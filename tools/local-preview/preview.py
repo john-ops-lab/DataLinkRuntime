@@ -153,13 +153,18 @@ def selected_manifest(config, previous, target):
     }:
         raise RuntimeError("Invalid private carry-forward reference")
     manifest_id = reference["manifest_id"]
-    if not isinstance(manifest_id, str) or not carry_forward.MANIFEST_ID.fullmatch(manifest_id):
+    if not isinstance(manifest_id, str) or not carry_forward.MANIFEST_ID.fullmatch(
+        manifest_id
+    ):
         raise RuntimeError("Invalid private carry-forward reference")
     path = ROOT / "carry-forward" / "manifests" / f"{manifest_id}.json"
     manifest = carry_forward.validate_manifest(carry_forward.read_private(path))
-    expected_schema = previous.get("schema") or vm_command(
-        "cat", vm_path(f"releases/{previous['sha']}/schema")
-    ).stdout.strip()
+    expected_schema = (
+        previous.get("schema")
+        or vm_command(
+            "cat", vm_path(f"releases/{previous['sha']}/schema")
+        ).stdout.strip()
+    )
     expected = {
         "manifest_id": manifest["manifest_id"],
         "manifest_digest": manifest["manifest_digest"],
@@ -173,7 +178,15 @@ def selected_manifest(config, previous, target):
         raise RuntimeError("Carry-forward plan is not bound to this candidate")
     if manifest["repo"] != config["repo"] or any(
         manifest[key] != expected[key]
-        for key in ("manifest_id", "manifest_digest", "from_sha", "to_sha", "from_schema", "to_schema", "pr")
+        for key in (
+            "manifest_id",
+            "manifest_digest",
+            "from_sha",
+            "to_sha",
+            "from_schema",
+            "to_schema",
+            "pr",
+        )
     ):
         raise RuntimeError("Carry-forward manifest binding changed")
     if manifest["controller_files_digest"] != controller_files_digest():
@@ -402,12 +415,57 @@ def plan_carry_forward(to_sha, ids_file, output):
         raise RuntimeError("candidate_not_staged")
     candidate_images = json.loads(images_result.stdout)
     old_images = json.loads(
-        vm_command(
-            "cat", vm_path(f"releases/{previous['sha']}/images.json")
-        ).stdout
+        vm_command("cat", vm_path(f"releases/{previous['sha']}/images.json")).stdout
     )
     storage = []
+    old_containers = []
     for service in ("postgres", "rabbitmq", "control", "worker"):
+        container_id = vm_command(
+            "docker", "inspect", container(service), "--format", "{{.Id}}"
+        ).stdout.strip()
+        image_id = vm_command(
+            "docker", "inspect", container(service), "--format", "{{.Image}}"
+        ).stdout.strip()
+        labels = {
+            "com.docker.compose.project": vm_command(
+                "docker",
+                "inspect",
+                container(service),
+                "--format",
+                '{{index .Config.Labels "com.docker.compose.project"}}',
+            ).stdout.strip(),
+            "com.docker.compose.service": vm_command(
+                "docker",
+                "inspect",
+                container(service),
+                "--format",
+                '{{index .Config.Labels "com.docker.compose.service"}}',
+            ).stdout.strip(),
+        }
+        expected_images = [
+            value
+            for tag, value in old_images.items()
+            if tag.endswith(f"-{service}:{previous['sha']}")
+        ]
+        if (
+            (service != "rabbitmq" and len(expected_images) != 1)
+            or (expected_images and image_id != expected_images[0])
+            or labels
+            != {
+                "com.docker.compose.project": config["project"],
+                "com.docker.compose.service": service,
+            }
+            or not re.fullmatch(r"[0-9a-f]{64}", container_id)
+        ):
+            raise RuntimeError("Old container identity is not closed")
+        old_containers.append(
+            {
+                "service": service,
+                "container_id": container_id,
+                "image_id": image_id,
+                "labels": labels,
+            }
+        )
         mounts = json.loads(
             vm_command(
                 "docker",
@@ -417,22 +475,39 @@ def plan_carry_forward(to_sha, ids_file, output):
                 "{{json .Mounts}}",
             ).stdout
         )
-        storage.extend(
-            {
-                "service": service,
-                "type": "volume",
-                "name": mount.get("Name"),
-                "destination": mount.get("Destination"),
-            }
-            for mount in mounts
-            if mount.get("Type") == "volume"
-        )
-    worker_storage = [item for item in storage if item["service"] == "worker"]
+        for mount in mounts:
+            mount_type = mount.get("Type")
+            if mount_type not in {"volume", "bind", "tmpfs"}:
+                raise RuntimeError("Old storage identity is not closed")
+            storage.append(
+                {
+                    "service": service,
+                    "type": mount_type,
+                    "source": (
+                        mount.get("Name")
+                        if mount_type == "volume"
+                        else mount.get("Source", "")
+                        if mount_type == "bind"
+                        else ""
+                    ),
+                    "destination": mount.get("Destination"),
+                    "read_only": not bool(mount.get("RW")),
+                }
+            )
+    worker_storage = [
+        item
+        for item in storage
+        if item["service"] == "worker" and item["type"] == "volume"
+    ]
     if (
-        len({(item["service"], item["destination"]) for item in storage}) != len(storage)
+        len({(item["service"], item["destination"]) for item in storage})
+        != len(storage)
         or {item["destination"] for item in worker_storage}
         != {"/var/lib/dlr/runtime", "/var/lib/dlr/journal"}
-        or any(not item["name"] or not item["destination"] for item in storage)
+        or any(
+            not item["destination"] or (item["type"] != "tmpfs" and not item["source"])
+            for item in storage
+        )
     ):
         raise RuntimeError("Worker storage identity is not closed")
     manifest_id = uuid.uuid4().hex
@@ -456,18 +531,17 @@ def plan_carry_forward(to_sha, ids_file, output):
         "storage_identity": sorted(
             storage, key=lambda item: (item["service"], item["destination"])
         ),
+        "old_containers": sorted(old_containers, key=lambda item: item["service"]),
     }
-    vm_private_write(f"{work_relative}/ids.json", carry_forward.canonical_bytes(ids) + b"\n")
+    vm_private_write(
+        f"{work_relative}/ids.json", carry_forward.canonical_bytes(ids) + b"\n"
+    )
     vm_private_write(
         f"{work_relative}/context.json", carry_forward.canonical_bytes(context) + b"\n"
     )
     phase(target, "plan", manifest_id)
     manifest = carry_forward.validate_manifest(
-        json.loads(
-            vm_command(
-                "cat", vm_path(f"{work_relative}/manifest.json")
-            ).stdout
-        )
+        json.loads(vm_command("cat", vm_path(f"{work_relative}/manifest.json")).stdout)
     )
     carry_forward.write_private(output, manifest)
     return {
@@ -476,7 +550,9 @@ def plan_carry_forward(to_sha, ids_file, output):
         "manifest_digest": manifest["manifest_digest"],
         "from_sha": manifest["from_sha"],
         "to_sha": manifest["to_sha"],
-        "selection_count": len(carry_forward.selected_execution_ids(manifest["selection"])),
+        "selection_count": len(
+            carry_forward.selected_execution_ids(manifest["selection"])
+        ),
     }
 
 
@@ -799,7 +875,12 @@ def main():
     parser.add_argument("--carry-forward", type=Path)
     args = parser.parse_args()
     if args.command == "plan-carry-forward":
-        if args.pr is not None or not args.to_sha or not args.ids_file or not args.output:
+        if (
+            args.pr is not None
+            or not args.to_sha
+            or not args.ids_file
+            or not args.output
+        ):
             parser.error(
                 "plan-carry-forward requires --to-sha, --ids-file and --output"
             )

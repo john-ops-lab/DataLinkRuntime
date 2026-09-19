@@ -152,6 +152,62 @@ carry_files() {
       --material-root "artifacts=$artifact_target" \
       --expected-uid "$worker_uid" "$@"
 }
+carry_state() {
+  local evidence=$1; shift
+  local control_network env_file rc
+  env_file="$evidence/database.env"
+  trap 'rm -f "$env_file"' RETURN EXIT
+  python3 - "$project-control-1" "$env_file" <<'PY'
+import json, os, pathlib, subprocess, sys
+value = json.loads(subprocess.check_output(['docker','inspect',sys.argv[1]], text=True))[0]
+allowed = {}
+for item in value['Config']['Env']:
+    key, separator, raw = item.partition('=')
+    if separator and key in {'DATABASE_URL', 'PGOPTIONS'}:
+        allowed[key] = raw
+assert set(allowed) >= {'DATABASE_URL'}
+path = pathlib.Path(sys.argv[2])
+descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, 'w') as output:
+    for key in ('DATABASE_URL', 'PGOPTIONS'):
+        if key in allowed:
+            assert '\n' not in allowed[key] and '\r' not in allowed[key]
+            output.write(f'{key}={allowed[key]}\n')
+PY
+  control_network=$(python3 - "$project-control-1" <<'PY'
+import json, subprocess, sys
+value = json.loads(subprocess.check_output(['docker','inspect',sys.argv[1]], text=True))[0]
+networks = list(value['NetworkSettings']['Networks'])
+assert len(networks) == 1
+print(networks[0])
+PY
+  )
+  local -a mounts=(
+    --mount "type=bind,source=$root/carry_forward.py,target=/opt/dlr/carry_forward.py,readonly"
+    --mount "type=bind,source=$evidence,target=/evidence"
+    --mount "type=volume,source=$runtime_volume,target=/var/lib/dlr/runtime,readonly,volume-nocopy"
+    --mount "type=volume,source=$journal_volume,target=/var/lib/dlr/journal,readonly,volume-nocopy"
+    --mount "type=volume,source=$builtin_volume,target=/var/lib/dlr/builtin-packages,readonly,volume-nocopy"
+    --mount "type=volume,source=$artifact_volume,target=$artifact_target,readonly,volume-nocopy"
+  )
+  if [ -n "${carry_manifest:-}" ]; then
+    mounts+=(--mount "type=bind,source=$carry_manifest,target=/evidence/manifest.json,readonly")
+  fi
+  if docker run --rm --read-only --network "$control_network" \
+    --cap-drop ALL --cap-add DAC_READ_SEARCH --user 0:0 \
+    --security-opt no-new-privileges=true --pids-limit 64 \
+    --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+    --env-file "$env_file" --env PYTHONDONTWRITEBYTECODE=1 \
+    --entrypoint python "${mounts[@]}" "$control_image" \
+    /opt/dlr/carry_forward.py capture-state \
+      --runtime-root /var/lib/dlr/runtime --journal-root /var/lib/dlr/journal \
+      --material-root builtin=/var/lib/dlr/builtin-packages \
+      --material-root "artifacts=$artifact_target" \
+      --expected-uid "$worker_uid" "$@"; then rc=0; else rc=$?; fi
+  rm -f "$env_file"
+  trap - RETURN EXIT
+  return "$rc"
+}
 images() {
   python3 - "$release/images.json" "${1:-verify}" "$sha" "$project" <<'PY'
 import json, subprocess, sys
@@ -211,11 +267,12 @@ if [ "$action" = plan ]; then
     test "$(docker volume inspect "$volume" --format '{{.Name}}')" = "$volume"
     test "$(docker volume inspect "$volume" --format '{{index .Labels "com.docker.compose.project"}}')" = "$project"
   done
-  carry_control "$carry_work" check-db \
-    --ids /evidence/ids.json --output /evidence/db.json
-  carry_files "$carry_work" --db /evidence/db.json --output /evidence/files.json
+  carry_state "$carry_work" --ids /evidence/ids.json \
+    --db-output /evidence/db.json --files-output /evidence/files.json
   python3 "$root/carry_forward.py" check-kernel --unit "$sandbox_unit" \
     --expected-description "$sandbox_description" \
+    --worker-container "$project-worker-1" \
+    --runtime-volume "$runtime_volume" --journal-volume "$journal_volume" \
     --output "$carry_work/kernel.json"
   python3 "$root/carry_forward.py" plan \
     --ids "$carry_work/ids.json" --context "$carry_work/context.json" \
@@ -270,16 +327,47 @@ assert manifest['to_schema'] == schema
 assert manifest['candidate_image_ids'] == json.loads(pathlib.Path(candidate_images_path).read_text())
 assert manifest['old_image_ids'] == json.loads(pathlib.Path(old_images_path).read_text())
 actual = []
+containers = []
 for service in ('postgres', 'rabbitmq', 'control', 'worker'):
+    name = f'{project}-{service}-1'
+    container_id = subprocess.check_output(
+        ['docker','inspect',name,'--format','{{.Id}}'], text=True
+    ).strip()
+    image_id = subprocess.check_output(
+        ['docker','inspect',name,'--format','{{.Image}}'], text=True
+    ).strip()
+    labels = {
+        'com.docker.compose.project': subprocess.check_output(
+            ['docker','inspect',name,'--format','{{index .Config.Labels "com.docker.compose.project"}}'], text=True
+        ).strip(),
+        'com.docker.compose.service': subprocess.check_output(
+            ['docker','inspect',name,'--format','{{index .Config.Labels "com.docker.compose.service"}}'], text=True
+        ).strip(),
+    }
+    containers.append({'service':service,'container_id':container_id,
+                       'image_id':image_id,'labels':labels})
     mounts = json.loads(subprocess.check_output(
-        ['docker','inspect',f'{project}-{service}-1','--format','{{json .Mounts}}'], text=True
+        ['docker','inspect',name,'--format','{{json .Mounts}}'], text=True
     ))
     actual.extend(
-        {'service':service,'type':'volume','name':item.get('Name'),'destination':item.get('Destination')}
-        for item in mounts if item.get('Type') == 'volume'
+        {'service':service,'type':item.get('Type'),
+         'source':item.get('Name') if item.get('Type') == 'volume'
+                  else item.get('Source','') if item.get('Type') == 'bind' else '',
+         'destination':item.get('Destination'),'read_only':not bool(item.get('RW'))}
+        for item in mounts if item.get('Type') in {'volume','bind','tmpfs'}
     )
 actual.sort(key=lambda item:(item['service'], item['destination']))
+containers.sort(key=lambda item:item['service'])
 assert manifest['storage_identity'] == actual
+assert manifest['old_containers'] == containers
+old_images = json.loads(pathlib.Path(old_images_path).read_text())
+for item in containers:
+    matches = [image for tag,image in old_images.items()
+               if tag.endswith(f"-{item['service']}:{manifest['from_sha']}")]
+    if item['service'] != 'rabbitmq':
+        assert len(matches) == 1 and matches[0] == item['image_id']
+    assert item['labels'] == {'com.docker.compose.project':project,
+                              'com.docker.compose.service':item['service']}
 release = pathlib.Path(candidate_images_path).parent
 config = json.loads(subprocess.check_output([
     'docker','compose','--project-name',project,'--env-file',str(pathlib.Path(controller_root)/'preview.env'),
@@ -290,24 +378,28 @@ candidate = []
 declared = config.get('volumes', {})
 for service in ('postgres', 'rabbitmq', 'control', 'worker'):
     for item in config['services'][service].get('volumes', []):
-        if item.get('type') != 'volume':
-            continue
-        source = item.get('source')
-        assert isinstance(source, str) and source in declared
-        volume = declared[source]
-        name = volume.get('name') or f'{project}_{source}'
+        mount_type = item.get('type')
+        assert mount_type in {'volume','bind','tmpfs'}
+        source = item.get('source','')
+        if mount_type == 'volume':
+            assert isinstance(source, str) and source in declared
+            volume = declared[source]
+            source = volume.get('name') or f'{project}_{source}'
+        elif mount_type == 'bind':
+            assert isinstance(source, str) and source.startswith('/')
+        else:
+            source = ''
         candidate.append({
-            'service':service,'type':'volume','name':name,'destination':item.get('target')
+            'service':service,'type':mount_type,'source':source,
+            'destination':item.get('target'),'read_only':bool(item.get('read_only',False))
         })
 candidate.sort(key=lambda item:(item['service'], item['destination']))
 assert candidate == manifest['storage_identity']
 PY
     carry_check="$root/carry-forward/check/$carry_id"
     install -d -m 700 "$carry_check/preflight"
-    carry_control "$carry_check/preflight" check-db \
-      --baseline /evidence/manifest.json --output /evidence/db.json
-    carry_files "$carry_check/preflight" \
-      --baseline /evidence/manifest.json --output /evidence/files.json
+    carry_state "$carry_check/preflight" --baseline /evidence/manifest.json \
+      --db-output /evidence/db.json --files-output /evidence/files.json
   fi
   # Delay while queued/running/retrying work or unfinished cleanup exists.
   busy_query="SELECT (SELECT count(*) FROM executions WHERE status IN ('queued','running','retry_wait') OR workspace_cleanup_status='pending') + (SELECT count(*) FROM execution_attempts WHERE status IN ('claimed','running'))"
@@ -329,8 +421,9 @@ PY
   old_compose stop control
   if [ -n "$carry_manifest" ]; then
     install -d -m 700 "$carry_check/control-stopped"
-    if ! carry_control "$carry_check/control-stopped" check-db \
-      --baseline /evidence/manifest.json --output /evidence/db.json \
+    if ! carry_state "$carry_check/control-stopped" \
+      --baseline /evidence/manifest.json \
+      --db-output /evidence/db.json --files-output /evidence/files.json \
       > "$carry_check/control-stopped/stdout.jsonl" \
       2> "$carry_check/control-stopped/stderr.jsonl"; then
       exit 1
@@ -353,14 +446,13 @@ PY
       | grep -Ev '^(postgres|rabbitmq)$' || true)
     test -z "$unknown_running"
     install -d -m 700 "$carry_check/stopped"
-    if ! carry_control "$carry_check/stopped" check-db \
-      --baseline /evidence/manifest.json --output /evidence/db.json \
+    if ! carry_state "$carry_check/stopped" \
+      --baseline /evidence/manifest.json \
+      --db-output /evidence/db.json --files-output /evidence/files.json \
       > "$carry_check/stopped/db-stdout.jsonl" \
       2> "$carry_check/stopped/db-stderr.jsonl"; then
       exit 1
     fi
-    carry_files "$carry_check/stopped" \
-      --baseline /evidence/manifest.json --output /evidence/files.json
     python3 "$root/carry_forward.py" check-kernel \
       --unit "$sandbox_unit" --expected-description "$sandbox_description" \
       --require-idle --baseline "$carry_manifest" \
@@ -375,10 +467,8 @@ PY
   compose run --rm --no-deps -T -v "$root:/preview:ro" control python /preview/assets.py > "$backup/assets.json"
   if [ -n "$carry_manifest" ]; then
     install -d -m 700 "$carry_check/after-backup"
-    carry_control "$carry_check/after-backup" check-db \
-      --baseline /evidence/manifest.json --output /evidence/db.json
-    carry_files "$carry_check/after-backup" \
-      --baseline /evidence/manifest.json --output /evidence/files.json
+    carry_state "$carry_check/after-backup" --baseline /evidence/manifest.json \
+      --db-output /evidence/db.json --files-output /evidence/files.json
     python3 "$root/carry_forward.py" check-kernel \
       --unit "$sandbox_unit" --expected-description "$sandbox_description" \
       --require-idle --baseline "$carry_manifest" \
@@ -391,10 +481,8 @@ PY
   compose run --rm --no-deps -T -v "$root:/preview:ro" control python /preview/assets.py "/preview/backups/$(basename "$backup")/assets.json" > "$backup/assets-after.json"
   if [ -n "$carry_manifest" ]; then
     install -d -m 700 "$carry_check/after-migration"
-    carry_control "$carry_check/after-migration" check-db \
-      --baseline /evidence/manifest.json --output /evidence/db.json
-    carry_files "$carry_check/after-migration" \
-      --baseline /evidence/manifest.json --output /evidence/files.json
+    carry_state "$carry_check/after-migration" --baseline /evidence/manifest.json \
+      --db-output /evidence/db.json --files-output /evidence/files.json
     python3 "$root/carry_forward.py" check-kernel \
       --unit "$sandbox_unit" --expected-description "$sandbox_description" \
       --require-idle --baseline "$carry_manifest" \

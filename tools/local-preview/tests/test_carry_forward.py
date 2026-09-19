@@ -26,15 +26,13 @@ def tables(executions, attempts=(), incidents=(), slots=(), cleanup_requests=())
     attempts = [dict(row) for row in attempts]
     for row in attempts:
         if row.get("status") in carry.TERMINAL_ATTEMPTS:
-            row.setdefault(
-                "cleanup_summary", {"workspace_cleanup_status": "completed"}
-            )
-    values = {
-        name: table(["id"], ["id"], []) for name in carry.RESPONSIBILITY_TABLES
-    }
+            row.setdefault("cleanup_summary", {"workspace_cleanup_status": "completed"})
+    values = {name: table(["id"], ["id"], []) for name in carry.RESPONSIBILITY_TABLES}
     values.update(
         {
-            "executions": table(list(executions[0]) if executions else ["id"], ["id"], executions),
+            "executions": table(
+                list(executions[0]) if executions else ["id"], ["id"], executions
+            ),
             "execution_attempts": table(
                 list(attempts[0]) if attempts else ["id", "execution_id", "status"],
                 ["id"],
@@ -126,7 +124,10 @@ class SelectionTests(unittest.TestCase):
         for bad in (
             {"queued": [], "cleanup_execution_ids": []},
             {"queued": "*", "cleanup_execution_ids": []},
-            {"queued": [{"execution_id": True, "incident_ids": [1]}], "cleanup_execution_ids": []},
+            {
+                "queued": [{"execution_id": True, "incident_ids": [1]}],
+                "cleanup_execution_ids": [],
+            },
             {
                 "queued": [
                     {"execution_id": 7, "incident_ids": [11]},
@@ -229,7 +230,9 @@ class ResponsibilityTests(unittest.TestCase):
                 }
             ],
         )
-        with self.assertRaisesRegex(carry.CarryForwardError, "unselected_execution_busy"):
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "unselected_execution_busy"
+        ):
             carry.derive_responsibilities(changed, self.selection)
 
     def test_unselected_terminal_deferred_is_not_ignored(self):
@@ -311,8 +314,22 @@ class FileEvidenceTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.runtime = self.root / "runtime"
         self.journal = self.root / "journal"
-        self.runtime.mkdir(mode=0o700)
+        self.runtime.mkdir(mode=0o711)
         self.journal.mkdir(mode=0o700)
+        for root in (self.runtime, self.journal):
+            lock = root / ".dlr-instance.lock"
+            lock.touch(mode=0o600)
+        attempt_journal = self.runtime / "attempt-journal"
+        attempt_journal.mkdir(mode=0o700)
+        (attempt_journal / ".dlr-instance.lock").touch(mode=0o600)
+        (self.runtime / "workspaces").mkdir(mode=0o700)
+        cache = self.runtime / "version-cache"
+        cache.mkdir(mode=0o711)
+        (cache / "entries").mkdir(mode=0o711)
+        (cache / ".dlr-cache-reservations.json").write_text("{}")
+        (cache / ".dlr-cache-reservations.json").chmod(0o600)
+        (cache / ".dlr-cache-reservations.lock").touch(mode=0o644)
+        (self.journal / "sandbox-recovery").mkdir(mode=0o700)
 
     def _write(self, path, value):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -322,11 +339,15 @@ class FileEvidenceTests(unittest.TestCase):
     def test_never_claimed_rejects_workspace(self):
         workspace = self.runtime / "workspaces/attempt-3/dlr-exec-7"
         workspace.mkdir(parents=True)
+        workspace.parent.chmod(0o700)
+        workspace.chmod(0o700)
         evidence = carry.capture_files(self.runtime, self.journal)
         responsibilities = {
-            "executions": [{"execution_id": 7, "attempt_ids": [], "cleanup": "not_applicable"}]
+            "executions": [
+                {"execution_id": 7, "attempt_ids": [], "cleanup": "not_applicable"}
+            ]
         }
-        with self.assertRaisesRegex(carry.CarryForwardError, "never_claimed_storage_present"):
+        with self.assertRaisesRegex(carry.CarryForwardError, "workspace_entry_unknown"):
             carry.validate_file_responsibilities(evidence, responsibilities)
 
     def test_file_metadata_changes_preservation_fingerprint(self):
@@ -337,6 +358,71 @@ class FileEvidenceTests(unittest.TestCase):
         os.utime(path, ns=(changed, changed))
         after = carry.capture_files(self.runtime, self.journal)
         self.assertNotEqual(before, after)
+
+    def test_real_layout_contract_allows_cache_and_empty_attempt_shells(self):
+        for attempt_id in range(1, 462):
+            (self.runtime / f"workspaces/attempt-{attempt_id}").mkdir(mode=0o700)
+        evidence = carry.capture_files(self.runtime, self.journal)
+        carry.validate_file_responsibilities(
+            evidence,
+            {
+                "executions": [
+                    {
+                        "execution_id": 900,
+                        "attempt_ids": [],
+                        "cleanup": "not_applicable",
+                    }
+                ]
+            },
+        )
+        self.assertIn(
+            "version-cache/entries",
+            {entry["path"] for entry in evidence["runtime"]["entries"]},
+        )
+
+    def test_trusted_roots_and_lock_types_are_closed(self):
+        self.runtime.chmod(0o777)
+        with self.assertRaisesRegex(carry.CarryForwardError, "runtime_root_invalid"):
+            carry.capture_files(self.runtime, self.journal)
+        self.runtime.chmod(0o711)
+        lock = self.runtime / ".dlr-instance.lock"
+        lock.unlink()
+        lock.mkdir(mode=0o700)
+        with self.assertRaisesRegex(carry.CarryForwardError, "storage_lock_invalid"):
+            carry.capture_files(self.runtime, self.journal)
+
+    def test_unknown_workspace_shapes_are_rejected(self):
+        unknown = self.runtime / "workspaces/unknown-owner"
+        unknown.mkdir()
+        with self.assertRaisesRegex(carry.CarryForwardError, "workspace_entry_unknown"):
+            carry.validate_file_responsibilities(
+                carry.capture_files(self.runtime, self.journal), {"executions": []}
+            )
+
+    def test_individual_credential_hashes_are_not_persisted(self):
+        token = "cleanup-token"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        self._write(
+            self.journal / "execution-9-attempt-13.cleanup.json",
+            {
+                "cleanup_token": token,
+                "execution_id": 9,
+                "protocol_version": 3,
+                "workspace_path": "/var/lib/dlr/runtime/workspaces/attempt-13/dlr-exec-9",
+                "attempt_id": 13,
+            },
+        )
+        evidence = carry.capture_files(
+            self.runtime,
+            self.journal,
+            credential_hashes={
+                13: {"claim_token_hash": None, "cleanup_token_hash": token_hash}
+            },
+        )
+        self.assertTrue(
+            evidence["journal_facts"]["cleanup"][0]["cleanup_token_matches"]
+        )
+        self.assertNotIn(token_hash, json.dumps(evidence, sort_keys=True))
 
     def test_deferred_journal_identity_and_token_are_verified(self):
         token = "cleanup-token"
@@ -350,7 +436,16 @@ class FileEvidenceTests(unittest.TestCase):
                 "attempt_id": 13,
             },
         )
-        evidence = carry.capture_files(self.runtime, self.journal)
+        evidence = carry.capture_files(
+            self.runtime,
+            self.journal,
+            credential_hashes={
+                13: {
+                    "cleanup_token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                    "claim_token_hash": None,
+                }
+            },
+        )
         responsibilities = {
             "executions": [
                 {
@@ -360,7 +455,9 @@ class FileEvidenceTests(unittest.TestCase):
                     "attempts": [
                         {
                             "attempt_id": 13,
-                            "cleanup_token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                            "cleanup_token_hash": hashlib.sha256(
+                                token.encode()
+                            ).hexdigest(),
                         }
                     ],
                     "cleanup": "deferred_preserved",
@@ -368,7 +465,7 @@ class FileEvidenceTests(unittest.TestCase):
             ]
         }
         carry.validate_file_responsibilities(evidence, responsibilities)
-        responsibilities["executions"][0]["attempts"][0]["cleanup_token_hash"] = "0" * 64
+        evidence["journal_facts"]["cleanup"][0]["cleanup_token_matches"] = False
         with self.assertRaisesRegex(
             carry.CarryForwardError, "deferred_journal_identity_invalid"
         ):
@@ -376,7 +473,9 @@ class FileEvidenceTests(unittest.TestCase):
 
     def test_deferred_without_journal_is_rejected(self):
         evidence = carry.capture_files(self.runtime, self.journal)
-        with self.assertRaisesRegex(carry.CarryForwardError, "deferred_journal_missing"):
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "deferred_journal_missing"
+        ):
             carry.validate_file_responsibilities(
                 evidence,
                 {
@@ -412,7 +511,15 @@ class FileEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(carry.CarryForwardError, "cleanup_journal_unknown"):
             carry.validate_file_responsibilities(
                 evidence,
-                {"executions": [{"execution_id": 7, "attempt_ids": [], "cleanup": "not_applicable"}]},
+                {
+                    "executions": [
+                        {
+                            "execution_id": 7,
+                            "attempt_ids": [],
+                            "cleanup": "not_applicable",
+                        }
+                    ]
+                },
             )
 
     def test_attempt_journal_must_match_attempt_fence_and_tokens(self):
@@ -441,8 +548,12 @@ class FileEvidenceTests(unittest.TestCase):
                             "attempt_id": 13,
                             "attempt_no": 2,
                             "fencing_token": 4,
-                            "claim_token_hash": hashlib.sha256(claim.encode()).hexdigest(),
-                            "cleanup_token_hash": hashlib.sha256(cleanup.encode()).hexdigest(),
+                            "claim_token_hash": hashlib.sha256(
+                                claim.encode()
+                            ).hexdigest(),
+                            "cleanup_token_hash": hashlib.sha256(
+                                cleanup.encode()
+                            ).hexdigest(),
                             "lease_expires_at": "2026-09-17T01:00:00+00:00",
                         }
                     ],
@@ -450,8 +561,19 @@ class FileEvidenceTests(unittest.TestCase):
                 }
             ]
         }
-        evidence = carry.capture_files(self.runtime, self.journal)
-        with self.assertRaisesRegex(carry.CarryForwardError, "completed_storage_present"):
+        evidence = carry.capture_files(
+            self.runtime,
+            self.journal,
+            credential_hashes={
+                13: {
+                    "claim_token_hash": hashlib.sha256(claim.encode()).hexdigest(),
+                    "cleanup_token_hash": hashlib.sha256(cleanup.encode()).hexdigest(),
+                }
+            },
+        )
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "completed_storage_present"
+        ):
             carry.validate_file_responsibilities(evidence, responsibilities)
         responsibilities["executions"][0]["cleanup"] = "deferred_preserved"
         responsibilities["executions"][0]["deferred_attempt_ids"] = [13]
@@ -465,22 +587,124 @@ class FileEvidenceTests(unittest.TestCase):
                 "attempt_id": 13,
             },
         )
-        evidence = carry.capture_files(self.runtime, self.journal)
+        evidence = carry.capture_files(
+            self.runtime,
+            self.journal,
+            credential_hashes={
+                13: {
+                    "claim_token_hash": hashlib.sha256(claim.encode()).hexdigest(),
+                    "cleanup_token_hash": hashlib.sha256(cleanup.encode()).hexdigest(),
+                }
+            },
+        )
         carry.validate_file_responsibilities(evidence, responsibilities)
         responsibilities["executions"][0]["attempts"][0]["fencing_token"] = 5
-        with self.assertRaisesRegex(carry.CarryForwardError, "attempt_journal_identity_invalid"):
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "attempt_journal_identity_invalid"
+        ):
             carry.validate_file_responsibilities(evidence, responsibilities)
 
 
 class ManifestAndProjectionTests(unittest.TestCase):
+    def test_retired_marker_matches_worker_namespace_rules(self):
+        marker = {
+            "cgroup_name": "attempt-9-13",
+            "marker_fingerprint": "f" * 64,
+            "namespace_identity": {
+                "boot_id": "11111111-1111-1111-1111-111111111111",
+                "parent_device": 10,
+                "parent_inode": 20,
+                "root_device": 10,
+                "root_inode": 30,
+            },
+        }
+        result = carry.validate_retired_markers(
+            [marker],
+            boot_id="11111111-1111-1111-1111-111111111111",
+            parent_device=10,
+            parent_inode=20,
+            children={"agent": {"device": 10, "inode": 21}},
+        )
+        self.assertEqual(result[0]["cgroup_name"], "attempt-9-13")
+        cross_boot = json.loads(json.dumps(marker))
+        cross_boot["namespace_identity"]["boot_id"] = (
+            "22222222-2222-2222-2222-222222222222"
+        )
+        carry.validate_retired_markers(
+            [cross_boot],
+            boot_id="11111111-1111-1111-1111-111111111111",
+            parent_device=99,
+            parent_inode=99,
+            children={"agent": {"device": 10, "inode": 21}},
+        )
+        for changed, children in (
+            ({"parent_inode": 99}, {"agent": {"device": 10, "inode": 21}}),
+            (
+                {},
+                {
+                    "agent": {"device": 10, "inode": 21},
+                    "old": {"device": 10, "inode": 30},
+                },
+            ),
+        ):
+            invalid = json.loads(json.dumps(marker))
+            invalid["namespace_identity"].update(changed)
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "sandbox_namespace_not_retired"
+            ):
+                carry.validate_retired_markers(
+                    [invalid],
+                    boot_id="11111111-1111-1111-1111-111111111111",
+                    parent_device=10,
+                    parent_inode=20,
+                    children=children,
+                )
+
     def test_candidate_disposition_table_must_exist_and_be_empty(self):
         revision = "0040_issue152_dispositions"
         table_name = "execution_incident_dispositions"
         carry.validate_candidate_tables(revision, {table_name}, {table_name: 0})
         with self.assertRaisesRegex(carry.CarryForwardError, "candidate_table_missing"):
             carry.validate_candidate_tables(revision, set(), {})
-        with self.assertRaisesRegex(carry.CarryForwardError, "candidate_table_not_empty"):
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "candidate_table_not_empty"
+        ):
             carry.validate_candidate_tables(revision, {table_name}, {table_name: 1})
+
+    def test_schema_inventory_allows_only_0038_to_0040_delta_and_seed(self):
+        baseline = {"executions", "execution_attempts"}
+        expected = baseline | {
+            "runtime_reconciliation_cursors",
+            "execution_incident_dispositions",
+        }
+        carry.validate_schema_inventory(
+            "0038_issue138_languages",
+            "0040_issue152_dispositions",
+            baseline,
+            expected,
+            {"execution_incident_dispositions": 0},
+            [("expired_attempts", 0, 0)],
+        )
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "candidate_schema_inventory_changed"
+        ):
+            carry.validate_schema_inventory(
+                "0038_issue138_languages",
+                "0040_issue152_dispositions",
+                baseline,
+                expected | {"unapproved_table"},
+                {"execution_incident_dispositions": 0},
+                [("expired_attempts", 0, 0)],
+            )
+        with self.assertRaisesRegex(carry.CarryForwardError, "candidate_seed_invalid"):
+            carry.validate_schema_inventory(
+                "0038_issue138_languages",
+                "0040_issue152_dispositions",
+                baseline,
+                expected,
+                {"execution_incident_dispositions": 0},
+                [],
+            )
 
     def test_projection_is_ordered_and_exact(self):
         first = tables([queued_execution()])
@@ -493,7 +717,7 @@ class ManifestAndProjectionTests(unittest.TestCase):
 
     def test_manifest_digest_and_candidate_binding_are_closed(self):
         payload = {
-            "format_version": 1,
+            "format_version": carry.FORMAT_VERSION,
             "manifest_id": "1" * 32,
             "created_at": "2026-09-17T00:00:00+00:00",
             "repo": "owner/repo",
@@ -512,14 +736,18 @@ class ManifestAndProjectionTests(unittest.TestCase):
             },
             "responsibilities": {},
             "old_runtime_projection": carry.project_rows(tables([queued_execution()])),
+            "schema_inventory": {"tables": sorted(carry.RESPONSIBILITY_TABLES)},
             "storage_identity": {},
+            "old_containers": [],
             "file_evidence": {},
             "kernel_evidence": {},
         }
         manifest = carry.seal_manifest(payload)
         carry.validate_manifest(manifest)
         manifest["to_sha"] = SHA_A
-        with self.assertRaisesRegex(carry.CarryForwardError, "manifest_digest_mismatch"):
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "manifest_digest_mismatch"
+        ):
             carry.validate_manifest(manifest)
 
     def test_private_file_requires_restricted_parent_and_regular_single_link(self):
@@ -531,7 +759,9 @@ class ManifestAndProjectionTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
             self.assertEqual(carry.read_private(target), {"safe": True})
             parent.chmod(0o755)
-            with self.assertRaisesRegex(carry.CarryForwardError, "private_parent_invalid"):
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "private_parent_invalid"
+            ):
                 carry.read_private(target)
 
     def test_kernel_compare_rejects_unknown_or_repopulated_children(self):
@@ -554,7 +784,11 @@ class ManifestAndProjectionTests(unittest.TestCase):
                 },
             },
         }
-        after = dict(baseline, children={"agent": baseline["children"]["agent"]})
+        after = dict(
+            baseline,
+            children={"agent": baseline["children"]["agent"]},
+            namespace_evidence={"related_count": 0},
+        )
         carry.compare_kernel(baseline, after)
         for name in ("unknown", "agent/hidden", "attempt-7-9"):
             children = dict(after["children"])

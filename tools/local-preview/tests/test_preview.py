@@ -93,7 +93,9 @@ class ControllerTests(unittest.TestCase):
         manifest_path.write_text("{}")
         manifest = {"manifest_id": "1" * 32, "manifest_digest": "2" * 64}
         with (
-            patch.object(preview, "selected_manifest", return_value=(manifest, manifest_path)),
+            patch.object(
+                preview, "selected_manifest", return_value=(manifest, manifest_path)
+            ),
             patch.object(preview, "vm_private_write") as transfer,
         ):
             self.assertEqual(preview.tick(), "Ready")
@@ -102,8 +104,14 @@ class ControllerTests(unittest.TestCase):
             (self.target, "deploy", "1" * 32),
         )
         transfer.assert_called_once()
-        self.assertFalse((Path(self.temp.name) / "carry-forward/manifests/" / manifest_path.name).exists())
-        self.assertTrue((Path(self.temp.name) / "carry-forward/consumed/manifest.json").exists())
+        self.assertFalse(
+            (
+                Path(self.temp.name) / "carry-forward/manifests/" / manifest_path.name
+            ).exists()
+        )
+        self.assertTrue(
+            (Path(self.temp.name) / "carry-forward/consumed/manifest.json").exists()
+        )
 
     def test_ci_rerun_same_sha_does_not_build(self):
         self.target["sha"] = A
@@ -295,7 +303,9 @@ class RemotePhaseTests(unittest.TestCase):
         ):
             self.assertTrue(preview.phase({"sha": B}, "deploy", "1" * 32))
         remote = command.call_args_list[0].args
-        self.assertEqual(remote[-4:], ("", "1" * 32, "nonce", "/example/preview/phase-exit"))
+        self.assertEqual(
+            remote[-4:], ("", "1" * 32, "nonce", "/example/preview/phase-exit")
+        )
 
 
 class CarryForwardSelectionTests(unittest.TestCase):
@@ -314,7 +324,7 @@ class CarryForwardSelectionTests(unittest.TestCase):
         Path(directory).chmod(0o700)
         value = carry_forward.seal_manifest(
             {
-                "format_version": 1,
+                "format_version": carry_forward.FORMAT_VERSION,
                 "manifest_id": "1" * 32,
                 "created_at": "2026-09-17T00:00:00+00:00",
                 "repo": "owner/repo",
@@ -341,7 +351,11 @@ class CarryForwardSelectionTests(unittest.TestCase):
                     }
                     for name in carry_forward.RESPONSIBILITY_TABLES
                 },
+                "schema_inventory": {
+                    "tables": sorted(carry_forward.RESPONSIBILITY_TABLES)
+                },
                 "storage_identity": [],
+                "old_containers": [],
                 "file_evidence": {},
                 "kernel_evidence": {},
             }

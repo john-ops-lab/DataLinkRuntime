@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 MANIFEST_ID = re.compile(r"[0-9a-f]{32}")
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
@@ -60,6 +60,18 @@ MAX_CAPTURE_BYTES = 16 * 1024 * 1024 * 1024
 MAX_JSON_BYTES = 1024 * 1024
 EMPTY_TABLES_BY_REVISION = {
     "0040_issue152_dispositions": ("execution_incident_dispositions",),
+}
+SCHEMA_ADDITIONS = {
+    ("0038_issue138_languages", "0039_issue134_reconcile"): {
+        "runtime_reconciliation_cursors"
+    },
+    ("0039_issue134_reconcile", "0040_issue152_dispositions"): {
+        "execution_incident_dispositions"
+    },
+    ("0038_issue138_languages", "0040_issue152_dispositions"): {
+        "runtime_reconciliation_cursors",
+        "execution_incident_dispositions",
+    },
 }
 
 
@@ -203,7 +215,9 @@ def normalize_selection(value: Any) -> dict[str, Any]:
             {"execution_id": execution_id, "incident_ids": sorted(incident_ids)}
         )
     cleanup_ids = [_positive(entry) for entry in cleanup]
-    if len(set(cleanup_ids)) != len(cleanup_ids) or seen_executions.intersection(cleanup_ids):
+    if len(set(cleanup_ids)) != len(cleanup_ids) or seen_executions.intersection(
+        cleanup_ids
+    ):
         raise CarryForwardError("selection_duplicate")
     if not normalized_queued and not cleanup_ids:
         raise CarryForwardError("selection_empty")
@@ -243,7 +257,9 @@ def row_digest(row: dict[str, Any]) -> str:
 
 
 def project_rows(
-    tables: dict[str, dict[str, Any]], *, required: tuple[str, ...] = RESPONSIBILITY_TABLES
+    tables: dict[str, dict[str, Any]],
+    *,
+    required: tuple[str, ...] = RESPONSIBILITY_TABLES,
 ) -> dict[str, Any]:
     projection: dict[str, Any] = {}
     for name in required:
@@ -264,10 +280,14 @@ def project_rows(
             or not primary_key
             or not set(primary_key).issubset(columns)
             or not isinstance(rows, list)
-            or not all(isinstance(row, dict) and set(row) == set(columns) for row in rows)
+            or not all(
+                isinstance(row, dict) and set(row) == set(columns) for row in rows
+            )
         ):
             raise CarryForwardError("schema_projection_invalid")
-        rows = sorted(rows, key=lambda row: canonical_bytes([row[key] for key in primary_key]))
+        rows = sorted(
+            rows, key=lambda row: canonical_bytes([row[key] for key in primary_key])
+        )
         projection[name] = {
             "columns": columns,
             "primary_key": primary_key,
@@ -277,7 +297,9 @@ def project_rows(
     return projection
 
 
-def _by_execution(rows: list[dict[str, Any]], execution_id: int) -> list[dict[str, Any]]:
+def _by_execution(
+    rows: list[dict[str, Any]], execution_id: int
+) -> list[dict[str, Any]]:
     return [row for row in rows if row.get("execution_id") == execution_id]
 
 
@@ -289,16 +311,27 @@ def derive_responsibilities(
     rows = {name: value["rows"] for name, value in tables.items()}
     executions = {row.get("id"): row for row in rows["executions"]}
     attempts = rows["execution_attempts"]
-    incidents = {row.get("id"): row for row in rows["execution_infrastructure_incidents"]}
+    incidents = {
+        row.get("id"): row for row in rows["execution_infrastructure_incidents"]
+    }
     active = [row for row in attempts if row.get("status") in ACTIVE_ATTEMPTS]
     if active:
         raise CarryForwardError("active_attempt_present")
-    if any(row.get("active_attempt_id") is not None for row in rows["adapter_execution_slots"]):
+    if any(
+        row.get("active_attempt_id") is not None
+        for row in rows["adapter_execution_slots"]
+    ):
         raise CarryForwardError("active_slot_present")
-    if any(row.get("status") in {"pending", "running"} for row in rows["worker_cleanup_requests"]):
+    if any(
+        row.get("status") in {"pending", "running"}
+        for row in rows["worker_cleanup_requests"]
+    ):
         raise CarryForwardError("worker_cleanup_active")
     for row in rows["executions"]:
-        if row.get("status") in {"queued", "running", "retry_wait"} and row.get("id") not in selected:
+        if (
+            row.get("status") in {"queued", "running", "retry_wait"}
+            and row.get("id") not in selected
+        ):
             raise CarryForwardError("unselected_execution_busy")
         if (
             row.get("workspace_cleanup_status") in {"pending", "deferred"}
@@ -365,7 +398,8 @@ def derive_responsibilities(
                 not incident
                 or incident.get("execution_id") != execution_id
                 or incident.get("status") != "open"
-                or incident.get("dispatch_generation") != execution.get("dispatch_generation")
+                or incident.get("dispatch_generation")
+                != execution.get("dispatch_generation")
             ):
                 raise CarryForwardError("queued_incident_invalid")
             execution_incidents.append(incident_id)
@@ -377,13 +411,17 @@ def derive_responsibilities(
         if all_open_incidents != set(execution_incidents):
             raise CarryForwardError("queued_incident_unselected")
         result.append(
-            _responsibility(execution, _by_execution(attempts, execution_id), execution_incidents)
+            _responsibility(
+                execution, _by_execution(attempts, execution_id), execution_incidents
+            )
         )
     for execution_id in selection["cleanup_execution_ids"]:
         execution = executions.get(execution_id)
         if not execution or execution.get("status") not in TERMINAL_EXECUTIONS:
             raise CarryForwardError("cleanup_execution_invalid")
-        result.append(_responsibility(execution, _by_execution(attempts, execution_id), []))
+        result.append(
+            _responsibility(execution, _by_execution(attempts, execution_id), [])
+        )
     return {"executions": sorted(result, key=lambda item: item["execution_id"])}
 
 
@@ -391,9 +429,15 @@ def _responsibility(
     execution: dict[str, Any], attempts: list[dict[str, Any]], incident_ids: list[int]
 ) -> dict[str, Any]:
     execution_id = _positive(execution.get("id"), "execution_identity_invalid")
-    attempt_ids = sorted(_positive(row.get("id"), "attempt_identity_invalid") for row in attempts)
+    attempt_ids = sorted(
+        _positive(row.get("id"), "attempt_identity_invalid") for row in attempts
+    )
     attempt_count = execution.get("attempt_count")
-    if not isinstance(attempt_count, int) or isinstance(attempt_count, bool) or attempt_count < 0:
+    if (
+        not isinstance(attempt_count, int)
+        or isinstance(attempt_count, bool)
+        or attempt_count < 0
+    ):
         raise CarryForwardError("execution_attempt_count_invalid")
     if attempt_count != len(attempts):
         raise CarryForwardError("execution_attempt_count_invalid")
@@ -402,12 +446,18 @@ def _responsibility(
     attempt_cleanup: dict[int, str] = {}
     for row in attempts:
         summary = row.get("cleanup_summary")
-        status = summary.get("workspace_cleanup_status") if isinstance(summary, dict) else None
+        status = (
+            summary.get("workspace_cleanup_status")
+            if isinstance(summary, dict)
+            else None
+        )
         if status not in {"completed", "deferred"}:
             raise CarryForwardError("attempt_cleanup_state_unknown")
         attempt_cleanup[row["id"]] = status
     deferred_attempt_ids = sorted(
-        attempt_id for attempt_id, status in attempt_cleanup.items() if status == "deferred"
+        attempt_id
+        for attempt_id, status in attempt_cleanup.items()
+        if status == "deferred"
     )
     cleanup_status = execution.get("workspace_cleanup_status")
     if (
@@ -420,7 +470,11 @@ def _responsibility(
         cleanup = "not_applicable"
     elif attempts and cleanup_status == "completed" and not deferred_attempt_ids:
         cleanup = "completed"
-    elif attempts and cleanup_status in {"completed", "deferred"} and deferred_attempt_ids:
+    elif (
+        attempts
+        and cleanup_status in {"completed", "deferred"}
+        and deferred_attempt_ids
+    ):
         cleanup = "deferred_preserved"
     else:
         raise CarryForwardError("cleanup_state_unknown")
@@ -437,8 +491,6 @@ def _responsibility(
                 "attempt_no": row.get("attempt_no"),
                 "fencing_token": row.get("fencing_token"),
                 "status": row.get("status"),
-                "claim_token_hash": row.get("claim_token_hash"),
-                "cleanup_token_hash": row.get("cleanup_token_hash"),
                 "lease_expires_at": datetime_text(row.get("lease_expires_at")),
                 "cleanup_status": attempt_cleanup[row["id"]],
             }
@@ -458,7 +510,9 @@ def compare_projection(before: dict[str, Any], after: dict[str, Any]) -> None:
             raise CarryForwardError("projection_columns_changed")
         if left.get("primary_key") != right.get("primary_key"):
             raise CarryForwardError("projection_primary_key_changed")
-        if left.get("rows") != right.get("rows") or left.get("count") != right.get("count"):
+        if left.get("rows") != right.get("rows") or left.get("count") != right.get(
+            "count"
+        ):
             raise CarryForwardError("projection_rows_changed")
 
 
@@ -479,8 +533,7 @@ def validate_projection_evidence(value: Any) -> dict[str, Any]:
             not isinstance(columns, list)
             or not columns
             or not all(
-                isinstance(column, str)
-                and re.fullmatch(r"[a-z][a-z0-9_]*", column)
+                isinstance(column, str) and re.fullmatch(r"[a-z][a-z0-9_]*", column)
                 for column in columns
             )
             or len(set(columns)) != len(columns)
@@ -524,7 +577,11 @@ def _safe_tree(
                 raise CarryForwardError("storage_read_failed") from error
             if info.st_dev != root_device:
                 raise CarryForwardError("storage_device_changed")
-            if parent == root and allowed_top is not None and child.name not in allowed_top:
+            if (
+                parent == root
+                and allowed_top is not None
+                and child.name not in allowed_top
+            ):
                 if child.name in (ignored_top or set()):
                     continue
                 raise CarryForwardError("storage_entry_unknown")
@@ -547,7 +604,9 @@ def _safe_tree(
                 hasher = hashlib.sha256()
                 descriptor = -1
                 try:
-                    descriptor = os.open(child, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    descriptor = os.open(
+                        child, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                    )
                     opened = os.fstat(descriptor)
                     stable = (
                         opened.st_dev,
@@ -622,6 +681,36 @@ def _root_identity(root: Path) -> dict[str, int]:
         "inode": info.st_ino,
         "mtime_ns": info.st_mtime_ns,
     }
+
+
+def _validate_directory(
+    path: Path, *, modes: set[int], expected_uid: int | None, code: str
+) -> None:
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise CarryForwardError(code) from error
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or stat.S_IMODE(info.st_mode) not in modes
+        or (expected_uid is not None and info.st_uid != expected_uid)
+    ):
+        raise CarryForwardError(code)
+
+
+def _validate_lock(path: Path, expected_uid: int | None) -> None:
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise CarryForwardError("storage_lock_invalid") from error
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or (expected_uid is not None and info.st_uid != expected_uid)
+    ):
+        raise CarryForwardError("storage_lock_invalid")
 
 
 def _load_closed_json(
@@ -719,7 +808,9 @@ def _workspace_identity(
             or descriptor["artifact_id"] <= 0
             or descriptor.get("ordinal") != ordinal
             or not isinstance(descriptor.get("mount_name"), str)
-            or not re.fullmatch(r"input-[0-9]{2}(?:\.[A-Za-z0-9]+)?", descriptor["mount_name"])
+            or not re.fullmatch(
+                r"input-[0-9]{2}(?:\.[A-Za-z0-9]+)?", descriptor["mount_name"]
+            )
             or not isinstance(descriptor.get("original_filename"), str)
             or not isinstance(descriptor.get("content_type"), str)
             or not isinstance(descriptor.get("size_bytes"), int)
@@ -733,7 +824,10 @@ def _workspace_identity(
 
 
 def _journal_facts(
-    runtime_root: Path, journal_root: Path, expected_uid: int | None = None
+    runtime_root: Path,
+    journal_root: Path,
+    expected_uid: int | None = None,
+    credential_hashes: dict[int, dict[str, str | None]] | None = None,
 ) -> dict[str, Any]:
     cleanup_fields = {
         "cleanup_token",
@@ -780,9 +874,20 @@ def _journal_facts(
             {
                 "execution_id": execution_id,
                 "attempt_id": attempt_id,
-                "cleanup_token_hash": hashlib.sha256(
-                    value["cleanup_token"].encode()
-                ).hexdigest(),
+                "cleanup_token_matches": (
+                    hmac.compare_digest(
+                        hashlib.sha256(value["cleanup_token"].encode()).hexdigest(),
+                        expected,
+                    )
+                    if credential_hashes is not None
+                    and isinstance(
+                        expected := credential_hashes.get(attempt_id, {}).get(
+                            "cleanup_token_hash"
+                        ),
+                        str,
+                    )
+                    else None
+                ),
                 "workspace_suffix": (
                     f"workspaces/attempt-{attempt_id}/dlr-exec-{execution_id}"
                 ),
@@ -799,7 +904,10 @@ def _journal_facts(
             if not match:
                 continue
             value = _load_closed_json(
-                path, attempt_fields, "attempt_journal_invalid", expected_uid=expected_uid
+                path,
+                attempt_fields,
+                "attempt_journal_invalid",
+                expected_uid=expected_uid,
             )
             attempt_id = int(match.group(1))
             positive = ("execution_id", "attempt_id", "attempt_no", "fencing_token")
@@ -830,16 +938,145 @@ def _journal_facts(
                     "attempt_id": attempt_id,
                     "attempt_no": value["attempt_no"],
                     "fencing_token": value["fencing_token"],
-                    "claim_token_hash": hashlib.sha256(
-                        value["claim_token"].encode()
-                    ).hexdigest(),
-                    "cleanup_token_hash": hashlib.sha256(
-                        value["cleanup_token"].encode()
-                    ).hexdigest(),
+                    "claim_token_matches": (
+                        hmac.compare_digest(
+                            hashlib.sha256(value["claim_token"].encode()).hexdigest(),
+                            expected_claim,
+                        )
+                        if credential_hashes is not None
+                        and isinstance(
+                            expected_claim := credential_hashes.get(attempt_id, {}).get(
+                                "claim_token_hash"
+                            ),
+                            str,
+                        )
+                        else None
+                    ),
+                    "cleanup_token_matches": (
+                        hmac.compare_digest(
+                            hashlib.sha256(value["cleanup_token"].encode()).hexdigest(),
+                            expected_cleanup,
+                        )
+                        if credential_hashes is not None
+                        and isinstance(
+                            expected_cleanup := credential_hashes.get(
+                                attempt_id, {}
+                            ).get("cleanup_token_hash"),
+                            str,
+                        )
+                        else None
+                    ),
                     "lease_expires_at": datetime_text(value["lease_expires_at"]),
                 }
             )
-    return {"cleanup": cleanup, "attempt": attempt}
+    recovery: list[dict[str, Any]] = []
+    recovery_root = journal_root / "sandbox-recovery"
+    _validate_directory(
+        recovery_root,
+        modes={0o700},
+        expected_uid=expected_uid,
+        code="sandbox_recovery_invalid",
+    )
+    marker_fields = {
+        "cgroup_name",
+        "execution_id",
+        "mount_name",
+        "mount_path",
+        "namespace_identity",
+        "cgroup_device",
+        "cgroup_inode",
+    }
+    namespace_fields = {
+        "boot_id",
+        "parent_device",
+        "parent_inode",
+        "root_device",
+        "root_inode",
+    }
+    for path in sorted(recovery_root.iterdir(), key=lambda item: item.name):
+        value = _load_closed_json(
+            path, marker_fields, "sandbox_recovery_invalid", expected_uid=expected_uid
+        )
+        name = value.get("cgroup_name")
+        attempt_match = (
+            re.fullmatch(r"attempt-([1-9][0-9]*)-([1-9][0-9]*)", name)
+            if isinstance(name, str)
+            else None
+        )
+        preflight_match = (
+            re.fullmatch(r"dlr-preflight-([0-9a-f]{16,64})", name)
+            if isinstance(name, str)
+            else None
+        )
+        if (
+            (attempt_match is None and preflight_match is None)
+            or path.name != f"sandbox-{name}.json"
+            or value.get("mount_name") != ".dlr-sandbox-mount"
+            or type(value.get("execution_id")) is not int
+            or value["execution_id"] <= 0
+            or type(value.get("cgroup_device")) is not int
+            or value["cgroup_device"] < 0
+            or type(value.get("cgroup_inode")) is not int
+            or value["cgroup_inode"] < 0
+        ):
+            raise CarryForwardError("sandbox_recovery_invalid")
+        identity = value.get("namespace_identity")
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != namespace_fields
+            or not isinstance(identity.get("boot_id"), str)
+            or not re.fullmatch(
+                r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",
+                identity["boot_id"],
+            )
+            or any(
+                type(identity[key]) is not int or identity[key] < 0
+                for key in namespace_fields - {"boot_id"}
+            )
+        ):
+            raise CarryForwardError("sandbox_recovery_invalid")
+        if attempt_match is not None:
+            execution_id, attempt_id = map(int, attempt_match.groups())
+            expected_parent = runtime_root / "workspaces" / f"attempt-{attempt_id}"
+            expected_mount = expected_parent / ".dlr-sandbox-mount"
+            kind = "attempt"
+            if value["execution_id"] != execution_id:
+                raise CarryForwardError("sandbox_recovery_invalid")
+        else:
+            execution_id, attempt_id = 1, None
+            expected_parent = runtime_root / name
+            expected_mount = expected_parent / ".dlr-sandbox-mount"
+            kind = "preflight"
+            if value["execution_id"] != 1:
+                raise CarryForwardError("sandbox_recovery_invalid")
+        _validate_directory(
+            expected_parent,
+            modes={0o700},
+            expected_uid=expected_uid,
+            code="sandbox_recovery_invalid",
+        )
+        if value.get("mount_path") != str(expected_mount):
+            raise CarryForwardError("sandbox_recovery_invalid")
+        if expected_mount.exists():
+            _validate_directory(
+                expected_mount,
+                modes={0o700},
+                expected_uid=expected_uid,
+                code="sandbox_recovery_invalid",
+            )
+        recovery.append(
+            {
+                "kind": kind,
+                "cgroup_name": name,
+                "execution_id": execution_id,
+                "attempt_id": attempt_id,
+                "namespace_identity": identity,
+                "cgroup_device": value["cgroup_device"],
+                "cgroup_inode": value["cgroup_inode"],
+                "marker_fingerprint": digest(value),
+            }
+        )
+    return {"cleanup": cleanup, "attempt": attempt, "sandbox_recovery": recovery}
 
 
 def capture_files(
@@ -847,11 +1084,51 @@ def capture_files(
     journal_root: Path,
     material_roots: dict[str, Path] | None = None,
     expected_uid: int | None = None,
+    credential_hashes: dict[int, dict[str, str | None]] | None = None,
 ) -> dict[str, Any]:
+    _validate_directory(
+        runtime_root,
+        modes={0o700, 0o711},
+        expected_uid=expected_uid,
+        code="runtime_root_invalid",
+    )
+    _validate_directory(
+        journal_root,
+        modes={0o700},
+        expected_uid=expected_uid,
+        code="journal_root_invalid",
+    )
+    _validate_lock(runtime_root / ".dlr-instance.lock", expected_uid)
+    _validate_lock(journal_root / ".dlr-instance.lock", expected_uid)
+    attempt_root = runtime_root / "attempt-journal"
+    _validate_directory(
+        attempt_root,
+        modes={0o700},
+        expected_uid=expected_uid,
+        code="attempt_journal_root_invalid",
+    )
+    _validate_lock(attempt_root / ".dlr-instance.lock", expected_uid)
+    workspaces = runtime_root / "workspaces"
+    _validate_directory(
+        workspaces,
+        modes={0o700},
+        expected_uid=expected_uid,
+        code="workspace_root_invalid",
+    )
+    preflight_roots = {
+        child.name
+        for child in runtime_root.iterdir()
+        if re.fullmatch(r"dlr-preflight-[0-9a-f]{16,64}", child.name)
+    }
     runtime = _safe_tree(
         runtime_root,
-        allowed_top={".dlr-instance.lock", "attempt-journal", "workspaces"},
-        ignored_top={"dependency-cache", "environments"},
+        allowed_top={
+            ".dlr-instance.lock",
+            "attempt-journal",
+            "version-cache",
+            "workspaces",
+            *preflight_roots,
+        },
     )
     journal = _safe_tree(journal_root)
     materials = {
@@ -874,14 +1151,18 @@ def capture_files(
             "digest": digest(journal),
         },
         "materials": materials,
-        "journal_facts": _journal_facts(runtime_root, journal_root, expected_uid),
+        "journal_facts": _journal_facts(
+            runtime_root, journal_root, expected_uid, credential_hashes
+        ),
     }
 
 
 def validate_file_responsibilities(
     evidence: dict[str, Any], responsibilities: dict[str, Any]
 ) -> None:
-    runtime_paths = {entry["path"] for entry in evidence["runtime"]["entries"]}
+    runtime_entries = {entry["path"]: entry for entry in evidence["runtime"]["entries"]}
+    journal_entries = {entry["path"]: entry for entry in evidence["journal"]["entries"]}
+    runtime_paths = set(runtime_entries)
     journal_paths = {entry["path"] for entry in evidence["journal"]["entries"]}
     if any(
         entry.get("type") == "symlink"
@@ -891,22 +1172,115 @@ def validate_file_responsibilities(
     cleanup_facts = evidence.get("journal_facts", {}).get("cleanup", [])
     attempt_facts = evidence.get("journal_facts", {}).get("attempt", [])
     selected_ids = {item["execution_id"] for item in responsibilities["executions"]}
-    if any(fact["execution_id"] not in selected_ids for fact in cleanup_facts + attempt_facts):
+    selected_attempts = {
+        attempt["attempt_id"]: item["execution_id"]
+        for item in responsibilities["executions"]
+        for attempt in item.get("attempts", [])
+    }
+    deferred_attempts = {
+        attempt_id: item["execution_id"]
+        for item in responsibilities["executions"]
+        for attempt_id in item.get("deferred_attempt_ids", [])
+    }
+    recovery_facts = evidence.get("journal_facts", {}).get("sandbox_recovery", [])
+    retired_preflight_names = {
+        marker["cgroup_name"]
+        for marker in recovery_facts
+        if marker.get("kind") == "preflight"
+    }
+    if any(
+        fact["execution_id"] not in selected_ids
+        for fact in cleanup_facts + attempt_facts
+    ):
         raise CarryForwardError("unselected_storage_responsibility")
-    for path in runtime_paths:
+    cache_allowed = {
+        "version-cache",
+        "version-cache/entries",
+        "version-cache/.dlr-cache-reservations.json",
+        "version-cache/.dlr-cache-reservations.lock",
+    }
+    for path, entry in runtime_entries.items():
         match = re.search(r"(^|/)dlr-exec-([1-9][0-9]*)($|/)", path)
         if match and int(match.group(2)) not in selected_ids:
             raise CarryForwardError("unselected_storage_responsibility")
-        if path.startswith("attempt-journal/") and path != "attempt-journal/.dlr-instance.lock":
-            if not re.fullmatch(
-                r"attempt-journal/attempt-[1-9][0-9]*\.attempt\.json", path
+        if path == ".dlr-instance.lock" and entry.get("type") != "file":
+            raise CarryForwardError("storage_lock_invalid")
+        if (
+            path.startswith("attempt-journal/")
+            and path != "attempt-journal/.dlr-instance.lock"
+        ):
+            if (
+                not re.fullmatch(
+                    r"attempt-journal/attempt-[1-9][0-9]*\.attempt\.json", path
+                )
+                or entry.get("type") != "file"
             ):
                 raise CarryForwardError("attempt_journal_unknown")
+        if path.startswith("version-cache"):
+            if path not in cache_allowed and not path.startswith(
+                "version-cache/entries/"
+            ):
+                raise CarryForwardError("version_cache_unknown")
+            if path in {"version-cache", "version-cache/entries"} and (
+                entry.get("type") != "directory" or entry.get("mode") != 0o711
+            ):
+                raise CarryForwardError("version_cache_invalid")
+            if path == "version-cache/.dlr-cache-reservations.json" and (
+                entry.get("type") != "file" or entry.get("mode") != 0o600
+            ):
+                raise CarryForwardError("version_cache_invalid")
+            if path == "version-cache/.dlr-cache-reservations.lock" and (
+                entry.get("type") != "file" or entry.get("mode") != 0o644
+            ):
+                raise CarryForwardError("version_cache_invalid")
+        if path == "workspaces":
+            if entry.get("type") != "directory" or entry.get("mode") != 0o700:
+                raise CarryForwardError("workspace_root_invalid")
+            continue
+        if path.startswith("workspaces/"):
+            parts = path.split("/")
+            attempt_match = re.fullmatch(r"attempt-([1-9][0-9]*)", parts[1])
+            if not attempt_match:
+                raise CarryForwardError("workspace_entry_unknown")
+            attempt_id = int(attempt_match.group(1))
+            if len(parts) == 2:
+                if entry.get("type") != "directory" or entry.get("mode") != 0o700:
+                    raise CarryForwardError("workspace_identity_invalid")
+                continue
+            execution_id = deferred_attempts.get(attempt_id)
+            if (
+                execution_id is None
+                or selected_attempts.get(attempt_id) != execution_id
+            ):
+                raise CarryForwardError("workspace_entry_unknown")
+            expected = f"dlr-exec-{execution_id}"
+            if parts[2] not in {expected, ".dlr-sandbox-mount"}:
+                raise CarryForwardError("workspace_identity_invalid")
+        preflight = path.split("/", 1)[0]
+        if (
+            preflight.startswith("dlr-preflight-")
+            and preflight not in retired_preflight_names
+        ):
+            raise CarryForwardError("sandbox_recovery_unselected")
     for path in journal_paths:
-        if path in {".dlr-instance.lock", "sandbox-recovery"}:
+        if path == ".dlr-instance.lock":
+            if journal_entries[path].get("type") != "file":
+                raise CarryForwardError("storage_lock_invalid")
+            continue
+        if path == "sandbox-recovery":
+            if journal_entries[path].get("type") != "directory":
+                raise CarryForwardError("sandbox_recovery_unknown")
             continue
         if path.startswith("sandbox-recovery/"):
-            raise CarryForwardError("sandbox_recovery_unknown")
+            if (
+                not re.fullmatch(
+                    r"sandbox-recovery/sandbox-(?:attempt-[1-9][0-9]*-[1-9][0-9]*|dlr-preflight-[0-9a-f]{16,64})\.json",
+                    path,
+                )
+                or journal_entries[path].get("type") != "file"
+            ):
+                raise CarryForwardError("sandbox_recovery_unknown")
+            continue
         if not re.fullmatch(
             r"execution-[1-9][0-9]*-attempt-[1-9][0-9]*\.cleanup\.json", path
         ):
@@ -922,7 +1296,9 @@ def validate_file_responsibilities(
         related_cleanup = {
             path
             for path in journal_paths
-            if re.fullmatch(rf"execution-{execution_id}-attempt-[1-9][0-9]*\.cleanup\.json", path)
+            if re.fullmatch(
+                rf"execution-{execution_id}-attempt-[1-9][0-9]*\.cleanup\.json", path
+            )
         }
         related_attempt = {
             path
@@ -949,7 +1325,9 @@ def validate_file_responsibilities(
             }
             if related_cleanup != expected:
                 raise CarryForwardError("deferred_journal_missing")
-            facts = [fact for fact in cleanup_facts if fact["execution_id"] == execution_id]
+            facts = [
+                fact for fact in cleanup_facts if fact["execution_id"] == execution_id
+            ]
             attempts = {attempt["attempt_id"]: attempt for attempt in item["attempts"]}
             if (
                 not facts
@@ -957,37 +1335,34 @@ def validate_file_responsibilities(
                     fact["attempt_id"] not in item["deferred_attempt_ids"]
                     for fact in facts
                 )
-                or any(
-                    not isinstance(attempts[fact["attempt_id"]].get("cleanup_token_hash"), str)
-                    or not hmac.compare_digest(
-                        fact["cleanup_token_hash"],
-                        attempts[fact["attempt_id"]]["cleanup_token_hash"],
-                    )
-                    for fact in facts
-                )
+                or any(fact.get("cleanup_token_matches") is not True for fact in facts)
             ):
                 raise CarryForwardError("deferred_journal_identity_invalid")
-        attempts = {attempt["attempt_id"]: attempt for attempt in item.get("attempts", [])}
+        attempts = {
+            attempt["attempt_id"]: attempt for attempt in item.get("attempts", [])
+        }
         for fact in (
             fact for fact in attempt_facts if fact["execution_id"] == execution_id
         ):
             attempt = attempts.get(fact["attempt_id"])
             if not attempt or any(
-                (
-                    not isinstance(attempt.get(key), str)
-                    or not hmac.compare_digest(fact[key], attempt[key])
-                )
-                if key in {"claim_token_hash", "cleanup_token_hash"}
+                fact.get(key) is not True
+                if key in {"claim_token_matches", "cleanup_token_matches"}
                 else fact[key] != attempt.get(key)
                 for key in (
                     "attempt_no",
                     "fencing_token",
-                    "claim_token_hash",
-                    "cleanup_token_hash",
+                    "claim_token_matches",
+                    "cleanup_token_matches",
                     "lease_expires_at",
                 )
             ):
                 raise CarryForwardError("attempt_journal_identity_invalid")
+    for marker in evidence.get("journal_facts", {}).get("sandbox_recovery", []):
+        if marker["kind"] == "attempt" and (
+            deferred_attempts.get(marker["attempt_id"]) != marker["execution_id"]
+        ):
+            raise CarryForwardError("sandbox_recovery_unselected")
 
 
 def _read_text(path: Path) -> str:
@@ -997,8 +1372,252 @@ def _read_text(path: Path) -> str:
         raise CarryForwardError("kernel_read_failed") from error
 
 
+def _mountinfo(path: Path) -> list[dict[str, str]]:
+    def decode(value: str) -> str:
+        return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
+
+    try:
+        raw = path.read_text()
+    except OSError as error:
+        raise CarryForwardError("kernel_identity_unknown") from error
+    if len(raw.encode()) > 8 * 1024 * 1024:
+        raise CarryForwardError("kernel_inventory_limit")
+    result = []
+    for line in raw.splitlines():
+        fields = line.split()
+        try:
+            separator = fields.index("-")
+            result.append(
+                {
+                    "major_minor": fields[2],
+                    "root": decode(fields[3]),
+                    "mountpoint": decode(fields[4]),
+                    "filesystem": fields[separator + 1],
+                }
+            )
+        except (ValueError, IndexError) as error:
+            raise CarryForwardError("kernel_identity_unknown") from error
+    return result
+
+
+def _docker_text(arguments: list[str]) -> str:
+    try:
+        return subprocess.run(
+            arguments,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as error:
+        raise CarryForwardError("kernel_identity_unknown") from error
+
+
+def _worker_authority(
+    container: str,
+    runtime_volume: str,
+    journal_volume: str,
+    control_group: str,
+) -> dict[str, Any]:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", container):
+        raise CarryForwardError("kernel_identity_unknown")
+    container_id = _docker_text(["docker", "inspect", container, "--format", "{{.Id}}"])
+    image_id = _docker_text(["docker", "inspect", container, "--format", "{{.Image}}"])
+    started_at = _docker_text(
+        ["docker", "inspect", container, "--format", "{{.State.StartedAt}}"]
+    )
+    pid_text = _docker_text(
+        ["docker", "inspect", container, "--format", "{{.State.Pid}}"]
+    )
+    labels = {
+        "com.docker.compose.project": _docker_text(
+            [
+                "docker",
+                "inspect",
+                container,
+                "--format",
+                '{{index .Config.Labels "com.docker.compose.project"}}',
+            ]
+        ),
+        "com.docker.compose.service": _docker_text(
+            [
+                "docker",
+                "inspect",
+                container,
+                "--format",
+                '{{index .Config.Labels "com.docker.compose.service"}}',
+            ]
+        ),
+    }
+    try:
+        pid = int(pid_text)
+    except ValueError as error:
+        raise CarryForwardError("kernel_identity_unknown") from error
+    if pid <= 0 or labels["com.docker.compose.service"] != "worker":
+        raise CarryForwardError("kernel_identity_unknown")
+    stat_fields = _read_text(Path(f"/proc/{pid}/stat")).split()
+    cgroup = _read_text(Path(f"/proc/{pid}/cgroup"))
+    if (
+        len(stat_fields) < 22
+        or not cgroup.startswith(f"0::{control_group}/")
+        or not cgroup.endswith("/agent")
+    ):
+        raise CarryForwardError("kernel_identity_unknown")
+    worker_root = Path("/sys/fs/cgroup") / cgroup.removeprefix("0::").removesuffix(
+        "/agent"
+    )
+    worker_root_info = worker_root.lstat()
+    parent = Path("/sys/fs/cgroup") / control_group.removeprefix("/")
+    parent_info = parent.lstat()
+    volume_identities: dict[str, Any] = {}
+    mounts = _mountinfo(Path(f"/proc/{pid}/mountinfo"))
+    for name, volume, target in (
+        ("runtime", runtime_volume, "/var/lib/dlr/runtime"),
+        ("journal", journal_volume, "/var/lib/dlr/journal"),
+    ):
+        mountpoint = _docker_text(
+            ["docker", "volume", "inspect", volume, "--format", "{{.Mountpoint}}"]
+        )
+        source_info = Path(mountpoint).lstat()
+        process_info = Path(f"/proc/{pid}/root{target}").lstat()
+        matches = [item for item in mounts if item["mountpoint"] == target]
+        if len(matches) != 1 or (source_info.st_dev, source_info.st_ino) != (
+            process_info.st_dev,
+            process_info.st_ino,
+        ):
+            raise CarryForwardError("kernel_identity_unknown")
+        volume_identities[name] = {
+            "name": volume,
+            "device": source_info.st_dev,
+            "inode": source_info.st_ino,
+            "mount": matches[0],
+        }
+    authority = {
+        "container_id": container_id,
+        "image_id": image_id,
+        "started_at": started_at,
+        "pid": pid,
+        "pid_starttime": stat_fields[21],
+        "mount_namespace": os.readlink(f"/proc/{pid}/ns/mnt"),
+        "cgroup_namespace": os.readlink(f"/proc/{pid}/ns/cgroup"),
+        "parent_device": parent_info.st_dev,
+        "parent_inode": parent_info.st_ino,
+        "root_device": worker_root_info.st_dev,
+        "root_inode": worker_root_info.st_ino,
+        "labels": labels,
+        "volumes": volume_identities,
+    }
+    if _read_text(Path(f"/proc/{pid}/stat")).split()[21] != stat_fields[21]:
+        raise CarryForwardError("kernel_identity_unknown")
+    return authority
+
+
+def _related_mount_namespaces(authority: dict[str, Any]) -> dict[str, Any]:
+    targets = {
+        (
+            item["mount"]["filesystem"],
+            item["mount"]["major_minor"],
+            item["mount"]["root"],
+        )
+        for item in authority["volumes"].values()
+    }
+    proc = Path("/proc")
+    pids = sorted(int(path.name) for path in proc.iterdir() if path.name.isdigit())
+    if len(pids) > 8192:
+        raise CarryForwardError("kernel_inventory_limit")
+    seen: set[str] = set()
+    related: list[dict[str, Any]] = []
+    total_bytes = 0
+    for pid in pids:
+        namespace_path = proc / str(pid) / "ns/mnt"
+        try:
+            namespace = os.readlink(namespace_path)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            if (proc / str(pid)).exists():
+                raise CarryForwardError("kernel_identity_unknown") from error
+            continue
+        if namespace in seen:
+            continue
+        seen.add(namespace)
+        if len(seen) > 2048:
+            raise CarryForwardError("kernel_inventory_limit")
+        mountinfo_path = proc / str(pid) / "mountinfo"
+        try:
+            total_bytes += mountinfo_path.stat().st_size
+        except FileNotFoundError:
+            continue
+        if total_bytes > 128 * 1024 * 1024:
+            raise CarryForwardError("kernel_inventory_limit")
+        matches = [
+            item
+            for item in _mountinfo(mountinfo_path)
+            if (item["filesystem"], item["major_minor"], item["root"]) in targets
+        ]
+        if matches:
+            related.append(
+                {
+                    "namespace": namespace,
+                    "pid": pid,
+                    "pid_starttime": _read_text(proc / str(pid) / "stat").split()[21],
+                    "mounts_digest": digest(matches),
+                }
+            )
+    return {
+        "namespace_count": len(seen),
+        "related_count": len(related),
+        "related_digest": digest(related),
+    }
+
+
+def validate_retired_markers(
+    markers: list[dict[str, Any]],
+    *,
+    boot_id: str,
+    parent_device: int,
+    parent_inode: int,
+    children: dict[str, dict[str, Any]],
+) -> list[dict[str, str]]:
+    child_tuples = {
+        (item["device"], item["inode"])
+        for item in children.values()
+        if isinstance(item, dict)
+        and type(item.get("device")) is int
+        and type(item.get("inode")) is int
+    }
+    result = []
+    for marker in markers:
+        identity = marker.get("namespace_identity")
+        if not isinstance(identity, dict):
+            raise CarryForwardError("sandbox_recovery_invalid")
+        retired = identity.get("boot_id") != boot_id or (
+            (identity.get("parent_device"), identity.get("parent_inode"))
+            == (parent_device, parent_inode)
+            and (identity.get("root_device"), identity.get("root_inode"))
+            not in child_tuples
+        )
+        if not retired or marker.get("cgroup_name") in children:
+            raise CarryForwardError("sandbox_namespace_not_retired")
+        result.append(
+            {
+                "cgroup_name": marker["cgroup_name"],
+                "marker_fingerprint": marker["marker_fingerprint"],
+            }
+        )
+    return sorted(result, key=lambda item: item["cgroup_name"])
+
+
 def capture_kernel(
-    unit: str, *, require_idle: bool, expected_description: str | None = None
+    unit: str,
+    *,
+    require_idle: bool,
+    expected_description: str | None = None,
+    worker_container: str | None = None,
+    runtime_volume: str | None = None,
+    journal_volume: str | None = None,
+    baseline_authority: dict[str, Any] | None = None,
+    recovery_markers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if not re.fullmatch(r"dlr-[A-Za-z0-9][A-Za-z0-9_.-]*\.service", unit):
         raise CarryForwardError("kernel_unit_invalid")
@@ -1011,7 +1630,13 @@ def capture_kernel(
                 text=True,
                 timeout=10,
             ).stdout.strip()
-            for name in ("ActiveState", "Delegate", "ControlGroup", "MainPID", "Description")
+            for name in (
+                "ActiveState",
+                "Delegate",
+                "ControlGroup",
+                "MainPID",
+                "Description",
+            )
         ]
     except (OSError, subprocess.SubprocessError) as error:
         raise CarryForwardError("kernel_status_unavailable") from error
@@ -1054,6 +1679,7 @@ def capture_kernel(
     while pending:
         child = pending.pop()
         try:
+            child_info = child.lstat()
             descendants = sorted(
                 (path for path in child.iterdir() if path.is_dir()), reverse=True
             )
@@ -1067,7 +1693,9 @@ def capture_kernel(
         )
         try:
             populated = int(events["populated"])
-            pids = [int(value) for value in _read_text(child / "cgroup.procs").splitlines()]
+            pids = [
+                int(value) for value in _read_text(child / "cgroup.procs").splitlines()
+            ]
         except (KeyError, ValueError) as error:
             raise CarryForwardError("kernel_events_invalid") from error
         if populated not in {0, 1} or any(pid <= 0 for pid in pids):
@@ -1077,6 +1705,8 @@ def capture_kernel(
             "populated": populated,
             "process_count": len(pids),
             "process_digest": digest(sorted(pids)),
+            "device": child_info.st_dev,
+            "inode": child_info.st_ino,
         }
     keeper = tree.get("agent")
     if (
@@ -1097,12 +1727,52 @@ def capture_kernel(
                 text=True,
                 timeout=10,
             ).stdout.strip()
-            for name in ("ActiveState", "Delegate", "ControlGroup", "MainPID", "Description")
+            for name in (
+                "ActiveState",
+                "Delegate",
+                "ControlGroup",
+                "MainPID",
+                "Description",
+            )
         ]
     except (OSError, subprocess.SubprocessError) as error:
         raise CarryForwardError("kernel_status_unavailable") from error
-    if repeated != values or _read_text(Path(f"/proc/{main_pid}/stat")).split()[21] != stat_fields[21]:
+    if (
+        repeated != values
+        or _read_text(Path(f"/proc/{main_pid}/stat")).split()[21] != stat_fields[21]
+    ):
         raise CarryForwardError("kernel_keeper_changed")
+    supplied = (worker_container, runtime_volume, journal_volume)
+    if any(supplied) and not all(supplied):
+        raise CarryForwardError("kernel_identity_unknown")
+    authority = baseline_authority
+    if all(supplied):
+        authority = _worker_authority(
+            worker_container or "",
+            runtime_volume or "",
+            journal_volume or "",
+            control_group,
+        )
+    namespace_evidence = None
+    retired_markers: list[dict[str, Any]] = []
+    if require_idle:
+        if not isinstance(authority, dict):
+            raise CarryForwardError("kernel_identity_unknown")
+        first = _related_mount_namespaces(authority)
+        second = _related_mount_namespaces(authority)
+        if first != second:
+            raise CarryForwardError("kernel_identity_unknown")
+        if first["related_count"]:
+            raise CarryForwardError("kernel_namespace_active")
+        namespace_evidence = first
+        boot_id = _read_text(Path("/proc/sys/kernel/random/boot_id"))
+        retired_markers = validate_retired_markers(
+            recovery_markers or [],
+            boot_id=boot_id,
+            parent_device=parent_info.st_dev,
+            parent_inode=parent_info.st_ino,
+            children=tree,
+        )
     return {
         "boot_id": _read_text(Path("/proc/sys/kernel/random/boot_id")),
         "unit": unit,
@@ -1113,6 +1783,11 @@ def capture_kernel(
         "parent_device": parent_info.st_dev,
         "parent_inode": parent_info.st_ino,
         "children": tree,
+        "old_worker_authority": authority,
+        "namespace_evidence": namespace_evidence,
+        "retired_markers": sorted(
+            retired_markers, key=lambda item: item["cgroup_name"]
+        ),
     }
 
 
@@ -1139,6 +1814,11 @@ def compare_kernel(before: dict[str, Any], after: dict[str, Any]) -> None:
         or agent.get("process_digest") != digest([after["keeper_pid"]])
     ):
         raise CarryForwardError("kernel_not_idle")
+    if before.get("old_worker_authority") != after.get("old_worker_authority"):
+        raise CarryForwardError("kernel_identity_unknown")
+    namespace = after.get("namespace_evidence")
+    if not isinstance(namespace, dict) or namespace.get("related_count") != 0:
+        raise CarryForwardError("kernel_namespace_active")
 
 
 def validate_candidate_tables(
@@ -1151,8 +1831,37 @@ def validate_candidate_tables(
             raise CarryForwardError("candidate_table_not_empty")
 
 
+def validate_schema_inventory(
+    from_revision: str,
+    to_revision: str,
+    baseline_tables: set[str],
+    existing: set[str],
+    counts: dict[str, int],
+    cursor_rows: list[tuple[Any, ...]],
+) -> None:
+    allowed = SCHEMA_ADDITIONS.get((from_revision, to_revision))
+    if allowed is None:
+        raise CarryForwardError("candidate_schema_path_unknown")
+    if existing != baseline_tables | allowed:
+        raise CarryForwardError("candidate_schema_inventory_changed")
+    if (
+        "execution_incident_dispositions" in allowed
+        and counts.get("execution_incident_dispositions") != 0
+    ):
+        raise CarryForwardError("candidate_table_not_empty")
+    if "runtime_reconciliation_cursors" in allowed and cursor_rows != [
+        ("expired_attempts", 0, 0)
+    ]:
+        raise CarryForwardError("candidate_seed_invalid")
+
+
 def inspect_database(
-    selection: dict[str, Any], baseline_projection: dict[str, Any] | None = None
+    selection: dict[str, Any],
+    baseline_projection: dict[str, Any] | None = None,
+    *,
+    baseline_schema_inventory: dict[str, Any] | None = None,
+    from_revision: str | None = None,
+    to_revision: str | None = None,
 ) -> dict[str, Any]:
     try:
         from sqlalchemy import create_engine, inspect, text
@@ -1164,22 +1873,66 @@ def inspect_database(
     engine = create_engine(url)
     tables: dict[str, dict[str, Any]] = {}
     with engine.connect() as connection:
-        connection.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+        connection.execute(
+            text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        )
         inspector = inspect(connection)
         existing = set(inspector.get_table_names())
-        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        revision = connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one()
         candidate_counts = {
-            name: connection.execute(text(f'SELECT count(*) FROM "{name}"')).scalar_one()
+            name: connection.execute(
+                text(f'SELECT count(*) FROM "{name}"')
+            ).scalar_one()
             for name in EMPTY_TABLES_BY_REVISION.get(revision, ())
             if name in existing
         }
         validate_candidate_tables(revision, existing, candidate_counts)
+        if baseline_schema_inventory is not None:
+            if not isinstance(baseline_schema_inventory, dict) or set(
+                baseline_schema_inventory
+            ) != {"tables"}:
+                raise CarryForwardError("schema_inventory_invalid")
+            baseline_tables = baseline_schema_inventory["tables"]
+            if (
+                not isinstance(baseline_tables, list)
+                or not all(isinstance(name, str) for name in baseline_tables)
+                or baseline_tables != sorted(set(baseline_tables))
+                or from_revision is None
+                or to_revision is None
+                or revision != to_revision
+            ):
+                raise CarryForwardError("schema_inventory_invalid")
+            cursor_rows = (
+                [
+                    tuple(row)
+                    for row in connection.execute(
+                        text(
+                            "SELECT name, after_id, upper_id "
+                            "FROM runtime_reconciliation_cursors ORDER BY name"
+                        )
+                    )
+                ]
+                if "runtime_reconciliation_cursors" in existing
+                and "runtime_reconciliation_cursors" not in set(baseline_tables)
+                else []
+            )
+            validate_schema_inventory(
+                from_revision,
+                to_revision,
+                set(baseline_tables),
+                existing,
+                candidate_counts,
+                cursor_rows,
+            )
         for name in RESPONSIBILITY_TABLES:
             if name not in existing:
                 raise CarryForwardError("schema_table_missing")
             actual_columns = [column["name"] for column in inspector.get_columns(name)]
             actual_primary_key = list(
-                (inspector.get_pk_constraint(name) or {}).get("constrained_columns") or []
+                (inspector.get_pk_constraint(name) or {}).get("constrained_columns")
+                or []
             )
             if not actual_primary_key:
                 raise CarryForwardError("schema_primary_key_missing")
@@ -1207,7 +1960,19 @@ def inspect_database(
             }
     projection = project_rows(tables)
     responsibilities = derive_responsibilities(tables, selection)
-    return {"projection": projection, "responsibilities": responsibilities}
+    credential_hashes = {
+        row["id"]: {
+            "claim_token_hash": row.get("claim_token_hash"),
+            "cleanup_token_hash": row.get("cleanup_token_hash"),
+        }
+        for row in tables["execution_attempts"]["rows"]
+    }
+    return {
+        "projection": projection,
+        "responsibilities": responsibilities,
+        "schema_inventory": {"tables": sorted(existing)},
+        "_credential_hashes": credential_hashes,
+    }
 
 
 def manifest_payload(value: dict[str, Any]) -> dict[str, Any]:
@@ -1239,7 +2004,9 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         "selection",
         "responsibilities",
         "old_runtime_projection",
+        "schema_inventory",
         "storage_identity",
+        "old_containers",
         "file_evidence",
         "kernel_evidence",
         "manifest_digest",
@@ -1248,7 +2015,9 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         raise CarryForwardError("manifest_shape_invalid")
     if value["format_version"] != FORMAT_VERSION:
         raise CarryForwardError("manifest_version_invalid")
-    if not isinstance(value["manifest_id"], str) or not MANIFEST_ID.fullmatch(value["manifest_id"]):
+    if not isinstance(value["manifest_id"], str) or not MANIFEST_ID.fullmatch(
+        value["manifest_id"]
+    ):
         raise CarryForwardError("manifest_id_invalid")
     for key in ("from_sha", "to_sha"):
         if not isinstance(value[key], str) or not SHA.fullmatch(value[key]):
@@ -1266,10 +2035,24 @@ def validate_manifest(value: Any) -> dict[str, Any]:
     except (TypeError, ValueError) as error:
         raise CarryForwardError("manifest_time_invalid") from error
     for key in ("from_schema", "to_schema"):
-        if not isinstance(value[key], str) or not re.fullmatch(r"[a-zA-Z0-9_.-]+", value[key]):
+        if not isinstance(value[key], str) or not re.fullmatch(
+            r"[a-zA-Z0-9_.-]+", value[key]
+        ):
             raise CarryForwardError("manifest_schema_invalid")
     normalize_selection(value["selection"])
     validate_projection_evidence(value["old_runtime_projection"])
+    inventory = value["schema_inventory"]
+    if (
+        not isinstance(inventory, dict)
+        or set(inventory) != {"tables"}
+        or not isinstance(inventory["tables"], list)
+        or inventory["tables"] != sorted(set(inventory["tables"]))
+        or not all(
+            isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9_]*", name)
+            for name in inventory["tables"]
+        )
+    ):
+        raise CarryForwardError("schema_inventory_invalid")
     if digest(manifest_payload(value)) != value["manifest_digest"]:
         raise CarryForwardError("manifest_digest_mismatch")
     return value
@@ -1288,8 +2071,19 @@ def _command_check_db(args: argparse.Namespace) -> dict[str, Any]:
     )
     baseline_projection = None
     if baseline:
-        baseline_projection = baseline.get("old_runtime_projection", baseline.get("projection"))
-    result = inspect_database(selection, baseline_projection)
+        baseline_projection = baseline.get(
+            "old_runtime_projection", baseline.get("projection")
+        )
+    result = inspect_database(
+        selection,
+        baseline_projection,
+        baseline_schema_inventory=baseline.get("schema_inventory")
+        if baseline
+        else None,
+        from_revision=baseline.get("from_schema") if baseline else None,
+        to_revision=baseline.get("to_schema") if baseline else None,
+    )
+    result.pop("_credential_hashes", None)
     if args.baseline:
         compare_projection(baseline_projection, result["projection"])
         if baseline["responsibilities"] != result["responsibilities"]:
@@ -1332,17 +2126,99 @@ def _command_capture(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _command_kernel(args: argparse.Namespace) -> dict[str, Any]:
-    evidence = capture_kernel(
-        args.unit,
-        require_idle=args.require_idle,
-        expected_description=args.expected_description,
+def _material_roots(values: list[str]) -> dict[str, Path]:
+    materials: dict[str, Path] = {}
+    for item in values:
+        if "=" not in item:
+            raise CarryForwardError("material_root_invalid")
+        name, path = item.split("=", 1)
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", name) or name in materials:
+            raise CarryForwardError("material_root_invalid")
+        materials[name] = Path(path)
+    return materials
+
+
+def _command_capture_state(args: argparse.Namespace) -> dict[str, Any]:
+    baseline = read_private(args.baseline) if args.baseline else None
+    if baseline and "manifest_digest" in baseline:
+        baseline = validate_manifest(baseline)
+    selection = normalize_selection(
+        read_private(args.ids)
+        if args.ids
+        else baseline.get("selection")
+        if baseline
+        else None
     )
+    baseline_projection = None
+    if baseline:
+        baseline_projection = baseline.get(
+            "old_runtime_projection", baseline.get("projection")
+        )
+    db = inspect_database(
+        selection,
+        baseline_projection,
+        baseline_schema_inventory=baseline.get("schema_inventory")
+        if baseline
+        else None,
+        from_revision=baseline.get("from_schema") if baseline else None,
+        to_revision=baseline.get("to_schema") if baseline else None,
+    )
+    credential_hashes = db.pop("_credential_hashes")
+    files = capture_files(
+        args.runtime_root,
+        args.journal_root,
+        _material_roots(args.material_root),
+        args.expected_uid,
+        credential_hashes,
+    )
+    validate_file_responsibilities(files, db["responsibilities"])
+    if baseline:
+        compare_projection(baseline_projection, db["projection"])
+        if baseline["responsibilities"] != db["responsibilities"]:
+            raise CarryForwardError("responsibility_changed")
+        baseline_files = baseline.get("file_evidence", baseline)
+        if baseline_files != files:
+            raise CarryForwardError("file_evidence_changed")
+    write_private(args.db_output, db)
+    write_private(args.files_output, files)
+    return {
+        "code": "state_ok",
+        "tables": len(db["projection"]),
+        "runtime_entries": len(files["runtime"]["entries"]),
+        "journal_entries": len(files["journal"]["entries"]),
+    }
+
+
+def _command_kernel(args: argparse.Namespace) -> dict[str, Any]:
+    baseline = None
+    baseline_kernel = None
+    recovery_markers = None
     if args.baseline:
         baseline = read_private(args.baseline)
         if "manifest_digest" in baseline:
             baseline = validate_manifest(baseline)
-        compare_kernel(baseline.get("kernel_evidence", baseline), evidence)
+        baseline_kernel = baseline.get("kernel_evidence", baseline)
+        recovery_markers = (
+            baseline.get("file_evidence", {})
+            .get("journal_facts", {})
+            .get("sandbox_recovery", [])
+        )
+    evidence = capture_kernel(
+        args.unit,
+        require_idle=args.require_idle,
+        expected_description=args.expected_description,
+        worker_container=args.worker_container,
+        runtime_volume=args.runtime_volume,
+        journal_volume=args.journal_volume,
+        baseline_authority=(
+            baseline_kernel.get("old_worker_authority")
+            if isinstance(baseline_kernel, dict)
+            else None
+        ),
+        recovery_markers=recovery_markers,
+    )
+    if baseline_kernel is not None:
+        compare_kernel(baseline_kernel, evidence)
     write_private(args.output, evidence)
     return {"code": "kernel_ok", "children": len(evidence["children"])}
 
@@ -1354,6 +2230,34 @@ def _command_plan(args: argparse.Namespace) -> dict[str, Any]:
     files = read_private(args.files)
     kernel = read_private(args.kernel)
     validate_file_responsibilities(files, db["responsibilities"])
+    workers = [
+        item
+        for item in context.get("old_containers", [])
+        if item.get("service") == "worker"
+    ]
+    authority = kernel.get("old_worker_authority")
+    if (
+        len(workers) != 1
+        or not isinstance(authority, dict)
+        or any(
+            authority.get(key) != workers[0].get(key)
+            for key in ("container_id", "image_id", "labels")
+        )
+    ):
+        raise CarryForwardError("kernel_identity_unknown")
+    expected_volumes = {
+        item["destination"]: item["source"]
+        for item in context.get("storage_identity", [])
+        if item.get("service") == "worker" and item.get("type") == "volume"
+    }
+    if {
+        name: authority.get("volumes", {}).get(name, {}).get("name")
+        for name in ("runtime", "journal")
+    } != {
+        "runtime": expected_volumes.get("/var/lib/dlr/runtime"),
+        "journal": expected_volumes.get("/var/lib/dlr/journal"),
+    }:
+        raise CarryForwardError("kernel_identity_unknown")
     value = {
         "format_version": FORMAT_VERSION,
         "manifest_id": context["manifest_id"],
@@ -1371,7 +2275,9 @@ def _command_plan(args: argparse.Namespace) -> dict[str, Any]:
         "selection": selection,
         "responsibilities": db["responsibilities"],
         "old_runtime_projection": db["projection"],
+        "schema_inventory": db["schema_inventory"],
         "storage_identity": context["storage_identity"],
+        "old_containers": context["old_containers"],
         "file_evidence": files,
         "kernel_evidence": kernel,
     }
@@ -1403,9 +2309,21 @@ def parser() -> argparse.ArgumentParser:
     capture.add_argument("--expected-uid", type=int)
     capture.add_argument("--baseline", type=Path)
     capture.add_argument("--output", type=Path, required=True)
+    state = commands.add_parser("capture-state")
+    state.add_argument("--ids", type=Path)
+    state.add_argument("--baseline", type=Path)
+    state.add_argument("--runtime-root", type=Path, required=True)
+    state.add_argument("--journal-root", type=Path, required=True)
+    state.add_argument("--material-root", action="append", default=[])
+    state.add_argument("--expected-uid", type=int)
+    state.add_argument("--db-output", type=Path, required=True)
+    state.add_argument("--files-output", type=Path, required=True)
     kernel = commands.add_parser("check-kernel")
     kernel.add_argument("--unit", required=True)
     kernel.add_argument("--expected-description")
+    kernel.add_argument("--worker-container")
+    kernel.add_argument("--runtime-volume")
+    kernel.add_argument("--journal-volume")
     kernel.add_argument("--require-idle", action="store_true")
     kernel.add_argument("--baseline", type=Path)
     kernel.add_argument("--output", type=Path, required=True)
@@ -1425,6 +2343,8 @@ def main() -> None:
             result = _command_check_db(args)
         elif args.command == "capture":
             result = _command_capture(args)
+        elif args.command == "capture-state":
+            result = _command_capture_state(args)
         elif args.command == "check-kernel":
             result = _command_kernel(args)
         elif args.command == "plan":
@@ -1436,7 +2356,10 @@ def main() -> None:
         print(json.dumps({"code": error.code}, sort_keys=True), file=sys.stderr)
         raise SystemExit(2) from None
     except Exception:
-        print(json.dumps({"code": "verifier_internal_error"}, sort_keys=True), file=sys.stderr)
+        print(
+            json.dumps({"code": "verifier_internal_error"}, sort_keys=True),
+            file=sys.stderr,
+        )
         raise SystemExit(2) from None
 
 
