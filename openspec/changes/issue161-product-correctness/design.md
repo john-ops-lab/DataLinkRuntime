@@ -1,0 +1,157 @@
+## Context
+
+范围、Issue 承接关系与非目标见 proposal。设计起点为 `f6ef4c126690fb70ed35890b92d058f91b72590e`，读取了 README、当前产品/架构、OpenSpec 配置、七个相关 Issue 及 #161；历史运行证据只作为复现线索，不计本次通过。
+
+当前源码的重要事实：
+
+| 子项 | 现状与入口 |
+| --- | --- |
+| #153 A | `services/input_config.py::_apply_input_config_update_locked` 每次成功保存 revision+1，同时给 JSONB 当前值及 Schedule input 赋值；普通 Python 等值判断可能令 ORM 不发出类型变化 UPDATE，必须先用真实 PostgreSQL 定位 |
+| #153 B | `worker/executor.py` 对完整 null 产生 4 字节 output_size；`services/execution.py::_normalize_output` 对 null 保留上报大小；`OutputView.tsx` 当前把 null/undefined 都作为无输出，旧大小可以缺失 |
+| #155 A | `ExecutionHistoryPanel.tsx` 已有选中 ID、detail request epoch 和 watcher；`api.cancelExecution` 及第一组服务端取消合同可复用 |
+| #155 B | `adapter_runtime.py` 的 runtime_locked 已含启用计划和 running；`App.tsx` 当前 runtime poll 在未锁/无 active 时不启动，`TaskRunSettingsPanel` 的 loadSchedule 只更新本地计划，refreshAdapter 还会清空若干用户 override |
+| #150 A | 两套 Nginx 没有 input-artifacts 专用路由；后端已使用 `L + MultipartReader.REQUEST_OVERHEAD_LIMIT`，不是缺少 multipart 预算 |
+| #150 B | Settings、Compose、env 示例默认 false；文件/Lease/GC 机制已存在，默认修改不等于生命周期证明 |
+| #157 | 服务端只验证名称、类型枚举及部分 builtin 合同；PATCH 逐项修改 ORM 对象，必须先算最终组合后校验 |
+| #159 | `dlr_docs.py` 写成 Java config()/secrets()/logger() 且 logger.warning；`java_runtime.py::SOURCE` 实际为字段及 info/warn/error |
+
+主规格里仍有旧协议/Wave 迁移叙述，本组只增补 JSON 保真和修改当前默认开关要求，不借本组清理历史迁移合同。第一组代码、状态和证据不改写。
+
+## Goals / Non-Goals
+
+**Goals:** 五项主 Issue 和三个已归档来源的全部独立验收可追溯；优先在现有领域写入口、组件与代理路由做小范围修正；用数据库新 Session、真实浏览器、实际代理和业务 oracle 证明结果。
+
+**Non-Goals:** 不建立全局 JSON 类型库、新运行状态仓库或新事件总线；不改变 Worker wire protocol、调度/重试/取消/Lease 责任；不新增 schema 或填造历史输出；不扩建 Runtime API。产品默认开启不等于在现有部署擅自改写显式环境配置。
+
+## Decisions
+
+### D1. 输入更新在已有事务中显式标记 JSON 列
+
+先在现有 PostgreSQL 测试 fixture 中 RED 复现：保存数字、提交、关闭 Session，保存布尔、提交，再开新 Session，联合 Python `type`、值和 SQL `jsonb_typeof` 判断当前配置与镜像。不能把 `0 == False` 单独作为根因证据。设计期间已对起点 SHA 完成独立 PostgreSQL/API RED：四个顶层方向及嵌套对象/数组均保留旧值、revision 仍递增；当前 JSON 和 Schedule 镜像的 ORM history 均未识别修改。该结果仅为修复前证据，不计 GREEN 或最终验收。
+
+在 `_apply_input_config_update_locked` 赋值后，对 JSON 来源的 `config.json_value` 显式 `flag_modified`，同时对已赋值的 Schedule JSON 镜像执行对应标记；`JSON.NULL` 与 `null()` 分支保持原样，非 JSON 的 SQL 表达式不套用不必要的标记。先验证主字段，再验证镜像，避免只修一侧。此入口也承接旧 Schedule 兼容写入。
+
+选择显式标记的原因是所有有效保存本就 revision+1，明确要求本次值持久化，不需要新建去重规则。全局 TypeDecorator/JSONB comparator 会波及无关 JSON 列；仅 deep copy 仍可被 Python 等值比较折叠；只改 UI 不解决持久化。若 RED 证明还有独立写入口，补最小入口覆盖并说明实际证据，不先扩大到所有 JSONB 字段。
+
+不更改 schema、约束、revision、乐观锁或事务锁序。JSON null 与 source=none 的 SQL NULL 必须用 `IS NULL`/`jsonb_typeof` 分开验证。保存时旧 Execution 只读，后续创建才使用新配置。普通值与真正未变值的成功保存仍按原规则递增 revision。
+
+### D2. 输出采用保守且统一的分类，历史不回填
+
+在 OutputView 周边加入小型纯分类函数，由实时和历史共用，不新增状态存储。优先级如下：
+
+| 条件 | 展示/操作 |
+| --- | --- |
+| output_truncated 为真 | 原截断大小与 preview 分支优先 |
+| 存在非 null/undefined JSON 正文 | 按原值展示，缺少旧 size 不隐藏 false/0/空字符串/数组/对象 |
+| null、size 为有限整数 4、未截断、无矛盾 preview/存在性信息，且不同时满足下面的从未执行组合 | 完整 JSON null |
+| 一致的显式 size=0 且无正文/preview，或下面定义的服务端未开始执行组合证据 | 无输出 |
+| null/undefined 且大小缺失、负值、非整数、错误大小或其他矛盾 | 中性“输出信息不足，无法确认” |
+
+Worker 的正常完整输出以规范 JSON 序列化后计算大小，故 4 具有实际来源；不把任意正数当 null。不使用 Execution status 判别正文，已有复制/下载若存在须使用同一分类，不给 unknown 造字符串 null。当前 OutputView 本身没有新操作需求。
+
+**无正文证据定案：不写入新的 size=0，不改后端终结路径。** 现有 ExecutionResponse 公开 attempt_count、started_at 和 dispatch_backend。组合证明限定为这些字段均显式存在、`dispatch_backend=rabbitmq`、`attempt_count=0`、`started_at=null`、状态为 queued/cancelled/expired，且 output=null、size=null/undefined、无截断与 preview：可靠执行机制要求先有 Attempt 才可执行代码，该组合表示从未开始产出正文。`0033` 迁移拒绝旧机制数据，不将任意旧行回填成此执行机制；但 response schema 有默认值，UI 仍必须检查实际字段存在，不能通过 `?? 0`/`?? "rabbitmq"` 对缺字段 fixture 或旧响应制造证明。实现前用真实创建→Claim 前取消例子查库确认无 Attempt，GET 与两处 UI 均显示无输出；状态本身不是证据。字段缺失、不合法或有任何输出元数据冲突时不使用该分支，曾有 Attempt 的 null+缺失 size 保持 unknown。
+
+冲突优先级明确：实际非 null 正文仍按原值展示，即使其他元数据陈旧；截断标记始终第一。null+size4 同时具备从未执行组合则元数据矛盾，显示 unknown；null+非零错误大小/preview 同理，不能落到无输出分支。
+
+新旧报告的 null + 缺失 size 不能统一补0；准备失败、Worker report、恢复终态不因本项新增元数据写入或重置历史输出。历史 fixture 必须包括字段缺失、旧默认值与矛盾组合，读前后哈希证明未改写。独立 Review 核对 API/迁移对 attempt_count 的默认处理，禁止仅为显示为空更改状态机。
+
+### D3. 历史详情取消捕获意图和 epoch
+
+操作入口放在现有历史详情，权限使用已有 canOperate/Adapter 权限，不新建授权规则。点击时捕获 `{executionId, detailEpoch}`，调用已有取消 API；取消 pending 按执行 ID 去重，状态变化由后端最终裁定。
+
+响应只在 epoch 和 ID 仍匹配时写详情、错误和 watcher；切换/关闭后允许列表正常刷新 B，但不能覆盖 C 或启动错误 watcher。409/终态/权限失败分别呈现现有安全错误并重新读取目标，重复点击不产生重复 UI 请求。第一次返回和 watcher 状态的先后次序都测试。复用第一组 cancellation error code，不重写服务端释放 Slot/Admission/Lease 的代码。
+
+### D4. 权威运行锁共享刷新，草稿与已保存状态分开
+
+`adapter.runtime_locked` 继续是所有受保护控件的主权威，后端已经包含 Schedule/Webhook 启用与 active Attempt。统一使用已同步的 Adapter snapshot，不让 Task 面板用 scheduleEnabled 单独决定部分控件、Header 用另一份过时 Adapter。
+
+在 App 当前选中 Adapter 的现有刷新链路收敛以下触发：页面可见时按既有 3 秒策略有界轮询，包括 unlocked/idle；恢复窗口焦点或可见性时立即刷新；计划开启/关闭、取消/终态和 runtime 409 后刷新。每次只有一个在途读取，依 Adapter ID/请求 epoch 忽略迟到结果，卸载清理定时器/listener；后台隐藏暂停常规轮询，恢复时补读。复用现有 watcher，不新增通知流、不强行切换历史选择。
+
+计划 GET 与 Adapter GET 需要协调：本页计划变更成功后刷新两者；显式刷新计划同样更新权威 Adapter。后台刷新只更新计划 enabled 等已保存状态，在 scheduleTouched/schedulePolicyTouched 时不重置 cron/timezone/policy 草稿。把 Task 面板当前会清空 Worker/run mode/timeout overrides 的 `refreshAdapter` 拆清用途：保存成功且当前 epoch 匹配时接受新基线，纯状态刷新/冲突刷新不清草稿。代码 snapshot、requirements、runtimeConfig、输入 JSON/文件/retention 均不能被运行状态刷新替换。
+
+锁定后禁用保存、Monaco、依赖、运行配置、绑定、Worker、超时、当前输入等受保护操作，原因可聚焦查看；停用计划、停止执行仍按现有各自资格可用。queued/retry_wait 不等于 active 锁。后端 409 保持最终防线，前端显示已同步原因且保留 dirty。新增文案双语，对涉及 Button/Form/Tooltip 的实现先查询项目固定 Ant Design 5.29.3 快照，不升级 manifest。
+
+### D5. 两套托管上传专用路由使用精确有限总量
+
+新增匹配 `/api/adapters/<数字 ID>/input-artifacts` 的独立路由，不放宽通用 `/api/`。Token 原样代理；账号保留 `__dlr_account` 私有 rewrite、认证/CSRF/安全 header 传递。
+
+当前 `MAX_FILE_BYTES=2*1024^3=2,147,483,648`；`REQUEST_OVERHEAD_LIMIT=256*1024=262,144`；采用精确十进制 `client_max_body_size 2147745792;`，即二者之和，不误把 `2g` 当完整请求上限。不写死一次样例的 185 字节开销。确定性测试从应用常量读取预算，解析两个路由中的值和范围，不复制第三份应用最大值。
+
+托管路由沿用上传的流式代理习惯：关闭 request buffering、使用 HTTP/1.1，并保留有界 body/read timeout。后端继续以当前数据库 L + 开销限制实际请求，同时维持单文件、字段预算、quota reservation、磁盘低水位、失败清理。代理总量放大不修改后端限制，不需要数据库策略自动生成配置。
+
+真实代理验证两种 L（1 MiB 与大于 1 MiB 的策略），每种 L/L+1；请求大小明确位于代理上限内，从状态码、JSON code 与代理/Control 受控证据区分拒绝层。用超过固定上限的声明长度请求证明代理 413，无需真的制造/传输超大文件；最大 2 GiB 的配置关系用常量一致性和 Nginx 配置加载验证，不伪称实际传输了 2 GiB。成功文件保存后由脚本读取并与独立 SHA-256 比对。
+
+### D6. 开关默认值与既有关闭行为一起验证
+
+Settings default、Compose `${DLR_MANAGED_FILES_ENABLED:-true}`、`.env.example` 一致改 true。更新过时 Wave 默认关闭说明与测试断言，同时保留明确关闭的测试；不能把全部测试 fixture 切 true 后删掉关闭用例。两个默认值分开测：Python 配置无变量/true/false，Compose 无变量/true/false 渲染；不借真实用户 env 文件跑测试。
+
+不改 ArtifactStore 路径/挂载或对象格式，不清空数据。显式 false 的旧部署保持 false，运维文档说明显式打开、重新创建受影响服务、能力与真实读取检查；关闭前停止新增并等待已有执行/Lease 按原合同收敛，保留数据和治理。
+
+业务矩阵至少有五语言各一条 managed file 读取执行并核对文件名/大小/哈希/内容；格式维度覆盖 XLSX、CSV、LOG、JSON，Excel/日志相关实际模板分别验证。格式与语言采取覆盖矩阵，不声称只有一条文本读取就证明所有组合。受支持但需要依赖的模板必须准备好合法来源再运行。ArtifactStore 重启持久、配额拒绝、活跃 Lease 保护、到期/删除后回收与历史摘要保持分别留证；GC 自然等待可利用既有允许策略，不能伪造时间或直接清理保留数据。
+
+### D7. 依赖源校验先合并，再变更，保存不访问网络
+
+在现有源 service 或同包小型帮助函数中建立唯一 `(kind, index_url)` 语法校验，创建与 PATCH 同用。PATCH 先读取记录、算 next_kind/next_url/next_credential，验证整个组合和现有 builtin/credential 规则，再改 ORM 属性或默认源标记，避免失败留下部分更新。省略字段保留；显式 null 延续既有 schema 合同，不借此改变 PATCH 语义。
+
+| 类型 | 保留的合法形式 | 必须拒绝 |
+| --- | --- | --- |
+| PyPI | 单个 http(s) host/可选端口/仓库路径；精确 dlr-builtin://pypi | 无 scheme/host、非法端口、控制字符/空白、错配 builtin |
+| npm | 单个 http(s) registry 路径；精确 dlr-builtin://npm，现有 password/token 规则 | 同上及 builtin 凭据冲突 |
+| Maven | 单个 http(s) repository 路径；精确 dlr-builtin://maven | 同上，不新增 file/其他 transport |
+| Go Proxy | 当前单个 http(s) proxy；精确 dlr-builtin://goproxy | 同上，不新增 direct/off、逗号/竖线 proxy list 或 file 协议 |
+
+使用标准 URL parser 并显式验证 scheme、host、合法端口、控制字符和原始字符串中的非法空白；保留正常 http、localhost/IP、合法 IPv6、路径/尾斜杠与已有支持的查询语义，不强制 HTTPS、公共 DNS、`/simple/` 后缀或即时可达。不能依 URL parser 自动规范化吞掉控制字符。凭据绑定不受误伤，错误文本/detail 只含字段名与稳定原因，不包含原始 URL/userinfo/query 值。
+
+内置源保持已有创建限制、类型/地址/凭据不可变约束，普通源不能通过 PATCH 转成内置源。旧非法普通源不在启动/list 上强制校验，可修成合法地址或删除；其他修改若最终组合仍非法则返回字段错误。既有测试用 malformed URL 建连通性失败源须改为合法但确定不可达的合成地址，旧非法记录兼容用隔离测试 fixture 种入。
+
+前端 `SystemSettingsDrawer` 的地址 Form.Item 显示后端稳定字段错误，保存失败保持输入、支持修复；frontend 轻量语法提示不能替代服务端权威。所有四类各用可控源、新 Version 冷目录和可观测包请求执行代表性第三方调用；source 命中、安装成功与业务输出分别断言，不清现有 cache、不引入外部 PyPI 故障修复。
+
+### D8. Java 文档示例直接对运行时代码编译
+
+纠正 `dlr_docs.py` Java contract 与 runtime-config entry；搜索相关 Java 文档/示例同类调用。Java logger 是 `warn`，不保留 `warning` 误导。Python/JavaScript 等语言条目按各自实际 API，不做机械全库替换。
+
+在可检索 Java 合同里保留短而可执行的代表性示例，测试提取同一示例与 `java_runtime.SOURCE` 编译，使用当前真实 harness、input/config 和合成 secret 环境执行；oracle 断言配置值、输入转换输出、info/warn/error 分流和仅布尔凭据存在性。正文及 stdout/stderr 扫描合成 secret，证明无真值泄漏。测试故意将字段改成方法时应编译失败，证明绑定的是 Runtime 合同而不是文档字符串快照。没有 JDK 时不能计 PASS，使用已有 JDK CI/验证环境，不为本项更改 Runtime。
+
+## Verification Matrix
+
+| 检查点 | 必须证明 | 方法/不能替代的证据 |
+| --- | --- | --- |
+| 153-A | 顶层/dict/list 的四个方向类型更新、null/SQL NULL、镜像、revision、历史不变 | 真实 PG RED/GREEN，commit 后新 Session + SQL 类型；真实 UI 保存/重载/API/执行/历史 |
+| 153-B | null、无正文、false/0/空值、缺失/无效/矛盾、截断 | 分类表 + 实时/历史组件 + 真实 null 运行；无正文说明可靠来源；历史 fixture 读前后一致 |
+| 155-A | 指定 queued、另一 active 不变、重复/迟到/权限/claim/terminal | UI 请求 ID 与选择一致，真实 API/资源核对，回归第一组取消状态机 |
+| 155-B | 同页与双页面启停计划、active、dirty、409/失败/迟到 | 两个真实 Chrome 页面及交互/请求/Console，代码与多个表单草稿逐字段前后比较 |
+| 150-A | 双代理 L/L+1/>1MiB、上限关系、改 L 无 reload、清理/其他路由/认证 | 真实代理与业务 SHA oracle；静态关系和 Nginx配置加载不能代替 L 成功 |
+| 150-B | 未设置/显式开关，格式×五语言覆盖、模板、持久/配额/Lease/GC | 独立合成夹具，真实执行与重启、自然生命周期；保留旧 BLOCKED，不以 ready 当成功 |
+| 157 | 四类 create/PATCH 全组合、离线保存、旧记录修复、安全错误 | PG/API + UI字段反馈；四类新版本冷环境实际源访问及业务输出 |
+| 159 | 检索内容实际公共字段与日志方法、示例可编译执行 | 提取文档代码与真实 Java SOURCE 编译运行，配置/输出/日志/secret不泄漏 |
+| 最终组 | 新 head 无遗漏、第一组可靠性不退化 | Backend Ruff/format/Mypy/full pytest、Web ESLint/TS/Vitest/build、OpenSpec strict、适用CI/独立Review、最终head关键运行 |
+
+复现与运行证据保留在私有交付目录，公共材料只记录合成预期、结果摘要、公开 SHA 和无敏感定位。不提交本机端口、路径、私有对象 ID、Token/Key、运行日志、完整请求头或截图中的账号信息。所有 NOT_RUN/BLOCKED/旧 SHA 证据明确标记。
+
+## Risks / Trade-offs
+
+- [ORM 赋值仍折叠类型差异或只修一侧] → PostgreSQL 新 Session 与两个 JSONB 字段逐项验证；不以返回对象或 Python `==` 通过。
+- [历史输出无法可靠恢复] → unknown 显示保守保真；不填历史 size、不根据 succeeded 猜测、不新增无正文标记，只采用现有可靠字段。
+- [增加 idle 状态轮询] → 复用 3 秒策略、单请求、可见性暂停及 epoch 清理；不引入另一套 store。
+- [刷新清空草稿] → 已保存 snapshot 与 override 分开，后台/409 不调用清空草稿的保存成功分支，双页 dirty 场景强制验收。
+- [代理上限较大] → 只扩托管路由，后端仍以实际 L/配额/磁盘限制流式读取，固定有限总量及认证不变。
+- [默认开启把依赖问题暴露出来] → 五语言/格式/模板真实矩阵；明确失败归因，保持 D021/D027 排除范围。
+- [旧非法源阻塞正常修复] → list/start 不校验历史，修复/delete 可行；PATCH 最终组合校验在写入前。
+- [固定环境保全更新超出现行合同] → 实施可继续，部署不得伪装为第一组仅 CSS 模式；由 integration owner 另行完成可审查合同和授权。
+
+## Migration Plan
+
+1. 在第二组唯一集成分支按 153A→153B→155A→155B→150A→150B→157→159 串行推进，每项保留对应提交、目标测试与证据。Worker 子任务为 LOCAL_FAST，不 push/PR；整组远端交付由 integration owner 按已授权模式处理。
+2. 预计 Alembic head 保持 `0040`，没有 schema/历史数据迁移；最终验证 migration diff、metadata 与 fresh head 一致，发现新增迁移需求时重新审查，不能假定同 schema 即可更新。
+3. 第二组 backend/Nginx/Compose 等变更明确超出第一组 `audited-web-same-schema`。冻结 exact source/target SHA、完整路径集合、schema、持久卷/审计/queued 等保护清单与备份恢复方案；控制器 attention 不绕过，现行模式拒绝不能靠扩大通配路径解决。第二组专用保全合同与适用批准是固定环境更新和合并前的阻断门禁；缺失时可以继续独立产品实施和普通 PR 准备，不得部署、合并或进入第三组。
+4. 远端交付顺序固定为：创建唯一开放且非 draft 的最终 PR（控制器接受的选择对象）→精确 PR HEAD 的 Hosted CI/独立 Review→在第3项合同及批准满足后选择该 PR，完成固定环境部署和关键运行门禁→所有门禁通过后按既有授权 merge→精确 merged-main CI 与实际部署 SHA 核对/必要回归。不得等全部部署 Gate 通过才创建 PR，也不得先 merge 再补候选部署验收。通用默认值变化不覆盖现有显式 false。
+5. 回退只在授权的保全程序内处理应用版本；不降级数据库、不删卷、不撤销或重置历史/queued/Incident。托管开关可显式关闭以阻止新增，并按既有规则收敛在途 Lease，Blob 与历史保留。旧 UI 对 null 的展示退化不允许回填历史掩盖。
+6. 主 Issue 保持开放，原归档 Issue 保持归档。机器检查、合并、部署和用户最终验收分别记录；不使用自动关闭关键字，不把剩余强制人工门禁变成非阻塞。组间推进以 #161 明确门禁为准。
+
+## References
+
+- [SQLAlchemy JSON null/SQL NULL 合同](https://docs.sqlalchemy.org/en/20/core/type_basics.html#sqlalchemy.types.JSON)：决定保留 JSON.NULL 与 null()，不改变现有模型映射。
+- [SQLAlchemy flag_modified](https://docs.sqlalchemy.org/en/20/orm/session_api.html#sqlalchemy.orm.attributes.flag_modified) 与 [compare_values](https://docs.sqlalchemy.org/en/20/core/custom_types.html#sqlalchemy.types.TypeDecorator.compare_values)：显式属性变更可避开默认 Python 值比较；选择服务写入口而非全局类型替换。
+- [Nginx client_max_body_size](https://nginx.org/en/docs/http/ngx_http_core_module.html#client_max_body_size)：限制整个请求体，超限 413，0 为禁用检查；据此采用专用路由有限值。
+- [Nginx proxy_request_buffering](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_request_buffering)：流式代理复用现有上传模式，HTTP/1.1 与 chunked 行为一并核对。
+- [Go Modules GOPROXY](https://go.dev/ref/mod#environment-variables)：上游支持的 proxy list 不自动成为 DLR 已支持的产品合同，本组仅验证当前单地址及内置源。
