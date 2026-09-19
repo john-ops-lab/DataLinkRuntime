@@ -345,6 +345,7 @@ export default function ExecutionHistoryPanel(props: {
     if (!isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
       return;
     }
+    let retireIntent = false;
     setDispositionLoading(operation);
     setDispositionError(null);
     try {
@@ -363,7 +364,7 @@ export default function ExecutionHistoryPanel(props: {
       }
       setDispositionResults((current) => ({ ...current, [intent.incidentId]: result }));
       if (await refreshReliableDetail(intent.executionId, intent.requestId)) {
-        dispositionIntentsRef.current.delete(intent.operation);
+        retireIntent = true;
       }
     } catch (error) {
       if (!isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
@@ -373,7 +374,7 @@ export default function ExecutionHistoryPanel(props: {
       if (error instanceof ApiError && error.status === 409) {
         try {
           if (await refreshReliableDetail(intent.executionId, intent.requestId)) {
-            dispositionIntentsRef.current.delete(intent.operation);
+            retireIntent = true;
           }
         } catch (refreshError) {
           if (isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
@@ -382,9 +383,15 @@ export default function ExecutionHistoryPanel(props: {
         }
       }
     } finally {
-      if (isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
-        setDispositionLoading(null);
-        setConfirmingDisposition(null);
+      if (
+        isCurrentDetailEpoch(intent.executionId, intent.requestId)
+        && dispositionIntentsRef.current.get(intent.operation) === intent
+      ) {
+        setDispositionLoading((current) => current === intent.operation ? null : current);
+        setConfirmingDisposition((current) => current === intent.operation ? null : current);
+        if (retireIntent) {
+          dispositionIntentsRef.current.delete(intent.operation);
+        }
       }
     }
   }

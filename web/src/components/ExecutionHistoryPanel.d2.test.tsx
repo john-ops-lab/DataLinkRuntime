@@ -647,4 +647,78 @@ describe("Issue #127 D2 execution history", () => {
       await second.promise;
     });
   });
+
+  it("keeps another Incident's unsubmitted confirmation after a same-Execution request completes", async () => {
+    const first = deferred<IncidentDispositionResponse>();
+    vi.spyOn(api, "getReliableExecutionDetail").mockResolvedValue(reliableDetail([
+      incident({ id: 901, recover_available: false, recover_reason: "execution_terminal" }),
+      incident({ id: 902, recover_available: false, recover_reason: "execution_terminal" }),
+    ], { status: "succeeded" }));
+    const dispose = vi.spyOn(api, "disposeInfrastructureIncident").mockReturnValue(first.promise);
+    renderHistory(execution({ dispatch_generation: 2 }));
+    fireEvent.click(await screen.findByTestId("history-row"));
+    const firstAlert = await screen.findByTestId("execution-incident-901");
+    fireEvent.click(within(firstAlert).getByRole("button", {
+      name: "核实并关闭事件",
+    }));
+    fireEvent.click(await screen.findByRole("button", { name: /确\s*认/ }));
+    await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(within(screen.getByTestId("execution-incident-902")).getByRole("button", {
+      name: "核实并关闭事件",
+    }));
+    expect(await screen.findByRole("button", { name: /确\s*认/ })).toBeTruthy();
+    await act(async () => {
+      first.resolve(dispositionResponse());
+      await first.promise;
+    });
+
+    expect(screen.getByRole("button", { name: /确\s*认/ })).toBeTruthy();
+    expect(screen.getByTestId("execution-incident-902")).toBeTruthy();
+  });
+
+  it("keeps another Incident's pending confirmation and loading after a same-Execution request completes", async () => {
+    const first = deferred<IncidentDispositionResponse>();
+    const second = deferred<IncidentDispositionResponse>();
+    vi.spyOn(api, "getReliableExecutionDetail").mockResolvedValue(reliableDetail([
+      incident({ id: 901, recover_available: false, recover_reason: "execution_terminal" }),
+      incident({ id: 902, recover_available: false, recover_reason: "execution_terminal" }),
+    ], { status: "succeeded" }));
+    const dispose = vi.spyOn(api, "disposeInfrastructureIncident")
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    renderHistory(execution({ dispatch_generation: 2 }));
+    fireEvent.click(await screen.findByTestId("history-row"));
+    const firstAlert = await screen.findByTestId("execution-incident-901");
+    fireEvent.click(within(firstAlert).getByRole("button", {
+      name: "核实并关闭事件",
+    }));
+    fireEvent.click(await screen.findByRole("button", { name: /确\s*认/ }));
+    await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(within(screen.getByTestId("execution-incident-902")).getByRole("button", {
+      name: "核实并关闭事件",
+    }));
+    fireEvent.click(await screen.findByRole("button", { name: /确\s*认/ }));
+    await waitFor(() => expect(dispose).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      first.resolve(dispositionResponse());
+      await first.promise;
+    });
+
+    const secondButton = within(screen.getByTestId("execution-incident-902")).getByRole("button", {
+      name: /核实并关闭事件/,
+    });
+    expect(secondButton.className).toContain("ant-btn-loading");
+    expect(screen.getByRole("button", { name: /确\s*认/ })).toBeTruthy();
+    await act(async () => {
+      second.resolve(dispositionResponse({
+        receipt: {
+          ...dispositionResponse().receipt,
+          incident_id: 902,
+        },
+      }));
+      await second.promise;
+    });
+  });
 });
