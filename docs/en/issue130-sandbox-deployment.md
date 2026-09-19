@@ -192,3 +192,8 @@ These commands preserve database volumes. Do not use global Docker prune.
 
 The [Issue #130 migration record](issue130-reliable-runtime-migrations.md) is
 historical only; its legacy/canary/Cutover APIs and settings do not apply today.
+
+For an execution stalled by delivery failures, follow
+[Infrastructure Incident Dispositions](incident-dispositions.md) to recover or
+terminate the original record and verify its actual result and cleanup. See the
+[local preview controller](local-preview.md) for upgrades carrying old responsibility.
