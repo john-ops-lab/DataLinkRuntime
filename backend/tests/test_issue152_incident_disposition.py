@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
+import sys
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -38,6 +40,7 @@ from dlr.control.security import SUPERADMIN_PRINCIPAL, Principal, require_princi
 from dlr.control.services import attempt as attempt_service
 from dlr.control.services import builtin_package
 from dlr.control.services import execution as execution_service
+from dlr.control.services import incident_disposition as incident_disposition_service
 from dlr.control.services.artifact_store import LocalFileArtifactStore
 from dlr.control.services.execution_cancellation import (
     lock_execution_in_admission_order,
@@ -415,6 +418,21 @@ def _dispose(
         ),
         SUPERADMIN_PRINCIPAL,
     )
+
+
+def _exclusive_flock_available(path: Path) -> bool:
+    probe = (
+        "import fcntl,sys; "
+        "stream=open(sys.argv[1],'a+b'); "
+        "fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(path)],
+        check=False,
+        capture_output=True,
+        timeout=5,
+    )
+    return result.returncode == 0
 
 
 def _managed_execution(
@@ -991,6 +1009,136 @@ def test_managed_blob_removed_between_preflight_and_final_validation_is_rejected
     assert rejected.response.receipt.outcome == "incident_materials_unavailable"
 
 
+@pytest.mark.parametrize(
+    "shape",
+    ["missing_revision", "unknown_key", "none_nonnull", "fake_dependency"],
+)
+def test_recovery_rejects_unknown_or_inconsistent_nonmanaged_input_snapshot(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    shape: str,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, f"issue152-input-invalid-{shape}-worker")
+    adapter = _rabbit_adapter(api_client, worker, f"issue152-input-invalid-{shape}-adapter")
+    execution = _execution(api_client, adapter["id"])
+    with session_factory.begin() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        if shape == "missing_revision":
+            row.input_snapshot = {"source_type": row.input_source_type}
+        elif shape == "unknown_key":
+            row.input_snapshot = {**row.input_snapshot, "unrecognized": True}
+        elif shape == "none_nonnull":
+            row.input_source_type = "none"
+            row.input_snapshot = {"source_type": "none", "revision": row.input_config_revision}
+            row.input = {"contradiction": True}
+        else:
+            assert row.dependency_check is False
+            row.input_source_type = "none"
+            row.input_snapshot = {"source_type": "none", "dependency_check": True}
+        incident_id = _bound_incident(session, row.id).id
+
+    with session_factory() as session:
+        result = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="recover",
+        )
+    assert result.response.receipt.outcome == "incident_materials_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("source_type", "snapshot", "runtime_input", "dependency_check"),
+    [
+        ("json", {"source_type": "json", "revision": 1}, None, False),
+        ("json", {"source_type": "json", "revision": 1}, "scalar", False),
+        ("json", {"source_type": "json", "revision": 1}, 2**60, False),
+        ("none", {"source_type": "none", "revision": 1}, None, False),
+        (
+            "json",
+            {"source_type": "json", "revision": 1, "legacy_override": True},
+            {"legacy": True},
+            False,
+        ),
+        ("none", {"source_type": "none", "dependency_check": True}, None, True),
+    ],
+)
+def test_recovery_accepts_known_nonmanaged_input_snapshot_shapes(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    source_type: str,
+    snapshot: dict[str, object],
+    runtime_input: object,
+    dependency_check: bool,
+) -> None:
+    _enable_runtime(monkeypatch)
+    name = f"issue152-input-valid-{source_type}-{dependency_check}-{type(runtime_input).__name__}"
+    worker = _ready_worker(api_client, f"{name}-worker")
+    adapter = _rabbit_adapter(api_client, worker, f"{name}-adapter")
+    execution = _execution(api_client, adapter["id"])
+    with session_factory.begin() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        row.input_source_type = source_type
+        row.input_snapshot = snapshot
+        row.input = runtime_input
+        row.dependency_check = dependency_check
+        incident_id = _bound_incident(session, row.id).id
+
+    with session_factory() as session:
+        result = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="recover",
+        )
+    assert result.response.receipt.outcome == "dispatch_already_pending"
+
+
+def test_recovery_rejects_runtime_input_changed_after_material_preflight(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-input-race-worker")
+    adapter = _rabbit_adapter(api_client, worker, "issue152-input-race-adapter")
+    execution = _execution(api_client, adapter["id"])
+    with session_factory.begin() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        row.input = {"original": "input"}
+        incident_id = _bound_incident(session, row.id).id
+
+    preflight = incident_disposition_service.preflight_recovery_materials
+
+    def change_after_preflight(session: Session, row: Execution):
+        proof = preflight(session, row)
+        with session_factory.begin() as concurrent:
+            changed = concurrent.get(Execution, execution["id"])
+            assert changed is not None
+            changed.input = {"changed": "input"}
+        return proof
+
+    monkeypatch.setattr(
+        incident_disposition_service,
+        "preflight_recovery_materials",
+        change_after_preflight,
+    )
+    with session_factory() as session:
+        result = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="recover",
+        )
+    assert result.response.receipt.outcome == "incident_materials_unavailable"
+
+
 @pytest.mark.parametrize("corrupt", [False, True])
 def test_recovery_validates_frozen_credential_rows_without_current_binding_or_secret_output(
     api_client: object,
@@ -1100,6 +1248,32 @@ def test_recovery_holds_and_validates_original_builtin_package(
         }
         incident_id = _bound_incident(session, row.id).id
 
+    record = incident_disposition_service._record
+
+    def fail_after_validation(*args: object, **kwargs: object):
+        assert not _exclusive_flock_available(builtin_package.storage_path(storage_key, ".lock"))
+        raise RuntimeError("injected disposition audit failure")
+
+    monkeypatch.setattr(incident_disposition_service, "_record", fail_after_validation)
+    with (
+        session_factory() as session,
+        pytest.raises(RuntimeError, match="injected disposition audit failure"),
+    ):
+        _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="recover",
+        )
+    assert _exclusive_flock_available(builtin_package.storage_path(storage_key, ".lock"))
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        incident = session.get(ExecutionInfrastructureIncident, incident_id)
+        assert row is not None and row.dispatch_generation == 1
+        assert incident is not None and incident.status == "open"
+        assert session.scalar(select(ExecutionIncidentDisposition)) is None
+
+    monkeypatch.setattr(incident_disposition_service, "_record", record)
     with session_factory() as session:
         accepted = _dispose(
             session,

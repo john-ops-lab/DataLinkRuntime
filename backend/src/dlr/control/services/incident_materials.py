@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import stat
 from contextlib import ExitStack
@@ -101,6 +102,13 @@ def _positive_int(value: object) -> bool:
 
 
 def _fingerprint(execution: Execution) -> str:
+    input_bytes = json.dumps(
+        execution.input,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
     value = {
         "execution_id": execution.id,
         "dispatch_generation": execution.dispatch_generation,
@@ -115,6 +123,8 @@ def _fingerprint(execution: Execution) -> str:
         "input_source_type": execution.input_source_type,
         "input_config_revision": execution.input_config_revision,
         "input_snapshot": execution.input_snapshot,
+        "input_sha256": hashlib.sha256(input_bytes).hexdigest(),
+        "dependency_check": execution.dependency_check,
         "credential_bindings_snapshot": execution.credential_bindings_snapshot,
         "builtin_package_snapshot": execution.builtin_package_snapshot,
         "timeout_seconds_snapshot": execution.timeout_seconds_snapshot,
@@ -179,6 +189,7 @@ def _managed_snapshot(execution: Execution) -> list[dict[str, Any]]:
     snapshot = execution.input_snapshot
     if (
         not isinstance(snapshot, dict)
+        or set(snapshot) != {"source_type", "revision", "artifacts"}
         or snapshot.get("source_type") != "managed_files"
         or isinstance(snapshot.get("revision"), bool)
         or not isinstance(snapshot.get("revision"), int)
@@ -203,6 +214,42 @@ def _managed_snapshot(execution: Execution) -> list[dict[str, Any]]:
             raise ValueError("managed input artifact snapshot is invalid")
         _normalized_sha256(item.get("sha256"))
     return artifacts
+
+
+def _valid_input_snapshot(execution: Execution) -> bool:
+    """Match only input snapshot shapes produced by supported execution entrypoints."""
+
+    snapshot = execution.input_snapshot
+    source_type = execution.input_source_type
+    if not isinstance(snapshot, dict) or snapshot.get("source_type") != source_type:
+        return False
+    if source_type == "managed_files":
+        try:
+            _managed_snapshot(execution)
+        except ValueError:
+            return False
+        return execution.input is None and execution.dependency_check is False
+    if source_type not in {"none", "json", "webhook"}:
+        return False
+    if execution.dependency_check:
+        return (
+            source_type == "none"
+            and execution.input is None
+            and snapshot == {"source_type": "none", "dependency_check": True}
+        )
+    expected_keys = {"source_type", "revision"}
+    if snapshot.get("legacy_override") is True and source_type == "json":
+        expected_keys.add("legacy_override")
+    if set(snapshot) != expected_keys:
+        return False
+    revision = snapshot.get("revision")
+    if (
+        isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision != execution.input_config_revision
+    ):
+        return False
+    return source_type != "none" or execution.input is None
 
 
 def _preflight_managed_targets(session: Session, execution: Execution) -> tuple[FileTarget, ...]:
@@ -408,16 +455,7 @@ def _validate_execution_snapshots(session: Session, execution: Execution) -> boo
         or policy["max_attempts"] != execution.max_attempts_snapshot
     ):
         return False
-    snapshot = execution.input_snapshot
-    if not isinstance(snapshot, dict) or snapshot.get("source_type") != execution.input_source_type:
-        return False
-    if "revision" in snapshot:
-        revision = snapshot.get("revision")
-        if isinstance(revision, bool) or not isinstance(revision, int):
-            return False
-        if revision != execution.input_config_revision:
-            return False
-    return execution.input_source_type in {"none", "json", "webhook", "managed_files"}
+    return _valid_input_snapshot(execution)
 
 
 def _same_stat(info: os.stat_result, proof: FileProof) -> bool:

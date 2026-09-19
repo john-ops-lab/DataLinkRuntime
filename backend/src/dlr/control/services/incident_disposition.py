@@ -494,7 +494,7 @@ def _install_published_dispatch(
     return created
 
 
-def dispose_incident(
+def _dispose_incident_transaction(
     session: Session,
     execution_id: int,
     incident_id: int,
@@ -887,3 +887,36 @@ def dispose_incident(
         to_outbox_id=replacement.id,
     )
     return _commit_result(session, receipt, incident, execution)
+
+
+def dispose_incident(
+    session: Session,
+    execution_id: int,
+    incident_id: int,
+    action: Literal["recover", "terminate"],
+    expected_generation: int,
+    idempotency_key: uuid.UUID,
+    reason_code: Literal[
+        "capacity_repaired", "routing_repaired", "operator_cancel", "verified_terminal"
+    ],
+    principal: Principal,
+) -> IncidentDispositionResult:
+    """Dispose one Incident and release transferred file guards on every failure."""
+
+    try:
+        return _dispose_incident_transaction(
+            session,
+            execution_id,
+            incident_id,
+            action,
+            expected_generation,
+            idempotency_key,
+            reason_code,
+            principal,
+        )
+    except Exception:
+        try:
+            session.rollback()
+        finally:
+            close_material_guards(session)
+        raise
