@@ -50,8 +50,9 @@ you just read, rather than copying the example value. Authentication determines 
 actor; requests cannot supply one. Account entry retains existing Session/CSRF requirements.
 
 After a network interruption or duplicate click, keep the same key and body for
-the original intent. The same immutable `receipt` is returned, while the outer
-`execution_status` may reflect subsequent progress. Changing the body with the
+the original intent. The original `receipt` retains its ID and request identity.
+Cooperative cancellation result fields converge in place at the actual terminal
+transition; the outer `execution_status` may also reflect subsequent progress. Changing the body with the
 same key returns `409`. Refresh after a state conflict; generate a new key only
 for an explicitly new disposition intent.
 
