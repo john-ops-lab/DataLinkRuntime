@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -1085,6 +1086,7 @@ def capture_files(
     material_roots: dict[str, Path] | None = None,
     expected_uid: int | None = None,
     credential_hashes: dict[int, dict[str, str | None]] | None = None,
+    attempt_statuses: dict[int, str] | None = None,
 ) -> dict[str, Any]:
     _validate_directory(
         runtime_root,
@@ -1139,6 +1141,66 @@ def capture_files(
         }
         for name, path in sorted((material_roots or {}).items())
     }
+    journal_facts = _journal_facts(
+        runtime_root, journal_root, expected_uid, credential_hashes
+    )
+    associated_attempts = {
+        item["attempt_id"]
+        for name in ("cleanup", "attempt", "sandbox_recovery")
+        for item in journal_facts[name]
+        if type(item.get("attempt_id")) is int
+    }
+    workspace_device = workspaces.lstat().st_dev
+    empty_attempt_shells = []
+    for child in sorted(workspaces.iterdir(), key=lambda item: item.name):
+        match = re.fullmatch(r"attempt-([1-9][0-9]*)", child.name)
+        if match is None:
+            continue
+        before = child.lstat()
+        children = list(child.iterdir())
+        after = child.lstat()
+        stable = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_uid,
+            before.st_gid,
+            before.st_mtime_ns,
+        ) == (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_uid,
+            after.st_gid,
+            after.st_mtime_ns,
+        )
+        if children:
+            continue
+        attempt_id = int(match.group(1))
+        if (
+            not stable
+            or stat.S_ISLNK(before.st_mode)
+            or not stat.S_ISDIR(before.st_mode)
+            or stat.S_IMODE(before.st_mode) != 0o700
+            or before.st_dev != workspace_device
+            or (expected_uid is not None and before.st_uid != expected_uid)
+            or attempt_id in associated_attempts
+        ):
+            raise CarryForwardError("workspace_identity_invalid")
+        status = (attempt_statuses or {}).get(attempt_id)
+        if status is not None and status not in TERMINAL_ATTEMPTS:
+            raise CarryForwardError("attempt_state_unknown")
+        empty_attempt_shells.append(
+            {
+                "attempt_id": attempt_id,
+                "classification": (
+                    "terminal_attempt_empty_shell"
+                    if status is not None
+                    else "owned_empty_shell_without_db_row"
+                ),
+            }
+        )
+    empty_attempt_shells.sort(key=lambda item: item["attempt_id"])
     return {
         "runtime": {
             "root": _root_identity(runtime_root),
@@ -1151,9 +1213,8 @@ def capture_files(
             "digest": digest(journal),
         },
         "materials": materials,
-        "journal_facts": _journal_facts(
-            runtime_root, journal_root, expected_uid, credential_hashes
-        ),
+        "journal_facts": journal_facts,
+        "empty_attempt_shells": empty_attempt_shells,
     }
 
 
@@ -1165,8 +1226,11 @@ def validate_file_responsibilities(
     runtime_paths = set(runtime_entries)
     journal_paths = {entry["path"] for entry in evidence["journal"]["entries"]}
     if any(
+        entry.get("type") == "symlink" for entry in evidence["journal"]["entries"]
+    ) or any(
         entry.get("type") == "symlink"
-        for entry in evidence["runtime"]["entries"] + evidence["journal"]["entries"]
+        and not entry.get("path", "").startswith("version-cache/entries/")
+        for entry in evidence["runtime"]["entries"]
     ):
         raise CarryForwardError("responsibility_symlink_rejected")
     cleanup_facts = evidence.get("journal_facts", {}).get("cleanup", [])
@@ -1183,6 +1247,29 @@ def validate_file_responsibilities(
         for attempt_id in item.get("deferred_attempt_ids", [])
     }
     recovery_facts = evidence.get("journal_facts", {}).get("sandbox_recovery", [])
+    empty_shells = evidence.get("empty_attempt_shells")
+    if not isinstance(empty_shells, list) or any(
+        not isinstance(item, dict)
+        or set(item) != {"attempt_id", "classification"}
+        or type(item["attempt_id"]) is not int
+        or item["attempt_id"] <= 0
+        or item["classification"]
+        not in {"terminal_attempt_empty_shell", "owned_empty_shell_without_db_row"}
+        for item in empty_shells
+    ):
+        raise CarryForwardError("workspace_identity_invalid")
+    empty_shell_ids = [item["attempt_id"] for item in empty_shells]
+    if empty_shell_ids != sorted(set(empty_shell_ids)):
+        raise CarryForwardError("workspace_identity_invalid")
+    captured_empty_ids = {
+        int(match.group(1))
+        for path, entry in runtime_entries.items()
+        if (match := re.fullmatch(r"workspaces/attempt-([1-9][0-9]*)", path))
+        and entry.get("type") == "directory"
+        and not any(other.startswith(f"{path}/") for other in runtime_paths)
+    }
+    if captured_empty_ids != set(empty_shell_ids):
+        raise CarryForwardError("workspace_identity_invalid")
     retired_preflight_names = {
         marker["cgroup_name"]
         for marker in recovery_facts
@@ -1372,16 +1459,30 @@ def _read_text(path: Path) -> str:
         raise CarryForwardError("kernel_read_failed") from error
 
 
-def _mountinfo(path: Path) -> list[dict[str, str]]:
+def _mountinfo(
+    path: Path,
+    *,
+    budget: dict[str, int] | None = None,
+    deadline: float | None = None,
+) -> list[dict[str, str]]:
     def decode(value: str) -> str:
         return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
 
+    if deadline is not None and time.monotonic() > deadline:
+        raise CarryForwardError("kernel_inventory_limit")
     try:
-        raw = path.read_text()
+        raw_bytes = path.read_bytes()
+        raw = raw_bytes.decode()
     except OSError as error:
         raise CarryForwardError("kernel_identity_unknown") from error
-    if len(raw.encode()) > 8 * 1024 * 1024:
+    except UnicodeError as error:
+        raise CarryForwardError("kernel_identity_unknown") from error
+    if len(raw_bytes) > 8 * 1024 * 1024:
         raise CarryForwardError("kernel_inventory_limit")
+    if budget is not None:
+        budget["mountinfo_bytes"] = budget.get("mountinfo_bytes", 0) + len(raw_bytes)
+        if budget["mountinfo_bytes"] > 128 * 1024 * 1024:
+            raise CarryForwardError("kernel_inventory_limit")
     result = []
     for line in raw.splitlines():
         fields = line.split()
@@ -1393,6 +1494,7 @@ def _mountinfo(path: Path) -> list[dict[str, str]]:
                     "root": decode(fields[3]),
                     "mountpoint": decode(fields[4]),
                     "filesystem": fields[separator + 1],
+                    "source": decode(fields[separator + 2]),
                 }
             )
         except (ValueError, IndexError) as error:
@@ -1411,6 +1513,50 @@ def _docker_text(arguments: list[str]) -> str:
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError) as error:
         raise CarryForwardError("kernel_identity_unknown") from error
+
+
+def _worker_runtime_config(config: Any) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        raise CarryForwardError("kernel_identity_unknown")
+    environment = config.get("Env")
+    if not isinstance(environment, list) or not all(
+        isinstance(item, str) and "=" in item for item in environment
+    ):
+        raise CarryForwardError("kernel_identity_unknown")
+    values = dict(item.split("=", 1) for item in environment)
+    runtime = values.get("DLR_RUNTIME_ROOT", "/var/lib/dlr/runtime")
+    result = {
+        "user": config.get("User") or "0",
+        "runtime_root": runtime,
+        "journal_root": values.get(
+            "DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", "/var/lib/dlr/journal"
+        ),
+        "attempt_journal_root": values.get(
+            "DLR_ATTEMPT_JOURNAL_ROOT", f"{runtime}/attempt-journal"
+        ),
+        "cgroup_path": values.get("DLR_SANDBOX_CGROUP_PATH"),
+    }
+    if result != {
+        "user": result["user"],
+        "runtime_root": "/var/lib/dlr/runtime",
+        "journal_root": "/var/lib/dlr/journal",
+        "attempt_journal_root": "/var/lib/dlr/runtime/attempt-journal",
+        "cgroup_path": "/run/dlr-cgroup",
+    } or not re.fullmatch(r"[0-9]+(?::[0-9]+)?", result["user"]):
+        raise CarryForwardError("kernel_identity_unknown")
+    return result
+
+
+def _delegated_worker_root(cgroup: str, control_group: str) -> Path:
+    cgroup_path = Path(cgroup.removeprefix("0::"))
+    parent_path = Path(control_group)
+    try:
+        delegated = cgroup_path.relative_to(parent_path)
+    except ValueError as error:
+        raise CarryForwardError("kernel_identity_unknown") from error
+    if len(delegated.parts) != 2 or delegated.parts[-1] != "agent":
+        raise CarryForwardError("kernel_identity_unknown")
+    return Path("/sys/fs/cgroup").joinpath(*parent_path.parts[1:], delegated.parts[0])
 
 
 def _worker_authority(
@@ -1450,6 +1596,16 @@ def _worker_authority(
         ),
     }
     try:
+        runtime_config = _worker_runtime_config(
+            json.loads(
+                _docker_text(
+                    ["docker", "inspect", container, "--format", "{{json .Config}}"]
+                )
+            )
+        )
+    except json.JSONDecodeError as error:
+        raise CarryForwardError("kernel_identity_unknown") from error
+    try:
         pid = int(pid_text)
     except ValueError as error:
         raise CarryForwardError("kernel_identity_unknown") from error
@@ -1463,12 +1619,16 @@ def _worker_authority(
         or not cgroup.endswith("/agent")
     ):
         raise CarryForwardError("kernel_identity_unknown")
-    worker_root = Path("/sys/fs/cgroup") / cgroup.removeprefix("0::").removesuffix(
-        "/agent"
-    )
+    worker_root = _delegated_worker_root(cgroup, control_group)
     worker_root_info = worker_root.lstat()
     parent = Path("/sys/fs/cgroup") / control_group.removeprefix("/")
     parent_info = parent.lstat()
+    process_cgroup_info = Path(f"/proc/{pid}/root/sys/fs/cgroup").lstat()
+    if (worker_root_info.st_dev, worker_root_info.st_ino) != (
+        process_cgroup_info.st_dev,
+        process_cgroup_info.st_ino,
+    ):
+        raise CarryForwardError("kernel_identity_unknown")
     volume_identities: dict[str, Any] = {}
     mounts = _mountinfo(Path(f"/proc/{pid}/mountinfo"))
     for name, volume, target in (
@@ -1505,11 +1665,31 @@ def _worker_authority(
         "root_device": worker_root_info.st_dev,
         "root_inode": worker_root_info.st_ino,
         "labels": labels,
+        "runtime_config": runtime_config,
         "volumes": volume_identities,
     }
     if _read_text(Path(f"/proc/{pid}/stat")).split()[21] != stat_fields[21]:
         raise CarryForwardError("kernel_identity_unknown")
     return authority
+
+
+def _mount_root_contains(root: str, candidate: str) -> bool:
+    try:
+        Path(candidate).relative_to(Path(root))
+    except ValueError:
+        return False
+    return True
+
+
+def _selected_mount_matches(
+    mount: dict[str, str], targets: set[tuple[str, str, str]]
+) -> bool:
+    return any(
+        mount["filesystem"] == filesystem
+        and mount["major_minor"] == major_minor
+        and _mount_root_contains(root, mount["root"])
+        for filesystem, major_minor, root in targets
+    )
 
 
 def _related_mount_namespaces(authority: dict[str, Any]) -> dict[str, Any]:
@@ -1521,53 +1701,168 @@ def _related_mount_namespaces(authority: dict[str, Any]) -> dict[str, Any]:
         )
         for item in authority["volumes"].values()
     }
+    old_namespaces = {
+        authority.get("mount_namespace"),
+        authority.get("cgroup_namespace"),
+    }
+    if None in old_namespaces or not all(
+        isinstance(value, str)
+        and re.fullmatch(r"(?:mnt|cgroup):\[[1-9][0-9]*\]", value)
+        for value in old_namespaces
+    ):
+        raise CarryForwardError("kernel_identity_unknown")
     proc = Path("/proc")
-    pids = sorted(int(path.name) for path in proc.iterdir() if path.name.isdigit())
-    if len(pids) > 8192:
-        raise CarryForwardError("kernel_inventory_limit")
-    seen: set[str] = set()
-    related: list[dict[str, Any]] = []
-    total_bytes = 0
+    deadline = time.monotonic() + 20
+    budget = {"mountinfo_bytes": 0, "fd_entries": 0}
+    try:
+        pids = sorted(int(path.name) for path in proc.iterdir() if path.name.isdigit())
+    except OSError as error:
+        raise CarryForwardError("kernel_identity_unknown") from error
+    tasks: list[tuple[int, int, Path]] = []
     for pid in pids:
-        namespace_path = proc / str(pid) / "ns/mnt"
+        if time.monotonic() > deadline:
+            raise CarryForwardError("kernel_inventory_limit")
+        process = proc / str(pid)
+        tasks.append((pid, pid, process))
+        task_root = proc / str(pid) / "task"
         try:
-            namespace = os.readlink(namespace_path)
+            tids = sorted(
+                int(path.name) for path in task_root.iterdir() if path.name.isdigit()
+            )
+        except FileNotFoundError:
+            tids = []
+        except OSError as error:
+            if process.exists():
+                raise CarryForwardError("kernel_identity_unknown") from error
+            continue
+        tasks.extend((pid, tid, task_root / str(tid)) for tid in tids if tid != pid)
+        if len(tasks) > 8192:
+            raise CarryForwardError("kernel_inventory_limit")
+
+    representatives: dict[str, tuple[int, int, Path]] = {}
+    task_namespaces: dict[tuple[int, int], tuple[str, str]] = {}
+    for pid, tid, task in tasks:
+        if time.monotonic() > deadline:
+            raise CarryForwardError("kernel_inventory_limit")
+        try:
+            mount_namespace = os.readlink(task / "ns/mnt")
+            cgroup_namespace = os.readlink(task / "ns/cgroup")
         except FileNotFoundError:
             continue
         except OSError as error:
-            if (proc / str(pid)).exists():
+            if task.exists():
                 raise CarryForwardError("kernel_identity_unknown") from error
             continue
-        if namespace in seen:
-            continue
-        seen.add(namespace)
-        if len(seen) > 2048:
+        if not re.fullmatch(
+            r"mnt:\[[1-9][0-9]*\]", mount_namespace
+        ) or not re.fullmatch(r"cgroup:\[[1-9][0-9]*\]", cgroup_namespace):
+            raise CarryForwardError("kernel_identity_unknown")
+        representatives.setdefault(mount_namespace, (pid, tid, task))
+        task_namespaces[(pid, tid)] = (mount_namespace, cgroup_namespace)
+        if len(representatives) > 2048:
             raise CarryForwardError("kernel_inventory_limit")
-        mountinfo_path = proc / str(pid) / "mountinfo"
+
+    member_namespaces = {
+        namespace for namespaces in task_namespaces.values() for namespace in namespaces
+    }
+
+    related: list[dict[str, Any]] = []
+    namespace_pins: list[dict[str, Any]] = []
+    unknown_pins: list[dict[str, Any]] = []
+    for namespace, (pid, tid, task) in sorted(representatives.items()):
         try:
-            total_bytes += mountinfo_path.stat().st_size
-        except FileNotFoundError:
-            continue
-        if total_bytes > 128 * 1024 * 1024:
-            raise CarryForwardError("kernel_inventory_limit")
-        matches = [
-            item
-            for item in _mountinfo(mountinfo_path)
-            if (item["filesystem"], item["major_minor"], item["root"]) in targets
-        ]
+            mounts = _mountinfo(task / "mountinfo", budget=budget, deadline=deadline)
+        except CarryForwardError:
+            if not task.exists():
+                continue
+            raise
+        matches = [item for item in mounts if _selected_mount_matches(item, targets)]
         if matches:
             related.append(
                 {
                     "namespace": namespace,
-                    "pid": pid,
-                    "pid_starttime": _read_text(proc / str(pid) / "stat").split()[21],
                     "mounts_digest": digest(matches),
                 }
             )
+        for item in mounts:
+            if item.get("filesystem") != "nsfs":
+                continue
+            pinned = {
+                value
+                for value in (item.get("root"), item.get("source"))
+                if isinstance(value, str)
+                and re.fullmatch(r"(?:mnt|cgroup):\[[1-9][0-9]*\]", value)
+            }
+            for value in sorted(pinned):
+                record = {
+                    "kind": "nsfs",
+                    "owner_mount_namespace": namespace,
+                    "pinned": value,
+                    "mountpoint_digest": digest(item.get("mountpoint")),
+                }
+                if value in old_namespaces:
+                    namespace_pins.append(record)
+                elif value not in member_namespaces:
+                    unknown_pins.append(record)
+
+    fd_pins: list[dict[str, Any]] = []
+    for pid, tid, task in tasks:
+        if (pid, tid) not in task_namespaces:
+            continue
+        if time.monotonic() > deadline:
+            raise CarryForwardError("kernel_inventory_limit")
+        fd_root = task / "fd"
+        try:
+            descriptors = sorted(fd_root.iterdir(), key=lambda path: path.name)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            if task.exists():
+                raise CarryForwardError("kernel_identity_unknown") from error
+            continue
+        budget["fd_entries"] += len(descriptors)
+        if budget["fd_entries"] > 65536:
+            raise CarryForwardError("kernel_inventory_limit")
+        for descriptor in descriptors:
+            if time.monotonic() > deadline:
+                raise CarryForwardError("kernel_inventory_limit")
+            try:
+                target = os.readlink(descriptor)
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                if task.exists():
+                    raise CarryForwardError("kernel_identity_unknown") from error
+                continue
+            if not re.fullmatch(r"(?:mnt|cgroup):\[[1-9][0-9]*\]", target):
+                continue
+            if target in old_namespaces or target not in member_namespaces:
+                mount_namespace, cgroup_namespace = task_namespaces[(pid, tid)]
+                record = {
+                    "kind": "fd",
+                    "owner_mount_namespace": mount_namespace,
+                    "owner_cgroup_namespace": cgroup_namespace,
+                    "pinned": target,
+                }
+                if target in old_namespaces:
+                    fd_pins.append(record)
+                else:
+                    unknown_pins.append(record)
+
+    if unknown_pins:
+        raise CarryForwardError("kernel_identity_unknown")
+
+    related = sorted(related, key=lambda item: item["namespace"])
+    pins = sorted([*namespace_pins, *fd_pins], key=lambda item: canonical_bytes(item))
+    target = {"related": related, "pins": pins}
     return {
-        "namespace_count": len(seen),
+        "task_count": len(task_namespaces),
+        "namespace_count": len(representatives),
+        "mountinfo_bytes": budget["mountinfo_bytes"],
+        "fd_entries": budget["fd_entries"],
         "related_count": len(related),
-        "related_digest": digest(related),
+        "pin_count": len(pins),
+        "target_digest": digest(target),
     }
 
 
@@ -1760,11 +2055,14 @@ def capture_kernel(
             raise CarryForwardError("kernel_identity_unknown")
         first = _related_mount_namespaces(authority)
         second = _related_mount_namespaces(authority)
-        if first != second:
+        stable_keys = ("related_count", "pin_count", "target_digest")
+        if any(first.get(key) != second.get(key) for key in stable_keys):
             raise CarryForwardError("kernel_identity_unknown")
         if first["related_count"]:
             raise CarryForwardError("kernel_namespace_active")
-        namespace_evidence = first
+        if first["pin_count"]:
+            raise CarryForwardError("kernel_namespace_active")
+        namespace_evidence = second
         boot_id = _read_text(Path("/proc/sys/kernel/random/boot_id"))
         retired_markers = validate_retired_markers(
             recovery_markers or [],
@@ -1817,7 +2115,12 @@ def compare_kernel(before: dict[str, Any], after: dict[str, Any]) -> None:
     if before.get("old_worker_authority") != after.get("old_worker_authority"):
         raise CarryForwardError("kernel_identity_unknown")
     namespace = after.get("namespace_evidence")
-    if not isinstance(namespace, dict) or namespace.get("related_count") != 0:
+    if (
+        not isinstance(namespace, dict)
+        or namespace.get("related_count") != 0
+        or namespace.get("pin_count") != 0
+        or not isinstance(namespace.get("target_digest"), str)
+    ):
         raise CarryForwardError("kernel_namespace_active")
 
 
@@ -1855,6 +2158,44 @@ def validate_schema_inventory(
         raise CarryForwardError("candidate_seed_invalid")
 
 
+def validate_storage_identity(storage: Any) -> list[dict[str, Any]]:
+    if not isinstance(storage, list):
+        raise CarryForwardError("storage_identity_invalid")
+    identities: list[dict[str, Any]] = []
+    for item in storage:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"service", "type", "source", "destination", "read_only"}
+            or item["type"] not in {"volume", "bind", "tmpfs"}
+            or not isinstance(item["service"], str)
+            or not isinstance(item["source"], str)
+            or not isinstance(item["destination"], str)
+            or not item["destination"].startswith("/")
+            or type(item["read_only"]) is not bool
+            or (item["type"] != "tmpfs" and not item["source"])
+        ):
+            raise CarryForwardError("storage_identity_invalid")
+        identities.append(item)
+    keys = [(item["service"], item["destination"]) for item in identities]
+    if len(keys) != len(set(keys)):
+        raise CarryForwardError("storage_identity_invalid")
+    for protected in (item for item in identities if item["type"] == "volume"):
+        root = Path(protected["destination"])
+        for item in identities:
+            if item["service"] != protected["service"] or item is protected:
+                continue
+            candidate = Path(item["destination"])
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                try:
+                    root.relative_to(candidate)
+                except ValueError:
+                    continue
+            raise CarryForwardError("storage_identity_shadowed")
+    return sorted(identities, key=lambda item: (item["service"], item["destination"]))
+
+
 def inspect_database(
     selection: dict[str, Any],
     baseline_projection: dict[str, Any] | None = None,
@@ -1862,6 +2203,7 @@ def inspect_database(
     baseline_schema_inventory: dict[str, Any] | None = None,
     from_revision: str | None = None,
     to_revision: str | None = None,
+    schema_phase: str | None = None,
 ) -> dict[str, Any]:
     try:
         from sqlalchemy import create_engine, inspect, text
@@ -1901,31 +2243,37 @@ def inspect_database(
                 or baseline_tables != sorted(set(baseline_tables))
                 or from_revision is None
                 or to_revision is None
-                or revision != to_revision
+                or schema_phase not in {"before", "after"}
             ):
                 raise CarryForwardError("schema_inventory_invalid")
-            cursor_rows = (
-                [
-                    tuple(row)
-                    for row in connection.execute(
-                        text(
-                            "SELECT name, after_id, upper_id "
-                            "FROM runtime_reconciliation_cursors ORDER BY name"
+            if schema_phase == "before":
+                if revision != from_revision or existing != set(baseline_tables):
+                    raise CarryForwardError("schema_inventory_invalid")
+            else:
+                if revision != to_revision:
+                    raise CarryForwardError("schema_inventory_invalid")
+                cursor_rows = (
+                    [
+                        tuple(row)
+                        for row in connection.execute(
+                            text(
+                                "SELECT name, after_id, upper_id "
+                                "FROM runtime_reconciliation_cursors ORDER BY name"
+                            )
                         )
-                    )
-                ]
-                if "runtime_reconciliation_cursors" in existing
-                and "runtime_reconciliation_cursors" not in set(baseline_tables)
-                else []
-            )
-            validate_schema_inventory(
-                from_revision,
-                to_revision,
-                set(baseline_tables),
-                existing,
-                candidate_counts,
-                cursor_rows,
-            )
+                    ]
+                    if "runtime_reconciliation_cursors" in existing
+                    and "runtime_reconciliation_cursors" not in set(baseline_tables)
+                    else []
+                )
+                validate_schema_inventory(
+                    from_revision,
+                    to_revision,
+                    set(baseline_tables),
+                    existing,
+                    candidate_counts,
+                    cursor_rows,
+                )
         for name in RESPONSIBILITY_TABLES:
             if name not in existing:
                 raise CarryForwardError("schema_table_missing")
@@ -1967,11 +2315,15 @@ def inspect_database(
         }
         for row in tables["execution_attempts"]["rows"]
     }
+    attempt_statuses = {
+        row["id"]: row["status"] for row in tables["execution_attempts"]["rows"]
+    }
     return {
         "projection": projection,
         "responsibilities": responsibilities,
         "schema_inventory": {"tables": sorted(existing)},
         "_credential_hashes": credential_hashes,
+        "_attempt_statuses": attempt_statuses,
     }
 
 
@@ -2040,6 +2392,7 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         ):
             raise CarryForwardError("manifest_schema_invalid")
     normalize_selection(value["selection"])
+    validate_storage_identity(value["storage_identity"])
     validate_projection_evidence(value["old_runtime_projection"])
     inventory = value["schema_inventory"]
     if (
@@ -2082,8 +2435,10 @@ def _command_check_db(args: argparse.Namespace) -> dict[str, Any]:
         else None,
         from_revision=baseline.get("from_schema") if baseline else None,
         to_revision=baseline.get("to_schema") if baseline else None,
+        schema_phase=args.schema_phase,
     )
     result.pop("_credential_hashes", None)
+    result.pop("_attempt_statuses", None)
     if args.baseline:
         compare_projection(baseline_projection, result["projection"])
         if baseline["responsibilities"] != result["responsibilities"]:
@@ -2162,14 +2517,17 @@ def _command_capture_state(args: argparse.Namespace) -> dict[str, Any]:
         else None,
         from_revision=baseline.get("from_schema") if baseline else None,
         to_revision=baseline.get("to_schema") if baseline else None,
+        schema_phase=args.schema_phase,
     )
     credential_hashes = db.pop("_credential_hashes")
+    attempt_statuses = db.pop("_attempt_statuses")
     files = capture_files(
         args.runtime_root,
         args.journal_root,
         _material_roots(args.material_root),
         args.expected_uid,
         credential_hashes,
+        attempt_statuses,
     )
     validate_file_responsibilities(files, db["responsibilities"])
     if baseline:
@@ -2230,6 +2588,7 @@ def _command_plan(args: argparse.Namespace) -> dict[str, Any]:
     files = read_private(args.files)
     kernel = read_private(args.kernel)
     validate_file_responsibilities(files, db["responsibilities"])
+    validate_storage_identity(context.get("storage_identity"))
     workers = [
         item
         for item in context.get("old_containers", [])
@@ -2243,6 +2602,7 @@ def _command_plan(args: argparse.Namespace) -> dict[str, Any]:
             authority.get(key) != workers[0].get(key)
             for key in ("container_id", "image_id", "labels")
         )
+        or authority.get("runtime_config") != workers[0].get("runtime_config")
     ):
         raise CarryForwardError("kernel_identity_unknown")
     expected_volumes = {
@@ -2301,6 +2661,7 @@ def parser() -> argparse.ArgumentParser:
     db.add_argument("--ids", type=Path)
     db.add_argument("--output", type=Path, required=True)
     db.add_argument("--baseline", type=Path)
+    db.add_argument("--schema-phase", choices=("before", "after"))
     capture = commands.add_parser("capture")
     capture.add_argument("--runtime-root", type=Path, required=True)
     capture.add_argument("--journal-root", type=Path, required=True)
@@ -2312,6 +2673,7 @@ def parser() -> argparse.ArgumentParser:
     state = commands.add_parser("capture-state")
     state.add_argument("--ids", type=Path)
     state.add_argument("--baseline", type=Path)
+    state.add_argument("--schema-phase", choices=("before", "after"))
     state.add_argument("--runtime-root", type=Path, required=True)
     state.add_argument("--journal-root", type=Path, required=True)
     state.add_argument("--material-root", action="append", default=[])

@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import carry_forward as carry
@@ -360,9 +361,16 @@ class FileEvidenceTests(unittest.TestCase):
         self.assertNotEqual(before, after)
 
     def test_real_layout_contract_allows_cache_and_empty_attempt_shells(self):
+        cached_bin = self.runtime / "version-cache/entries/a-v/.venv/bin"
+        cached_bin.mkdir(parents=True)
+        (cached_bin / "python").symlink_to("/usr/bin/python3")
         for attempt_id in range(1, 462):
             (self.runtime / f"workspaces/attempt-{attempt_id}").mkdir(mode=0o700)
-        evidence = carry.capture_files(self.runtime, self.journal)
+        evidence = carry.capture_files(
+            self.runtime,
+            self.journal,
+            attempt_statuses={attempt_id: "succeeded" for attempt_id in range(1, 450)},
+        )
         carry.validate_file_responsibilities(
             evidence,
             {
@@ -379,6 +387,12 @@ class FileEvidenceTests(unittest.TestCase):
             "version-cache/entries",
             {entry["path"] for entry in evidence["runtime"]["entries"]},
         )
+        classifications = {
+            item["attempt_id"]: item["classification"]
+            for item in evidence["empty_attempt_shells"]
+        }
+        self.assertEqual(classifications[1], "terminal_attempt_empty_shell")
+        self.assertEqual(classifications[461], "owned_empty_shell_without_db_row")
 
     def test_trusted_roots_and_lock_types_are_closed(self):
         self.runtime.chmod(0o777)
@@ -606,6 +620,133 @@ class FileEvidenceTests(unittest.TestCase):
 
 
 class ManifestAndProjectionTests(unittest.TestCase):
+    def test_selected_mount_uses_component_bounded_volume_root(self):
+        targets = {("ext4", "8:1", "/docker/volumes/selected/_data")}
+        base = {"filesystem": "ext4", "major_minor": "8:1"}
+        self.assertTrue(
+            carry._selected_mount_matches(
+                dict(base, root="/docker/volumes/selected/_data/attempt-7"),
+                targets,
+            )
+        )
+        self.assertFalse(
+            carry._selected_mount_matches(
+                dict(base, root="/docker/volumes/selected/_data-other"),
+                targets,
+            )
+        )
+        self.assertFalse(
+            carry._selected_mount_matches(
+                dict(base, root="/docker/volumes/other/_data"), targets
+            )
+        )
+
+    def test_storage_shadow_runtime_config_and_cgroup_root_are_closed(self):
+        storage = [
+            {
+                "service": "worker",
+                "type": "volume",
+                "source": "runtime",
+                "destination": "/var/lib/dlr/runtime",
+                "read_only": False,
+            }
+        ]
+        carry.validate_storage_identity(storage)
+        shadow = dict(
+            storage[0],
+            type="bind",
+            source="/host/shadow",
+            destination="/var/lib/dlr/runtime/workspaces",
+        )
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "storage_identity_shadowed"
+        ):
+            carry.validate_storage_identity([*storage, shadow])
+        config = carry._worker_runtime_config(
+            {
+                "User": "1000:1000",
+                "Env": [
+                    "DLR_RUNTIME_ROOT=/var/lib/dlr/runtime",
+                    "DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT=/var/lib/dlr/journal",
+                    "DLR_SANDBOX_CGROUP_PATH=/run/dlr-cgroup",
+                ],
+            }
+        )
+        self.assertEqual(
+            config["attempt_journal_root"],
+            "/var/lib/dlr/runtime/attempt-journal",
+        )
+        self.assertEqual(
+            carry._delegated_worker_root(
+                "0::/system.slice/dlr.service/docker-worker/agent",
+                "/system.slice/dlr.service",
+            ),
+            Path("/sys/fs/cgroup/system.slice/dlr.service/docker-worker"),
+        )
+        with self.assertRaisesRegex(carry.CarryForwardError, "kernel_identity_unknown"):
+            carry._delegated_worker_root(
+                "0::/system.slice/dlr.service/a/b/agent",
+                "/system.slice/dlr.service",
+            )
+
+    def test_namespace_census_finds_tid_and_pins_and_rejects_unknown_pin(self):
+        authority = {
+            "mount_namespace": "mnt:[4242]",
+            "cgroup_namespace": "cgroup:[4243]",
+            "volumes": {
+                "runtime": {
+                    "mount": {
+                        "filesystem": "ext4",
+                        "major_minor": "8:1",
+                        "root": "/docker/volumes/selected-runtime/_data",
+                    }
+                }
+            },
+        }
+
+        def process(root, namespace, mountinfo, fd_target=None):
+            (root / "ns").mkdir(parents=True)
+            (root / "ns/mnt").symlink_to(namespace)
+            (root / "ns/cgroup").symlink_to("cgroup:[20]")
+            (root / "mountinfo").write_text(mountinfo)
+            (root / "fd").mkdir()
+            if fd_target:
+                (root / "fd/8").symlink_to(fd_target)
+
+        def census(*, tid_mount="", leader_mount="", fd_target=None):
+            with tempfile.TemporaryDirectory() as directory:
+                fake_proc = Path(directory) / "proc"
+                leader = fake_proc / "20"
+                process(
+                    leader,
+                    "mnt:[20]",
+                    leader_mount or "1 0 0:1 / / rw - proc proc rw\n",
+                    fd_target,
+                )
+                if tid_mount:
+                    process(leader / "task/21", "mnt:[21]", tid_mount)
+                real_path = Path
+
+                def mapped_path(value):
+                    path = real_path(value)
+                    if path == real_path("/proc"):
+                        return fake_proc
+                    return path
+
+                with mock.patch.object(carry, "Path", side_effect=mapped_path):
+                    return carry._related_mount_namespaces(authority)
+
+        selected = (
+            "1 0 8:1 /docker/volumes/selected-runtime/_data/attempt-7 "
+            "/runtime rw - ext4 /dev/sda rw\n"
+        )
+        self.assertEqual(census(tid_mount=selected)["related_count"], 1)
+        self.assertEqual(census(fd_target="mnt:[4242]")["pin_count"], 1)
+        nsfs = "1 0 0:4 mnt:[4242] /pin rw - nsfs nsfs rw\n"
+        self.assertEqual(census(leader_mount=nsfs)["pin_count"], 1)
+        with self.assertRaisesRegex(carry.CarryForwardError, "kernel_identity_unknown"):
+            census(fd_target="mnt:[999999]")
+
     def test_retired_marker_matches_worker_namespace_rules(self):
         marker = {
             "cgroup_name": "attempt-9-13",
@@ -737,7 +878,7 @@ class ManifestAndProjectionTests(unittest.TestCase):
             "responsibilities": {},
             "old_runtime_projection": carry.project_rows(tables([queued_execution()])),
             "schema_inventory": {"tables": sorted(carry.RESPONSIBILITY_TABLES)},
-            "storage_identity": {},
+            "storage_identity": [],
             "old_containers": [],
             "file_evidence": {},
             "kernel_evidence": {},
@@ -787,7 +928,11 @@ class ManifestAndProjectionTests(unittest.TestCase):
         after = dict(
             baseline,
             children={"agent": baseline["children"]["agent"]},
-            namespace_evidence={"related_count": 0},
+            namespace_evidence={
+                "related_count": 0,
+                "pin_count": 0,
+                "target_digest": "f" * 64,
+            },
         )
         carry.compare_kernel(baseline, after)
         for name in ("unknown", "agent/hidden", "attempt-7-9"):

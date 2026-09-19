@@ -458,12 +458,28 @@ def plan_carry_forward(to_sha, ids_file, output):
             or not re.fullmatch(r"[0-9a-f]{64}", container_id)
         ):
             raise RuntimeError("Old container identity is not closed")
+        runtime_config = None
+        if service == "worker":
+            raw_config = json.loads(
+                vm_command(
+                    "docker",
+                    "inspect",
+                    container(service),
+                    "--format",
+                    "{{json .Config}}",
+                ).stdout
+            )
+            try:
+                runtime_config = carry_forward._worker_runtime_config(raw_config)
+            except carry_forward.CarryForwardError as error:
+                raise RuntimeError("Worker runtime config is not closed") from error
         old_containers.append(
             {
                 "service": service,
                 "container_id": container_id,
                 "image_id": image_id,
                 "labels": labels,
+                **({"runtime_config": runtime_config} if runtime_config else {}),
             }
         )
         mounts = json.loads(
@@ -510,6 +526,10 @@ def plan_carry_forward(to_sha, ids_file, output):
         )
     ):
         raise RuntimeError("Worker storage identity is not closed")
+    try:
+        storage = carry_forward.validate_storage_identity(storage)
+    except carry_forward.CarryForwardError as error:
+        raise RuntimeError("Worker storage identity is shadowed") from error
     manifest_id = uuid.uuid4().hex
     work_relative = f"carry-forward/work/{manifest_id}"
     context = {

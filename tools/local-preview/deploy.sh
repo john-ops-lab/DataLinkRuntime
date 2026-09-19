@@ -344,8 +344,14 @@ for service in ('postgres', 'rabbitmq', 'control', 'worker'):
             ['docker','inspect',name,'--format','{{index .Config.Labels "com.docker.compose.service"}}'], text=True
         ).strip(),
     }
-    containers.append({'service':service,'container_id':container_id,
-                       'image_id':image_id,'labels':labels})
+    container = {'service':service,'container_id':container_id,
+                 'image_id':image_id,'labels':labels}
+    if service == 'worker':
+        raw_config = json.loads(subprocess.check_output(
+            ['docker','inspect',name,'--format','{{json .Config}}'], text=True
+        ))
+        container['runtime_config'] = module._worker_runtime_config(raw_config)
+    containers.append(container)
     mounts = json.loads(subprocess.check_output(
         ['docker','inspect',name,'--format','{{json .Mounts}}'], text=True
     ))
@@ -358,6 +364,7 @@ for service in ('postgres', 'rabbitmq', 'control', 'worker'):
     )
 actual.sort(key=lambda item:(item['service'], item['destination']))
 containers.sort(key=lambda item:item['service'])
+module.validate_storage_identity(actual)
 assert manifest['storage_identity'] == actual
 assert manifest['old_containers'] == containers
 old_images = json.loads(pathlib.Path(old_images_path).read_text())
@@ -374,6 +381,24 @@ config = json.loads(subprocess.check_output([
     '-f',str(release/'docker-compose.yml'),'-f',str(release/'compose.preview.json'),
     'config','--format','json',
 ], text=True))
+worker_config = config['services']['worker']
+worker_environment = worker_config.get('environment', {})
+assert isinstance(worker_environment, dict)
+worker_images = [image for tag,image in manifest['candidate_image_ids'].items()
+                 if tag.endswith(f"-worker:{manifest['to_sha']}")]
+assert len(worker_images) == 1
+worker_image_config = json.loads(subprocess.check_output(
+    ['docker','image','inspect',worker_images[0],'--format','{{json .Config}}'], text=True
+))
+image_environment = dict(item.split('=',1) for item in worker_image_config.get('Env', []) if '=' in item)
+image_environment.update(worker_environment)
+candidate_runtime_config = module._worker_runtime_config({
+    'User': worker_config.get('user') or worker_image_config.get('User') or '0',
+    'Env': [f'{key}={value}' for key,value in image_environment.items()],
+})
+manifest_worker = [item for item in manifest['old_containers'] if item['service'] == 'worker']
+assert len(manifest_worker) == 1
+assert candidate_runtime_config == manifest_worker[0]['runtime_config']
 candidate = []
 declared = config.get('volumes', {})
 for service in ('postgres', 'rabbitmq', 'control', 'worker'):
@@ -394,11 +419,13 @@ for service in ('postgres', 'rabbitmq', 'control', 'worker'):
             'destination':item.get('target'),'read_only':bool(item.get('read_only',False))
         })
 candidate.sort(key=lambda item:(item['service'], item['destination']))
+module.validate_storage_identity(candidate)
 assert candidate == manifest['storage_identity']
 PY
     carry_check="$root/carry-forward/check/$carry_id"
     install -d -m 700 "$carry_check/preflight"
     carry_state "$carry_check/preflight" --baseline /evidence/manifest.json \
+      --schema-phase before \
       --db-output /evidence/db.json --files-output /evidence/files.json
   fi
   # Delay while queued/running/retrying work or unfinished cleanup exists.
@@ -423,6 +450,7 @@ PY
     install -d -m 700 "$carry_check/control-stopped"
     if ! carry_state "$carry_check/control-stopped" \
       --baseline /evidence/manifest.json \
+      --schema-phase before \
       --db-output /evidence/db.json --files-output /evidence/files.json \
       > "$carry_check/control-stopped/stdout.jsonl" \
       2> "$carry_check/control-stopped/stderr.jsonl"; then
@@ -448,6 +476,7 @@ PY
     install -d -m 700 "$carry_check/stopped"
     if ! carry_state "$carry_check/stopped" \
       --baseline /evidence/manifest.json \
+      --schema-phase before \
       --db-output /evidence/db.json --files-output /evidence/files.json \
       > "$carry_check/stopped/db-stdout.jsonl" \
       2> "$carry_check/stopped/db-stderr.jsonl"; then
@@ -468,6 +497,7 @@ PY
   if [ -n "$carry_manifest" ]; then
     install -d -m 700 "$carry_check/after-backup"
     carry_state "$carry_check/after-backup" --baseline /evidence/manifest.json \
+      --schema-phase before \
       --db-output /evidence/db.json --files-output /evidence/files.json
     python3 "$root/carry_forward.py" check-kernel \
       --unit "$sandbox_unit" --expected-description "$sandbox_description" \
@@ -482,6 +512,7 @@ PY
   if [ -n "$carry_manifest" ]; then
     install -d -m 700 "$carry_check/after-migration"
     carry_state "$carry_check/after-migration" --baseline /evidence/manifest.json \
+      --schema-phase after \
       --db-output /evidence/db.json --files-output /evidence/files.json
     python3 "$root/carry_forward.py" check-kernel \
       --unit "$sandbox_unit" --expected-description "$sandbox_description" \
