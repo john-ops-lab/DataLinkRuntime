@@ -789,7 +789,6 @@ export default function ExecutionHistoryPanel(props: {
                                       disabled={!incident.recover_available}
                                       loading={dispositionLoading === recoverOperation}
                                       title={incidentReasonLabel(incident.recover_reason, (key, options) => t(key, options))}
-                                      onClickCapture={() => setConfirmingDisposition(recoverOperation)}
                                     >
                                       {t("history.recoverExecution")}
                                     </Button>
@@ -825,7 +824,6 @@ export default function ExecutionHistoryPanel(props: {
                                       disabled={!incident.terminate_available}
                                       loading={dispositionLoading === terminateOperation}
                                       title={incidentReasonLabel(incident.terminate_reason, (key, options) => t(key, options))}
-                                      onClickCapture={() => setConfirmingDisposition(terminateOperation)}
                                     >
                                       {terminateLabel}
                                     </Button>
