@@ -73,6 +73,19 @@ docker compose ps
 Alembic `0026`～`0029` 的 `downgrade()` 仅供隔离测试清理，生产回滚禁止调用，
 因为它会丢弃输入权威事实或 Execution 快照。
 
+### 默认开启与升级
+
+新部署或未设置 `DLR_MANAGED_FILES_ENABLED` 的升级部署默认启用 Managed Input；
+Settings、Compose fallback 与 `.env.example` 均采用 `true`。升级不会改写已有 `.env`
+或外部环境变量，因此原来显式设置为 `false` 的部署继续保持关闭。启用前应确认
+ArtifactStore 使用持久卷、当前 Worker 协议和清理链路已就绪；随后重新创建受影响服务，
+读取 capability，并用真实文件执行核对文件名、大小、哈希和内容。`ready=true` 只证明
+配置入口就绪，不能替代真实 Worker 读取。
+
+若要从显式关闭切换为开启，设置 `DLR_MANAGED_FILES_ENABLED=true` 后重新创建
+Control、Worker 与两个 Web 入口。若要保持关闭，继续明确设置 `false`；不要依赖旧版本的
+隐式默认值。关闭不会删除 Artifact、数据库行或历史，`none`/`json` 输入继续遵守原合同。
+
 ## 非破坏回滚演练
 
 回滚是部署回滚，不是数据库降级。先冻结新增 managed upload 和新 managed

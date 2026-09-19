@@ -88,6 +88,24 @@ Alembic `0026` through `0029` `downgrade()` functions are test-only cleanup
 paths. Production rollback must not invoke them because they discard input
 authority or immutable Execution snapshots.
 
+### Default enablement and upgrades
+
+Managed Input is enabled by default for new deployments and upgrades where
+`DLR_MANAGED_FILES_ENABLED` is unset. Settings, the Compose fallback, and
+`.env.example` all use `true`. An upgrade does not rewrite an existing `.env`
+file or external environment, so a deployment that explicitly sets `false`
+remains closed. Before enabling, confirm that ArtifactStore uses persistent
+storage and that the current Worker protocol and cleanup path are ready. Then
+recreate the affected services, read capability, and run a real file Execution
+that verifies filename, size, hash, and content. `ready=true` proves only that
+the configuration entry is ready; it is not a substitute for a real Worker read.
+
+To move from an explicit closure to enabled, set
+`DLR_MANAGED_FILES_ENABLED=true` and recreate Control, Worker, and both Web
+entries. To remain closed, keep an explicit `false`; do not rely on the old
+implicit default. Closing the feature does not delete Artifacts, database rows,
+or history, and `none`/`json` inputs retain their existing contract.
+
 ## Non-destructive rollback drill
 
 Rollback is a deployment rollback, not a database downgrade. First stop new
