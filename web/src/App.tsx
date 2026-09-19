@@ -2047,6 +2047,7 @@ export function AdapterConsole({
                         recordKind={selected.adapter_type === "webhook" ? "call" : "execution"}
                         autoOpenExecutionId={historyExecutionId}
                         onAutoOpenHandled={() => setHistoryExecutionId(null)}
+                        canCancel={selectedCanEdit}
                       />
                     ) : null,
                   },

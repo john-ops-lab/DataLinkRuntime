@@ -2896,6 +2896,43 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
   expect((await screen.findByTestId("detail-input")).textContent).toContain('"k": 2');
 });
 
+it.each([
+  ["read", false],
+  ["edit", true],
+] as const)("passes %s Adapter cancellation capability into execution history", async (accessLevel, canCancel) => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+    access_level: accessLevel,
+  });
+  const queued = makeExecution({ id: 71, status: "queued", started_at: null });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    readyWorkerRoute,
+    {
+      method: "GET",
+      match: /\/api\/adapters\/1\/executions\?/,
+      respond: () => ({
+        body: { items: [makeSummary({ id: 71, status: "queued" })], next_before_id: null },
+      }),
+    },
+    { method: "GET", match: "/api/executions/71", respond: () => ({ body: queued }) },
+    { method: "GET", match: "/api/executions/71/events", respond: () => ({ stream: "" }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "执行记录" }));
+  fireEvent.click(await screen.findByTestId("history-row"));
+  await screen.findByTestId("execution-run-id");
+
+  if (canCancel) {
+    expect(screen.getByTestId("execution-cancel-queued")).toBeTruthy();
+  } else {
+    expect(screen.queryByTestId("execution-cancel-queued")).toBeNull();
+  }
+});
+
 it("never shows a stale detail when executions are clicked in quick succession", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   const page = {

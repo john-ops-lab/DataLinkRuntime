@@ -41,9 +41,10 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
   };
 }
 
-function WatcherHarness(props: { initial: Execution; next?: Execution }) {
+function WatcherHarness(props: { initial: Execution; next?: Execution; candidate?: Execution }) {
   const watcher = useExecutionWatcher(() => undefined);
   const nextExecution = props.next;
+  const operationCandidate = props.candidate;
   return (
     <>
       <button type="button" data-testid="watch" onClick={() => watcher.watch(props.initial)}>
@@ -52,6 +53,15 @@ function WatcherHarness(props: { initial: Execution; next?: Execution }) {
       {nextExecution !== undefined && (
         <button type="button" data-testid="watch-next" onClick={() => watcher.watch(nextExecution)}>
           Watch next
+        </button>
+      )}
+      {operationCandidate !== undefined && (
+        <button
+          type="button"
+          data-testid="reconcile"
+          onClick={() => watcher.reconcileOperationResult(operationCandidate)}
+        >
+          Reconcile operation
         </button>
       )}
       <output data-testid="execution-status">{watcher.execution?.status ?? ""}</output>
@@ -244,5 +254,53 @@ describe("useExecutionWatcher live-log boundaries", () => {
 
     expect(screen.getByTestId("live-log").textContent).toBe(snapshot);
     expect(screen.getByTestId("live-log-server-truncated")).toBeTruthy();
+  });
+
+  it("keeps a synchronously observed terminal result when an older operation response arrives", async () => {
+    const initial = makeExecution({ status: "queued", started_at: null });
+    const terminal = makeExecution({
+      status: "succeeded",
+      stdout: "final\n",
+      ended_at: "2026-08-15T00:00:02Z",
+    });
+    const stale = makeExecution({ status: "running", stdout: "old\n" });
+    getExecution.mockResolvedValue(terminal);
+    render(<WatcherHarness initial={initial} candidate={stale} />);
+    fireEvent.click(screen.getByTestId("watch"));
+    const handlers = latestHandlers();
+
+    act(() => {
+      handlers.onExecution?.(terminal);
+      fireEvent.click(screen.getByTestId("reconcile"));
+    });
+
+    await waitFor(() => expect(getExecution).toHaveBeenCalledWith(initial.id));
+    expect(screen.getByTestId("execution-status").textContent).toBe("succeeded");
+    expect(screen.getByTestId("live-log").textContent).toBe("final\n");
+    expect(openExecutionEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows an operation response first and still converges on a later terminal event", async () => {
+    const initial = makeExecution({ status: "queued", started_at: null });
+    const running = makeExecution({ status: "running", cancel_requested: true });
+    const terminal = makeExecution({
+      status: "succeeded",
+      stdout: "final\n",
+      ended_at: "2026-08-15T00:00:02Z",
+    });
+    getExecution.mockResolvedValue(terminal);
+    render(<WatcherHarness initial={initial} candidate={running} />);
+    fireEvent.click(screen.getByTestId("watch"));
+    fireEvent.click(screen.getByTestId("reconcile"));
+    expect(openExecutionEvents).toHaveBeenCalledTimes(2);
+
+    const handlers = latestHandlers();
+    act(() => {
+      handlers.onExecution?.(terminal);
+    });
+
+    await waitFor(() => expect(screen.getByTestId("execution-status").textContent).toBe("succeeded"));
+    expect(screen.getByTestId("live-log").textContent).toBe("final\n");
+    expect(openExecutionEvents).toHaveBeenCalledTimes(2);
   });
 });

@@ -26,6 +26,8 @@ export interface ExecutionWatcher {
   fallbackExhausted: boolean;
   /** Start (or restart) watching one Execution; resets the live buffers. */
   watch: (initial: Execution) => void;
+  /** Apply an operation response without letting it replace a newer terminal result. */
+  reconcileOperationResult: (candidate: Execution) => boolean;
   /** Invalidate all in-flight events/polls and close the stream. */
   stop: () => void;
 }
@@ -40,6 +42,9 @@ function retainLiveLines(content: string): string {
 
 export function useExecutionWatcher(onError: (message: string) => void): ExecutionWatcher {
   const [execution, setExecution] = useState<Execution | null>(null);
+  // React state is asynchronous. Operation responses and SSE events use this
+  // ref to reconcile against the newest accepted result in the same tick.
+  const executionRef = useRef<Execution | null>(null);
   const [liveStdout, setLiveStdout] = useState("");
   const [liveStderr, setLiveStderr] = useState("");
   const [serverLogLineCount, setServerLogLineCount] = useState(0);
@@ -52,6 +57,7 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
   // (SSE events, terminal detail GET, fallback polls) may commit UI state, so
   // a slow response from an older Execution can never overwrite the newest.
   const generationRef = useRef(0);
+  const mountedRef = useRef(false);
   // Callers usually pass a state setter or inline closure: keep the newest
   // callback without resubscribing the stream (assignment in an effect, not
   // during render, so the lint rule stays satisfied).
@@ -75,12 +81,21 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
   }, []);
 
   // Close the stream and pending fallback polls on unmount (adapter switch).
-  useEffect(() => stop, [stop]);
+  // StrictMode replays this setup/cleanup pair, so each setup restores the
+  // live marker and each cleanup invalidates the current generation.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      stop();
+    };
+  }, [stop]);
 
   function applyDetail(generation: number, detail: Execution) {
     if (generation !== generationRef.current) {
       return; // a newer watch owns the view now
     }
+    executionRef.current = detail;
     setExecution(detail);
     setLiveStdout(retainLiveLines(detail.stdout));
     setLiveStderr(retainLiveLines(detail.stderr));
@@ -155,9 +170,13 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
   }
 
   function watch(initial: Execution) {
+    if (!mountedRef.current) {
+      return;
+    }
     generationRef.current += 1; // invalidate the previous watch's async work
     const generation = generationRef.current;
     setFallbackExhausted(false);
+    executionRef.current = initial;
     setExecution(initial);
     setLiveStdout(retainLiveLines(initial.stdout));
     setLiveStderr(retainLiveLines(initial.stderr));
@@ -179,6 +198,7 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
         // Every execution event carries the stored streams at poll time; the
         // log events between polls are deltas on top of it, so replacing the
         // buffers here keeps the live view consistent without duplicates.
+        executionRef.current = next;
         setExecution(next);
         // Status events carry the authoritative stored streams. Ignore an
         // older, shorter snapshot that could arrive after a newer log delta;
@@ -240,13 +260,14 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
         }
         // Truncation just happened server-side: reflect it immediately
         // instead of waiting for the next execution event or terminal.
-        setExecution((current) =>
-          current === null
-            ? current
-            : event.stream === "stdout"
-              ? { ...current, stdout_truncated: event.truncated }
-              : { ...current, stderr_truncated: event.truncated },
-        );
+        const current = executionRef.current;
+        if (current !== null) {
+          const next = event.stream === "stdout"
+            ? { ...current, stdout_truncated: event.truncated }
+            : { ...current, stderr_truncated: event.truncated };
+          executionRef.current = next;
+          setExecution(next);
+        }
       },
       onUnexpectedClose() {
         if (generation !== generationRef.current) {
@@ -264,6 +285,20 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
     });
   }
 
+  function reconcileOperationResult(candidate: Execution): boolean {
+    const current = executionRef.current;
+    if (
+      !mountedRef.current
+      || current === null
+      || current.id !== candidate.id
+      || isTerminal(current.status)
+    ) {
+      return false;
+    }
+    watch(candidate);
+    return true;
+  }
+
   return {
     execution,
     liveStdout,
@@ -271,6 +306,7 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
     serverLogLineCount,
     fallbackExhausted,
     watch,
+    reconcileOperationResult,
     stop,
   };
 }
