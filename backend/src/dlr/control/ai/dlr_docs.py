@@ -93,15 +93,33 @@ _JAVA_CONTRACT = """\
 The Java Adapter runtime contract:
 
 - Entry point: public Object handle(Context context, Object input).
-- context.config(): the Adapter runtime_config map.
-- context.secrets().get("ENV_KEY"): bound Credential field for the request;
+- context.config: the Adapter runtime_config map.
+- context.secrets.get("ENV_KEY"): bound Credential field for the request;
   unknown keys return null.
-- context.logger().info / warning / error write to the platform log.
+- context.logger.info / warn / error write to the platform log.
 - input is JSON-compatible (Map / List / String / Number / Boolean / null);
   the return value must be JSON-serializable.
 - A thrown Exception fails the Execution with its message (sanitized).
 - Execution output and stdout are bounded; Credential truth never enters
   output, logs or history.
+
+```java
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public class Adapter {
+    public Object handle(Context context, Object input) {
+        context.logger.info("docs info");
+        context.logger.warn("docs warn");
+        context.logger.error("docs error");
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("input", input);
+        result.put("stage", context.config.get("stage"));
+        result.put("secretPresent", context.secrets.get("DOC_TOKEN") != null);
+        return result;
+    }
+}
+```
 """
 
 _ENTRIES: tuple[DocEntry, ...] = (
@@ -306,7 +324,7 @@ _ENTRIES: tuple[DocEntry, ...] = (
         (
             "runtime_config is an arbitrary JSON object saved with each Revision. It must contain "
             "only finite JSON values (no NaN / Infinity, no duplicate keys) and is exposed to the "
-            "runtime as context.config (Python), context.config (JavaScript) or context.config() "
+            "runtime as context.config (Python), context.config (JavaScript) or context.config "
             "(Java). It is manually managed configuration: the AI Candidate must not propose "
             "runtime_config changes. Legacy Provider responses may echo it only when it exactly "
             "matches the current Working Copy; lifecycle fields such as language, adapter_type "

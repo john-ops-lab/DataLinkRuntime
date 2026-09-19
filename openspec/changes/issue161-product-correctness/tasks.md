@@ -52,8 +52,8 @@
 
 ## 9. #159：Java 文档合同
 
-- [ ] 9.1 搜索并修正Java AI文档、配置说明及相关示例的字段/日志方法，保持Runtime API不变；检索/读取结果和源码对照检查通过，其他语言不被机械替换。
-- [ ] 9.2 将文档代表性示例与真实java_runtime.SOURCE编译运行，核对config、JSON输出、info/warn/error及合成secret存在性且不泄漏；实际JDK通过并加入确定性契约回归，不能只测字符串。
+- [x] 9.1 搜索并修正Java AI文档、配置说明及相关示例的字段/日志方法，保持Runtime API不变；检索/读取结果和源码对照检查通过，其他语言不被机械替换。
+- [x] 9.2 将文档代表性示例与真实java_runtime.SOURCE编译运行，核对config、JSON输出、info/warn/error及合成secret存在性且不泄漏；实际JDK通过并加入确定性契约回归，不能只测字符串。
 
 ## 10. 整组交付与状态分离
 
