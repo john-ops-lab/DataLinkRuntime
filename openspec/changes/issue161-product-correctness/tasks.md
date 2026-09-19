@@ -13,7 +13,7 @@
 
 ## 3. #153 B：输出存在性
 
-- [ ] 3.1 核对 Worker/Control/ExecutionResponse 的 null、size、preview、attempt_count、started_at 来源，建立设计 D2 真值表；真实未 Claim 取消例子证明无 Attempt/无正文，历史缺失或默认元数据无法证明者归 unknown，不补写0。
+- [x] 3.1 核对 Worker/Control/ExecutionResponse 的 null、size、preview、attempt_count、started_at 来源，建立设计 D2 真值表；真实未 Claim 取消例子证明无 Attempt/无正文，历史缺失或默认元数据无法证明者归 unknown，不补写0。
 - [ ] 3.2 实现实时与历史共用的输出分类和双语中性提示；组件回归覆盖 null、false、0、空字符串/数组/对象、显式空、缺失/负数/非整数/矛盾元数据和截断优先，已有复制/下载不造 null。
 - [ ] 3.3 真实运行 JSON null 并在实时/历史验证正文；读取明确未开始执行的取消记录与历史不完整 fixture，核对 API/数据库来源和前后哈希不变，完成大输出/截断已有操作回归。
 
@@ -39,7 +39,7 @@
 ## 7. #150 B：托管文件默认开启
 
 - [ ] 7.1 统一Settings、Compose和.env.example缺省true，更新默认断言及双语启停/升级说明；无变量/true/false配置矩阵和Compose渲染通过，显式false旧配置不被覆盖。
-- [ ] 7.2 默认开启环境在真实页面完成上传、保存、运行，五语言各至少一次文件内容/元数据/哈希读取；格式覆盖XLSX/CSV/LOG/JSON，Excel与日志模板独立执行，矩阵逐格标注，不要求无依据的全笛卡尔积。
+- [ ] 7.2 默认开启环境在真实页面完成上传、保存、运行，五语言各至少一次文件内容/元数据/哈希读取；格式覆盖XLSX/CSV/LOG/JSON，实际Excel等相关模板及现有日志Adapter示例分别独立执行；随产品发布的日志模板若在精确候选catalog中不存在，按目录证据标N/A。已有实际用户日志模板仍按来源和版本验收，矩阵逐格标注，不要求无依据的全笛卡尔积。
 - [ ] 7.3 完成ArtifactStore重启持久化、配额拒绝、active Lease保护及自然到期/删除回收回归，检查历史摘要/输出保留；新增证据与原BLOCKED/失败分离，capability ready仅算配置检查。
 - [ ] 7.4 显式false环境重跑原有允许/拒绝、none/json及治理分支，证明关闭不清文件/表/历史、不扩大行为，文档所述恢复步骤与实际配置一致。
 
