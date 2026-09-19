@@ -372,6 +372,67 @@ describe("Issue #155A queued execution cancellation", () => {
   );
 
   it.each(["success", "error follow-up"] as const)(
+    "keeps live progress that arrives before a late cancellation %s snapshot",
+    async (path) => {
+      const pendingOperation = deferred<Execution>();
+      vi.spyOn(api, "listExecutions").mockResolvedValue({
+        items: [summary({ status: "queued" })],
+        next_before_id: null,
+      });
+      const queued = execution({
+        status: "queued",
+        attempt_count: 0,
+        started_at: null,
+        stdout: "",
+        stderr: "",
+      });
+      const running = execution({
+        status: "running",
+        attempt_count: 1,
+        cancel_requested: true,
+        stdout: "",
+        stderr: "",
+      });
+      const getExecution = vi.spyOn(api, "getExecution").mockResolvedValueOnce(queued);
+      if (path === "success") {
+        vi.spyOn(api, "cancelExecution").mockReturnValue(pendingOperation.promise);
+      } else {
+        getExecution.mockReturnValueOnce(pendingOperation.promise);
+        vi.spyOn(api, "cancelExecution").mockRejectedValue(
+          new ApiError(409, "incident_execution_active", "claim conflict"),
+        );
+      }
+      render(<ExecutionHistoryPanel adapterId={41} autoOpenExecutionId={71} canCancel />);
+      fireEvent.click(await screen.findByTestId("execution-cancel-queued"));
+      if (path === "error follow-up") {
+        await waitFor(() => expect(getExecution).toHaveBeenCalledTimes(2));
+      }
+
+      const handlers = firstHistoryHandlers();
+      act(() => {
+        handlers.onExecution?.({
+          ...running,
+          cancel_requested: false,
+          stdout: "accepted line\n",
+          stderr: "accepted error\n",
+        });
+        handlers.onLog?.({ stream: "stdout", chunk: "new delta\n" });
+      });
+      await act(async () => {
+        pendingOperation.resolve(running);
+        await pendingOperation.promise;
+      });
+
+      fireEvent.click(screen.getByRole("tab", { name: "执行日志" }));
+      const detailLog = screen.getByTestId("detail-log").textContent ?? "";
+      expect(detailLog).toContain("accepted line\n");
+      expect(detailLog).toContain("accepted error\n");
+      expect(screen.getByTestId("execution-cancel-pending")).toBeTruthy();
+      expect(openExecutionEvents).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["success", "error follow-up"] as const)(
     "keeps a newer terminal watcher result when an older %s result arrives",
     async (path) => {
       const pendingOperation = deferred<Execution>();

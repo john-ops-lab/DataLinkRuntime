@@ -365,6 +365,7 @@ export default function ExecutionHistoryPanel(props: {
       executionId,
       requestId: detailRequestRef.current,
       componentGeneration: componentGenerationRef.current,
+      operationEpoch: watcher.beginOperation(executionId),
     };
     if (
       !isCurrentDetailEpoch(intent.executionId, intent.requestId)
@@ -383,7 +384,7 @@ export default function ExecutionHistoryPanel(props: {
       ) {
         // The server may return cancelled, a terminal state, or running with
         // cancel_requested after a Claim race. Never invent a local state.
-        watcher.reconcileOperationResult(cancelled);
+        watcher.reconcileOperationResult(cancelled, intent.operationEpoch);
       }
     } catch (error) {
       if (
@@ -397,7 +398,7 @@ export default function ExecutionHistoryPanel(props: {
             isCurrentComponentGeneration(intent.componentGeneration)
             && isCurrentDetailEpoch(intent.executionId, intent.requestId)
           ) {
-            watcher.reconcileOperationResult(refreshed);
+            watcher.reconcileOperationResult(refreshed, intent.operationEpoch);
           }
         } catch {
           // Preserve the cancellation error; a failed follow-up read must not
