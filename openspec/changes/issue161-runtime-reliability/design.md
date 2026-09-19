@@ -151,7 +151,7 @@ GET 复用 Execution read 权限；POST 复用 business principal + `require_exe
 
 现控制器无绕过 stuck queued 的合法入口，需要作为 #152B 配套修改并独立 review。默认自动 `deploy` 空闲条件不变；新增私有、显式候选绑定的 `carry_forward` 清单/模式，仅面向本机制可向前兼容迁移。清单绑定旧 SHA、新 SHA、schema、候选 Execution/Incident IDs 与快照指纹，不能用通配符或永久设置“忽略 busy”。公开仓库仅放生成/验证器、合成 fixture 和合同。
 
-同 schema 后继只显式允许 `0040_issue152_dispositions → 0040_issue152_dispositions`，其 schema 新增集合为空，不得泛化为任意相同 revision。每个后继候选必须从当前事实生成新的 SHA/controller 绑定 manifest；未知同 revision 或未知向前路径在规划写出 manifest 前拒绝。该路径仅接受下述现有责任分类，并要求 `execution_incident_dispositions` 表存在且为空；已有 disposition 在停止任何服务前拒绝规划。既有 `runtime_reconciliation_cursors` 表及其行原样保留，不重新写入初始 seed。
+同 schema 后继只显式允许 `0040_issue152_dispositions → 0040_issue152_dispositions`，其 schema 新增集合为空，不得泛化为任意相同 revision。每个后继候选必须从当前事实生成新的 SHA/controller 绑定 manifest；未知同 revision 或未知向前路径在规划写出 manifest 前拒绝。该路径仅接受下述现有责任分类，并要求 `execution_incident_dispositions` 表存在且为空；已有 disposition 在停止任何服务前拒绝规划。既有 `runtime_reconciliation_cursors` 表保留在原 inventory 中，后继不重新执行 0039 seed；当前游标不要求等于初始 `0/0`，应用运行期间正常 reconciler 仍可推进游标。
 
 资格不是只放宽 SQL：queued 必须有关联 open infrastructure Incident、Admission 未释放、无该 Execution 的 active Attempt；禁止其他非清单 queued/retry_wait/running、任意 active Attempt/Slot。先做只读预检，停旧 Control（等待请求退出），复查无 active，再停 Worker/Web；全部停止后再次验证数据库、Slot、kernel cgroup/process、runtime/workspace 和私有 journal。出现 claim/新责任/未知残留立即 attention 或安全恢复旧服务后等待，不继续迁移。
 

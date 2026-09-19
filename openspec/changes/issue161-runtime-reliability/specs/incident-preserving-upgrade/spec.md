@@ -7,7 +7,7 @@
 ### Requirement: 显式候选绑定的责任保全升级
 默认自动部署 SHALL 保留原空闲门禁。特定 Incident 升级 MUST 使用显式、候选 SHA/schema 绑定的私有清单，仅允许登记的 queued＋open Incident、无 active Attempt/Slot 的责任；其他活动或未知状态保持阻塞。不得通过取消旧queued、清空卷、修改业务lease/终态或永久忽略busy完成升级。
 
-同 schema 后继 MUST 仅允许显式 `0040_issue152_dispositions → 0040_issue152_dispositions`，且 schema 对象集合保持完全相同；不得把任意相同 revision 视为兼容。新候选 MUST 生成新的 SHA/controller 绑定清单。规划及后续核验 MUST 要求 `execution_incident_dispositions` 表存在且为空，并原样保留既有 `runtime_reconciliation_cursors`，不得重新写入 seed。未知同 revision、未知向前路径或已有 disposition MUST 在 manifest 写出及停止服务前拒绝。
+同 schema 后继 MUST 仅允许显式 `0040_issue152_dispositions → 0040_issue152_dispositions`，且 schema 对象集合保持完全相同；不得把任意相同 revision 视为兼容。新候选 MUST 生成新的 SHA/controller 绑定清单。规划及后续核验 MUST 要求 `execution_incident_dispositions` 表存在且为空，并在原 inventory 中保留既有 `runtime_reconciliation_cursors` 表，不得重新执行 0039 seed；当前游标不要求等于初始 `0/0`，应用运行期间正常 reconciler MAY 推进游标。未知同 revision、未知向前路径或已有 disposition MUST 在 manifest 写出及停止服务前拒绝。
 
 #### Scenario: 保留旧 queued Incident
 - **WHEN** 精确候选通过原CI/历史/迁移门禁且清单资格满足
@@ -18,7 +18,7 @@
 - **THEN** 迁移不开始，安全恢复旧服务等待或保留attention，不把先前检查当作当前事实
 
 #### Scenario: 0040 同 schema 后继保持既有对象
-- **WHEN** 当前和候选 revision 均为 `0040_issue152_dispositions`，责任满足现有分类，审计表为空且 schema inventory 与 cursor 行均未改变
+- **WHEN** 当前和候选 revision 均为 `0040_issue152_dispositions`，责任满足现有分类、审计表为空且 schema inventory 未改变
 - **THEN** 使用绑定新候选的 fresh manifest 继续全部保全门禁，不新增表且不重新初始化 cursor
 
 #### Scenario: 未知 transition 或已有人工处置
