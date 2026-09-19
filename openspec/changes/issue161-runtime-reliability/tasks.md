@@ -30,10 +30,10 @@
 
 ## 5. #152 B — 原Execution人工处置独立检查点
 
-- [ ] 5.1 新增处置审计增量迁移、schema、幂等键/请求hash和独立计数；真实PostgreSQL升级保留旧Incident且不补造处置，测试唯一约束、同key重试/冲突、只读不计数和DLQ重复观测分离。
-- [ ] 5.2 实现无commit cancellation helper和事务性dispose服务，冻结统一锁顺序、终态hook与资源责任；真实并发测试证明审计/mutation原子、取消与Claim/Result/Recovery无锁反序、无重复Slot/Admission/Lease释放。
-- [ ] 5.3 实现资格与Outbox决策表：当前queued、active、cancel_requested、retry_wait、终态、旧/未来代、身份不符、missing/corrupt、pending/leased/published/settled及容量不足；每行有独立预期code/副作用断言，验证只必要时增加代次且不新建Execution。
-- [ ] 5.4 实现原冻结材料验证，覆盖JSON/null/none、managed-files原Lease与hash/size/ordinal、版本/Worker/resource/retry/builtin/credential引用；真实文件删除/GC与提交竞态测试证明不替换历史快照，未知引用拒绝且日志/响应无Secret。
+- [x] 5.1 新增处置审计增量迁移、schema、幂等键/请求hash和独立计数；真实PostgreSQL升级保留旧Incident且不补造处置，测试唯一约束、同key重试/冲突、只读不计数和DLQ重复观测分离。
+- [x] 5.2 实现无commit cancellation helper和事务性dispose服务，冻结统一锁顺序、终态hook与资源责任；真实并发测试证明审计/mutation原子、取消与Claim/Result/Recovery无锁反序、无重复Slot/Admission/Lease释放。
+- [x] 5.3 实现资格与Outbox决策表：当前queued、active、cancel_requested、retry_wait、终态、旧/未来代、身份不符、missing/corrupt、pending/leased/published/settled及容量不足；每行有独立预期code/副作用断言，验证只必要时增加代次且不新建Execution。
+- [x] 5.4 实现原冻结材料验证，覆盖JSON/null/none、managed-files原Lease与hash/size/ordinal、版本/Worker/resource/retry/builtin/credential引用；真实文件删除/GC与提交竞态测试证明不替换历史快照，未知引用拒绝且日志/响应无Secret。
 - [ ] 5.5 实现POST处置和审计分页、增量reliable-detail能力字段；API测试覆盖401/403/404、跨Adapter、伪造actor、读后被Claim/取消/终结/材料失效，后端提交重检安全拒绝或幂等反馈。
 - [ ] 5.6 在写UI前读取项目Ant Design skill并查询5.29.3对应API；在ExecutionHistoryPanel加入恢复/终结、资格原因、观测/处置计数与结果，中英文及当前权限传递；Web测试覆盖重复点击同key、409刷新原记录、active协作取消说明和键盘操作。
 - [ ] 5.7 按结构化x-death修正reason分类；测试delivery_limit/rejected/expired/maxlen、历史链、不同queue、畸形/缺失headers，真实Broker验证非delivery-limit自动流程仍按原合同运行，不新增自动delivery-limit恢复。
