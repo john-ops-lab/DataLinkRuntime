@@ -241,6 +241,25 @@ async function openIncidentHistory(page: Page) {
   await expect(page.getByRole("dialog")).toBeVisible();
 }
 
+async function tabToButton(page: Page, name: RegExp, limit = 12) {
+  const button = page.getByRole("button", { name });
+  const visited: string[] = [];
+  for (let index = 0; index < limit; index += 1) {
+    await page.keyboard.press("Tab");
+    if (await button.evaluate((element) => element === document.activeElement)) {
+      return;
+    }
+    visited.push(await page.evaluate(() => {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement)) return "none";
+      return active.getAttribute("aria-label")
+        ?? active.textContent?.replace(/\s+/g, " ").trim()
+        ?? active.tagName;
+    }));
+  }
+  throw new Error(`Popconfirm button was not keyboard reachable; visited: ${visited.join(" -> ")}`);
+}
+
 test("real Ant Design recover Popconfirm cancels without writing and confirms exactly once", async ({ page }) => {
   const { unknownRequests, dispositionRequests } = await installRoutes(page);
   await openIncidentHistory(page);
@@ -282,5 +301,51 @@ test("real Ant Design terminate Popconfirm submits exactly once", async ({ page 
     reason_code: "operator_cancel",
   });
   expect(dispositionRequests[0]?.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+  expect(unknownRequests).toEqual([]);
+});
+
+test("recover Popconfirm keeps cancel and confirm inside the Drawer keyboard cycle", async ({ page }) => {
+  const { unknownRequests, dispositionRequests } = await installRoutes(page);
+  await openIncidentHistory(page);
+
+  const recover = page.getByRole("button", { name: "恢复此执行" });
+  await recover.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("确认恢复此执行？")).toBeVisible();
+  await tabToButton(page, /取\s*消/);
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("确认恢复此执行？")).toBeHidden();
+  expect(dispositionRequests).toHaveLength(0);
+
+  await recover.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("确认恢复此执行？")).toBeVisible();
+  await tabToButton(page, /确\s*认/);
+  await page.keyboard.press("Enter");
+  await expect.poll(() => dispositionRequests.length).toBe(1);
+  expect(dispositionRequests[0]?.body).toEqual({
+    action: "recover",
+    expected_generation: 2,
+    reason_code: "capacity_repaired",
+  });
+  expect(unknownRequests).toEqual([]);
+});
+
+test("terminate Popconfirm confirm stays inside the Drawer keyboard cycle", async ({ page }) => {
+  const { unknownRequests, dispositionRequests } = await installRoutes(page);
+  await openIncidentHistory(page);
+
+  const terminate = page.getByRole("button", { name: "终结此执行" });
+  await terminate.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("确认终结此执行？")).toBeVisible();
+  await tabToButton(page, /确\s*认/);
+  await page.keyboard.press("Enter");
+  await expect.poll(() => dispositionRequests.length).toBe(1);
+  expect(dispositionRequests[0]?.body).toEqual({
+    action: "terminate",
+    expected_generation: 2,
+    reason_code: "operator_cancel",
+  });
   expect(unknownRequests).toEqual([]);
 });

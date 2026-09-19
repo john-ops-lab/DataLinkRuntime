@@ -25,6 +25,12 @@ import { LogView, OutputView } from "./OutputView";
 
 const PAGE_SIZE = 50;
 
+function drawerPopupContainer(triggerNode: HTMLElement): HTMLElement {
+  return triggerNode.closest<HTMLElement>("[role='dialog']")
+    ?? triggerNode.parentElement
+    ?? triggerNode.ownerDocument.body;
+}
+
 interface IncidentDispositionIntent {
   operation: string;
   requestId: number;
@@ -770,6 +776,7 @@ export default function ExecutionHistoryPanel(props: {
                                 <Space direction="vertical" size="small">
                                   <Popconfirm
                                     open={confirmingDisposition === recoverOperation}
+                                    getPopupContainer={drawerPopupContainer}
                                     title={t("history.recoverConfirmTitle")}
                                     description={t("history.recoverConfirmDescription")}
                                     okText={t("history.confirmAction")}
@@ -795,6 +802,7 @@ export default function ExecutionHistoryPanel(props: {
                                   </Popconfirm>
                                   <Popconfirm
                                     open={confirmingDisposition === terminateOperation}
+                                    getPopupContainer={drawerPopupContainer}
                                     title={terminalVerification
                                       ? t("history.verifyCloseConfirmTitle")
                                       : staleIncidentVerification
