@@ -4433,5 +4433,591 @@ t INFO access 172.18.0.6:1013 - "POST /api/workers/1/cleanups/24/result HTTP/1.1
                     carry._startup_proof(changed)
 
 
+class Group2StartingReconcileTests(unittest.TestCase):
+    def _request(self):
+        failed_manifest = group2_manifest()
+        failed_sha = failed_manifest["to_sha"]
+        tool_sha = "d" * 40
+        manifest_id = failed_manifest["manifest_id"]
+        prior_id = "2" * 32
+        h = lambda value: hashlib.sha256(value).hexdigest()
+        source_scope = copy.deepcopy(group2_scope()["final_source"])
+        source_scope["to_sha"] = tool_sha
+        entries = source_scope["entries"]
+        source_scope["tree_digest"] = carry.digest(
+            {
+                "from_tree": source_scope["from_tree"],
+                "to_tree": source_scope["to_tree"],
+                "entries": entries,
+            }
+        )
+        controller_files = {
+            name: h(name.encode()) for name in carry.GROUP2_CONTROLLER_FILES
+        }
+        review_entries = [
+            item for item in entries if item["path"] in carry.GROUP2_CONTROLLER_PATHS
+        ]
+        review_record = {
+            "schema": "group2-reconcile-tool-review-v1",
+            "status": "APPROVED",
+            "head_sha": tool_sha,
+            "source_scope_digest": carry.digest(source_scope),
+            "controller_files": controller_files,
+            "entries": review_entries,
+        }
+        review_raw = (
+            "review\n```json\n"
+            + json.dumps(review_record, sort_keys=True)
+            + "\n```\n"
+        ).encode()
+        embedded = lambda raw: {
+            "sha256": h(raw),
+            "content_b64": __import__("base64").b64encode(raw).decode(),
+        }
+        file_record = lambda raw: {"exists": True, **embedded(raw)}
+        prior_manifest = copy.deepcopy(group2_manifest())
+        prior_manifest["manifest_id"] = prior_id
+        prior_manifest["manifest_digest"] = carry.digest(
+            carry.manifest_payload(prior_manifest)
+        )
+        prior_manifest_raw = carry.canonical_bytes(prior_manifest)
+        prior_images = {
+            f"dlr-preview-{service}:{carry.GROUP2_FROM_SHA}": f"sha256:{index:064x}"
+            for index, service in enumerate(("postgres", "control", "worker", "web"), 1)
+        }
+        prior_state = {
+            "sha": carry.GROUP2_FROM_SHA,
+            "schema": "0040_issue152_dispositions",
+            "images": prior_images,
+        }
+        prior_probe = {
+            "execution_id": 1,
+            "status": "succeeded",
+            "workspace_cleanup_status": "completed",
+        }
+        prior_receipt_raw = carry.canonical_bytes(
+            {
+                "schema": "0040_issue152_dispositions",
+                "images": prior_images,
+                "probe": prior_probe,
+                "backup": "/private/backup",
+                "carry_forward": {
+                    "manifest_id": prior_id,
+                    "manifest_digest": prior_manifest["manifest_digest"],
+                    "selection_count": len(
+                        prior_manifest["responsibilities"]["executions"]
+                    ),
+                },
+            }
+        )
+        prior_manifest_name = f"carry-forward/manifests/{prior_id}.json"
+        prior_consumed_name = f"carry-forward/consumed/{prior_id}.json"
+        installed_files = failed_manifest["review_scope"]["controller_files"]["files"]
+        jobs = [
+            {
+                "name": name,
+                "id": index,
+                "conclusion": "success",
+                "status": "completed",
+                "run_id": 9,
+                "run_attempt": 1,
+                "head_sha": tool_sha,
+            }
+            for index, name in enumerate(
+                ("backend", "compose-smoke", "local-preview", "web"), 1
+            )
+        ]
+        binding = {
+            "head_sha": tool_sha,
+            "run_id": 9,
+            "run_attempt": 1,
+            "workflow_path": ".github/workflows/ci.yml",
+            "event": "pull_request",
+            "jobs": [
+                {key: job[key] for key in ("name", "id", "conclusion")}
+                for job in jobs
+            ],
+        }
+        parsed = {
+            "failed-manifest.json": failed_manifest,
+            "first-startup.json": {
+                "schema": "group2-first-startup-evidence-v1",
+                "check_raw": {},
+                "log_read_diagnostic": {},
+                "actual_results": {},
+                "db": {},
+                "files": {},
+                "legacy_assets": {},
+            },
+            "prior-success.json": {
+                "schema": "group2-prior-success-evidence-v1",
+                "host": {
+                    "state.json": file_record(carry.canonical_bytes(prior_state)),
+                    prior_manifest_name: {"exists": False},
+                    prior_consumed_name: file_record(prior_manifest_raw),
+                },
+                "vm": {
+                    prior_manifest_name: file_record(prior_manifest_raw),
+                    prior_consumed_name: {"exists": False},
+                    f"releases/{carry.GROUP2_FROM_SHA}/images.json": file_record(carry.canonical_bytes(prior_images)),
+                    f"releases/{carry.GROUP2_FROM_SHA}/probe.json": file_record(carry.canonical_bytes(prior_probe)),
+                    f"releases/{carry.GROUP2_FROM_SHA}/receipt.json": file_record(prior_receipt_raw),
+                    f"releases/{carry.GROUP2_FROM_SHA}/schema": file_record(b"0040_issue152_dispositions\n"),
+                },
+            },
+            "authority.json": {
+                "schema": "group2-incident-authority-v1",
+                "snapshot": {
+                    "enabled": False,
+                    "selected_pr": 161,
+                    "state": prior_state,
+                    "carry_reference": {"manifest_id": manifest_id, "manifest_digest": failed_manifest["manifest_digest"]},
+                    "attention": {"phase": "switching", "candidate": {"sha": failed_sha}},
+                    "transaction": {"phase": "starting", "sha": failed_sha},
+                    "installed_files": installed_files,
+                },
+                "host_authority": {},
+                "vm_inventory": {},
+            },
+            "platform.json": {
+                "schema": "group2-incident-platform-v1",
+                "images": {
+                    "prior": {
+                        service: {
+                            "Id": prior_images[f"dlr-preview-{service}:{carry.GROUP2_FROM_SHA}"],
+                            **(
+                                {
+                                    "postgres_version": "postgres (PostgreSQL) 16.15",
+                                    "postgres_env_versions": ["PG_MAJOR=16", "PG_VERSION=16.15"],
+                                }
+                                if service == "postgres"
+                                else {}
+                            ),
+                        }
+                        for service in ("postgres", "control", "worker", "web")
+                    },
+                    "candidate": {
+                        "postgres": {
+                            "Id": "sha256:" + "9" * 64,
+                            "postgres_version": "postgres (PostgreSQL) 16.15",
+                            "postgres_env_versions": ["PG_MAJOR=16", "PG_VERSION=16.15"],
+                        }
+                    },
+                },
+                "postgres_format": {
+                    "data_pg_version": "16",
+                    "current_server_version": "16.15",
+                    "prior_binary_version": "postgres (PostgreSQL) 16.15",
+                    "candidate_binary_version": "postgres (PostgreSQL) 16.15",
+                    "claim": "VERSION_AND_IMAGE_INSPECTION_ONLY_NO_ROLLBACK_OR_RESTORE",
+                },
+                "source_files": {
+                    name: embedded(name.encode())
+                    for name in (
+                        "old-postgres.Dockerfile",
+                        "candidate-postgres.Dockerfile",
+                        "old-postgres-entrypoint.sh",
+                        "candidate-postgres-entrypoint.sh",
+                    )
+                },
+            },
+            "source-review.json": {
+                "schema": "group2-reconcile-source-review-v1",
+                "status": "APPROVED",
+                "tool_sha": tool_sha,
+                "source_scope": source_scope,
+                "controller_files": controller_files,
+                "inherited_reviews": [
+                    {"name": name, **embedded(str(index).encode())}
+                    for index, name in enumerate(carry.GROUP2_INHERITED_REVIEW_HASHES)
+                ],
+                "tool_review": {**embedded(review_raw), "entries": review_entries},
+            },
+            "ci.json": {
+                "schema": "group2-reconcile-ci-v1",
+                "binding": binding,
+                "raw": {
+                    "run": {
+                        "head_sha": tool_sha,
+                        "id": 9,
+                        "run_attempt": 1,
+                        "path": ".github/workflows/ci.yml",
+                        "event": "pull_request",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                    "jobs": {"total_count": 4, "jobs": jobs},
+                },
+            },
+        }
+        artifacts = {name: carry.canonical_bytes(value) for name, value in parsed.items()}
+        request = {
+            "schema": "group2-starting-reconcile-request-v1",
+            "mode": carry.GROUP2_MODE,
+            "action": "restore-prior-software",
+            "incident_id": "e" * 32,
+            "repo": "owner/repo",
+            "pr": 161,
+            "failed": {
+                "sha": failed_sha,
+                "manifest_id": manifest_id,
+                "manifest_digest": failed_manifest["manifest_digest"],
+                "manifest_sha256": h(artifacts["failed-manifest.json"]),
+                "scope_digest": failed_manifest["review_scope_digest"],
+                "installed_controller_files_digest": carry.digest(installed_files),
+                "initial_evidence_digest": carry.digest(
+                    {
+                        name: h(artifacts[name])
+                        for name in (
+                            "failed-manifest.json",
+                            "first-startup.json",
+                            "prior-success.json",
+                            "authority.json",
+                            "platform.json",
+                        )
+                    }
+                ),
+            },
+            "prior": {
+                "sha": carry.GROUP2_FROM_SHA,
+                "manifest_id": prior_id,
+                "manifest_digest": prior_manifest["manifest_digest"],
+                "receipt_sha256": h(prior_receipt_raw),
+                "consumed_sha256": h(prior_manifest_raw),
+                "images_digest": carry.digest(prior_images),
+                "schema": "0040_issue152_dispositions",
+            },
+            "tool": {
+                "sha": tool_sha,
+                "controller_files": {
+                    name: h(name.encode()) for name in carry.GROUP2_CONTROLLER_FILES
+                },
+                "source_scope_digest": carry.digest(source_scope),
+                "review_report_sha256": h(artifacts["source-review.json"]),
+                "ci_evidence_sha256": h(artifacts["ci.json"]),
+            },
+            "restore": {
+                "up": ["postgres", "control", "worker", "web"],
+                "stop_only": ["account-web"],
+                "retain": ["rabbitmq"],
+                "storage_identity_digest": "8" * 64,
+                "account_policy": "stop-current-candidate-preserve-binding",
+            },
+            "evidence_files": {name: h(value) for name, value in artifacts.items()},
+        }
+        request["request_digest"] = carry.digest(request)
+        approval = {
+            "schema": "group2-starting-reconcile-approval-v1",
+            "status": "USER_APPROVED",
+            "request_digest": request["request_digest"],
+            "tool_sha": tool_sha,
+            "actions": list(carry.GROUP2_RECONCILE_ACTIONS),
+            "user_reply": "批准本事故专用恢复动作",
+            "user_record_sha256": "c" * 64,
+        }
+        return request, approval, artifacts
+
+    def test_reconcile_request_is_closed_and_separately_approved(self):
+        request, approval, artifacts = self._request()
+        with mock.patch.object(carry, "_validate_reconcile_wrappers"):
+            result = carry.validate_group2_reconcile_request(request, approval, artifacts)
+        self.assertEqual(result["request"], request)
+        for label, mutate, code in (
+            ("missing approval", lambda r, a, x: a.clear(), "approval_invalid"),
+            ("general approval", lambda r, a, x: a.__setitem__("schema", "general"), "approval_invalid"),
+            ("wrong request", lambda r, a, x: a.__setitem__("request_digest", "0" * 64), "approval_invalid"),
+            ("wrong tool", lambda r, a, x: a.__setitem__("tool_sha", "0" * 40), "approval_invalid"),
+            ("wrong actions", lambda r, a, x: a["actions"].reverse(), "approval_invalid"),
+            ("dirty payload", lambda r, a, x: x.__setitem__("ci.json", x["ci.json"] + b"\n"), "artifact_digest"),
+            ("extra evidence", lambda r, a, x: x.__setitem__("extra.json", b"{}"), "artifact_invalid"),
+            ("installed confused", lambda r, a, x: r["failed"].__setitem__("installed_controller_files_digest", "0" * 64), "request_digest"),
+        ):
+            changed_request = copy.deepcopy(request)
+            changed_approval = copy.deepcopy(approval)
+            changed_artifacts = copy.deepcopy(artifacts)
+            mutate(changed_request, changed_approval, changed_artifacts)
+            with self.subTest(label=label), self.assertRaisesRegex(
+                carry.CarryForwardError, code
+            ):
+                with mock.patch.object(carry, "_validate_reconcile_wrappers"):
+                    carry.validate_group2_reconcile_request(
+                        changed_request, changed_approval, changed_artifacts
+                    )
+
+    def test_reconcile_user_record_binds_exact_request_approval_and_actions(self):
+        request, approval, _artifacts = self._request()
+        record = {
+            "schema": "group2-starting-reconcile-user-record-v1",
+            "request_digest": request["request_digest"],
+            "tool_sha": request["tool"]["sha"],
+            "actions": list(carry.GROUP2_RECONCILE_ACTIONS),
+            "presented_request": " ".join(
+                (
+                    request["request_digest"],
+                    request["tool"]["sha"],
+                    *carry.GROUP2_RECONCILE_ACTIONS,
+                )
+            ),
+            "user_reply": approval["user_reply"],
+        }
+        raw = carry.canonical_bytes(record)
+        approval["user_record_sha256"] = hashlib.sha256(raw).hexdigest()
+        self.assertEqual(
+            carry.validate_group2_reconcile_user_record(request, approval, raw),
+            record,
+        )
+        for label, mutate in (
+            ("wrong raw digest", lambda value: value.__setitem__("user_reply", "changed")),
+            ("missing presented action", lambda value: value.__setitem__("presented_request", request["request_digest"])),
+            ("extra field", lambda value: value.__setitem__("generated", True)),
+        ):
+            changed = copy.deepcopy(record)
+            mutate(changed)
+            with self.subTest(label=label), self.assertRaisesRegex(
+                carry.CarryForwardError, "approval_record_invalid"
+            ):
+                carry.validate_group2_reconcile_user_record(
+                    request, approval, carry.canonical_bytes(changed)
+                )
+
+    def test_reconcile_wrappers_bind_full_source_review_and_exact_ci(self):
+        request, _approval, artifacts = self._request()
+        parsed = {name: json.loads(value) for name, value in artifacts.items()}
+        raw_hashes = {name: hashlib.sha256(value).hexdigest() for name, value in artifacts.items()}
+        first = parsed["first-startup.json"]
+        baseline = {"evidence_digest": "1" * 64}
+        first["check_raw"].update(
+            {
+                "after-migration/db.json": {},
+                "after-migration/files.json": {},
+                "group2/account-check.json": {"account_check": {"containers": {"worker": {}}}},
+                "group2/log-before-start.json": {"log_evidence": baseline},
+                "group2/log-after-start-request.json": {"baseline": baseline},
+                "group2/start-window.json": {"window_start_ns": 1, "window_end_ns": 2},
+            }
+        )
+        first["log_read_diagnostic"] = {"log_append": {}}
+        first["db"] = {
+            "asset_projection": {
+                name: {"columns": [], "primary_key": [], "rows": [], "count": 0}
+                for name in carry.ASSET_TABLES
+            }
+        }
+        first["legacy_assets"] = {
+            name: {"columns": [], "rows": []} for name in carry.ASSET_TABLES
+        }
+        proof, startup = {"proof": True}, {"code": "ok"}
+        first["actual_results"] = {
+            "startup_reconstruction": {
+                "proof": proof,
+                "result": "DERIVED_FROM_LATER_DIAGNOSTIC_ONLY",
+            }
+        }
+        raw_hashes["first-startup.json"] = hashlib.sha256(
+            carry.canonical_bytes(first)
+        ).hexdigest()
+        request["evidence_files"]["first-startup.json"] = raw_hashes[
+            "first-startup.json"
+        ]
+        request["failed"]["initial_evidence_digest"] = carry.digest(
+            {
+                name: raw_hashes[name]
+                for name in (
+                    "failed-manifest.json",
+                    "first-startup.json",
+                    "prior-success.json",
+                    "authority.json",
+                    "platform.json",
+                )
+            }
+        )
+        with (
+            mock.patch.object(carry, "_startup_proof", return_value=proof),
+            mock.patch.object(carry, "compare_group2_startup_files", return_value=startup),
+            mock.patch.object(carry, "_validate_group2_manifest_db"),
+            mock.patch.object(
+                carry,
+                "GROUP2_INHERITED_REVIEW_HASHES",
+                {
+                    item["name"]: item["sha256"]
+                    for item in parsed["source-review.json"]["inherited_reviews"]
+                },
+            ),
+        ):
+            carry._validate_reconcile_wrappers(request, parsed, raw_hashes)
+            changed = copy.deepcopy(parsed)
+            changed["source-review.json"]["tool_review"]["entries"].pop()
+            with self.assertRaisesRegex(carry.CarryForwardError, "review_invalid"):
+                carry._validate_reconcile_wrappers(request, changed, raw_hashes)
+            changed = copy.deepcopy(parsed)
+            changed["ci.json"]["raw"]["jobs"]["jobs"][0]["conclusion"] = "failure"
+            with self.assertRaisesRegex(carry.CarryForwardError, "ci_invalid"):
+                carry._validate_reconcile_wrappers(request, changed, raw_hashes)
+
+    def test_vm_reconcile_orders_restore_without_migrate_restore_or_retag(self):
+        request, approval, artifacts = self._request()
+        manifest = json.loads(artifacts["failed-manifest.json"])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            incident = root / "incidents" / request["incident_id"]
+            evidence = incident / "evidence"
+            tool = incident / "tool"
+            evidence.mkdir(parents=True, mode=0o700)
+            tool.mkdir(mode=0o700)
+            (root / "incidents").chmod(0o700)
+            incident.chmod(0o700)
+            for name, value in artifacts.items():
+                (evidence / name).write_bytes(value)
+            carry.write_private(incident / "request.json", request)
+            carry.write_private(incident / "approval.json", approval)
+            carry.write_private(
+                incident / "preflight-authority.json",
+                {
+                    "enabled": False,
+                    "attention_phase": "switching",
+                    "transaction_phase": "starting",
+                    "failed_sha": request["failed"]["sha"],
+                    "current_sha": request["prior"]["sha"],
+                    "installed_controller_files_digest": request["failed"]["installed_controller_files_digest"],
+                },
+            )
+            (root / "current-sha").write_text(request["prior"]["sha"])
+            carry.write_private(
+                root / "transaction.json",
+                {"phase": "starting", "sha": request["failed"]["sha"], "backup": "old", "carry_forward": {"manifest_id": request["failed"]["manifest_id"]}},
+            )
+            carry.write_private(
+                root / "deployment.json",
+                {"sandbox_unit": "unit", "sandbox_cpu_quota": "100%", "sandbox_memory_max": "1G"},
+            )
+            installed = {}
+            for name in carry.GROUP2_CONTROLLER_FILES:
+                (root / name).write_bytes(name.encode())
+                installed[name] = hashlib.sha256(name.encode()).hexdigest()
+            request["failed"]["installed_controller_files_digest"] = carry.digest(installed)
+            carry.write_private(incident / "request.json", request)
+            manifest["kernel_evidence"] = {"old_worker_authority": {}}
+            manifest["file_evidence"].setdefault("journal_facts", {})["sandbox_recovery"] = []
+            project = manifest["account_entry"]["project"]
+            manifest["old_image_ids"] = {
+                f"{project}-{service}:{carry.GROUP2_FROM_SHA}": f"sha256:{index:064x}"
+                for index, service in enumerate(("postgres", "control", "worker", "web"), 1)
+            }
+            manifest["storage_identity"] = [
+                {"service": "worker", "type": "volume", "source": "runtime", "destination": "/var/lib/dlr/runtime", "read_only": False},
+                {"service": "worker", "type": "volume", "source": "journal", "destination": "/var/lib/dlr/journal", "read_only": False},
+            ]
+            request["restore"]["storage_identity_digest"] = carry.digest(
+                manifest["storage_identity"]
+            )
+            carry.write_private(incident / "request.json", request)
+            old_images = {}
+            for service in ("postgres", "control", "worker", "web"):
+                matches = [
+                    image for tag, image in manifest["old_image_ids"].items()
+                    if tag.endswith(f"-{service}:{carry.GROUP2_FROM_SHA}")
+                ]
+                old_images[service] = matches[0]
+            parsed = {name: json.loads(value) for name, value in artifacts.items()}
+            parsed["failed-manifest.json"] = manifest
+            parsed["first-startup.json"] = {
+                "db": {},
+                "files": {},
+                "log_read_diagnostic": {"log_append": {}},
+                "actual_results": {"startup_reconstruction": {"proof": {}}},
+            }
+            parsed["platform.json"]["images"] = {
+                "candidate": {service: {"Id": image} for service, image in old_images.items()},
+                "prior": {service: {"Id": image} for service, image in old_images.items()},
+            }
+            user_record = carry.canonical_bytes(
+                {
+                    "schema": "group2-starting-reconcile-user-record-v1",
+                    "request_digest": request["request_digest"],
+                    "tool_sha": request["tool"]["sha"],
+                    "actions": list(carry.GROUP2_RECONCILE_ACTIONS),
+                    "presented_request": " ".join(
+                        (
+                            request["request_digest"],
+                            request["tool"]["sha"],
+                            *carry.GROUP2_RECONCILE_ACTIONS,
+                        )
+                    ),
+                    "user_reply": approval["user_reply"],
+                }
+            )
+            approval["user_record_sha256"] = hashlib.sha256(user_record).hexdigest()
+            carry.write_private(incident / "approval.json", approval)
+            (incident / "USER-APPROVAL.txt").write_bytes(user_record)
+            carry.write_private(
+                incident / "phase.json",
+                {
+                    "schema": "group2-starting-reconcile-phase-v1",
+                    "incident_id": request["incident_id"],
+                    "phase": "prepared",
+                },
+            )
+            for name in ("deploy.sh", "carry_forward.py"):
+                payload = name.encode()
+                (tool / name).write_bytes(payload)
+                request["tool"]["controller_files"][name] = hashlib.sha256(
+                    payload
+                ).hexdigest()
+            carry.write_private(incident / "request.json", request)
+            commands = []
+            real_atomic = carry._atomic_incident_json
+
+            def atomic(path, value):
+                real_atomic(path, value)
+                if path.name == "result.json":
+                    carry.write_private(
+                        incident / "host-validated.json",
+                        {"incident_id": request["incident_id"], "receipt_digest": "9" * 64},
+                    )
+
+            def run(arguments, **_kwargs):
+                commands.append(arguments)
+                return SimpleNamespace(returncode=0)
+
+            def checked(arguments):
+                if any("SELECT version_num" in item for item in arguments):
+                    return request["prior"]["schema"]
+                if "--version" in arguments:
+                    return "postgres (PostgreSQL) 16.15"
+                if "SHOW server_version" in arguments:
+                    return "16.15"
+                if any("PG_VERSION" in item for item in arguments):
+                    return "16"
+                return ""
+
+            receipt = {"receipt_digest": "9" * 64}
+            with (
+                mock.patch.object(carry, "validate_group2_reconcile_request", return_value={"request": request, "approval": approval, "artifacts": parsed}),
+                mock.patch.object(carry, "_live_storage_identity", return_value=manifest["storage_identity"]),
+                mock.patch.object(carry, "read_log_append", return_value={}),
+                mock.patch.object(carry, "_capture_reconcile_state", return_value=({}, {})),
+                mock.patch.object(carry, "capture_kernel", return_value={}),
+                mock.patch.object(carry, "_container_image", side_effect=lambda _p, service: old_images.get(service, "rabbit")),
+                mock.patch.object(carry, "_inspect_container", return_value={"container_id": "same", "status": "exited"}),
+                mock.patch.object(carry, "validate_group2_reconcile_preflight"),
+                mock.patch.object(carry, "_incident_startup_proof", return_value={}),
+                mock.patch.object(carry, "_read_token_health", return_value={"status": 200, "database": True}),
+                mock.patch.object(carry, "validate_group2_reconcile_result", return_value=receipt),
+                mock.patch.object(carry, "_checked_output", side_effect=checked),
+                mock.patch.object(carry.subprocess, "run", side_effect=run),
+                mock.patch.object(carry, "_atomic_incident_json", side_effect=atomic),
+            ):
+                result = carry.reconcile_group2_vm(root, request["incident_id"])
+            self.assertEqual(result["receipt_digest"], "9" * 64)
+            flattened = "\n".join(" ".join(command) for command in commands)
+            self.assertIn("stop control", flattened)
+            self.assertIn("--force-recreate --wait", flattened)
+            self.assertNotIn("pg_restore", flattened)
+            self.assertNotIn("alembic", flattened)
+            self.assertNotIn("docker tag", flattened)
+            committed = carry.read_private(root / "transaction.json")
+            self.assertEqual(committed["operation"], "incident_software_restore")
+
+
 if __name__ == "__main__":
     unittest.main()

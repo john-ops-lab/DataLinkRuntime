@@ -47,3 +47,29 @@
 #### Scenario: 普通用户验收与 ACL 拒绝
 - **WHEN** 使用本轮新普通用户完成上传、保存、运行及权限负例
 - **THEN** 正例属于其自有新对象，负例使用另一新对象，不使用原保留责任作为写入目标；这些对象与正式部署探针分开留证
+
+### Requirement: 首次启动后失败只经专项入口恢复旧软件
+系统 SHALL 仅为本组已绑定的 starting 失败、尚无正式业务 probe 的事务提供单次 `reconcile-group2-starting`；MUST 要求闭合请求、实际专项用户批准、精确工具提交审查和 CI、完整原件及 fresh 保全事实一致。系统 MUST 保持正式安装控制器不变，只暂存绑定的隔离事故工具，不修改安装器或普通 recover 门禁，不支持自动重放、任意命令或通用失败续跑。
+
+#### Scenario: 缺专项批准或事实漂移
+- **WHEN** 请求/批准/源码/CI 摘要不符，原成功根不闭合，同 ID 已使用，或 fresh authority、DB、审计、session、文件、日志、卷、镜像及首次 startup 无法与原件核对
+- **THEN** 系统拒绝推进并保留 paused/attention；不能从现场值生成新的预期或用通用旧授权替代专项批准
+
+#### Scenario: 原软件恢复与账号停止策略
+- **WHEN** 停 Control 后保全、其余应用停机、真实 idle kernel/namespace/FD 及 PostgreSQL 相同版本/RootFS/数据卷检查均通过
+- **THEN** 系统仅重建旧成功 PostgreSQL 软件并启动旧 Control/Worker/Web，保留 RabbitMQ 和全部卷；account-web 保持当前容器和绑定且停止，不 restore 数据库、不迁移、不执行正式 probe
+
+#### Scenario: 第二次 startup 保全
+- **WHEN** 恢复应用启动
+- **THEN** 系统以新的唯一 Worker 生命周期、nonce、精确窗口和连续日志验证既有两处允许的目录 mtime；第三路径、旧内容、责任或审计变化均拒绝，普通 v4 四应用和双入口要求不变
+
+### Requirement: 事故对账不得伪造失败部署成功
+系统 MUST 先持久化独立事故原件和 receipt 并由宿主全量重算，才提交标识为 `incident_software_restore` 的旧成功 SHA transaction。原 current SHA、宿主 state 和旧成功 probe/receipt/consumed MUST 保持原字节；失败 manifest SHALL 原样归档为 abandoned 而非 consumed。配置 CAS 成功并保持 paused 后，attention MUST 最后清除。
+
+#### Scenario: 持久化或控制面提交中断
+- **WHEN** receipt 落盘、读回、transaction、失败 manifest 归档或配置 CAS 任一步失败
+- **THEN** 系统保留真实 phase 和 attention，不自动再次停止/启动、不普通 acknowledge、不重放同事故；先只读对账并审查具体剩余动作
+
+#### Scenario: 正常 v4 的保全根接续
+- **WHEN** 事故恢复已成功且需要正常部署新候选
+- **THEN** 独立 reviewer 从原参考及闭合事故链复算唯一新 snapshot：原 selection/DB、恢复后 files、追加固定 request/receipt/chain 摘要的 lineage；系统拒绝缺失/重复/伪造链或未知来源，之后重新 stage/install/plan/once 并完整验证双入口，不复用失败 manifest

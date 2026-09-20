@@ -2,11 +2,34 @@
 # Trusted controller, executed only in the dedicated Colima VM.
 set -euo pipefail
 umask 077
-sha=${1:?commit required}
-action=${2:?stage, plan, deploy, recover or adopt required}
-schema=${3:-}
-carry_id=${4:-}
-recovery_id=${5:-}
+if [ "${1:-}" = reconcile-group2-starting ]; then
+  root=${2:?fixed root required}
+  incident_id=${3:?incident id required}
+  [[ "$root" =~ ^/[a-zA-Z0-9_./-]+$ ]] && [[ "$root" != */ ]] && [[ "$root" != *".."* ]] || exit 2
+  [[ "$incident_id" =~ ^[0-9a-f]{32}$ ]] || exit 2
+  tool_root=$(cd "$(dirname "$0")" && pwd)
+  [ "$tool_root" = "$root/incidents/$incident_id/tool" ] || exit 2
+  request="$root/incidents/$incident_id/request.json"
+  sha=$(python3 - "$request" <<'PYINCIDENTSHA'
+import json, sys
+value=json.load(open(sys.argv[1])); print(value['prior']['sha'])
+PYINCIDENTSHA
+  )
+  action=reconcile-group2-starting
+  schema=0040_issue152_dispositions
+  carry_id=
+  recovery_id=
+  exec 9>"$root/deploy.lock"
+  flock -n 9 || exit 1
+  exec python3 "$tool_root/carry_forward.py" reconcile-vm \
+    --root "$root" --incident-id "$incident_id"
+else
+  sha=${1:?commit required}
+  action=${2:?stage, plan, deploy, recover or adopt required}
+  schema=${3:-}
+  carry_id=${4:-}
+  recovery_id=${5:-}
+fi
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 2
 [[ "$action" =~ ^(stage|plan|deploy|recover|adopt)$ ]] || exit 2
 if [ -n "$carry_id" ]; then [[ "$carry_id" =~ ^[0-9a-f]{32}$ ]] || exit 2; fi
@@ -23,6 +46,7 @@ for key in ('project', 'web_port', 'sandbox_unit', 'sandbox_cpu_quota', 'sandbox
 PYSETTINGS
 )
 eval "$deployment_settings"
+carry_helper="$root/carry_forward.py"
 sandbox_description="DataLinkRuntime Sandbox $sandbox_unit CPU=$sandbox_cpu_quota Memory=$sandbox_memory_max"
 release=$root/releases/$sha
 exec 9>"$root/deploy.lock"
@@ -119,7 +143,7 @@ print(networks[0])
 PY
 )
   local -a mounts=(
-    --mount "type=bind,source=$root/carry_forward.py,target=/opt/dlr/carry_forward.py,readonly"
+    --mount "type=bind,source=$carry_helper,target=/opt/dlr/carry_forward.py,readonly"
     --mount "type=bind,source=$evidence,target=/evidence"
   )
   if [ -n "${carry_manifest:-}" ]; then
@@ -139,7 +163,7 @@ PY
 carry_files() {
   local evidence=$1; shift
   local -a mounts=(
-    --mount "type=bind,source=$root/carry_forward.py,target=/opt/dlr/carry_forward.py,readonly"
+    --mount "type=bind,source=$carry_helper,target=/opt/dlr/carry_forward.py,readonly"
     --mount "type=bind,source=$evidence,target=/evidence"
     --mount "type=volume,source=$runtime_volume,target=/var/lib/dlr/runtime,readonly,volume-nocopy"
     --mount "type=volume,source=$journal_volume,target=/var/lib/dlr/journal,readonly,volume-nocopy"
@@ -192,7 +216,7 @@ print(networks[0])
 PY
   )
   local -a mounts=(
-    --mount "type=bind,source=$root/carry_forward.py,target=/opt/dlr/carry_forward.py,readonly"
+    --mount "type=bind,source=$carry_helper,target=/opt/dlr/carry_forward.py,readonly"
     --mount "type=bind,source=$evidence,target=/evidence"
     --mount "type=volume,source=$runtime_volume,target=/var/lib/dlr/runtime,readonly,volume-nocopy"
     --mount "type=volume,source=$journal_volume,target=/var/lib/dlr/journal,readonly,volume-nocopy"
@@ -219,7 +243,7 @@ PY
 }
 group2_runtime_host() {
   local request=$1 output=$2
-  python3 "$root/carry_forward.py" group2-runtime \
+  python3 "$carry_helper" group2-runtime \
     --request "$request" --output "$output" >/dev/null
 }
 group2_log_checkpoint() {

@@ -139,6 +139,25 @@ GROUP2_CONTROLLER_FILES = {
     "assets.py",
     "carry_forward.py",
 }
+GROUP2_RECONCILE_EVIDENCE_FILES = {
+    "failed-manifest.json",
+    "first-startup.json",
+    "prior-success.json",
+    "authority.json",
+    "platform.json",
+    "source-review.json",
+    "ci.json",
+}
+GROUP2_RECONCILE_ACTIONS = [
+    "incident-tool-stage",
+    "restore-prior-software",
+    "reconcile-control-plane",
+]
+GROUP2_INHERITED_REVIEW_HASHES = {
+    "group2-product-integration-recheck.md": "e5c457872b19af0994ce76e3a894e8ffbb2cbd7a11868236d5c4bb8bd2fe152f",
+    "group2-ci-web-code-review.md": "aa4a861dc2784244921a79af25183e4600b6328b8ddff573dbb3f1425c24c43f",
+    "group2-python-harness-code-review.md": "31bc67be2eefadceba6c1d612731d24f349983adf61567386ebc56ea39062c2b",
+}
 # The 57-path approved product anchor.  The three planning artifacts are
 # intentionally content-bound by the final independent review rather than by
 # the earlier product commit; every other blob remains pinned to that review.
@@ -6907,6 +6926,21 @@ def _startup_proof(request: Any) -> dict[str, Any]:
         },
     )
     profile = validate_group2_account_entry(value["profile"])
+    return _worker_startup_proof(
+        value,
+        profile,
+        profile["candidate_image_ids_by_service"]["worker"],
+        profile["candidate_profiles"]["worker"],
+    )
+
+
+def _worker_startup_proof(
+    value: dict[str, Any],
+    profile: dict[str, Any],
+    expected_image: str,
+    expected_profile: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate the Worker-specific startup facts shared by deploy and incident restore."""
     logs_before = value["logs_before"]
     logs_after = value["logs_after"]
     try:
@@ -6947,12 +6981,12 @@ def _startup_proof(request: Any) -> dict[str, Any]:
         or after.get("restart_count") != 0
         or not isinstance(before, dict)
         or before.get("container_id") == after.get("container_id")
-        or after.get("image_id") != profile["candidate_image_ids_by_service"]["worker"]
+        or after.get("image_id") != expected_image
         or after.get("command") != profile["old_containers"]["worker"].get("command")
         or after.get("status") != "running"
         or after.get("health") != "healthy"
         or not _container_matches_profile(
-            after, profile["candidate_profiles"]["worker"], profile["project"], "worker"
+            after, expected_profile, profile["project"], "worker"
         )
         or not isinstance(window_start, int)
         or isinstance(window_start, bool)
@@ -7766,6 +7800,877 @@ def validate_group2_recovery_evidence(
     }
 
 
+def _closed_object(value: Any, fields: set[str], code: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise CarryForwardError(code)
+    return value
+
+
+def _reconcile_artifact_value(value: Any) -> tuple[Any, str]:
+    """Return the parsed value and the digest of the exact supplied bytes."""
+    if isinstance(value, bytes):
+        raw = value
+    elif isinstance(value, str):
+        raw = value.encode()
+    elif isinstance(value, dict):
+        raw = canonical_bytes(value)
+    else:
+        raise CarryForwardError("group2_reconcile_artifact_invalid")
+    try:
+        parsed = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise CarryForwardError("group2_reconcile_artifact_invalid") from error
+    return parsed, hashlib.sha256(raw).hexdigest()
+
+
+def _validate_embedded_bytes(value: Any, code: str) -> bytes:
+    value = _closed_object(value, {"sha256", "content_b64"}, code)
+    _digest_text(value["sha256"], code)
+    try:
+        raw = base64.b64decode(value["content_b64"], validate=True)
+    except (TypeError, ValueError) as error:
+        raise CarryForwardError(code) from error
+    if hashlib.sha256(raw).hexdigest() != value["sha256"]:
+        raise CarryForwardError(code)
+    return raw
+
+
+def _read_embedded_file(value: Any, code: str) -> bytes:
+    if not isinstance(value, dict) or value.get("exists") is not True:
+        raise CarryForwardError(code)
+    return _validate_embedded_bytes(
+        {"sha256": value.get("sha256"), "content_b64": value.get("content_b64")},
+        code,
+    )
+
+
+def _embedded_json(value: Any, code: str) -> Any:
+    try:
+        return json.loads(_read_embedded_file(value, code))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise CarryForwardError(code) from error
+
+
+def _machine_json_records(raw: bytes) -> list[dict[str, Any]]:
+    try:
+        text_value = raw.decode("utf-8")
+    except UnicodeError as error:
+        raise CarryForwardError("group2_reconcile_review_invalid") from error
+    records = []
+    for body in re.findall(r"```json\s*\n(.*?)\n```", text_value, re.DOTALL):
+        try:
+            item = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            records.append(item)
+    return records
+
+
+def _validate_reconcile_wrappers(
+    request: dict[str, Any], parsed: dict[str, Any], raw_hashes: dict[str, str]
+) -> None:
+    failed = validate_manifest(parsed["failed-manifest.json"])
+    validate_group2_manifest_extensions(failed)
+    first = _closed_object(
+        parsed["first-startup.json"],
+        {"schema", "check_raw", "log_read_diagnostic", "actual_results", "db", "files", "legacy_assets"},
+        "group2_reconcile_first_startup_invalid",
+    )
+    prior = _closed_object(
+        parsed["prior-success.json"], {"schema", "host", "vm"},
+        "group2_reconcile_prior_invalid",
+    )
+    authority = _closed_object(
+        parsed["authority.json"], {"schema", "snapshot", "host_authority", "vm_inventory"},
+        "group2_reconcile_authority_invalid",
+    )
+    platform = _closed_object(
+        parsed["platform.json"], {"schema", "images", "postgres_format", "source_files"},
+        "group2_reconcile_platform_invalid",
+    )
+    if (
+        first["schema"] != "group2-first-startup-evidence-v1"
+        or prior["schema"] != "group2-prior-success-evidence-v1"
+        or authority["schema"] != "group2-incident-authority-v1"
+        or platform["schema"] != "group2-incident-platform-v1"
+    ):
+        raise CarryForwardError("group2_reconcile_artifact_invalid")
+    prior_id = request["prior"]["manifest_id"]
+    prior_manifest_name = f"carry-forward/manifests/{prior_id}.json"
+    prior_consumed_name = f"carry-forward/consumed/{prior_id}.json"
+    expected_host = {"state.json", prior_manifest_name, prior_consumed_name}
+    expected_vm = {
+        prior_manifest_name,
+        prior_consumed_name,
+        f"releases/{GROUP2_FROM_SHA}/images.json",
+        f"releases/{GROUP2_FROM_SHA}/probe.json",
+        f"releases/{GROUP2_FROM_SHA}/receipt.json",
+        f"releases/{GROUP2_FROM_SHA}/schema",
+    }
+    if set(prior["host"]) != expected_host or set(prior["vm"]) != expected_vm:
+        raise CarryForwardError("group2_reconcile_prior_invalid")
+    host_state = _embedded_json(
+        prior["host"]["state.json"], "group2_reconcile_prior_invalid"
+    )
+    host_consumed_raw = _read_embedded_file(
+        prior["host"][prior_consumed_name], "group2_reconcile_prior_invalid"
+    )
+    vm_manifest_raw = _read_embedded_file(
+        prior["vm"][prior_manifest_name], "group2_reconcile_prior_invalid"
+    )
+    prior_manifest = validate_manifest(json.loads(vm_manifest_raw))
+    vm_images = _embedded_json(
+        prior["vm"][f"releases/{GROUP2_FROM_SHA}/images.json"],
+        "group2_reconcile_prior_invalid",
+    )
+    vm_receipt_raw = _read_embedded_file(
+        prior["vm"][f"releases/{GROUP2_FROM_SHA}/receipt.json"],
+        "group2_reconcile_prior_invalid",
+    )
+    try:
+        vm_receipt = json.loads(vm_receipt_raw)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise CarryForwardError("group2_reconcile_prior_invalid") from error
+    vm_receipt = _closed_object(
+        vm_receipt, {"schema", "images", "probe", "backup", "carry_forward"},
+        "group2_reconcile_prior_invalid",
+    )
+    vm_probe = _embedded_json(
+        prior["vm"][f"releases/{GROUP2_FROM_SHA}/probe.json"],
+        "group2_reconcile_prior_invalid",
+    )
+    vm_schema = _read_embedded_file(
+        prior["vm"][f"releases/{GROUP2_FROM_SHA}/schema"],
+        "group2_reconcile_prior_invalid",
+    ).decode().strip()
+    if (
+        prior["host"][prior_manifest_name] != {"exists": False}
+        or prior["vm"][prior_consumed_name] != {"exists": False}
+        or host_consumed_raw != vm_manifest_raw
+        or prior_manifest["manifest_id"] != prior_id
+        or prior_manifest["manifest_digest"] != request["prior"]["manifest_digest"]
+        or host_state.get("sha") != GROUP2_FROM_SHA
+        or host_state.get("schema") != request["prior"]["schema"]
+        or host_state.get("images") != vm_images
+        or digest(vm_images) != request["prior"]["images_digest"]
+        or vm_receipt["schema"] != request["prior"]["schema"]
+        or vm_receipt["images"] != vm_images
+        or vm_receipt["probe"] != vm_probe
+        or not isinstance(vm_receipt["backup"], str)
+        or not vm_receipt["backup"].startswith("/")
+        or vm_receipt["carry_forward"]
+        != {
+            "manifest_id": prior_id,
+            "manifest_digest": request["prior"]["manifest_digest"],
+            "selection_count": len(prior_manifest["responsibilities"]["executions"]),
+        }
+        or hashlib.sha256(vm_receipt_raw).hexdigest() != request["prior"]["receipt_sha256"]
+        or hashlib.sha256(host_consumed_raw).hexdigest() != request["prior"]["consumed_sha256"]
+        or vm_schema != request["prior"]["schema"]
+    ):
+        raise CarryForwardError("group2_reconcile_prior_invalid")
+    snapshot = authority["snapshot"]
+    if (
+        not isinstance(snapshot, dict)
+        or snapshot.get("enabled") is not False
+        or snapshot.get("selected_pr") != request["pr"]
+        or snapshot.get("state") != host_state
+        or snapshot.get("carry_reference", {}).get("manifest_id")
+        != request["failed"]["manifest_id"]
+        or snapshot.get("carry_reference", {}).get("manifest_digest")
+        != request["failed"]["manifest_digest"]
+        or snapshot.get("attention", {}).get("phase") != "switching"
+        or snapshot.get("attention", {}).get("candidate", {}).get("sha")
+        != request["failed"]["sha"]
+        or snapshot.get("transaction", {}).get("phase") != "starting"
+        or snapshot.get("transaction", {}).get("sha") != request["failed"]["sha"]
+        or digest(snapshot.get("installed_files"))
+        != request["failed"]["installed_controller_files_digest"]
+    ):
+        raise CarryForwardError("group2_reconcile_authority_invalid")
+    image_ids = {
+        service: item.get("Id")
+        for service, item in platform["images"].get("prior", {}).items()
+    }
+    expected_prior_images = {
+        tag: image_ids[tag.rsplit("-", 1)[-1].split(":", 1)[0]]
+        for tag in vm_images
+    }
+    if expected_prior_images != vm_images:
+        raise CarryForwardError("group2_reconcile_platform_invalid")
+    source_files = platform["source_files"]
+    expected_source_files = {
+        "old-postgres.Dockerfile", "candidate-postgres.Dockerfile",
+        "old-postgres-entrypoint.sh", "candidate-postgres-entrypoint.sh",
+    }
+    if not isinstance(source_files, dict) or set(source_files) != expected_source_files:
+        raise CarryForwardError("group2_reconcile_platform_invalid")
+    for value in source_files.values():
+        _validate_embedded_bytes(value, "group2_reconcile_platform_invalid")
+    postgres_format = _closed_object(
+        platform["postgres_format"],
+        {"data_pg_version", "current_server_version", "prior_binary_version",
+         "candidate_binary_version", "claim"},
+        "group2_reconcile_platform_invalid",
+    )
+    prior_postgres = platform["images"].get("prior", {}).get("postgres", {})
+    candidate_postgres = platform["images"].get("candidate", {}).get("postgres", {})
+    if (
+        not all(
+            isinstance(postgres_format[key], str) and postgres_format[key]
+            for key in postgres_format
+        )
+        or prior_postgres.get("postgres_version")
+        != postgres_format["prior_binary_version"]
+        or candidate_postgres.get("postgres_version")
+        != postgres_format["candidate_binary_version"]
+        or f"PG_MAJOR={postgres_format['data_pg_version']}"
+        not in prior_postgres.get("postgres_env_versions", [])
+        or f"PG_MAJOR={postgres_format['data_pg_version']}"
+        not in candidate_postgres.get("postgres_env_versions", [])
+    ):
+        raise CarryForwardError("group2_reconcile_platform_invalid")
+    source = _closed_object(
+        parsed["source-review.json"],
+        {"schema", "status", "tool_sha", "source_scope", "controller_files",
+         "inherited_reviews", "tool_review"},
+        "group2_reconcile_review_invalid",
+    )
+    if (
+        source["schema"] != "group2-reconcile-source-review-v1"
+        or source["status"] != "APPROVED"
+        or source["tool_sha"] != request["tool"]["sha"]
+        or source["controller_files"] != request["tool"]["controller_files"]
+        or digest(source["source_scope"]) != request["tool"]["source_scope_digest"]
+    ):
+        raise CarryForwardError("group2_reconcile_review_invalid")
+    validate_group2_source_diff(source["source_scope"], {"final_source": source["source_scope"]})
+    inherited = source["inherited_reviews"]
+    if not isinstance(inherited, list) or len(inherited) != 3:
+        raise CarryForwardError("group2_reconcile_review_invalid")
+    inherited_names = set()
+    for item in inherited:
+        item = _closed_object(item, {"name", "sha256", "content_b64"}, "group2_reconcile_review_invalid")
+        if not isinstance(item["name"], str) or item["name"] in inherited_names:
+            raise CarryForwardError("group2_reconcile_review_invalid")
+        inherited_names.add(item["name"])
+        _validate_embedded_bytes(
+            {"sha256": item["sha256"], "content_b64": item["content_b64"]},
+            "group2_reconcile_review_invalid",
+        )
+        if GROUP2_INHERITED_REVIEW_HASHES.get(item["name"]) != item["sha256"]:
+            raise CarryForwardError("group2_reconcile_review_invalid")
+    if inherited_names != set(GROUP2_INHERITED_REVIEW_HASHES):
+        raise CarryForwardError("group2_reconcile_review_invalid")
+    tool_review = _closed_object(
+        source["tool_review"], {"sha256", "content_b64", "entries"},
+        "group2_reconcile_review_invalid",
+    )
+    review_raw = _validate_embedded_bytes(
+        {"sha256": tool_review["sha256"], "content_b64": tool_review["content_b64"]},
+        "group2_reconcile_review_invalid",
+    )
+    expected_entries = [
+        item for item in source["source_scope"]["entries"]
+        if item.get("path") in GROUP2_CONTROLLER_PATHS
+    ]
+    if tool_review["entries"] != expected_entries or len(expected_entries) != 10:
+        raise CarryForwardError("group2_reconcile_review_invalid")
+    matches = [
+        item for item in _machine_json_records(review_raw)
+        if item.get("schema") == "group2-reconcile-tool-review-v1"
+    ]
+    expected_record = {
+        "schema": "group2-reconcile-tool-review-v1",
+        "status": "APPROVED",
+        "head_sha": request["tool"]["sha"],
+        "source_scope_digest": request["tool"]["source_scope_digest"],
+        "controller_files": request["tool"]["controller_files"],
+        "entries": expected_entries,
+    }
+    if matches != [expected_record]:
+        raise CarryForwardError("group2_reconcile_review_invalid")
+    ci = _closed_object(
+        parsed["ci.json"], {"schema", "binding", "raw"},
+        "group2_reconcile_ci_invalid",
+    )
+    if ci["schema"] != "group2-reconcile-ci-v1" or not isinstance(ci["raw"], dict):
+        raise CarryForwardError("group2_reconcile_ci_invalid")
+    run, jobs_response = ci["raw"].get("run"), ci["raw"].get("jobs")
+    if not isinstance(run, dict) or not isinstance(jobs_response, dict):
+        raise CarryForwardError("group2_reconcile_ci_invalid")
+    jobs = jobs_response.get("jobs")
+    if not isinstance(jobs, list) or jobs_response.get("total_count") != len(jobs):
+        raise CarryForwardError("group2_reconcile_ci_invalid")
+    normalized_jobs = sorted(
+        ({key: job.get(key) for key in ("name", "id", "conclusion")} for job in jobs),
+        key=lambda item: (item["name"], item["id"]),
+    )
+    binding = {
+        "head_sha": run.get("head_sha"), "run_id": run.get("id"),
+        "run_attempt": run.get("run_attempt"), "workflow_path": run.get("path"),
+        "event": run.get("event"), "jobs": normalized_jobs,
+    }
+    if (
+        ci["binding"] != binding
+        or binding["head_sha"] != request["tool"]["sha"]
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "success"
+        or any(
+            job.get("status") != "completed"
+            or job.get("run_id") != run.get("id")
+            or job.get("run_attempt") != run.get("run_attempt")
+            or job.get("head_sha") != run.get("head_sha")
+            for job in jobs
+        )
+        or any(job["conclusion"] != "success" for job in normalized_jobs)
+        or any(sum(job["name"] == name for job in normalized_jobs) != 1
+               for name in ("backend", "web", "local-preview", "compose-smoke"))
+    ):
+        raise CarryForwardError("group2_reconcile_ci_invalid")
+    if (
+        failed["manifest_id"] != request["failed"]["manifest_id"]
+        or failed["manifest_digest"] != request["failed"]["manifest_digest"]
+        or failed["to_sha"] != request["failed"]["sha"]
+        or failed["review_scope_digest"] != request["failed"]["scope_digest"]
+        or failed["controller_files_digest"]
+        != request["failed"]["installed_controller_files_digest"]
+        or raw_hashes["failed-manifest.json"] != request["failed"]["manifest_sha256"]
+        or digest({name: raw_hashes[name] for name in (
+            "failed-manifest.json", "first-startup.json", "prior-success.json",
+            "authority.json", "platform.json")})
+        != request["failed"]["initial_evidence_digest"]
+        or raw_hashes["source-review.json"] != request["tool"]["review_report_sha256"]
+        or raw_hashes["ci.json"] != request["tool"]["ci_evidence_sha256"]
+    ):
+        raise CarryForwardError("group2_reconcile_artifact_binding_changed")
+    check = first["check_raw"]
+    required_check = {
+        "after-migration/db.json", "after-migration/files.json",
+        "group2/account-check.json", "group2/log-before-start.json",
+        "group2/log-after-start-request.json", "group2/start-window.json",
+    }
+    if not isinstance(check, dict) or not required_check.issubset(check):
+        raise CarryForwardError("group2_reconcile_first_startup_invalid")
+    before_logs = check["group2/log-before-start.json"].get("log_evidence")
+    after_request = check["group2/log-after-start-request.json"]
+    after_logs = after_request.get("baseline")
+    # The saved request binds the exact baseline used for the append read.  The
+    # resulting segment is retained by the diagnostic wrapper rather than by a
+    # replacement success file after the original read failed.
+    if before_logs != after_logs:
+        raise CarryForwardError("group2_reconcile_first_startup_invalid")
+    diagnostic = first["log_read_diagnostic"]
+    log_after = diagnostic.get("log_append") if isinstance(diagnostic, dict) else None
+    window = check["group2/start-window.json"]
+    account_check = check["group2/account-check.json"].get("account_check", {})
+    startup_request = {
+        "mode": GROUP2_MODE,
+        "operation": "startup-proof",
+        "profile": failed["account_entry"],
+        "logs_before": before_logs,
+        "logs_after": log_after,
+        "container_before": failed["account_entry"]["old_containers"]["worker"],
+        "container_after": account_check.get("containers", {}).get("worker"),
+        "window_start_ns": window.get("window_start_ns"),
+        "window_end_ns": window.get("window_end_ns"),
+    }
+    proof = _startup_proof(startup_request)
+    compare_group2_startup_files(
+        check["after-migration/files.json"], first["files"], proof
+    )
+    reconstruction = first["actual_results"].get("startup_reconstruction")
+    if (
+        not isinstance(reconstruction, dict)
+        or set(reconstruction) != {"result", "proof"}
+        or reconstruction["result"] != "DERIVED_FROM_LATER_DIAGNOSTIC_ONLY"
+        or reconstruction["proof"] != proof
+    ):
+        raise CarryForwardError("group2_reconcile_first_startup_changed")
+    _validate_group2_manifest_db(failed, first["db"])
+    legacy = first["legacy_assets"]
+    projection = first["db"]["asset_projection"]
+    if not isinstance(legacy, dict) or set(legacy) != set(ASSET_TABLES):
+        raise CarryForwardError("group2_reconcile_first_startup_changed")
+    for name in ASSET_TABLES:
+        item = legacy[name]
+        projected = projection[name]
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"columns", "rows"}
+            or item["columns"] != projected["columns"]
+            or not isinstance(item["rows"], list)
+            or not all(
+                isinstance(row, str) and DIGEST.fullmatch(row)
+                for row in item["rows"]
+            )
+            or len(item["rows"]) != projected["count"]
+        ):
+            raise CarryForwardError("group2_reconcile_first_startup_changed")
+
+
+def validate_group2_reconcile_user_record(
+    request: Any, approval: Any, raw: bytes
+) -> dict[str, Any]:
+    """Validate the separately retained transcript against request and approval."""
+    if not isinstance(raw, bytes):
+        raise CarryForwardError("group2_reconcile_approval_record_invalid")
+    _closed_object(
+        request,
+        {"schema", "mode", "action", "incident_id", "repo", "pr", "failed",
+         "prior", "tool", "restore", "evidence_files", "request_digest"},
+        "group2_reconcile_request_invalid",
+    )
+    try:
+        text = raw.decode("utf-8")
+        decoder = json.JSONDecoder()
+        record, end = decoder.raw_decode(text)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise CarryForwardError("group2_reconcile_approval_record_invalid") from error
+    if text[end:] not in {"", "\n"}:
+        raise CarryForwardError("group2_reconcile_approval_record_invalid")
+    record = _closed_object(
+        record,
+        {"schema", "request_digest", "tool_sha", "actions", "presented_request",
+         "user_reply"},
+        "group2_reconcile_approval_record_invalid",
+    )
+    presented = record["presented_request"]
+    if (
+        approval.get("user_record_sha256") != hashlib.sha256(raw).hexdigest()
+        or record["schema"] != "group2-starting-reconcile-user-record-v1"
+        or any(
+            record.get(key) != approval.get(key)
+            for key in ("request_digest", "tool_sha", "actions", "user_reply")
+        )
+        or record["request_digest"] != request["request_digest"]
+        or record["tool_sha"] != request["tool"]["sha"]
+        or record["actions"] != GROUP2_RECONCILE_ACTIONS
+        or not isinstance(record["user_reply"], str)
+        or not record["user_reply"].strip()
+        or not isinstance(presented, str)
+        or any(
+            value not in presented
+            for value in (
+                request["request_digest"], request["tool"]["sha"],
+                *GROUP2_RECONCILE_ACTIONS,
+            )
+        )
+    ):
+        raise CarryForwardError("group2_reconcile_approval_record_invalid")
+    return record
+
+
+def validate_group2_reconcile_request(
+    request: Any, approval: Any, artifacts: Any
+) -> dict[str, Any]:
+    """Validate the closed, separately approved incident request without I/O."""
+    request = _closed_object(
+        request,
+        {
+            "schema", "mode", "action", "incident_id", "repo", "pr", "failed",
+            "prior", "tool", "restore", "evidence_files", "request_digest",
+        },
+        "group2_reconcile_request_invalid",
+    )
+    if (
+        request["schema"] != "group2-starting-reconcile-request-v1"
+        or request["mode"] != GROUP2_MODE
+        or request["action"] != "restore-prior-software"
+        or MANIFEST_ID.fullmatch(str(request["incident_id"])) is None
+        or not isinstance(request["repo"], str)
+        or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", request["repo"]) is None
+    ):
+        raise CarryForwardError("group2_reconcile_request_invalid")
+    _positive(request["pr"], "group2_reconcile_request_invalid")
+    expected_digest = digest({k: v for k, v in request.items() if k != "request_digest"})
+    if request["request_digest"] != expected_digest:
+        raise CarryForwardError("group2_reconcile_request_digest_mismatch")
+    failed = _closed_object(
+        request["failed"],
+        {"sha", "manifest_id", "manifest_digest", "manifest_sha256", "scope_digest",
+         "installed_controller_files_digest", "initial_evidence_digest"},
+        "group2_reconcile_failed_invalid",
+    )
+    prior = _closed_object(
+        request["prior"],
+        {"sha", "manifest_id", "manifest_digest", "receipt_sha256", "consumed_sha256",
+         "images_digest", "schema"},
+        "group2_reconcile_prior_invalid",
+    )
+    tool = _closed_object(
+        request["tool"],
+        {"sha", "controller_files", "source_scope_digest", "review_report_sha256",
+         "ci_evidence_sha256"},
+        "group2_reconcile_tool_invalid",
+    )
+    restore = _closed_object(
+        request["restore"],
+        {"up", "stop_only", "retain", "storage_identity_digest", "account_policy"},
+        "group2_reconcile_restore_invalid",
+    )
+    digest_fields = (
+        (failed, ("manifest_digest", "manifest_sha256", "scope_digest",
+                  "installed_controller_files_digest", "initial_evidence_digest")),
+        (prior, ("manifest_digest", "receipt_sha256", "consumed_sha256", "images_digest")),
+        (tool, ("source_scope_digest", "review_report_sha256", "ci_evidence_sha256")),
+        (restore, ("storage_identity_digest",)),
+    )
+    for owner, names in digest_fields:
+        for name in names:
+            _digest_text(owner[name], "group2_reconcile_request_invalid")
+    for owner, name in ((failed, "sha"), (prior, "sha"), (tool, "sha")):
+        _sha_text(owner[name], "group2_reconcile_request_invalid")
+    if (
+        prior["sha"] != GROUP2_FROM_SHA
+        or prior["schema"] != "0040_issue152_dispositions"
+        or failed["sha"] == prior["sha"]
+        or tool["sha"] == failed["sha"]
+        or restore
+        != {
+            "up": ["postgres", "control", "worker", "web"],
+            "stop_only": ["account-web"],
+            "retain": ["rabbitmq"],
+            "storage_identity_digest": restore["storage_identity_digest"],
+            "account_policy": "stop-current-candidate-preserve-binding",
+        }
+    ):
+        raise CarryForwardError("group2_reconcile_request_invalid")
+    files = tool["controller_files"]
+    if not isinstance(files, dict) or set(files) != GROUP2_CONTROLLER_FILES:
+        raise CarryForwardError("group2_reconcile_tool_invalid")
+    for item in files.values():
+        _digest_text(item, "group2_reconcile_tool_invalid")
+    evidence_files = request["evidence_files"]
+    if not isinstance(evidence_files, dict) or set(evidence_files) != GROUP2_RECONCILE_EVIDENCE_FILES:
+        raise CarryForwardError("group2_reconcile_artifact_invalid")
+    if not isinstance(artifacts, dict) or set(artifacts) != GROUP2_RECONCILE_EVIDENCE_FILES:
+        raise CarryForwardError("group2_reconcile_artifact_invalid")
+    parsed = {}
+    raw_hashes = {}
+    for name, value in artifacts.items():
+        parsed[name], actual = _reconcile_artifact_value(value)
+        raw_hashes[name] = actual
+        if evidence_files[name] != actual:
+            raise CarryForwardError("group2_reconcile_artifact_digest_mismatch")
+    _validate_reconcile_wrappers(request, parsed, raw_hashes)
+    approval = _closed_object(
+        approval,
+        {"schema", "status", "request_digest", "tool_sha", "actions", "user_reply",
+         "user_record_sha256"},
+        "group2_reconcile_approval_invalid",
+    )
+    _digest_text(approval["user_record_sha256"], "group2_reconcile_approval_invalid")
+    if (
+        approval["schema"] != "group2-starting-reconcile-approval-v1"
+        or approval["status"] != "USER_APPROVED"
+        or approval["request_digest"] != request["request_digest"]
+        or approval["tool_sha"] != tool["sha"]
+        or approval["actions"] != GROUP2_RECONCILE_ACTIONS
+        or not isinstance(approval["user_reply"], str)
+        or not approval["user_reply"].strip()
+    ):
+        raise CarryForwardError("group2_reconcile_approval_invalid")
+    return {"request": request, "approval": approval, "artifacts": parsed}
+
+
+def _validate_reconcile_idle(value: Any) -> dict[str, Any]:
+    value = _closed_object(
+        value, {"idle", "namespace_quiet", "fd_quiet", "keeper_unchanged"},
+        "group2_reconcile_idle_invalid",
+    )
+    if any(value[key] is not True for key in value):
+        raise CarryForwardError("group2_reconcile_idle_invalid")
+    return value
+
+
+def validate_group2_reconcile_preflight(
+    request: Any, fresh: Any, originals: Any
+) -> dict[str, Any]:
+    """Compare live preflight evidence with the frozen incident originals."""
+    _closed_object(request, {"schema", "mode", "action", "incident_id", "repo", "pr",
+        "failed", "prior", "tool", "restore", "evidence_files", "request_digest"},
+        "group2_reconcile_request_invalid")
+    fresh = _closed_object(
+        fresh,
+        {"authority", "db", "files", "logs", "storage",
+         "postgres", "images", "idle"},
+        "group2_reconcile_preflight_invalid",
+    )
+    originals = _closed_object(
+        originals,
+        {"authority", "db", "files", "logs", "startup_proof", "storage", "postgres", "images"},
+        "group2_reconcile_originals_invalid",
+    )
+    authority = fresh["authority"]
+    if (
+        not isinstance(authority, dict)
+        or authority.get("enabled") is not False
+        or authority.get("attention_phase") != "switching"
+        or authority.get("transaction_phase") != "starting"
+        or authority.get("failed_sha") != request["failed"]["sha"]
+        or authority.get("current_sha") != request["prior"]["sha"]
+        or authority.get("installed_controller_files_digest")
+        != request["failed"]["installed_controller_files_digest"]
+    ):
+        raise CarryForwardError("group2_reconcile_authority_changed")
+    if fresh["authority"] != originals["authority"]:
+        raise CarryForwardError("group2_reconcile_authority_changed")
+    _compare_group2_db_strict(originals["db"], fresh["db"])
+    _validate_capture_digests(originals["files"])
+    _validate_capture_digests(fresh["files"])
+    if originals["files"] != fresh["files"]:
+        raise CarryForwardError("group2_reconcile_files_changed")
+    _validate_log_link(originals["logs"], fresh["logs"])
+    worker_append = _appended_text(fresh["logs"], "/worker/worker.log")
+    control_append = _appended_text(fresh["logs"], "/control/control.log")
+    if (
+        "sandbox preflight receipt:" in worker_append
+        or "sandbox preflight passed; rabbitmq execution gate=True" in worker_append
+        or re.search(
+            r'"(?:POST|PATCH|DELETE) /api/(?:adapters|executions|workers)/',
+            control_append,
+        )
+    ):
+        raise CarryForwardError("group2_reconcile_startup_changed")
+    for key in ("storage", "postgres", "images"):
+        if fresh[key] != originals[key]:
+            raise CarryForwardError(f"group2_reconcile_{key}_changed")
+    if fresh["postgres"].get("schema") != request["prior"]["schema"]:
+        raise CarryForwardError("group2_reconcile_postgres_changed")
+    if digest(fresh["storage"]) != request["restore"]["storage_identity_digest"]:
+        raise CarryForwardError("group2_reconcile_storage_changed")
+    _validate_reconcile_idle(fresh["idle"])
+    return fresh
+
+
+def _incident_startup_proof(request: Any) -> dict[str, Any]:
+    """Reuse the normal startup oracle with the prior Worker bound as candidate."""
+    value = _closed_request(
+        request,
+        "startup-proof",
+        {"profile", "logs_before", "logs_after", "container_before", "container_after",
+         "window_start_ns", "window_end_ns"},
+    )
+    profile = validate_group2_account_entry(value["profile"])
+    return _worker_startup_proof(
+        value,
+        profile,
+        profile["old_containers"]["worker"]["image_id"],
+        profile["old_profiles"]["worker"],
+    )
+
+
+def validate_group2_reconcile_result(request: Any, evidence: Any) -> dict[str, Any]:
+    evidence = _closed_object(
+        evidence,
+        {"preflight", "stopped", "restored_postgres", "restore_startup", "restored",
+         "account", "images", "storage", "token_health"},
+        "group2_reconcile_result_invalid",
+    )
+    preflight, stopped, restored = evidence["preflight"], evidence["stopped"], evidence["restored"]
+    _closed_object(preflight, {"db", "files", "logs"}, "group2_reconcile_result_invalid")
+    _closed_object(stopped, {"db", "files", "logs", "idle"}, "group2_reconcile_result_invalid")
+    _closed_object(evidence["restored_postgres"], {"db", "files", "logs"}, "group2_reconcile_result_invalid")
+    _closed_object(restored, {"db", "files", "logs"}, "group2_reconcile_result_invalid")
+    for item in (stopped, evidence["restored_postgres"], restored):
+        _compare_group2_db_strict(preflight["db"], item["db"])
+        _validate_capture_digests(item["files"])
+    if stopped["files"] != preflight["files"] or evidence["restored_postgres"]["files"] != stopped["files"]:
+        raise CarryForwardError("group2_reconcile_files_changed")
+    _validate_log_link(preflight["logs"], stopped["logs"])
+    _validate_log_link(stopped["logs"], evidence["restored_postgres"]["logs"])
+    proof = _incident_startup_proof(evidence["restore_startup"]["request"])
+    if proof != evidence["restore_startup"].get("proof"):
+        raise CarryForwardError("group2_reconcile_startup_changed")
+    file_result = compare_group2_startup_files(
+        evidence["restored_postgres"]["files"], restored["files"], proof
+    )
+    _validate_log_link(evidence["restored_postgres"]["logs"], restored["logs"])
+    _validate_reconcile_idle(stopped["idle"])
+    account = _closed_object(evidence["account"], {"before", "after"}, "group2_reconcile_account_invalid")
+    account_fields = {
+        "container_id", "image_id", "command", "labels", "port_bindings", "mounts", "networks"
+    }
+    if (
+        not isinstance(account["before"], dict)
+        or not isinstance(account["after"], dict)
+        or any(account["before"].get(key) != account["after"].get(key) for key in account_fields)
+        or account["after"].get("status") == "running"
+    ):
+        raise CarryForwardError("group2_reconcile_account_changed")
+    if evidence["storage"] != request["restore"]["storage_identity_digest"]:
+        raise CarryForwardError("group2_reconcile_storage_changed")
+    expected_images = evidence["images"]
+    if (
+        not isinstance(expected_images, dict)
+        or set(expected_images) != {"prior", "restored", "rabbitmq_before", "rabbitmq_after"}
+        or not isinstance(expected_images["prior"], dict)
+        or not isinstance(expected_images["restored"], dict)
+        or set(expected_images["restored"]) != {"postgres", "control", "worker", "web"}
+        or expected_images["rabbitmq_after"] != expected_images["rabbitmq_before"]
+        or digest(expected_images["prior"]) != request["prior"]["images_digest"]
+    ):
+        raise CarryForwardError("group2_reconcile_images_changed")
+    for service, actual in expected_images["restored"].items():
+        matches = [
+            image for tag, image in expected_images["prior"].items()
+            if tag.endswith(f"-{service}:{request['prior']['sha']}")
+        ]
+        if matches != [actual]:
+            raise CarryForwardError("group2_reconcile_images_changed")
+    if evidence["token_health"] != {"status": 200, "database": True}:
+        raise CarryForwardError("group2_reconcile_health_failed")
+    payload = {
+        "schema": "group2-software-reconcile-v1",
+        "result": "restored_prior_software",
+        "incident_id": request["incident_id"],
+        "tool_sha": request["tool"]["sha"],
+        "failed_sha": request["failed"]["sha"],
+        "restored_sha": request["prior"]["sha"],
+        "request_digest": request["request_digest"],
+        "restored": restored,
+        "startup_proof": proof,
+        "startup_files": file_result,
+        "account": account["after"],
+        "images": expected_images,
+        "storage_identity_digest": evidence["storage"],
+    }
+    payload["receipt_digest"] = digest(payload)
+    return payload
+
+
+def validate_group2_reconcile_preservation(
+    record: Any, original_reference: Any
+) -> dict[str, Any]:
+    record = _closed_object(
+        record,
+        {"schema", "request", "approval", "failed_manifest", "prior_success",
+         "first_startup", "pre_rollback", "stopped", "restore_startup", "restored", "receipt"},
+        "group2_reconcile_chain_invalid",
+    )
+    if record["schema"] != "group2-reconcile-chain-v1":
+        raise CarryForwardError("group2_reconcile_chain_invalid")
+    original_reference = _closed_object(
+        original_reference, {"snapshot", "snapshot_digest", "review_report_sha256"},
+        "group2_preservation_reference_invalid",
+    )
+    original = _closed_object(
+        original_reference["snapshot"], {"selection", "db", "files", "lineage"},
+        "group2_preservation_reference_invalid",
+    )
+    _digest_text(
+        original_reference["review_report_sha256"],
+        "group2_preservation_reference_invalid",
+    )
+    if (
+        original_reference["snapshot_digest"] != digest(original)
+        or not isinstance(original["lineage"], list)
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"name", "sha256"}
+            or not isinstance(item["name"], str)
+            or DIGEST.fullmatch(str(item["sha256"])) is None
+            for item in original["lineage"]
+        )
+    ):
+        raise CarryForwardError("group2_preservation_reference_invalid")
+    request = _closed_object(
+        record["request"],
+        {"schema", "mode", "action", "incident_id", "repo", "pr", "failed",
+         "prior", "tool", "restore", "evidence_files", "request_digest"},
+        "group2_reconcile_chain_invalid",
+    )
+    approval = _closed_object(
+        record["approval"],
+        {"schema", "status", "request_digest", "tool_sha", "actions", "user_reply",
+         "user_record_sha256"},
+        "group2_reconcile_chain_invalid",
+    )
+    prior_success = _closed_object(
+        record["prior_success"],
+        {"sha", "manifest_id", "manifest_digest", "receipt_sha256",
+         "consumed_sha256", "images_digest", "schema"},
+        "group2_reconcile_chain_invalid",
+    )
+    restored = _closed_object(
+        record["restored"],
+        {"postgres", "final", "account", "images", "storage", "token_health"},
+        "group2_reconcile_chain_invalid",
+    )
+    failed_manifest = validate_manifest(record["failed_manifest"])
+    validate_group2_manifest_extensions(failed_manifest)
+    if (
+        request["schema"] != "group2-starting-reconcile-request-v1"
+        or request["mode"] != GROUP2_MODE
+        or request["action"] != "restore-prior-software"
+        or request["request_digest"]
+        != digest({key: value for key, value in request.items() if key != "request_digest"})
+        or approval["schema"] != "group2-starting-reconcile-approval-v1"
+        or approval["status"] != "USER_APPROVED"
+        or approval["request_digest"] != request["request_digest"]
+        or approval["tool_sha"] != request.get("tool", {}).get("sha")
+        or approval["actions"] != GROUP2_RECONCILE_ACTIONS
+        or not isinstance(approval["user_reply"], str)
+        or not approval["user_reply"].strip()
+        or DIGEST.fullmatch(str(approval["user_record_sha256"])) is None
+        or failed_manifest.get("manifest_id") != request.get("failed", {}).get("manifest_id")
+        or failed_manifest.get("manifest_digest") != request.get("failed", {}).get("manifest_digest")
+        or failed_manifest.get("to_sha") != request.get("failed", {}).get("sha")
+        or failed_manifest["review_scope"].get("preservation_reference") != original_reference
+        or prior_success != request.get("prior")
+    ):
+        raise CarryForwardError("group2_reconcile_chain_invalid")
+    first = _closed_object(
+        record["first_startup"],
+        {"request", "proof", "before_files", "after_files", "result"},
+        "group2_reconcile_chain_invalid",
+    )
+    first_proof = _startup_proof(first["request"])
+    if (
+        first_proof != first["proof"]
+        or compare_group2_startup_files(
+            first["before_files"], first["after_files"], first_proof
+        )
+        != first["result"]
+    ):
+        raise CarryForwardError("group2_reconcile_chain_changed")
+    receipt = validate_group2_reconcile_result(
+        request,
+        {
+            "preflight": record["pre_rollback"],
+            "stopped": record["stopped"],
+            "restored_postgres": restored["postgres"],
+            "restore_startup": record["restore_startup"],
+            "restored": restored["final"],
+            "account": restored["account"],
+            "images": restored["images"],
+            "storage": restored["storage"],
+            "token_health": restored["token_health"],
+        },
+    )
+    if (
+        receipt != record["receipt"]
+        or original["db"] != record["pre_rollback"]["db"]
+        or original["db"] != receipt["restored"]["db"]
+    ):
+        raise CarryForwardError("group2_reconcile_chain_changed")
+    chain_digest = digest(record)
+    snapshot = {
+        "selection": original["selection"],
+        "db": original["db"],
+        "files": receipt["restored"]["files"],
+        "lineage": [
+            *original["lineage"],
+            {"name": f"incident/{request['incident_id']}/request", "sha256": request["request_digest"]},
+            {"name": f"incident/{request['incident_id']}/receipt", "sha256": receipt["receipt_digest"]},
+            {"name": f"incident/{request['incident_id']}/chain", "sha256": chain_digest},
+        ],
+    }
+    return snapshot
+
+
 def group2_runtime(request: Any) -> dict[str, Any]:
     if not isinstance(request, dict) or request.get("mode") != GROUP2_MODE:
         raise CarryForwardError("group2_runtime_request_invalid")
@@ -7796,6 +8701,369 @@ def _command_group2_runtime(args: argparse.Namespace) -> dict[str, Any]:
     result = group2_runtime(request)
     write_private(args.output, result)
     return {"code": "group2_runtime_ok", "operation": request["operation"]}
+
+
+def _atomic_incident_json(path: Path, value: Any) -> None:
+    write_private(path, value)
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _checked_output(arguments: list[str]) -> str:
+    return subprocess.check_output(arguments, text=True, timeout=180).strip()
+
+
+def _compose_arguments(root: Path, project: str, sha: str) -> list[str]:
+    release = root / "releases" / sha
+    return [
+        "docker", "compose", "--project-name", project,
+        "--env-file", str(root / "preview.env"),
+        "-f", str(release / "docker-compose.yml"),
+        "-f", str(release / "compose.preview.json"),
+    ]
+
+
+def _container_image(project: str, service: str) -> str:
+    return _checked_output(
+        ["docker", "inspect", f"{project}-{service}-1", "--format", "{{.Image}}"]
+    )
+
+
+def _live_storage_identity(project: str) -> list[dict[str, Any]]:
+    actual = []
+    for service in ("postgres", "rabbitmq", "control", "worker"):
+        value = json.loads(_checked_output(["docker", "inspect", f"{project}-{service}-1"]))[0]
+        for item in value.get("Mounts", []):
+            if item.get("Type") not in {"volume", "bind", "tmpfs"}:
+                continue
+            actual.append(
+                {
+                    "service": service,
+                    "type": item["Type"],
+                    "source": item.get("Name") if item["Type"] == "volume" else item.get("Source", "") if item["Type"] == "bind" else "",
+                    "destination": item.get("Destination"),
+                    "read_only": not bool(item.get("RW")),
+                }
+            )
+    actual.sort(key=lambda item: (item["service"], item["destination"]))
+    return validate_storage_identity(actual)
+
+
+def _read_token_health(root: Path, profile: dict[str, Any]) -> dict[str, Any]:
+    env = _read_explicit_env(root / "preview.env")
+    token_port = profile["ports"]["token"]
+    if not isinstance(token_port, list) or len(token_port) != 1:
+        raise CarryForwardError("group2_reconcile_health_failed")
+    request = urllib_request.Request(
+        f"http://127.0.0.1:{token_port[0]['published']}/api/health",
+        headers={"Authorization": "Bearer " + env["DLR_ADMIN_TOKEN"]},
+    )
+    try:
+        with urllib_request.build_opener(urllib_request.ProxyHandler({})).open(
+            request, timeout=10
+        ) as response:
+            body = json.load(response)
+            return {"status": response.status, "database": body.get("database")}
+    except (OSError, ValueError, KeyError) as error:
+        raise CarryForwardError("group2_reconcile_health_failed") from error
+
+
+def _incident_phase(directory: Path, phase: str, request: dict[str, Any]) -> None:
+    _atomic_incident_json(
+        directory / "phase.json",
+        {"schema": "group2-starting-reconcile-phase-v1", "incident_id": request["incident_id"], "phase": phase},
+    )
+
+
+def _capture_reconcile_state(
+    root: Path,
+    directory: Path,
+    name: str,
+    manifest: dict[str, Any],
+    project: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    output = directory / name
+    output.mkdir(mode=0o700)
+    storage = manifest["storage_identity"]
+    def volume(service: str, destination: str) -> str:
+        matches = [
+            item["source"] for item in storage
+            if item["service"] == service and item["destination"] == destination
+            and item["type"] == "volume"
+        ]
+        if len(matches) != 1:
+            raise CarryForwardError("group2_reconcile_storage_changed")
+        return matches[0]
+    runtime = volume("worker", "/var/lib/dlr/runtime")
+    journal = volume("worker", "/var/lib/dlr/journal")
+    builtin = volume("control", "/var/lib/dlr/builtin-packages")
+    artifact_entries = [
+        item for item in storage
+        if item["service"] == "control" and item["type"] == "volume"
+        and item["destination"] != "/var/lib/dlr/builtin-packages"
+    ]
+    if len(artifact_entries) != 1:
+        raise CarryForwardError("group2_reconcile_storage_changed")
+    artifact = artifact_entries[0]
+    worker_user = _checked_output(
+        ["docker", "inspect", f"{project}-worker-1", "--format", "{{.Config.User}}"]
+    )
+    worker_uid = (worker_user.split(":", 1)[0] or "0")
+    if not worker_uid.isdigit():
+        raise CarryForwardError("group2_reconcile_storage_changed")
+    control = json.loads(_checked_output(["docker", "inspect", f"{project}-control-1"]))[0]
+    allowed_env = []
+    for item in control["Config"]["Env"]:
+        key = item.partition("=")[0]
+        if key in {"DATABASE_URL", "PGOPTIONS"}:
+            allowed_env.append(item)
+    if not any(item.startswith("DATABASE_URL=") for item in allowed_env):
+        raise CarryForwardError("group2_reconcile_db_capture_invalid")
+    networks = list(control["NetworkSettings"]["Networks"])
+    if len(networks) != 1:
+        raise CarryForwardError("group2_reconcile_db_capture_invalid")
+    old_control = [
+        image for tag, image in manifest["old_image_ids"].items()
+        if tag.endswith(f"-control:{GROUP2_FROM_SHA}")
+    ]
+    if len(old_control) != 1:
+        raise CarryForwardError("group2_reconcile_images_changed")
+    arguments = [
+        "docker", "run", "--rm", "--read-only", "--network", networks[0],
+        "--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH", "--user", "0:0",
+        "--security-opt", "no-new-privileges=true", "--pids-limit", "64",
+        "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m",
+        "--env", "PYTHONDONTWRITEBYTECODE=1",
+    ]
+    for item in allowed_env:
+        arguments.extend(("--env", item))
+    arguments.extend(
+        (
+            "--mount", f"type=bind,source={directory / 'tool' / 'carry_forward.py'},target=/opt/dlr/carry_forward.py,readonly",
+            "--mount", f"type=bind,source={output},target=/evidence",
+            "--mount", f"type=bind,source={directory / 'evidence' / 'failed-manifest.json'},target=/baseline.json,readonly",
+            "--mount", f"type=volume,source={runtime},target=/var/lib/dlr/runtime,readonly,volume-nocopy",
+            "--mount", f"type=volume,source={journal},target=/var/lib/dlr/journal,readonly,volume-nocopy",
+            "--mount", f"type=volume,source={builtin},target=/var/lib/dlr/builtin-packages,readonly,volume-nocopy",
+            "--mount", f"type=volume,source={artifact['source']},target={artifact['destination']},readonly,volume-nocopy",
+            "--entrypoint", "python", old_control[0], "/opt/dlr/carry_forward.py", "capture-state",
+            "--baseline", "/baseline.json", "--schema-phase", "before", "--mode", GROUP2_MODE,
+            "--runtime-root", "/var/lib/dlr/runtime", "--journal-root", "/var/lib/dlr/journal",
+            "--material-root", "builtin=/var/lib/dlr/builtin-packages",
+            "--material-root", f"artifacts={artifact['destination']}", "--expected-uid", worker_uid,
+            "--db-output", "/evidence/db.json", "--files-output", "/evidence/files.json",
+        )
+    )
+    subprocess.run(arguments, check=True, timeout=300)
+    return read_private(output / "db.json"), read_private(output / "files.json")
+
+
+def reconcile_group2_vm(root: Path, incident_id: str) -> dict[str, Any]:
+    """VM-only one-shot orchestration.  It waits for the host receipt check before tx commit."""
+    root = root.resolve(strict=True)
+    directory = (root / "incidents" / incident_id).resolve(strict=True)
+    if directory.parent != root / "incidents":
+        raise CarryForwardError("group2_reconcile_replay_rejected")
+    request = read_private(directory / "request.json")
+    if read_private(directory / "phase.json") != {
+        "schema": "group2-starting-reconcile-phase-v1",
+        "incident_id": incident_id,
+        "phase": "prepared",
+    }:
+        raise CarryForwardError("group2_reconcile_replay_rejected")
+    approval = read_private(directory / "approval.json")
+    user_record = (directory / "USER-APPROVAL.txt").read_bytes()
+    artifacts = {
+        name: (directory / "evidence" / name).read_bytes()
+        for name in GROUP2_RECONCILE_EVIDENCE_FILES
+    }
+    validated = validate_group2_reconcile_request(request, approval, artifacts)
+    validate_group2_reconcile_user_record(request, approval, user_record)
+    tool_directory = directory / "tool"
+    if (
+        not tool_directory.is_dir()
+        or tool_directory.is_symlink()
+        or {item.name for item in tool_directory.iterdir()}
+        != {"deploy.sh", "carry_forward.py"}
+    ):
+        raise CarryForwardError("group2_reconcile_tool_changed")
+    for name in ("deploy.sh", "carry_forward.py"):
+        path = tool_directory / name
+        info = path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or hashlib.sha256(path.read_bytes()).hexdigest()
+            != request["tool"]["controller_files"][name]
+        ):
+            raise CarryForwardError("group2_reconcile_tool_changed")
+    manifest = validated["artifacts"]["failed-manifest.json"]
+    first = validated["artifacts"]["first-startup.json"]
+    authority = read_private(directory / "preflight-authority.json")
+    if (root / "current-sha").read_text().strip() != request["prior"]["sha"]:
+        raise CarryForwardError("group2_reconcile_authority_changed")
+    tx = read_private(root / "transaction.json")
+    if tx.get("phase") != "starting" or tx.get("sha") != request["failed"]["sha"]:
+        raise CarryForwardError("group2_reconcile_authority_changed")
+    installed = {
+        name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+        for name in GROUP2_CONTROLLER_FILES
+    }
+    if digest(installed) != request["failed"]["installed_controller_files_digest"]:
+        raise CarryForwardError("group2_reconcile_authority_changed")
+    project = manifest["account_entry"]["project"]
+    live_storage = _live_storage_identity(project)
+    if live_storage != manifest["storage_identity"] or digest(live_storage) != request["restore"]["storage_identity_digest"]:
+        raise CarryForwardError("group2_reconcile_storage_changed")
+    logs = read_log_append(first["log_read_diagnostic"]["log_append"])
+    db, files = _capture_reconcile_state(root, directory, "preflight", manifest, project)
+    volumes = [item for item in manifest["storage_identity"] if item["type"] == "volume"]
+    runtime_volume = next(item["source"] for item in volumes if item["service"] == "worker" and item["destination"] == "/var/lib/dlr/runtime")
+    journal_volume = next(item["source"] for item in volumes if item["service"] == "worker" and item["destination"] == "/var/lib/dlr/journal")
+    deployment = read_private(root / "deployment.json")
+    kernel = capture_kernel(
+        deployment["sandbox_unit"], require_idle=True,
+        expected_description=f"DataLinkRuntime Sandbox {deployment['sandbox_unit']} CPU={deployment['sandbox_cpu_quota']} Memory={deployment['sandbox_memory_max']}",
+        worker_container=f"{project}-worker-1", runtime_volume=runtime_volume,
+        journal_volume=journal_volume,
+        baseline_authority=manifest["kernel_evidence"].get("old_worker_authority"),
+        baseline_recovery_markers=manifest["file_evidence"].get("journal_facts", {}).get("sandbox_recovery", []),
+    )
+    current_images = {
+        service: _container_image(project, service)
+        for service in ("postgres", "control", "worker", "web")
+    }
+    platform = validated["artifacts"]["platform.json"]
+    postgres_format = platform["postgres_format"]
+    expected_current_images = {
+        service: platform["images"]["candidate"][service]["Id"]
+        for service in ("postgres", "control", "worker", "web")
+    }
+    if current_images != expected_current_images:
+        raise CarryForwardError("group2_reconcile_images_changed")
+    prior_images = {}
+    for service in ("postgres", "control", "worker", "web"):
+        matches = [
+            image for tag, image in manifest["old_image_ids"].items()
+            if tag.endswith(f"-{service}:{request['prior']['sha']}")
+        ]
+        if len(matches) != 1:
+            raise CarryForwardError("group2_reconcile_images_changed")
+        prior_images[service] = matches[0]
+    preflight = {
+        "authority": authority, "db": db, "files": files, "logs": logs,
+        "storage": live_storage, "postgres": {
+            "schema": _checked_output(["docker", "exec", f"{project}-postgres-1", "psql", "-U", "dlr", "-d", "dlr", "-Atc", "SELECT version_num FROM alembic_version"]),
+            "binary_version": _checked_output(["docker", "exec", f"{project}-postgres-1", "postgres", "--version"]),
+            "server_version": _checked_output(["docker", "exec", f"{project}-postgres-1", "psql", "-U", "dlr", "-d", "dlr", "-Atc", "SHOW server_version"]),
+            "data_pg_version": _checked_output(["docker", "exec", f"{project}-postgres-1", "cat", "/var/lib/postgresql/data/PG_VERSION"]),
+        },
+        "images": current_images, "idle": {"idle": True, "namespace_quiet": True, "fd_quiet": True, "keeper_unchanged": True},
+    }
+    originals = {
+        "authority": authority, "db": first["db"], "files": first["files"],
+        "logs": first["log_read_diagnostic"]["log_append"],
+        "startup_proof": first["actual_results"]["startup_reconstruction"]["proof"],
+        "storage": live_storage,
+        "postgres": {
+            "schema": request["prior"]["schema"],
+            "binary_version": postgres_format["candidate_binary_version"],
+            "server_version": postgres_format["current_server_version"],
+            "data_pg_version": postgres_format["data_pg_version"],
+        },
+        "images": current_images,
+    }
+    validate_group2_reconcile_preflight(request, preflight, originals)
+    _incident_phase(directory, "stopping-control", request)
+    compose = _compose_arguments(root, project, request["prior"]["sha"])
+    account_before = _inspect_container(project, "account-web")
+    subprocess.run([*compose, "stop", "control"], check=True, timeout=180)
+    subprocess.run([*compose, "stop", "worker", "web", "account-web"], check=True, timeout=180)
+    account_after = _inspect_container(project, "account-web")
+    stopped_db, stopped_files = _capture_reconcile_state(root, directory, "stopped", manifest, project)
+    stopped_logs = read_log_append(logs)
+    stopped_kernel = capture_kernel(
+        deployment["sandbox_unit"], require_idle=True,
+        expected_description=f"DataLinkRuntime Sandbox {deployment['sandbox_unit']} CPU={deployment['sandbox_cpu_quota']} Memory={deployment['sandbox_memory_max']}",
+        worker_container=f"{project}-worker-1", runtime_volume=runtime_volume, journal_volume=journal_volume,
+        baseline_authority=manifest["kernel_evidence"].get("old_worker_authority"),
+        baseline_recovery_markers=manifest["file_evidence"].get("journal_facts", {}).get("sandbox_recovery", []),
+    )
+    stopped = {"db": stopped_db, "files": stopped_files, "logs": stopped_logs,
+               "idle": {"idle": True, "namespace_quiet": True, "fd_quiet": True, "keeper_unchanged": True}}
+    _incident_phase(directory, "restoring-postgres", request)
+    subprocess.run([*compose, "up", "-d", "--no-build", "--no-deps", "--force-recreate", "--wait", "--wait-timeout", "180", "postgres"], check=True, timeout=240)
+    if _live_storage_identity(project) != live_storage:
+        raise CarryForwardError("group2_reconcile_storage_changed")
+    if (
+        _container_image(project, "postgres") != prior_images["postgres"]
+        or _checked_output(["docker", "exec", f"{project}-postgres-1", "postgres", "--version"])
+        != postgres_format["prior_binary_version"]
+        or _checked_output(["docker", "exec", f"{project}-postgres-1", "psql", "-U", "dlr", "-d", "dlr", "-Atc", "SHOW server_version"])
+        != postgres_format["current_server_version"]
+        or _checked_output(["docker", "exec", f"{project}-postgres-1", "cat", "/var/lib/postgresql/data/PG_VERSION"])
+        != postgres_format["data_pg_version"]
+        or _checked_output(["docker", "exec", f"{project}-postgres-1", "psql", "-U", "dlr", "-d", "dlr", "-Atc", "SELECT version_num FROM alembic_version"])
+        != request["prior"]["schema"]
+    ):
+        raise CarryForwardError("group2_reconcile_postgres_changed")
+    restored_db, restored_files = _capture_reconcile_state(root, directory, "restored-postgres", manifest, project)
+    restored_logs = read_log_append(stopped_logs)
+    before_worker = _inspect_container(project, "worker")
+    window_start = time.time_ns()
+    subprocess.run([*compose, "up", "-d", "--no-build", "--no-deps", "--force-recreate", "--wait", "--wait-timeout", "180", "worker"], check=True, timeout=240)
+    subprocess.run([*compose, "up", "-d", "--no-build", "--no-deps", "--wait", "--wait-timeout", "180", "control", "web"], check=True, timeout=240)
+    window_end = time.time_ns()
+    after_worker = _inspect_container(project, "worker")
+    final_logs = read_log_append(restored_logs)
+    final_db, final_files = _capture_reconcile_state(root, directory, "restored", manifest, project)
+    startup_request = {
+        "mode": GROUP2_MODE, "operation": "startup-proof", "profile": manifest["account_entry"],
+        "logs_before": restored_logs, "logs_after": final_logs,
+        "container_before": before_worker, "container_after": after_worker,
+        "window_start_ns": window_start, "window_end_ns": window_end,
+    }
+    proof = _incident_startup_proof(startup_request)
+    restored_images = {service: _container_image(project, service) for service in ("postgres", "control", "worker", "web")}
+    rabbit = _container_image(project, "rabbitmq")
+    token_health = _read_token_health(root, manifest["account_entry"])
+    evidence = {
+        "preflight": {"db": db, "files": files, "logs": logs},
+        "stopped": stopped,
+        "restored_postgres": {"db": restored_db, "files": restored_files, "logs": restored_logs},
+        "restore_startup": {"request": startup_request, "proof": proof},
+        "restored": {"db": final_db, "files": final_files, "logs": final_logs},
+        "account": {"before": account_before, "after": account_after},
+        "images": {"prior": manifest["old_image_ids"], "restored": restored_images, "rabbitmq_before": rabbit, "rabbitmq_after": _container_image(project, "rabbitmq")},
+        "storage": request["restore"]["storage_identity_digest"], "token_health": token_health,
+    }
+    receipt = validate_group2_reconcile_result(request, evidence)
+    result = {"evidence": evidence, "receipt": receipt, "kernel": {"preflight": kernel, "stopped": stopped_kernel}}
+    _atomic_incident_json(directory / "result.json", result)
+    _atomic_incident_json(directory / "receipt.json", receipt)
+    deadline = time.monotonic() + 300
+    while not (directory / "host-validated.json").exists():
+        if time.monotonic() >= deadline:
+            raise CarryForwardError("group2_reconcile_host_validation_timeout")
+        time.sleep(0.25)
+    acknowledgement = read_private(directory / "host-validated.json")
+    if acknowledgement != {"incident_id": incident_id, "receipt_digest": receipt["receipt_digest"]}:
+        raise CarryForwardError("group2_reconcile_host_validation_invalid")
+    transaction = {
+        "phase": "ready", "sha": request["prior"]["sha"],
+        "operation": "incident_software_restore",
+        "reconciled_by": {"incident_id": incident_id, "receipt_digest": receipt["receipt_digest"]},
+        "backup": tx.get("backup"), "carry_forward": tx.get("carry_forward"), "at": time.time(),
+    }
+    _atomic_incident_json(root / "transaction.json", transaction)
+    return {"code": "group2_reconcile_vm_ok", "receipt_digest": receipt["receipt_digest"]}
+
+
+def _command_reconcile_vm(args: argparse.Namespace) -> dict[str, Any]:
+    return reconcile_group2_vm(args.root, args.incident_id)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -7844,6 +9112,9 @@ def parser() -> argparse.ArgumentParser:
     runtime = commands.add_parser("group2-runtime")
     runtime.add_argument("--request", type=Path, required=True)
     runtime.add_argument("--output", type=Path, required=True)
+    reconcile = commands.add_parser("reconcile-vm")
+    reconcile.add_argument("--root", type=Path, required=True)
+    reconcile.add_argument("--incident-id", required=True)
     return root
 
 
@@ -7862,8 +9133,12 @@ def main() -> None:
             result = _command_plan(args)
         elif args.command == "compare":
             result = _command_compare(args)
-        else:
+        elif args.command == "group2-runtime":
             result = _command_group2_runtime(args)
+        else:
+            if MANIFEST_ID.fullmatch(args.incident_id) is None:
+                raise CarryForwardError("group2_reconcile_request_invalid")
+            result = _command_reconcile_vm(args)
         print(json.dumps(result, sort_keys=True))
     except CarryForwardError as error:
         print(json.dumps({"code": error.code}, sort_keys=True), file=sys.stderr)

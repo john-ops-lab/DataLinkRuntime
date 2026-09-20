@@ -63,3 +63,5 @@
 - [ ] 10.3 按已获专项批准的 D10 实现并独立审查六文件内 v4 合同，完成 scope/锁内重核、原责任/审计/资产/session 保全、双入口、动态探针自然 cleanup 和同 SHA recover 正负回归；由 integration owner 冻结最终 exact SHA/完整 raw diff/blob/mode/迁移图/controller/images/CI/批准绑定，再执行正式固定更新。专项批准不替代这些部署和合并门禁，不得绕过第一组模式或进入第三组。
 - [ ] 10.4 创建唯一开放非draft PR，依次完成精确PR HEAD Hosted CI/Review、在10.3通过后选择PR完成固定部署与关键运行Gate、合并、精确merged-main CI及实际部署/必要回归；记录各SHA，既有固定环境数据/卷/凭据/第一组证据保持，禁止先合并后补候选部署验收。
 - [ ] 10.5 汇总八子项独立验收、修复SHA和剩余用户手工验收，主Issue保持开放、原归档Issue不重开；不使用自动关闭关键字，完成本次临时文件清理和公共材料敏感信息扫描。
+- [ ] 10.6 按 D11 在原五个代码/测试文件中实现受限事故入口和专用保全链，完成一条完整正例及十类拒绝/中断反例、独立增量 Review、精确提交 CI；冻结可审查请求与执行动作，正式环境保持 paused/attention，代码通过不计作恢复批准或成功。
+- [ ] 10.7 获得绑定精确请求及工具 SHA 的专项批准后，fresh 全量核对原保全事实，单次恢复旧 PostgreSQL/Control/Worker/Web 软件并保留停止的 account-web；验证并持久化事故 receipt 后按 D11 顺序对账，失败 manifest 不消费。独立审查新保全链后重新完成 10.3 正常 v4 部署，不复用失败事务或旧探针。

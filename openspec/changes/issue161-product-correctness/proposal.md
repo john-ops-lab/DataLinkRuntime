@@ -11,6 +11,7 @@
 - #159：以实际 Java Context 公共字段和 logger 方法纠正文档与示例，并对真实 Runtime 编译运行。
 - 按以上顺序保留独立提交与测试检查点，同组只有一个最终 PR；逐项机器检查不替代最终 head 的 CI、独立 Review、运行验证和用户手工验收。
 - 根据本组专项批准，新增仅供本组精确候选的一次性 `audited-group2-same-schema-v1` / manifest v4 保全部署合同；保留第一组责任、完整审计和全部旧资产，沿原绑定启动账号入口，并完成动态探针后的保全验证。
+- 为本组首次启动后、正式探针前失败的事务准备一次受限软件恢复入口：保留数据和失败原件，恢复最后成功的 PostgreSQL、Control、Worker、Web 软件，停止并保留当前 account-web；完成控制面对账后再重新规划正常 v4 更新。代码准备属于本组收尾，实际事故工具传输、软件恢复及控制面提交仍须针对精确请求单独批准。
 
 ## Capabilities
 
@@ -37,3 +38,5 @@
 第二组包含后端、Nginx 和 Compose 变化，超出第一组 `audited-web-same-schema` 保全更新合同；本组已获针对具体范围的专项批准，同 schema 本身仍不是部署授权。配套只修改 `tools/local-preview/` 下的 `preview.py`、`deploy.sh`、`carry_forward.py`、`tests/test_preview.py`、`tests/test_carry_forward.py` 及 `docs/zh-CN/local-preview.md`，同步本组 proposal/design/tasks 和新增 incident-preserving-upgrade delta。安装器、验证器、资产工具、端口与配置字段不扩展。最终实现仍须独立审查、冻结完整 Git 差异与精确 HEAD CI 后，由官方安装器和控制器执行。产品实施、最终 PR、合并、部署、用户验收和 Issue 关闭分别记账，主 Issue 保持开放，原 #156/#158/#154 归档状态保持不变。
 
 非目标：#129、第三组缓存治理、第四组 Prompt/会话改造、外部 PyPI 准备故障、S3 Java 原模板故障、托管上传自动重写 Nginx、STAGED 离页提示/过期提示扩建，以及第一组运行状态机再设计。
+
+事故入口不修改安装器、不替换正式安装的控制器、不恢复数据库备份、不执行迁移或探针，也不提供通用失败事务续跑或自动回退。它只能从精确审查与 CI 通过的干净仓库运行，将同提交工具暂存到私有事故目录；失败候选始终保持失败身份。正式部署与双入口验收仍须通过原 v4 流程。

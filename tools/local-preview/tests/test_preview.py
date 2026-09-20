@@ -215,6 +215,42 @@ class ControllerTests(unittest.TestCase):
         )
         self.assertIsNone(preview.read("attention.json"))
 
+    def test_reconcile_cli_is_unique_and_rejects_general_options(self):
+        request = Path(self.temp.name) / "request.json"
+        approval = Path(self.temp.name) / "approval.json"
+        request.write_text("{}")
+        approval.write_text("{}")
+        base = [
+            "preview.py",
+            "reconcile-group2-starting",
+            "--incident-request",
+            str(request),
+            "--incident-approval",
+            str(approval),
+        ]
+        with (
+            patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+            patch.object(sys, "argv", base),
+            patch.object(
+                preview,
+                "reconcile_group2_starting",
+                return_value={"incident_id": "1" * 32, "receipt_digest": "2" * 64},
+            ) as reconcile,
+            patch("builtins.print"),
+        ):
+            preview.main()
+        reconcile.assert_called_once_with(request, approval)
+        for extra in (["7"], ["--to-sha", B], ["--mode", carry_forward.GROUP2_MODE]):
+            with (
+                self.subTest(extra=extra),
+                patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+                patch.object(sys, "argv", [*base, *extra]),
+                patch.object(preview, "reconcile_group2_starting") as reconcile,
+                self.assertRaises(SystemExit),
+            ):
+                preview.main()
+            reconcile.assert_not_called()
+
     def test_explicit_manifest_is_transferred_and_bound_to_deploy_only(self):
         manifest_path = Path(self.temp.name) / "manifest.json"
         manifest_path.write_text("{}")

@@ -133,6 +133,31 @@ journal 缺失、未知文件或 symlink、未选择的 workspace、未知 cgrou
 
 carry-forward 切换停下 Control 后若出现 Claim、证据变化或任何未知读取失败，控制器保持应用停止和 attention，要求人工核对并重新计划；它不会用一次旧健康结果自动恢复写入。进入 `migrating` 后同样不自动 downgrade、restore 或启动旧 schema 应用。失败现场、原卷和备份保留供诊断。成功 receipt 只记录 manifest ID/摘要/计数，不公开私有选择；它证明旧责任被原样带到新版本，不证明原 Incident 已恢复、终结或 cleanup 已完成。后续验收必须关联原 Execution ID、generation、Attempt、输出与资源释放，新建任务成功不能替代。
 
+### 第二组 starting 事故的受限软件恢复
+
+本入口只处理本组已绑定的首次启动后、正式 probe 前失败；它不是普通 `recover`，也不把失败部署补记成成功。**代码、测试与 CI 通过不等于事故操作获批**。实际传输工具、恢复旧软件和提交控制面对账前，必须取得绑定具体请求摘要、工具 SHA 与实际用户原文的专项批准；原第二组通用交付批准不能替代。
+
+从独立审查且精确 CI 通过的干净仓库运行官方入口：
+
+```sh
+DLR_PREVIEW_HOME=<PRIVATE_CONTROLLER_ROOT> \
+  python3 tools/local-preview/preview.py reconcile-group2-starting \
+  --incident-request <PRIVATE_INCIDENT_REQUEST_JSON> \
+  --incident-approval <PRIVATE_INCIDENT_APPROVAL_JSON>
+```
+
+闭合请求绑定失败 manifest 与首次 startup 原件、最后成功 receipt/consumed/镜像、完整源码范围、审查/CI、原卷与账号绑定；同名 `.evidence` 目录只接受固定清单中的私有单链接普通文件。批准动作必须精确覆盖事故工具暂存、旧软件恢复和控制面对账。没有任意命令、目标 SHA、force、resume 或 retry 选项；同事故 ID 已存在即拒绝重放。
+
+正式安装器对 attention 的拒绝保持不变。事故入口取得宿主 operation→config 锁及 VM deploy 锁，先核实际批准/源码/CI、host/VM authority、正式安装字节、镜像/卷/PG 身份，再把同提交的 deploy/carry 工具暂存到私有事故目录并验证摘要。工具就位后完成完整 fresh 数据、文件、日志和启动核验，全部通过前不改 transaction phase 或停服务；失败只留下 prepared 目录，原告警与运行状态不变。正式宿主/VM 控制器、installation 和旧成功记录不替换；不能临时移走 attention 或让读取返回伪造状态以通过安装器。
+
+恢复先停 Control 并复核，随后停 Worker、Web 和 account-web，验证原 DB、完整责任/审计、全部业务资产与 session、文件、连续日志及真实 idle kernel/namespace/FD。旧 PostgreSQL 镜像必须实际存在，版本、完整 RootFS 和数据卷符合绑定；仅重建软件容器，不恢复备份、不执行迁移、不写旧业务行。之后启动旧成功版本的 Control、Worker、Web。RabbitMQ 与全部卷保持，account-web 保留当前容器、镜像和绑定并停止，不要求把它伪报为健康。
+
+第二次 startup 使用独立精确窗口、唯一 Worker/nonce、连续日志及既有两处允许的目录 mtime 证明；其余旧内容、权限和 DB 不变，Token 入口只做只读健康检查，不运行正式业务 probe。完整事故原件与独立 receipt 先在 VM 持久化，再由宿主读回重算和保存。只有成功后才提交指向旧成功 SHA 的事故恢复 transaction；原 current SHA、宿主 state、旧成功 probe/receipt/consumed 保持原字节。失败 manifest 原样归档并记录 abandoned，绝不 consumed；配置 CAS 清除旧 carry 引用并保持 paused，attention 最后清除。
+
+任何读取、保全或持久化失败都停在真实阶段，不自动重试、回退数据库或清理原件。receipt 后、清 attention 前中断也不自动续作：先只读对账，再审查具体剩余动作。恢复成功只证明旧软件已恢复和现场被保留，不证明新候选部署成功，也不证明账号入口可用。
+
+恢复后的新保全报告保留现有 snapshot/reference shape，仅为本事故使用 `group2_starting_reconcile_v1` 来源及唯一 `group2-reconcile-chain-v1` 记录。验证器从原参考重算两个 startup 与完整保全链，唯一导出原 selection/DB、恢复后 files 及追加 request/receipt/chain 摘要的 lineage；fresh 值不能自行批准。独立 reviewer 签署后，才重新执行 trusted stage、新 scope、官方 install、fresh manifest 与正常 v4 部署；最终四应用、双入口及正式 probe 的原门禁全部保留。
+
 ## 安装或更新控制器
 
 当前安装器用于接管私有配置指定的既有环境，要求 macOS、Python 3.11+、`gh` 登录、Colima、已有 LaunchAgent、`source.git` 源码缓存、`config.json`、`state.json`、`preview.env`，以及 VM 内已准备好的 sandbox 脚本。它不负责首次创建 VM 或生成凭据，也不改变默认 Docker context。若 carry-forward plan 正在占用配置，安装器会先等待它结束再暂停更新；暂停后若 controller operation 仍忙，安装器保持 paused 并退出。取得操作与配置边界后，它才卸载 watcher；随后必须取得 watcher singleton，才会备份、替换文件或传输 VM 脚本。

@@ -1200,21 +1200,38 @@ def validate_group2_artifacts(scope, scope_path):
     if len(preservation_records) != 1:
         raise ValueError("Group2 preservation review is not machine approved")
     preservation = preservation_records[0]
+    source_kind = preservation.get("source_kind")
+    chain_records = [
+        item
+        for item in machine_records(preservation_path)
+        if item.get("schema") == "group2-reconcile-chain-v1"
+    ]
+    if source_kind == "private_snapshot":
+        valid_source = not chain_records
+    elif source_kind == "group2_starting_reconcile_v1":
+        if len(chain_records) != 1:
+            raise ValueError("Group2 reconciliation chain is missing or ambiguous")
+        try:
+            snapshot = carry_forward.validate_group2_reconcile_preservation(
+                chain_records[0],
+                chain_records[0]["failed_manifest"]["review_scope"][
+                    "preservation_reference"
+                ],
+            )
+        except (KeyError, carry_forward.CarryForwardError) as error:
+            raise ValueError("Group2 reconciliation chain is invalid") from error
+        valid_source = snapshot == scope["preservation_reference"]["snapshot"]
+    else:
+        valid_source = False
     if not (
-        preservation.get("status") == "APPROVED"
-        and preservation.get("source_kind") == "private_snapshot"
+        valid_source
+        and preservation.get("status") == "APPROVED"
         and preservation.get("snapshot_digest")
         == scope["preservation_reference"]["snapshot_digest"]
         and preservation.get("lineage")
         == scope["preservation_reference"]["snapshot"]["lineage"]
         and set(preservation)
-        == {
-            "schema",
-            "status",
-            "source_kind",
-            "snapshot_digest",
-            "lineage",
-        }
+        == {"schema", "status", "source_kind", "snapshot_digest", "lineage"}
     ):
         raise ValueError("Group2 preservation review is not machine approved")
     return directory
@@ -2243,6 +2260,373 @@ def tick():
         return _tick()
 
 
+def _read_incident_input(path):
+    path = Path(path)
+    info = path.lstat()
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o177
+    ):
+        raise ValueError("Incident input must be a private regular file")
+    path = path.resolve(strict=True)
+    return path, path.read_bytes()
+
+
+def _incident_tool_files():
+    source = Path(__file__).resolve().parent
+    values = {}
+    for name in carry_forward.GROUP2_CONTROLLER_FILES:
+        path = source / name
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("Incident source controller is incomplete")
+        values[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    repository = source.parents[1]
+    head = subprocess.check_output(
+        ["/usr/bin/git", "-C", str(repository), "rev-parse", "HEAD"],
+        env=ENV,
+        text=True,
+        timeout=30,
+    ).strip()
+    dirty = subprocess.check_output(
+        ["/usr/bin/git", "-C", str(repository), "status", "--porcelain"],
+        env=ENV,
+        text=True,
+        timeout=30,
+    )
+    if dirty:
+        raise ValueError("Incident source controller has uncommitted changes")
+    return source, head, values
+
+
+def _validate_incident_worktree_source(repository, reviewed):
+    arguments = [
+        "/usr/bin/git", "-C", str(repository), "diff-tree", "--raw", "-r", "-z",
+        "--no-abbrev", "--no-renames", "--no-commit-id",
+        reviewed["from_sha"], reviewed["to_sha"],
+    ]
+    raw = subprocess.check_output(arguments, env=ENV, timeout=120)
+    if hashlib.sha256(raw).hexdigest() != reviewed["raw_diff_sha256"]:
+        raise ValueError("Incident reviewed source raw difference changed")
+    for key, suffix in (("from_tree", reviewed["from_sha"]), ("to_tree", reviewed["to_sha"])):
+        actual = subprocess.check_output(
+            ["/usr/bin/git", "-C", str(repository), "rev-parse", suffix + "^{tree}"],
+            env=ENV, text=True, timeout=30,
+        ).strip()
+        if actual != reviewed[key]:
+            raise ValueError("Incident reviewed source tree changed")
+    for item in reviewed["entries"]:
+        line = subprocess.check_output(
+            ["/usr/bin/git", "-C", str(repository), "ls-tree", reviewed["to_sha"], "--", item["path"]],
+            env=ENV, text=True, timeout=30,
+        ).strip()
+        if line != f"{item['new_mode']} blob {item['new_oid']}\t{item['path']}":
+            raise ValueError("Incident reviewed source blob changed")
+
+
+def reconcile_group2_starting(request_path, approval_path):
+    """Execute the one-shot, approval-bound Group2 starting reconciliation."""
+    request_path, request_bytes = _read_incident_input(request_path)
+    approval_path, approval_bytes = _read_incident_input(approval_path)
+    if approval_path.name != "USER-APPROVAL.json" or approval_path.parent != request_path.parent:
+        raise ValueError("Incident approval must be the fixed sibling approval file")
+    user_record_path, user_record = _read_incident_input(
+        approval_path.parent / "USER-APPROVAL.txt"
+    )
+    try:
+        request = json.loads(request_bytes)
+        approval = json.loads(approval_bytes)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("Incident request or approval is invalid") from error
+    evidence_directory = request_path.with_suffix(".evidence")
+    if not evidence_directory.is_dir() or evidence_directory.is_symlink():
+        raise ValueError("Incident evidence directory is missing")
+    if evidence_directory.stat().st_mode & 0o077:
+        raise ValueError("Incident evidence directory is not private")
+    if {item.name for item in evidence_directory.iterdir()} != set(
+        carry_forward.GROUP2_RECONCILE_EVIDENCE_FILES
+    ):
+        raise ValueError("Incident evidence directory is not closed")
+    artifacts = {}
+    for name in carry_forward.GROUP2_RECONCILE_EVIDENCE_FILES:
+        _, artifacts[name] = _read_incident_input(evidence_directory / name)
+    try:
+        carry_forward.validate_group2_reconcile_user_record(
+            request, approval, user_record
+        )
+    except carry_forward.CarryForwardError as error:
+        raise ValueError(
+            "Incident approval record does not bind the presented request"
+        ) from error
+    source, head, tool_files = _incident_tool_files()
+    validated = carry_forward.validate_group2_reconcile_request(
+        request, approval, artifacts
+    )
+    if head != request["tool"]["sha"] or tool_files != request["tool"]["controller_files"]:
+        raise ValueError("Incident source controller binding changed")
+    _validate_incident_worktree_source(
+        source.parents[1], validated["artifacts"]["source-review.json"]["source_scope"]
+    )
+
+    incident_id = request["incident_id"]
+    with operation_lock(blocking=False):
+        with config_lock():
+            config_bytes = (ROOT / "config.json").read_bytes()
+            state_bytes = (ROOT / "state.json").read_bytes()
+            attention_bytes = (ROOT / "attention.json").read_bytes()
+            config = json.loads(config_bytes)
+            state = json.loads(state_bytes)
+            attention = json.loads(attention_bytes)
+            if (
+                config.get("enabled") is not False
+                or config.get("repo") != request["repo"]
+                or config.get("pr") != request["pr"]
+                or state.get("sha") != request["prior"]["sha"]
+                or attention.get("candidate", {}).get("sha") != request["failed"]["sha"]
+                or attention.get("phase") != "switching"
+            ):
+                raise ValueError("Incident control-plane authority changed")
+            reference = config.get("carry_forward")
+            if not isinstance(reference, dict) or any(
+                reference.get(key) != request["failed"][key]
+                for key in ("manifest_id", "manifest_digest")
+            ):
+                raise ValueError("Incident failed manifest authority changed")
+            failed_active = ROOT / "carry-forward" / "manifests" / f"{request['failed']['manifest_id']}.json"
+            failed_consumed = ROOT / "carry-forward" / "consumed" / failed_active.name
+            prior_consumed = ROOT / "carry-forward" / "consumed" / f"{request['prior']['manifest_id']}.json"
+            if (
+                not failed_active.is_file()
+                or failed_active.is_symlink()
+                or failed_consumed.exists()
+                or not prior_consumed.is_file()
+                or prior_consumed.is_symlink()
+                or hashlib.sha256(prior_consumed.read_bytes()).hexdigest()
+                != request["prior"]["consumed_sha256"]
+            ):
+                raise ValueError("Incident carry-forward lineage changed")
+            if controller_files_digest() != request["failed"]["installed_controller_files_digest"]:
+                raise ValueError("Installed incident controller identity changed")
+            vm_tx = transaction()
+            if vm_tx.get("phase") != "starting" or vm_tx.get("sha") != request["failed"]["sha"]:
+                raise ValueError("Incident VM transaction authority changed")
+            if vm_command("cat", vm_path("current-sha")).stdout.strip() != request["prior"]["sha"]:
+                raise ValueError("Incident VM current SHA changed")
+            for name, expected in validated["artifacts"]["authority.json"]["snapshot"]["installed_files"].items():
+                actual = vm_command("sha256sum", vm_path(name)).stdout.split()[0]
+                if actual != expected:
+                    raise ValueError("Installed VM controller bytes changed")
+            platform = validated["artifacts"]["platform.json"]
+            for generation in ("prior", "candidate"):
+                for item in platform["images"][generation].values():
+                    inspected = json.loads(
+                        vm_command("docker", "image", "inspect", item["Id"]).stdout
+                    )
+                    if len(inspected) != 1 or any(
+                        inspected[0].get(key) != value
+                        for key, value in item.items()
+                        if key in {"Id", "RepoTags", "RepoDigests", "Created", "Architecture", "Os", "RootFS"}
+                    ):
+                        raise ValueError("Incident image availability changed")
+            failed_manifest = validated["artifacts"]["failed-manifest.json"]
+            for item in failed_manifest["storage_identity"]:
+                if item["type"] == "volume":
+                    actual = vm_command(
+                        "docker", "volume", "inspect", item["source"], "--format", "{{.Name}}"
+                    ).stdout.strip()
+                    if actual != item["source"]:
+                        raise ValueError("Incident volume identity changed")
+                    label = vm_command(
+                        "docker", "volume", "inspect", item["source"], "--format",
+                        '{{index .Labels "com.docker.compose.project"}}',
+                    ).stdout.strip()
+                    if label != failed_manifest["account_entry"]["project"]:
+                        raise ValueError("Incident volume backing changed")
+            project = failed_manifest["account_entry"]["project"]
+            schema = vm_command(
+                "docker", "exec", f"{project}-postgres-1", "psql", "-U", "dlr", "-d", "dlr", "-Atc",
+                "SELECT version_num FROM alembic_version",
+            ).stdout.strip()
+            pg_version = vm_command(
+                "docker", "exec", f"{project}-postgres-1", "postgres", "--version"
+            ).stdout.strip()
+            server_version = vm_command(
+                "docker", "exec", f"{project}-postgres-1", "psql", "-U", "dlr",
+                "-d", "dlr", "-Atc", "SHOW server_version",
+            ).stdout.strip()
+            data_pg_version = vm_command(
+                "docker", "exec", f"{project}-postgres-1", "cat",
+                "/var/lib/postgresql/data/PG_VERSION",
+            ).stdout.strip()
+            postgres_format = platform["postgres_format"]
+            if (
+                schema != request["prior"]["schema"]
+                or pg_version != postgres_format["candidate_binary_version"]
+                or server_version != postgres_format["current_server_version"]
+                or data_pg_version != postgres_format["data_pg_version"]
+            ):
+                raise ValueError("Incident PostgreSQL format identity changed")
+            preflight_authority = {
+                "enabled": False,
+                "attention_phase": "switching",
+                "transaction_phase": "starting",
+                "failed_sha": request["failed"]["sha"],
+                "current_sha": request["prior"]["sha"],
+                "installed_controller_files_digest": request["failed"]["installed_controller_files_digest"],
+            }
+            host_incident = ROOT / "incidents" / incident_id
+            if host_incident.exists():
+                raise ValueError("Incident identity was already used")
+            if vm_command("test", "!", "-e", vm_path(f"incidents/{incident_id}"), check=False).returncode:
+                raise ValueError("Incident identity was already used in the VM")
+            host_incident = private_directory(f"incidents/{incident_id}")
+            write_private_bytes(host_incident / "request.json", request_bytes)
+            write_private_bytes(host_incident / "approval.json", approval_bytes)
+            write_private_bytes(host_incident / "USER-APPROVAL.txt", user_record)
+            for name, value in artifacts.items():
+                write_private_bytes(host_incident / name, value)
+            vm_private_write(f"incidents/{incident_id}/request.json", request_bytes)
+            vm_private_write(f"incidents/{incident_id}/approval.json", approval_bytes)
+            vm_private_write(f"incidents/{incident_id}/USER-APPROVAL.txt", user_record)
+            vm_private_write(
+                f"incidents/{incident_id}/preflight-authority.json",
+                carry_forward.canonical_bytes(preflight_authority),
+            )
+            for name, value in artifacts.items():
+                vm_private_write(f"incidents/{incident_id}/evidence/{name}", value)
+            for name in ("deploy.sh", "carry_forward.py"):
+                payload = (source / name).read_bytes()
+                vm_private_write(f"incidents/{incident_id}/tool/{name}", payload)
+                actual = vm_command(
+                    "sha256sum", vm_path(f"incidents/{incident_id}/tool/{name}")
+                ).stdout.split()[0]
+                if actual != tool_files[name]:
+                    raise RuntimeError("Incident VM tool transfer changed")
+            prepared = carry_forward.canonical_bytes(
+                {
+                    "schema": "group2-starting-reconcile-phase-v1",
+                    "incident_id": incident_id,
+                    "phase": "prepared",
+                }
+            )
+            write_private_bytes(host_incident / "phase.json", prepared)
+            vm_private_write(f"incidents/{incident_id}/phase.json", prepared)
+            with (ROOT / "deploy.log").open("a") as output:
+                process = subprocess.Popen(
+                    [COLIMA, "ssh", "-p", settings()["profile"], "--", "sudo", "bash",
+                     vm_path(f"incidents/{incident_id}/tool/deploy.sh"),
+                     "reconcile-group2-starting", settings()["vm_root"], incident_id],
+                    env=ENV, stdout=output, stderr=subprocess.STDOUT,
+                )
+                deadline = time.monotonic() + 2100
+                while True:
+                    ready = vm_command(
+                        "test", "-f", vm_path(f"incidents/{incident_id}/result.json"), check=False
+                    ).returncode == 0
+                    if ready:
+                        break
+                    code = process.poll()
+                    if code is not None:
+                        raise RuntimeError(f"Incident software reconciliation failed ({code})")
+                    if time.monotonic() >= deadline:
+                        process.kill()
+                        process.wait()
+                        raise RuntimeError("Incident software reconciliation timed out")
+                    time.sleep(0.25)
+            result_bytes = vm_command(
+                "cat", vm_path(f"incidents/{incident_id}/result.json")
+            ).stdout.encode()
+            try:
+                result_value = json.loads(result_bytes)
+                receipt_value = carry_forward.validate_group2_reconcile_result(
+                    request, result_value["evidence"]
+                )
+            except (KeyError, json.JSONDecodeError, carry_forward.CarryForwardError) as error:
+                raise RuntimeError("Incident VM result is invalid") from error
+            if receipt_value != result_value.get("receipt"):
+                raise RuntimeError("Incident VM receipt binding changed")
+            vm_receipt_bytes = vm_command(
+                "cat", vm_path(f"incidents/{incident_id}/receipt.json")
+            ).stdout.encode()
+            if json.loads(vm_receipt_bytes) != receipt_value:
+                raise RuntimeError("Incident VM receipt file changed")
+            write_private_bytes(host_incident / "result.json", result_bytes)
+            write_private_bytes(host_incident / "receipt.json", vm_receipt_bytes)
+            vm_private_write(
+                f"incidents/{incident_id}/host-validated.json",
+                carry_forward.canonical_bytes(
+                    {"incident_id": incident_id, "receipt_digest": receipt_value["receipt_digest"]}
+                ),
+            )
+            try:
+                code = process.wait(timeout=300)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                raise RuntimeError("Incident VM transaction commit timed out") from None
+            if code:
+                raise RuntimeError(f"Incident VM transaction commit failed ({code})")
+            committed = transaction()
+            if (
+                committed.get("phase") != "ready"
+                or committed.get("sha") != request["prior"]["sha"]
+                or committed.get("operation") != "incident_software_restore"
+                or committed.get("reconciled_by")
+                != {"incident_id": incident_id, "receipt_digest": receipt_value["receipt_digest"]}
+            ):
+                raise RuntimeError("Incident VM transaction commit is invalid")
+            prior_vm = validated["artifacts"]["prior-success.json"]["vm"]
+            for relative, saved in prior_vm.items():
+                if saved.get("exists") is True:
+                    actual = vm_command("sha256sum", vm_path(relative)).stdout.split()[0]
+                    if actual != saved["sha256"]:
+                        raise RuntimeError("Incident changed prior success evidence")
+                elif (
+                    saved != {"exists": False}
+                    or vm_command(
+                        "test", "!", "-e", vm_path(relative), check=False
+                    ).returncode
+                ):
+                    raise RuntimeError("Incident changed prior success evidence")
+            if vm_command("cat", vm_path("current-sha")).stdout.strip() != request["prior"]["sha"]:
+                raise RuntimeError("Incident changed current-sha")
+            # These files are byte invariants: the incident is not a deployment of a new SHA.
+            if (ROOT / "state.json").read_bytes() != state_bytes:
+                raise RuntimeError("Incident changed the host deployed state")
+            active = ROOT / "carry-forward" / "manifests" / f"{request['failed']['manifest_id']}.json"
+            active_bytes = active.read_bytes()
+            if hashlib.sha256(active_bytes).hexdigest() != request["failed"]["manifest_sha256"]:
+                raise RuntimeError("Incident failed manifest changed")
+            abandoned = private_directory("carry-forward/abandoned") / f"{request['failed']['manifest_id']}.json"
+            write_private_bytes(abandoned, active_bytes)
+            record = {
+                "schema": "group2-carry-forward-abandonment-v1",
+                "manifest_id": request["failed"]["manifest_id"],
+                "manifest_sha256": request["failed"]["manifest_sha256"],
+                "incident_id": incident_id,
+                "receipt_digest": receipt_value["receipt_digest"],
+            }
+            write_private_bytes(
+                host_incident / "abandonment.json", carry_forward.canonical_bytes(record)
+            )
+            write_private_bytes(
+                abandoned.with_suffix(".abandonment.json"),
+                carry_forward.canonical_bytes(record),
+            )
+            if (ROOT / "config.json").read_bytes() != config_bytes:
+                raise RuntimeError("Incident configuration changed before CAS")
+            active.unlink()
+            config.pop("carry_forward")
+            write("config.json", config)
+            status("Incident restored prior software; paused", incident=record)
+            if (ROOT / "attention.json").read_bytes() != attention_bytes:
+                raise RuntimeError("Incident attention changed before final clear")
+            (ROOT / "attention.json").unlink()
+    return {"incident_id": incident_id, "receipt_digest": receipt_value["receipt_digest"]}
+
+
 def main():
     if not os.environ.get("DLR_PREVIEW_HOME"):
         sys.exit("Set DLR_PREVIEW_HOME to your private installation directory")
@@ -2260,6 +2644,7 @@ def main():
             "acknowledge",
             "plan-carry-forward",
             "install-group2",
+            "reconcile-group2-starting",
         ],
     )
     parser.add_argument("pr", nargs="?", type=int)
@@ -2271,7 +2656,38 @@ def main():
         "--mode", choices=(carry_forward.AUDITED_MODE, carry_forward.GROUP2_MODE)
     )
     parser.add_argument("--review-scope", type=Path)
+    parser.add_argument("--incident-request", type=Path)
+    parser.add_argument("--incident-approval", type=Path)
     args = parser.parse_args()
+    if args.command == "reconcile-group2-starting":
+        if (
+            args.pr is not None
+            or args.incident_request is None
+            or args.incident_approval is None
+            or any(
+                value is not None
+                for value in (
+                    args.to_sha,
+                    args.ids_file,
+                    args.output,
+                    args.carry_forward,
+                    args.mode,
+                    args.review_scope,
+                )
+            )
+        ):
+            parser.error(
+                "reconcile-group2-starting requires --incident-request and --incident-approval"
+            )
+        print(
+            json.dumps(
+                reconcile_group2_starting(
+                    args.incident_request, args.incident_approval
+                ),
+                indent=2,
+            )
+        )
+        return
     if args.command == "install-group2":
         if (
             args.pr is not None
