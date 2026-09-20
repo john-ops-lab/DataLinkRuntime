@@ -5,6 +5,7 @@ import os
 import stat
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 from pathlib import Path
@@ -2780,6 +2781,209 @@ class Group2RuntimeTests(unittest.TestCase):
                 carry.CarryForwardError, "log_evidence_link_invalid"
             ):
                 carry.read_log_append(forged_baseline)
+
+    def test_log_snapshot_has_a_fixed_prefix_under_scheduled_file_races(self):
+        original = b"original-prefix\n"
+        tail = b"legal-append\n"
+
+        def exercise(event, stage, *, append_before=False):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "worker" / "worker.log"
+                path.parent.mkdir()
+                path.write_bytes(original)
+                profile = self._profile(path)
+                baseline = carry.capture_log_prefix(profile)
+                baseline_item = next(
+                    item for item in baseline["files"] if item["path"] == str(path)
+                )
+                if append_before:
+                    with path.open("ab") as stream:
+                        stream.write(tail)
+                replacement = Path(directory) / "replacement.tmp"
+                replacement.write_bytes(path.read_bytes())
+                original_open = carry.os.open
+                original_read = carry.os.read
+                read_calls = 0
+                injected = False
+
+                def inject():
+                    nonlocal injected
+                    injected = True
+                    info = path.stat()
+                    if event == "append":
+                        with path.open("ab") as stream:
+                            stream.write(tail)
+                    elif event == "replace":
+                        os.replace(replacement, path)
+                    elif event == "symlink":
+                        path.unlink()
+                        path.symlink_to(replacement)
+                    elif event == "overwrite":
+                        with path.open("r+b", buffering=0) as stream:
+                            stream.write(b"X" * len(original))
+                    elif event == "new-window-overwrite":
+                        with path.open("r+b", buffering=0) as stream:
+                            stream.seek(len(original))
+                            stream.write(b"Y" * len(tail))
+                    elif event == "overwrite-hide-mtime-change-atime":
+                        with path.open("r+b", buffering=0) as stream:
+                            stream.write(b"W" * len(original))
+                        os.utime(
+                            path,
+                            ns=(info.st_atime_ns + 2_000_000_000, info.st_mtime_ns),
+                        )
+                    elif event == "truncate-regrow":
+                        path.write_bytes(b"Z" * info.st_size)
+                    elif event == "chmod":
+                        path.chmod(0o600)
+                    elif event != "none":
+                        raise AssertionError(event)
+
+                def opened(value, flags, *args, **kwargs):
+                    if (
+                        not injected
+                        and stage == "before-open"
+                        and str(value) == str(path)
+                    ):
+                        inject()
+                    return original_open(value, flags, *args, **kwargs)
+
+                def read(descriptor, length):
+                    nonlocal read_calls
+                    value = original_read(descriptor, length)
+                    if os.fstat(descriptor).st_ino == baseline_item["inode"]:
+                        read_calls += 1
+                        if not injected and stage == f"read-{read_calls}":
+                            inject()
+                    return value
+
+                with mock.patch.object(
+                    carry.os, "open", side_effect=opened
+                ), mock.patch.object(carry.os, "read", side_effect=read):
+                    return carry.read_log_append(baseline), path.read_bytes()
+
+        positives = (
+            ("none", "none", False),
+            ("append", "before-open", False),
+            ("append", "read-1", False),
+            ("append", "read-2", False),
+        )
+        for event, stage, append_before in positives:
+            with self.subTest(event=event, stage=stage):
+                evidence, actual = exercise(event, stage, append_before=append_before)
+                item = next(
+                    value
+                    for value in evidence["files"]
+                    if value["path"].endswith("/worker/worker.log")
+                )
+                self.assertEqual(
+                    hashlib.sha256(actual[: item["end_size"]]).hexdigest(),
+                    item["end_sha256"],
+                )
+
+        negatives = (
+            ("replace", "read-1", False, "log_file_unstable"),
+            ("replace", "read-2", False, "log_file_unstable"),
+            ("symlink", "read-1", False, "log_file_unstable"),
+            ("overwrite", "read-1", False, "log_file_unstable"),
+            ("truncate-regrow", "read-1", False, "log_file_unstable"),
+            ("chmod", "read-1", False, "log_file_unstable"),
+            ("overwrite", "before-open", False, "log_file_unstable"),
+            (
+                "overwrite-hide-mtime-change-atime",
+                "before-open",
+                False,
+                "log_file_unstable",
+            ),
+            ("new-window-overwrite", "read-1", True, "log_file_unstable"),
+        )
+        for event, stage, append_before, code in negatives:
+            with self.subTest(event=event, stage=stage):
+                with self.assertRaisesRegex(carry.CarryForwardError, code):
+                    exercise(event, stage, append_before=append_before)
+
+    def test_log_snapshot_accepts_ten_reads_during_real_24mb_append_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "worker" / "worker.log"
+            path.parent.mkdir()
+            block = b"x" * 1023 + b"\n"
+            path.write_bytes(block * (23 * 1024))
+            profile = self._profile(path)
+            baseline = carry.capture_log_prefix(profile)
+            baseline_item = next(
+                item for item in baseline["files"] if item["path"] == str(path)
+            )
+            stop = threading.Event()
+            begun = threading.Event()
+
+            def writer():
+                with path.open("ab", buffering=0) as stream:
+                    while not stop.is_set():
+                        stream.write(b"legal append from owned thread\n")
+                        begun.set()
+                        stop.wait(0.0005)
+
+            thread = threading.Thread(target=writer)
+            thread.start()
+            self.assertTrue(begun.wait(2))
+            segments = []
+            try:
+                for _ in range(10):
+                    segment = carry.read_log_append(baseline)
+                    carry._validate_log_link(
+                        baseline, segment, profile["profile_digest"]
+                    )
+                    segments.append(segment)
+            finally:
+                stop.set()
+                thread.join(2)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(len(segments), 10)
+            content = path.read_bytes()
+            self.assertEqual(
+                hashlib.sha256(content[: baseline_item["size"]]).hexdigest(),
+                baseline_item["prefix_sha256"],
+            )
+            carry.combine_group2_log_window(baseline, segments[-1])
+
+    def test_log_snapshot_retries_only_a_partial_utf8_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "worker" / "worker.log"
+            path.parent.mkdir()
+            path.write_bytes(b"before\n")
+            profile = self._profile(path)
+            baseline = carry.capture_log_prefix(profile)
+            with path.open("ab") as stream:
+                stream.write(b"\xe2")
+            completed = False
+
+            def complete_tail(_seconds):
+                nonlocal completed
+                if not completed:
+                    completed = True
+                    with path.open("ab") as stream:
+                        stream.write(b"\x82\xac\n")
+
+            with mock.patch.object(carry.time, "sleep", side_effect=complete_tail):
+                evidence = carry.read_log_append(baseline)
+            worker = next(
+                item for item in evidence["files"] if item["path"] == str(path)
+            )
+            self.assertEqual(worker["appended_text"], "€\n")
+
+            second = carry.read_log_append(evidence)
+            with path.open("ab") as stream:
+                stream.write(b"\xe2")
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "log_append_partial_utf8"
+            ):
+                carry.read_log_append(second)
+            with path.open("ab") as stream:
+                stream.write(b"\xff")
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "log_append_invalid"
+            ):
+                carry.read_log_append(second)
 
     def test_group2_runtime_rejects_unknown_operation_and_fields(self):
         with self.assertRaisesRegex(

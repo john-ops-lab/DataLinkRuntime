@@ -5640,15 +5640,16 @@ def capture_log_prefix(profile: Any) -> dict[str, Any]:
                 continue
             if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
                 raise CarryForwardError("log_file_invalid")
-            content, stable = _read_stable_log(path)
-            if stable != info:
-                raise CarryForwardError("log_file_unstable")
+            content, stable, _ = _read_utf8_log_snapshot(path, info)
             item = {
                 "path": str(path),
                 "exists": True,
                 **{
-                    key: common[key]
-                    for key in ("device", "inode", "mode", "uid", "gid")
+                    "device": stable.st_dev,
+                    "inode": stable.st_ino,
+                    "mode": stat.S_IMODE(stable.st_mode),
+                    "uid": stable.st_uid,
+                    "gid": stable.st_gid,
                 },
                 "size": len(content),
                 "prefix_sha256": hashlib.sha256(content).hexdigest(),
@@ -5913,22 +5914,16 @@ def read_log_append(baseline: Any) -> dict[str, Any]:
             info = path.lstat()
             if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
                 raise CarryForwardError("log_file_invalid")
-            content, stable = _read_stable_log(path)
-            if stable != info:
-                raise CarryForwardError("log_file_unstable")
-            try:
-                appended_text = content.decode("utf-8")
-            except UnicodeDecodeError as error:
-                raise CarryForwardError("log_append_invalid") from error
+            content, stable, appended_text = _read_utf8_log_snapshot(path, info, 0)
             output.append(
                 {
                     "path": item["path"],
                     "exists": True,
-                    "device": info.st_dev,
-                    "inode": info.st_ino,
-                    "mode": stat.S_IMODE(info.st_mode),
-                    "uid": info.st_uid,
-                    "gid": info.st_gid,
+                    "device": stable.st_dev,
+                    "inode": stable.st_ino,
+                    "mode": stat.S_IMODE(stable.st_mode),
+                    "uid": stable.st_uid,
+                    "gid": stable.st_gid,
                     "size": 0,
                     "prefix_sha256": hashlib.sha256(b"").hexdigest(),
                     "appended_text": appended_text,
@@ -5954,21 +5949,17 @@ def read_log_append(baseline: Any) -> dict[str, Any]:
             item["gid"],
         ) or info.st_size < item["size"]:
             raise CarryForwardError("log_prefix_changed")
-        content, stable = _read_stable_log(path)
-        if stable != info:
-            raise CarryForwardError("log_file_unstable")
-        prefix, appended = content[: item["size"]], content[item["size"] :]
-        if hashlib.sha256(prefix).hexdigest() != item["prefix_sha256"]:
-            raise CarryForwardError("log_prefix_changed")
-        try:
-            appended_text = appended.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise CarryForwardError("log_append_invalid") from error
+        content, stable, appended_text = _read_utf8_log_snapshot(
+            path,
+            info,
+            item["size"],
+            item["prefix_sha256"],
+        )
         output.append(
             {
                 **item,
                 "appended_text": appended_text,
-                "end_size": info.st_size,
+                "end_size": len(content),
                 "end_sha256": hashlib.sha256(content).hexdigest(),
             }
         )
@@ -5998,40 +5989,113 @@ def read_log_append(baseline: Any) -> dict[str, Any]:
     return result
 
 
-def _read_stable_log(path: Path) -> tuple[bytes, os.stat_result]:
+def _log_stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        stat.S_IMODE(value.st_mode),
+        value.st_uid,
+        value.st_gid,
+    )
+
+
+def _validate_log_stat_transition(
+    before: os.stat_result,
+    after: os.stat_result,
+    minimum_size: int,
+) -> None:
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or not stat.S_ISREG(after.st_mode)
+        or _log_stat_identity(before) != _log_stat_identity(after)
+        or after.st_size < minimum_size
+        or (
+            after.st_size == before.st_size
+            and after.st_mtime_ns != before.st_mtime_ns
+        )
+        or (
+            after.st_size == before.st_size
+            and after.st_ctime_ns != before.st_ctime_ns
+        )
+    ):
+        raise CarryForwardError("log_file_unstable")
+
+
+def _read_log_prefix(descriptor: int, length: int) -> bytes:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    remaining = length
+    chunks = []
+    while remaining:
+        chunk = os.read(descriptor, min(1024 * 1024, remaining))
+        if not chunk:
+            raise CarryForwardError("log_file_unstable")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _read_stable_log(
+    path: Path, expected: os.stat_result | None = None
+) -> tuple[bytes, os.stat_result]:
+    try:
+        path_before = path.lstat()
+    except OSError as error:
+        raise CarryForwardError("log_read_failed") from error
+    if expected is not None:
+        _validate_log_stat_transition(expected, path_before, expected.st_size)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
         before = os.fstat(descriptor)
-        chunks = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
+        _validate_log_stat_transition(path_before, before, path_before.st_size)
+        observed_size = before.st_size
+        first = _read_log_prefix(descriptor, observed_size)
+        second = _read_log_prefix(descriptor, observed_size)
+        if first != second:
+            raise CarryForwardError("log_file_unstable")
         after = os.fstat(descriptor)
+        _validate_log_stat_transition(before, after, observed_size)
     except OSError as error:
         raise CarryForwardError("log_read_failed") from error
     finally:
         if "descriptor" in locals():
             os.close(descriptor)
-    if not stat.S_ISREG(before.st_mode) or (
-        before.st_dev,
-        before.st_ino,
-        before.st_mode,
-        before.st_uid,
-        before.st_gid,
-        before.st_size,
-    ) != (
-        after.st_dev,
-        after.st_ino,
-        after.st_mode,
-        after.st_uid,
-        after.st_gid,
-        after.st_size,
-    ):
-        raise CarryForwardError("log_file_unstable")
-    return b"".join(chunks), before
+    try:
+        path_after = path.lstat()
+    except OSError as error:
+        raise CarryForwardError("log_file_unstable") from error
+    _validate_log_stat_transition(after, path_after, observed_size)
+    return first, before
+
+
+def _read_utf8_log_snapshot(
+    path: Path,
+    expected: os.stat_result,
+    offset: int = 0,
+    prefix_sha256: str | None = None,
+) -> tuple[bytes, os.stat_result, str]:
+    for attempt in range(3):
+        content, stable = _read_stable_log(path, expected)
+        prefix = content[:offset]
+        if len(prefix) != offset or (
+            prefix_sha256 is not None
+            and hashlib.sha256(prefix).hexdigest() != prefix_sha256
+        ):
+            raise CarryForwardError("log_prefix_changed")
+        appended = content[offset:]
+        try:
+            return content, stable, appended.decode("utf-8")
+        except UnicodeDecodeError as error:
+            partial_tail = (
+                error.end == len(appended)
+                and error.reason == "unexpected end of data"
+            )
+            if not partial_tail:
+                raise CarryForwardError("log_append_invalid") from error
+            if attempt == 2:
+                raise CarryForwardError("log_append_partial_utf8") from error
+            time.sleep(0)
+    raise CarryForwardError("log_append_partial_utf8")
 
 
 def _http_result(
