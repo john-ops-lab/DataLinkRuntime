@@ -5644,13 +5644,11 @@ def capture_log_prefix(profile: Any) -> dict[str, Any]:
             item = {
                 "path": str(path),
                 "exists": True,
-                **{
-                    "device": stable.st_dev,
-                    "inode": stable.st_ino,
-                    "mode": stat.S_IMODE(stable.st_mode),
-                    "uid": stable.st_uid,
-                    "gid": stable.st_gid,
-                },
+                "device": stable.st_dev,
+                "inode": stable.st_ino,
+                "mode": stat.S_IMODE(stable.st_mode),
+                "uid": stable.st_uid,
+                "gid": stable.st_gid,
                 "size": len(content),
                 "prefix_sha256": hashlib.sha256(content).hexdigest(),
             }
@@ -6009,6 +6007,7 @@ def _validate_log_stat_transition(
         or not stat.S_ISREG(after.st_mode)
         or _log_stat_identity(before) != _log_stat_identity(after)
         or after.st_size < minimum_size
+        or after.st_size < before.st_size
         or (
             after.st_size == before.st_size
             and after.st_mtime_ns != before.st_mtime_ns
@@ -6019,6 +6018,24 @@ def _validate_log_stat_transition(
         )
     ):
         raise CarryForwardError("log_file_unstable")
+
+
+def _log_timestamp_transition_only(
+    before: os.stat_result,
+    after: os.stat_result,
+    minimum_size: int,
+) -> bool:
+    return (
+        stat.S_ISREG(before.st_mode)
+        and stat.S_ISREG(after.st_mode)
+        and _log_stat_identity(before) == _log_stat_identity(after)
+        and after.st_size == before.st_size
+        and after.st_size >= minimum_size
+        and (
+            after.st_mtime_ns != before.st_mtime_ns
+            or after.st_ctime_ns != before.st_ctime_ns
+        )
+    )
 
 
 def _read_log_prefix(descriptor: int, length: int) -> bytes:
@@ -6034,6 +6051,42 @@ def _read_log_prefix(descriptor: int, length: int) -> bytes:
     return b"".join(chunks)
 
 
+def _resolve_log_append_metadata_race(
+    descriptor: int,
+    path: Path,
+    identity: os.stat_result,
+    observed_size: int,
+    transient_size: int,
+    high_watermark: int,
+    content: bytes,
+) -> None:
+    for _ in range(3):
+        time.sleep(0.001)
+        if _read_log_prefix(descriptor, observed_size) != content:
+            raise CarryForwardError("log_file_unstable")
+        descriptor_info = os.fstat(descriptor)
+        try:
+            path_info = path.lstat()
+        except OSError as error:
+            raise CarryForwardError("log_file_unstable") from error
+        for current in (descriptor_info, path_info):
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or _log_stat_identity(current) != _log_stat_identity(identity)
+                or current.st_size < high_watermark
+            ):
+                raise CarryForwardError("log_file_unstable")
+        if path_info.st_size < descriptor_info.st_size:
+            raise CarryForwardError("log_file_unstable")
+        high_watermark = path_info.st_size
+        if (
+            descriptor_info.st_size > transient_size
+            and path_info.st_size > transient_size
+        ):
+            return
+    raise CarryForwardError("log_file_unstable")
+
+
 def _read_stable_log(
     path: Path, expected: os.stat_result | None = None
 ) -> tuple[bytes, os.stat_result]:
@@ -6043,7 +6096,12 @@ def _read_stable_log(
         raise CarryForwardError("log_read_failed") from error
     if expected is not None:
         _validate_log_stat_transition(expected, path_before, expected.st_size)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    descriptor = None
     try:
         descriptor = os.open(path, flags)
         before = os.fstat(descriptor)
@@ -6054,17 +6112,35 @@ def _read_stable_log(
         if first != second:
             raise CarryForwardError("log_file_unstable")
         after = os.fstat(descriptor)
-        _validate_log_stat_transition(before, after, observed_size)
+        try:
+            path_after = path.lstat()
+        except OSError as error:
+            raise CarryForwardError("log_file_unstable") from error
+        transient_size = None
+        for previous, current in ((before, after), (after, path_after)):
+            try:
+                _validate_log_stat_transition(previous, current, observed_size)
+            except CarryForwardError:
+                if not _log_timestamp_transition_only(
+                    previous, current, observed_size
+                ):
+                    raise
+                transient_size = current.st_size
+        if transient_size is not None:
+            _resolve_log_append_metadata_race(
+                descriptor,
+                path,
+                before,
+                observed_size,
+                transient_size,
+                max(before.st_size, after.st_size, path_after.st_size),
+                first,
+            )
     except OSError as error:
         raise CarryForwardError("log_read_failed") from error
     finally:
-        if "descriptor" in locals():
+        if descriptor is not None:
             os.close(descriptor)
-    try:
-        path_after = path.lstat()
-    except OSError as error:
-        raise CarryForwardError("log_file_unstable") from error
-    _validate_log_stat_transition(after, path_after, observed_size)
     return first, before
 
 

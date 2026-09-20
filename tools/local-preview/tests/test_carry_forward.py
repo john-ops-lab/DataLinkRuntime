@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -2783,7 +2784,7 @@ class Group2RuntimeTests(unittest.TestCase):
                 carry.read_log_append(forged_baseline)
 
     def test_log_snapshot_has_a_fixed_prefix_under_scheduled_file_races(self):
-        original = b"original-prefix\n"
+        original = b"x" * (1024 * 1024 + 17) + b"\n"
         tail = b"legal-append\n"
 
         def exercise(event, stage, *, append_before=False):
@@ -2803,7 +2804,10 @@ class Group2RuntimeTests(unittest.TestCase):
                 replacement.write_bytes(path.read_bytes())
                 original_open = carry.os.open
                 original_read = carry.os.read
+                original_fstat = carry.os.fstat
                 read_calls = 0
+                read_lengths = []
+                fstat_calls = 0
                 injected = False
 
                 def inject():
@@ -2851,16 +2855,33 @@ class Group2RuntimeTests(unittest.TestCase):
                 def read(descriptor, length):
                     nonlocal read_calls
                     value = original_read(descriptor, length)
-                    if os.fstat(descriptor).st_ino == baseline_item["inode"]:
+                    if original_fstat(descriptor).st_ino == baseline_item["inode"]:
                         read_calls += 1
+                        read_lengths.append(length)
                         if not injected and stage == f"read-{read_calls}":
+                            inject()
+                    return value
+
+                def fstat(descriptor):
+                    nonlocal fstat_calls
+                    value = original_fstat(descriptor)
+                    if value.st_ino == baseline_item["inode"]:
+                        fstat_calls += 1
+                        if (
+                            not injected
+                            and stage == "after-final-fstat"
+                            and fstat_calls == 2
+                        ):
                             inject()
                     return value
 
                 with mock.patch.object(
                     carry.os, "open", side_effect=opened
-                ), mock.patch.object(carry.os, "read", side_effect=read):
-                    return carry.read_log_append(baseline), path.read_bytes()
+                ), mock.patch.object(
+                    carry.os, "read", side_effect=read
+                ), mock.patch.object(carry.os, "fstat", side_effect=fstat):
+                    evidence = carry.read_log_append(baseline)
+                return evidence, path.read_bytes(), injected, read_lengths
 
         positives = (
             ("none", "none", False),
@@ -2870,12 +2891,22 @@ class Group2RuntimeTests(unittest.TestCase):
         )
         for event, stage, append_before in positives:
             with self.subTest(event=event, stage=stage):
-                evidence, actual = exercise(event, stage, append_before=append_before)
+                evidence, actual, injected, read_lengths = exercise(
+                    event, stage, append_before=append_before
+                )
                 item = next(
                     value
                     for value in evidence["files"]
                     if value["path"].endswith("/worker/worker.log")
                 )
+                expected_size = len(original) + (
+                    len(tail) if stage == "before-open" else 0
+                )
+                expected_text = tail.decode() if stage == "before-open" else ""
+                self.assertEqual(injected, event != "none")
+                self.assertEqual(item["end_size"], expected_size)
+                self.assertEqual(item["appended_text"], expected_text)
+                self.assertEqual(sum(read_lengths), 2 * expected_size)
                 self.assertEqual(
                     hashlib.sha256(actual[: item["end_size"]]).hexdigest(),
                     item["end_sha256"],
@@ -2884,6 +2915,7 @@ class Group2RuntimeTests(unittest.TestCase):
         negatives = (
             ("replace", "read-1", False, "log_file_unstable"),
             ("replace", "read-2", False, "log_file_unstable"),
+            ("replace", "after-final-fstat", False, "log_file_unstable"),
             ("symlink", "read-1", False, "log_file_unstable"),
             ("overwrite", "read-1", False, "log_file_unstable"),
             ("truncate-regrow", "read-1", False, "log_file_unstable"),
@@ -2898,9 +2930,181 @@ class Group2RuntimeTests(unittest.TestCase):
             ("new-window-overwrite", "read-1", True, "log_file_unstable"),
         )
         for event, stage, append_before, code in negatives:
-            with self.subTest(event=event, stage=stage):
-                with self.assertRaisesRegex(carry.CarryForwardError, code):
-                    exercise(event, stage, append_before=append_before)
+            with self.subTest(event=event, stage=stage), self.assertRaisesRegex(
+                carry.CarryForwardError, code
+            ):
+                exercise(event, stage, append_before=append_before)
+
+    def test_log_snapshot_fifo_replacement_returns_without_blocking(self):
+        source = """
+import os
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import carry_forward as carry
+path = Path(sys.argv[2])
+path.write_bytes(b"preserved baseline\\n")
+expected = path.lstat()
+original_open = carry.os.open
+def opened(value, flags, *args, **kwargs):
+    path.unlink()
+    os.mkfifo(path, 0o600)
+    return original_open(value, flags, *args, **kwargs)
+carry.os.open = opened
+try:
+    carry._read_stable_log(path, expected)
+except carry.CarryForwardError as error:
+    if str(error) == "log_file_unstable":
+        print("REJECTED")
+        raise SystemExit(0)
+    raise
+raise AssertionError("FIFO was accepted")
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "worker.log"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    source,
+                    str(Path(carry.__file__).parent),
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "REJECTED\n")
+
+    def test_log_snapshot_resolves_only_bounded_append_metadata_lag(self):
+        def exercise(*, append_after_lag, shrink_during_settle=False):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "worker" / "worker.log"
+                path.parent.mkdir()
+                original = b"preserved prefix\n"
+                tail = b"later append\n"
+                path.write_bytes(original)
+                profile = self._profile(path)
+                baseline = carry.capture_log_prefix(profile)
+                item = next(
+                    value for value in baseline["files"] if value["path"] == str(path)
+                )
+                original_fstat = carry.os.fstat
+                fstat_calls = 0
+                lag_injected = False
+                append_injected = False
+                shrink_injected = False
+
+                def fstat(descriptor):
+                    nonlocal fstat_calls, lag_injected, shrink_injected
+                    value = original_fstat(descriptor)
+                    if value.st_ino == item["inode"]:
+                        fstat_calls += 1
+                        if fstat_calls == 2:
+                            lag_injected = True
+                            os.utime(
+                                path,
+                                ns=(value.st_atime_ns, value.st_mtime_ns + 1_000_000),
+                            )
+                        elif fstat_calls == 3 and shrink_during_settle:
+                            self.assertGreater(value.st_size, len(original))
+                            path.write_bytes(path.read_bytes()[: len(original) + 5])
+                            shrink_injected = True
+                    return value
+
+                def pause(_seconds):
+                    nonlocal append_injected
+                    if append_after_lag and not append_injected:
+                        append_injected = True
+                        with path.open("ab", buffering=0) as stream:
+                            stream.write(tail)
+
+                with mock.patch.object(
+                    carry.os, "fstat", side_effect=fstat
+                ), mock.patch.object(carry.time, "sleep", side_effect=pause) as sleep:
+                    if not append_after_lag or shrink_during_settle:
+                        with self.assertRaisesRegex(
+                            carry.CarryForwardError, "log_file_unstable"
+                        ):
+                            carry.read_log_append(baseline)
+                        self.assertTrue(lag_injected)
+                        if shrink_during_settle:
+                            self.assertEqual(sleep.call_count, 1)
+                            self.assertTrue(append_injected)
+                            self.assertTrue(shrink_injected)
+                        else:
+                            self.assertEqual(sleep.call_count, 3)
+                            self.assertFalse(append_injected)
+                        return
+                    evidence = carry.read_log_append(baseline)
+
+                endpoint = next(
+                    value
+                    for value in evidence["files"]
+                    if value["path"] == str(path)
+                )
+                self.assertTrue(lag_injected)
+                self.assertTrue(append_injected)
+                self.assertEqual(sleep.call_count, 1)
+                self.assertEqual(endpoint["end_size"], len(original))
+                self.assertEqual(endpoint["appended_text"], "")
+                self.assertEqual(
+                    endpoint["end_sha256"], hashlib.sha256(original).hexdigest()
+                )
+
+        exercise(append_after_lag=True)
+        exercise(append_after_lag=False)
+        exercise(append_after_lag=True, shrink_during_settle=True)
+
+    def test_log_snapshot_rejects_path_shrink_that_remains_above_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "worker" / "worker.log"
+            path.parent.mkdir()
+            original = b"preserved prefix\n"
+            window = b"sampled append\n"
+            later = b"later append\n"
+            path.write_bytes(original)
+            profile = self._profile(path)
+            baseline = carry.capture_log_prefix(profile)
+            with path.open("ab", buffering=0) as stream:
+                stream.write(window)
+            sampled_size = path.stat().st_size
+            original_read = carry.os.read
+            original_fstat = carry.os.fstat
+            read_injected = False
+            fstat_calls = 0
+            truncate_injected = False
+
+            def read(descriptor, length):
+                nonlocal read_injected
+                value = original_read(descriptor, length)
+                if not read_injected:
+                    read_injected = True
+                    with path.open("ab", buffering=0) as stream:
+                        stream.write(later)
+                return value
+
+            def fstat(descriptor):
+                nonlocal fstat_calls, truncate_injected
+                value = original_fstat(descriptor)
+                fstat_calls += 1
+                if fstat_calls == 2:
+                    self.assertGreater(value.st_size, sampled_size)
+                    path.write_bytes(path.read_bytes()[:sampled_size])
+                    truncate_injected = True
+                return value
+
+            with mock.patch.object(
+                carry.os, "read", side_effect=read
+            ), mock.patch.object(
+                carry.os, "fstat", side_effect=fstat
+            ), self.assertRaisesRegex(carry.CarryForwardError, "log_file_unstable"):
+                carry.read_log_append(baseline)
+            self.assertTrue(read_injected)
+            self.assertTrue(truncate_injected)
+            self.assertEqual(path.stat().st_size, sampled_size)
 
     def test_log_snapshot_accepts_ten_reads_during_real_24mb_append_writer(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2964,8 +3168,14 @@ class Group2RuntimeTests(unittest.TestCase):
                     with path.open("ab") as stream:
                         stream.write(b"\x82\xac\n")
 
-            with mock.patch.object(carry.time, "sleep", side_effect=complete_tail):
+            with mock.patch.object(
+                carry, "_read_stable_log", wraps=carry._read_stable_log
+            ) as sample, mock.patch.object(
+                carry.time, "sleep", side_effect=complete_tail
+            ) as pause:
                 evidence = carry.read_log_append(baseline)
+            self.assertEqual(sample.call_count, 2)
+            self.assertEqual(pause.call_count, 1)
             worker = next(
                 item for item in evidence["files"] if item["path"] == str(path)
             )
@@ -2974,16 +3184,25 @@ class Group2RuntimeTests(unittest.TestCase):
             second = carry.read_log_append(evidence)
             with path.open("ab") as stream:
                 stream.write(b"\xe2")
-            with self.assertRaisesRegex(
+            with mock.patch.object(
+                carry, "_read_stable_log", wraps=carry._read_stable_log
+            ) as sample, mock.patch.object(
+                carry.time, "sleep", return_value=None
+            ) as pause, self.assertRaisesRegex(
                 carry.CarryForwardError, "log_append_partial_utf8"
             ):
                 carry.read_log_append(second)
+            self.assertEqual(sample.call_count, 3)
+            self.assertEqual(pause.call_count, 2)
             with path.open("ab") as stream:
                 stream.write(b"\xff")
-            with self.assertRaisesRegex(
-                carry.CarryForwardError, "log_append_invalid"
-            ):
+            with mock.patch.object(
+                carry, "_read_stable_log", wraps=carry._read_stable_log
+            ) as sample, mock.patch.object(
+                carry.time, "sleep", side_effect=AssertionError("must not retry")
+            ), self.assertRaisesRegex(carry.CarryForwardError, "log_append_invalid"):
                 carry.read_log_append(second)
+            self.assertEqual(sample.call_count, 1)
 
     def test_group2_runtime_rejects_unknown_operation_and_fields(self):
         with self.assertRaisesRegex(
