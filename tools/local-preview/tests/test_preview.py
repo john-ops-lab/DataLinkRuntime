@@ -1498,6 +1498,7 @@ class Group2ControllerGateTests(unittest.TestCase):
         subprocess.run(
             [install, "-d", "-m", "700", str(preflight)],
             check=True,
+            umask=0o022,
         )
         self.assertNotEqual(carry_check.stat().st_mode & 0o777, 0o700)
         with self.assertRaisesRegex(
