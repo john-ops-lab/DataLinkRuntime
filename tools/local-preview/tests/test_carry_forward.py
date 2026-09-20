@@ -2067,6 +2067,122 @@ class ManifestAndProjectionTests(unittest.TestCase):
             ):
                 carry.read_private(target)
 
+    def test_reconcile_capture_uses_private_ids_without_historical_baseline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            directory.chmod(0o700)
+            evidence = directory / "evidence"
+            evidence.mkdir(mode=0o700)
+            manifest = {
+                "selection": {
+                    "queued": [{"execution_id": 7, "incident_ids": [11]}],
+                    "cleanup_execution_ids": [],
+                },
+                "storage_identity": [
+                    {
+                        "service": "worker",
+                        "type": "volume",
+                        "source": "runtime-volume",
+                        "destination": "/var/lib/dlr/runtime",
+                    },
+                    {
+                        "service": "worker",
+                        "type": "volume",
+                        "source": "journal-volume",
+                        "destination": "/var/lib/dlr/journal",
+                    },
+                    {
+                        "service": "control",
+                        "type": "volume",
+                        "source": "builtin-volume",
+                        "destination": "/var/lib/dlr/builtin-packages",
+                    },
+                    {
+                        "service": "control",
+                        "type": "volume",
+                        "source": "artifact-volume",
+                        "destination": "/var/lib/dlr/artifacts",
+                    },
+                ],
+                "old_image_ids": {
+                    f"example-control:{carry.GROUP2_FROM_SHA}": "sha256:old-control"
+                },
+            }
+            docker_arguments = None
+
+            def checked_output(arguments):
+                if arguments[1:3] == ["inspect", "preview-worker-1"]:
+                    return "1000:1000"
+                if arguments[1:3] == ["inspect", "preview-control-1"]:
+                    return json.dumps(
+                        [
+                            {
+                                "Config": {
+                                    "Env": [
+                                        "DATABASE_URL=postgresql://synthetic",
+                                        "PGOPTIONS=-c default_transaction_read_only=on",
+                                        "IGNORED=value",
+                                    ]
+                                },
+                                "NetworkSettings": {"Networks": {"preview": {}}},
+                            }
+                        ]
+                    )
+                self.fail(f"unexpected command: {arguments!r}")
+
+            def run(arguments, *, check, timeout):
+                nonlocal docker_arguments
+                docker_arguments = arguments
+                self.assertTrue(check)
+                self.assertEqual(timeout, 300)
+                output = directory / "preflight"
+                carry.write_private(output / "db.json", {"db": "captured"})
+                carry.write_private(output / "files.json", {"files": "captured"})
+
+            with (
+                mock.patch.object(carry, "_checked_output", side_effect=checked_output),
+                mock.patch.object(carry.subprocess, "run", side_effect=run),
+            ):
+                result = carry._capture_reconcile_state(
+                    directory, directory, "preflight", manifest, "preview"
+                )
+
+            self.assertEqual(result, ({"db": "captured"}, {"files": "captured"}))
+            self.assertIsNotNone(docker_arguments)
+            self.assertEqual(
+                carry.read_private(directory / "preflight" / "ids.json"),
+                manifest["selection"],
+            )
+            self.assertIn(
+                f"type=bind,source={directory / 'preflight'},target=/evidence",
+                docker_arguments,
+            )
+            self.assertFalse(
+                any("target=/baseline.json" in item for item in docker_arguments)
+            )
+            self.assertNotIn("--baseline", docker_arguments)
+            ids_index = docker_arguments.index("--ids")
+            self.assertEqual(
+                docker_arguments[ids_index + 1], "/evidence/ids.json"
+            )
+
+            container_root = directory / "container-root"
+            container_root.mkdir(mode=0o755)
+            container_evidence = container_root / "evidence"
+            container_evidence.mkdir(mode=0o700)
+            new_target = container_evidence / "ids.json"
+            carry.write_private(new_target, manifest["selection"])
+            self.assertEqual(
+                carry.read_private(new_target), manifest["selection"]
+            )
+            old_target = container_root / "baseline.json"
+            old_target.write_text('{"manifest":"baseline"}\n')
+            old_target.chmod(0o600)
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "private_parent_invalid"
+            ):
+                carry.read_private(old_target)
+
     def test_kernel_compare_rejects_unknown_or_repopulated_children(self):
         baseline = {
             "boot_id": "boot",
@@ -5195,6 +5311,125 @@ class Group2StartingReconcileTests(unittest.TestCase):
             "storage": carry.digest([]), "token_health": {"status": 200, "database": True},
         }
         return request, approval, artifacts, validated, evidence, reference, first_files_result
+
+    def test_raw_capture_reaches_stage_gate_after_allowed_startup_file_change(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            root.chmod(0o700)
+            (
+                _request,
+                _approval,
+                _artifacts,
+                validated,
+                evidence,
+                _reference,
+                _first_files_result,
+            ) = self._complete_reconcile_case(root)
+            manifest = validated["artifacts"]["failed-manifest.json"]
+            current_db = evidence["preflight"]["db"]
+            current_files = evidence["preflight"]["files"]
+            self.assertNotEqual(manifest["file_evidence"], current_files)
+
+            baseline = root / "failed-manifest.json"
+            ids = root / "ids.json"
+            carry.write_private(baseline, manifest)
+            carry.write_private(ids, manifest["selection"])
+
+            def inspect_database(*_args, **_kwargs):
+                value = copy.deepcopy(current_db)
+                value["_credential_hashes"] = {}
+                value["_attempt_statuses"] = {}
+                return value
+
+            def arguments(*, baseline_path, ids_path, stem):
+                return SimpleNamespace(
+                    baseline=baseline_path,
+                    ids=ids_path,
+                    mode=carry.GROUP2_MODE,
+                    schema_phase="before",
+                    runtime_root=root / "runtime",
+                    journal_root=root / "journal",
+                    material_root=[],
+                    expected_uid=None,
+                    db_output=root / f"{stem}-db.json",
+                    files_output=root / f"{stem}-files.json",
+                )
+
+            with (
+                mock.patch.object(
+                    carry, "inspect_database", side_effect=inspect_database
+                ),
+                mock.patch.object(
+                    carry,
+                    "capture_files",
+                    side_effect=lambda *_args, **_kwargs: copy.deepcopy(
+                        current_files
+                    ),
+                ),
+                self.assertRaisesRegex(
+                    carry.CarryForwardError, "file_evidence_changed"
+                ),
+            ):
+                carry._command_capture_state(
+                    arguments(baseline_path=baseline, ids_path=None, stem="strict")
+                )
+
+            with (
+                mock.patch.object(
+                    carry, "inspect_database", side_effect=inspect_database
+                ),
+                mock.patch.object(
+                    carry,
+                    "capture_files",
+                    side_effect=lambda *_args, **_kwargs: copy.deepcopy(
+                        current_files
+                    ),
+                ),
+            ):
+                result = carry._command_capture_state(
+                    arguments(baseline_path=None, ids_path=ids, stem="raw")
+                )
+            captured_db = carry.read_private(root / "raw-db.json")
+            captured_files = carry.read_private(root / "raw-files.json")
+            self.assertEqual(result["code"], "state_ok")
+            self.assertEqual(captured_db, current_db)
+            self.assertEqual(captured_files, current_files)
+
+            current = copy.deepcopy(evidence["stopped"]["control"])
+            current["db"] = captured_db
+            current["files"] = captured_files
+            self.assertEqual(
+                carry.validate_group2_reconcile_transition(
+                    evidence["preflight"],
+                    current,
+                    kernel_baseline=evidence["preflight"]["kernel"],
+                    require_idle=False,
+                ),
+                current,
+            )
+            for label, mutate in (
+                (
+                    "database",
+                    lambda value: value["db"].__setitem__("projection", {}),
+                ),
+                (
+                    "files",
+                    lambda value: value["files"]["runtime"]["root"].__setitem__(
+                        "inode", 999
+                    ),
+                ),
+            ):
+                changed = copy.deepcopy(current)
+                mutate(changed)
+                with self.subTest(label=label), self.assertRaises(
+                    carry.CarryForwardError
+                ):
+                    carry.validate_group2_reconcile_transition(
+                        evidence["preflight"],
+                        changed,
+                        kernel_baseline=evidence["preflight"]["kernel"],
+                        require_idle=False,
+                    )
 
     def test_reconcile_request_is_closed_and_separately_approved(self):
         request, approval, artifacts = self._request()

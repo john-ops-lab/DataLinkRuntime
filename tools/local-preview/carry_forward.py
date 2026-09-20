@@ -9216,6 +9216,7 @@ def _capture_reconcile_state(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     output = directory / name
     output.mkdir(mode=0o700)
+    write_private(output / "ids.json", manifest["selection"])
     storage = manifest["storage_identity"]
     def volume(service: str, destination: str) -> str:
         matches = [
@@ -9273,13 +9274,12 @@ def _capture_reconcile_state(
         (
             "--mount", f"type=bind,source={directory / 'tool' / 'carry_forward.py'},target=/opt/dlr/carry_forward.py,readonly",
             "--mount", f"type=bind,source={output},target=/evidence",
-            "--mount", f"type=bind,source={directory / 'evidence' / 'failed-manifest.json'},target=/baseline.json,readonly",
             "--mount", f"type=volume,source={runtime},target=/var/lib/dlr/runtime,readonly,volume-nocopy",
             "--mount", f"type=volume,source={journal},target=/var/lib/dlr/journal,readonly,volume-nocopy",
             "--mount", f"type=volume,source={builtin},target=/var/lib/dlr/builtin-packages,readonly,volume-nocopy",
             "--mount", f"type=volume,source={artifact['source']},target={artifact['destination']},readonly,volume-nocopy",
             "--entrypoint", "python", old_control[0], "/opt/dlr/carry_forward.py", "capture-state",
-            "--baseline", "/baseline.json", "--schema-phase", "before", "--mode", GROUP2_MODE,
+            "--ids", "/evidence/ids.json", "--schema-phase", "before", "--mode", GROUP2_MODE,
             "--runtime-root", "/var/lib/dlr/runtime", "--journal-root", "/var/lib/dlr/journal",
             "--material-root", "builtin=/var/lib/dlr/builtin-packages",
             "--material-root", f"artifacts={artifact['destination']}", "--expected-uid", worker_uid,
