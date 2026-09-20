@@ -6,10 +6,14 @@ sha=${1:?commit required}
 action=${2:?stage, plan, deploy, recover or adopt required}
 schema=${3:-}
 carry_id=${4:-}
+recovery_id=${5:-}
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 2
 [[ "$action" =~ ^(stage|plan|deploy|recover|adopt)$ ]] || exit 2
 if [ -n "$carry_id" ]; then [[ "$carry_id" =~ ^[0-9a-f]{32}$ ]] || exit 2; fi
 [ "$action" = plan ] || [ -z "$carry_id" ] || [ "$action" = deploy ] || exit 2
+if [ -n "$recovery_id" ]; then
+  [ "$action" = recover ] && [[ "$recovery_id" =~ ^[0-9a-f]{32}$ ]] || exit 2
+fi
 root=$(cd "$(dirname "$0")" && pwd)
 deployment_settings=$(python3 - "$root/deployment.json" <<'PYSETTINGS'
 import json, shlex, sys
@@ -43,9 +47,10 @@ PY
 compose() { docker compose --project-name "$project" --env-file "$root/preview.env" -f docker-compose.yml -f compose.preview.json "$@"; }
 sql() { docker exec "$project-postgres-1" psql -U dlr -d dlr -Atc "$1"; }
 record() {
-  python3 - "$root/transaction.json" "$1" "$sha" "${backup:-}" "${carry_manifest:-}" <<'PY'
+  python3 - "$root/transaction.json" "$1" "$sha" "${backup:-}" \
+    "${carry_manifest:-}" "${recovery_id:-}" "${recovery_completion_digest:-}" <<'PY'
 import json, os, sys, time
-path, phase, sha, backup, manifest_path = sys.argv[1:]
+path, phase, sha, backup, manifest_path, recovery_id, recovery_digest = sys.argv[1:]
 value = {'phase': phase, 'sha': sha, 'backup': backup, 'at': time.time()}
 if manifest_path:
     with open(manifest_path) as source: manifest = json.load(source)
@@ -55,6 +60,10 @@ if manifest_path:
         'from_sha': manifest['from_sha'],
         'to_sha': manifest['to_sha'],
     }
+if recovery_id:
+    value['recovery_id'] = recovery_id
+if recovery_digest:
+    value['recovery_evidence_digest'] = recovery_digest
 with open(path + '.tmp', 'w') as out:
     json.dump(value, out)
     out.flush(); os.fsync(out.fileno())
@@ -364,14 +373,26 @@ value=json.load(open(sys.argv[1]))
 print('true' if value.get('mode') == 'audited-group2-same-schema-v1' else 'false')
 PY
   )
+  if [ "$is_group2" = true ]; then
+    [ -n "$recovery_id" ] || exit 2
+    read -r previous_recovery_id previous_recovery_digest < <(
+      python3 - "$root/transaction.json" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1])); identity=value.get('recovery_id'); digest=value.get('recovery_evidence_digest')
+if identity is None and digest is None: print('- -')
+elif isinstance(identity,str) and isinstance(digest,str): print(identity,digest)
+else: raise SystemExit('Invalid previous recovery binding')
+PY
+    )
+    record recovering
+  fi
   compose up -d --no-build --wait --wait-timeout 180 postgres rabbitmq
   test "$(sql 'SELECT version_num FROM alembic_version')" = "$(cat "$release/schema")"
   if [ "$is_group2" = true ]; then
-    record recovering
-    recovery=$(python3 - "$root/carry-forward" "$sha" <<'PY'
-import pathlib, sys, time
-path=pathlib.Path(sys.argv[1])/f'recovery-{sys.argv[2]}-{time.time_ns()}'
-path.mkdir(mode=0o700,parents=True)
+    recovery=$(python3 - "$root/carry-forward" "$sha" "$recovery_id" <<'PY'
+import pathlib, sys
+path=pathlib.Path(sys.argv[1])/f'recovery-{sys.argv[2]}-{sys.argv[3]}'
+path.mkdir(mode=0o700,parents=True,exist_ok=False)
 print(path)
 PY
     )
@@ -403,17 +424,40 @@ PY
       --db-output /evidence/before-db.json --files-output /evidence/before-files.json
     python3 - "$root/carry_forward.py" "$release/receipt.json" \
       "$release/recovery-baseline" "$recovery/before-db.json" \
-      "$recovery/before-files.json" <<'PY'
-import hashlib, importlib.util, json, sys
+      "$recovery/before-files.json" "$carry_manifest" "$root/carry-forward" \
+      "$previous_recovery_id" "$previous_recovery_digest" "$recovery/baseline.json" <<'PY'
+import importlib.util, json, pathlib, sys
 spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 receipt=json.load(open(sys.argv[2])); baseline=sys.argv[3]
 db=json.load(open(baseline+'/db.json')); files=json.load(open(baseline+'/files.json'))
 actual_db=json.load(open(sys.argv[4])); actual_files=json.load(open(sys.argv[5]))
 value={'result':json.load(open(baseline+'/post-preservation.json')),'db':db,'files':files}
 assert m.digest(value)==receipt['post_preservation_digest']==receipt['stages']['post_preservation']
-for key in ('projection','responsibilities','protected_rows','asset_projection','schema_shape','schema_inventory'):
-    assert actual_db[key]==db[key], 'Recovery database baseline changed'
-assert actual_files==files, 'Recovery file baseline changed'
+manifest=m.validate_manifest(m.read_private(pathlib.Path(sys.argv[6]))); root=pathlib.Path(sys.argv[7])
+previous_id,previous_digest=sys.argv[8:10]
+deployment={'db':db,'files':files,'post_preservation':value['result']}
+if previous_id=='-':
+    assert previous_digest=='-'
+    predecessor={'kind':'deployment','recovery_id':None,'evidence_digest':None,'db':db,'files':files}
+else:
+    prior=root/f'recovery-{manifest["to_sha"]}-{previous_id}'
+    prior_baseline=json.load(open(prior/'baseline.json')); completion=json.load(open(prior/'completion.json'))
+    def read(name): return json.load(open(prior/name))
+    evidence={'request':read('startup-request.json'),'proof':read('startup.json')['startup_proof'],
+      'before_db':read('before-db.json'),'after_db':read('after-db.json'),
+      'before_files':read('before-files.json'),'after_files':read('after-files.json'),
+      'account_check':read('account.json')['account_check'],'entry_probe':read('entry.json')['entry_probe'],
+      'logs_before':read('log-before.json')['log_evidence'],'logs_after':read('log-after.json')['log_evidence'],
+      'preservation':read('preservation.json')}
+    result=m.validate_group2_recovery_evidence(manifest,prior_baseline,evidence)
+    digest=m.digest({'baseline':prior_baseline,'evidence':evidence})
+    assert digest==previous_digest==completion['evidence_digest'] and result==completion['result']
+    predecessor={'kind':'recovery','recovery_id':previous_id,'evidence_digest':digest,
+                 'db':evidence['after_db'],'files':evidence['after_files']}
+current={'deployment':deployment,'predecessor':predecessor,
+         'fresh':{'db':actual_db,'files':actual_files}}
+m._validate_group2_recovery_lineage(deployment,predecessor,current['fresh'])
+m.write_private(pathlib.Path(sys.argv[10]),current)
 PY
     python3 - "$recovery/before-worker.json" "$root/carry_forward.py" "$project" <<'PY'
 import importlib.util, pathlib, sys
@@ -496,7 +540,6 @@ with open(sys.argv[1]+'.tmp','w') as out:
 os.replace(sys.argv[1]+'.tmp',sys.argv[1])
 PY
     group2_runtime_host "$recovery/entry-request.json" "$recovery/entry.json"
-    record ready
   else
     compose up -d --no-build --wait --wait-timeout 180 control worker web
   fi
@@ -822,6 +865,48 @@ done
 if [ "${is_group2:-false}" = true ]; then
   test "$(docker inspect "$project-account-web-1" --format '{{.Image}}')" = "$(docker image inspect "$project-web:$sha" --format '{{.Id}}')"
 fi
+if [ "$action" = recover ] && [ "${is_group2:-false}" = true ]; then
+  python3 - "$root/carry_forward.py" "$carry_manifest" \
+    "$release/recovery-baseline" "$recovery" "$recovery_id" "$sha" <<'PY'
+import importlib.util, json, pathlib, sys
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+manifest=m.validate_manifest(m.read_private(pathlib.Path(sys.argv[2])))
+baseline_path=pathlib.Path(sys.argv[3]); evidence_path=pathlib.Path(sys.argv[4])
+def read(path): return json.load(open(path))
+baseline=read(evidence_path/'baseline.json')
+account=read(evidence_path/'account.json'); entry=read(evidence_path/'entry.json')
+evidence={
+ 'request':read(evidence_path/'startup-request.json'),
+ 'proof':read(evidence_path/'startup.json')['startup_proof'],
+ 'before_db':read(evidence_path/'before-db.json'),
+ 'after_db':read(evidence_path/'after-db.json'),
+ 'before_files':read(evidence_path/'before-files.json'),
+ 'after_files':read(evidence_path/'after-files.json'),
+ 'account_check':account['account_check'],'entry_probe':entry['entry_probe'],
+ 'logs_before':read(evidence_path/'log-before.json')['log_evidence'],
+ 'logs_after':read(evidence_path/'log-after.json')['log_evidence'],
+ 'preservation':read(evidence_path/'preservation.json'),
+}
+result=m.validate_group2_recovery_evidence(manifest,baseline,evidence)
+evidence_digest=m.digest({'baseline':baseline,'evidence':evidence})
+completion={'schema':'group2-recovery-completion-v1','recovery_id':sys.argv[5],
+ 'sha':sys.argv[6],'manifest_id':manifest['manifest_id'],
+ 'manifest_digest':manifest['manifest_digest'],'evidence_digest':evidence_digest,
+ 'predecessor':{'kind':baseline['predecessor']['kind'],
+                'recovery_id':baseline['predecessor']['recovery_id'],
+                'evidence_digest':baseline['predecessor']['evidence_digest']},
+ 'result':result}
+m.write_private(evidence_path/'completion.json',completion)
+print(evidence_digest)
+PY
+  recovery_completion_digest=$(python3 - "$recovery/completion.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))['evidence_digest'])
+PY
+  )
+  record ready
+fi
 if [ "$action" = deploy ] && [ "${is_group2:-false}" = true ]; then
   python3 - "$group2/start-window.json" <<'PY'
 import json, os, sys, time
@@ -896,7 +981,8 @@ with open(sys.argv[1]+'.tmp','w') as out:
 os.replace(sys.argv[1]+'.tmp',sys.argv[1])
 PY
   group2_runtime_host "$group2/entry-request.json" "$group2/entry-before.json"
-  install -m 600 "$group2/log-after-start.json" "$group2/log-before-probe.json"
+  group2_log_checkpoint "$group2/log-after-start.json" \
+    "$group2/log-before-probe.json"
   record verifying
   compose exec -T control python - < "$root/verify.py" > "$group2/probe.pending.json"
   python3 - "$group2/probe.pending.json" <<'PY'
@@ -939,7 +1025,7 @@ os.replace(sys.argv[1]+'.tmp',sys.argv[1])
 PY
   carry_control "$group2" group2-runtime \
     --request /evidence/cleanup-request.json --output /evidence/cleanup.json >/dev/null
-  python3 - "$group2/log-final-request.json" "$group2/log-before-probe.json" <<'PY'
+  python3 - "$group2/log-final-request.json" "$group2/log-partial.json" <<'PY'
 import json, os, sys
 value={'mode':'audited-group2-same-schema-v1','operation':'log-append',
        'baseline':json.load(open(sys.argv[2]))['log_evidence']}
@@ -948,8 +1034,18 @@ with open(sys.argv[1]+'.tmp','w') as out:
 os.replace(sys.argv[1]+'.tmp',sys.argv[1])
 PY
   group2_runtime_host "$group2/log-final-request.json" "$group2/log-final.json"
+  python3 - "$root/carry_forward.py" "$group2/log-before-probe.json" \
+    "$group2/log-partial.json" "$group2/log-final.json" \
+    "$group2/log-complete.json" <<'PY'
+import importlib.util, json, pathlib, sys
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+values=[json.load(open(path))['log_evidence'] for path in sys.argv[2:5]]
+m.write_private(pathlib.Path(sys.argv[5]),
+                {'log_evidence':m.combine_group2_log_window(*values)})
+PY
   python3 - "$group2/probe-final-request.json" "$group2/log-before-probe.json" \
-    "$group2/log-final.json" "$group2/probe.pending.json" \
+    "$group2/log-complete.json" "$group2/probe.pending.json" \
     "$group2/started/db.json" "$group2/cleanup.json" <<'PY'
 import json, os, sys
 value={'mode':'audited-group2-same-schema-v1','operation':'probe-proof',
@@ -997,34 +1093,62 @@ PY
   install -m 600 "$group2/final/db.json" "$release/recovery-baseline/db.json"
   install -m 600 "$group2/final/files.json" "$release/recovery-baseline/files.json"
   install -m 600 "$group2/post-preservation.json" "$release/recovery-baseline/post-preservation.json"
-  python3 - "$release" "$backup" "$carry_manifest" "$group2" <<'PY'
-import hashlib, json, os, pathlib, sys
+  python3 - "$release" "$backup" "$carry_manifest" "$group2" \
+    "$root/carry_forward.py" <<'PY'
+import hashlib, importlib.util, json, os, pathlib, sys
 release=pathlib.Path(sys.argv[1]); evidence=pathlib.Path(sys.argv[4]); manifest=json.load(open(sys.argv[3]))
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[5])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 def digest(value):
     return hashlib.sha256(json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 def read(name): return json.load(open(evidence/name))
 post_bundle={'result':read('post-preservation.json'),'db':read('final/db.json'),'files':read('final/files.json')}
-stages={
- 'preflight':digest(json.load(open(evidence.parent/'preflight/db.json'))),
- 'control_stopped':digest(json.load(open(evidence.parent/'control-stopped/db.json'))),
- 'stopped':digest(json.load(open(evidence.parent/'stopped/db.json'))),
- 'backup':digest({'db':json.load(open(evidence.parent/'after-backup/db.json')),
-                  'dump_sha256':hashlib.sha256((pathlib.Path(sys.argv[2])/'database.dump').read_bytes()).hexdigest(),
-                  'list_sha256':hashlib.sha256((pathlib.Path(sys.argv[2])/'database.list').read_bytes()).hexdigest()}),
- 'same_schema':digest(json.load(open(evidence.parent/'after-migration/db.json'))),
- 'started':digest(read('started-check.json')),
- 'probe':digest(read('probe-final.json')['probe_proof']['probe_result']),
- 'natural_cleanup':digest(read('cleanup.json')),
- 'post_preservation':digest(post_bundle),
- 'post_health':digest({'account':read('account-after.json'),'entry':read('entry-after.json'),
-                       'logs':read('log-after-health.json')}),
+raw_stages={
+ 'preflight':json.load(open(evidence.parent/'preflight/db.json')),
+ 'control_stopped':json.load(open(evidence.parent/'control-stopped/db.json')),
+ 'stopped':json.load(open(evidence.parent/'stopped/db.json')),
+ 'backup':{'db':json.load(open(evidence.parent/'after-backup/db.json')),
+           'dump_sha256':hashlib.sha256((pathlib.Path(sys.argv[2])/'database.dump').read_bytes()).hexdigest(),
+           'list_sha256':hashlib.sha256((pathlib.Path(sys.argv[2])/'database.list').read_bytes()).hexdigest()},
+ 'same_schema':json.load(open(evidence.parent/'after-migration/db.json')),
+ 'started':read('started-check.json'),
+ 'probe':read('probe-final.json')['probe_proof']['probe_result'],
+ 'natural_cleanup':read('cleanup.json')['cleanup'],
+ 'post_preservation':post_bundle,
+ 'post_health':{'account_check':read('account-after.json')['account_check'],
+                'entry_probe':read('entry-after.json')['entry_probe'],
+                'logs_after':read('log-after-health.json')['log_evidence']},
 }
+stage_paths={'preflight':'preflight','control_stopped':'control-stopped',
+ 'stopped':'stopped','after_backup':'after-backup','after_migration':'after-migration'}
+stage_inputs={name:{'db':json.load(open(evidence.parent/path/'db.json')),
+                    'files':json.load(open(evidence.parent/path/'files.json')),
+                    'logs_after':json.load(open(evidence.parent/path/'log.json'))['log_evidence']}
+              for name,path in stage_paths.items()}
+startup={'request':read('startup-request.json'),'proof':read('startup.json')['startup_proof'],
+ 'before_files':manifest['file_evidence'],'after_files':read('started/files.json'),
+ 'after_db':read('started/db.json'),'result':read('started-check.json')}
+probe={'proof':read('probe-final.json')['probe_proof'],'before_db':read('started/db.json'),
+ 'after_db':read('final/db.json'),'before_files':read('started/files.json'),
+ 'after_files':read('final/files.json'),'logs_before':read('log-before-probe.json')['log_evidence'],
+ 'logs_partial':read('log-partial.json')['log_evidence'],'logs_final':read('log-final.json')['log_evidence'],
+ 'logs_complete':read('log-complete.json')['log_evidence'],'probe_result':raw_stages['probe'],
+ 'cleanup':raw_stages['natural_cleanup'],'result':read('post-preservation.json')}
+post_health={'account_check':raw_stages['post_health']['account_check'],
+ 'entry_probe':raw_stages['post_health']['entry_probe'],
+ 'logs_before':read('log-before-health.json')['log_evidence'],
+ 'logs_after':raw_stages['post_health']['logs_after']}
+receipt_evidence={'stages':raw_stages,'stage_inputs':stage_inputs,'startup':startup,
+                  'probe':probe,'post_health':post_health}
+m.validate_group2_receipt_evidence(manifest,receipt_evidence)
+stages={name:digest(value) for name,value in raw_stages.items()}
 account=manifest['account_entry']; post=read('post-preservation.json')
 value={'mode':manifest['mode'],'sha':manifest['to_sha'],'schema':(release/'schema').read_text().strip(),
  'images':json.load(open(release/'images.json')),'probe':json.load(open(release/'probe.json')),
  'backup':sys.argv[2], 'carry_forward':{'manifest_id':manifest['manifest_id'],'manifest_digest':manifest['manifest_digest']},
  'ci_binding':manifest['ci_binding'],'review_scope_digest':manifest['review_scope_digest'],
  'stages':stages,'post_preservation_digest':digest(post_bundle),
+ 'evidence_digest':digest(receipt_evidence),
  'account_entry_digest':account['profile_digest'],'account_entry':account,'account_ready':True}
 temporary=release/'receipt.json.tmp'
 with temporary.open('w') as out: json.dump(value,out); out.flush(); os.fsync(out.fileno())

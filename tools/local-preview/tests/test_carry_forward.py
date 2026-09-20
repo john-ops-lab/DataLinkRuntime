@@ -2204,6 +2204,27 @@ class Group2RuntimeTests(unittest.TestCase):
                 chained["baseline_evidence_digest"], evidence["evidence_digest"]
             )
             carry._validate_log_link(evidence, chained, profile["profile_digest"])
+            complete = carry.combine_group2_log_window(baseline, evidence, chained)
+            complete_worker = next(
+                item for item in complete["files"] if item["path"] == str(path)
+            )
+            self.assertEqual(complete_worker["appended_text"], "after\nlater\n")
+            self.assertEqual(
+                complete["baseline_evidence_digest"], baseline["evidence_digest"]
+            )
+            carry._validate_log_link(baseline, complete, profile["profile_digest"])
+            invalid = copy.deepcopy(chained)
+            invalid_worker = next(
+                item for item in invalid["files"] if item["path"] == str(path)
+            )
+            invalid_worker["end_size"] += 1
+            invalid["evidence_digest"] = carry.digest(
+                {key: item for key, item in invalid.items() if key != "evidence_digest"}
+            )
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "log_evidence_invalid"
+            ):
+                carry.combine_group2_log_window(baseline, evidence, invalid)
             path.write_text("replaced\n")
             with self.assertRaisesRegex(carry.CarryForwardError, "log_prefix_changed"):
                 carry.read_log_append(baseline)
@@ -2228,6 +2249,70 @@ class Group2RuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(carry.CarryForwardError, "log_file_invalid"):
                 carry.read_log_append(baseline)
 
+    def test_log_directory_mtime_requires_a_new_approved_direct_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worker = root / "worker" / "worker.log"
+            worker.parent.mkdir()
+            worker.write_text("before\n")
+            archive = worker.parent / "archive"
+            archive.mkdir()
+            profile = self._profile(worker)
+
+            baseline = carry.capture_log_prefix(profile)
+            worker_root = next(
+                item for item in baseline["roots"] if item["path"] == str(worker.parent)
+            )
+            self.assertIn("mtime_ns", worker_root)
+            self.assertIn(
+                "mtime_ns",
+                next(
+                    item for item in worker_root["entries"] if item["path"] == "archive"
+                ),
+            )
+
+            old_root_mtime = worker.parent.stat().st_mtime_ns
+            os.utime(
+                worker.parent,
+                ns=(worker.parent.stat().st_atime_ns, old_root_mtime + 1),
+            )
+            with self.assertRaisesRegex(carry.CarryForwardError, "log_root_changed"):
+                carry.read_log_append(baseline)
+            os.utime(
+                worker.parent, ns=(worker.parent.stat().st_atime_ns, old_root_mtime)
+            )
+
+            old_nested_mtime = archive.stat().st_mtime_ns
+            os.utime(
+                archive,
+                ns=(archive.stat().st_atime_ns, old_nested_mtime + 1),
+            )
+            with self.assertRaisesRegex(carry.CarryForwardError, "log_root_changed"):
+                carry.read_log_append(baseline)
+            os.utime(archive, ns=(archive.stat().st_atime_ns, old_nested_mtime))
+
+            account_access = root / "account-web" / "access.log"
+            account_access.write_text("created\n")
+            first = carry.read_log_append(baseline)
+            self.assertEqual(
+                next(
+                    item
+                    for item in first["files"]
+                    if item["path"] == str(account_access)
+                )["appended_text"],
+                "created\n",
+            )
+            account_root = account_access.parent
+            os.utime(
+                account_root,
+                ns=(
+                    account_root.stat().st_atime_ns,
+                    account_root.stat().st_mtime_ns + 1,
+                ),
+            )
+            with self.assertRaisesRegex(carry.CarryForwardError, "log_root_changed"):
+                carry.read_log_append(first)
+
     def test_group2_runtime_rejects_unknown_operation_and_fields(self):
         with self.assertRaisesRegex(
             carry.CarryForwardError, "group2_runtime_operation_invalid"
@@ -2235,6 +2320,375 @@ class Group2RuntimeTests(unittest.TestCase):
             carry.group2_runtime(
                 {"mode": carry.GROUP2_MODE, "operation": "write-ready"}
             )
+
+    def test_receipt_and_recovery_validators_recompute_raw_evidence(self):
+        manifest = group2_manifest()
+
+        def append(previous, timestamp):
+            value = {
+                "profile_digest": previous["profile_digest"],
+                "files": [],
+                "roots": [],
+                "baseline_evidence_digest": previous["evidence_digest"],
+                "observed_after_ns": timestamp,
+            }
+            value["evidence_digest"] = carry.digest(value)
+            return value
+
+        stage_inputs = {}
+        startup_before = manifest["log_evidence"]
+        for timestamp, name in enumerate(
+            (
+                "preflight",
+                "control_stopped",
+                "stopped",
+                "after_backup",
+                "after_migration",
+            ),
+            2,
+        ):
+            startup_before = append(startup_before, timestamp)
+            stage_inputs[name] = {
+                "db": {"stage": name},
+                "files": {},
+                "logs_after": startup_before,
+            }
+        with (
+            mock.patch.object(carry, "_validate_group2_manifest_db"),
+            mock.patch.object(carry, "_validate_capture_digests"),
+        ):
+            self.assertEqual(
+                carry._validate_group2_stage_inputs(manifest, stage_inputs)[-1],
+                startup_before,
+            )
+            broken_stages = copy.deepcopy(stage_inputs)
+            broken = broken_stages["control_stopped"]["logs_after"]
+            broken["baseline_evidence_digest"] = "f" * 64
+            broken["evidence_digest"] = carry.digest(
+                {key: item for key, item in broken.items() if key != "evidence_digest"}
+            )
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "log_evidence_link_invalid"
+            ):
+                carry._validate_group2_stage_inputs(manifest, broken_stages)
+        startup_after = append(startup_before, 7)
+        probe_before = append(startup_after, 8)
+        probe_partial = append(probe_before, 9)
+        probe_final = append(probe_partial, 10)
+        probe_complete = carry.combine_group2_log_window(
+            probe_before, probe_partial, probe_final
+        )
+        health_after = append(probe_final, 11)
+        startup_request = {
+            "mode": carry.GROUP2_MODE,
+            "operation": "startup-proof",
+            "profile": manifest["account_entry"],
+            "logs_before": startup_before,
+            "logs_after": startup_after,
+            "container_before": manifest["account_entry"]["old_containers"]["worker"],
+            "container_after": {},
+            "window_start_ns": 1,
+            "window_end_ns": 2,
+        }
+        startup_proof = {"proof": "startup"}
+        startup_result = {"code": "startup-ok"}
+        cleanup = {"row": {}, "row_sha256": "a" * 64}
+        partial_proof = {
+            "adapter_id": 1,
+            "execution_id": 2,
+            "worker_id": 3,
+            "attempt_id": 4,
+        }
+        final_proof = {**partial_proof, "cleanup": cleanup}
+        post_result = {"code": "post-ok"}
+        account_check = {"account": "ok"}
+        entry_probe = {"entry": "ok"}
+        probe = {
+            "proof": final_proof,
+            "before_db": {"state": "started"},
+            "after_db": {"state": "final"},
+            "before_files": {"state": "started"},
+            "after_files": {"state": "final"},
+            "logs_before": probe_before,
+            "logs_partial": probe_partial,
+            "logs_final": probe_final,
+            "logs_complete": probe_complete,
+            "probe_result": {"status": "succeeded"},
+            "cleanup": cleanup,
+            "result": post_result,
+        }
+        startup = {
+            "request": startup_request,
+            "proof": startup_proof,
+            "before_files": manifest["file_evidence"],
+            "after_files": probe["before_files"],
+            "after_db": probe["before_db"],
+            "result": startup_result,
+        }
+        post_health = {
+            "account_check": account_check,
+            "entry_probe": entry_probe,
+            "logs_before": probe_final,
+            "logs_after": health_after,
+        }
+        stages = {
+            "preflight": stage_inputs["preflight"]["db"],
+            "control_stopped": stage_inputs["control_stopped"]["db"],
+            "stopped": stage_inputs["stopped"]["db"],
+            "backup": {
+                "db": stage_inputs["after_backup"]["db"],
+                "dump_sha256": "b" * 64,
+                "list_sha256": "c" * 64,
+            },
+            "same_schema": stage_inputs["after_migration"]["db"],
+            "started": startup_result,
+            "probe": probe["probe_result"],
+            "natural_cleanup": cleanup,
+            "post_preservation": {
+                "result": post_result,
+                "db": probe["after_db"],
+                "files": probe["after_files"],
+            },
+            "post_health": {
+                "account_check": account_check,
+                "entry_probe": entry_probe,
+                "logs_after": health_after,
+            },
+        }
+        evidence = {
+            "stages": stages,
+            "stage_inputs": stage_inputs,
+            "startup": startup,
+            "probe": probe,
+            "post_health": post_health,
+        }
+        patches = (
+            mock.patch.object(carry, "_validate_group2_manifest_db"),
+            mock.patch.object(carry, "_validate_capture_digests"),
+            mock.patch.object(carry, "_startup_proof", return_value=startup_proof),
+            mock.patch.object(
+                carry, "compare_group2_startup_files", return_value=startup_result
+            ),
+            mock.patch.object(
+                carry,
+                "derive_group2_probe_provenance",
+                side_effect=[partial_proof, final_proof],
+            ),
+            mock.patch.object(
+                carry, "compare_group2_post_probe", return_value=post_result
+            ),
+            mock.patch.object(
+                carry, "validate_group2_account_check", return_value=account_check
+            ),
+            mock.patch.object(
+                carry, "validate_group2_entry_probe", return_value=entry_probe
+            ),
+        )
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
+        ):
+            result = carry.validate_group2_receipt_evidence(manifest, evidence)
+        self.assertTrue(result["cleanup_ready"])
+        self.assertEqual(
+            set(result),
+            {
+                "startup_result",
+                "post_result",
+                "account_ready",
+                "entry_ready",
+                "cleanup_ready",
+                "log_chain_digest",
+            },
+        )
+
+        changed = copy.deepcopy(evidence)
+        changed["probe"]["logs_before"]["baseline_evidence_digest"] = "f" * 64
+        changed["probe"]["logs_before"]["evidence_digest"] = carry.digest(
+            {
+                key: item
+                for key, item in changed["probe"]["logs_before"].items()
+                if key != "evidence_digest"
+            }
+        )
+        with (
+            mock.patch.object(carry, "_validate_group2_manifest_db"),
+            mock.patch.object(carry, "_validate_capture_digests"),
+            mock.patch.object(carry, "_startup_proof", return_value=startup_proof),
+            mock.patch.object(
+                carry, "compare_group2_startup_files", return_value=startup_result
+            ),
+            self.assertRaisesRegex(
+                carry.CarryForwardError, "log_evidence_link_invalid"
+            ),
+        ):
+            carry.validate_group2_receipt_evidence(manifest, changed)
+
+        db = {
+            key: value
+            for key, value in {
+                "projection": {},
+                "responsibilities": {},
+                "protected_rows": {},
+                "asset_projection": {},
+                "schema_shape": {},
+                "schema_inventory": {},
+            }.items()
+        }
+        recovery_baseline = {
+            "deployment": {
+                "db": db,
+                "files": {},
+                "post_preservation": {
+                    "code": "group2_post_probe_ok",
+                    "cleanup_row_sha256": "d" * 64,
+                    "post_db_digest": carry.digest(
+                        {
+                            "protected_rows": db["protected_rows"],
+                            "asset_projection": db["asset_projection"],
+                            "schema_shape": db["schema_shape"],
+                        }
+                    ),
+                    "file_delta_digest": "e" * 64,
+                },
+            },
+            "predecessor": {
+                "kind": "deployment",
+                "recovery_id": None,
+                "evidence_digest": None,
+                "db": copy.deepcopy(db),
+                "files": {},
+            },
+            "fresh": {"db": copy.deepcopy(db), "files": {}},
+        }
+        before_worker = copy.deepcopy(
+            manifest["account_entry"]["old_containers"]["worker"]
+        )
+        before_worker["image_id"] = manifest["account_entry"][
+            "candidate_image_ids_by_service"
+        ]["worker"]
+        after_worker = copy.deepcopy(before_worker)
+        after_worker.update(container_id="recovered-worker", status="running")
+        recovery_request = {
+            **startup_request,
+            "container_before": before_worker,
+            "container_after": after_worker,
+        }
+        recovery_account = {"containers": {"worker": after_worker}}
+        recovery = {
+            "request": recovery_request,
+            "proof": startup_proof,
+            "before_db": db,
+            "after_db": copy.deepcopy(db),
+            "before_files": {},
+            "after_files": {"state": "recovered"},
+            "account_check": recovery_account,
+            "entry_probe": entry_probe,
+            "logs_before": startup_before,
+            "logs_after": startup_after,
+            "preservation": startup_result,
+        }
+        with (
+            mock.patch.object(carry, "_validate_capture_digests"),
+            mock.patch.object(carry, "_validate_group2_recovery_lineage"),
+            mock.patch.object(carry, "_startup_proof", return_value=startup_proof),
+            mock.patch.object(
+                carry, "compare_group2_startup_files", return_value=startup_result
+            ),
+            mock.patch.object(
+                carry, "validate_group2_account_check", return_value=recovery_account
+            ),
+            mock.patch.object(
+                carry, "validate_group2_entry_probe", return_value=entry_probe
+            ),
+        ):
+            recovered = carry.validate_group2_recovery_evidence(
+                manifest, recovery_baseline, recovery
+            )
+        self.assertEqual(
+            set(recovered),
+            {
+                "startup_result",
+                "preservation",
+                "account_ready",
+                "entry_ready",
+                "log_chain_digest",
+            },
+        )
+
+    def test_recovery_lineage_uses_only_deployment_or_prior_verified_after(self):
+        manifest = group2_manifest()
+        db = {
+            "projection": manifest["old_runtime_projection"],
+            "responsibilities": manifest["responsibilities"],
+            "protected_rows": manifest["protected_rows"],
+            "asset_projection": manifest["asset_projection"],
+            "schema_shape": manifest["schema_shape"],
+            "schema_inventory": manifest["schema_inventory"],
+        }
+        entries = [
+            {
+                "path": "old.bin",
+                "type": "file",
+                "mode": 0o600,
+                "sha256": "a" * 64,
+            }
+        ]
+        files = {
+            "runtime": {"root": {}, "entries": entries, "digest": carry.digest(entries)},
+            "journal": {"root": {}, "entries": [], "digest": carry.digest([])},
+            "materials": {},
+            "journal_facts": {"cleanup": [], "attempt": [], "sandbox_recovery": []},
+            "empty_attempt_shells": [],
+        }
+        deployment = {
+            "db": db,
+            "files": files,
+            "post_preservation": {"code": "group2_post_probe_ok"},
+        }
+        predecessor = {
+            "kind": "deployment",
+            "recovery_id": None,
+            "evidence_digest": None,
+            "db": copy.deepcopy(db),
+            "files": copy.deepcopy(files),
+        }
+        fresh = {"db": copy.deepcopy(db), "files": copy.deepcopy(files)}
+        carry._validate_group2_recovery_lineage(deployment, predecessor, fresh)
+        for changed in (
+            ("db", lambda value: value["responsibilities"].update(changed=True)),
+            ("files", lambda value: value["runtime"]["entries"][0].update(mode=0o644)),
+            ("files", lambda value: value["runtime"]["entries"].append({"path": "new"})),
+        ):
+            invalid = copy.deepcopy(fresh)
+            changed[1](invalid[changed[0]])
+            if changed[0] == "files":
+                invalid["files"]["runtime"]["entries"].sort(key=lambda item: item["path"])
+                invalid["files"]["runtime"]["digest"] = carry.digest(
+                    invalid["files"]["runtime"]["entries"]
+                )
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "group2_recovery_lineage_changed"
+            ):
+                carry._validate_group2_recovery_lineage(
+                    deployment, predecessor, invalid
+                )
+        prior_after = copy.deepcopy(predecessor)
+        prior_after.update(
+            kind="recovery", recovery_id="1" * 32, evidence_digest="2" * 64
+        )
+        prior_after["files"]["runtime"]["root"] = {"mtime_ns": 2}
+        carry._validate_group2_recovery_lineage(
+            deployment,
+            prior_after,
+            {"db": prior_after["db"], "files": prior_after["files"]},
+        )
 
     def test_compose_uses_formal_overlay_and_loopback_parser_supports_ipv6(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2676,7 +3130,15 @@ t INFO access 172.18.0.6:1013 - "POST /api/workers/1/cleanups/24/result HTTP/1.1
                 mock.patch.object(carry, "_http_result", side_effect=response),
                 mock.patch.dict(os.environ, {}, clear=True),
             ):
-                self.assertTrue(carry._entry_probe(request)["passed"])
+                result = carry._entry_probe(request)
+            self.assertTrue(result["passed"])
+            self.assertEqual(carry.validate_group2_entry_probe(profile, result), result)
+            changed = copy.deepcopy(result)
+            changed["probes"]["account_write_bad_csrf"]["status"] = 200
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "entry_boundary_invalid"
+            ):
+                carry.validate_group2_entry_probe(profile, changed)
 
             def redirected(url, method="GET", headers=None):
                 value = response(url, method, headers)
@@ -2746,6 +3208,15 @@ t INFO access 172.18.0.6:1013 - "POST /api/workers/1/cleanups/24/result HTTP/1.1
                 result = carry.check_group2_entry_boundaries(request)
             self.assertEqual(result["account_csrf"], ok)
             self.assertIn("127.0.0.1:8081", http.call_args.args[0])
+            self.assertEqual(
+                carry.validate_group2_account_check(profile, result), result
+            )
+            changed_result = copy.deepcopy(result)
+            changed_result["containers"]["worker"]["status"] = "exited"
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "account_binding_changed"
+            ):
+                carry.validate_group2_account_check(profile, changed_result)
 
             for service, field, changed in (
                 ("web", "command", [None, ["changed"]]),
@@ -2872,6 +3343,16 @@ t INFO access 172.18.0.6:1013 - "POST /api/workers/1/cleanups/24/result HTTP/1.1
                 "networks": service_profile["networks"],
             }
             start = 1_789_862_401_000_000_000
+            end = start + 999_999_999
+            before["observed_at_ns"] = start
+            before["evidence_digest"] = carry.digest(
+                {key: item for key, item in before.items() if key != "evidence_digest"}
+            )
+            after["baseline_evidence_digest"] = before["evidence_digest"]
+            after["observed_after_ns"] = end
+            after["evidence_digest"] = carry.digest(
+                {key: item for key, item in after.items() if key != "evidence_digest"}
+            )
             request = {
                 "mode": carry.GROUP2_MODE,
                 "operation": "startup-proof",
@@ -2881,7 +3362,7 @@ t INFO access 172.18.0.6:1013 - "POST /api/workers/1/cleanups/24/result HTTP/1.1
                 "container_before": {"container_id": "old-worker"},
                 "container_after": container_after,
                 "window_start_ns": start,
-                "window_end_ns": start + 999_999_999,
+                "window_end_ns": end,
             }
             self.assertEqual(carry._startup_proof(request)["nonce"], nonce)
             for mutate, code in (
@@ -2925,6 +3406,40 @@ t INFO access 172.18.0.6:1013 - "POST /api/workers/1/cleanups/24/result HTTP/1.1
                 carry.CarryForwardError, "startup_proof_invalid"
             ):
                 carry._startup_proof(changed)
+
+            for field, timestamp in (
+                ("observed_at_ns", start + 1),
+                ("observed_after_ns", end - 1),
+            ):
+                changed = copy.deepcopy(request)
+                target = (
+                    changed["logs_before"]
+                    if field == "observed_at_ns"
+                    else changed["logs_after"]
+                )
+                target[field] = timestamp
+                if field == "observed_at_ns":
+                    target["evidence_digest"] = carry.digest(
+                        {
+                            key: item
+                            for key, item in target.items()
+                            if key != "evidence_digest"
+                        }
+                    )
+                    changed["logs_after"]["baseline_evidence_digest"] = target[
+                        "evidence_digest"
+                    ]
+                changed["logs_after"]["evidence_digest"] = carry.digest(
+                    {
+                        key: item
+                        for key, item in changed["logs_after"].items()
+                        if key != "evidence_digest"
+                    }
+                )
+                with self.assertRaisesRegex(
+                    carry.CarryForwardError, "startup_proof_invalid"
+                ):
+                    carry._startup_proof(changed)
 
 
 if __name__ == "__main__":

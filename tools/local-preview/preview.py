@@ -481,7 +481,7 @@ def phase(target, action, manifest_id=""):
     # Colima maps remote nonzero exits to 1. A per-call nonce preserves the busy
     # result without confusing an old result with an SSH/transport failure.
     nonce = uuid.uuid4().hex
-    wrapper = 'bash "$1" "$2" "$3" "$4" "$5"; code=$?; printf "%s %s\\n" "$6" "$code" > "$7"; exit "$code"'
+    wrapper = 'bash "$1" "$2" "$3" "$4" "$5" "$6"; code=$?; printf "%s %s\\n" "$7" "$code" > "$8"; exit "$code"'
     with (ROOT / "deploy.log").open("a") as output:
         result = vm_command(
             "bash",
@@ -493,6 +493,7 @@ def phase(target, action, manifest_id=""):
             action,
             target.get("schema", ""),
             manifest_id,
+            target.get("recovery_id", ""),
             nonce,
             vm_path("phase-exit"),
             output=output,
@@ -1163,6 +1164,7 @@ def validate_group2_artifacts(scope, scope_path):
         and job.get("run_attempt") == run.get("run_attempt")
         and job.get("head_sha") == run.get("head_sha")
     ]
+    normalized_jobs.sort(key=lambda item: (item["name"], item["id"]))
     normalized_ci = {
         "head_sha": run.get("head_sha"),
         "run_id": run.get("id"),
@@ -1490,7 +1492,7 @@ def group2_receipt_evidence(value, manifest):
         raise RuntimeError("Invalid Group2 backup receipt path")
     dump_hash = vm_command("sha256sum", backup + "/database.dump").stdout.split()[0]
     list_hash = vm_command("sha256sum", backup + "/database.list").stdout.split()[0]
-    return {
+    stages = {
         "preflight": vm_json("preflight/db.json"),
         "control_stopped": vm_json("control-stopped/db.json"),
         "stopped": vm_json("stopped/db.json"),
@@ -1504,17 +1506,70 @@ def group2_receipt_evidence(value, manifest):
         "probe": vm_json("group2/probe-final.json")["probe_proof"][
             "probe_result"
         ],
-        "natural_cleanup": vm_json("group2/cleanup.json"),
+        "natural_cleanup": vm_json("group2/cleanup.json")["cleanup"],
         "post_preservation": {
             "result": vm_json("group2/post-preservation.json"),
             "db": vm_json("group2/final/db.json"),
             "files": vm_json("group2/final/files.json"),
         },
         "post_health": {
-            "account": vm_json("group2/account-after.json"),
-            "entry": vm_json("group2/entry-after.json"),
-            "logs": vm_json("group2/log-after-health.json"),
+            "account_check": vm_json("group2/account-after.json")["account_check"],
+            "entry_probe": vm_json("group2/entry-after.json")["entry_probe"],
+            "logs_after": vm_json("group2/log-after-health.json")["log_evidence"],
         },
+    }
+    stage_inputs = {
+        name: {
+            "db": vm_json(f"{path}/db.json"),
+            "files": vm_json(f"{path}/files.json"),
+            "logs_after": vm_json(f"{path}/log.json")["log_evidence"],
+        }
+        for name, path in {
+            "preflight": "preflight",
+            "control_stopped": "control-stopped",
+            "stopped": "stopped",
+            "after_backup": "after-backup",
+            "after_migration": "after-migration",
+        }.items()
+    }
+    startup_request = vm_json("group2/startup-request.json")
+    startup = {
+        "request": startup_request,
+        "proof": vm_json("group2/startup.json")["startup_proof"],
+        "before_files": manifest["file_evidence"],
+        "after_files": vm_json("group2/started/files.json"),
+        "after_db": vm_json("group2/started/db.json"),
+        "result": vm_json("group2/started-check.json"),
+    }
+    cleanup = vm_json("group2/cleanup.json")["cleanup"]
+    probe = {
+        "proof": vm_json("group2/probe-final.json")["probe_proof"],
+        "before_db": vm_json("group2/started/db.json"),
+        "after_db": vm_json("group2/final/db.json"),
+        "before_files": vm_json("group2/started/files.json"),
+        "after_files": vm_json("group2/final/files.json"),
+        "logs_before": vm_json("group2/log-before-probe.json")["log_evidence"],
+        "logs_partial": vm_json("group2/log-partial.json")["log_evidence"],
+        "logs_final": vm_json("group2/log-final.json")["log_evidence"],
+        "logs_complete": vm_json("group2/log-complete.json")["log_evidence"],
+        "probe_result": stages["probe"],
+        "cleanup": cleanup,
+        "result": vm_json("group2/post-preservation.json"),
+    }
+    account = vm_json("group2/account-after.json")["account_check"]
+    entry = vm_json("group2/entry-after.json")["entry_probe"]
+    post_health = {
+        "account_check": account,
+        "entry_probe": entry,
+        "logs_before": vm_json("group2/log-before-health.json")["log_evidence"],
+        "logs_after": vm_json("group2/log-after-health.json")["log_evidence"],
+    }
+    return {
+        "stages": stages,
+        "stage_inputs": stage_inputs,
+        "startup": startup,
+        "probe": probe,
+        "post_health": post_health,
     }
 
 
@@ -1548,6 +1603,7 @@ def validate_group2_receipt(value, target, manifest, evidence):
         "review_scope_digest",
         "stages",
         "post_preservation_digest",
+        "evidence_digest",
         "account_entry_digest",
         "account_entry",
         "account_ready",
@@ -1592,20 +1648,33 @@ def validate_group2_receipt(value, target, manifest, evidence):
         for item in value["stages"].values()
     ):
         raise RuntimeError("Group2 deployment receipt is missing a preservation stage")
-    for key in ("post_preservation_digest", "account_entry_digest"):
+    for key in (
+        "post_preservation_digest",
+        "evidence_digest",
+        "account_entry_digest",
+    ):
         if not isinstance(value[key], str) or not re.fullmatch(r"[0-9a-f]{64}", value[key]):
             raise RuntimeError("Invalid Group2 deployment receipt digest")
-    if not isinstance(evidence, dict) or set(evidence) != required_stages:
+    if not isinstance(evidence, dict) or set(evidence) != {
+        "stages",
+        "stage_inputs",
+        "startup",
+        "probe",
+        "post_health",
+    }:
+        raise RuntimeError("Group2 receipt evidence set changed")
+    stages = evidence["stages"]
+    if not isinstance(stages, dict) or set(stages) != required_stages:
         raise RuntimeError("Group2 receipt evidence set changed")
     expected_stages = {
-        key: carry_forward.digest(evidence[key]) for key in required_stages
+        key: carry_forward.digest(stages[key]) for key in required_stages
     }
     if value["stages"] != expected_stages:
         raise RuntimeError("Group2 receipt evidence digest changed")
     if (
         value["post_preservation_digest"]
         != expected_stages["post_preservation"]
-        or evidence["probe"] != value["probe"]
+        or stages["probe"] != value["probe"]
     ):
         raise RuntimeError("Group2 receipt preservation binding changed")
     probe = value["probe"]
@@ -1619,6 +1688,16 @@ def validate_group2_receipt(value, target, manifest, evidence):
         or probe["execution_id"] < 1
     ):
         raise RuntimeError("Group2 official probe did not complete")
+    try:
+        validated_evidence = carry_forward.validate_group2_receipt_evidence(
+            manifest, evidence
+        )
+    except carry_forward.CarryForwardError as error:
+        raise RuntimeError("Group2 receipt evidence is not valid") from error
+    if not isinstance(validated_evidence, dict):
+        raise RuntimeError("Group2 receipt evidence is not valid")
+    if value["evidence_digest"] != carry_forward.digest(evidence):
+        raise RuntimeError("Group2 receipt raw evidence binding changed")
     return {
         "mode": value["mode"],
         "schema": value["schema"],
@@ -1654,7 +1733,93 @@ def consume_manifest(manifest_path):
         raise
 
 
-def validate_group2_recovery(previous):
+def validate_group2_recovery_evidence(
+    manifest, recovery_id, expected_predecessor=None, *, check_predecessor=True
+):
+    base = f"carry-forward/recovery-{manifest['to_sha']}-{recovery_id}"
+
+    def vm_json(relative):
+        return json.loads(vm_command("cat", vm_path(f"{base}/{relative}")).stdout)
+
+    baseline = vm_json("baseline.json")
+    evidence = {
+        "request": vm_json("startup-request.json"),
+        "proof": vm_json("startup.json")["startup_proof"],
+        "before_db": vm_json("before-db.json"),
+        "after_db": vm_json("after-db.json"),
+        "before_files": vm_json("before-files.json"),
+        "after_files": vm_json("after-files.json"),
+        "account_check": vm_json("account.json")["account_check"],
+        "entry_probe": vm_json("entry.json")["entry_probe"],
+        "logs_before": vm_json("log-before.json")["log_evidence"],
+        "logs_after": vm_json("log-after.json")["log_evidence"],
+        "preservation": vm_json("preservation.json"),
+    }
+    completion = vm_json("completion.json")
+    expected_reference = (
+        {
+            "kind": "deployment",
+            "recovery_id": None,
+            "evidence_digest": None,
+        }
+        if expected_predecessor is None
+        else {
+            "kind": "recovery",
+            "recovery_id": expected_predecessor["recovery_id"],
+            "evidence_digest": expected_predecessor["evidence_digest"],
+        }
+    )
+    predecessor = baseline.get("predecessor")
+    if check_predecessor and (
+        not isinstance(predecessor, dict)
+        or {key: predecessor.get(key) for key in expected_reference}
+        != expected_reference
+    ):
+        raise RuntimeError("Group2 recovery predecessor binding changed")
+    if check_predecessor and expected_predecessor is not None:
+        prior = (
+            f"carry-forward/recovery-{manifest['to_sha']}-"
+            f"{expected_predecessor['recovery_id']}"
+        )
+        prior_db = json.loads(
+            vm_command("cat", vm_path(f"{prior}/after-db.json")).stdout
+        )
+        prior_files = json.loads(
+            vm_command("cat", vm_path(f"{prior}/after-files.json")).stdout
+        )
+        if (
+            baseline["predecessor"]["db"] != prior_db
+            or baseline["predecessor"]["files"] != prior_files
+        ):
+            raise RuntimeError("Group2 recovery predecessor evidence changed")
+    evidence_digest = carry_forward.digest(
+        {"baseline": baseline, "evidence": evidence}
+    )
+    try:
+        result = carry_forward.validate_group2_recovery_evidence(
+            manifest, baseline, evidence
+        )
+    except carry_forward.CarryForwardError as error:
+        raise RuntimeError("Group2 recovery evidence is not valid") from error
+    if completion != {
+        "schema": "group2-recovery-completion-v1",
+        "recovery_id": recovery_id,
+        "sha": manifest["to_sha"],
+        "manifest_id": manifest["manifest_id"],
+        "manifest_digest": manifest["manifest_digest"],
+        "evidence_digest": evidence_digest,
+        "predecessor": {
+            "kind": baseline["predecessor"]["kind"],
+            "recovery_id": baseline["predecessor"]["recovery_id"],
+            "evidence_digest": baseline["predecessor"]["evidence_digest"],
+        },
+        "result": result,
+    }:
+        raise RuntimeError("Group2 recovery completion binding changed")
+    return evidence_digest
+
+
+def validate_group2_recovery(previous, recovery_id=None):
     if previous.get("mode") != carry_forward.GROUP2_MODE:
         return None
     safe = previous.get("carry_forward")
@@ -1689,6 +1854,51 @@ def validate_group2_recovery(previous):
     if safe != expected_safe:
         raise RuntimeError("Group2 deployed safe reference changed")
     validate_group2_vm_commit(manifest)
+    last_recovery = previous.get("last_recovery")
+    tx = transaction()
+    if last_recovery is not None:
+        if (
+            not isinstance(last_recovery, dict)
+            or set(last_recovery) != {"recovery_id", "evidence_digest"}
+            or re.fullmatch(r"[0-9a-f]{32}", last_recovery["recovery_id"])
+            is None
+            or re.fullmatch(r"[0-9a-f]{64}", last_recovery["evidence_digest"])
+            is None
+        ):
+            raise RuntimeError("Invalid Group2 recovery safe reference")
+        if recovery_id is None:
+            digest = validate_group2_recovery_evidence(
+                manifest,
+                last_recovery["recovery_id"],
+                check_predecessor=False,
+            )
+            if (
+                digest != last_recovery["evidence_digest"]
+                or tx.get("recovery_id") != last_recovery["recovery_id"]
+                or tx.get("recovery_evidence_digest") != digest
+            ):
+                raise RuntimeError("Group2 recovery safe reference changed")
+    if recovery_id is not None:
+        if not isinstance(recovery_id, str) or not re.fullmatch(
+            r"[0-9a-f]{32}", recovery_id
+        ):
+            raise RuntimeError("Invalid Group2 recovery identity")
+        if (
+            last_recovery is not None
+            and recovery_id == last_recovery["recovery_id"]
+        ):
+            recovery_digest = validate_group2_recovery_evidence(
+                manifest, recovery_id, check_predecessor=False
+            )
+        else:
+            recovery_digest = validate_group2_recovery_evidence(
+                manifest, recovery_id, last_recovery
+            )
+        if (
+            tx.get("recovery_id") != recovery_id
+            or tx.get("recovery_evidence_digest") != recovery_digest
+        ):
+            raise RuntimeError("Group2 recovery transaction binding changed")
     return manifest
 
 
@@ -1845,18 +2055,47 @@ def _tick():
             write("attention.json", tx)
             return status("Unfinished deployment; automatic recovery refused")
         recovered_manifest = validate_group2_recovery(previous)
+        recovery_id = None
         if recovered_manifest is not None:
+            recovery_id = uuid.uuid4().hex
             write(
                 "attention.json",
                 {
                     "phase": "recovering",
                     "sha": previous["sha"],
                     "manifest_id": recovered_manifest["manifest_id"],
+                    "recovery_id": recovery_id,
                 },
             )
-        phase(previous, "recover")
+        recovery_target = (
+            {**previous, "recovery_id": recovery_id}
+            if recovery_id is not None
+            else previous
+        )
+        phase(recovery_target, "recover")
         if recovered_manifest is not None:
-            validate_group2_recovery(previous)
+            tx = transaction()
+            write(
+                "attention.json",
+                {
+                    "phase": "recovering",
+                    "sha": previous["sha"],
+                    "manifest_id": recovered_manifest["manifest_id"],
+                    "recovery_id": recovery_id,
+                    "recovery_evidence_digest": tx.get(
+                        "recovery_evidence_digest"
+                    ),
+                },
+            )
+            validate_group2_recovery(previous, recovery_id)
+            previous = {
+                **previous,
+                "last_recovery": {
+                    "recovery_id": recovery_id,
+                    "evidence_digest": tx["recovery_evidence_digest"],
+                },
+            }
+            write("state.json", previous)
             (ROOT / "attention.json").unlink()
         return status("Recovered verified local images", deployed=previous)
     target, reason = eligible(config)
@@ -2090,12 +2329,41 @@ def main():
             elif args.command == "acknowledge":
                 tx = transaction()
                 previous = read("state.json", {})
+                attention = read("attention.json", {})
                 if tx.get("phase") != "ready" or tx.get("sha") != previous.get("sha"):
                     parser.error(
                         "Reconcile VM transaction and deployed state first; database rollback is never automatic"
                     )
-                recovered_manifest = validate_group2_recovery(previous)
+                recovering_attention = (
+                    isinstance(attention, dict)
+                    and attention.get("phase") == "recovering"
+                )
+                recovery_id = attention.get("recovery_id") if recovering_attention else None
+                if recovering_attention and (
+                    not isinstance(recovery_id, str)
+                    or re.fullmatch(r"[0-9a-f]{32}", recovery_id) is None
+                ):
+                    parser.error("Group2 recovery identity is missing")
+                if recovery_id is not None and (
+                    attention.get("recovery_evidence_digest")
+                    not in {None, tx.get("recovery_evidence_digest")}
+                ):
+                    parser.error("Group2 recovery evidence binding changed")
+                recovered_manifest = validate_group2_recovery(
+                    previous, recovery_id
+                )
                 if recovered_manifest is not None:
+                    if recovery_id is not None:
+                        previous = {
+                            **previous,
+                            "last_recovery": {
+                                "recovery_id": recovery_id,
+                                "evidence_digest": tx[
+                                    "recovery_evidence_digest"
+                                ],
+                            },
+                        }
+                        write("state.json", previous)
                     reference = config.get("carry_forward")
                     if reference is not None and (
                         not isinstance(reference, dict)
