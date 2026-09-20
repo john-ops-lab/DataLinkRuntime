@@ -505,10 +505,26 @@ def group2_manifest():
         "log_roots": sorted(log_roots, key=lambda item: item["path"]),
     }
     profile["profile_digest"] = carry.digest(profile)
+    log_root_evidence = [
+        {
+            "path": item["path"],
+            "device": 1,
+            "inode": index,
+            "mode": 0o700,
+            "uid": 2,
+            "gid": 3,
+            "mtime_ns": 0,
+            "entries": [],
+            "allowed_new_files": sorted(item["allowed_new_files"]),
+        }
+        for index, item in enumerate(profile["log_roots"], 10)
+    ]
     logs = {
         "profile_digest": profile["profile_digest"],
-        "files": [],
-        "roots": [],
+        "files": [
+            {"path": path, "exists": False} for path in profile["log_files"]
+        ],
+        "roots": log_root_evidence,
         "clock": precise_log_clock(1),
         "observed_at_ns": 1,
     }
@@ -688,6 +704,31 @@ class Group2ScopeTests(unittest.TestCase):
         changed["manifest_digest"] = carry.digest(carry.manifest_payload(changed))
         with self.assertRaisesRegex(carry.CarryForwardError, "manifest_shape_invalid"):
             carry.validate_manifest(changed)
+        for mutation in ("empty", "other-root", "missing-required-file"):
+            changed = copy.deepcopy(manifest)
+            logs = changed["log_evidence"]
+            if mutation == "empty":
+                logs["roots"] = []
+            elif mutation == "other-root":
+                for root in logs["roots"]:
+                    root["path"] = root["path"].replace(
+                        "/private/logs", "/private/other-logs"
+                    )
+                for item in logs["files"]:
+                    item["path"] = item["path"].replace(
+                        "/private/logs", "/private/other-logs"
+                    )
+            else:
+                logs["files"].pop()
+            logs["evidence_digest"] = carry.digest(
+                {key: item for key, item in logs.items() if key != "evidence_digest"}
+            )
+            changed["manifest_digest"] = carry.digest(carry.manifest_payload(changed))
+            with (
+                self.subTest(mutation=mutation),
+                self.assertRaisesRegex(carry.CarryForwardError, "log_evidence_invalid"),
+            ):
+                carry.validate_manifest(changed)
 
     def test_protected_rows_reject_duplicate_or_unsorted_primary_keys(self):
         protected = group2_manifest()["protected_rows"]
@@ -2096,7 +2137,29 @@ class Group2RuntimeTests(unittest.TestCase):
         before = {
             "profile_digest": "b" * 64,
             "files": [common],
-            "roots": [],
+            "roots": [
+                {
+                    "path": "/logs/control",
+                    "device": 1,
+                    "inode": 9,
+                    "mode": 0o750,
+                    "uid": 3,
+                    "gid": 4,
+                    "mtime_ns": 5,
+                    "entries": [
+                        {
+                            "path": "control.log",
+                            "type": "file",
+                            "device": common["device"],
+                            "inode": common["inode"],
+                            "mode": common["mode"],
+                            "uid": common["uid"],
+                            "gid": common["gid"],
+                        }
+                    ],
+                    "allowed_new_files": ["control.log"],
+                }
+            ],
             "clock": precise_log_clock(10),
             "observed_at_ns": 10,
         }
@@ -2115,7 +2178,7 @@ class Group2RuntimeTests(unittest.TestCase):
                     ),
                 }
             ],
-            "roots": [],
+            "roots": copy.deepcopy(before["roots"]),
             "clock": precise_log_clock(20),
             "baseline_evidence_digest": before["evidence_digest"],
             "observed_after_ns": 20,
@@ -2403,6 +2466,7 @@ class Group2RuntimeTests(unittest.TestCase):
             ):
                 first = carry.read_log_append(baseline)
             carry._validate_log_link(baseline, first, profile["profile_digest"])
+            carry.combine_group2_log_window(baseline, first)
             self.assertEqual(
                 next(
                     item
@@ -2445,6 +2509,164 @@ class Group2RuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(carry.CarryForwardError, "log_root_changed"):
                 carry.read_log_append(first)
 
+    def test_log_endpoint_file_and_root_views_must_agree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worker = root / "worker" / "worker.log"
+            worker.parent.mkdir()
+            worker.write_text("before\n")
+            profile = self._profile(worker)
+            baseline = carry.capture_log_prefix(profile)
+            after = carry.read_log_append(baseline)
+            carry._validate_log_link(baseline, after, profile["profile_digest"])
+
+            phantom = copy.deepcopy(after)
+            account_root = next(
+                item
+                for item in phantom["roots"]
+                if item["path"] == str(root / "account-web")
+            )
+            account_root["entries"].append(
+                {
+                    "path": "access.log",
+                    "type": "file",
+                    "device": account_root["device"],
+                    "inode": 987654321,
+                    "mode": 0o600,
+                    "uid": account_root["uid"],
+                    "gid": account_root["gid"],
+                }
+            )
+            account_root["entries"].sort(key=lambda item: item["path"])
+            account_root["mtime_ns"] = max(
+                account_root["mtime_ns"], baseline["clock"]["lower_bound_ns"]
+            )
+            self._reseal_log(phantom)
+            for operation in (
+                lambda: carry._validate_log_link(
+                    baseline, phantom, profile["profile_digest"]
+                ),
+                lambda: carry.combine_group2_log_window(baseline, phantom),
+            ):
+                with self.assertRaisesRegex(
+                    carry.CarryForwardError, "log_evidence_link_invalid"
+                ):
+                    operation()
+
+            for key, value in (("inode", -1), ("mode", True)):
+                invalid = copy.deepcopy(after)
+                invalid_root = next(
+                    item
+                    for item in invalid["roots"]
+                    if item["path"] == str(root / "account-web")
+                )
+                invalid_file = next(
+                    item
+                    for item in invalid["files"]
+                    if item["path"] == str(root / "account-web" / "access.log")
+                )
+                invalid_entry = {
+                    "path": "access.log",
+                    "type": "file",
+                    "device": invalid_root["device"],
+                    "inode": 987654321,
+                    "mode": 0o600,
+                    "uid": invalid_root["uid"],
+                    "gid": invalid_root["gid"],
+                }
+                invalid_entry[key] = value
+                invalid_file.update(
+                    {
+                        "exists": True,
+                        "device": invalid_entry["device"],
+                        "inode": invalid_entry["inode"],
+                        "mode": invalid_entry["mode"],
+                        "uid": invalid_entry["uid"],
+                        "gid": invalid_entry["gid"],
+                        "size": 0,
+                        "prefix_sha256": hashlib.sha256(b"").hexdigest(),
+                        "appended_text": "",
+                        "end_size": 0,
+                        "end_sha256": hashlib.sha256(b"").hexdigest(),
+                    }
+                )
+                invalid_root["entries"].append(invalid_entry)
+                invalid_root["entries"].sort(key=lambda item: item["path"])
+                invalid_root["mtime_ns"] = max(
+                    invalid_root["mtime_ns"],
+                    baseline["clock"]["lower_bound_ns"],
+                )
+                self._reseal_log(invalid)
+                with self.assertRaisesRegex(
+                    carry.CarryForwardError, "log_evidence_invalid"
+                ):
+                    carry._validate_log_link(
+                        baseline, invalid, profile["profile_digest"]
+                    )
+
+            for mutation in ("missing", "identity"):
+                changed_before = copy.deepcopy(baseline)
+                changed_after = copy.deepcopy(after)
+                for endpoint in (changed_before, changed_after):
+                    worker_root = next(
+                        item
+                        for item in endpoint["roots"]
+                        if item["path"] == str(worker.parent)
+                    )
+                    worker_entry = next(
+                        item
+                        for item in worker_root["entries"]
+                        if item["path"] == worker.name
+                    )
+                    if mutation == "missing":
+                        worker_root["entries"].remove(worker_entry)
+                    else:
+                        worker_entry["inode"] += 1
+                self._reseal_log(changed_before)
+                changed_after["baseline_evidence_digest"] = changed_before[
+                    "evidence_digest"
+                ]
+                self._reseal_log(changed_after)
+                with self.assertRaisesRegex(
+                    carry.CarryForwardError, "log_evidence_link_invalid"
+                ):
+                    carry._validate_log_link(
+                        changed_before,
+                        changed_after,
+                        profile["profile_digest"],
+                    )
+
+            empty_before = copy.deepcopy(baseline)
+            empty_after = copy.deepcopy(after)
+            empty_before["roots"] = []
+            empty_after["roots"] = []
+            self._reseal_log(empty_before)
+            empty_after["baseline_evidence_digest"] = empty_before[
+                "evidence_digest"
+            ]
+            self._reseal_log(empty_after)
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "log_evidence_invalid"
+            ):
+                carry._validate_log_link(
+                    empty_before, empty_after, profile["profile_digest"]
+                )
+
+            forged_baseline = copy.deepcopy(baseline)
+            forged_worker = next(
+                item
+                for item in forged_baseline["files"]
+                if item["path"] == str(worker)
+            )
+            forged_worker.clear()
+            forged_worker.update(path=str(worker), exists=False)
+            self._reseal_log(forged_baseline)
+            worker.write_text("replacement-data\n")
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "log_evidence_link_invalid"
+            ):
+                carry.read_log_append(forged_baseline)
+
     def test_group2_runtime_rejects_unknown_operation_and_fields(self):
         with self.assertRaisesRegex(
             carry.CarryForwardError, "group2_runtime_operation_invalid"
@@ -2459,8 +2681,17 @@ class Group2RuntimeTests(unittest.TestCase):
         def append(previous, timestamp):
             value = {
                 "profile_digest": previous["profile_digest"],
-                "files": [],
-                "roots": [],
+                "files": [
+                    {
+                        "path": item["path"],
+                        "exists": False,
+                        "appended_text": "",
+                        "end_size": 0,
+                        "end_sha256": hashlib.sha256(b"").hexdigest(),
+                    }
+                    for item in previous["files"]
+                ],
+                "roots": copy.deepcopy(previous["roots"]),
                 "clock": precise_log_clock(timestamp),
                 "baseline_evidence_digest": previous["evidence_digest"],
                 "observed_after_ns": timestamp,

@@ -4425,7 +4425,7 @@ def validate_group2_manifest_extensions(manifest: Any) -> None:
     shape = validate_group2_schema_shape(manifest.get("schema_shape"))
     if set(shape) != set(manifest["schema_inventory"]["tables"]):
         raise CarryForwardError("schema_shape_invalid")
-    validate_group2_account_entry(manifest.get("account_entry"))
+    account_entry = validate_group2_account_entry(manifest.get("account_entry"))
     log_evidence = manifest.get("log_evidence")
     if (
         not isinstance(log_evidence, dict)
@@ -4450,6 +4450,7 @@ def validate_group2_manifest_extensions(manifest: Any) -> None:
     ):
         raise CarryForwardError("log_evidence_invalid")
     _validate_log_clock(log_evidence["clock"], log_evidence["observed_at_ns"])
+    _validate_log_endpoint(log_evidence, account_entry)
 
 
 def _compare_group2_db_strict(before: dict[str, Any], after: dict[str, Any]) -> None:
@@ -5723,6 +5724,7 @@ def read_log_append(baseline: Any) -> dict[str, Any]:
     if not isinstance(observed_before_ns, int) or isinstance(observed_before_ns, bool):
         raise CarryForwardError("log_evidence_invalid")
     _validate_log_clock(baseline["clock"], observed_before_ns)
+    _validate_log_endpoint(baseline)
     baseline_files = []
     for item in baseline["files"]:
         if not chained:
@@ -6321,6 +6323,16 @@ def _validate_log_link(
     return start, end
 
 
+def _validate_log_identity(value: Any) -> None:
+    if any(
+        not isinstance(value.get(key), int)
+        or isinstance(value.get(key), bool)
+        or value[key] < 0
+        for key in ("device", "inode", "mode", "uid", "gid")
+    ) or value["mode"] > 0o7777:
+        raise CarryForwardError("log_evidence_invalid")
+
+
 def _log_endpoint_files(value: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(value, dict) or not isinstance(value.get("files"), list):
         raise CarryForwardError("log_evidence_invalid")
@@ -6353,16 +6365,11 @@ def _log_endpoint_files(value: Any) -> dict[str, dict[str, Any]]:
                 raise CarryForwardError("log_evidence_invalid")
             if item["exists"]:
                 _digest_text(item["prefix_sha256"], "log_evidence_invalid")
+                _validate_log_identity(item)
                 if (
                     not isinstance(item["size"], int)
                     or isinstance(item["size"], bool)
                     or item["size"] < 0
-                    or any(
-                        not isinstance(item[key], int)
-                        or isinstance(item[key], bool)
-                        or item[key] < 0
-                        for key in ("device", "inode", "mode", "uid", "gid")
-                    )
                 ):
                     raise CarryForwardError("log_evidence_invalid")
             endpoint[path] = dict(item)
@@ -6398,6 +6405,7 @@ def _log_endpoint_files(value: Any) -> dict[str, dict[str, Any]]:
             continue
         _digest_text(item["prefix_sha256"], "log_evidence_invalid")
         _digest_text(item["end_sha256"], "log_evidence_invalid")
+        _validate_log_identity(item)
         appended = item["appended_text"].encode("utf-8")
         if (
             not isinstance(item["size"], int)
@@ -6466,6 +6474,8 @@ def _validate_log_root_transition(
             or not isinstance(new["entries"], list)
         ):
             raise CarryForwardError("log_evidence_invalid")
+        _validate_log_identity(old)
+        _validate_log_identity(new)
         if (
             any(
                 old[key] != new[key]
@@ -6505,6 +6515,13 @@ def _validate_log_root_transition(
                 or any(part in {"", ".", ".."} for part in item["path"].split("/"))
             ):
                 raise CarryForwardError("log_evidence_invalid")
+            _validate_log_identity(item)
+            if item["type"] == "directory" and (
+                not isinstance(item["mtime_ns"], int)
+                or isinstance(item["mtime_ns"], bool)
+                or item["mtime_ns"] < 0
+            ):
+                raise CarryForwardError("log_evidence_invalid")
         if (
             len(old_entries) != len(old["entries"])
             or len(new_entries) != len(new["entries"])
@@ -6529,11 +6546,83 @@ def _validate_log_root_transition(
             raise CarryForwardError("log_evidence_link_invalid")
 
 
+def _validate_log_endpoint_cross_view(
+    value: Any, files: dict[str, dict[str, Any]]
+) -> None:
+    roots = value.get("roots")
+    if not isinstance(roots, list):
+        raise CarryForwardError("log_evidence_invalid")
+    if not roots:
+        raise CarryForwardError("log_evidence_invalid")
+    root_files: dict[str, dict[str, Any]] = {}
+    root_paths = []
+    for root in roots:
+        root_path = Path(root["path"])
+        if not root_path.is_absolute():
+            raise CarryForwardError("log_evidence_invalid")
+        root_paths.append(root_path)
+        for entry in root["entries"]:
+            if entry["type"] != "file":
+                continue
+            absolute = str(root_path / entry["path"])
+            if absolute in root_files:
+                raise CarryForwardError("log_evidence_invalid")
+            root_files[absolute] = entry
+
+    for path in files:
+        file_path = Path(path)
+        if not file_path.is_absolute():
+            raise CarryForwardError("log_evidence_invalid")
+        containing = []
+        for root_path in root_paths:
+            try:
+                file_path.relative_to(root_path)
+            except ValueError:
+                continue
+            containing.append(root_path)
+        if len(containing) != 1:
+            raise CarryForwardError("log_evidence_invalid")
+
+    existing = {path for path, item in files.items() if item["exists"]}
+    if set(root_files) != existing:
+        raise CarryForwardError("log_evidence_link_invalid")
+    for path, entry in root_files.items():
+        item = files[path]
+        if any(
+            entry[key] != item[key]
+            for key in ("device", "inode", "mode", "uid", "gid")
+        ):
+            raise CarryForwardError("log_evidence_link_invalid")
+
+
+def _validate_log_endpoint(
+    value: Any, profile: dict[str, Any] | None = None
+) -> dict[str, dict[str, Any]]:
+    files = _log_endpoint_files(value)
+    observed_ns = value.get("observed_after_ns", value.get("observed_at_ns"))
+    clock = _validate_log_clock(value.get("clock"), observed_ns)
+    roots = value.get("roots")
+    _validate_log_root_transition(
+        roots, roots, clock["lower_bound_ns"], observed_ns
+    )
+    _validate_log_endpoint_cross_view(value, files)
+    if profile is not None:
+        declarations = {
+            item["path"]: item["allowed_new_files"] for item in profile["log_roots"]
+        }
+        observed = {
+            item["path"]: item["allowed_new_files"] for item in roots
+        }
+        if observed != declarations or not set(profile["log_files"]).issubset(files):
+            raise CarryForwardError("log_evidence_invalid")
+    return files
+
+
 def _validate_log_segment_transition(
     before: Any, after: Any, start_ns: int, end_ns: int
 ) -> None:
-    previous_files = _log_endpoint_files(before)
-    current_files = _log_endpoint_files(after)
+    previous_files = _validate_log_endpoint(before)
+    current_files = _validate_log_endpoint(after)
     if set(previous_files) != set(current_files):
         raise CarryForwardError("log_evidence_link_invalid")
     current_items = {item["path"]: item for item in after["files"]}
