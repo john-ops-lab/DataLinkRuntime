@@ -2375,6 +2375,120 @@ class Group2RuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(carry.CarryForwardError, "log_file_invalid"):
                 carry.read_log_append(baseline)
 
+    def test_log_endpoint_tree_is_canonical_complete_and_unambiguous(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worker = root / "worker" / "worker.log"
+            worker.parent.mkdir()
+            worker.write_text("old\n")
+            history = worker.parent / "history"
+            history.mkdir()
+            (history / "older.log").write_text("older\n")
+            (history / "empty").mkdir()
+            profile = self._profile(worker)
+            endpoint = carry.capture_log_prefix(profile)
+            carry._validate_log_endpoint(endpoint, profile)
+            missing_parent = copy.deepcopy(endpoint)
+            missing_parent["files"].append(
+                {
+                    "path": str(worker.parent / "not-yet" / "child.log"),
+                    "exists": False,
+                }
+            )
+            carry._validate_log_endpoint(missing_parent, profile)
+
+            worker_root = next(
+                item
+                for item in endpoint["roots"]
+                if item["path"] == str(worker.parent)
+            )
+
+            def rejected(edit):
+                changed = copy.deepcopy(endpoint)
+                changed_root = next(
+                    item
+                    for item in changed["roots"]
+                    if item["path"] == str(worker.parent)
+                )
+                edit(changed, changed_root)
+                with self.assertRaisesRegex(
+                    carry.CarryForwardError, "log_evidence_(invalid|link_invalid)"
+                ):
+                    carry._validate_log_endpoint(changed, profile)
+
+            rejected(
+                lambda _value, log_root: log_root.__setitem__(
+                    "entries",
+                    [item for item in log_root["entries"] if item["path"] != "history"],
+                )
+            )
+
+            def file_parent(_value, log_root):
+                parent = next(
+                    item for item in log_root["entries"] if item["path"] == "history"
+                )
+                parent["type"] = "file"
+                parent.pop("mtime_ns")
+
+            rejected(file_parent)
+            rejected(
+                lambda value, _log_root: value["files"].append(
+                    {"path": str(worker.parent), "exists": False}
+                )
+            )
+            rejected(
+                lambda value, _log_root: value["files"].append(
+                    {"path": str(worker.parent) + "/./worker.log", "exists": False}
+                )
+            )
+            rejected(
+                lambda value, _log_root: value["files"].append(
+                    {"path": str(worker.parent / "history"), "exists": False}
+                )
+            )
+            rejected(
+                lambda value, _log_root: value["files"].append(
+                    {"path": str(worker / "child.log"), "exists": False}
+                )
+            )
+            rejected(
+                lambda value, _log_root: value["files"].append(
+                    {"path": str(worker.parent / "history" / ".." / "missing.log"), "exists": False}
+                )
+            )
+            rejected(
+                lambda value, _log_root: value["files"].append(
+                    {"path": str(worker.parent) + "/bad\x00.log", "exists": False}
+                )
+            )
+            rejected(
+                lambda _value, log_root: log_root["entries"][0].__setitem__(
+                    "path", "bad\x00entry"
+                )
+            )
+            def nul_allowed(_value, log_root):
+                log_root["allowed_new_files"].append("bad\x00.log")
+                log_root["allowed_new_files"].sort()
+
+            rejected(nul_allowed)
+
+            def overlapping_root(value, _log_root):
+                nested = copy.deepcopy(worker_root)
+                nested["path"] = str(history)
+                nested["inode"] += 1000
+                nested["entries"] = []
+                nested["allowed_new_files"] = []
+                value["roots"].append(nested)
+
+            rejected(overlapping_root)
+
+            account_log = root / "account-web" / "access.log"
+            account_log.mkdir()
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "log_evidence_link_invalid"
+            ):
+                carry.capture_log_prefix(profile)
+
     def test_log_directory_mtime_requires_a_new_approved_direct_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

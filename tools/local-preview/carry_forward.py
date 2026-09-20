@@ -5682,6 +5682,7 @@ def capture_log_prefix(profile: Any) -> dict[str, Any]:
         "observed_at_ns": observed_at_ns,
     }
     result["evidence_digest"] = digest(result)
+    _validate_log_endpoint(result, profile)
     return result
 
 
@@ -6333,6 +6334,18 @@ def _validate_log_identity(value: Any) -> None:
         raise CarryForwardError("log_evidence_invalid")
 
 
+def _validate_absolute_log_path(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("/")
+        or value.startswith("//")
+        or "\x00" in value
+        or os.path.normpath(value) != value
+    ):
+        raise CarryForwardError("log_evidence_invalid")
+    return value
+
+
 def _log_endpoint_files(value: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(value, dict) or not isinstance(value.get("files"), list):
         raise CarryForwardError("log_evidence_invalid")
@@ -6342,7 +6355,7 @@ def _log_endpoint_files(value: Any) -> dict[str, dict[str, Any]]:
     for item in value["files"]:
         if not isinstance(item, dict) or not isinstance(item.get("path"), str):
             raise CarryForwardError("log_evidence_invalid")
-        path = item["path"]
+        path = _validate_absolute_log_path(item["path"])
         if path in endpoint or not isinstance(item.get("exists"), bool):
             raise CarryForwardError("log_evidence_invalid")
         if not is_append:
@@ -6467,6 +6480,7 @@ def _validate_log_root_transition(
                 not isinstance(name, str)
                 or not name
                 or "/" in name
+                or "\x00" in name
                 or name in {".", ".."}
                 for name in old["allowed_new_files"]
             )
@@ -6512,6 +6526,7 @@ def _validate_log_root_transition(
                 or item.get("type") not in {"directory", "file"}
                 or not isinstance(item.get("path"), str)
                 or item["path"].startswith("/")
+                or "\x00" in item["path"]
                 or any(part in {"", ".", ".."} for part in item["path"].split("/"))
             ):
                 raise CarryForwardError("log_evidence_invalid")
@@ -6555,33 +6570,58 @@ def _validate_log_endpoint_cross_view(
     if not roots:
         raise CarryForwardError("log_evidence_invalid")
     root_files: dict[str, dict[str, Any]] = {}
+    root_entries: dict[str, dict[str, Any]] = {}
     root_paths = []
     for root in roots:
-        root_path = Path(root["path"])
-        if not root_path.is_absolute():
-            raise CarryForwardError("log_evidence_invalid")
+        root_path = Path(_validate_absolute_log_path(root["path"]))
         root_paths.append(root_path)
         for entry in root["entries"]:
-            if entry["type"] != "file":
-                continue
             absolute = str(root_path / entry["path"])
-            if absolute in root_files:
+            if absolute in root_entries:
                 raise CarryForwardError("log_evidence_invalid")
-            root_files[absolute] = entry
+            root_entries[absolute] = entry
+            if entry["type"] == "file":
+                root_files[absolute] = entry
 
-    for path in files:
-        file_path = Path(path)
-        if not file_path.is_absolute():
+        entries = {entry["path"]: entry for entry in root["entries"]}
+        for relative in entries:
+            parts = relative.split("/")
+            for length in range(1, len(parts)):
+                parent = "/".join(parts[:length])
+                if parent not in entries or entries[parent]["type"] != "directory":
+                    raise CarryForwardError("log_evidence_invalid")
+
+    for index, root_path in enumerate(root_paths):
+        for other in root_paths[index + 1 :]:
+            try:
+                root_path.relative_to(other)
+            except ValueError:
+                try:
+                    other.relative_to(root_path)
+                except ValueError:
+                    continue
             raise CarryForwardError("log_evidence_invalid")
+
+    for path, item in files.items():
+        file_path = Path(path)
         containing = []
         for root_path in root_paths:
             try:
-                file_path.relative_to(root_path)
+                relative = file_path.relative_to(root_path)
             except ValueError:
                 continue
+            if relative == Path("."):
+                raise CarryForwardError("log_evidence_invalid")
             containing.append(root_path)
         if len(containing) != 1:
             raise CarryForwardError("log_evidence_invalid")
+        relative_parts = file_path.relative_to(containing[0]).parts
+        for length in range(1, len(relative_parts)):
+            parent = str(containing[0].joinpath(*relative_parts[:length]))
+            if parent in root_entries and root_entries[parent]["type"] != "directory":
+                raise CarryForwardError("log_evidence_invalid")
+        if not item["exists"] and path in root_entries:
+            raise CarryForwardError("log_evidence_link_invalid")
 
     existing = {path for path, item in files.items() if item["exists"]}
     if set(root_files) != existing:
