@@ -1488,6 +1488,32 @@ class Group2ControllerGateTests(unittest.TestCase):
             ):
                 preview.validate_group2_artifacts(scope, scope_path)
 
+    def test_real_install_explicitly_secures_carry_check_parent(self):
+        root = self.root / "real-install"
+        carry_check = root / "carry-forward" / "check" / ("a" * 32)
+        preflight = carry_check / "preflight"
+        install = shutil.which("install")
+        self.assertIsNotNone(install)
+
+        subprocess.run(
+            [install, "-d", "-m", "700", str(preflight)],
+            check=True,
+        )
+        self.assertNotEqual(carry_check.stat().st_mode & 0o777, 0o700)
+        with self.assertRaisesRegex(
+            carry_forward.CarryForwardError, "private_parent_invalid"
+        ):
+            carry_forward.write_private(carry_check / "ids.json", {})
+
+        subprocess.run(
+            [install, "-d", "-m", "700", str(carry_check), str(preflight)],
+            check=True,
+        )
+        self.assertEqual(carry_check.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(preflight.stat().st_mode & 0o777, 0o700)
+        carry_forward.write_private(carry_check / "ids.json", {})
+        self.assertEqual((carry_check / "ids.json").stat().st_mode & 0o777, 0o600)
+
     def test_deploy_executes_full_group2_flow_and_commit_failure_stays_unready(self):
         def fixture(name, fail_commit=False):
             root = self.root / name
@@ -1581,7 +1607,9 @@ GROUP2_FORMAT_VERSION=4; GROUP2_MODE='audited-group2-same-schema-v1'
 def digest(v): return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 def read_private(p): return json.load(open(p))
 def write_private(p,v):
- p=pathlib.Path(p); p.parent.mkdir(parents=True,exist_ok=True); p.write_text(json.dumps(v)); p.chmod(0o600)
+ p=pathlib.Path(p); info=p.parent.stat()
+ if info.st_uid!=os.geteuid() or info.st_mode & 0o077: raise SystemExit('private_parent_invalid')
+ p.write_text(json.dumps(v)); p.chmod(0o600)
 def validate_manifest(v): return v
 def validate_group2_manifest_extensions(v): return None
 def validate_storage_identity(v): return v
@@ -1736,6 +1764,9 @@ else: print('ok')
             0,
             result.stderr + result.stdout + (root / "events").read_text(),
         )
+        carry_check = root / "carry-forward" / "check" / ("a" * 32)
+        self.assertEqual(carry_check.stat().st_mode & 0o777, 0o700)
+        self.assertEqual((carry_check / "preflight").stat().st_mode & 0o777, 0o700)
         transaction = json.loads((root / "transaction.json").read_text())
         self.assertEqual(transaction["phase"], "ready")
         receipt = json.loads((root / "releases" / B / "receipt.json").read_text())

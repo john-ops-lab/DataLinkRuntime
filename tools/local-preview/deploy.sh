@@ -725,7 +725,7 @@ module.validate_storage_identity(candidate)
 assert candidate == manifest['storage_identity']
 PY
     carry_check="$root/carry-forward/check/$carry_id"
-    install -d -m 700 "$carry_check/preflight"
+    install -d -m 700 "$carry_check" "$carry_check/preflight"
     python3 - "$root/carry_forward.py" "$carry_manifest" "$carry_check/ids.json" <<'PY'
 import importlib.util, pathlib, sys
 spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
