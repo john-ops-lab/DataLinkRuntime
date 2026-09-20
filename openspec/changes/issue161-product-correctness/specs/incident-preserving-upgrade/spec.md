@@ -77,3 +77,22 @@
 #### Scenario: 正常 v4 的保全根接续
 - **WHEN** 事故恢复已成功且需要正常部署新候选
 - **THEN** 独立 reviewer 从原参考及闭合事故链复算唯一新 snapshot：原 selection/DB、恢复后 files、追加固定 request/receipt/chain 摘要的 lineage；系统拒绝缺失/重复/伪造链或未知来源，之后重新 stage/install/plan/once 并完整验证双入口，不复用失败 manifest
+
+### Requirement: 已批准的历史证据例外使用独立受限结果
+系统 SHALL 仅为本组已绑定的旧软件恢复后中断事故提供单次事后收尾；MUST 取得明确接受历史缺口和替代来源、绑定新工具 SHA、独立审查、精确 CI、请求及动作的专项批准。结果 MUST 分别保留真实历史原件、执行路径推导、无法恢复的历史扫描与窗口、当前完整事实，不生成或宣称原严格恢复链成功。普通保全来源、原完整链和其他事故 MUST 不受该例外影响。
+
+#### Scenario: 当前事实无法与原根核对
+- **WHEN** 当前六块 DB、责任/审计/资产/session、文件内容/身份、卷、镜像、PG/schema、连续日志、唯一 startup、Worker/keeper 或原账号停止策略任一不符
+- **THEN** 系统拒绝收尾；历史缺口许可不能用来放宽当前数据保全、第三路径变化或额外业务写入限制
+
+#### Scenario: 历史扫描无法恢复
+- **WHEN** 已保存的四阶段 ids/DB/files 和精确执行日志证明前置门禁走过，但历史 idle 扫描、阶段日志端点或精确应用启动窗口缺失
+- **THEN** 系统只在批准的独立来源中记录缺口、推导依据及外层命令窗口来源，不能用 fresh 扫描冒充历史 raw、填充虚构字段或伪装普通 snapshot
+
+#### Scenario: 只读核验后的控制面对账
+- **WHEN** 新受限结果和唯一保全快照已持久化并经双端重算，所有当前原件仍符合绑定
+- **THEN** 系统按固定顺序对账旧成功 transaction、归档失败 manifest、CAS 清除失败选择并保持 paused，最后清 attention；不停止/启动服务、不执行业务写入或 probe、不改原 state/current/成功原件，也不改原事故失败记录
+
+#### Scenario: 后继正式部署接纳受限来源
+- **WHEN** 独立 reviewer 对真实受限结果签署保全报告，并为后继候选组装 scope
+- **THEN** 系统从专用闭合记录重算原 selection/DB、核验后的 files 及明确引用缺口结果的 lineage；缺失、重复、改标或摘要不符均拒绝，正常 v4 完整验收仍须另行通过

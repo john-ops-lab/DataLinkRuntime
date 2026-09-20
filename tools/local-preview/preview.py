@@ -6,6 +6,7 @@ import base64
 import contextlib
 import datetime
 import fcntl
+import gc
 import hashlib
 import json
 import os
@@ -138,6 +139,26 @@ def write_private_bytes(path, data):
         temporary = Path(output.name)
         os.chmod(temporary, 0o600)
         output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, path)
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def write_private_json_stream(path, value):
+    if not path.parent.is_dir() or path.parent.stat().st_mode & 0o077:
+        raise ValueError("Private evidence parent must be mode 0700")
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, delete=False
+    ) as output:
+        temporary = Path(output.name)
+        os.chmod(temporary, 0o600)
+        for chunk in carry_forward.canonical_json_chunks(value):
+            output.write(chunk)
         output.flush()
         os.fsync(output.fileno())
     os.replace(temporary, path)
@@ -1207,10 +1228,15 @@ def validate_group2_artifacts(scope, scope_path):
         for item in machine_records(preservation_path)
         if item.get("schema") == "group2-reconcile-chain-v1"
     ]
+    partial_chain_records = [
+        item
+        for item in machine_records(preservation_path)
+        if item.get("schema") == "group2-partial-finalize-chain-v1"
+    ]
     if source_kind == "private_snapshot":
-        valid_source = not chain_records
+        valid_source = not chain_records and not partial_chain_records
     elif source_kind == "group2_starting_reconcile_v1":
-        if len(chain_records) != 1:
+        if len(chain_records) != 1 or partial_chain_records:
             raise ValueError("Group2 reconciliation chain is missing or ambiguous")
         try:
             snapshot = carry_forward.validate_group2_reconcile_preservation(
@@ -1222,6 +1248,20 @@ def validate_group2_artifacts(scope, scope_path):
         except (KeyError, carry_forward.CarryForwardError) as error:
             raise ValueError("Group2 reconciliation chain is invalid") from error
         valid_source = snapshot == scope["preservation_reference"]["snapshot"]
+    elif source_kind == "group2_partial_finalize_v1":
+        if len(partial_chain_records) != 1 or chain_records:
+            raise ValueError("Group2 partial finalize chain is missing or ambiguous")
+        chain = partial_chain_records[0]
+        try:
+            original_reference = (
+                carry_forward.group2_partial_finalize_original_reference(chain)
+            )
+            snapshot = carry_forward.validate_group2_partial_finalize_preservation(
+                chain, original_reference
+            )
+        except (KeyError, carry_forward.CarryForwardError) as error:
+            raise ValueError("Group2 partial finalize chain is invalid") from error
+        valid_source = _partial_finalize_scope_binding(chain, scope, snapshot)
     else:
         valid_source = False
     if not (
@@ -1236,6 +1276,15 @@ def validate_group2_artifacts(scope, scope_path):
     ):
         raise ValueError("Group2 preservation review is not machine approved")
     return directory
+
+
+def _partial_finalize_scope_binding(chain, scope, snapshot):
+    tool = chain.get("request", {}).get("tool", {})
+    return (
+        snapshot == scope["preservation_reference"]["snapshot"]
+        and tool.get("sha") == scope["final_source"]["to_sha"]
+        and tool.get("controller_files") == scope["controller_files"]["files"]
+    )
 
 
 def validate_group2_candidate_binding(scope, target, stage=None):
@@ -2370,7 +2419,6 @@ def reconcile_group2_starting(request_path, approval_path):
     _validate_incident_worktree_source(
         source.parents[1], validated["artifacts"]["source-review.json"]["source_scope"]
     )
-
     incident_id = request["incident_id"]
     with operation_lock(blocking=False):
         with config_lock():
@@ -2674,6 +2722,352 @@ def reconcile_group2_starting(request_path, approval_path):
     return {"incident_id": incident_id, "receipt_digest": receipt_value["receipt_digest"]}
 
 
+def _embedded_bytes(raw):
+    return {
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "content_b64": base64.b64encode(raw).decode("ascii"),
+    }
+
+
+def _validate_partial_review_source(source, head, validated):
+    review_value = validated["artifacts"]["source-review.json"]["tool_review"]
+    review_raw = base64.b64decode(review_value["content_b64"], validate=True)
+    independent = [
+        item for item in carry_forward._machine_json_records(review_raw)
+        if item.get("schema") == "group2-independent-review-v1"
+    ]
+    if len(independent) != 1:
+        raise ValueError("Partial finalize independent review changed")
+    repository = source.parents[1]
+    for item in independent[0]["coverage"]:
+        line = subprocess.check_output(
+            ["/usr/bin/git", "-C", str(repository), "ls-tree", head, "--", item["path"]],
+            env=ENV, text=True, timeout=30,
+        ).strip()
+        match = re.fullmatch(
+            r"(100644|100755) blob ([0-9a-f]{40})\t" + re.escape(item["path"]),
+            line,
+        )
+        content = subprocess.check_output(
+            ["/usr/bin/git", "-C", str(repository), "show", head + ":" + item["path"]],
+            env=ENV, timeout=30,
+        )
+        if (
+            match is None
+            or item != {
+                "path": item["path"], "mode": match.group(1),
+                "blob_oid": match.group(2),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        ):
+            raise ValueError("Partial finalize independent review changed")
+
+
+def finalize_group2_partial(request_path, approval_path):
+    request_path, request_bytes = _read_incident_input(request_path)
+    approval_path, approval_bytes = _read_incident_input(approval_path)
+    if approval_path.name != "USER-APPROVAL.json" or approval_path.parent != request_path.parent:
+        raise ValueError("Partial finalize approval must be the fixed sibling file")
+    _record_path, user_record = _read_incident_input(
+        approval_path.parent / "USER-APPROVAL.txt"
+    )
+    try:
+        request = json.loads(request_bytes)
+        approval = json.loads(approval_bytes)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("Partial finalize request or approval is invalid") from error
+    evidence_directory = request_path.with_suffix(".evidence")
+    if (
+        not evidence_directory.is_dir()
+        or evidence_directory.is_symlink()
+        or evidence_directory.stat().st_mode & 0o077
+        or {item.name for item in evidence_directory.iterdir()}
+        != carry_forward.GROUP2_PARTIAL_FINALIZE_FILES
+    ):
+        raise ValueError("Partial finalize evidence directory is invalid")
+    artifacts = {
+        name: _read_incident_input(evidence_directory / name)[1]
+        for name in carry_forward.GROUP2_PARTIAL_FINALIZE_FILES
+    }
+    validated = carry_forward.validate_group2_partial_finalize_request(
+        request, approval, user_record, artifacts
+    )
+    source, head, tool_files = _incident_tool_files()
+    if head != request["tool"]["sha"] or tool_files != request["tool"]["controller_files"]:
+        raise ValueError("Partial finalize source controller binding changed")
+    _validate_incident_worktree_source(
+        source.parents[1], validated["artifacts"]["source-review.json"]["source_scope"]
+    )
+    _validate_partial_review_source(source, head, validated)
+    incident_id = request["incident_id"]
+    finalize_id = request["finalize_id"]
+    with operation_lock(blocking=False):
+        with config_lock():
+            config_bytes = (ROOT / "config.json").read_bytes()
+            state_bytes = (ROOT / "state.json").read_bytes()
+            attention_bytes = (ROOT / "attention.json").read_bytes()
+            config = json.loads(config_bytes)
+            state = json.loads(state_bytes)
+            attention = json.loads(attention_bytes)
+            old = validated["context"]["validated_original"]
+            old_request = old["request"]
+            old_snapshot = old["artifacts"]["authority.json"]["snapshot"]
+            if (
+                config.get("enabled") is not False
+                or config.get("repo") != old_request["repo"]
+                or config.get("pr") != old_request["pr"]
+                or config.get("carry_forward") != old_snapshot["carry_reference"]
+                or state != old_snapshot["state"]
+                or attention != old_snapshot["attention"]
+            ):
+                raise ValueError("Partial finalize host authority changed")
+            finalize_root = ROOT / "incidents" / incident_id / "finalize"
+            if finalize_root.exists() and any(finalize_root.iterdir()):
+                raise ValueError("Partial finalize identity was already used")
+            if vm_command(
+                "test", "!", "-d", vm_path(f"incidents/{incident_id}/finalize"),
+                check=False,
+            ).returncode:
+                raise ValueError("Partial finalize identity was already used in VM")
+            controller_hashes = {
+                name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+                for name in carry_forward.GROUP2_CONTROLLER_FILES
+            }
+            expected_controller_hashes = old_snapshot["installed_files"]
+            if controller_hashes != expected_controller_hashes:
+                raise ValueError("Partial finalize installed controller changed")
+            prior = old["artifacts"]["prior-success.json"]
+            prior_actual = {"host": {}, "vm": {}}
+            for side in ("host", "vm"):
+                for relative, expected in prior[side].items():
+                    if side == "host":
+                        path = ROOT / relative
+                        exists = path.is_file() and not path.is_symlink()
+                        actual_hash = hashlib.sha256(path.read_bytes()).hexdigest() if exists else None
+                    else:
+                        exists = vm_command(
+                            "test", "-f", vm_path(relative), check=False
+                        ).returncode == 0
+                        actual_hash = (
+                            vm_command("sha256sum", vm_path(relative)).stdout.split()[0]
+                            if exists else None
+                        )
+                    actual = ({"exists": True, "sha256": actual_hash}
+                              if exists else {"exists": False})
+                    expected_small = ({"exists": True, "sha256": expected.get("sha256")}
+                                      if expected.get("exists") is True else {"exists": False})
+                    if actual != expected_small:
+                        raise ValueError("Partial finalize prior success changed")
+                    prior_actual[side][relative] = actual
+            host_authority = {
+                "host_files": {
+                    "config.json": _embedded_bytes(config_bytes),
+                    "state.json": _embedded_bytes(state_bytes),
+                    "attention.json": _embedded_bytes(attention_bytes),
+                },
+                "host_installed": controller_hashes,
+                "prior_success": prior_actual,
+            }
+            host_directory = private_directory(
+                f"incidents/{incident_id}/finalize/{finalize_id}"
+            )
+            evidence_host = private_directory(
+                f"incidents/{incident_id}/finalize/{finalize_id}/evidence"
+            )
+            tool_host = private_directory(
+                f"incidents/{incident_id}/finalize/{finalize_id}/tool"
+            )
+            for path, raw in (
+                (host_directory / "request.json", request_bytes),
+                (host_directory / "approval.json", approval_bytes),
+                (host_directory / "USER-APPROVAL.txt", user_record),
+            ):
+                write_private_bytes(path, raw)
+            for name, raw in artifacts.items():
+                write_private_bytes(evidence_host / name, raw)
+            for name in ("deploy.sh", "carry_forward.py"):
+                write_private_bytes(tool_host / name, (source / name).read_bytes())
+            phase = carry_forward.canonical_bytes({
+                "schema": "group2-partial-finalize-phase-v1",
+                "incident_id": incident_id, "finalize_id": finalize_id,
+                "phase": "prepared",
+            })
+            write_private_bytes(host_directory / "phase.json", phase)
+            write_private_bytes(
+                host_directory / "host-authority.json",
+                carry_forward.canonical_bytes(host_authority),
+            )
+            prefix = f"incidents/{incident_id}/finalize/{finalize_id}"
+            for relative, raw in (
+                ("request.json", request_bytes), ("approval.json", approval_bytes),
+                ("USER-APPROVAL.txt", user_record), ("phase.json", phase),
+                ("host-authority.json", carry_forward.canonical_bytes(host_authority)),
+            ):
+                vm_private_write(f"{prefix}/{relative}", raw)
+            for name, raw in artifacts.items():
+                vm_private_write(f"{prefix}/evidence/{name}", raw)
+            for name in ("deploy.sh", "carry_forward.py"):
+                vm_private_write(f"{prefix}/tool/{name}", (source / name).read_bytes())
+            with (ROOT / "deploy.log").open("a") as output:
+                process = subprocess.Popen(
+                    [COLIMA, "ssh", "-p", settings()["profile"], "--", "sudo", "bash",
+                     vm_path(f"{prefix}/tool/deploy.sh"), "finalize-group2-partial",
+                     settings()["vm_root"], incident_id, finalize_id],
+                    env=ENV, stdout=output, stderr=subprocess.STDOUT,
+                )
+                deadline = time.monotonic() + 2100
+                while vm_command(
+                    "test", "-f", vm_path(f"{prefix}/result.json"), check=False
+                ).returncode:
+                    if process.poll() is not None:
+                        raise RuntimeError("Partial finalize VM collection failed")
+                    if time.monotonic() >= deadline:
+                        process.kill(); process.wait()
+                        raise RuntimeError("Partial finalize VM collection timed out")
+                    time.sleep(0.25)
+            result_bytes = vm_command("cat", vm_path(f"{prefix}/result.json")).stdout.encode()
+            result = json.loads(result_bytes)
+            receipt = carry_forward.validate_group2_partial_finalize_result(
+                validated, result["evidence"]
+            )
+            if result != {"schema": "group2-partial-finalize-result-v1",
+                          "evidence": result["evidence"], "receipt": receipt}:
+                raise RuntimeError("Partial finalize VM result is invalid")
+            write_private_bytes(host_directory / "result.json", result_bytes)
+            receipt_bytes = vm_command("cat", vm_path(f"{prefix}/receipt.json")).stdout.encode()
+            if json.loads(receipt_bytes) != receipt:
+                raise RuntimeError("Partial finalize receipt changed")
+            write_private_bytes(host_directory / "receipt.json", receipt_bytes)
+            source_artifacts = {}
+            for name in sorted(tuple(artifacts)):
+                source_artifacts[name] = _embedded_bytes(artifacts.pop(name))
+            gc.collect()
+            chain = {
+                "schema": "group2-partial-finalize-chain-v1",
+                "request": request, "approval": approval,
+                "user_record": _embedded_bytes(user_record),
+                "source_artifacts": source_artifacts,
+                "result": result,
+            }
+            reference = validated["context"]["originals"]["manifest"][
+                "review_scope"
+            ]["preservation_reference"]
+            snapshot = carry_forward._validate_group2_partial_finalize_preservation(
+                chain, reference, validated
+            )
+            write_private_json_stream(host_directory / "chain.json", chain)
+            write_private_bytes(
+                host_directory / "preservation-snapshot.json",
+                carry_forward.canonical_bytes(snapshot),
+            )
+            acknowledgement = {
+                "finalize_id": finalize_id,
+                "request_digest": request["request_digest"],
+                "result_digest": carry_forward.digest(result),
+                "receipt_digest": receipt["receipt_digest"],
+                "chain_digest": carry_forward.streaming_digest(chain),
+            }
+            vm_private_write(
+                f"{prefix}/host-validated.json",
+                carry_forward.canonical_bytes(acknowledgement),
+            )
+            if process.wait(timeout=300):
+                raise RuntimeError("Partial finalize VM commit failed")
+            committed = transaction()
+            if (
+                committed.get("phase") != "ready"
+                or committed.get("sha") != carry_forward.GROUP2_FROM_SHA
+                or committed.get("operation") != "incident_partial_finalize"
+                or committed.get("reconciled_by") != {
+                    "incident_id": incident_id, "finalize_id": finalize_id,
+                    "receipt_digest": receipt["receipt_digest"],
+                }
+                or committed.get("backup") != state["backup"]
+                or committed.get("carry_forward") != state["carry_forward"]
+            ):
+                raise RuntimeError("Partial finalize VM transaction is invalid")
+            if vm_command("cat", vm_path("current-sha")).stdout.strip() != carry_forward.GROUP2_FROM_SHA:
+                raise RuntimeError("Partial finalize changed current-sha")
+            vm_expected = result["evidence"]["authority"]["vm_installed"]
+            for name, expected in vm_expected.items():
+                if vm_command("sha256sum", vm_path(name)).stdout.split()[0] != expected:
+                    raise RuntimeError("Partial finalize changed VM controller")
+            if {
+                name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+                for name in carry_forward.GROUP2_CONTROLLER_FILES
+            } != controller_hashes:
+                raise RuntimeError("Partial finalize changed host controller")
+            for side, values in prior_actual.items():
+                for relative, expected in values.items():
+                    if side == "host":
+                        path = ROOT / relative
+                        exists = path.is_file() and not path.is_symlink()
+                        actual_hash = hashlib.sha256(path.read_bytes()).hexdigest() if exists else None
+                    else:
+                        exists = vm_command(
+                            "test", "-f", vm_path(relative), check=False
+                        ).returncode == 0
+                        actual_hash = (
+                            vm_command("sha256sum", vm_path(relative)).stdout.split()[0]
+                            if exists else None
+                        )
+                    actual = ({"exists": True, "sha256": actual_hash}
+                              if exists else {"exists": False})
+                    if actual != expected:
+                        raise RuntimeError("Partial finalize changed prior success evidence")
+            if (ROOT / "state.json").read_bytes() != state_bytes:
+                raise RuntimeError("Partial finalize changed deployed state")
+            active = ROOT / "carry-forward" / "manifests" / (
+                old_request["failed"]["manifest_id"] + ".json"
+            )
+            active_bytes = active.read_bytes()
+            if hashlib.sha256(active_bytes).hexdigest() != old_request["failed"]["manifest_sha256"]:
+                raise RuntimeError("Partial finalize failed manifest changed")
+            abandoned = private_directory("carry-forward/abandoned") / active.name
+            write_private_bytes(abandoned, active_bytes)
+            abandonment = {
+                "schema": "group2-partial-finalize-abandonment-v1",
+                "manifest_id": old_request["failed"]["manifest_id"],
+                "manifest_sha256": old_request["failed"]["manifest_sha256"],
+                "incident_id": incident_id, "finalize_id": finalize_id,
+                "receipt_digest": receipt["receipt_digest"],
+            }
+            write_private_bytes(
+                host_directory / "abandonment.json",
+                carry_forward.canonical_bytes(abandonment),
+            )
+            write_private_bytes(
+                abandoned.with_suffix(".abandonment.json"),
+                carry_forward.canonical_bytes(abandonment),
+            )
+            if abandoned.read_bytes() != active_bytes:
+                raise RuntimeError("Partial finalize abandoned manifest changed")
+            if (ROOT / "config.json").read_bytes() != config_bytes:
+                raise RuntimeError("Partial finalize config changed before CAS")
+            active.unlink()
+            config.pop("carry_forward")
+            write("config.json", config)
+            status("Incident partial finalize completed; paused", incident=abandonment)
+            if (ROOT / "attention.json").read_bytes() != attention_bytes:
+                raise RuntimeError("Partial finalize attention changed before clear")
+            (ROOT / "attention.json").unlink()
+            committed_phase = {
+                "schema": "group2-partial-finalize-phase-v1",
+                "incident_id": incident_id, "finalize_id": finalize_id,
+                "phase": "committed",
+            }
+            write_private_bytes(
+                host_directory / "phase.json",
+                carry_forward.canonical_bytes(committed_phase),
+            )
+            vm_private_write(
+                f"{prefix}/phase.json",
+                carry_forward.canonical_bytes(committed_phase),
+            )
+    return {"incident_id": incident_id, "finalize_id": finalize_id,
+            "receipt_digest": receipt["receipt_digest"]}
+
+
 def main():
     if not os.environ.get("DLR_PREVIEW_HOME"):
         sys.exit("Set DLR_PREVIEW_HOME to your private installation directory")
@@ -2692,6 +3086,7 @@ def main():
             "plan-carry-forward",
             "install-group2",
             "reconcile-group2-starting",
+            "finalize-group2-partial",
         ],
     )
     parser.add_argument("pr", nargs="?", type=int)
@@ -2705,7 +3100,32 @@ def main():
     parser.add_argument("--review-scope", type=Path)
     parser.add_argument("--incident-request", type=Path)
     parser.add_argument("--incident-approval", type=Path)
+    parser.add_argument("--finalize-request", type=Path)
+    parser.add_argument("--finalize-approval", type=Path)
     args = parser.parse_args()
+    if args.command == "finalize-group2-partial":
+        if (
+            args.pr is not None
+            or args.finalize_request is None
+            or args.finalize_approval is None
+            or any(
+                value is not None
+                for value in (
+                    args.to_sha, args.ids_file, args.output, args.carry_forward,
+                    args.mode, args.review_scope, args.incident_request,
+                    args.incident_approval,
+                )
+            )
+        ):
+            parser.error(
+                "finalize-group2-partial requires --finalize-request and --finalize-approval"
+            )
+        print(json.dumps(finalize_group2_partial(
+            args.finalize_request, args.finalize_approval
+        ), indent=2))
+        return
+    if args.finalize_request is not None or args.finalize_approval is not None:
+        parser.error("finalize request inputs require finalize-group2-partial")
     if args.command == "reconcile-group2-starting":
         if (
             args.pr is not None
@@ -2720,6 +3140,8 @@ def main():
                     args.carry_forward,
                     args.mode,
                     args.review_scope,
+                    args.finalize_request,
+                    args.finalize_approval,
                 )
             )
         ):
@@ -2747,6 +3169,8 @@ def main():
                     args.output,
                     args.carry_forward,
                     args.mode,
+                    args.finalize_request,
+                    args.finalize_approval,
                 )
             )
         ):

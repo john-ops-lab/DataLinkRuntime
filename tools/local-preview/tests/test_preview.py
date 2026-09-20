@@ -1,4 +1,5 @@
 import sys
+import base64
 import tempfile
 import unittest
 import json
@@ -250,6 +251,330 @@ class ControllerTests(unittest.TestCase):
             ):
                 preview.main()
             reconcile.assert_not_called()
+
+    def test_partial_finalize_cli_is_unique_and_rejects_general_options(self):
+        request = Path(self.temp.name) / "finalize-request.json"
+        approval = Path(self.temp.name) / "USER-APPROVAL.json"
+        request.write_text("{}")
+        approval.write_text("{}")
+        base = [
+            "preview.py", "finalize-group2-partial",
+            "--finalize-request", str(request),
+            "--finalize-approval", str(approval),
+        ]
+        with (
+            patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+            patch.object(sys, "argv", base),
+            patch.object(
+                preview, "finalize_group2_partial",
+                return_value={"incident_id": "1" * 32, "finalize_id": "2" * 32},
+            ) as finalize,
+            patch("builtins.print"),
+        ):
+            preview.main()
+        finalize.assert_called_once_with(request, approval)
+        for extra in (["7"], ["--to-sha", B], ["--incident-request", request]):
+            with (
+                self.subTest(extra=extra),
+                patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+                patch.object(sys, "argv", [*base, *map(str, extra)]),
+                patch.object(preview, "finalize_group2_partial") as finalize,
+                self.assertRaises(SystemExit),
+            ):
+                preview.main()
+            finalize.assert_not_called()
+
+    def test_partial_finalize_review_recomputes_git_content_hash(self):
+        source = Path(self.temp.name) / "tools" / "local-preview"
+        source.mkdir(parents=True)
+        content = b"reviewed content\n"
+        coverage = {
+            "path": "tools/local-preview/carry_forward.py",
+            "mode": "100644",
+            "blob_oid": "a" * 40,
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+        record = {
+            "schema": "group2-independent-review-v1",
+            "coverage": [coverage],
+        }
+        raw = b"```json\n" + json.dumps(record).encode() + b"\n```\n"
+        validated = {
+            "artifacts": {
+                "source-review.json": {
+                    "tool_review": {
+                        "content_b64": base64.b64encode(raw).decode()
+                    }
+                }
+            }
+        }
+
+        def checked(arguments, **_kwargs):
+            if "ls-tree" in arguments:
+                return (
+                    f"100644 blob {'a' * 40}\t"
+                    "tools/local-preview/carry_forward.py\n"
+                )
+            return content
+
+        with patch.object(preview.subprocess, "check_output", side_effect=checked):
+            preview._validate_partial_review_source(source, "d" * 40, validated)
+        changed = copy.deepcopy(validated)
+        changed_record = copy.deepcopy(record)
+        changed_record["coverage"][0]["sha256"] = "0" * 64
+        changed_raw = (
+            b"```json\n" + json.dumps(changed_record).encode() + b"\n```\n"
+        )
+        changed["artifacts"]["source-review.json"]["tool_review"][
+            "content_b64"
+        ] = base64.b64encode(changed_raw).decode()
+        with (
+            patch.object(preview.subprocess, "check_output", side_effect=checked),
+            self.assertRaisesRegex(ValueError, "independent review changed"),
+        ):
+            preview._validate_partial_review_source(source, "d" * 40, changed)
+
+    def test_partial_finalize_scope_binds_sha_and_all_controller_files(self):
+        files = {name: str(index) * 64 for index, name in enumerate(
+            sorted(carry_forward.GROUP2_CONTROLLER_FILES), 1
+        )}
+        snapshot = {"lineage": []}
+        scope = {
+            "final_source": {"to_sha": "d" * 40},
+            "controller_files": {"files": files},
+            "preservation_reference": {"snapshot": snapshot},
+        }
+        chain = {"request": {"tool": {
+            "sha": "d" * 40, "controller_files": copy.deepcopy(files)
+        }}}
+        self.assertTrue(
+            preview._partial_finalize_scope_binding(chain, scope, snapshot)
+        )
+        changed = copy.deepcopy(chain)
+        changed["request"]["tool"]["controller_files"]["preview.py"] = "0" * 64
+        self.assertFalse(
+            preview._partial_finalize_scope_binding(changed, scope, snapshot)
+        )
+
+    def test_partial_finalize_deploy_entry_returns_before_normal_actions(self):
+        root = Path(self.temp.name) / "vm-root"
+        incident_id = "1" * 32
+        finalize_id = "2" * 32
+        tool = root / "incidents" / incident_id / "finalize" / finalize_id / "tool"
+        tool.mkdir(parents=True)
+        deploy = tool / "deploy.sh"
+        deploy.write_bytes(
+            (Path(preview.__file__).parent / "deploy.sh").read_bytes()
+        )
+        deploy.chmod(0o755)
+        helper = tool / "carry_forward.py"
+        helper.write_text(
+            "import json, pathlib, sys\n"
+            "root=pathlib.Path(sys.argv[sys.argv.index('--root')+1])\n"
+            "(root/'finalize-args.json').write_text(json.dumps(sys.argv[1:]))\n"
+        )
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        (fake_bin / "flock").write_text("#!/bin/sh\nexit 0\n")
+        (fake_bin / "flock").chmod(0o755)
+        result = subprocess.run(
+            [str(deploy), "finalize-group2-partial", str(root), incident_id,
+             finalize_id],
+            env={**os.environ, "PATH": str(fake_bin) + ":" + os.environ["PATH"]},
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads((root / "finalize-args.json").read_text()),
+            ["finalize-partial-vm", "--root", str(root), "--incident-id",
+             incident_id, "--finalize-id", finalize_id],
+        )
+        self.assertFalse((root / "backups").exists())
+        self.assertFalse((root / "transaction.json").exists())
+
+    def test_partial_finalize_host_orchestration_commits_only_after_vm_cas(self):
+        def run_case(valid_transaction):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "host"
+                vm_root = Path(temporary) / "vm"
+                request_dir = Path(temporary) / "request"
+                for directory in (root, vm_root, request_dir):
+                    directory.mkdir(mode=0o700)
+                incident_id = carry_forward.GROUP2_PARTIAL_INCIDENT_ID
+                finalize_id = "f" * 32
+                controller = {}
+                for name in carry_forward.GROUP2_CONTROLLER_FILES:
+                    raw = (name + "\n").encode()
+                    (root / name).write_bytes(raw)
+                    controller[name] = hashlib.sha256(raw).hexdigest()
+                vm_installed = {}
+                for name in ("deploy.sh", "carry_forward.py", "verify.py", "assets.py"):
+                    raw = ("vm-" + name + "\n").encode()
+                    (vm_root / name).write_bytes(raw)
+                    vm_installed[name] = hashlib.sha256(raw).hexdigest()
+                state = {"backup": "/old/backup", "carry_forward": {"manifest_id": "a" * 32}}
+                attention = {"phase": "restoring-apps"}
+                config = {
+                    "enabled": False, "repo": "owner/repo", "pr": 161,
+                    "carry_forward": {"manifest_id": "a" * 32},
+                }
+                for name, value in (("config.json", config), ("state.json", state),
+                                    ("attention.json", attention)):
+                    (root / name).write_text(json.dumps(value))
+                manifest_raw = b"failed manifest bytes\n"
+                active = root / "carry-forward" / "manifests" / ("a" * 32 + ".json")
+                active.parent.mkdir(parents=True)
+                active.write_bytes(manifest_raw)
+                request = {
+                    "incident_id": incident_id, "finalize_id": finalize_id,
+                    "request_digest": "b" * 64,
+                    "tool": {"sha": "d" * 40, "controller_files": controller},
+                }
+                approval = {"status": "USER_APPROVED"}
+                request_path = request_dir / "finalize.json"
+                approval_path = request_dir / "USER-APPROVAL.json"
+                record_path = request_dir / "USER-APPROVAL.txt"
+                request_path.write_text(json.dumps(request))
+                approval_path.write_text(json.dumps(approval))
+                record_path.write_text("{}")
+                evidence_dir = request_dir / "finalize.evidence"
+                evidence_dir.mkdir(mode=0o700)
+                for name in carry_forward.GROUP2_PARTIAL_FINALIZE_FILES:
+                    path = evidence_dir / name
+                    path.write_text("{}")
+                    path.chmod(0o600)
+                for path in (request_path, approval_path, record_path):
+                    path.chmod(0o600)
+                old_request = {
+                    "repo": "owner/repo", "pr": 161,
+                    "failed": {
+                        "manifest_id": "a" * 32,
+                        "manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
+                    },
+                }
+                reference = {"snapshot": {"lineage": []}}
+                validated = {
+                    "request": request, "approval": approval, "user_record": {},
+                    "artifacts": {"source-review.json": {"source_scope": {}}},
+                    "context": {
+                        "validated_original": {
+                            "request": old_request,
+                            "artifacts": {
+                                "authority.json": {"snapshot": {
+                                    "carry_reference": config["carry_forward"],
+                                    "state": state, "attention": attention,
+                                    "installed_files": controller,
+                                }},
+                                "prior-success.json": {"host": {}, "vm": {}},
+                            },
+                        },
+                        "originals": {"manifest": {
+                            "review_scope": {"preservation_reference": reference}
+                        }},
+                    },
+                }
+                receipt = {"receipt_digest": "9" * 64}
+                evidence = {"authority": {"vm_installed": vm_installed}}
+                result = {
+                    "schema": "group2-partial-finalize-result-v1",
+                    "evidence": evidence, "receipt": receipt,
+                }
+                commands = []
+                committed_value = {}
+
+                def mapped(value):
+                    relative = Path(value).relative_to("/vm")
+                    return vm_root / relative
+
+                def vm_write(relative, data):
+                    path = vm_root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    path.write_bytes(data)
+
+                def vm_command(*arguments, check=True):
+                    commands.append(tuple(arguments))
+                    if arguments[:3] == ("test", "!", "-d"):
+                        return SimpleNamespace(returncode=int(mapped(arguments[3]).exists()), stdout="")
+                    if arguments[:2] == ("test", "-f"):
+                        return SimpleNamespace(returncode=0 if mapped(arguments[2]).is_file() else 1, stdout="")
+                    if arguments[0] == "cat":
+                        path = mapped(arguments[1])
+                        return SimpleNamespace(returncode=0 if path.is_file() else 1,
+                                               stdout=path.read_text() if path.is_file() else "")
+                    if arguments[0] == "sha256sum":
+                        raw = mapped(arguments[1]).read_bytes()
+                        return SimpleNamespace(returncode=0,
+                                               stdout=hashlib.sha256(raw).hexdigest() + "  file\n")
+                    raise AssertionError(arguments)
+
+                class Process:
+                    def __init__(self, arguments, **_kwargs):
+                        commands.append(tuple(arguments))
+                        prefix = vm_root / "incidents" / incident_id / "finalize" / finalize_id
+                        (prefix / "result.json").write_text(json.dumps(result))
+                        (prefix / "receipt.json").write_text(json.dumps(receipt))
+
+                    def poll(self):
+                        return None
+
+                    def wait(self, timeout=None):
+                        transaction = {
+                            "phase": "ready", "sha": carry_forward.GROUP2_FROM_SHA,
+                            "operation": "incident_partial_finalize",
+                            "reconciled_by": {
+                                "incident_id": incident_id, "finalize_id": finalize_id,
+                                "receipt_digest": receipt["receipt_digest"],
+                            },
+                            "backup": state["backup"],
+                            "carry_forward": state["carry_forward"],
+                        }
+                        if not valid_transaction:
+                            transaction["sha"] = "0" * 40
+                        committed_value.clear()
+                        committed_value.update(transaction)
+                        (vm_root / "transaction.json").write_text(json.dumps(transaction))
+                        return 0
+
+                (vm_root / "current-sha").write_text(carry_forward.GROUP2_FROM_SHA + "\n")
+                source = Path(temporary) / "source" / "tools" / "local-preview"
+                source.mkdir(parents=True)
+                for name in ("deploy.sh", "carry_forward.py"):
+                    (source / name).write_text(name)
+                with (
+                    patch.object(preview, "ROOT", root),
+                    patch.object(preview, "settings", return_value={"vm_root": "/vm", "profile": "test"}),
+                    patch.object(preview, "vm_path", side_effect=lambda suffix: "/vm/" + suffix),
+                    patch.object(preview, "vm_private_write", side_effect=vm_write),
+                    patch.object(preview, "vm_command", side_effect=vm_command),
+                    patch.object(preview, "transaction", side_effect=lambda: copy.deepcopy(committed_value)),
+                    patch.object(preview.subprocess, "Popen", Process),
+                    patch.object(preview, "operation_lock", return_value=preview.contextlib.nullcontext()),
+                    patch.object(preview, "config_lock", return_value=preview.contextlib.nullcontext()),
+                    patch.object(preview, "_incident_tool_files", return_value=(source, "d" * 40, controller)),
+                    patch.object(preview, "_validate_incident_worktree_source"),
+                    patch.object(preview, "_validate_partial_review_source"),
+                    patch.object(carry_forward, "validate_group2_partial_finalize_request", return_value=validated),
+                    patch.object(carry_forward, "validate_group2_partial_finalize_result", return_value=receipt),
+                    patch.object(carry_forward, "_validate_group2_partial_finalize_preservation", return_value={"lineage": []}),
+                ):
+                    if valid_transaction:
+                        output = preview.finalize_group2_partial(request_path, approval_path)
+                        self.assertEqual(output["receipt_digest"], receipt["receipt_digest"])
+                        self.assertFalse(active.exists())
+                        self.assertFalse((root / "attention.json").exists())
+                        self.assertNotIn("carry_forward", json.loads((root / "config.json").read_text()))
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "transaction is invalid"):
+                            preview.finalize_group2_partial(request_path, approval_path)
+                        self.assertTrue(active.exists())
+                        self.assertTrue((root / "attention.json").exists())
+                        self.assertIn("carry_forward", json.loads((root / "config.json").read_text()))
+                flattened = " ".join(" ".join(command) for command in commands)
+                for forbidden in (" stop ", " up ", " restart ", "pg_restore", "alembic"):
+                    self.assertNotIn(forbidden, " " + flattened + " ")
+
+        run_case(True)
+        run_case(False)
 
     def test_explicit_manifest_is_transferred_and_bound_to_deploy_only(self):
         manifest_path = Path(self.temp.name) / "manifest.json"

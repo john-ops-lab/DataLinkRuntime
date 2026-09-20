@@ -5431,6 +5431,253 @@ class Group2StartingReconcileTests(unittest.TestCase):
                         require_idle=False,
                     )
 
+    def test_restored_kernel_projects_real_compose_labels(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            (
+                request,
+                _approval,
+                _artifacts,
+                validated,
+                evidence,
+                _reference,
+                _first_files_result,
+            ) = self._complete_reconcile_case(Path(temporary))
+            worker = evidence["restored"]["containers"]["worker"]
+            worker["labels"] = {
+                **worker["labels"],
+                "ao.session": "synthetic",
+                "com.docker.compose.config-hash": "synthetic",
+                "com.docker.compose.container-number": "1",
+                "com.docker.compose.depends_on": "synthetic",
+                "com.docker.compose.image": "sha256:synthetic",
+                "com.docker.compose.oneoff": "False",
+                "com.docker.compose.project.config_files": "/synthetic/compose.yml",
+                "com.docker.compose.project.environment_file": "/synthetic/.env",
+                "com.docker.compose.project.working_dir": "/synthetic",
+                "com.docker.compose.replace": "synthetic",
+                "com.docker.compose.version": "2.synthetic",
+            }
+            self.assertEqual(len(worker["labels"]), 13)
+            evidence["restore_startup"]["request"]["container_after"] = copy.deepcopy(
+                worker
+            )
+            evidence["restore_startup"]["proof"] = carry._incident_startup_proof(
+                evidence["restore_startup"]["request"]
+            )
+            self.assertEqual(
+                carry.validate_group2_reconcile_result(
+                    request, evidence, validated
+                )["schema"],
+                "group2-software-reconcile-v1",
+            )
+
+            for label_key in (
+                "com.docker.compose.project",
+                "com.docker.compose.service",
+            ):
+                changed = copy.deepcopy(evidence)
+                changed["restored"]["kernel"]["old_worker_authority"][
+                    "labels"
+                ][label_key] = "wrong"
+                with self.subTest(label_key=label_key), self.assertRaisesRegex(
+                    carry.CarryForwardError, "kernel_changed"
+                ):
+                    carry.validate_group2_reconcile_result(
+                        request, changed, validated
+                    )
+
+    def test_partial_finalize_result_recomputes_history_and_current_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            (
+                _request,
+                _approval,
+                _artifacts,
+                original_validated,
+                restored_evidence,
+                _reference,
+                _first_files_result,
+            ) = self._complete_reconcile_case(Path(temporary))
+            original = carry._group2_reconcile_originals(original_validated)
+            diagnostic = copy.deepcopy(restored_evidence["restored"])
+            diagnostic["logs"] = carry.combine_group2_log_window(
+                original["logs_after_startup"],
+                restored_evidence["preflight"]["logs"],
+                restored_evidence["stopped"]["control"]["logs"],
+                restored_evidence["stopped"]["apps"]["logs"],
+                restored_evidence["restored_postgres"]["logs"],
+                restored_evidence["restored"]["logs"],
+            )
+            startup = restored_evidence["restore_startup"]
+
+            def utc_text(value):
+                import datetime
+
+                return datetime.datetime.fromtimestamp(
+                    value / 1_000_000_000, tz=datetime.timezone.utc
+                ).isoformat(timespec="microseconds")
+
+            phase = {
+                "schema": "group2-starting-reconcile-phase-v1",
+                "incident_id": carry.GROUP2_PARTIAL_INCIDENT_ID,
+                "phase": "restoring-apps",
+            }
+            context = {
+                "validated_original": original_validated,
+                "originals": original,
+                "attempt": {
+                    "started_at": utc_text(startup["request"]["window_start_ns"]),
+                    "finished_at": utc_text(startup["request"]["window_end_ns"]),
+                },
+                "phase": {"phase": phase},
+                "diagnostic": {"stage": diagnostic},
+            }
+            request = {
+                "incident_id": carry.GROUP2_PARTIAL_INCIDENT_ID,
+                "finalize_id": "f" * 32,
+                "original_request_digest": carry.GROUP2_PARTIAL_ORIGINAL_REQUEST_DIGEST,
+                "request_digest": "e" * 64,
+                "tool": {"sha": "d" * 40},
+            }
+            current = copy.deepcopy(diagnostic)
+            current["logs"] = carry.read_log_append(diagnostic["logs"])
+            current["window_start_ns"] = diagnostic["window_end_ns"]
+            current["window_end_ns"] = current["window_start_ns"]
+
+            def embedded(value):
+                raw = carry.canonical_bytes(value)
+                return {
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "content_b64": __import__("base64").b64encode(raw).decode(),
+                }
+
+            snapshot = original_validated["artifacts"]["authority.json"]["snapshot"]
+            config = {
+                "enabled": False,
+                "repo": original_validated["request"]["repo"],
+                "pr": original_validated["request"]["pr"],
+                "carry_forward": snapshot["carry_reference"],
+            }
+            host_files = {
+                "config.json": embedded(config),
+                "state.json": embedded(snapshot["state"]),
+                "attention.json": embedded(snapshot["attention"]),
+            }
+            installed = snapshot["installed_files"]
+            vm_installed = carry._reconcile_vm_installed_files(
+                original_validated["artifacts"]["authority.json"]
+            )
+            prior = original_validated["artifacts"]["prior-success.json"]
+            prior_small = {
+                side: {
+                    name: (
+                        {"exists": True, "sha256": value["sha256"]}
+                        if value.get("exists") is True else {"exists": False}
+                    )
+                    for name, value in prior[side].items()
+                }
+                for side in ("host", "vm")
+            }
+            authority = {
+                "host_files": host_files,
+                "host_installed": installed,
+                "vm_files": {
+                    "transaction.json": embedded(
+                        {"phase": "starting", "sha": carry.GROUP2_PARTIAL_FAILED_SHA}
+                    ),
+                    "current-sha": {
+                        "sha256": hashlib.sha256(
+                            (carry.GROUP2_FROM_SHA + "\n").encode()
+                        ).hexdigest(),
+                        "content_b64": __import__("base64").b64encode(
+                            (carry.GROUP2_FROM_SHA + "\n").encode()
+                        ).decode(),
+                    },
+                    "phase.json": embedded(phase),
+                },
+                "vm_installed": vm_installed,
+                "prior_success": prior_small,
+            }
+            context["diagnostic_host_state"] = {
+                "state_sha256": host_files["state.json"]["sha256"],
+                "attention_sha256": host_files["attention.json"]["sha256"],
+                "installed": installed,
+            }
+            context["diagnostic_vm_state"] = {
+                "installed": vm_installed,
+                "current_sha": carry.GROUP2_FROM_SHA,
+            }
+            platform = original_validated["artifacts"]["platform.json"][
+                "postgres_format"
+            ]
+            evidence = {
+                "current": current,
+                "authority": authority,
+                "postgres": {
+                    "schema": "0040_issue152_dispositions",
+                    "binary_version": platform["prior_binary_version"],
+                    "server_version": platform["current_server_version"],
+                    "data_pg_version": platform["data_pg_version"],
+                },
+                "token_health": {"status": 200, "database": True},
+            }
+            validated = {
+                "request": request,
+                "approval": {},
+                "user_record": {},
+                "artifacts": {},
+                "context": context,
+            }
+            with (
+                mock.patch.object(
+                    carry, "GROUP2_PARTIAL_NONCE", startup["proof"]["nonce"]
+                ),
+                mock.patch.object(
+                    carry, "GROUP2_PARTIAL_WORKER_ID", startup["proof"]["container_id"]
+                ),
+            ):
+                receipt = carry.validate_group2_partial_finalize_result(
+                    validated, evidence
+                )
+                self.assertEqual(
+                    receipt["result"], "finalized_observed_prior_software"
+                )
+                for label, mutate in (
+                    (
+                        "database",
+                        lambda value: value["current"]["db"].__setitem__(
+                            "projection", {}
+                        ),
+                    ),
+                    (
+                        "third file change",
+                        lambda value: value["current"]["files"]["runtime"][
+                            "root"
+                        ].__setitem__("inode", 999),
+                    ),
+                    (
+                        "authority label",
+                        lambda value: value["current"]["kernel"][
+                            "old_worker_authority"
+                        ]["labels"].__setitem__("extra", "forbidden"),
+                    ),
+                    (
+                        "prior success",
+                        lambda value: next(
+                            item
+                            for item in value["authority"]["prior_success"]["vm"].values()
+                            if item.get("exists") is True
+                        ).__setitem__("sha256", "0" * 64),
+                    ),
+                ):
+                    changed = copy.deepcopy(evidence)
+                    mutate(changed)
+                    with self.subTest(label=label), self.assertRaises(
+                        carry.CarryForwardError
+                    ):
+                        carry.validate_group2_partial_finalize_result(
+                            validated, changed
+                        )
+
     def test_reconcile_request_is_closed_and_separately_approved(self):
         request, approval, artifacts = self._request()
         with mock.patch.object(carry, "_validate_reconcile_wrappers"):
@@ -5458,6 +5705,214 @@ class Group2StartingReconcileTests(unittest.TestCase):
                 carry.validate_group2_reconcile_request(
                     changed_request, changed_approval, changed_artifacts
                 )
+
+    def test_partial_finalize_tool_requires_both_reviews_and_exact_ci(self):
+        request, _approval, artifacts = self._request()
+        source = json.loads(artifacts["source-review.json"])
+        ci = json.loads(artifacts["ci.json"])
+        review = source["tool_review"]
+        tool_raw = __import__("base64").b64decode(review["content_b64"])
+        independent = {
+            "schema": "group2-independent-review-v1",
+            "status": "APPROVED",
+            "reviewed_commit": request["tool"]["sha"],
+            "source_kind": "git_commit",
+            "coverage": [
+                {
+                    "path": item["path"],
+                    "mode": item["new_mode"],
+                    "blob_oid": item["new_oid"],
+                    "sha256": hashlib.sha256(item["path"].encode()).hexdigest(),
+                }
+                for item in review["entries"]
+            ],
+            "blocking_findings": [],
+        }
+        raw = tool_raw + b"\n```json\n" + json.dumps(independent).encode() + b"\n```\n"
+        review["sha256"] = hashlib.sha256(raw).hexdigest()
+        review["content_b64"] = __import__("base64").b64encode(raw).decode()
+        inherited = {
+            item["name"]: item["sha256"] for item in source["inherited_reviews"]
+        }
+
+        def validate(source_value, ci_value):
+            with mock.patch.object(
+                carry, "GROUP2_INHERITED_REVIEW_HASHES", inherited
+            ):
+                return carry._validate_group2_partial_tool(
+                    request["tool"], source_value, ci_value
+                )
+
+        validate(source, ci)
+
+        for label, mutate in (
+            (
+                "missing independent",
+                lambda value: value["tool_review"].__setitem__(
+                    "content_b64",
+                    __import__("base64").b64encode(tool_raw).decode(),
+                ),
+            ),
+            (
+                "coverage mode",
+                lambda value: value["tool_review"]["entries"][0].__setitem__(
+                    "new_mode", "100755"
+                ),
+            ),
+        ):
+            changed = copy.deepcopy(source)
+            mutate(changed)
+            if label == "missing independent":
+                changed["tool_review"]["sha256"] = hashlib.sha256(
+                    __import__("base64").b64decode(
+                        changed["tool_review"]["content_b64"]
+                    )
+                ).hexdigest()
+            with self.subTest(label=label), self.assertRaises(
+                carry.CarryForwardError
+            ):
+                validate(changed, ci)
+        changed_ci = copy.deepcopy(ci)
+        changed_ci["raw"]["run"]["head_sha"] = "0" * 40
+        with self.assertRaises(carry.CarryForwardError):
+            validate(source, changed_ci)
+
+    def test_partial_finalize_requires_new_bound_approval(self):
+        raw_artifacts = {
+            name: carry.canonical_bytes({"name": name})
+            for name in carry.GROUP2_PARTIAL_FINALIZE_FILES
+        }
+        tool = {
+            "sha": "d" * 40,
+            "controller_files": {
+                name: hashlib.sha256(name.encode()).hexdigest()
+                for name in carry.GROUP2_CONTROLLER_FILES
+            },
+            "source_scope_digest": "1" * 64,
+            "review_report_sha256": hashlib.sha256(
+                raw_artifacts["source-review.json"]
+            ).hexdigest(),
+            "ci_evidence_sha256": hashlib.sha256(
+                raw_artifacts["ci.json"]
+            ).hexdigest(),
+        }
+        request = {
+            "schema": "group2-partial-finalize-request-v1",
+            "mode": carry.GROUP2_MODE,
+            "action": "finalize-observed-prior-software",
+            "incident_id": carry.GROUP2_PARTIAL_INCIDENT_ID,
+            "finalize_id": "f" * 32,
+            "repo": "owner/repo",
+            "pr": 161,
+            "original_request_digest": carry.GROUP2_PARTIAL_ORIGINAL_REQUEST_DIGEST,
+            "tool": tool,
+            "evidence_files": {
+                name: hashlib.sha256(raw).hexdigest()
+                for name, raw in raw_artifacts.items()
+            },
+        }
+        request["request_digest"] = carry.digest(request)
+        record = {
+            "schema": "group2-partial-finalize-user-record-v1",
+            "request_digest": request["request_digest"],
+            "tool_sha": tool["sha"],
+            "actions": carry.GROUP2_PARTIAL_FINALIZE_ACTIONS,
+            "presented_request": " ".join(
+                (
+                    request["incident_id"], request["finalize_id"],
+                    request["original_request_digest"], request["request_digest"],
+                    tool["sha"], *carry.GROUP2_PARTIAL_FINALIZE_ACTIONS,
+                    "historical raw unavailable outer_official_attempt",
+                )
+            ),
+            "user_reply": "approved exact finalize",
+        }
+        user_record = carry.canonical_bytes(record)
+        approval = {
+            "schema": "group2-partial-finalize-approval-v1",
+            "status": "USER_APPROVED",
+            "request_digest": request["request_digest"],
+            "tool_sha": tool["sha"],
+            "actions": carry.GROUP2_PARTIAL_FINALIZE_ACTIONS,
+            "user_reply": record["user_reply"],
+            "user_record_sha256": hashlib.sha256(user_record).hexdigest(),
+        }
+        original_context = {
+            "validated_original": {"request": {"repo": "owner/repo", "pr": 161}}
+        }
+        with (
+            mock.patch.object(
+                carry,
+                "_validate_group2_partial_originals",
+                return_value=original_context,
+            ),
+            mock.patch.object(carry, "_validate_group2_partial_tool"),
+        ):
+            validated = carry.validate_group2_partial_finalize_request(
+                request, approval, user_record, raw_artifacts
+            )
+            self.assertEqual(validated["request"], request)
+            empty_record = copy.deepcopy(record)
+            empty_record["user_reply"] = ""
+            empty_raw = carry.canonical_bytes(empty_record)
+            empty_approval = copy.deepcopy(approval)
+            empty_approval["user_reply"] = ""
+            empty_approval["user_record_sha256"] = hashlib.sha256(
+                empty_raw
+            ).hexdigest()
+            with self.assertRaises(carry.CarryForwardError):
+                carry.validate_group2_partial_finalize_request(
+                    request, empty_approval, empty_raw, raw_artifacts
+                )
+            for label, mutate in (
+                (
+                    "scope acceptance is not approval",
+                    lambda value: value.__setitem__("status", "SCOPE_ACCEPTED"),
+                ),
+                (
+                    "old approval schema",
+                    lambda value: value.__setitem__(
+                        "schema", "group2-starting-reconcile-approval-v1"
+                    ),
+                ),
+                (
+                    "wrong request",
+                    lambda value: value.__setitem__("request_digest", "0" * 64),
+                ),
+            ):
+                changed = copy.deepcopy(approval)
+                mutate(changed)
+                with self.subTest(label=label), self.assertRaises(
+                    carry.CarryForwardError
+                ):
+                    carry.validate_group2_partial_finalize_request(
+                        request, changed, user_record, raw_artifacts
+                    )
+
+    def test_partial_finalize_streaming_embedded_digest_binds_content(self):
+        raw = (b"partial-finalize-evidence\n" * 300000) + b"tail"
+        embedded = {
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "content_b64": __import__("base64").b64encode(raw).decode(),
+        }
+        carry._validate_embedded_digest(
+            embedded, embedded["sha256"], "partial_chain_invalid"
+        )
+        canonical_value = {
+            "embedded": embedded, "escaped": "line\n\"quoted\"雪",
+            "values": [None, True, False, 3, 1.5],
+        }
+        self.assertEqual(
+            carry.streaming_digest(canonical_value), carry.digest(canonical_value)
+        )
+        changed = copy.deepcopy(embedded)
+        changed["content_b64"] = changed["content_b64"][:-4] + "AAAA"
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "partial_chain_invalid"
+        ):
+            carry._validate_embedded_digest(
+                changed, embedded["sha256"], "partial_chain_invalid"
+            )
 
     def test_complete_reconcile_validators_bind_originals_stages_and_chain(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -6137,6 +6592,144 @@ class Group2StartingReconcileTests(unittest.TestCase):
                 for fragment in forbidden:
                     with self.subTest(fail_at=fail_at, fragment=fragment):
                         self.assertNotIn(fragment, flattened)
+
+    def test_partial_finalize_vm_orchestration_rejects_replay_after_ack_commit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            incident_id = carry.GROUP2_PARTIAL_INCIDENT_ID
+            finalize_id = "f" * 32
+            directory = root / "incidents" / incident_id / "finalize" / finalize_id
+            evidence_dir = directory / "evidence"
+            tool_dir = directory / "tool"
+            tool_dir.mkdir(parents=True, mode=0o700)
+            evidence_dir.mkdir(mode=0o700)
+            for parent in (root / "incidents", root / "incidents" / incident_id,
+                           root / "incidents" / incident_id / "finalize", directory):
+                parent.chmod(0o700)
+            tool_hashes = {}
+            for name in ("deploy.sh", "carry_forward.py"):
+                raw = ("tool-" + name).encode()
+                (tool_dir / name).write_bytes(raw)
+                tool_hashes[name] = hashlib.sha256(raw).hexdigest()
+            for name in carry.GROUP2_PARTIAL_FINALIZE_FILES:
+                (evidence_dir / name).write_text("{}")
+            request = {
+                "incident_id": incident_id, "finalize_id": finalize_id,
+                "request_digest": "b" * 64,
+                "tool": {"controller_files": tool_hashes},
+            }
+            approval = {"status": "USER_APPROVED"}
+            carry.write_private(directory / "request.json", request)
+            carry.write_private(directory / "approval.json", approval)
+            (directory / "USER-APPROVAL.txt").write_text("{}")
+            (directory / "USER-APPROVAL.txt").chmod(0o600)
+            carry.write_private(directory / "phase.json", {
+                "schema": "group2-partial-finalize-phase-v1",
+                "incident_id": incident_id, "finalize_id": finalize_id,
+                "phase": "prepared",
+            })
+            carry.write_private(root / "deployment.json", {})
+            original_phase = {
+                "schema": "group2-starting-reconcile-phase-v1",
+                "incident_id": incident_id, "phase": "restoring-apps",
+            }
+            carry.write_private(root / "incidents" / incident_id / "phase.json",
+                                original_phase)
+            carry.write_private(root / "transaction.json", {
+                "phase": "starting", "sha": carry.GROUP2_PARTIAL_FAILED_SHA,
+            })
+            (root / "current-sha").write_text(carry.GROUP2_FROM_SHA + "\n")
+            installed = {}
+            for name in ("deploy.sh", "carry_forward.py", "verify.py", "assets.py"):
+                raw = ("installed-" + name).encode()
+                (root / name).write_bytes(raw)
+                installed[name] = hashlib.sha256(raw).hexdigest()
+            containers = {
+                name: {"container_id": name, "status": "running"}
+                for name in ("postgres", "rabbitmq", "control", "worker", "web", "account-web")
+            }
+            current = {"containers": containers}
+            manifest = {
+                "account_entry": {"project": "example"},
+                "storage_identity": [
+                    {"service": "worker", "type": "volume", "source": "runtime",
+                     "destination": "/var/lib/dlr/runtime"},
+                    {"service": "worker", "type": "volume", "source": "journal",
+                     "destination": "/var/lib/dlr/journal"},
+                ],
+                "kernel_evidence": {"old_worker_authority": {}},
+                "review_scope": {"preservation_reference": {"snapshot": {}}},
+            }
+            prior_state = {"backup": "/old/backup", "carry_forward": {"manifest_id": "a" * 32}}
+            validated = {
+                "request": request, "approval": approval, "user_record": {},
+                "artifacts": {},
+                "context": {
+                    "originals": {"manifest": manifest},
+                    "diagnostic": {"stage": {"logs": {}}},
+                    "validated_original": {"artifacts": {
+                        "platform.json": {"postgres_format": {
+                            "prior_binary_version": "postgres 16.15",
+                            "current_server_version": "16.15",
+                            "data_pg_version": "16",
+                        }},
+                        "prior-success.json": {"host": {}, "vm": {}},
+                        "authority.json": {"snapshot": {"state": prior_state}},
+                    }},
+                },
+            }
+            host_authority = {
+                "host_files": {}, "host_installed": {},
+                "prior_success": {"host": {}, "vm": {}},
+            }
+            carry.write_private(directory / "host-authority.json", host_authority)
+            receipt = {"receipt_digest": "9" * 64}
+            carry.write_private(directory / "host-validated.json", {
+                "finalize_id": finalize_id,
+                "request_digest": request["request_digest"],
+                "result_digest": "8" * 64,
+                "receipt_digest": receipt["receipt_digest"],
+                "chain_digest": "7" * 64,
+            })
+            capture_calls = []
+
+            def capture(*args, **kwargs):
+                capture_calls.append((args, kwargs))
+                return current
+
+            def checked(arguments):
+                text = " ".join(arguments)
+                if "version_num" in text:
+                    return "0040_issue152_dispositions"
+                if "postgres --version" in text:
+                    return "postgres 16.15"
+                if "server_version" in text:
+                    return "16.15"
+                return "16"
+
+            with (
+                mock.patch.object(carry, "validate_group2_partial_finalize_request", return_value=validated),
+                mock.patch.object(carry, "_capture_reconcile_stage", side_effect=capture),
+                mock.patch.object(carry, "_checked_output", side_effect=checked),
+                mock.patch.object(carry, "_read_token_health", return_value={"status": 200, "database": True}),
+                mock.patch.object(carry, "validate_group2_partial_finalize_result", return_value=receipt),
+                mock.patch.object(carry, "_validate_group2_partial_finalize_preservation", return_value={}),
+                mock.patch.object(carry, "streaming_digest", return_value="7" * 64),
+                mock.patch.object(carry, "digest", return_value="8" * 64),
+                mock.patch.object(carry, "_inspect_container", side_effect=lambda _project, service: containers[service]),
+            ):
+                output = carry.finalize_group2_partial_vm(
+                    root, incident_id, finalize_id
+                )
+                self.assertEqual(output["receipt_digest"], receipt["receipt_digest"])
+                self.assertEqual(carry.read_private(root / "transaction.json")["operation"],
+                                 "incident_partial_finalize")
+                self.assertEqual(len(capture_calls), 1)
+                with self.assertRaisesRegex(
+                    carry.CarryForwardError, "replay_rejected"
+                ):
+                    carry.finalize_group2_partial_vm(root, incident_id, finalize_id)
+                self.assertEqual(len(capture_calls), 1)
 
 
 if __name__ == "__main__":

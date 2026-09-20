@@ -2,7 +2,20 @@
 # Trusted controller, executed only in the dedicated Colima VM.
 set -euo pipefail
 umask 077
-if [ "${1:-}" = reconcile-group2-starting ]; then
+if [ "${1:-}" = finalize-group2-partial ]; then
+  root=${2:?fixed root required}
+  incident_id=${3:?incident id required}
+  finalize_id=${4:?finalize id required}
+  [[ "$root" =~ ^/[a-zA-Z0-9_./-]+$ ]] && [[ "$root" != */ ]] && [[ "$root" != *".."* ]] || exit 2
+  [[ "$incident_id" =~ ^[0-9a-f]{32}$ ]] || exit 2
+  [[ "$finalize_id" =~ ^[0-9a-f]{32}$ ]] || exit 2
+  tool_root=$(cd "$(dirname "$0")" && pwd)
+  [ "$tool_root" = "$root/incidents/$incident_id/finalize/$finalize_id/tool" ] || exit 2
+  exec 9>"$root/deploy.lock"
+  flock -n 9 || exit 1
+  exec python3 "$tool_root/carry_forward.py" finalize-partial-vm \
+    --root "$root" --incident-id "$incident_id" --finalize-id "$finalize_id"
+elif [ "${1:-}" = reconcile-group2-starting ]; then
   root=${2:?fixed root required}
   incident_id=${3:?incident id required}
   [[ "$root" =~ ^/[a-zA-Z0-9_./-]+$ ]] && [[ "$root" != */ ]] && [[ "$root" != *".."* ]] || exit 2

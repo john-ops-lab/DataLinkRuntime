@@ -160,6 +160,18 @@ DLR_PREVIEW_HOME=<PRIVATE_CONTROLLER_ROOT> \
 
 恢复后的新保全报告保留现有 snapshot/reference shape，仅为本事故使用 `group2_starting_reconcile_v1` 来源及唯一 `group2-reconcile-chain-v1` 记录。验证器从原参考重算两个 startup 与完整保全链，唯一导出原 selection/DB、恢复后 files 及追加 request/receipt/chain 摘要的 lineage；fresh 值不能自行批准。独立 reviewer 签署后，才重新执行 trusted stage、新 scope、官方 install、fresh manifest 与正常 v4 部署；最终四应用、双入口及正式 probe 的原门禁全部保留。
 
+### 第二组部分恢复后的受限事后收尾
+
+本组存在一种已独立说明并经用户接受的历史证据例外：旧软件已经运行，但应用健康等待失败使原事故程序提前退出，部分停机进程扫描、阶段日志端点和精确启动窗口未持久化。当前健康或事后只读检查不能补回这些历史原件，也不能令原完整事故链成立。
+
+受限收尾使用单独的请求、结果和保全来源，明确记录保存原件、按精确执行路径推得的事实、不可恢复的缺口，以及当前完整原件。替代的 startup 时间窗来自实际外层命令记录，不能冒称原 compose 窗口。缺口条款、工具 SHA、独立审查、CI 和固定动作须取得新的精确批准，旧失败操作的批准不能重放。
+
+该入口只读核对当前全部数据、文件、日志、镜像、PG/schema、卷、Worker/keeper 与账号停止策略，不停止或启动服务，不迁移、还原数据库或运行业务探针。既有两处启动 mtime 规则和全部当前保全要求保持。原件与新受限结果先持久化、双端重算后才允许固定控制面对账；旧 state/current/成功原件不改，原失败记录不改，失败 manifest 只 abandoned，配置保持 paused，attention 最后清除。中断不自动续作。
+
+新的保全来源须由独立 reviewer 从原根、保存原件及受限结果重算并签署，不能改标普通 snapshot 或向旧完整链补造扫描。之后仍走正常 v4 重新规划部署、四应用及双入口验收；受限收尾不证明最终候选已部署。
+
+入口为 `finalize-group2-partial --finalize-request <REQUEST> --finalize-approval <APPROVAL>`，只接受本事故的新 `finalize_id` 和六件闭合证据。新的 `group2-partial-finalize-chain-v1` 必须经完整重算，保全报告使用 `group2_partial_finalize_v1` 来源；不能与旧事故链混用。同一事故已存在收尾记录时拒绝重放或另建一次。
+
 ## 安装或更新控制器
 
 当前安装器用于接管私有配置指定的既有环境，要求 macOS、Python 3.11+、`gh` 登录、Colima、已有 LaunchAgent、`source.git` 源码缓存、`config.json`、`state.json`、`preview.env`，以及 VM 内已准备好的 sandbox 脚本。它不负责首次创建 VM 或生成凭据，也不改变默认 Docker context。若 carry-forward plan 正在占用配置，安装器会先等待它结束再暂停更新；暂停后若 controller operation 仍忙，安装器保持 paused 并退出。取得操作与配置边界后，它才卸载 watcher；随后必须取得 watcher singleton，才会备份、替换文件或传输 VM 脚本。

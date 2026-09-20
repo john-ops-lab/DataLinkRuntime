@@ -13,6 +13,7 @@ import base64
 import ctypes
 import datetime as dt
 import decimal
+import gc
 import hashlib
 import hmac
 import ipaddress
@@ -153,6 +154,34 @@ GROUP2_RECONCILE_ACTIONS = [
     "restore-prior-software",
     "reconcile-control-plane",
 ]
+GROUP2_PARTIAL_INCIDENT_ID = "04deee8840a94841bc7d9bfc91b5e95c"
+GROUP2_PARTIAL_ORIGINAL_TOOL_SHA = "04f7a2476cdbd4cdddf7a7b810bd577490f44ce9"
+GROUP2_PARTIAL_ORIGINAL_REQUEST_DIGEST = (
+    "63f6ac4d2323ecea2d5345153b19862d4ab52c38df79058db00c396e8afe3635"
+)
+GROUP2_PARTIAL_FAILED_SHA = "42aab1cadec97394458b21b0e4521bb0f523e8c0"
+GROUP2_PARTIAL_NONCE = "a3a4b6c1c3ed4e8d8d80a4402396b678"
+GROUP2_PARTIAL_WORKER_ID = (
+    "3ddf3dc64baa04bf66ecbabe963288d669a294510f15616156c94bc910e4e417"
+)
+GROUP2_PARTIAL_FINALIZE_FILES = {
+    "original-incident.json", "partial-attempt.json", "diagnostic.json",
+    "scope-acceptance.json", "source-review.json", "ci.json",
+}
+GROUP2_PARTIAL_FINALIZE_ACTIONS = [
+    "partial-finalize-tool-stage",
+    "read-current-preservation",
+    "finalize-control-plane",
+]
+GROUP2_PARTIAL_FIXED_HASHES = {
+    "official_attempt": "b19732783fb607a2f49143eb109ab5ef552327f97a7113a6fddea5428b372d5c",
+    "phase": "00ca97f2dbdb192c6d2b5567d77785c57a017c806f460679ce9f3f18d583b17c",
+    "deploy_tail": "9c81b1df570bdd3ac02f54b2d9177262e649773905d06ef83f4258584150d18b",
+    "diagnostic_result": "0a90154b1d2cf82722dca4de17875ea60bd6e6a722b3ab02f9f298d2eaabfe34",
+    "diagnostic_vm_state": "16695dfe07ef001bfbef1665d27bdda0960615dc94d9f98f15ac6f84b6b98895",
+    "diagnostic_host_state": "5d96ca8172bc3c4d3a55e59d511c32b1c22bb984b65fc3f4818d32632b56cf32",
+    "decision_report": "7e8d1314e639525d21b51a6a6c2b49b9e3cd411cbfa184eb2f32dc8c6d3e5f47",
+}
 GROUP2_INHERITED_REVIEW_HASHES = {
     "group2-product-integration-recheck.md": "e5c457872b19af0994ce76e3a894e8ffbb2cbd7a11868236d5c4bb8bd2fe152f",
     "group2-ci-web-code-review.md": "aa4a861dc2784244921a79af25183e4600b6328b8ddff573dbb3f1425c24c43f",
@@ -650,6 +679,64 @@ def canonical_bytes(value: Any) -> bytes:
 
 def digest(value: Any) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def streaming_digest(value: Any) -> str:
+    """Hash canonical JSON incrementally for evidence objects with large raw inputs."""
+    output = hashlib.sha256()
+    for chunk in canonical_json_chunks(value):
+        output.update(chunk.encode("utf-8"))
+    return output.hexdigest()
+
+
+def canonical_json_chunks(value: Any):
+    """Yield canonical JSON without copying large safe ASCII strings."""
+    if value is None:
+        yield "null"
+    elif value is True:
+        yield "true"
+    elif value is False:
+        yield "false"
+    elif isinstance(value, int) and not isinstance(value, bool):
+        yield str(value)
+    elif isinstance(value, float):
+        if not math.isfinite(value):
+            raise CarryForwardError("noncanonical_value")
+        yield json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    elif isinstance(value, str):
+        if (
+            len(value) > 1024 * 1024
+            and value.isascii()
+            and '"' not in value
+            and "\\" not in value
+            and all(ord(character) >= 0x20 for character in value)
+        ):
+            yield '"'
+            for offset in range(0, len(value), 1024 * 1024):
+                yield value[offset:offset + 1024 * 1024]
+            yield '"'
+        else:
+            yield json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    elif isinstance(value, list):
+        yield "["
+        for index, item in enumerate(value):
+            if index:
+                yield ","
+            yield from canonical_json_chunks(item)
+        yield "]"
+    elif isinstance(value, dict) and all(
+        isinstance(key, str) for key in value
+    ):
+        yield "{"
+        for index, key in enumerate(sorted(value)):
+            if index:
+                yield ","
+            yield json.dumps(key, ensure_ascii=False, separators=(",", ":"))
+            yield ":"
+            yield from canonical_json_chunks(value[key])
+        yield "}"
+    else:
+        raise CarryForwardError("noncanonical_value")
 
 
 def _secure_file(path: Path, *, output: bool = False) -> None:
@@ -7835,6 +7922,28 @@ def _validate_embedded_bytes(value: Any, code: str) -> bytes:
     return raw
 
 
+def _validate_embedded_digest(value: Any, expected: str, code: str) -> None:
+    """Validate a large embedded byte string without retaining decoded bytes."""
+    value = _closed_object(value, {"sha256", "content_b64"}, code)
+    if value["sha256"] != expected or not isinstance(value["content_b64"], str):
+        raise CarryForwardError(code)
+    _digest_text(expected, code)
+    encoded = value["content_b64"]
+    if len(encoded) % 4:
+        raise CarryForwardError(code)
+    output = hashlib.sha256()
+    block = 4 * 1024 * 1024
+    try:
+        for offset in range(0, len(encoded), block):
+            chunk = encoded[offset:offset + block]
+            decoded = base64.b64decode(chunk, validate=True)
+            output.update(decoded)
+    except (TypeError, ValueError) as error:
+        raise CarryForwardError(code) from error
+    if output.hexdigest() != expected:
+        raise CarryForwardError(code)
+
+
 def _read_embedded_file(value: Any, code: str) -> bytes:
     if not isinstance(value, dict) or value.get("exists") is not True:
         raise CarryForwardError(code)
@@ -8281,6 +8390,773 @@ def validate_group2_reconcile_user_record(
     ):
         raise CarryForwardError("group2_reconcile_approval_record_invalid")
     return record
+
+
+def _partial_embedded_json(value: Any, code: str) -> tuple[Any, bytes]:
+    raw = _validate_embedded_bytes(value, code)
+    try:
+        return json.loads(raw), raw
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise CarryForwardError(code) from error
+
+
+def _validate_group2_partial_originals(artifacts: dict[str, Any]) -> dict[str, Any]:
+    """Validate the four frozen incident inputs without inventing missing history."""
+    code = "group2_partial_finalize_artifact_invalid"
+    original = _closed_object(
+        artifacts["original-incident.json"],
+        {"request", "approval", "user_record", "artifacts", "tool_source"}, code,
+    )
+    old_request, _ = _partial_embedded_json(original["request"], code)
+    old_approval, _ = _partial_embedded_json(original["approval"], code)
+    old_user_record = _validate_embedded_bytes(original["user_record"], code)
+    old_artifacts = _closed_object(
+        original["artifacts"], GROUP2_RECONCILE_EVIDENCE_FILES, code
+    )
+    old_raw = {
+        name: _validate_embedded_bytes(value, code)
+        for name, value in old_artifacts.items()
+    }
+    validated = validate_group2_reconcile_request(
+        old_request, old_approval, old_raw
+    )
+    validate_group2_reconcile_user_record(
+        old_request, old_approval, old_user_record
+    )
+    if (
+        old_request["incident_id"] != GROUP2_PARTIAL_INCIDENT_ID
+        or old_request["request_digest"] != GROUP2_PARTIAL_ORIGINAL_REQUEST_DIGEST
+        or old_request["tool"]["sha"] != GROUP2_PARTIAL_ORIGINAL_TOOL_SHA
+    ):
+        raise CarryForwardError(code)
+    tool_source = _closed_object(
+        original["tool_source"], {"deploy.sh", "carry_forward.py"}, code
+    )
+    for name, value in tool_source.items():
+        raw = _validate_embedded_bytes(value, code)
+        if hashlib.sha256(raw).hexdigest() != old_request["tool"][
+            "controller_files"
+        ][name]:
+            raise CarryForwardError(code)
+
+    partial = _closed_object(
+        artifacts["partial-attempt.json"],
+        {"official_attempt", "official_log", "phase", "deploy_tail", "historical"},
+        code,
+    )
+    for key in ("official_attempt", "phase", "deploy_tail"):
+        if partial[key].get("sha256") != GROUP2_PARTIAL_FIXED_HASHES[key]:
+            raise CarryForwardError(code)
+    attempt, _ = _partial_embedded_json(partial["official_attempt"], code)
+    official_log = _validate_embedded_bytes(partial["official_log"], code)
+    phase, _ = _partial_embedded_json(partial["phase"], code)
+    _validate_embedded_bytes(partial["deploy_tail"], code)
+    expected_stages = {
+        name: ["db.json", "files.json", "ids.json"]
+        for name in (
+            "preflight", "control-stopped", "apps-stopped", "restored-postgres"
+        )
+    }
+    if (
+        attempt
+        != {
+            **attempt,
+            "source_sha": GROUP2_PARTIAL_ORIGINAL_TOOL_SHA,
+            "request_digest": GROUP2_PARTIAL_ORIGINAL_REQUEST_DIGEST,
+            "incident_id": GROUP2_PARTIAL_INCIDENT_ID,
+            "exit_code": 1,
+        }
+        or attempt.get("log_sha256") != hashlib.sha256(official_log).hexdigest()
+        or phase.get("phase", {}).get("incident_id") != GROUP2_PARTIAL_INCIDENT_ID
+        or phase.get("phase", {}).get("phase") != "restoring-apps"
+        or phase.get("transaction", {}).get("phase") != "starting"
+        or phase.get("transaction", {}).get("sha") != GROUP2_PARTIAL_FAILED_SHA
+        or phase.get("result") is not False
+        or phase.get("stages") != expected_stages
+    ):
+        raise CarryForwardError(code)
+    historical_names = {
+        f"{stage}/{name}"
+        for stage in expected_stages
+        for name in ("ids.json", "db.json", "files.json")
+    }
+    historical = _closed_object(partial["historical"], historical_names, code)
+
+    diagnostic = _closed_object(
+        artifacts["diagnostic.json"], {"result", "vm_state", "host_state"}, code
+    )
+    for key, fixed in (
+        ("result", "diagnostic_result"),
+        ("vm_state", "diagnostic_vm_state"),
+        ("host_state", "diagnostic_host_state"),
+    ):
+        if diagnostic[key].get("sha256") != GROUP2_PARTIAL_FIXED_HASHES[fixed]:
+            raise CarryForwardError(code)
+    diagnostic_result, _ = _partial_embedded_json(diagnostic["result"], code)
+    diagnostic_vm_state, _ = _partial_embedded_json(diagnostic["vm_state"], code)
+    diagnostic_host_state, _ = _partial_embedded_json(
+        diagnostic["host_state"], code
+    )
+    originals = _group2_reconcile_originals(validated)
+    saved = diagnostic_result.get("historical_capture_bytes")
+    if not isinstance(saved, dict) or set(saved) != historical_names:
+        raise CarryForwardError(code)
+    for name, value in historical.items():
+        raw = _validate_embedded_bytes(value, code)
+        if value != saved[name]:
+            raise CarryForwardError(code)
+        parsed, _ = _reconcile_artifact_value(raw)
+        suffix = name.rsplit("/", 1)[1]
+        expected = (
+            originals["manifest"]["selection"]
+            if suffix == "ids.json"
+            else originals["db"]
+            if suffix == "db.json"
+            else originals["files_after_startup"]
+        )
+        if parsed != expected:
+            raise CarryForwardError(code)
+
+    scope = _closed_object(
+        artifacts["scope-acceptance.json"],
+        {"incident_id", "original_request_digest", "decision_report",
+         "presented_request", "user_reply"},
+        code,
+    )
+    if (
+        scope["incident_id"] != GROUP2_PARTIAL_INCIDENT_ID
+        or scope["original_request_digest"]
+        != GROUP2_PARTIAL_ORIGINAL_REQUEST_DIGEST
+        or scope["decision_report"].get("sha256")
+        != GROUP2_PARTIAL_FIXED_HASHES["decision_report"]
+        or not isinstance(scope["presented_request"], str)
+        or not scope["presented_request"].strip()
+        or scope["user_reply"] != "收尾吧"
+    ):
+        raise CarryForwardError(code)
+    _validate_embedded_bytes(scope["decision_report"], code)
+    return {
+        "validated_original": validated,
+        "originals": originals,
+        "attempt": attempt,
+        "phase": phase,
+        "diagnostic": diagnostic_result,
+        "diagnostic_vm_state": diagnostic_vm_state,
+        "diagnostic_host_state": diagnostic_host_state,
+    }
+
+
+def validate_group2_partial_finalize_inputs(artifacts: Any) -> dict[str, Any]:
+    """Validate the four frozen inputs available before final review and CI."""
+    names = {
+        "original-incident.json", "partial-attempt.json",
+        "diagnostic.json", "scope-acceptance.json",
+    }
+    if not isinstance(artifacts, dict) or set(artifacts) != names:
+        raise CarryForwardError("group2_partial_finalize_artifact_invalid")
+    parsed = {
+        name: _reconcile_artifact_value(value)[0]
+        for name, value in artifacts.items()
+    }
+    return _validate_group2_partial_originals(parsed)
+
+
+def _validate_group2_partial_tool(
+    tool: dict[str, Any], source: Any, ci: Any
+) -> None:
+    code = "group2_partial_finalize_tool_invalid"
+    source = _closed_object(
+        source,
+        {"schema", "status", "tool_sha", "source_scope", "controller_files",
+         "inherited_reviews", "tool_review"},
+        code,
+    )
+    if (
+        source["schema"] != "group2-reconcile-source-review-v1"
+        or source["status"] != "APPROVED"
+        or source["tool_sha"] != tool["sha"]
+        or source["controller_files"] != tool["controller_files"]
+        or digest(source["source_scope"]) != tool["source_scope_digest"]
+    ):
+        raise CarryForwardError(code)
+    validate_group2_source_diff(
+        source["source_scope"], {"final_source": source["source_scope"]}
+    )
+    inherited = source["inherited_reviews"]
+    if not isinstance(inherited, list) or {
+        item.get("name") for item in inherited if isinstance(item, dict)
+    } != set(GROUP2_INHERITED_REVIEW_HASHES):
+        raise CarryForwardError(code)
+    for item in inherited:
+        item = _closed_object(item, {"name", "sha256", "content_b64"}, code)
+        _validate_embedded_bytes(
+            {"sha256": item["sha256"], "content_b64": item["content_b64"]},
+            code,
+        )
+        if GROUP2_INHERITED_REVIEW_HASHES[item["name"]] != item["sha256"]:
+            raise CarryForwardError(code)
+    review = _closed_object(
+        source["tool_review"], {"sha256", "content_b64", "entries"}, code
+    )
+    review_raw = _validate_embedded_bytes(
+        {"sha256": review["sha256"], "content_b64": review["content_b64"]}, code
+    )
+    entries = [
+        item for item in source["source_scope"]["entries"]
+        if item.get("path") in GROUP2_CONTROLLER_PATHS
+    ]
+    if review["entries"] != entries or len(entries) != 10:
+        raise CarryForwardError(code)
+    records = _machine_json_records(review_raw)
+    expected_tool = {
+        "schema": "group2-reconcile-tool-review-v1",
+        "status": "APPROVED",
+        "head_sha": tool["sha"],
+        "source_scope_digest": tool["source_scope_digest"],
+        "controller_files": tool["controller_files"],
+        "entries": entries,
+    }
+    tool_matches = [
+        item for item in records
+        if item.get("schema") == "group2-reconcile-tool-review-v1"
+    ]
+    independent = [
+        item for item in records
+        if item.get("schema") == "group2-independent-review-v1"
+    ]
+    if tool_matches != [expected_tool] or len(independent) != 1:
+        raise CarryForwardError(code)
+    independent_record = _closed_object(
+        independent[0],
+        {"schema", "status", "reviewed_commit", "source_kind", "coverage",
+         "blocking_findings"}, code,
+    )
+    coverage = independent_record["coverage"]
+    if (
+        independent_record["status"] != "APPROVED"
+        or independent_record["reviewed_commit"] != tool["sha"]
+        or independent_record["source_kind"] != "git_commit"
+        or independent_record["blocking_findings"] != []
+        or not isinstance(coverage, list)
+        or len(coverage) != 10
+    ):
+        raise CarryForwardError(code)
+    coverage_by_path = {}
+    for item in coverage:
+        item = _closed_object(
+            item, {"path", "mode", "blob_oid", "sha256"}, code
+        )
+        if item["path"] in coverage_by_path:
+            raise CarryForwardError(code)
+        _digest_text(item["sha256"], code)
+        coverage_by_path[item["path"]] = item
+    if any(
+        coverage_by_path.get(item["path"])
+        != {
+            "path": item["path"], "mode": item["new_mode"],
+            "blob_oid": item["new_oid"],
+            "sha256": coverage_by_path.get(item["path"], {}).get("sha256"),
+        }
+        for item in entries
+    ):
+        raise CarryForwardError(code)
+
+    ci = _closed_object(ci, {"schema", "binding", "raw"}, code)
+    run = ci.get("raw", {}).get("run") if isinstance(ci.get("raw"), dict) else None
+    jobs_value = ci.get("raw", {}).get("jobs") if isinstance(ci.get("raw"), dict) else None
+    jobs = jobs_value.get("jobs") if isinstance(jobs_value, dict) else None
+    if (
+        ci["schema"] != "group2-reconcile-ci-v1"
+        or not isinstance(run, dict)
+        or not isinstance(jobs, list)
+        or jobs_value.get("total_count") != len(jobs)
+    ):
+        raise CarryForwardError(code)
+    normalized = sorted(
+        ({key: job.get(key) for key in ("name", "id", "conclusion")} for job in jobs),
+        key=lambda item: (item["name"], item["id"]),
+    )
+    binding = {
+        "head_sha": run.get("head_sha"), "run_id": run.get("id"),
+        "run_attempt": run.get("run_attempt"), "workflow_path": run.get("path"),
+        "event": run.get("event"), "jobs": normalized,
+    }
+    if (
+        ci["binding"] != binding
+        or binding["head_sha"] != tool["sha"]
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "success"
+        or any(
+            job.get("status") != "completed"
+            or job.get("run_id") != run.get("id")
+            or job.get("run_attempt") != run.get("run_attempt")
+            or job.get("head_sha") != run.get("head_sha")
+            or job.get("conclusion") != "success"
+            for job in jobs
+        )
+        or any(sum(job["name"] == name for job in normalized) != 1
+               for name in ("backend", "web", "local-preview", "compose-smoke"))
+    ):
+        raise CarryForwardError(code)
+
+
+def validate_group2_partial_finalize_request(
+    request: Any, approval: Any, user_record: bytes, artifacts: Any
+) -> dict[str, Any]:
+    code = "group2_partial_finalize_request_invalid"
+    request = _closed_object(
+        request,
+        {"schema", "mode", "action", "incident_id", "finalize_id", "repo", "pr",
+         "original_request_digest", "tool", "evidence_files", "request_digest"},
+        code,
+    )
+    if (
+        request["schema"] != "group2-partial-finalize-request-v1"
+        or request["mode"] != GROUP2_MODE
+        or request["action"] != "finalize-observed-prior-software"
+        or request["incident_id"] != GROUP2_PARTIAL_INCIDENT_ID
+        or MANIFEST_ID.fullmatch(str(request["finalize_id"])) is None
+        or not isinstance(request["repo"], str)
+        or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", request["repo"])
+        is None
+        or request["original_request_digest"]
+        != GROUP2_PARTIAL_ORIGINAL_REQUEST_DIGEST
+        or request["request_digest"]
+        != digest({key: value for key, value in request.items() if key != "request_digest"})
+    ):
+        raise CarryForwardError(code)
+    _positive(request["pr"], code)
+    tool = _closed_object(
+        request["tool"],
+        {"sha", "controller_files", "source_scope_digest", "review_report_sha256",
+         "ci_evidence_sha256"}, code,
+    )
+    if (
+        tool["sha"] in {GROUP2_PARTIAL_ORIGINAL_TOOL_SHA, GROUP2_PARTIAL_FAILED_SHA}
+        or set(tool["controller_files"]) != GROUP2_CONTROLLER_FILES
+    ):
+        raise CarryForwardError(code)
+    _sha_text(tool["sha"], code)
+    for value in (*tool["controller_files"].values(), tool["source_scope_digest"],
+                  tool["review_report_sha256"], tool["ci_evidence_sha256"]):
+        _digest_text(value, code)
+    evidence_files = _closed_object(
+        request["evidence_files"], GROUP2_PARTIAL_FINALIZE_FILES, code
+    )
+    if not isinstance(artifacts, dict) or set(artifacts) != GROUP2_PARTIAL_FINALIZE_FILES:
+        raise CarryForwardError(code)
+    parsed = {}
+    for name, value in artifacts.items():
+        parsed[name], actual = _reconcile_artifact_value(value)
+        if evidence_files[name] != actual:
+            raise CarryForwardError("group2_partial_finalize_artifact_invalid")
+    context = _validate_group2_partial_originals(parsed)
+    old_request = context["validated_original"]["request"]
+    if request["repo"] != old_request["repo"] or request["pr"] != old_request["pr"]:
+        raise CarryForwardError(code)
+    if (
+        evidence_files["source-review.json"] != tool["review_report_sha256"]
+        or evidence_files["ci.json"] != tool["ci_evidence_sha256"]
+    ):
+        raise CarryForwardError(code)
+    _validate_group2_partial_tool(
+        tool, parsed["source-review.json"], parsed["ci.json"]
+    )
+    approval = _closed_object(
+        approval,
+        {"schema", "status", "request_digest", "tool_sha", "actions", "user_reply",
+         "user_record_sha256"}, code,
+    )
+    if not isinstance(user_record, bytes):
+        raise CarryForwardError(code)
+    try:
+        text = user_record.decode()
+        record, end = json.JSONDecoder().raw_decode(text)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise CarryForwardError(code) from error
+    record = _closed_object(
+        record,
+        {"schema", "request_digest", "tool_sha", "actions", "presented_request",
+         "user_reply"}, code,
+    )
+    presented = record["presented_request"]
+    if (
+        text[end:] not in {"", "\n"}
+        or approval["schema"] != "group2-partial-finalize-approval-v1"
+        or approval["status"] != "USER_APPROVED"
+        or approval["request_digest"] != request["request_digest"]
+        or approval["tool_sha"] != tool["sha"]
+        or approval["actions"] != GROUP2_PARTIAL_FINALIZE_ACTIONS
+        or approval["user_record_sha256"] != hashlib.sha256(user_record).hexdigest()
+        or record["schema"] != "group2-partial-finalize-user-record-v1"
+        or any(record[key] != approval[key] for key in ("request_digest", "tool_sha", "actions", "user_reply"))
+        or not isinstance(approval["user_reply"], str)
+        or not approval["user_reply"].strip()
+        or not isinstance(presented, str)
+        or any(value not in presented for value in (
+            request["incident_id"], request["finalize_id"],
+            request["original_request_digest"], request["request_digest"], tool["sha"],
+            *GROUP2_PARTIAL_FINALIZE_ACTIONS,
+            "historical", "outer_official_attempt",
+        ))
+    ):
+        raise CarryForwardError(code)
+    return {"request": request, "approval": approval, "user_record": record,
+            "artifacts": parsed, "context": context}
+
+
+def group2_partial_finalize_original_reference(chain: Any) -> dict[str, Any]:
+    code = "group2_partial_finalize_chain_invalid"
+    if not isinstance(chain, dict):
+        raise CarryForwardError(code)
+    sources = _closed_object(
+        chain.get("source_artifacts"), GROUP2_PARTIAL_FINALIZE_FILES, code
+    )
+    original_raw = _validate_embedded_bytes(sources["original-incident.json"], code)
+    try:
+        original = json.loads(original_raw)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise CarryForwardError(code) from error
+    original = _closed_object(
+        original,
+        {"request", "approval", "user_record", "artifacts", "tool_source"}, code,
+    )
+    old_sources = _closed_object(
+        original["artifacts"], GROUP2_RECONCILE_EVIDENCE_FILES, code
+    )
+    failed_raw = _validate_embedded_bytes(old_sources["failed-manifest.json"], code)
+    try:
+        failed = validate_manifest(json.loads(failed_raw))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise CarryForwardError(code) from error
+    return failed["review_scope"]["preservation_reference"]
+
+
+def _utc_text_ns(value: Any) -> int:
+    if not isinstance(value, str):
+        raise CarryForwardError("group2_partial_finalize_history_invalid")
+    match = re.fullmatch(
+        r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?\+00:00", value
+    )
+    if match is None:
+        raise CarryForwardError("group2_partial_finalize_history_invalid")
+    timestamp = dt.datetime.fromisoformat(match.group(1) + "+00:00")
+    seconds = int((timestamp - dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)).total_seconds())
+    return seconds * 1_000_000_000 + int((match.group(2) or "").ljust(9, "0"))
+
+
+def _group2_partial_history(validated: dict[str, Any]) -> dict[str, Any]:
+    context = validated["context"]
+    originals = context["originals"]
+    manifest = originals["manifest"]
+    diagnostic = context["diagnostic"]
+    stage = _validate_reconcile_stage(diagnostic.get("stage"))
+    attempt = context["attempt"]
+    startup_request = {
+        "mode": GROUP2_MODE,
+        "operation": "startup-proof",
+        "profile": manifest["account_entry"],
+        "logs_before": originals["logs_after_startup"],
+        "logs_after": stage["logs"],
+        "container_before": originals["first_startup"]["request"]["container_after"],
+        "container_after": stage["containers"]["worker"],
+        "window_start_ns": _utc_text_ns(attempt["started_at"]),
+        "window_end_ns": _utc_text_ns(attempt["finished_at"]),
+    }
+    proof = _incident_startup_proof(startup_request)
+    if (
+        proof.get("nonce") != GROUP2_PARTIAL_NONCE
+        or proof.get("container_id")
+        != GROUP2_PARTIAL_WORKER_ID
+        or stage["db"] != originals["db"]
+        or stage["containers"]["worker"].get("restart_count") != 0
+        or stage["storage"] != manifest["storage_identity"]
+    ):
+        raise CarryForwardError("group2_partial_finalize_history_invalid")
+    for service in ("postgres", "control", "worker", "web"):
+        matches = [
+            image for tag, image in manifest["old_image_ids"].items()
+            if tag.endswith(f"-{service}:{GROUP2_FROM_SHA}")
+        ]
+        container = stage["containers"][service]
+        if (
+            matches != [container.get("image_id")]
+            or container.get("status") != "running"
+            or container.get("health") != "healthy"
+            or container.get("restart_count") != 0
+        ):
+            raise CarryForwardError("group2_partial_finalize_history_invalid")
+        if service in {"control", "worker", "web"} and not _container_matches_profile(
+            container, manifest["account_entry"]["old_profiles"][service],
+            manifest["account_entry"]["project"], service,
+        ):
+            raise CarryForwardError("group2_partial_finalize_history_invalid")
+    rabbit = stage["containers"]["rabbitmq"]
+    account = stage["containers"]["account-web"]
+    if (
+        rabbit.get("status") != "running"
+        or rabbit.get("health") != "healthy"
+        or rabbit.get("restart_count") != 0
+        or account.get("status") == "running"
+    ):
+        raise CarryForwardError("group2_partial_finalize_history_invalid")
+    startup_files = compare_group2_startup_files(
+        originals["files_after_startup"], stage["files"], proof
+    )
+    _validate_log_link(originals["logs_after_startup"], stage["logs"])
+    _validate_reconcile_log_activity(stage["logs"], allow_registration=True)
+    original_kernel = context["validated_original"]["artifacts"]["authority.json"][
+        "vm_inventory"
+    ]["current_kernel"]
+    _validate_restored_running_kernel(
+        original_kernel, stage["kernel"], proof,
+        stage["containers"]["worker"], manifest["account_entry"],
+    )
+    return {"stage": stage, "proof": proof, "startup_files": startup_files,
+            "original_kernel": original_kernel}
+
+
+def validate_group2_partial_finalize_result(
+    validated: Any, evidence: Any
+) -> dict[str, Any]:
+    code = "group2_partial_finalize_result_invalid"
+    validated = _closed_object(
+        validated, {"request", "approval", "user_record", "artifacts", "context"}, code
+    )
+    evidence = _closed_object(
+        evidence, {"current", "authority", "postgres", "token_health"}, code
+    )
+    history = _group2_partial_history(validated)
+    previous = history["stage"]
+    current = _validate_reconcile_stage(evidence["current"])
+    validate_group2_reconcile_transition(
+        previous, current,
+        kernel_baseline=previous["kernel"], require_idle=False,
+    )
+    if (
+        current["containers"] != previous["containers"]
+        or current["db"] != validated["context"]["originals"]["db"]
+        or current["files"] != previous["files"]
+    ):
+        raise CarryForwardError("group2_partial_finalize_current_changed")
+    _validate_restored_running_kernel(
+        history["original_kernel"], current["kernel"], history["proof"],
+        current["containers"]["worker"],
+        validated["context"]["originals"]["manifest"]["account_entry"],
+    )
+    for service in ("postgres", "rabbitmq", "control", "worker", "web"):
+        item = current["containers"][service]
+        if (
+            item.get("status") != "running"
+            or item.get("health") != "healthy"
+            or item.get("restart_count") != 0
+        ):
+            raise CarryForwardError("group2_partial_finalize_current_changed")
+    account = current["containers"]["account-web"]
+    if account.get("status") == "running" or account != previous["containers"]["account-web"]:
+        raise CarryForwardError("group2_partial_finalize_current_changed")
+    platform = validated["context"]["validated_original"]["artifacts"]["platform.json"]
+    postgres_format = platform["postgres_format"]
+    if evidence["postgres"] != {
+        "schema": "0040_issue152_dispositions",
+        "binary_version": postgres_format["prior_binary_version"],
+        "server_version": postgres_format["current_server_version"],
+        "data_pg_version": postgres_format["data_pg_version"],
+    } or evidence["token_health"] != {"status": 200, "database": True}:
+        raise CarryForwardError("group2_partial_finalize_health_changed")
+    authority = _closed_object(
+        evidence["authority"],
+        {"host_files", "host_installed", "vm_files", "vm_installed", "prior_success"},
+        code,
+    )
+    if (
+        set(authority["host_files"]) != {"config.json", "state.json", "attention.json"}
+        or set(authority["host_installed"]) != GROUP2_CONTROLLER_FILES
+        or set(authority["vm_files"]) != {"transaction.json", "current-sha", "phase.json"}
+        or set(authority["vm_installed"]) != {"deploy.sh", "carry_forward.py", "verify.py", "assets.py"}
+        or set(authority["prior_success"]) != {"host", "vm"}
+    ):
+        raise CarryForwardError(code)
+    host_values = {
+        name: _partial_embedded_json(value, code)[0]
+        for name, value in authority["host_files"].items()
+    }
+    transaction, _ = _partial_embedded_json(authority["vm_files"]["transaction.json"], code)
+    phase, _ = _partial_embedded_json(authority["vm_files"]["phase.json"], code)
+    current_sha = _validate_embedded_bytes(authority["vm_files"]["current-sha"], code).decode().strip()
+    if (
+        transaction.get("phase") != "starting"
+        or transaction.get("sha") != GROUP2_PARTIAL_FAILED_SHA
+        or phase != validated["context"]["phase"]["phase"]
+        or current_sha != GROUP2_FROM_SHA
+    ):
+        raise CarryForwardError("group2_partial_finalize_authority_changed")
+    old_artifacts = validated["context"]["validated_original"]["artifacts"]
+    old_request = validated["context"]["validated_original"]["request"]
+    old_authority = old_artifacts["authority.json"]["snapshot"]
+    diagnostic_host = validated["context"]["diagnostic_host_state"]
+    diagnostic_vm = validated["context"]["diagnostic_vm_state"]
+    config = host_values["config.json"]
+    if (
+        config.get("enabled") is not False
+        or config.get("repo") != old_request["repo"]
+        or config.get("pr") != old_request["pr"]
+        or config.get("carry_forward") != old_authority["carry_reference"]
+        or host_values["state.json"] != old_authority["state"]
+        or host_values["attention.json"] != old_authority["attention"]
+        or authority["host_files"]["state.json"]["sha256"]
+        != diagnostic_host.get("state_sha256")
+        or authority["host_files"]["attention.json"]["sha256"]
+        != diagnostic_host.get("attention_sha256")
+        or authority["host_installed"] != diagnostic_host.get("installed")
+        or authority["vm_installed"] != diagnostic_vm.get("installed")
+        or diagnostic_vm.get("current_sha") != GROUP2_FROM_SHA
+    ):
+        raise CarryForwardError("group2_partial_finalize_authority_changed")
+    expected_vm_installed = _reconcile_vm_installed_files(old_artifacts["authority.json"])
+    if authority["vm_installed"] != expected_vm_installed:
+        raise CarryForwardError("group2_partial_finalize_authority_changed")
+    prior = old_artifacts["prior-success.json"]
+    expected_prior = {}
+    for side in ("host", "vm"):
+        expected_prior[side] = {
+            name: (
+                {"exists": False}
+                if value == {"exists": False}
+                else {"exists": True, "sha256": value.get("sha256")}
+            )
+            for name, value in prior[side].items()
+        }
+    if authority["prior_success"] != expected_prior:
+        raise CarryForwardError("group2_partial_finalize_authority_changed")
+    request = validated["request"]
+    basis = {
+        "history": "source_phase_and_saved_db_files",
+        "startup_window": "outer_official_attempt",
+        "before_worker": "saved_first_startup_container",
+        "unavailable": [
+            "historical_stage_logs", "historical_stage_kernel",
+            "historical_stage_containers", "historical_stage_storage",
+            "historical_stage_windows", "original_compose_startup_window",
+        ],
+    }
+    receipt = {
+        "schema": "group2-partial-finalize-receipt-v1",
+        "result": "finalized_observed_prior_software",
+        "incident_id": request["incident_id"], "finalize_id": request["finalize_id"],
+        "original_request_digest": request["original_request_digest"],
+        "request_digest": request["request_digest"], "tool_sha": request["tool"]["sha"],
+        "failed_sha": GROUP2_PARTIAL_FAILED_SHA, "restored_sha": GROUP2_FROM_SHA,
+        "basis": basis, "startup_proof": history["proof"],
+        "startup_files": history["startup_files"],
+        "evidence_digest": digest(evidence),
+    }
+    receipt["receipt_digest"] = digest(receipt)
+    return receipt
+
+
+def validate_group2_partial_finalize_preservation(
+    chain: Any, original_reference: Any
+) -> dict[str, Any]:
+    return _validate_group2_partial_finalize_preservation(
+        chain, original_reference, None
+    )
+
+
+def _validate_group2_partial_finalize_preservation(
+    chain: Any, original_reference: Any, validated: Any
+) -> dict[str, Any]:
+    code = "group2_partial_finalize_chain_invalid"
+    chain = _closed_object(
+        chain,
+        {"schema", "request", "approval", "user_record", "source_artifacts", "result"},
+        code,
+    )
+    if chain["schema"] != "group2-partial-finalize-chain-v1":
+        raise CarryForwardError(code)
+    source_artifacts = _closed_object(
+        chain["source_artifacts"], GROUP2_PARTIAL_FINALIZE_FILES, code
+    )
+    user_record = _validate_embedded_bytes(chain["user_record"], code)
+    if validated is None:
+        raw_artifacts = {
+            name: _validate_embedded_bytes(value, code)
+            for name, value in source_artifacts.items()
+        }
+        validated = validate_group2_partial_finalize_request(
+            chain["request"], chain["approval"], user_record, raw_artifacts
+        )
+    else:
+        validated = _closed_object(
+            validated,
+            {"request", "approval", "user_record", "artifacts", "context"},
+            code,
+        )
+        try:
+            parsed_user_record = json.loads(user_record)
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise CarryForwardError(code) from error
+        if (
+            chain["request"] != validated["request"]
+            or chain["approval"] != validated["approval"]
+            or parsed_user_record != validated["user_record"]
+            or hashlib.sha256(user_record).hexdigest()
+            != validated["approval"]["user_record_sha256"]
+        ):
+            raise CarryForwardError(code)
+        for name, value in source_artifacts.items():
+            _validate_embedded_digest(
+                value, validated["request"]["evidence_files"][name], code
+            )
+    result = _closed_object(
+        chain["result"], {"schema", "evidence", "receipt"}, code
+    )
+    if result["schema"] != "group2-partial-finalize-result-v1":
+        raise CarryForwardError(code)
+    receipt = validate_group2_partial_finalize_result(
+        validated, result["evidence"]
+    )
+    reference = validated["context"]["originals"]["manifest"]["review_scope"][
+        "preservation_reference"
+    ]
+    if original_reference != reference or result["receipt"] != receipt:
+        raise CarryForwardError(code)
+    original = reference["snapshot"]
+    request = validated["request"]
+    chain_digest = streaming_digest(chain)
+    return {
+        "selection": original["selection"],
+        "db": original["db"],
+        "files": result["evidence"]["current"]["files"],
+        "lineage": [
+            *original["lineage"],
+            {
+                "name": f"incident/{request['incident_id']}/partial-attempt",
+                "sha256": request["evidence_files"]["partial-attempt.json"],
+            },
+            {
+                "name": (
+                    f"incident/{request['incident_id']}/finalize/"
+                    f"{request['finalize_id']}/request"
+                ),
+                "sha256": request["request_digest"],
+            },
+            {
+                "name": (
+                    f"incident/{request['incident_id']}/finalize/"
+                    f"{request['finalize_id']}/receipt"
+                ),
+                "sha256": receipt["receipt_digest"],
+            },
+            {
+                "name": (
+                    f"incident/{request['incident_id']}/finalize/"
+                    f"{request['finalize_id']}/chain"
+                ),
+                "sha256": chain_digest,
+            },
+        ],
+    }
 
 
 def validate_group2_reconcile_request(
@@ -8776,7 +9652,14 @@ def _validate_restored_running_kernel(
             authority.get(key) != worker.get(key)
             for key in ("container_id", "image_id", "started_at")
         )
-        or authority.get("labels") != worker.get("labels")
+        or authority.get("labels")
+        != {
+            key: worker.get("labels", {}).get(key)
+            for key in (
+                "com.docker.compose.project",
+                "com.docker.compose.service",
+            )
+        }
         or authority.get("runtime_config") != original_authority.get("runtime_config")
         or authority.get("volumes") != original_authority.get("volumes")
         or authority.get("parent_device") != original_authority.get("parent_device")
@@ -9599,8 +10482,269 @@ def reconcile_group2_vm(root: Path, incident_id: str) -> dict[str, Any]:
     return {"code": "group2_reconcile_vm_ok", "receipt_digest": receipt["receipt_digest"]}
 
 
+def _embedded_file_value(path: Path) -> dict[str, str]:
+    raw = path.read_bytes()
+    return {
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "content_b64": base64.b64encode(raw).decode("ascii"),
+    }
+
+
+def finalize_group2_partial_vm(
+    root: Path, incident_id: str, finalize_id: str
+) -> dict[str, Any]:
+    root = root.resolve(strict=True)
+    directory = (
+        root / "incidents" / incident_id / "finalize" / finalize_id
+    ).resolve(strict=True)
+    if directory.parent != root / "incidents" / incident_id / "finalize":
+        raise CarryForwardError("group2_partial_finalize_replay_rejected")
+    request = read_private(directory / "request.json")
+    approval = read_private(directory / "approval.json")
+    user_record = (directory / "USER-APPROVAL.txt").read_bytes()
+    artifacts = {
+        name: (directory / "evidence" / name).read_bytes()
+        for name in GROUP2_PARTIAL_FINALIZE_FILES
+    }
+    validated = validate_group2_partial_finalize_request(
+        request, approval, user_record, artifacts
+    )
+    if (
+        incident_id != GROUP2_PARTIAL_INCIDENT_ID
+        or finalize_id != request["finalize_id"]
+        or read_private(directory / "phase.json")
+        != {
+            "schema": "group2-partial-finalize-phase-v1",
+            "incident_id": incident_id,
+            "finalize_id": finalize_id,
+            "phase": "prepared",
+        }
+    ):
+        raise CarryForwardError("group2_partial_finalize_replay_rejected")
+    _atomic_incident_json(
+        directory / "phase.json",
+        {
+            "schema": "group2-partial-finalize-phase-v1",
+            "incident_id": incident_id,
+            "finalize_id": finalize_id,
+            "phase": "collecting",
+        },
+    )
+    tool_directory = directory / "tool"
+    if {item.name for item in tool_directory.iterdir()} != {
+        "deploy.sh", "carry_forward.py"
+    }:
+        raise CarryForwardError("group2_partial_finalize_tool_changed")
+    for name in ("deploy.sh", "carry_forward.py"):
+        info = (tool_directory / name).lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or hashlib.sha256((tool_directory / name).read_bytes()).hexdigest()
+            != request["tool"]["controller_files"][name]
+        ):
+            raise CarryForwardError("group2_partial_finalize_tool_changed")
+    manifest = validated["context"]["originals"]["manifest"]
+    diagnostic = validated["context"]["diagnostic"]["stage"]
+    project = manifest["account_entry"]["project"]
+    volumes = [
+        item for item in manifest["storage_identity"] if item["type"] == "volume"
+    ]
+    runtime_volume = next(
+        item["source"] for item in volumes
+        if item["service"] == "worker"
+        and item["destination"] == "/var/lib/dlr/runtime"
+    )
+    journal_volume = next(
+        item["source"] for item in volumes
+        if item["service"] == "worker"
+        and item["destination"] == "/var/lib/dlr/journal"
+    )
+    current = _capture_reconcile_stage(
+        root, directory, "current-capture", manifest, project,
+        diagnostic["logs"], read_private(root / "deployment.json"),
+        require_idle=False,
+        baseline_authority=validated["context"]["originals"]["manifest"]
+        ["kernel_evidence"]["old_worker_authority"],
+        runtime_volume=runtime_volume, journal_volume=journal_volume,
+    )
+    _atomic_incident_json(directory / "current.json", current)
+    postgres_format = validated["context"]["validated_original"]["artifacts"][
+        "platform.json"
+    ]["postgres_format"]
+    postgres = {
+        "schema": _checked_output([
+            "docker", "exec", f"{project}-postgres-1", "psql", "-U", "dlr",
+            "-d", "dlr", "-Atc", "SELECT version_num FROM alembic_version",
+        ]),
+        "binary_version": _checked_output([
+            "docker", "exec", f"{project}-postgres-1", "postgres", "--version",
+        ]),
+        "server_version": _checked_output([
+            "docker", "exec", f"{project}-postgres-1", "psql", "-U", "dlr",
+            "-d", "dlr", "-Atc", "SHOW server_version",
+        ]),
+        "data_pg_version": _checked_output([
+            "docker", "exec", f"{project}-postgres-1", "cat",
+            "/var/lib/postgresql/data/PG_VERSION",
+        ]),
+    }
+    if postgres != {
+        "schema": "0040_issue152_dispositions",
+        "binary_version": postgres_format["prior_binary_version"],
+        "server_version": postgres_format["current_server_version"],
+        "data_pg_version": postgres_format["data_pg_version"],
+    }:
+        raise CarryForwardError("group2_partial_finalize_health_changed")
+    host_authority = read_private(directory / "host-authority.json")
+    prior = validated["context"]["validated_original"]["artifacts"][
+        "prior-success.json"
+    ]
+    vm_prior = {}
+    for relative, expected in prior["vm"].items():
+        path = root / relative
+        exists = path.is_file() and not path.is_symlink()
+        actual = (
+            {"exists": True, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            if exists else {"exists": False}
+        )
+        expected_small = (
+            {"exists": True, "sha256": expected.get("sha256")}
+            if expected.get("exists") is True else {"exists": False}
+        )
+        if actual != expected_small:
+            raise CarryForwardError("group2_partial_finalize_authority_changed")
+        vm_prior[relative] = actual
+    authority = {
+        **host_authority,
+        "prior_success": {**host_authority["prior_success"], "vm": vm_prior},
+        "vm_files": {
+            "transaction.json": _embedded_file_value(root / "transaction.json"),
+            "current-sha": _embedded_file_value(root / "current-sha"),
+            "phase.json": _embedded_file_value(
+                root / "incidents" / incident_id / "phase.json"
+            ),
+        },
+        "vm_installed": {
+            name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+            for name in ("deploy.sh", "carry_forward.py", "verify.py", "assets.py")
+        },
+    }
+    evidence = {
+        "current": current,
+        "authority": authority,
+        "postgres": postgres,
+        "token_health": _read_token_health(root, manifest["account_entry"]),
+    }
+    receipt = validate_group2_partial_finalize_result(validated, evidence)
+    result = {
+        "schema": "group2-partial-finalize-result-v1",
+        "evidence": evidence,
+        "receipt": receipt,
+    }
+    _atomic_incident_json(directory / "result.json", result)
+    _atomic_incident_json(directory / "receipt.json", receipt)
+    deadline = time.monotonic() + 300
+    while not (directory / "host-validated.json").exists():
+        if time.monotonic() >= deadline:
+            raise CarryForwardError("group2_partial_finalize_host_timeout")
+        time.sleep(0.25)
+    acknowledgement = read_private(directory / "host-validated.json")
+    source_artifacts = {}
+    for name in sorted(tuple(artifacts)):
+        raw = artifacts.pop(name)
+        source_artifacts[name] = {
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "content_b64": base64.b64encode(raw).decode("ascii"),
+        }
+    gc.collect()
+    chain = {
+        "schema": "group2-partial-finalize-chain-v1",
+        "request": request,
+        "approval": approval,
+        "user_record": {
+            "sha256": hashlib.sha256(user_record).hexdigest(),
+            "content_b64": base64.b64encode(user_record).decode("ascii"),
+        },
+        "source_artifacts": source_artifacts,
+        "result": result,
+    }
+    _validate_group2_partial_finalize_preservation(
+        chain, manifest["review_scope"]["preservation_reference"], validated
+    )
+    expected_acknowledgement = {
+        "finalize_id": finalize_id,
+        "request_digest": request["request_digest"],
+        "result_digest": digest(result),
+        "receipt_digest": receipt["receipt_digest"],
+        "chain_digest": streaming_digest(chain),
+    }
+    if acknowledgement != expected_acknowledgement:
+        raise CarryForwardError("group2_partial_finalize_host_invalid")
+    current_vm_files = {
+        "transaction.json": _embedded_file_value(root / "transaction.json"),
+        "current-sha": _embedded_file_value(root / "current-sha"),
+        "phase.json": _embedded_file_value(
+            root / "incidents" / incident_id / "phase.json"
+        ),
+    }
+    current_vm_installed = {
+        name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+        for name in ("deploy.sh", "carry_forward.py", "verify.py", "assets.py")
+    }
+    current_vm_prior = {}
+    for relative in prior["vm"]:
+        path = root / relative
+        current_vm_prior[relative] = (
+            {"exists": True, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            if path.is_file() and not path.is_symlink() else {"exists": False}
+        )
+    if (
+        current_vm_files != authority["vm_files"]
+        or current_vm_installed != authority["vm_installed"]
+        or current_vm_prior != authority["prior_success"]["vm"]
+        or {
+            service: _inspect_container(project, service)
+            for service in ("postgres", "rabbitmq", "control", "worker", "web", "account-web")
+        }
+        != current["containers"]
+    ):
+        raise CarryForwardError("group2_partial_finalize_authority_changed")
+    prior_state = validated["context"]["validated_original"]["artifacts"][
+        "authority.json"
+    ]["snapshot"]["state"]
+    _atomic_incident_json(
+        root / "transaction.json",
+        {
+            "phase": "ready", "sha": GROUP2_FROM_SHA,
+            "operation": "incident_partial_finalize",
+            "reconciled_by": {
+                "incident_id": incident_id, "finalize_id": finalize_id,
+                "receipt_digest": receipt["receipt_digest"],
+            },
+            "backup": prior_state["backup"],
+            "carry_forward": prior_state["carry_forward"],
+            "at": time.time(),
+        },
+    )
+    _atomic_incident_json(
+        directory / "phase.json",
+        {
+            "schema": "group2-partial-finalize-phase-v1",
+            "incident_id": incident_id, "finalize_id": finalize_id,
+            "phase": "vm-committed",
+        },
+    )
+    return {"code": "group2_partial_finalize_vm_ok",
+            "receipt_digest": receipt["receipt_digest"]}
+
+
 def _command_reconcile_vm(args: argparse.Namespace) -> dict[str, Any]:
     return reconcile_group2_vm(args.root, args.incident_id)
+
+
+def _command_finalize_partial_vm(args: argparse.Namespace) -> dict[str, Any]:
+    return finalize_group2_partial_vm(args.root, args.incident_id, args.finalize_id)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -9652,6 +10796,10 @@ def parser() -> argparse.ArgumentParser:
     reconcile = commands.add_parser("reconcile-vm")
     reconcile.add_argument("--root", type=Path, required=True)
     reconcile.add_argument("--incident-id", required=True)
+    finalize = commands.add_parser("finalize-partial-vm")
+    finalize.add_argument("--root", type=Path, required=True)
+    finalize.add_argument("--incident-id", required=True)
+    finalize.add_argument("--finalize-id", required=True)
     return root
 
 
@@ -9672,10 +10820,17 @@ def main() -> None:
             result = _command_compare(args)
         elif args.command == "group2-runtime":
             result = _command_group2_runtime(args)
-        else:
+        elif args.command == "reconcile-vm":
             if MANIFEST_ID.fullmatch(args.incident_id) is None:
                 raise CarryForwardError("group2_reconcile_request_invalid")
             result = _command_reconcile_vm(args)
+        else:
+            if (
+                MANIFEST_ID.fullmatch(args.incident_id) is None
+                or MANIFEST_ID.fullmatch(args.finalize_id) is None
+            ):
+                raise CarryForwardError("group2_partial_finalize_request_invalid")
+            result = _command_finalize_partial_vm(args)
         print(json.dumps(result, sort_keys=True))
     except CarryForwardError as error:
         print(json.dumps({"code": error.code}, sort_keys=True), file=sys.stderr)

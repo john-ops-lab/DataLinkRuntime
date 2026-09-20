@@ -148,6 +148,18 @@ fresh 只读重复读快照先与第一组独立封存事实核对，再保护�
 
 后续保全引用保留原 shape，仅在现有报告中增加专用 `group2_starting_reconcile_v1` 来源和唯一闭合事故链。事故链嵌入既有七份输入的原始字节及摘要，重跑请求绑定检查。纯验证器从失败 manifest 中的原参考逐边连接前五阶段、首次 startup、停止、恢复 startup 与最终保全，唯一导出原 selection、原 DB、恢复后 files 及追加 request/receipt/chain 摘要的 lineage；不能从 fresh 值自批新根。事故后由独立 reviewer 签署该引用，再走 trusted stage、新 scope、官方 install、fresh manifest 和正常 v4 once；账号入口到这时才随候选更新并验收。
 
+### D12. 已恢复软件但历史原件不完整时的受限事后收尾
+
+本例外只适用于本组已绑定、旧软件已运行且恢复操作在应用健康等待中退出的事故。用户已接受针对该事故如实保留历史证据缺口并准备工具；这不等于对未来工具 SHA 和控制面写入的批准。原 D11 完整链、普通 private snapshot、安装器和普通 recover 的规则保持不变。
+
+新记录分别绑定原请求及实际批准、原工具源码及审查/CI、实际失败尝试/phase/日志、四阶段已落盘的 ids/DB/files 原字节和当前完整原件。历史 idle namespace/FD 采样、阶段日志端点与精确应用启动窗口缺失必须明确记载；执行顺序只能证明门禁曾通过，不能生成历史扫描值。恢复 startup 使用实际外层命令开始/结束时间及已保存容器/日志来源，必须标明替代来源并纳入专项批准，不伪称原相邻阶段窗口。
+
+当前六块 DB、全部责任/审计/资产/session、文件内容/身份/权限、卷、镜像、PG/schema、连续日志、唯一 Worker 生命周期/nonce、keeper/PID/cgroup 和账号停止策略仍完整校验。只接受既有两处启动 mtime 变化；日志中的额外业务写入或第三次启动仍拒绝。kernel authority 的 Compose project/service 标签与完整容器标签按固定两键投影比较，完整 Worker profile 校验独立保留，不能修改采集原件以通过。
+
+新工具只允许隔离暂存、只读核验和固定控制面对账，不执行 compose stop/up/recreate/restart、迁移、数据库还原、业务探针或业务写接口。先持久化并读回新的受限结果及保全记录，再提交独立标识的旧成功 SHA transaction，继续引用原成功 backup/carry；宿主 state/current SHA 和旧成功原件保持原字节。失败 manifest 原样 abandoned、配置 CAS 后仍 paused，attention 最后清除。原事故的失败 phase 和缺口保持，不重放、不改记成功；任何中断保留实际部分提交状态，不自动补动作。
+
+后继正常 v4 只能通过独立 reviewer 核验的新专用来源接纳唯一 snapshot：原 selection/DB、经核验的恢复后 files，以及绑定新请求/受限结果/原件链的 lineage。不得将部分证据塞入 D11 旧链、以 null/布尔值填充缺失 raw，或改标普通 private snapshot。后续仍须重新 stage/install/plan/once 和完整四应用、双入口及业务验收。
+
 ## Verification Matrix
 
 | 检查点 | 必须证明 | 方法/不能替代的证据 |
