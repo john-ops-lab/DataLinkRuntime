@@ -6718,18 +6718,67 @@ class Group2StartingReconcileTests(unittest.TestCase):
                 mock.patch.object(carry, "digest", return_value="8" * 64),
                 mock.patch.object(carry, "_inspect_container", side_effect=lambda _project, service: containers[service]),
             ):
+                sibling = directory.parent / ("e" * 32)
+                sibling.mkdir(mode=0o700)
+                (sibling / "marker").write_text("existing")
+                with self.assertRaisesRegex(
+                    carry.CarryForwardError, "replay_rejected"
+                ):
+                    carry.finalize_group2_partial_vm(
+                        root, incident_id, finalize_id
+                    )
+                self.assertEqual(capture_calls, [])
+                (sibling / "marker").unlink()
+                sibling.rmdir()
+
+                real_identity = carry._validate_group2_partial_finalize_directory
+                identity_calls = 0
+
+                def add_sibling_before_commit(*args):
+                    nonlocal identity_calls
+                    identity_calls += 1
+                    if identity_calls == 2:
+                        sibling.mkdir(mode=0o700)
+                        (sibling / "marker").write_text("late")
+                    return real_identity(*args)
+
+                with (
+                    mock.patch.object(
+                        carry,
+                        "_validate_group2_partial_finalize_directory",
+                        side_effect=add_sibling_before_commit,
+                    ),
+                    self.assertRaisesRegex(
+                        carry.CarryForwardError, "replay_rejected"
+                    ),
+                ):
+                    carry.finalize_group2_partial_vm(
+                        root, incident_id, finalize_id
+                    )
+                self.assertEqual(len(capture_calls), 1)
+                self.assertEqual(
+                    carry.read_private(root / "transaction.json")["phase"],
+                    "starting",
+                )
+                (sibling / "marker").unlink()
+                sibling.rmdir()
+                carry.write_private(directory / "phase.json", {
+                    "schema": "group2-partial-finalize-phase-v1",
+                    "incident_id": incident_id, "finalize_id": finalize_id,
+                    "phase": "prepared",
+                })
                 output = carry.finalize_group2_partial_vm(
                     root, incident_id, finalize_id
                 )
                 self.assertEqual(output["receipt_digest"], receipt["receipt_digest"])
                 self.assertEqual(carry.read_private(root / "transaction.json")["operation"],
                                  "incident_partial_finalize")
-                self.assertEqual(len(capture_calls), 1)
+                self.assertEqual(len(capture_calls), 2)
                 with self.assertRaisesRegex(
                     carry.CarryForwardError, "replay_rejected"
                 ):
                     carry.finalize_group2_partial_vm(root, incident_id, finalize_id)
-                self.assertEqual(len(capture_calls), 1)
+                self.assertEqual(len(capture_calls), 2)
 
 
 if __name__ == "__main__":

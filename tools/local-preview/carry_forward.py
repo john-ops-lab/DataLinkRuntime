@@ -10490,15 +10490,42 @@ def _embedded_file_value(path: Path) -> dict[str, str]:
     }
 
 
+def _validate_group2_partial_finalize_directory(
+    root: Path, incident_id: str, finalize_id: str
+) -> Path:
+    code = "group2_partial_finalize_replay_rejected"
+    finalize_root = root / "incidents" / incident_id / "finalize"
+    directory = finalize_root / finalize_id
+    try:
+        root_info = finalize_root.lstat()
+        directory_info = directory.lstat()
+        children = {item.name for item in finalize_root.iterdir()}
+        canonical_root = finalize_root.resolve(strict=True)
+        canonical_directory = directory.resolve(strict=True)
+    except OSError as error:
+        raise CarryForwardError(code) from error
+    if (
+        incident_id != GROUP2_PARTIAL_INCIDENT_ID
+        or MANIFEST_ID.fullmatch(finalize_id) is None
+        or not stat.S_ISDIR(root_info.st_mode)
+        or stat.S_ISLNK(root_info.st_mode)
+        or not stat.S_ISDIR(directory_info.st_mode)
+        or stat.S_ISLNK(directory_info.st_mode)
+        or canonical_root != finalize_root
+        or canonical_directory != directory
+        or children != {finalize_id}
+    ):
+        raise CarryForwardError(code)
+    return directory
+
+
 def finalize_group2_partial_vm(
     root: Path, incident_id: str, finalize_id: str
 ) -> dict[str, Any]:
     root = root.resolve(strict=True)
-    directory = (
-        root / "incidents" / incident_id / "finalize" / finalize_id
-    ).resolve(strict=True)
-    if directory.parent != root / "incidents" / incident_id / "finalize":
-        raise CarryForwardError("group2_partial_finalize_replay_rejected")
+    directory = _validate_group2_partial_finalize_directory(
+        root, incident_id, finalize_id
+    )
     request = read_private(directory / "request.json")
     approval = read_private(directory / "approval.json")
     user_record = (directory / "USER-APPROVAL.txt").read_bytes()
@@ -10681,6 +10708,7 @@ def finalize_group2_partial_vm(
     }
     if acknowledgement != expected_acknowledgement:
         raise CarryForwardError("group2_partial_finalize_host_invalid")
+    _validate_group2_partial_finalize_directory(root, incident_id, finalize_id)
     current_vm_files = {
         "transaction.json": _embedded_file_value(root / "transaction.json"),
         "current-sha": _embedded_file_value(root / "current-sha"),
