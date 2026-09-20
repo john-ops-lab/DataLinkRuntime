@@ -4303,11 +4303,12 @@ t INFO access 172.18.0.6:1013 - "POST /api/workers/1/cleanups/24/result HTTP/1.1
                 },
             }
             before = carry.capture_log_prefix(profile)
-            worker.write_text(
-                "sandbox preflight receipt: "
-                + json.dumps(receipt, sort_keys=True)
-                + "\nsandbox preflight passed; rabbitmq execution gate=True\n"
-            )
+            with worker.open("a") as output:
+                output.write(
+                    "sandbox preflight receipt: "
+                    + json.dumps(receipt, sort_keys=True)
+                    + "\nsandbox preflight passed; rabbitmq execution gate=True\n"
+                )
             after = carry.read_log_append(before)
             service_profile = profile["candidate_profiles"]["worker"]
             container_after = {
@@ -4489,6 +4490,14 @@ class Group2StartingReconcileTests(unittest.TestCase):
             "sha": carry.GROUP2_FROM_SHA,
             "schema": "0040_issue152_dispositions",
             "images": prior_images,
+            "backup": "/private/backup",
+            "carry_forward": {
+                "manifest_id": prior_id,
+                "manifest_digest": prior_manifest["manifest_digest"],
+                "selection_count": len(
+                    prior_manifest["responsibilities"]["executions"]
+                ),
+            },
         }
         prior_probe = {
             "execution_id": 1,
@@ -4577,7 +4586,22 @@ class Group2StartingReconcileTests(unittest.TestCase):
                     "installed_files": installed_files,
                 },
                 "host_authority": {},
-                "vm_inventory": {},
+                "vm_inventory": {
+                    "files": {
+                        name: {
+                            "exists": True,
+                            "kind": "file",
+                            "sha256": h(name.encode()),
+                        }
+                        for name in (
+                            "deploy.sh",
+                            "carry_forward.py",
+                            "verify.py",
+                            "assets.py",
+                        )
+                    },
+                    "current_kernel": {},
+                },
             },
             "platform.json": {
                 "schema": "group2-incident-platform-v1",
@@ -4717,6 +4741,453 @@ class Group2StartingReconcileTests(unittest.TestCase):
         }
         return request, approval, artifacts
 
+    def _complete_reconcile_case(self, root):
+        request, approval, artifacts = self._request()
+        parsed = {name: json.loads(value) for name, value in artifacts.items()}
+        manifest = parsed["failed-manifest.json"]
+
+        runtime = root / "runtime"
+        journal = root / "journal"
+        runtime.mkdir(mode=0o711)
+        journal.mkdir(mode=0o700)
+        for directory in (runtime, journal):
+            (directory / ".dlr-instance.lock").touch(mode=0o600)
+        (runtime / "attempt-journal").mkdir(mode=0o700)
+        (runtime / "attempt-journal" / ".dlr-instance.lock").touch(mode=0o600)
+        (runtime / "workspaces").mkdir(mode=0o700)
+        (runtime / "version-cache").mkdir(mode=0o711)
+        (runtime / "version-cache" / "entries").mkdir(mode=0o711)
+        (runtime / "version-cache" / ".dlr-cache-reservations.json").write_text("{}")
+        (runtime / "version-cache" / ".dlr-cache-reservations.json").chmod(0o600)
+        (runtime / "version-cache" / ".dlr-cache-reservations.lock").touch(mode=0o644)
+        (journal / "sandbox-recovery").mkdir(mode=0o700)
+        files = carry.capture_files(runtime, journal)
+
+        profile = Group2RuntimeTests()._profile(root / "logs" / "worker" / "worker.log")
+        prior_images = {
+            f"dlr-preview-{service}:{carry.GROUP2_FROM_SHA}": f"sha256:{index:064x}"
+            for index, service in enumerate(("postgres", "control", "worker", "web"), 1)
+        }
+        candidate_images = {
+            service: f"sha256:{index + 10:064x}"
+            for index, service in enumerate(("postgres", "control", "worker", "web"), 1)
+        }
+        profile["from_sha"] = carry.GROUP2_FROM_SHA
+        profile["to_sha"] = manifest["to_sha"]
+        profile["candidate_image_ids_by_service"].update(
+            {
+                "control": candidate_images["control"],
+                "worker": candidate_images["worker"],
+                "web": candidate_images["web"],
+                "account-web": candidate_images["web"],
+            }
+        )
+        profile["candidate_web_image_id"] = candidate_images["web"]
+        for service in profile["old_containers"]:
+            image_service = "web" if service == "account-web" else service
+            profile["old_containers"][service]["image_id"] = prior_images[
+                f"dlr-preview-{image_service}:{carry.GROUP2_FROM_SHA}"
+            ]
+        profile["profile_digest"] = carry.digest(
+            {key: value for key, value in profile.items() if key != "profile_digest"}
+        )
+        baseline = carry.capture_log_prefix(profile)
+
+        def append(previous):
+            return carry.read_log_append(previous)
+
+        original_logs = []
+        previous = baseline
+        for _ in range(5):
+            previous = append(previous)
+            original_logs.append(previous)
+        first_before = previous
+
+        def startup(previous, nonce, image, container_id, service_profile):
+            start = previous["observed_after_ns"]
+            started = max(start, __import__("time").time_ns())
+            receipt = FileEvidenceTests._startup_proof(
+                FileEvidenceTests(), start, started + 1_000_000
+            )["preflight_receipt"]
+            receipt["cgroup_name"] = f"dlr-preflight-{nonce}"
+            receipt["cleanup"]["cgroup_name"] = receipt["cgroup_name"]
+            receipt["namespace_identity"] = {
+                "boot_id": "boot",
+                "parent_device": 1,
+                "parent_inode": 2,
+                "root_device": 1,
+                "root_inode": 30 if nonce.startswith("1") else 40,
+            }
+            worker = Path(
+                next(path for path in profile["log_files"] if path.endswith("/worker/worker.log"))
+            )
+            with worker.open("a") as output:
+                output.write(
+                    "sandbox preflight receipt: "
+                    + json.dumps(receipt, sort_keys=True)
+                    + "\nsandbox preflight passed; rabbitmq execution gate=True\n"
+                )
+            if nonce.startswith("2"):
+                control = Path(
+                    next(
+                        path
+                        for path in profile["log_files"]
+                        if path.endswith("/control/control.log")
+                    )
+                )
+                with control.open("a") as output:
+                    output.write(
+                        'x 127.0.0.1:5000 - "POST /api/workers/register '
+                        'HTTP/1.1" 200\n'
+                    )
+            after = append(previous)
+            end = after["observed_after_ns"]
+            timestamp = __import__("datetime").datetime.fromtimestamp(
+                started / 1_000_000_000, __import__("datetime").timezone.utc
+            ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+            container = {
+                "container_id": container_id,
+                "image_id": image,
+                "status": "running",
+                "health": "healthy",
+                "started_at": timestamp,
+                "restart_count": 0,
+                "command": service_profile["effective_command"],
+                "labels": {
+                    "com.docker.compose.project": profile["project"],
+                    "com.docker.compose.service": "worker",
+                },
+                "port_bindings": {},
+                "mounts": service_profile["mounts"],
+                "networks": service_profile["networks"],
+            }
+            return after, container, start, end
+
+        first_after, first_worker, first_start, first_end = startup(
+            first_before, "1" * 32, candidate_images["worker"],
+            "candidate-worker", profile["candidate_profiles"]["worker"],
+        )
+        first_request = {
+            "mode": carry.GROUP2_MODE,
+            "operation": "startup-proof",
+            "profile": profile,
+            "logs_before": first_before,
+            "logs_after": first_after,
+            "container_before": profile["old_containers"]["worker"],
+            "container_after": first_worker,
+            "window_start_ns": first_start,
+            "window_end_ns": first_end,
+        }
+        first_proof = carry._startup_proof(first_request)
+        os.utime(runtime, ns=(first_start, first_start))
+        recovery = journal / "sandbox-recovery"
+        os.utime(recovery, ns=(first_start + 1, first_start + 1))
+        startup_files = carry.capture_files(runtime, journal)
+        first_files_result = carry.compare_group2_startup_files(
+            files, startup_files, first_proof
+        )
+        db = {
+            "projection": manifest["old_runtime_projection"],
+            "responsibilities": manifest["responsibilities"],
+            "protected_rows": manifest["protected_rows"],
+            "asset_projection": manifest["asset_projection"],
+            "schema_shape": manifest["schema_shape"],
+            "schema_inventory": manifest["schema_inventory"],
+        }
+        reference = manifest["review_scope"]["preservation_reference"]
+        reference["snapshot"]["db"] = db
+        reference["snapshot"]["files"] = files
+        reference["snapshot_digest"] = carry.digest(reference["snapshot"])
+        manifest["review_scope"]["image_binding"] = {
+            "old_image_ids": prior_images,
+            "candidate_image_ids": {
+                f"dlr-{name}:{manifest['to_sha']}": value
+                for name, value in candidate_images.items()
+            },
+        }
+        manifest["review_scope"]["preservation_reference"] = reference
+        manifest["review_scope"]["scope_digest"] = carry.digest(
+            {
+                key: value
+                for key, value in manifest["review_scope"].items()
+                if key != "scope_digest"
+            }
+        )
+        manifest["review_scope_digest"] = manifest["review_scope"]["scope_digest"]
+        manifest["preservation_reference_digest"] = reference["snapshot_digest"]
+        manifest["account_entry"] = profile
+        manifest["log_evidence"] = baseline
+        manifest["file_evidence"] = files
+        manifest["old_image_ids"] = prior_images
+        manifest["candidate_image_ids"] = manifest["review_scope"]["image_binding"][
+            "candidate_image_ids"
+        ]
+        manifest["manifest_digest"] = carry.digest(carry.manifest_payload(manifest))
+        parsed["failed-manifest.json"] = manifest
+        check = {"log-baseline.json": baseline}
+        for name, logs in zip(
+            ("preflight", "control-stopped", "stopped", "after-backup", "after-migration"),
+            original_logs,
+        ):
+            check[f"{name}/log-request.json"] = {
+                "baseline": baseline if name == "preflight" else original_logs[
+                    ("preflight", "control-stopped", "stopped", "after-backup", "after-migration").index(name) - 1
+                ]
+            }
+            check[f"{name}/log.json"] = {"log_evidence": logs}
+            check[f"{name}/db.json"] = db
+            check[f"{name}/files.json"] = files
+        check.update(
+            {
+                "group2/account-check.json": {
+                    "account_check": {"containers": {"worker": first_worker}}
+                },
+                "group2/log-before-start.json": {"log_evidence": first_before},
+                "group2/log-after-start-request.json": {"baseline": first_before},
+                "group2/start-window.json": {
+                    "window_start_ns": first_start,
+                    "window_end_ns": first_end,
+                },
+            }
+        )
+        parsed["first-startup.json"] = {
+            "schema": "group2-first-startup-evidence-v1",
+            "check_raw": check,
+            "log_read_diagnostic": {"log_append": first_after},
+            "actual_results": {
+                "startup_reconstruction": {
+                    "result": "DERIVED_FROM_LATER_DIAGNOSTIC_ONLY",
+                    "proof": first_proof,
+                }
+            },
+            "db": db,
+            "files": startup_files,
+            "legacy_assets": {
+                name: {
+                    "columns": item["columns"],
+                    "rows": [carry.digest(row) for row in item["rows"]],
+                }
+                for name, item in db["asset_projection"].items()
+            },
+        }
+
+        def container(service, image, container_id, status="running"):
+            service_profile = profile["old_profiles"].get(service, profile["old_profiles"]["web"])
+            return {
+                "container_id": container_id,
+                "image_id": image,
+                "status": status,
+                "health": "healthy" if status == "running" else None,
+                "started_at": "2026-09-20T00:00:00Z",
+                "restart_count": 0,
+                "command": service_profile["effective_command"],
+                "labels": {
+                    "com.docker.compose.project": profile["project"],
+                    "com.docker.compose.service": service,
+                },
+                "port_bindings": carry._profile_port_bindings(service_profile),
+                "mounts": service_profile["mounts"],
+                "networks": service_profile["networks"],
+            }
+
+        containers = {
+            "postgres": container("postgres", candidate_images["postgres"], "candidate-postgres"),
+            "rabbitmq": container("rabbitmq", "rabbit-image", "rabbit"),
+            "control": container("control", candidate_images["control"], "candidate-control"),
+            "worker": first_worker,
+            "web": container("web", candidate_images["web"], "candidate-web"),
+            "account-web": container("account-web", candidate_images["web"], "candidate-account"),
+        }
+        authority = {
+            "container_id": first_worker["container_id"],
+            "image_id": first_worker["image_id"],
+            "started_at": first_worker["started_at"],
+            "pid": 101,
+            "pid_starttime": "10",
+            "mount_namespace": "mnt:[1]",
+            "cgroup_namespace": "cgroup:[1]",
+            "parent_device": 1,
+            "parent_inode": 2,
+            "root_device": 1,
+            "root_inode": 20,
+            "labels": first_worker["labels"],
+            "runtime_config": {
+                "user": "0", "runtime_root": "/var/lib/dlr/runtime",
+                "journal_root": "/var/lib/dlr/journal",
+                "attempt_journal_root": "/var/lib/dlr/runtime/attempt-journal",
+                "cgroup_path": "/run/dlr-cgroup",
+            },
+            "volumes": {"runtime": {"name": "runtime"}, "journal": {"name": "journal"}},
+        }
+        child = lambda pid: {
+            "populated": 1, "process_count": 1,
+            "process_digest": carry.digest([pid]), "device": 1, "inode": pid,
+        }
+        active_kernel = {
+            "boot_id": "boot", "unit": "dlr-test.service",
+            "control_group": "/system.slice/dlr-test.service", "keeper_pid": 7,
+            "keeper_starttime": "7", "description": "DataLinkRuntime Sandbox dlr-test.service CPU=100% Memory=1G",
+            "parent_device": 1, "parent_inode": 2,
+            "children": {"agent": child(7), first_worker["container_id"]: child(101), f"{first_worker['container_id']}/agent": child(101)},
+            "old_worker_authority": authority, "namespace_evidence": None,
+            "retired_markers": [],
+        }
+        parsed["authority.json"]["vm_inventory"]["current_kernel"] = active_kernel
+        parsed["authority.json"]["snapshot"]["carry_reference"] = {
+            "manifest_id": manifest["manifest_id"],
+            "manifest_digest": manifest["manifest_digest"],
+        }
+        parsed["platform.json"]["images"]["candidate"].update(
+            {name: {"Id": image} for name, image in candidate_images.items() if name != "postgres"}
+        )
+        parsed["platform.json"]["images"]["candidate"]["postgres"]["Id"] = candidate_images["postgres"]
+
+        artifacts = {name: carry.canonical_bytes(value) for name, value in parsed.items()}
+        request["failed"].update(
+            {
+                "manifest_digest": manifest["manifest_digest"],
+                "manifest_sha256": hashlib.sha256(artifacts["failed-manifest.json"]).hexdigest(),
+                "scope_digest": manifest["review_scope_digest"],
+                "initial_evidence_digest": carry.digest(
+                    {
+                        name: hashlib.sha256(artifacts[name]).hexdigest()
+                        for name in (
+                            "failed-manifest.json", "first-startup.json", "prior-success.json",
+                            "authority.json", "platform.json",
+                        )
+                    }
+                ),
+            }
+        )
+        request["restore"]["storage_identity_digest"] = carry.digest([])
+        request["evidence_files"] = {
+            name: hashlib.sha256(value).hexdigest() for name, value in artifacts.items()
+        }
+        request["request_digest"] = carry.digest(
+            {key: value for key, value in request.items() if key != "request_digest"}
+        )
+        approval["request_digest"] = request["request_digest"]
+        inherited = {
+            item["name"]: item["sha256"]
+            for item in parsed["source-review.json"]["inherited_reviews"]
+        }
+        with mock.patch.object(carry, "GROUP2_INHERITED_REVIEW_HASHES", inherited):
+            validated = carry.validate_group2_reconcile_request(request, approval, artifacts)
+
+        log_preflight = append(first_after)
+        log_control = append(log_preflight)
+        log_apps = append(log_control)
+        log_pg = append(log_apps)
+        idle_kernel = copy.deepcopy(active_kernel)
+        idle_kernel["children"] = {"agent": active_kernel["children"]["agent"]}
+        idle_kernel["namespace_evidence"] = {
+            "task_count": 0, "namespace_count": 0, "mountinfo_bytes": 0,
+            "fd_entries": [], "related_count": 0, "pin_count": 0,
+            "target_digest": carry.digest({"related": [], "pins": []}),
+        }
+        control_containers = copy.deepcopy(containers)
+        control_containers["control"]["status"] = "exited"
+        apps_containers = copy.deepcopy(control_containers)
+        for service in ("worker", "web", "account-web"):
+            apps_containers[service]["status"] = "exited"
+            apps_containers[service]["health"] = None
+        pg_containers = copy.deepcopy(apps_containers)
+        pg_containers["postgres"] = container(
+            "postgres", prior_images[f"dlr-preview-postgres:{carry.GROUP2_FROM_SHA}"],
+            "restored-postgres",
+        )
+        second_after, final_worker, second_start, second_end = startup(
+            log_pg, "2" * 32, prior_images[f"dlr-preview-worker:{carry.GROUP2_FROM_SHA}"],
+            "restored-worker", profile["old_profiles"]["worker"],
+        )
+        final_containers = copy.deepcopy(pg_containers)
+        for service in ("control", "worker", "web"):
+            image = prior_images[f"dlr-preview-{service}:{carry.GROUP2_FROM_SHA}"]
+            final_containers[service] = (
+                final_worker if service == "worker" else container(service, image, f"restored-{service}")
+            )
+        final_authority = copy.deepcopy(authority)
+        final_authority.update(
+            {
+                "container_id": final_worker["container_id"],
+                "image_id": final_worker["image_id"],
+                "started_at": final_worker["started_at"],
+                "pid": 202, "pid_starttime": "20",
+                "labels": final_worker["labels"],
+                "root_device": 1, "root_inode": 40,
+            }
+        )
+        final_kernel = copy.deepcopy(active_kernel)
+        final_kernel["old_worker_authority"] = final_authority
+        final_kernel["children"] = {
+            "agent": child(7), final_worker["container_id"]: child(202),
+            f"{final_worker['container_id']}/agent": child(202),
+        }
+        final_kernel["namespace_evidence"] = None
+
+        def stage(logs, kernel, stage_containers, start, end):
+            return {
+                "db": db, "files": startup_files, "logs": logs, "kernel": kernel,
+                "containers": stage_containers, "storage": [],
+                "window_start_ns": start, "window_end_ns": end,
+            }
+
+        t0 = first_after["observed_after_ns"] + 1
+        preflight = stage(log_preflight, active_kernel, containers, t0, log_preflight["observed_after_ns"])
+        control_stage = stage(log_control, active_kernel, control_containers, preflight["window_end_ns"], log_control["observed_after_ns"])
+        apps_stage = stage(log_apps, idle_kernel, apps_containers, control_stage["window_end_ns"], log_apps["observed_after_ns"])
+        pg_stage = stage(log_pg, idle_kernel, pg_containers, apps_stage["window_end_ns"], log_pg["observed_after_ns"])
+        restored_stage = stage(second_after, final_kernel, final_containers, second_end, second_end)
+        second_request = {
+            "mode": carry.GROUP2_MODE, "operation": "startup-proof", "profile": profile,
+            "logs_before": log_pg, "logs_after": second_after,
+            "container_before": pg_containers["worker"], "container_after": final_worker,
+            "window_start_ns": second_start, "window_end_ns": second_end,
+        }
+        second_proof = carry._incident_startup_proof(second_request)
+        final_files = copy.deepcopy(startup_files)
+        final_files["runtime"]["root"]["mtime_ns"] = second_start
+        recovery_item = next(
+            item
+            for item in final_files["journal"]["entries"]
+            if item["path"] == "sandbox-recovery"
+        )
+        recovery_item["mtime_ns"] = second_start + 1
+        final_files["journal"]["digest"] = carry.digest(
+            final_files["journal"]["entries"]
+        )
+        restored_stage["files"] = final_files
+        evidence = {
+            "preflight": preflight,
+            "stopped": {"control": control_stage, "apps": apps_stage},
+            "restored_postgres": pg_stage,
+            "restore_startup": {"request": second_request, "proof": second_proof},
+            "restored": restored_stage,
+            "account": {"before": containers["account-web"], "after": final_containers["account-web"]},
+            "images": {
+                "prior": prior_images,
+                "restored": {
+                    service: prior_images[f"dlr-preview-{service}:{carry.GROUP2_FROM_SHA}"]
+                    for service in ("postgres", "control", "worker", "web")
+                },
+                "rabbitmq_before": "rabbit-image", "rabbitmq_after": "rabbit-image",
+                "postgres": {
+                    "preflight": {
+                        "schema": request["prior"]["schema"],
+                        "binary_version": "postgres (PostgreSQL) 16.15",
+                        "server_version": "16.15", "data_pg_version": "16",
+                    },
+                    "restored": {
+                        "schema": request["prior"]["schema"],
+                        "binary_version": "postgres (PostgreSQL) 16.15",
+                        "server_version": "16.15", "data_pg_version": "16",
+                    },
+                },
+            },
+            "storage": carry.digest([]), "token_health": {"status": 200, "database": True},
+        }
+        return request, approval, artifacts, validated, evidence, reference, first_files_result
+
     def test_reconcile_request_is_closed_and_separately_approved(self):
         request, approval, artifacts = self._request()
         with mock.patch.object(carry, "_validate_reconcile_wrappers"):
@@ -4736,13 +5207,244 @@ class Group2StartingReconcileTests(unittest.TestCase):
             changed_approval = copy.deepcopy(approval)
             changed_artifacts = copy.deepcopy(artifacts)
             mutate(changed_request, changed_approval, changed_artifacts)
-            with self.subTest(label=label), self.assertRaisesRegex(
-                carry.CarryForwardError, code
+            with (
+                self.subTest(label=label),
+                self.assertRaisesRegex(carry.CarryForwardError, code),
+                mock.patch.object(carry, "_validate_reconcile_wrappers"),
             ):
-                with mock.patch.object(carry, "_validate_reconcile_wrappers"):
-                    carry.validate_group2_reconcile_request(
-                        changed_request, changed_approval, changed_artifacts
+                carry.validate_group2_reconcile_request(
+                    changed_request, changed_approval, changed_artifacts
+                )
+
+    def test_complete_reconcile_validators_bind_originals_stages_and_chain(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            (
+                request,
+                approval,
+                artifacts,
+                validated,
+                evidence,
+                reference,
+                _first_files_result,
+            ) = self._complete_reconcile_case(Path(temporary))
+            authority = {
+                "enabled": False,
+                "attention_phase": "switching",
+                "transaction_phase": "starting",
+                "failed_sha": request["failed"]["sha"],
+                "current_sha": request["prior"]["sha"],
+                "installed_controller_files_digest": request["failed"][
+                    "installed_controller_files_digest"
+                ],
+            }
+            postgres_format = validated["artifacts"]["platform.json"][
+                "postgres_format"
+            ]
+            postgres = {
+                "schema": request["prior"]["schema"],
+                "binary_version": postgres_format["candidate_binary_version"],
+                "server_version": postgres_format["current_server_version"],
+                "data_pg_version": postgres_format["data_pg_version"],
+            }
+            images = {
+                service: evidence["preflight"]["containers"][service]["image_id"]
+                for service in ("postgres", "control", "worker", "web")
+            }
+            self.assertEqual(
+                carry.validate_group2_reconcile_preflight(
+                    request,
+                    {
+                        "stage": evidence["preflight"],
+                        "authority": authority,
+                        "postgres": postgres,
+                        "images": images,
+                    },
+                    {
+                        "validated": validated,
+                        "authority": authority,
+                        "postgres": postgres,
+                        "images": images,
+                        "kernel": validated["artifacts"]["authority.json"][
+                            "vm_inventory"
+                        ]["current_kernel"],
+                    },
+                ),
+                evidence["preflight"],
+            )
+            receipt = carry.validate_group2_reconcile_result(
+                request, evidence, validated
+            )
+            originals = carry._group2_reconcile_originals(validated)
+            embedded = {
+                name: {
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "content_b64": __import__("base64").b64encode(raw).decode(),
+                }
+                for name, raw in artifacts.items()
+            }
+            chain = {
+                "schema": "group2-reconcile-chain-v1",
+                "request": request,
+                "approval": approval,
+                "failed_manifest": originals["manifest"],
+                "prior_success": request["prior"],
+                "first_startup": {
+                    "source_artifacts": embedded,
+                    **originals["first_startup"],
+                },
+                "pre_rollback": evidence["preflight"],
+                "stopped": evidence["stopped"],
+                "restore_startup": evidence["restore_startup"],
+                "restored": {
+                    "postgres": evidence["restored_postgres"],
+                    "final": evidence["restored"],
+                    "account": evidence["account"],
+                    "images": evidence["images"],
+                    "storage": evidence["storage"],
+                    "token_health": evidence["token_health"],
+                },
+                "receipt": receipt,
+            }
+            inherited = {
+                item["name"]: item["sha256"]
+                for item in validated["artifacts"]["source-review.json"][
+                    "inherited_reviews"
+                ]
+            }
+            with mock.patch.object(
+                carry, "GROUP2_INHERITED_REVIEW_HASHES", inherited
+            ):
+                snapshot = carry.validate_group2_reconcile_preservation(
+                    chain, reference
+                )
+            self.assertEqual(snapshot["db"], originals["db"])
+            self.assertEqual(snapshot["files"], evidence["restored"]["files"])
+
+            normal = (
+                'x 127.0.0.1:1 - "POST /api/workers/7/heartbeat HTTP/1.1" 204\n'
+                'x 127.0.0.1:2 - "POST /api/workers/7/cleanups/claim HTTP/1.1" 204\n'
+            )
+            _before, normal_logs = Group2RuntimeTests()._log_window(normal)
+            carry._validate_reconcile_log_activity(
+                normal_logs, allow_registration=False
+            )
+            _before, business_logs = Group2RuntimeTests()._log_window(
+                'x 127.0.0.1:3 - "POST /api/adapters HTTP/1.1" 201\n'
+            )
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "startup_changed"
+            ):
+                carry._validate_reconcile_log_activity(
+                    business_logs, allow_registration=False
+                )
+
+            for label, mutate in (
+                (
+                    "control db drift",
+                    lambda value: value["stopped"]["control"]["db"].__setitem__(
+                        "projection", {}
+                    ),
+                ),
+                (
+                    "apps files drift",
+                    lambda value: value["stopped"]["apps"]["files"]["runtime"][
+                        "root"
+                    ].__setitem__("inode", 999),
+                ),
+                (
+                    "postgres db drift",
+                    lambda value: value["restored_postgres"]["db"].__setitem__(
+                        "schema_inventory", {}
+                    ),
+                ),
+            ):
+                changed = copy.deepcopy(evidence)
+                mutate(changed)
+                with self.subTest(label=label), self.assertRaises(
+                    carry.CarryForwardError
+                ):
+                    carry.validate_group2_reconcile_result(
+                        request, changed, validated
                     )
+
+            changed = copy.deepcopy(evidence)
+            for stage in (
+                changed["preflight"], changed["stopped"]["control"],
+                changed["stopped"]["apps"], changed["restored_postgres"],
+                changed["restored"],
+            ):
+                stage["files"]["runtime"]["root"]["inode"] += 123
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "originals_changed|files_changed"
+            ):
+                carry.validate_group2_reconcile_result(request, changed, validated)
+
+            for label, mutate, code in (
+                (
+                    "reused nonce",
+                    lambda value: value["restore_startup"]["proof"].__setitem__(
+                        "nonce", originals["first_startup"]["proof"]["nonce"]
+                    ),
+                    "startup",
+                ),
+                (
+                    "disconnected log",
+                    lambda value: value["restore_startup"]["request"].__setitem__(
+                        "logs_before", value["preflight"]["logs"]
+                    ),
+                    "startup",
+                ),
+                (
+                    "boolean kernel",
+                    lambda value: value["stopped"]["apps"].__setitem__(
+                        "kernel",
+                        {
+                            "idle": True,
+                            "namespace_quiet": True,
+                            "fd_quiet": True,
+                            "keeper_unchanged": True,
+                        },
+                    ),
+                    "kernel|stage",
+                ),
+                (
+                    "reused container",
+                    lambda value: value["restored"]["containers"]["worker"].__setitem__(
+                        "container_id",
+                        originals["first_startup"]["proof"]["container_id"],
+                    ),
+                    "startup|kernel",
+                ),
+            ):
+                changed = copy.deepcopy(evidence)
+                mutate(changed)
+                with self.subTest(label=label), self.assertRaisesRegex(
+                    carry.CarryForwardError, code
+                ):
+                    carry.validate_group2_reconcile_result(
+                        request, changed, validated
+                    )
+
+            changed_chain = copy.deepcopy(chain)
+            changed_chain["receipt"]["evidence_digest"] = "0" * 64
+            with mock.patch.object(
+                carry, "GROUP2_INHERITED_REVIEW_HASHES", inherited
+            ), self.assertRaisesRegex(carry.CarryForwardError, "chain_changed"):
+                carry.validate_group2_reconcile_preservation(
+                    changed_chain, reference
+                )
+            changed_chain = copy.deepcopy(chain)
+            source = changed_chain["first_startup"]["source_artifacts"][
+                "failed-manifest.json"
+            ]
+            source["content_b64"] = __import__("base64").b64encode(b"{}").decode()
+            source["sha256"] = hashlib.sha256(b"{}").hexdigest()
+            with mock.patch.object(
+                carry, "GROUP2_INHERITED_REVIEW_HASHES", inherited
+            ), self.assertRaises(carry.CarryForwardError):
+                carry.validate_group2_reconcile_preservation(
+                    changed_chain, reference
+                )
 
     def test_reconcile_user_record_binds_exact_request_approval_and_actions(self):
         request, approval, _artifacts = self._request()
@@ -4891,11 +5593,9 @@ class Group2StartingReconcileTests(unittest.TestCase):
                 {"sandbox_unit": "unit", "sandbox_cpu_quota": "100%", "sandbox_memory_max": "1G"},
             )
             installed = {}
-            for name in carry.GROUP2_CONTROLLER_FILES:
+            for name in ("deploy.sh", "carry_forward.py", "verify.py", "assets.py"):
                 (root / name).write_bytes(name.encode())
                 installed[name] = hashlib.sha256(name.encode()).hexdigest()
-            request["failed"]["installed_controller_files_digest"] = carry.digest(installed)
-            carry.write_private(incident / "request.json", request)
             manifest["kernel_evidence"] = {"old_worker_authority": {}}
             manifest["file_evidence"].setdefault("journal_facts", {})["sandbox_recovery"] = []
             project = manifest["account_entry"]["project"]
@@ -4996,10 +5696,17 @@ class Group2StartingReconcileTests(unittest.TestCase):
                 mock.patch.object(carry, "_live_storage_identity", return_value=manifest["storage_identity"]),
                 mock.patch.object(carry, "read_log_append", return_value={}),
                 mock.patch.object(carry, "_capture_reconcile_state", return_value=({}, {})),
-                mock.patch.object(carry, "capture_kernel", return_value={}),
+                mock.patch.object(
+                    carry,
+                    "capture_kernel",
+                    autospec=True,
+                    return_value={"old_worker_authority": {}},
+                ),
                 mock.patch.object(carry, "_container_image", side_effect=lambda _p, service: old_images.get(service, "rabbit")),
                 mock.patch.object(carry, "_inspect_container", return_value={"container_id": "same", "status": "exited"}),
-                mock.patch.object(carry, "validate_group2_reconcile_preflight"),
+                mock.patch.object(carry, "validate_group2_reconcile_preflight", side_effect=lambda _request, fresh, _originals: fresh["stage"]),
+                mock.patch.object(carry, "validate_group2_reconcile_transition"),
+                mock.patch.object(carry, "_validate_reconcile_container_transition"),
                 mock.patch.object(carry, "_incident_startup_proof", return_value={}),
                 mock.patch.object(carry, "_read_token_health", return_value={"status": 200, "database": True}),
                 mock.patch.object(carry, "validate_group2_reconcile_result", return_value=receipt),
@@ -5017,6 +5724,55 @@ class Group2StartingReconcileTests(unittest.TestCase):
             self.assertNotIn("docker tag", flattened)
             committed = carry.read_private(root / "transaction.json")
             self.assertEqual(committed["operation"], "incident_software_restore")
+            self.assertEqual(committed["backup"], "/private/backup")
+            self.assertEqual(committed["carry_forward"], parsed["authority.json"]["snapshot"]["state"]["carry_forward"])
+
+            for fail_at, forbidden in (
+                (1, ("stop worker web account-web", "postgres", "control worker web")),
+                (2, ("postgres", "control worker web")),
+                (3, ("control worker web",)),
+            ):
+                carry.write_private(
+                    incident / "phase.json",
+                    {
+                        "schema": "group2-starting-reconcile-phase-v1",
+                        "incident_id": request["incident_id"],
+                        "phase": "prepared",
+                    },
+                )
+                carry.write_private(
+                    root / "transaction.json",
+                    {"phase": "starting", "sha": request["failed"]["sha"]},
+                )
+                commands.clear()
+                calls = 0
+
+                def reject_stage(*_args, **_kwargs):
+                    nonlocal calls
+                    calls += 1
+                    if calls == fail_at:
+                        raise carry.CarryForwardError("group2_reconcile_db_changed")
+
+                with (
+                    mock.patch.object(carry, "validate_group2_reconcile_request", return_value={"request": request, "approval": approval, "artifacts": parsed}),
+                    mock.patch.object(carry, "_live_storage_identity", return_value=manifest["storage_identity"]),
+                    mock.patch.object(carry, "read_log_append", return_value={}),
+                    mock.patch.object(carry, "_capture_reconcile_state", return_value=({}, {})),
+                    mock.patch.object(carry, "capture_kernel", autospec=True, return_value={"old_worker_authority": {}}),
+                    mock.patch.object(carry, "_container_image", side_effect=lambda _p, service: old_images.get(service, "rabbit")),
+                    mock.patch.object(carry, "_inspect_container", return_value={"container_id": "same", "status": "exited"}),
+                    mock.patch.object(carry, "validate_group2_reconcile_preflight", side_effect=lambda _request, fresh, _originals: fresh["stage"]),
+                    mock.patch.object(carry, "validate_group2_reconcile_transition", side_effect=reject_stage),
+                    mock.patch.object(carry, "_validate_reconcile_container_transition"),
+                    mock.patch.object(carry, "_checked_output", side_effect=checked),
+                    mock.patch.object(carry.subprocess, "run", side_effect=run),
+                    self.assertRaisesRegex(carry.CarryForwardError, "db_changed"),
+                ):
+                    carry.reconcile_group2_vm(root, request["incident_id"])
+                flattened = "\n".join(" ".join(command) for command in commands)
+                for fragment in forbidden:
+                    with self.subTest(fail_at=fail_at, fragment=fragment):
+                        self.assertNotIn(fragment, flattened)
 
 
 if __name__ == "__main__":

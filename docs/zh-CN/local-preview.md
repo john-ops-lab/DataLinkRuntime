@@ -150,9 +150,11 @@ DLR_PREVIEW_HOME=<PRIVATE_CONTROLLER_ROOT> \
 
 正式安装器对 attention 的拒绝保持不变。事故入口取得宿主 operation→config 锁及 VM deploy 锁，先核实际批准/源码/CI、host/VM authority、正式安装字节、镜像/卷/PG 身份，再把同提交的 deploy/carry 工具暂存到私有事故目录并验证摘要。工具就位后完成完整 fresh 数据、文件、日志和启动核验，全部通过前不改 transaction phase 或停服务；失败只留下 prepared 目录，原告警与运行状态不变。正式宿主/VM 控制器、installation 和旧成功记录不替换；不能临时移走 attention 或让读取返回伪造状态以通过安装器。
 
-恢复先停 Control 并复核，随后停 Worker、Web 和 account-web，验证原 DB、完整责任/审计、全部业务资产与 session、文件、连续日志及真实 idle kernel/namespace/FD。旧 PostgreSQL 镜像必须实际存在，版本、完整 RootFS 和数据卷符合绑定；仅重建软件容器，不恢复备份、不执行迁移、不写旧业务行。之后启动旧成功版本的 Control、Worker、Web。RabbitMQ 与全部卷保持，account-web 保留当前容器、镜像和绑定并停止，不要求把它伪报为健康。
+宿主六个控制器文件与 VM 四个实际安装文件分别绑定，不要求 VM 存在宿主专用文件。每个阶段保存完整原始 kernel、容器、卷和采集窗口，连同 DB/files/log 纳入 receipt 摘要并由宿主重算；不能以 idle 布尔值替代进程证据。
 
-第二次 startup 使用独立精确窗口、唯一 Worker/nonce、连续日志及既有两处允许的目录 mtime 证明；其余旧内容、权限和 DB 不变，Token 入口只做只读健康检查，不运行正式业务 probe。完整事故原件与独立 receipt 先在 VM 持久化，再由宿主读回重算和保存。只有成功后才提交指向旧成功 SHA 的事故恢复 transaction；原 current SHA、宿主 state、旧成功 probe/receipt/consumed 保持原字节。失败 manifest 原样归档并记录 abandoned，绝不 consumed；配置 CAS 清除旧 carry 引用并保持 paused，attention 最后清除。
+恢复先停 Control 并复核，随后停 Worker、Web 和 account-web，验证原 DB、完整责任/审计、全部业务资产与 session、文件、连续日志及真实 idle kernel/namespace/FD。旧 PostgreSQL 镜像必须实际存在，版本、完整 RootFS 和数据卷符合绑定；仅重建软件容器，不恢复备份、不执行迁移、不写旧业务行。每次停机及 PostgreSQL 恢复后的完整比较必须先于下一次 phase 或服务变更，失败立即停留。之后启动旧成功版本的 Control、Worker、Web。RabbitMQ 与全部卷保持，account-web 保留当前容器、镜像和绑定并停止，不要求把它伪报为健康。
+
+第二次 startup 使用独立精确窗口、唯一 Worker/nonce、连续日志及既有两处允许的目录 mtime 证明；其余旧内容、权限和 DB 不变，Token 入口只做只读健康检查，不运行正式业务 probe。完整事故原件与独立 receipt 先在 VM 持久化，再由宿主读回重算和保存。只有成功后才提交指向旧成功 SHA 的事故恢复 transaction，其 backup/carry 引用也必须来自此前成功事务；原 current SHA、宿主 state、旧成功 probe/receipt/consumed 保持原字节。失败 manifest 原样归档并记录 abandoned，绝不 consumed；配置 CAS 清除旧 carry 引用并保持 paused，attention 最后清除。
 
 任何读取、保全或持久化失败都停在真实阶段，不自动重试、回退数据库或清理原件。receipt 后、清 attention 前中断也不自动续作：先只读对账，再审查具体剩余动作。恢复成功只证明旧软件已恢复和现场被保留，不证明新候选部署成功，也不证明账号入口可用。
 

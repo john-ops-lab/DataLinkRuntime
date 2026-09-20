@@ -2,6 +2,7 @@
 """CI-gated local preview controller. PR code executes only in an unshared VM."""
 
 import argparse
+import base64
 import contextlib
 import datetime
 import fcntl
@@ -2332,7 +2333,7 @@ def reconcile_group2_starting(request_path, approval_path):
     approval_path, approval_bytes = _read_incident_input(approval_path)
     if approval_path.name != "USER-APPROVAL.json" or approval_path.parent != request_path.parent:
         raise ValueError("Incident approval must be the fixed sibling approval file")
-    user_record_path, user_record = _read_incident_input(
+    _user_record_path, user_record = _read_incident_input(
         approval_path.parent / "USER-APPROVAL.txt"
     )
     try:
@@ -2414,7 +2415,10 @@ def reconcile_group2_starting(request_path, approval_path):
                 raise ValueError("Incident VM transaction authority changed")
             if vm_command("cat", vm_path("current-sha")).stdout.strip() != request["prior"]["sha"]:
                 raise ValueError("Incident VM current SHA changed")
-            for name, expected in validated["artifacts"]["authority.json"]["snapshot"]["installed_files"].items():
+            vm_installed = carry_forward._reconcile_vm_installed_files(
+                validated["artifacts"]["authority.json"]
+            )
+            for name, expected in vm_installed.items():
                 actual = vm_command("sha256sum", vm_path(name)).stdout.split()[0]
                 if actual != expected:
                     raise ValueError("Installed VM controller bytes changed")
@@ -2541,7 +2545,7 @@ def reconcile_group2_starting(request_path, approval_path):
             try:
                 result_value = json.loads(result_bytes)
                 receipt_value = carry_forward.validate_group2_reconcile_result(
-                    request, result_value["evidence"]
+                    request, result_value["evidence"], validated
                 )
             except (KeyError, json.JSONDecodeError, carry_forward.CarryForwardError) as error:
                 raise RuntimeError("Incident VM result is invalid") from error
@@ -2554,6 +2558,47 @@ def reconcile_group2_starting(request_path, approval_path):
                 raise RuntimeError("Incident VM receipt file changed")
             write_private_bytes(host_incident / "result.json", result_bytes)
             write_private_bytes(host_incident / "receipt.json", vm_receipt_bytes)
+            originals = carry_forward._group2_reconcile_originals(validated)
+            chain = {
+                "schema": "group2-reconcile-chain-v1",
+                "request": request,
+                "approval": approval,
+                "failed_manifest": originals["manifest"],
+                "prior_success": request["prior"],
+                "first_startup": {
+                    "source_artifacts": {
+                        name: {
+                            "sha256": hashlib.sha256(raw).hexdigest(),
+                            "content_b64": base64.b64encode(raw).decode("ascii"),
+                        }
+                        for name, raw in artifacts.items()
+                    },
+                    **originals["first_startup"],
+                },
+                "pre_rollback": result_value["evidence"]["preflight"],
+                "stopped": result_value["evidence"]["stopped"],
+                "restore_startup": result_value["evidence"]["restore_startup"],
+                "restored": {
+                    "postgres": result_value["evidence"]["restored_postgres"],
+                    "final": result_value["evidence"]["restored"],
+                    "account": result_value["evidence"]["account"],
+                    "images": result_value["evidence"]["images"],
+                    "storage": result_value["evidence"]["storage"],
+                    "token_health": result_value["evidence"]["token_health"],
+                },
+                "receipt": receipt_value,
+            }
+            preservation = carry_forward.validate_group2_reconcile_preservation(
+                chain,
+                originals["manifest"]["review_scope"]["preservation_reference"],
+            )
+            write_private_bytes(
+                host_incident / "chain.json", carry_forward.canonical_bytes(chain)
+            )
+            write_private_bytes(
+                host_incident / "preservation-snapshot.json",
+                carry_forward.canonical_bytes(preservation),
+            )
             vm_private_write(
                 f"incidents/{incident_id}/host-validated.json",
                 carry_forward.canonical_bytes(
@@ -2575,6 +2620,8 @@ def reconcile_group2_starting(request_path, approval_path):
                 or committed.get("operation") != "incident_software_restore"
                 or committed.get("reconciled_by")
                 != {"incident_id": incident_id, "receipt_digest": receipt_value["receipt_digest"]}
+                or committed.get("backup") != state["backup"]
+                or committed.get("carry_forward") != state["carry_forward"]
             ):
                 raise RuntimeError("Incident VM transaction commit is invalid")
             prior_vm = validated["artifacts"]["prior-success.json"]["vm"]

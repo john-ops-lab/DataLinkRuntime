@@ -134,17 +134,19 @@ fresh 只读重复读快照先与第一组独立封存事实核对，再保护�
 
 该入口仅处理本组已绑定的 `starting` 失败事务，不能把失败候选变成成功前驱。原 D10 的失败停留和成功版本 recover 规则保持不变。实施代码、离线测试、独立审查与精确 CI 可以先准备；隔离工具传输、旧软件恢复和控制面提交必须另获绑定具体请求与工具 SHA 的专项批准。
 
-唯一宿主入口为 `reconcile-group2-starting --incident-request <private.json> --incident-approval <approval.json>`，无任意命令、目标 SHA、force、retry 或 resume 参数。闭合请求绑定失败 manifest/首次启动原件、最后成功 receipt/consumed/镜像、完整 64 路径及 54 个冻结产品 blob、六工具摘要、精确提交审查/CI、原卷及账号绑定。独立批准记录绑定请求摘要、工具提交、实际用户原文及三个精确动作：传事故工具、恢复旧软件、提交控制面对账。旧通用批准或自填布尔值不能代替。
+唯一宿主入口为 `reconcile-group2-starting --incident-request <private.json> --incident-approval <approval.json>`，无任意命令、目标 SHA、force、retry 或 resume 参数。闭合请求绑定失败 manifest/首次启动原件、最后成功 receipt/consumed/镜像、完整 64 路径及 54 个冻结产品 blob、宿主六工具及 VM 四个实际安装文件的独立摘要、精确提交审查/CI、原卷及账号绑定。独立批准记录绑定请求摘要、工具提交、实际用户原文及三个精确动作：传事故工具、恢复旧软件、提交控制面对账。旧通用批准或自填布尔值不能代替。
 
 官方安装器拒绝 attention 的边界不动。从审查通过的干净提交运行官方入口，先核实际批准/源码/CI、host/VM authority、正式安装字节、镜像/卷/PG 身份；之后只向私有 `incidents/<id>/tool/` 暂存同提交的 deploy/carry 两个工具并核对摘要。工具就位后，使用它完成下面的完整 fresh 保全核验，全部通过前不改 transaction phase 或停止服务；失败只留下 prepared 事故目录，原告警与运行状态不变。正式宿主及 VM 已安装控制器、installation 和旧成功 receipt 保持原字节。宿主 operation→config 锁与 VM deploy 锁排除并发，同 ID 目录已存在即拒绝重放。
 
 先以 fresh 全量只读证据与原件核对 paused/attention/starting、镜像、卷、完整责任/审计/21 类旧资产（含 session）、日志前缀和首次 startup，证明尚无业务 probe。随后停 Control 并复核，停 Worker/Web/account-web，再证明真实 idle kernel、namespace 与 FD 归属。恢复前后 PostgreSQL 实际主版本、完整 RootFS、数据卷和 schema 必须一致；仅用已有的最后成功镜像重建 PostgreSQL 软件容器，不 restore dump、迁移、改标签或触碰业务旧行。
 
+每阶段保存完整 DB、files、logs、kernel、container、storage 及采集窗口，并在下一次 phase 写入或服务操作之前完成纯比较；停 Control、停其余应用、恢复 PostgreSQL 任一阶段漂移均不能继续。运行态使用实际失败候选 Worker authority；停后使用它作为基线核对原始 namespace/FD 证据，不能用布尔值替代。完整 evidence 摘要纳入 receipt，宿主和后续保全验证器复算相同链。
+
 只启动最后成功版本的 Control、Worker、Web。account-web 保留失败候选的原容器、镜像及绑定并保持停止，RabbitMQ 和全部持久卷不变；不能借 Compose 依赖启动账号入口。第二次独立 startup 窗口验证唯一 Worker/nonce、连续日志及既有两处目录 mtime 变化，其余文件、内容、权限和 DB 必须不变。复用 Worker 公共证明，不削弱普通 v4 的四应用及双入口健康要求。
 
-先持久化 VM 原件和独立 `group2-software-reconcile-v1` receipt，宿主读回全量重算并保存后，才将 VM transaction 记为旧成功 SHA 的 `incident_software_restore`，绑定事故 receipt。VM current SHA 和宿主 state 原本即为旧成功值，逐字节验证且不写；旧成功 probe/receipt/consumed 不改。失败 manifest 原字节归档并附作废记录，不消费它；CAS 核对原配置选择后清 carry 引用，保持 paused，最后才清本次 attention。任一点中断均保留真实 phase 和原件，不自动续作；receipt 后中断也须先只读对账并形成具体收尾方案。
+先持久化 VM 原件和独立 `group2-software-reconcile-v1` receipt，宿主读回全量重算并保存后，才将 VM transaction 记为旧成功 SHA 的 `incident_software_restore`，绑定事故 receipt，其 backup/carry 引用从此前成功事务派生，不能沿用失败 manifest。VM current SHA 和宿主 state 原本即为旧成功值，逐字节验证且不写；旧成功 probe/receipt/consumed 不改。失败 manifest 原字节归档并附作废记录，不消费它；CAS 核对原配置选择后清 carry 引用，保持 paused，最后才清本次 attention。任一点中断均保留真实 phase 和原件，不自动续作；receipt 后中断也须先只读对账并形成具体收尾方案。
 
-后续保全引用保留原 shape，仅在现有报告中增加专用 `group2_starting_reconcile_v1` 来源和唯一闭合事故链。纯验证器从失败 manifest 中的原参考复算首次 startup、停止、恢复 startup 与最终保全，唯一导出原 selection、原 DB、恢复后 files 及追加 request/receipt/chain 摘要的 lineage；不能从 fresh 值自批新根。事故后由独立 reviewer 签署该引用，再走 trusted stage、新 scope、官方 install、fresh manifest 和正常 v4 once；账号入口到这时才随候选更新并验收。
+后续保全引用保留原 shape，仅在现有报告中增加专用 `group2_starting_reconcile_v1` 来源和唯一闭合事故链。事故链嵌入既有七份输入的原始字节及摘要，重跑请求绑定检查。纯验证器从失败 manifest 中的原参考逐边连接前五阶段、首次 startup、停止、恢复 startup 与最终保全，唯一导出原 selection、原 DB、恢复后 files 及追加 request/receipt/chain 摘要的 lineage；不能从 fresh 值自批新根。事故后由独立 reviewer 签署该引用，再走 trusted stage、新 scope、官方 install、fresh manifest 和正常 v4 once；账号入口到这时才随候选更新并验收。
 
 ## Verification Matrix
 

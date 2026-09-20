@@ -59,12 +59,16 @@
 - **WHEN** 停 Control 后保全、其余应用停机、真实 idle kernel/namespace/FD 及 PostgreSQL 相同版本/RootFS/数据卷检查均通过
 - **THEN** 系统仅重建旧成功 PostgreSQL 软件并启动旧 Control/Worker/Web，保留 RabbitMQ 和全部卷；account-web 保持当前容器和绑定且停止，不 restore 数据库、不迁移、不执行正式 probe
 
+#### Scenario: 中间阶段保全失败
+- **WHEN** 停 Control、停其余应用或恢复 PostgreSQL 后，完整 DB/files/log、原始 kernel/namespace/FD、容器或卷证据不符
+- **THEN** 系统在下一次 phase 写入及服务变更前拒绝推进；完整阶段证据进入 receipt 摘要并由宿主与后续保全验证器重新计算，不能只在所有应用启动后汇总拒绝
+
 #### Scenario: 第二次 startup 保全
 - **WHEN** 恢复应用启动
 - **THEN** 系统以新的唯一 Worker 生命周期、nonce、精确窗口和连续日志验证既有两处允许的目录 mtime；第三路径、旧内容、责任或审计变化均拒绝，普通 v4 四应用和双入口要求不变
 
 ### Requirement: 事故对账不得伪造失败部署成功
-系统 MUST 先持久化独立事故原件和 receipt 并由宿主全量重算，才提交标识为 `incident_software_restore` 的旧成功 SHA transaction。原 current SHA、宿主 state 和旧成功 probe/receipt/consumed MUST 保持原字节；失败 manifest SHALL 原样归档为 abandoned 而非 consumed。配置 CAS 成功并保持 paused 后，attention MUST 最后清除。
+系统 MUST 先持久化独立事故原件和 receipt 并由宿主全量重算，才提交标识为 `incident_software_restore` 的旧成功 SHA transaction，backup/carry 引用也 MUST 来自此前成功事务，不能引用失败 manifest。原 current SHA、宿主 state 和旧成功 probe/receipt/consumed MUST 保持原字节；失败 manifest SHALL 原样归档为 abandoned 而非 consumed。配置 CAS 成功并保持 paused 后，attention MUST 最后清除。
 
 #### Scenario: 持久化或控制面提交中断
 - **WHEN** receipt 落盘、读回、transaction、失败 manifest 归档或配置 CAS 任一步失败
