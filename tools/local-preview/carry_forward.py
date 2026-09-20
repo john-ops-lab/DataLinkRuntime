@@ -8512,6 +8512,16 @@ def _validate_reconcile_log_activity(
         raise CarryForwardError("group2_reconcile_startup_changed")
 
 
+def _validate_reconcile_quiet_logs(logs: dict[str, Any]) -> None:
+    _validate_reconcile_log_activity(logs, allow_registration=False)
+    worker = _appended_text(logs, "/worker/worker.log")
+    if (
+        "sandbox preflight receipt:" in worker
+        or "sandbox preflight passed; rabbitmq execution gate=True" in worker
+    ):
+        raise CarryForwardError("group2_reconcile_startup_changed")
+
+
 def _validate_reconcile_stage(value: Any) -> dict[str, Any]:
     value = _closed_object(
         value, GROUP2_RECONCILE_STAGE_FIELDS, "group2_reconcile_stage_invalid"
@@ -8545,6 +8555,8 @@ def validate_group2_reconcile_transition(
     previous = _validate_reconcile_stage(previous)
     current = _validate_reconcile_stage(current)
     _compare_group2_db_strict(previous["db"], current["db"])
+    if previous["db"] != current["db"]:
+        raise CarryForwardError("group2_reconcile_db_changed")
     if previous["files"] != current["files"]:
         raise CarryForwardError("group2_reconcile_files_changed")
     _validate_log_link(previous["logs"], current["logs"])
@@ -8552,6 +8564,7 @@ def validate_group2_reconcile_transition(
         raise CarryForwardError("group2_reconcile_storage_changed")
     if current["window_start_ns"] < previous["window_end_ns"]:
         raise CarryForwardError("group2_reconcile_window_invalid")
+    _validate_reconcile_quiet_logs(current["logs"])
     if require_idle:
         compare_kernel(kernel_baseline, current["kernel"])
         namespace = current["kernel"].get("namespace_evidence")
@@ -8587,6 +8600,43 @@ def validate_group2_reconcile_transition(
     return current
 
 
+def _validate_reconcile_preflight_root(
+    request: dict[str, Any], stage: Any, validated: Any
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    stage = _validate_reconcile_stage(stage)
+    historical = _group2_reconcile_originals(validated)
+    authority = validated["artifacts"]["authority.json"]["vm_inventory"]
+    original_kernel = authority.get("current_kernel")
+    platform = validated["artifacts"]["platform.json"]
+    candidate_images = {
+        service: platform["images"]["candidate"][service].get("Id")
+        for service in ("postgres", "control", "worker", "web")
+    }
+    if (
+        stage["db"] != historical["db"]
+        or stage["files"] != historical["files_after_startup"]
+        or stage["kernel"] != original_kernel
+        or stage["containers"]["worker"]
+        != historical["first_startup"]["request"]["container_after"]
+        or any(
+            stage["containers"][service].get("image_id")
+            != candidate_images[service]
+            for service in candidate_images
+        )
+        or digest(stage["storage"]) != request["restore"]["storage_identity_digest"]
+    ):
+        raise CarryForwardError("group2_reconcile_originals_changed")
+    kernel_authority = stage["kernel"].get("old_worker_authority")
+    if not isinstance(kernel_authority, dict) or any(
+        kernel_authority.get(key) != stage["containers"]["worker"].get(key)
+        for key in ("container_id", "image_id", "started_at")
+    ):
+        raise CarryForwardError("group2_reconcile_kernel_changed")
+    _validate_log_link(historical["logs_after_startup"], stage["logs"])
+    _validate_reconcile_quiet_logs(stage["logs"])
+    return stage, historical
+
+
 def validate_group2_reconcile_preflight(
     request: Any, fresh: Any, originals: Any
 ) -> dict[str, Any]:
@@ -8604,8 +8654,9 @@ def validate_group2_reconcile_preflight(
         {"validated", "authority", "postgres", "images", "kernel"},
         "group2_reconcile_originals_invalid",
     )
-    historical = _group2_reconcile_originals(originals["validated"])
-    stage = _validate_reconcile_stage(fresh["stage"])
+    stage, _historical = _validate_reconcile_preflight_root(
+        request, fresh["stage"], originals["validated"]
+    )
     authority = fresh["authority"]
     if (
         not isinstance(authority, dict)
@@ -8620,28 +8671,8 @@ def validate_group2_reconcile_preflight(
         raise CarryForwardError("group2_reconcile_authority_changed")
     if fresh["authority"] != originals["authority"]:
         raise CarryForwardError("group2_reconcile_authority_changed")
-    if (
-        stage["db"] != historical["db"]
-        or stage["files"] != historical["files_after_startup"]
-        or stage["kernel"] != originals["kernel"]
-        or stage["containers"]["worker"]
-        != historical["first_startup"]["request"]["container_after"]
-    ):
+    if stage["kernel"] != originals["kernel"]:
         raise CarryForwardError("group2_reconcile_originals_changed")
-    kernel_authority = stage["kernel"].get("old_worker_authority")
-    if not isinstance(kernel_authority, dict) or any(
-        kernel_authority.get(key) != stage["containers"]["worker"].get(key)
-        for key in ("container_id", "image_id", "started_at")
-    ):
-        raise CarryForwardError("group2_reconcile_kernel_changed")
-    _validate_log_link(historical["logs_after_startup"], stage["logs"])
-    worker_append = _appended_text(stage["logs"], "/worker/worker.log")
-    _validate_reconcile_log_activity(stage["logs"], allow_registration=False)
-    if (
-        "sandbox preflight receipt:" in worker_append
-        or "sandbox preflight passed; rabbitmq execution gate=True" in worker_append
-    ):
-        raise CarryForwardError("group2_reconcile_startup_changed")
     for key in ("postgres", "images"):
         if fresh[key] != originals[key]:
             raise CarryForwardError(f"group2_reconcile_{key}_changed")
@@ -8729,6 +8760,11 @@ def _validate_restored_running_kernel(
     original_authority = before.get("old_worker_authority")
     children = after.get("children")
     container_id = proof["container_id"]
+    keeper = children.get("agent") if isinstance(children, dict) else None
+    worker_root = children.get(container_id) if isinstance(children, dict) else None
+    worker_agent = (
+        children.get(f"{container_id}/agent") if isinstance(children, dict) else None
+    )
     if (
         not isinstance(authority, dict)
         or not isinstance(original_authority, dict)
@@ -8755,12 +8791,20 @@ def _validate_restored_running_kernel(
             proof["preflight_receipt"]["namespace_identity"]["root_device"],
             proof["preflight_receipt"]["namespace_identity"]["root_inode"],
         )
-        or any(
-            not isinstance(children[name], dict)
-            or children[name].get("populated") != 1
-            or children[name].get("process_count") != 1
-            for name in ("agent", container_id, f"{container_id}/agent")
-        )
+        or not isinstance(keeper, dict)
+        or keeper.get("populated") != 1
+        or keeper.get("process_count") != 1
+        or keeper.get("process_digest") != digest([after["keeper_pid"]])
+        or not isinstance(worker_root, dict)
+        or worker_root.get("populated") != 1
+        or worker_root.get("process_count") != 0
+        or worker_root.get("process_digest") != digest([])
+        or (worker_root.get("device"), worker_root.get("inode"))
+        != (authority.get("root_device"), authority.get("root_inode"))
+        or not isinstance(worker_agent, dict)
+        or worker_agent.get("populated") != 1
+        or worker_agent.get("process_count") != 1
+        or worker_agent.get("process_digest") != digest([authority.get("pid")])
         or after.get("namespace_evidence") is not None
         or after.get("retired_markers") != []
     ):
@@ -8778,8 +8822,9 @@ def validate_group2_reconcile_result(
     )
     if validated_originals.get("request") != request:
         raise CarryForwardError("group2_reconcile_originals_changed")
-    originals = _group2_reconcile_originals(validated_originals)
-    preflight = _validate_reconcile_stage(evidence["preflight"])
+    preflight, originals = _validate_reconcile_preflight_root(
+        request, evidence["preflight"], validated_originals
+    )
     stopped = _closed_object(
         evidence["stopped"], {"control", "apps"}, "group2_reconcile_result_invalid"
     )

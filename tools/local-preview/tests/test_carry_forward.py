@@ -5023,12 +5023,20 @@ class Group2StartingReconcileTests(unittest.TestCase):
             "populated": 1, "process_count": 1,
             "process_digest": carry.digest([pid]), "device": 1, "inode": pid,
         }
+        worker_root = lambda inode: {
+            "populated": 1, "process_count": 0,
+            "process_digest": carry.digest([]), "device": 1, "inode": inode,
+        }
         active_kernel = {
             "boot_id": "boot", "unit": "dlr-test.service",
             "control_group": "/system.slice/dlr-test.service", "keeper_pid": 7,
             "keeper_starttime": "7", "description": "DataLinkRuntime Sandbox dlr-test.service CPU=100% Memory=1G",
             "parent_device": 1, "parent_inode": 2,
-            "children": {"agent": child(7), first_worker["container_id"]: child(101), f"{first_worker['container_id']}/agent": child(101)},
+            "children": {
+                "agent": child(7),
+                first_worker["container_id"]: worker_root(20),
+                f"{first_worker['container_id']}/agent": child(101),
+            },
             "old_worker_authority": authority, "namespace_evidence": None,
             "retired_markers": [],
         }
@@ -5120,7 +5128,7 @@ class Group2StartingReconcileTests(unittest.TestCase):
         final_kernel = copy.deepcopy(active_kernel)
         final_kernel["old_worker_authority"] = final_authority
         final_kernel["children"] = {
-            "agent": child(7), final_worker["container_id"]: child(202),
+            "agent": child(7), final_worker["container_id"]: worker_root(40),
             f"{final_worker['container_id']}/agent": child(202),
         }
         final_kernel["namespace_evidence"] = None
@@ -5367,6 +5375,65 @@ class Group2StartingReconcileTests(unittest.TestCase):
                         request, changed, validated
                     )
 
+            transitions = (
+                (
+                    "control projection",
+                    evidence["preflight"], evidence["stopped"]["control"],
+                    "projection", False,
+                ),
+                (
+                    "apps responsibilities",
+                    evidence["stopped"]["control"], evidence["stopped"]["apps"],
+                    "responsibilities", True,
+                ),
+                (
+                    "postgres inventory",
+                    evidence["stopped"]["apps"], evidence["restored_postgres"],
+                    "schema_inventory", True,
+                ),
+            )
+            for label, previous, current, key, require_idle in transitions:
+                previous = copy.deepcopy(previous)
+                current = copy.deepcopy(current)
+                current["db"] = copy.deepcopy(current["db"])
+                current["db"][key] = {"real_drift": True}
+                actions = []
+                with self.subTest(label=label), self.assertRaisesRegex(
+                    carry.CarryForwardError, "db_changed"
+                ):
+                    carry.validate_group2_reconcile_transition(
+                        previous,
+                        current,
+                        kernel_baseline=evidence["preflight"]["kernel"],
+                        require_idle=require_idle,
+                    )
+                    actions.append("next_mutation")
+                self.assertEqual(actions, [])
+
+            before_logs, after_logs = Group2RuntimeTests()._log_window(
+                'x 127.0.0.1:3 - "POST /api/adapters HTTP/1.1" 201\n'
+            )
+            previous = copy.deepcopy(evidence["preflight"])
+            current = copy.deepcopy(evidence["stopped"]["control"])
+            previous["logs"] = before_logs
+            current["logs"] = after_logs
+            previous["window_start_ns"] = 9
+            previous["window_end_ns"] = 10
+            current["window_start_ns"] = 10
+            current["window_end_ns"] = 20
+            actions = []
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "startup_changed"
+            ):
+                carry.validate_group2_reconcile_transition(
+                    previous,
+                    current,
+                    kernel_baseline=evidence["preflight"]["kernel"],
+                    require_idle=False,
+                )
+                actions.append("next_mutation")
+            self.assertEqual(actions, [])
+
             changed = copy.deepcopy(evidence)
             for stage in (
                 changed["preflight"], changed["stopped"]["control"],
@@ -5430,6 +5497,68 @@ class Group2StartingReconcileTests(unittest.TestCase):
             with mock.patch.object(
                 carry, "GROUP2_INHERITED_REVIEW_HASHES", inherited
             ), self.assertRaisesRegex(carry.CarryForwardError, "chain_changed"):
+                carry.validate_group2_reconcile_preservation(
+                    changed_chain, reference
+                )
+            changed = copy.deepcopy(evidence)
+            for stage in (
+                changed["preflight"], changed["stopped"]["control"],
+                changed["stopped"]["apps"], changed["restored_postgres"],
+                changed["restored"],
+            ):
+                stage["kernel"]["keeper_starttime"] = "detached-generation"
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "originals_changed"
+            ):
+                carry.validate_group2_reconcile_result(request, changed, validated)
+            for label, mutate in (
+                (
+                    "worker root direct process",
+                    lambda kernel, worker_id: kernel["children"][worker_id].update(
+                        process_count=1,
+                        process_digest=carry.digest(
+                            [kernel["old_worker_authority"]["pid"]]
+                        ),
+                    ),
+                ),
+                (
+                    "worker agent digest",
+                    lambda kernel, worker_id: kernel["children"][
+                        f"{worker_id}/agent"
+                    ].__setitem__("process_digest", carry.digest([])),
+                ),
+                (
+                    "extra child",
+                    lambda kernel, _worker_id: kernel["children"].__setitem__(
+                        "unexpected", {
+                            "populated": 0, "process_count": 0,
+                            "process_digest": carry.digest([]),
+                            "device": 1, "inode": 99,
+                        }
+                    ),
+                ),
+            ):
+                changed = copy.deepcopy(evidence)
+                kernel = changed["restored"]["kernel"]
+                worker_id = changed["restore_startup"]["proof"]["container_id"]
+                mutate(kernel, worker_id)
+                with self.subTest(label=label), self.assertRaisesRegex(
+                    carry.CarryForwardError, "kernel_changed"
+                ):
+                    carry.validate_group2_reconcile_result(
+                        request, changed, validated
+                    )
+            changed_chain = copy.deepcopy(chain)
+            for stage in (
+                changed_chain["pre_rollback"], changed_chain["stopped"]["control"],
+                changed_chain["stopped"]["apps"],
+                changed_chain["restored"]["postgres"],
+                changed_chain["restored"]["final"],
+            ):
+                stage["kernel"]["keeper_starttime"] = "detached-generation"
+            with mock.patch.object(
+                carry, "GROUP2_INHERITED_REVIEW_HASHES", inherited
+            ), self.assertRaisesRegex(carry.CarryForwardError, "originals_changed"):
                 carry.validate_group2_reconcile_preservation(
                     changed_chain, reference
                 )
