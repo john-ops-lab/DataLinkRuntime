@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,22 @@ ENV = {
 ENV["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 GH = "/opt/homebrew/bin/gh"
 COLIMA = "/opt/homebrew/bin/colima"
+
+GROUP2_REQUIRED_JOBS = {"backend", "web", "compose-smoke", "local-preview"}
+GROUP2_APPROVAL_HASHES = {
+    "user_approval_sha256": "a595555cd4f39466a9477bef96c7bd6424dc878efa75883e6a8ff16de988749b",
+    "product_scope_sha256": "53b52d4168f6ef7b7504b5eb6b229b5f784110c3bd4716ee0e447e6ec2f8bbc7",
+    "review_bindings_sha256": "ba8dfb8e9d6fc043c049162ec56b35747edd84755789f1325b38b40492dfed3b",
+}
+GROUP2_HISTORICAL_REVIEWS = {
+    "group2-product-integration-recheck.md":
+        "e5c457872b19af0994ce76e3a894e8ffbb2cbd7a11868236d5c4bb8bd2fe152f",
+    "group2-ci-web-code-review.md":
+        "aa4a861dc2784244921a79af25183e4600b6328b8ddff573dbb3f1425c24c43f",
+    "group2-python-harness-code-review.md":
+        "31bc67be2eefadceba6c1d612731d24f349983adf61567386ebc56ea39062c2b",
+}
+_group2_install_context = None
 
 
 def read(name, default=None):
@@ -103,9 +120,31 @@ def migration_graph_digest(sha):
 
 def private_directory(relative):
     path = ROOT / relative
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path, 0o700)
+    current = ROOT
+    for part in Path(relative).parts:
+        current = current / part
+        current.mkdir(exist_ok=True, mode=0o700)
+        if current.is_symlink() or not current.is_dir():
+            raise ValueError("Private path is not a directory")
+        os.chmod(current, 0o700)
     return path
+
+
+def write_private_bytes(path, data):
+    if not path.parent.is_dir() or path.parent.stat().st_mode & 0o077:
+        raise ValueError("Private evidence parent must be mode 0700")
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
+        temporary = Path(output.name)
+        os.chmod(temporary, 0o600)
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, path)
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def vm_private_write(relative, data):
@@ -197,6 +236,36 @@ def selected_manifest(config, previous, target):
         "source_diff"
     ] != audited_source_diff(manifest["from_sha"], manifest["to_sha"]):
         raise RuntimeError("Carry-forward source difference changed")
+    if manifest.get("mode") == carry_forward.GROUP2_MODE:
+        carry_forward.validate_group2_manifest_extensions(manifest)
+        exact, reason = eligible(config, GROUP2_REQUIRED_JOBS)
+        if exact is None or any(
+            exact.get(key) != target.get(key)
+            for key in ("sha", "run_id", "run_attempt", "pr")
+        ):
+            raise RuntimeError("Group2 exact CI binding changed: " + reason)
+        target.update(exact)
+        validate_group2_candidate_binding(manifest["review_scope"], exact)
+        if manifest["source_diff"] != group2_source_diff(
+            manifest["from_sha"], manifest["to_sha"], manifest["review_scope"]
+        ):
+            raise RuntimeError("Group2 source difference changed")
+        stored_scope = (
+            ROOT
+            / "carry-forward"
+            / "review-scopes"
+            / manifest["review_scope_digest"]
+            / "review-scope.json"
+        )
+        if (
+            not stored_scope.exists()
+            or carry_forward.read_private(stored_scope) != manifest["review_scope"]
+        ):
+            raise RuntimeError("Group2 reviewed scope evidence changed")
+        validate_group2_artifacts(manifest["review_scope"], stored_scope)
+        consumed = ROOT / "carry-forward" / "consumed" / path.name
+        if consumed.exists():
+            raise RuntimeError("Carry-forward manifest was already consumed")
     return manifest, path
 
 
@@ -204,6 +273,9 @@ def selected_manifest(config, previous, target):
 def config_lock():
     with (ROOT / "config.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        context = _group2_install_context
+        if context is not None and context.get("operation_held"):
+            validate_group2_install_locked(context)
         yield
 
 
@@ -213,7 +285,14 @@ def operation_lock(*, blocking=True):
     with (ROOT / "operation.lock").open("a") as lock:
         flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
         fcntl.flock(lock, flags)
-        yield
+        context = _group2_install_context
+        if context is not None:
+            context["operation_held"] = True
+        try:
+            yield
+        finally:
+            if context is not None:
+                context["operation_held"] = False
 
 
 def log(message):
@@ -236,7 +315,7 @@ def api(path):
     return json.loads(result.stdout)
 
 
-def eligible(config):
+def eligible(config, required_jobs=None):
     repo, number = config["repo"], int(config["pr"])
     pr = api(f"repos/{repo}/pulls/{number}")
     if pr["state"] != "open" or pr["draft"]:
@@ -262,15 +341,40 @@ def eligible(config):
     jobs = api(
         f"repos/{repo}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100"
     )["jobs"]
-    required = {"backend", "web", "compose-smoke"}
-    if not required.issubset({j["name"] for j in jobs if j["conclusion"] == "success"}):
+    extended_binding = required_jobs is not None
+    required = required_jobs or {"backend", "web", "compose-smoke"}
+    succeeded = {j["name"] for j in jobs if j["conclusion"] == "success"}
+    if not required.issubset(succeeded):
         return None, "Required CI jobs have not all succeeded"
-    return {
+    target = {
         "sha": sha,
         "run_id": run["id"],
         "run_attempt": run["run_attempt"],
         "pr": number,
-    }, "CI passed"
+    }
+    if extended_binding:
+        target.update(
+            required_jobs=sorted(required),
+            ci_binding={
+                "head_sha": sha,
+                "run_id": run["id"],
+                "run_attempt": run["run_attempt"],
+                "workflow_path": ".github/workflows/ci.yml",
+                "event": "pull_request",
+                "jobs": sorted(
+                    (
+                        {
+                            "id": job["id"],
+                            "name": job["name"],
+                            "conclusion": job["conclusion"],
+                        }
+                        for job in jobs
+                    ),
+                    key=lambda item: (item["name"], item["id"]),
+                ),
+            },
+        )
+    return target, "CI passed"
 
 
 def stage_source(sha, output):
@@ -405,11 +509,42 @@ def phase(target, action, manifest_id=""):
     return True
 
 
-def plan_carry_forward(to_sha, ids_file, output, mode=None):
+def plan_carry_forward(to_sha, ids_file, output, mode=None, review_scope=None):
     if not re.fullmatch(r"[0-9a-f]{40}", to_sha):
         raise ValueError("--to-sha must be a full lowercase commit SHA")
-    if mode not in {None, carry_forward.AUDITED_MODE}:
+    if mode not in {None, carry_forward.AUDITED_MODE, carry_forward.GROUP2_MODE}:
         raise ValueError("Unsupported carry-forward mode")
+    if (mode == carry_forward.GROUP2_MODE) != (review_scope is not None):
+        raise ValueError("Group2 mode requires one reviewed scope; older modes forbid it")
+    scope = (
+        carry_forward.validate_group2_review_scope(
+            carry_forward.read_private(review_scope)
+        )
+        if review_scope
+        else None
+    )
+    if scope is not None:
+        evidence = validate_group2_artifacts(scope, review_scope)
+        stored = private_directory(
+            f"carry-forward/review-scopes/{scope['scope_digest']}"
+        )
+        scope_destination = stored / "review-scope.json"
+        if scope_destination.exists():
+            if scope_destination.read_bytes() != carry_forward.canonical_bytes(scope) + b"\n":
+                raise ValueError("Stored Group2 review scope changed")
+        else:
+            carry_forward.write_private(scope_destination, scope)
+        evidence_destination = stored / "review-scope.evidence"
+        private_directory(str(evidence_destination.relative_to(ROOT)))
+        for source_path in evidence.rglob("*"):
+            if source_path.is_file():
+                relative = source_path.relative_to(evidence)
+                destination = evidence_destination / relative
+                private_directory(str(destination.parent.relative_to(ROOT)))
+                if destination.exists() and destination.read_bytes() != source_path.read_bytes():
+                    raise ValueError("Stored Group2 reviewed evidence changed")
+                if not destination.exists():
+                    write_private_bytes(destination, source_path.read_bytes())
     ids = carry_forward.normalize_selection(
         carry_forward.read_private(ids_file), mode=mode
     )
@@ -417,7 +552,9 @@ def plan_carry_forward(to_sha, ids_file, output, mode=None):
     previous = read("state.json", {})
     if read("attention.json"):
         raise RuntimeError("Resolve the existing deployment attention first")
-    target, reason = eligible(config)
+    target, reason = eligible(
+        config, GROUP2_REQUIRED_JOBS if scope is not None else None
+    )
     if target is None or target["sha"] != to_sha:
         raise RuntimeError("Candidate is not the selected eligible HEAD: " + reason)
     candidate = read("candidate.json", {})
@@ -439,6 +576,12 @@ def plan_carry_forward(to_sha, ids_file, output, mode=None):
     old_images = json.loads(
         vm_command("cat", vm_path(f"releases/{previous['sha']}/images.json")).stdout
     )
+    if scope is not None:
+        validate_group2_candidate_binding(scope, target)
+        if scope["image_binding"]["candidate_image_ids"] != candidate_images or scope[
+            "image_binding"
+        ]["old_image_ids"] != old_images:
+            raise RuntimeError("Group2 staged image binding changed")
     storage = []
     old_containers = []
     for service in ("postgres", "rabbitmq", "control", "worker"):
@@ -578,6 +721,21 @@ def plan_carry_forward(to_sha, ids_file, output, mode=None):
     if mode == carry_forward.AUDITED_MODE:
         context["mode"] = mode
         context["source_diff"] = source_diff
+    elif mode == carry_forward.GROUP2_MODE:
+        context.update(
+            {
+                "mode": mode,
+                "source_diff": group2_source_diff(
+                    previous["sha"], target["sha"], scope
+                ),
+                "review_scope": scope,
+                "review_scope_digest": scope["scope_digest"],
+                "ci_binding": scope["ci"],
+                "preservation_reference_digest": scope[
+                    "preservation_reference"
+                ]["snapshot_digest"],
+            }
+        )
     vm_private_write(
         f"{work_relative}/ids.json", carry_forward.canonical_bytes(ids) + b"\n"
     )
@@ -588,6 +746,10 @@ def plan_carry_forward(to_sha, ids_file, output, mode=None):
     manifest = carry_forward.validate_manifest(
         json.loads(vm_command("cat", vm_path(f"{work_relative}/manifest.json")).stdout)
     )
+    if scope is not None:
+        carry_forward.validate_group2_manifest_extensions(manifest)
+        if manifest["review_scope_digest"] != scope["scope_digest"]:
+            raise RuntimeError("VM Group2 manifest changed the reviewed scope")
     carry_forward.write_private(output, manifest)
     return {
         "code": "manifest_ready",
@@ -616,12 +778,42 @@ def install_manifest(config, pr, source):
         "source_diff"
     ] != audited_source_diff(manifest["from_sha"], manifest["to_sha"]):
         raise ValueError("Carry-forward manifest source difference changed")
+    if manifest.get("mode") == carry_forward.GROUP2_MODE:
+        carry_forward.validate_group2_manifest_extensions(manifest)
+        if state.get("history_anchor_sha", state.get("sha")) != state.get("sha"):
+            raise ValueError("Group2 manifest requires the actual deployed source")
+        target, reason = eligible(config | {"pr": pr}, GROUP2_REQUIRED_JOBS)
+        if target is None:
+            raise ValueError("Group2 exact CI is no longer eligible: " + reason)
+        validate_group2_candidate_binding(manifest["review_scope"], target)
+        stored_scope = (
+            ROOT
+            / "carry-forward"
+            / "review-scopes"
+            / manifest["review_scope_digest"]
+            / "review-scope.json"
+        )
+        if (
+            not stored_scope.exists()
+            or carry_forward.read_private(stored_scope) != manifest["review_scope"]
+        ):
+            raise ValueError("Group2 reviewed scope evidence is not installed")
+        validate_group2_artifacts(manifest["review_scope"], stored_scope)
+        if manifest["ci_binding"] != manifest["review_scope"]["ci"]:
+            raise ValueError("Group2 manifest CI binding changed")
     pull = api(f"repos/{config['repo']}/pulls/{pr}")
     if pull["head"]["sha"] != manifest["to_sha"]:
         raise ValueError("Carry-forward manifest is not bound to the current PR HEAD")
     directory = private_directory("carry-forward/manifests")
     destination = directory / f"{manifest['manifest_id']}.json"
-    carry_forward.write_private(destination, manifest)
+    consumed = ROOT / "carry-forward" / "consumed" / destination.name
+    if consumed.exists():
+        raise ValueError("Carry-forward manifest was already consumed")
+    if destination.exists():
+        if destination.read_bytes() != carry_forward.canonical_bytes(manifest) + b"\n":
+            raise ValueError("Active carry-forward manifest ID is already in use")
+    else:
+        carry_forward.write_private(destination, manifest)
     return {
         key: manifest[key]
         for key in (
@@ -664,7 +856,7 @@ def git_bytes(*args):
     )
 
 
-def audited_source_diff(from_sha, to_sha):
+def _source_diff(from_sha, to_sha):
     for sha in (from_sha, to_sha):
         if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise ValueError("Invalid audited source commit")
@@ -700,17 +892,19 @@ def audited_source_diff(from_sha, to_sha):
         if not match:
             raise ValueError("Invalid Git raw difference")
         old_mode, new_mode, old_oid, new_oid, status = match.groups()
-        expected_mode = carry_forward.AUDITED_SOURCE_MODES.get(path)
-        if (
-            status != "M"
-            or expected_mode is None
-            or old_mode != expected_mode
-            or new_mode != expected_mode
-            or old_oid == new_oid
+        if status not in {"A", "M"} or old_oid == new_oid:
+            raise ValueError("Source difference contains an unsupported change")
+        if status == "M" and (
+            old_mode != new_mode
             or git("cat-file", "-t", old_oid).strip() != "blob"
-            or git("cat-file", "-t", new_oid).strip() != "blob"
         ):
-            raise ValueError("Audited source difference is outside the approved scope")
+            raise ValueError("Source difference contains an unsupported modification")
+        if status == "A" and (old_mode != "000000" or old_oid != "0" * 40):
+            raise ValueError("Source difference contains an invalid addition")
+        if new_mode not in {"100644", "100755"} or git(
+            "cat-file", "-t", new_oid
+        ).strip() != "blob":
+            raise ValueError("Source difference is not a regular file")
         entries.append(
             {
                 "status": status,
@@ -722,18 +916,477 @@ def audited_source_diff(from_sha, to_sha):
             }
         )
     entries.sort(key=lambda item: item["path"])
-    if not entries or "web/src/index.css" not in {item["path"] for item in entries}:
-        raise ValueError("Audited source difference is missing the approved Web fix")
+    if len({item["path"] for item in entries}) != len(entries):
+        raise ValueError("Source difference contains duplicate paths")
     trees = {
+        "from_sha": from_sha,
+        "to_sha": to_sha,
         "from_tree": git("rev-parse", from_sha + "^{tree}").strip(),
         "to_tree": git("rev-parse", to_sha + "^{tree}").strip(),
+        "raw_diff_sha256": hashlib.sha256(raw).hexdigest(),
         "entries": entries,
     }
     if not all(
         re.fullmatch(r"[0-9a-f]{40}", trees[key]) for key in ("from_tree", "to_tree")
     ):
-        raise ValueError("Invalid audited source tree")
-    return {"tree_digest": carry_forward.digest(trees), "entries": entries}
+        raise ValueError("Invalid source tree")
+    trees["tree_digest"] = carry_forward.digest(
+        {key: trees[key] for key in ("from_tree", "to_tree", "entries")}
+    )
+    return trees
+
+
+def audited_source_diff(from_sha, to_sha):
+    source = _source_diff(from_sha, to_sha)
+    entries = source["entries"]
+    for item in entries:
+        expected_mode = carry_forward.AUDITED_SOURCE_MODES.get(item["path"])
+        if (
+            item["status"] != "M"
+            or expected_mode is None
+            or item["old_mode"] != expected_mode
+            or item["new_mode"] != expected_mode
+        ):
+            raise ValueError("Audited source difference is outside the approved scope")
+    if not entries or "web/src/index.css" not in {item["path"] for item in entries}:
+        raise ValueError("Audited source difference is missing the approved Web fix")
+    return {"tree_digest": source["tree_digest"], "entries": entries}
+
+
+def group2_source_diff(from_sha, to_sha, scope):
+    source = _source_diff(from_sha, to_sha)
+    return carry_forward.validate_group2_source_diff(source, scope)
+
+
+def validate_group2_artifacts(scope, scope_path):
+    directory = scope_path.parent / (scope_path.stem + ".evidence")
+    expected = {
+        "approval/REQUEST-ready.md": scope["approval"]["request_sha256"],
+        "approval/USER-APPROVAL.json": scope["approval"]["user_approval_sha256"],
+        "approval/product-scope.json": scope["approval"]["product_scope_sha256"],
+        "approval/review-bindings.json": scope["approval"]["review_bindings_sha256"],
+        "ci/" + scope["ci"]["evidence_sha256"]: scope["ci"]["evidence_sha256"],
+        "preservation/" + scope["preservation_reference"]["review_report_sha256"]:
+            scope["preservation_reference"]["review_report_sha256"],
+    }
+    expected.update(
+        {
+            "reviews/" + review["report_sha256"]: review["report_sha256"]
+            for review in scope["reviews"]
+        }
+    )
+    if not directory.is_dir() or directory.is_symlink():
+        raise ValueError("Group2 reviewed evidence directory is missing")
+    for path in (directory, *(item for item in directory.rglob("*") if item.is_dir())):
+        info = path.lstat()
+        if path.is_symlink() or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise ValueError("Group2 reviewed evidence directory is not private")
+    actual = {
+        str(path.relative_to(directory))
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
+    if actual != set(expected):
+        raise ValueError("Group2 reviewed evidence set changed")
+    for relative, digest in expected.items():
+        path = directory / relative
+        info = path.lstat()
+        if (
+            path.is_symlink()
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o177 != 0
+        ):
+            raise ValueError("Group2 reviewed evidence is not a private regular file")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError("Group2 reviewed evidence digest changed")
+    approval = directory / "approval"
+    if any(
+        scope["approval"][key] != expected_digest
+        for key, expected_digest in GROUP2_APPROVAL_HASHES.items()
+    ):
+        raise ValueError("Group2 historical approval anchor changed")
+    try:
+        user_approval = json.loads((approval / "USER-APPROVAL.json").read_text())
+        product_scope = json.loads((approval / "product-scope.json").read_text())
+        review_bindings = json.loads((approval / "review-bindings.json").read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("Group2 approval evidence is invalid") from error
+    if (
+        user_approval.get("status") != "USER_APPROVED"
+        or user_approval.get("user_reply") != "批准"
+        or user_approval.get("request_sha256")
+        != scope["approval"]["request_sha256"]
+        or user_approval.get("product_candidate_sha")
+        != scope["product_anchor"]["head_sha"]
+        or {key: product_scope.get(key) for key in scope["product_anchor"]}
+        != scope["product_anchor"]
+    ):
+        raise ValueError("Group2 approval evidence contradicts the reviewed scope")
+    historical = review_bindings.get("reviews_sha256")
+    commits = {
+        "group2-product-integration-recheck.md": review_bindings.get(
+            "integration_review_bound_commit"
+        ),
+        "group2-ci-web-code-review.md": review_bindings.get(
+            "ci_test_review_bound_commit"
+        ),
+        "group2-python-harness-code-review.md": review_bindings.get(
+            "harness_review_bound_commit"
+        ),
+    }
+    if (
+        not isinstance(historical, dict)
+        or historical != GROUP2_HISTORICAL_REVIEWS
+        or not all(isinstance(value, str) for value in commits.values())
+    ):
+        raise ValueError("Group2 inherited review bindings changed")
+
+    def machine_records(path):
+        try:
+            text_value = path.read_text()
+        except (OSError, UnicodeError) as error:
+            raise ValueError("Group2 review report is unreadable") from error
+        records = []
+        for body in re.findall(r"```json\s*\n(.*?)\n```", text_value, re.DOTALL):
+            try:
+                value = json.loads(body)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                records.append(value)
+        return records
+
+    final_sha = scope["final_source"]["to_sha"]
+    for review in scope["reviews"]:
+        report_path = directory / "reviews" / review["report_sha256"]
+        if review["name"] in historical:
+            if (
+                review["report_sha256"] != historical[review["name"]]
+                or review["reviewed_commit"] != commits[review["name"]]
+            ):
+                raise ValueError("Group2 inherited review identity changed")
+        else:
+            matches = [
+                item
+                for item in machine_records(report_path)
+                if item.get("schema") == "group2-independent-review-v1"
+            ]
+            if len(matches) != 1:
+                raise ValueError("Group2 independent review is not machine approved")
+            approved = matches[0]
+            if (
+                approved.get("status") != "APPROVED"
+                or approved.get("reviewed_commit") != review["reviewed_commit"]
+                or approved.get("source_kind") != "git_commit"
+                or approved.get("blocking_findings") != []
+                or set(approved)
+                != {
+                    "schema",
+                    "status",
+                    "reviewed_commit",
+                    "source_kind",
+                    "coverage",
+                    "blocking_findings",
+                }
+            ):
+                raise ValueError("Group2 independent review is not machine approved")
+            if review["reviewed_commit"] != final_sha:
+                raise ValueError("Group2 independent review is not bound to final source")
+            reported_items = approved.get("coverage")
+            if not isinstance(reported_items, list):
+                raise ValueError("Group2 independent review coverage changed")
+            reported = {item.get("path"): item for item in reported_items if isinstance(item, dict)}
+            if (
+                len(reported_items) != len(reported)
+                or set(reported) != {item["path"] for item in review["coverage"]}
+            ):
+                raise ValueError("Group2 independent review coverage changed")
+            for item in review["coverage"]:
+                actual = reported[item["path"]]
+                line = git("ls-tree", final_sha, "--", item["path"]).strip()
+                match = re.fullmatch(
+                    r"(100644|100755) blob ([0-9a-f]{40})\t"
+                    + re.escape(item["path"]),
+                    line,
+                )
+                content_sha256 = hashlib.sha256(
+                    git_bytes("show", final_sha + ":" + item["path"])
+                ).hexdigest()
+                if (
+                    set(actual) != {"path", "mode", "blob_oid", "sha256"}
+                    or match is None
+                    or actual
+                    != {
+                        "path": item["path"],
+                        "mode": match.group(1),
+                        "blob_oid": item["blob_oid"],
+                        "sha256": content_sha256,
+                    }
+                ):
+                    raise ValueError("Group2 independent review bytes changed")
+        for item in review["coverage"]:
+            path = item["path"]
+            for sha in (review["reviewed_commit"], final_sha):
+                line = git("ls-tree", sha, "--", path).strip()
+                match = re.fullmatch(
+                    r"(100644|100755) blob ([0-9a-f]{40})\t" + re.escape(path),
+                    line,
+                )
+                if match is None or match.group(2) != item["blob_oid"]:
+                    raise ValueError("Group2 review no longer covers the final blob")
+    try:
+        ci_evidence = json.loads(
+            (directory / "ci" / scope["ci"]["evidence_sha256"]).read_text()
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("Group2 CI evidence is invalid") from error
+    run = ci_evidence.get("run")
+    jobs_response = ci_evidence.get("jobs")
+    if not isinstance(run, dict) or not isinstance(jobs_response, dict):
+        raise ValueError("Group2 CI evidence is not a raw GitHub API record")
+    jobs = jobs_response.get("jobs")
+    if (
+        not isinstance(jobs, list)
+        or jobs_response.get("total_count") != len(jobs)
+        or len(jobs) != len({job.get("id") for job in jobs if isinstance(job, dict)})
+    ):
+        raise ValueError("Group2 CI jobs evidence is incomplete")
+    normalized_jobs = [
+        {key: job.get(key) for key in ("id", "name", "conclusion")}
+        for job in jobs
+        if isinstance(job, dict)
+        and job.get("status") == "completed"
+        and job.get("conclusion") == "success"
+        and job.get("run_id") == run.get("id")
+        and job.get("run_attempt") == run.get("run_attempt")
+        and job.get("head_sha") == run.get("head_sha")
+    ]
+    normalized_ci = {
+        "head_sha": run.get("head_sha"),
+        "run_id": run.get("id"),
+        "run_attempt": run.get("run_attempt"),
+        "workflow_path": run.get("path"),
+        "event": run.get("event"),
+        "jobs": normalized_jobs,
+    }
+    if run.get("status") != "completed" or run.get("conclusion") != "success":
+        raise ValueError("Group2 CI run is not successful")
+    if normalized_ci != {
+        key: scope["ci"][key]
+        for key in (
+            "head_sha",
+            "run_id",
+            "run_attempt",
+            "workflow_path",
+            "event",
+            "jobs",
+        )
+    }:
+        raise ValueError("Group2 CI evidence contradicts the reviewed scope")
+    preservation_path = (
+        directory
+        / "preservation"
+        / scope["preservation_reference"]["review_report_sha256"]
+    )
+    preservation_records = [
+        item
+        for item in machine_records(preservation_path)
+        if item.get("schema") == "group2-preservation-review-v1"
+    ]
+    if len(preservation_records) != 1:
+        raise ValueError("Group2 preservation review is not machine approved")
+    preservation = preservation_records[0]
+    if not (
+        preservation.get("status") == "APPROVED"
+        and preservation.get("source_kind") == "private_snapshot"
+        and preservation.get("snapshot_digest")
+        == scope["preservation_reference"]["snapshot_digest"]
+        and preservation.get("lineage")
+        == scope["preservation_reference"]["snapshot"]["lineage"]
+        and set(preservation)
+        == {
+            "schema",
+            "status",
+            "source_kind",
+            "snapshot_digest",
+            "lineage",
+        }
+    ):
+        raise ValueError("Group2 preservation review is not machine approved")
+    return directory
+
+
+def validate_group2_candidate_binding(scope, target, stage=None):
+    scope = carry_forward.validate_group2_review_scope(scope)
+    final = scope["final_source"]
+    anchor = scope["product_anchor"]
+    if target.get("sha") != final["to_sha"] or target.get("pr") != scope["pr"]:
+        raise ValueError("Group2 candidate does not match the reviewed final source")
+    if git("merge-base", final["from_sha"], anchor["head_sha"]).strip() != final[
+        "from_sha"
+    ] or git("merge-base", anchor["head_sha"], final["to_sha"]).strip() != anchor[
+        "head_sha"
+    ]:
+        raise ValueError("Group2 reviewed ancestry changed")
+    source = group2_source_diff(final["from_sha"], final["to_sha"], scope)
+    if source != final:
+        raise ValueError("Group2 final source difference changed")
+    controller_paths = {
+        name: "tools/local-preview/" + name
+        for name in (
+            "preview.py",
+            "migrations.py",
+            "deploy.sh",
+            "verify.py",
+            "assets.py",
+            "carry_forward.py",
+        )
+    }
+    for name, path in controller_paths.items():
+        actual = hashlib.sha256(
+            git_bytes("show", final["to_sha"] + ":" + path)
+        ).hexdigest()
+        if actual != scope["controller_files"]["files"][name]:
+            raise ValueError("Group2 reviewed controller bytes changed")
+    ci = scope["ci"]
+    actual_ci = target.get("ci_binding", {})
+    if any(actual_ci.get(key) != ci[key] for key in (
+        "head_sha", "run_id", "run_attempt", "workflow_path", "event", "jobs"
+    )) or target.get("required_jobs") != sorted(GROUP2_REQUIRED_JOBS):
+        raise ValueError("Group2 exact CI binding changed")
+    migration = scope["migration_graph"]
+    if (
+        migration_graph_digest(final["from_sha"]) != migration["graph_digest"]
+        or migration_graph_digest(final["to_sha"]) != migration["graph_digest"]
+        or migration_inventory(final["from_sha"]) != migration["from_files"]
+        or migration_inventory(final["to_sha"]) != migration["to_files"]
+        or compatible(
+            migration_files(final["from_sha"]),
+            migration_files(final["to_sha"]),
+            migration["head"],
+        )
+        != migration["head"]
+    ):
+        raise ValueError("Group2 migration graph changed")
+    if stage is not None and stage != scope["image_binding"]:
+        raise ValueError("Group2 staged images changed")
+    return scope
+
+
+def validate_group2_install_locked(context):
+    """Fail closed inside install.py's operation -> config critical section."""
+    scope_path = Path(context["scope_path"])
+    scope = carry_forward.validate_group2_review_scope(
+        carry_forward.read_private(scope_path)
+    )
+    if scope != context["scope"]:
+        raise RuntimeError("Group2 reviewed scope changed before installation")
+    validate_group2_artifacts(scope, scope_path)
+    source = Path(context["source"])
+    head = subprocess.check_output(
+        ["/usr/bin/git", "-C", str(source), "rev-parse", "HEAD"],
+        env=ENV,
+        text=True,
+        timeout=30,
+    ).strip()
+    dirty = subprocess.check_output(
+        ["/usr/bin/git", "-C", str(source), "status", "--porcelain", "--untracked-files=no"],
+        env=ENV,
+        text=True,
+        timeout=30,
+    )
+    if head != scope["final_source"]["to_sha"] or dirty:
+        raise RuntimeError("Reviewed Group2 controller source checkout changed")
+    expected_files = scope["controller_files"]["files"]
+    for name, expected in expected_files.items():
+        path = source / "tools" / "local-preview" / name
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError("Reviewed Group2 controller source is incomplete")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise RuntimeError("Reviewed Group2 controller source bytes changed")
+    config = read("config.json")
+    previous = read("state.json", {})
+    if previous.get("sha") != scope["final_source"]["from_sha"]:
+        raise RuntimeError("Group2 installation no longer starts at the approved deployment")
+    target, reason = eligible(config, GROUP2_REQUIRED_JOBS)
+    if target is None:
+        raise RuntimeError("Group2 reviewed CI is no longer eligible: " + reason)
+    images = json.loads(
+        vm_command(
+            "cat", vm_path(f"releases/{target['sha']}/images.json")
+        ).stdout
+    )
+    old_images = json.loads(
+        vm_command(
+            "cat", vm_path(f"releases/{previous['sha']}/images.json")
+        ).stdout
+    )
+    if scope["image_binding"] != {
+        "old_image_ids": old_images,
+        "candidate_image_ids": images,
+    }:
+        raise RuntimeError("Group2 reviewed staged images changed")
+    validate_group2_candidate_binding(scope, target, scope["image_binding"])
+    context["locked_validations"] = context.get("locked_validations", 0) + 1
+
+
+def verify_group2_installation(scope):
+    files = scope["controller_files"]["files"]
+    for name, expected in files.items():
+        path = ROOT / name
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError("Installed Group2 controller is incomplete")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise RuntimeError("Installed Group2 controller bytes changed")
+    for name in ("deploy.sh", "verify.py", "assets.py", "carry_forward.py"):
+        actual = vm_command("sha256sum", vm_path(name)).stdout.split()[0]
+        if actual != files[name]:
+            raise RuntimeError("Installed Group2 VM controller bytes changed")
+
+
+def install_group2(review_scope):
+    global _group2_install_context
+    if _group2_install_context is not None:
+        raise RuntimeError("Group2 installation context is already active")
+    scope = carry_forward.validate_group2_review_scope(
+        carry_forward.read_private(review_scope)
+    )
+    validate_group2_artifacts(scope, review_scope)
+    if read("config.json", {}).get("enabled") is not False:
+        raise RuntimeError("Pause the watcher before installing the Group2 controller")
+    source = Path(__file__).resolve().parents[2]
+    context = {
+        "scope": scope,
+        "scope_path": str(review_scope.resolve()),
+        "source": str(source),
+        "operation_held": False,
+        "locked_validations": 0,
+    }
+    _group2_install_context = context
+    original_argv = sys.argv
+    original_preview_module = sys.modules.get("preview")
+    try:
+        # install.py imports preview by name. Reuse this exact module so its real
+        # second config_lock sees the in-process review context.
+        sys.modules["preview"] = sys.modules[__name__]
+        import install
+
+        sys.argv = [str(Path(install.__file__).resolve())]
+        install.main()
+        if context["locked_validations"] != 1:
+            raise RuntimeError("Official installer did not execute the Group2 lock guard")
+        if read("config.json", {}).get("enabled") is not False:
+            raise RuntimeError("Group2 controller must remain paused after installation")
+        verify_group2_installation(scope)
+    finally:
+        sys.argv = original_argv
+        if original_preview_module is None:
+            sys.modules.pop("preview", None)
+        else:
+            sys.modules["preview"] = original_preview_module
+        _group2_install_context = None
 
 
 def migration_files(sha):
@@ -742,6 +1395,20 @@ def migration_files(sha):
     return {
         name: git("show", sha + ":" + name) for name in names if name.endswith(".py")
     }
+
+
+def migration_inventory(sha):
+    prefix = "backend/alembic/versions/"
+    output = git("ls-tree", "-r", sha, prefix).splitlines()
+    inventory = []
+    for line in output:
+        match = re.fullmatch(r"([0-7]{6}) blob ([0-9a-f]{40})\t(.+)", line)
+        if not match or not match.group(3).endswith(".py"):
+            raise ValueError("Invalid migration inventory")
+        inventory.append(
+            {"path": match.group(3), "mode": match.group(1), "oid": match.group(2)}
+        )
+    return sorted(inventory, key=lambda item: item["path"])
 
 
 def check_compatibility(previous, target):
@@ -811,6 +1478,220 @@ def receipt(target):
     )
 
 
+def group2_receipt_evidence(value, manifest):
+    base = f"carry-forward/check/{manifest['manifest_id']}"
+
+    def vm_json(relative):
+        return json.loads(vm_command("cat", vm_path(f"{base}/{relative}")).stdout)
+
+    backup = value.get("backup")
+    expected_prefix = vm_path("backups/")
+    if not isinstance(backup, str) or not backup.startswith(expected_prefix):
+        raise RuntimeError("Invalid Group2 backup receipt path")
+    dump_hash = vm_command("sha256sum", backup + "/database.dump").stdout.split()[0]
+    list_hash = vm_command("sha256sum", backup + "/database.list").stdout.split()[0]
+    return {
+        "preflight": vm_json("preflight/db.json"),
+        "control_stopped": vm_json("control-stopped/db.json"),
+        "stopped": vm_json("stopped/db.json"),
+        "backup": {
+            "db": vm_json("after-backup/db.json"),
+            "dump_sha256": dump_hash,
+            "list_sha256": list_hash,
+        },
+        "same_schema": vm_json("after-migration/db.json"),
+        "started": vm_json("group2/started-check.json"),
+        "probe": vm_json("group2/probe-final.json")["probe_proof"][
+            "probe_result"
+        ],
+        "natural_cleanup": vm_json("group2/cleanup.json"),
+        "post_preservation": {
+            "result": vm_json("group2/post-preservation.json"),
+            "db": vm_json("group2/final/db.json"),
+            "files": vm_json("group2/final/files.json"),
+        },
+        "post_health": {
+            "account": vm_json("group2/account-after.json"),
+            "entry": vm_json("group2/entry-after.json"),
+            "logs": vm_json("group2/log-after-health.json"),
+        },
+    }
+
+
+def validate_group2_vm_commit(manifest):
+    current = vm_command("cat", vm_path("current-sha")).stdout.strip()
+    tx = transaction()
+    reference = tx.get("carry_forward")
+    if (
+        current != manifest["to_sha"]
+        or tx.get("phase") != "ready"
+        or tx.get("sha") != manifest["to_sha"]
+        or not isinstance(reference, dict)
+        or reference.get("manifest_id") != manifest["manifest_id"]
+        or reference.get("manifest_digest") != manifest["manifest_digest"]
+        or reference.get("from_sha") != manifest["from_sha"]
+        or reference.get("to_sha") != manifest["to_sha"]
+    ):
+        raise RuntimeError("Group2 VM commit binding changed")
+
+
+def validate_group2_receipt(value, target, manifest, evidence):
+    required = {
+        "mode",
+        "sha",
+        "schema",
+        "images",
+        "probe",
+        "backup",
+        "carry_forward",
+        "ci_binding",
+        "review_scope_digest",
+        "stages",
+        "post_preservation_digest",
+        "account_entry_digest",
+        "account_entry",
+        "account_ready",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise RuntimeError("Invalid Group2 deployment receipt")
+    carry = value["carry_forward"]
+    try:
+        account_entry = carry_forward.validate_group2_account_entry(
+            value["account_entry"]
+        )
+    except carry_forward.CarryForwardError as error:
+        raise RuntimeError("Invalid Group2 account entry receipt") from error
+    if (
+        value["mode"] != carry_forward.GROUP2_MODE
+        or value["sha"] != target["sha"]
+        or value["schema"] != target["schema"]
+        or value["images"] != manifest["candidate_image_ids"]
+        or value["ci_binding"] != manifest["ci_binding"]
+        or value["review_scope_digest"] != manifest["review_scope_digest"]
+        or carry.get("manifest_id") != manifest["manifest_id"]
+        or carry.get("manifest_digest") != manifest["manifest_digest"]
+        or value["account_ready"] is not True
+        or value["account_entry"] != manifest["account_entry"]
+        or account_entry["profile_digest"] != value["account_entry_digest"]
+    ):
+        raise RuntimeError("Group2 deployment receipt binding changed")
+    required_stages = {
+        "preflight",
+        "control_stopped",
+        "stopped",
+        "backup",
+        "same_schema",
+        "started",
+        "probe",
+        "natural_cleanup",
+        "post_preservation",
+        "post_health",
+    }
+    if set(value["stages"]) != required_stages or not all(
+        isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item)
+        for item in value["stages"].values()
+    ):
+        raise RuntimeError("Group2 deployment receipt is missing a preservation stage")
+    for key in ("post_preservation_digest", "account_entry_digest"):
+        if not isinstance(value[key], str) or not re.fullmatch(r"[0-9a-f]{64}", value[key]):
+            raise RuntimeError("Invalid Group2 deployment receipt digest")
+    if not isinstance(evidence, dict) or set(evidence) != required_stages:
+        raise RuntimeError("Group2 receipt evidence set changed")
+    expected_stages = {
+        key: carry_forward.digest(evidence[key]) for key in required_stages
+    }
+    if value["stages"] != expected_stages:
+        raise RuntimeError("Group2 receipt evidence digest changed")
+    if (
+        value["post_preservation_digest"]
+        != expected_stages["post_preservation"]
+        or evidence["probe"] != value["probe"]
+    ):
+        raise RuntimeError("Group2 receipt preservation binding changed")
+    probe = value["probe"]
+    if (
+        not isinstance(probe, dict)
+        or set(probe) != {"status", "workspace_cleanup_status", "execution_id"}
+        or probe.get("status") != "succeeded"
+        or probe.get("workspace_cleanup_status") != "completed"
+        or not isinstance(probe.get("execution_id"), int)
+        or isinstance(probe.get("execution_id"), bool)
+        or probe["execution_id"] < 1
+    ):
+        raise RuntimeError("Group2 official probe did not complete")
+    return {
+        "mode": value["mode"],
+        "schema": value["schema"],
+        "images": value["images"],
+        "probe_succeeded": True,
+        "carry_forward": {
+            "manifest_id": manifest["manifest_id"],
+            "manifest_digest": manifest["manifest_digest"],
+            "review_scope_digest": manifest["review_scope_digest"],
+            "post_preservation_digest": value["post_preservation_digest"],
+            "account_entry_digest": value["account_entry_digest"],
+            "account_ready": True,
+        },
+    }
+
+
+def consume_manifest(manifest_path):
+    consumed = private_directory("carry-forward/consumed") / manifest_path.name
+    if consumed.exists():
+        raise RuntimeError("Carry-forward manifest was already consumed")
+    os.link(manifest_path, consumed)
+    try:
+        os.unlink(manifest_path)
+        for directory in (consumed.parent, manifest_path.parent):
+            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    except Exception:
+        # Keep the immutable consumed copy. A remaining active link is attention,
+        # never permission to overwrite or run the probe again.
+        raise
+
+
+def validate_group2_recovery(previous):
+    if previous.get("mode") != carry_forward.GROUP2_MODE:
+        return None
+    safe = previous.get("carry_forward")
+    if not isinstance(safe, dict):
+        raise RuntimeError("Group2 deployed state is missing its safe reference")
+    manifest_id = safe.get("manifest_id")
+    if not isinstance(manifest_id, str) or not carry_forward.MANIFEST_ID.fullmatch(
+        manifest_id
+    ):
+        raise RuntimeError("Invalid consumed Group2 manifest reference")
+    active = ROOT / "carry-forward" / "manifests" / f"{manifest_id}.json"
+    path = ROOT / "carry-forward" / "consumed" / f"{manifest_id}.json"
+    if active.exists() or not path.exists():
+        raise RuntimeError("Group2 manifest consumption is incomplete")
+    manifest = carry_forward.validate_manifest(carry_forward.read_private(path))
+    carry_forward.validate_group2_manifest_extensions(manifest)
+    if (
+        manifest["to_sha"] != previous.get("sha")
+        or manifest["manifest_digest"] != safe.get("manifest_digest")
+        or manifest["review_scope_digest"] != safe.get("review_scope_digest")
+        or manifest["controller_files_digest"] != controller_files_digest()
+    ):
+        raise RuntimeError("Consumed Group2 manifest binding changed")
+    private_receipt = receipt(previous)
+    safe_result = validate_group2_receipt(
+        private_receipt,
+        previous,
+        manifest,
+        group2_receipt_evidence(private_receipt, manifest),
+    )
+    expected_safe = safe_result["carry_forward"]
+    if safe != expected_safe:
+        raise RuntimeError("Group2 deployed safe reference changed")
+    validate_group2_vm_commit(manifest)
+    return manifest
+
+
 def healthy():
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -818,14 +1699,63 @@ def healthy():
             f"http://127.0.0.1:{settings()['web_port']}/api/health", timeout=5
         ) as response:
             body = json.load(response)
-            return (
+            healthy_now = (
                 response.status == 200
                 and body.get("database") is True
                 and body.get("rabbitmq", {}).get("ready") is True
                 and preview_containers_running()
             )
-    except (OSError, ValueError, subprocess.SubprocessError):
+            deployed = read("state.json", {})
+            if healthy_now and deployed.get("mode") == carry_forward.GROUP2_MODE:
+                healthy_now = group2_live_profile(deployed)
+            return healthy_now
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         return False
+
+
+def group2_live_profile(deployed):
+    private_receipt = receipt(deployed)
+    request = {
+        "mode": carry_forward.GROUP2_MODE,
+        "operation": "account-check",
+        "profile": private_receipt["account_entry"],
+        "project": settings()["project"],
+        "to_sha": deployed["sha"],
+        "candidate_image_ids": deployed["images"],
+    }
+    vm_private_write(
+        "carry-forward/health/request.json",
+        carry_forward.canonical_bytes(request) + b"\n",
+    )
+    result = vm_command(
+        "python3",
+        vm_path("carry_forward.py"),
+        "group2-runtime",
+        "--request",
+        vm_path("carry-forward/health/request.json"),
+        "--output",
+        vm_path("carry-forward/health/output.json"),
+        check=False,
+        timeout=45,
+    )
+    if result.returncode:
+        return False
+    output = json.loads(
+        vm_command("cat", vm_path("carry-forward/health/output.json")).stdout
+    )
+    checked = output.get("account_check", {})
+    csrf = checked.get("account_csrf", {})
+    return (
+        checked.get("profile_digest")
+        == deployed["carry_forward"].get("account_entry_digest")
+        and csrf.get("status") == 200
+        and csrf.get("body_status") == "ok"
+        and csrf.get("csrf_cookie") is True
+        and csrf.get("csrf_cookie_path") is True
+        and csrf.get("csrf_cookie_samesite_lax") is True
+        and csrf.get("csrf_cookie_httponly") is False
+        and csrf.get("redirect") is False
+    )
 
 
 def vm_running():
@@ -874,6 +1804,12 @@ def preview_containers_running():
         container("worker"),
         container("web"),
     }
+    deployed = read("state.json", {})
+    if deployed.get("mode") == carry_forward.GROUP2_MODE:
+        safe = deployed.get("carry_forward")
+        if not isinstance(safe, dict) or safe.get("account_ready") is not True:
+            return False
+        expected.add(container("account-web"))
     return expected.issubset(running)
 
 
@@ -908,7 +1844,20 @@ def _tick():
         if tx.get("phase") != "ready" or tx.get("sha") != previous["sha"]:
             write("attention.json", tx)
             return status("Unfinished deployment; automatic recovery refused")
+        recovered_manifest = validate_group2_recovery(previous)
+        if recovered_manifest is not None:
+            write(
+                "attention.json",
+                {
+                    "phase": "recovering",
+                    "sha": previous["sha"],
+                    "manifest_id": recovered_manifest["manifest_id"],
+                },
+            )
         phase(previous, "recover")
+        if recovered_manifest is not None:
+            validate_group2_recovery(previous)
+            (ROOT / "attention.json").unlink()
         return status("Recovered verified local images", deployed=previous)
     target, reason = eligible(config)
     if target is None:
@@ -966,6 +1915,23 @@ def _tick():
                 f"carry-forward/manifests/{manifest['manifest_id']}.json",
                 manifest_path.read_bytes(),
             )
+            if manifest.get("mode") == carry_forward.GROUP2_MODE:
+                reviewed = (
+                    ROOT
+                    / "carry-forward"
+                    / "review-scopes"
+                    / manifest["review_scope_digest"]
+                )
+                for source in reviewed.rglob("*"):
+                    if source.is_file():
+                        vm_private_write(
+                            str(
+                                Path("carry-forward/review-scopes")
+                                / manifest["review_scope_digest"]
+                                / source.relative_to(reviewed)
+                            ),
+                            source.read_bytes(),
+                        )
         if not phase(target, "deploy", manifest["manifest_id"] if manifest else ""):
             (ROOT / "attention.json").unlink()
             return status(
@@ -973,12 +1939,23 @@ def _tick():
                 candidate=target,
                 deployed=previous,
             )
-        target.update(receipt(target))
+        deployment_receipt = receipt(target)
+        if manifest and manifest.get("mode") == carry_forward.GROUP2_MODE:
+            validate_group2_vm_commit(manifest)
+            target.update(
+                validate_group2_receipt(
+                    deployment_receipt,
+                    target,
+                    manifest,
+                    group2_receipt_evidence(deployment_receipt, manifest),
+                )
+            )
+        else:
+            target.update(deployment_receipt)
         target["deployed_at"] = datetime.datetime.now().astimezone().isoformat()
         write("state.json", target)
         if manifest:
-            consumed = private_directory("carry-forward/consumed") / manifest_path.name
-            os.replace(manifest_path, consumed)
+            consume_manifest(manifest_path)
             latest_config.pop("carry_forward", None)
             write("config.json", latest_config)
         (ROOT / "attention.json").unlink()
@@ -1007,6 +1984,7 @@ def main():
             "copy-token",
             "acknowledge",
             "plan-carry-forward",
+            "install-group2",
         ],
     )
     parser.add_argument("pr", nargs="?", type=int)
@@ -1014,8 +1992,29 @@ def main():
     parser.add_argument("--ids-file", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--carry-forward", type=Path)
-    parser.add_argument("--mode", choices=(carry_forward.AUDITED_MODE,))
+    parser.add_argument(
+        "--mode", choices=(carry_forward.AUDITED_MODE, carry_forward.GROUP2_MODE)
+    )
+    parser.add_argument("--review-scope", type=Path)
     args = parser.parse_args()
+    if args.command == "install-group2":
+        if (
+            args.pr is not None
+            or not args.review_scope
+            or any(
+                value is not None
+                for value in (
+                    args.to_sha,
+                    args.ids_file,
+                    args.output,
+                    args.carry_forward,
+                    args.mode,
+                )
+            )
+        ):
+            parser.error("install-group2 requires --review-scope")
+        install_group2(args.review_scope)
+        return
     if args.command == "plan-carry-forward":
         if (
             args.pr is not None
@@ -1038,7 +2037,11 @@ def main():
                             "Pause the watcher before creating a carry-forward plan"
                         )
                     result = plan_carry_forward(
-                        args.to_sha, args.ids_file, args.output, args.mode
+                        args.to_sha,
+                        args.ids_file,
+                        args.output,
+                        args.mode,
+                        args.review_scope,
                     )
         except BlockingIOError:
             parser.error(
@@ -1091,6 +2094,16 @@ def main():
                     parser.error(
                         "Reconcile VM transaction and deployed state first; database rollback is never automatic"
                     )
+                recovered_manifest = validate_group2_recovery(previous)
+                if recovered_manifest is not None:
+                    reference = config.get("carry_forward")
+                    if reference is not None and (
+                        not isinstance(reference, dict)
+                        or reference.get("manifest_id")
+                        != recovered_manifest["manifest_id"]
+                    ):
+                        parser.error("Group2 consumed manifest reference changed")
+                    config.pop("carry_forward", None)
                 (ROOT / "attention.json").unlink(missing_ok=True)
             else:
                 config["enabled"] = args.command == "resume"

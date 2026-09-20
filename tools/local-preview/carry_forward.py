@@ -14,7 +14,9 @@ import datetime as dt
 import decimal
 import hashlib
 import hmac
+import ipaddress
 import json
+import math
 import os
 import re
 import stat
@@ -25,11 +27,25 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 FORMAT_VERSION = 2
 AUDITED_FORMAT_VERSION = 3
 AUDITED_MODE = "audited-web-same-schema-v1"
+GROUP2_FORMAT_VERSION = 4
+GROUP2_MODE = "audited-group2-same-schema-v1"
+GROUP2_REVIEW_SCHEMA = "group2-reviewed-scope-v1"
+GROUP2_FROM_SHA = "3d3ad7bff1cedde321628f217daafd130945e1d0"
+GROUP2_PRODUCT_SHA = "1c698e04bf9c388b8d6812c3bc45c7fb836230c7"
+GROUP2_FROM_TREE = "40fa62ef17a31f56c1eb319459d01c7086f0529e"
+GROUP2_PRODUCT_TREE = "b7aabc5dacdcc67988cacfd033a2d98808bcec97"
+GROUP2_PRODUCT_RAW_DIGEST = (
+    "08a602c5183922f98a67af2e0f28c3f88a92f91ea3be4ad0d336ad6f8970f3f0"
+)
+GROUP2_REQUEST_DIGEST = (
+    "ec0dfbeee43216ffc0e97498d209c3afc0c82742c3d041fa54a6d52464240b9e"
+)
 MANIFEST_ID = re.compile(r"[0-9a-f]{32}")
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
@@ -79,6 +95,453 @@ AUDIT_COLUMNS = (
     "created_at",
 )
 AUDITED_TABLES = (*RESPONSIBILITY_TABLES, AUDIT_TABLE)
+ASSET_TABLES = (
+    "adapters",
+    "adapter_versions",
+    "adapter_permissions",
+    "adapter_credential_bindings",
+    "adapter_input_configs",
+    "adapter_input_artifact_bindings",
+    "adapter_schedules",
+    "adapter_webhooks",
+    "credentials",
+    "user_templates",
+    "users",
+    "package_sources",
+    "builtin_package_settings",
+    "builtin_package_uploads",
+    "builtin_packages",
+    "managed_input_artifacts",
+    "system_settings",
+    "knowledge_source_settings",
+    "ai_custom_providers",
+    "ai_model_settings",
+    "user_sessions",
+)
+GROUP2_CONTROLLER_PATHS = {
+    "tools/local-preview/preview.py": "100755",
+    "tools/local-preview/deploy.sh": "100755",
+    "tools/local-preview/carry_forward.py": "100644",
+    "tools/local-preview/tests/test_preview.py": "100644",
+    "tools/local-preview/tests/test_carry_forward.py": "100644",
+    "docs/zh-CN/local-preview.md": "100644",
+    "openspec/changes/issue161-product-correctness/design.md": "100644",
+    "openspec/changes/issue161-product-correctness/proposal.md": "100644",
+    "openspec/changes/issue161-product-correctness/tasks.md": "100644",
+    "openspec/changes/issue161-product-correctness/specs/incident-preserving-upgrade/spec.md": "100644",
+}
+GROUP2_CONTROLLER_FILES = {
+    "preview.py",
+    "migrations.py",
+    "deploy.sh",
+    "verify.py",
+    "assets.py",
+    "carry_forward.py",
+}
+# The 57-path approved product anchor.  The three planning artifacts are
+# intentionally content-bound by the final independent review rather than by
+# the earlier product commit; every other blob remains pinned to that review.
+GROUP2_PRODUCT_RULES = {
+    ".env.example": (
+        "M",
+        "100644",
+        "100644",
+        "fa62b572ce28cb43c6666cae0b63f5d8ac9861ff",
+        "b30ff96f579e58df107635a15161ab5195962638",
+    ),
+    "backend/src/dlr/common/config.py": (
+        "M",
+        "100644",
+        "100644",
+        "a8995f83ea3135918c943a14967a32566defe11a",
+        "9b0ebdef9650da99a0d1c596d99a19577702c306",
+    ),
+    "backend/src/dlr/control/ai/dlr_docs.py": (
+        "M",
+        "100644",
+        "100644",
+        "5aa1a2b61e3443089792383201572ca0bb158104",
+        "187f850288dad1856a0bd8bd82083bf1fbf62835",
+    ),
+    "backend/src/dlr/control/app.py": (
+        "M",
+        "100644",
+        "100644",
+        "76126751eab20a45a8a34158093e7a221a40c074",
+        "d90bc58f38c7b567cfb04119b45b8c0bf7d9ae7c",
+    ),
+    "backend/src/dlr/control/services/input_config.py": (
+        "M",
+        "100644",
+        "100644",
+        "86a525003d513e696d170c4f4069559630e4b3ba",
+        "f2a12986d2de6d8738a4aaa5255235dc82be0c96",
+    ),
+    "backend/src/dlr/control/services/package_source.py": (
+        "M",
+        "100644",
+        "100644",
+        "b8aee5005899ff0ddfbe1a4d9540cc86d730b3df",
+        "916b886dac14f7e4ce849ed06087b5acc3766b98",
+    ),
+    "backend/src/dlr/control/services/schedule.py": (
+        "M",
+        "100644",
+        "100644",
+        "d9c6facbadd6d802cb618b325c99cf5e541bf58e",
+        "0591245faa4539c79e529f257f5ebf3d91f6b958",
+    ),
+    "backend/src/dlr/runtime/harness.py": (
+        "M",
+        "100644",
+        "100644",
+        "3182c6ae4b0c62f63c3ad62cc8fe95300395766b",
+        "7ad74e5b6f5327a68aff241ac450de9f0fb2f367",
+    ),
+    "backend/tests/test_account_wave_c.py": (
+        "M",
+        "100644",
+        "100644",
+        "a77a27399b11d60b3ccb8fb208adafb8f78a56f7",
+        "f79fb09cc7b0c0af38cc4b2089246fb824b310bb",
+    ),
+    "backend/tests/test_issue127_c4.py": (
+        "M",
+        "100644",
+        "100644",
+        "fcde54a8f039a672c6f6f56d4756e0ce949c5460",
+        "b28fdd6eef99945f1e97c33936a99855880ab18b",
+    ),
+    "backend/tests/test_issue150_upload_proxy_contract.py": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "4d75f4a83d5daff8b6f47b6f6972aa23f1d5d785",
+    ),
+    "backend/tests/test_issue153_json_type_persistence.py": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "865ff443e16b6c3c981a0b3eed90ebbcd9e04521",
+    ),
+    "backend/tests/test_issue157_package_source_validation.py": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "1500fe5b3e0cd30ddccbce44731ecf60b8eaf24b",
+    ),
+    "backend/tests/test_issue159_java_docs_contract.py": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "af8fb28b3e30635363aea16122681b734b4a87b3",
+    ),
+    "backend/tests/test_package_sources.py": (
+        "M",
+        "100644",
+        "100644",
+        "9e5bd3f6975eaab5bd6706571ae404d333cf4761",
+        "65ef0ae31f7007e2b6fc566c4247091675e8b4ab",
+    ),
+    "backend/tests/test_runtime.py": (
+        "M",
+        "100644",
+        "100644",
+        "637e092a4abe9c251fed7755601f1dd9d5feb347",
+        "9de645f1985175b32cf55a6182f3bcbb3866a80f",
+    ),
+    "docker-compose.yml": (
+        "M",
+        "100644",
+        "100644",
+        "60f7466be4537a7afd7a98db35861b04043f9364",
+        "bc05b6614edb9d2354e517880fa5343caf4a7afa",
+    ),
+    "docker/nginx-account.conf": (
+        "M",
+        "100644",
+        "100644",
+        "36195c9e64cd0f1be21c9387ddcf96ef8a2f15e2",
+        "af9b780a03f9c592ee4903f1fead8f1225844e9a",
+    ),
+    "docker/nginx.conf": (
+        "M",
+        "100644",
+        "100644",
+        "2b0671a61832fd7f3706c123d7d3cbf704c63c78",
+        "416d93a64b9050f2471b4caf70823898e5129eeb",
+    ),
+    "docs/en/issue127-managed-input-operations.md": (
+        "M",
+        "100644",
+        "100644",
+        "f046e21110ff2a6980fe23deaa4e4f8c58c9e72b",
+        "2874894289df8dba0ce65901cb035c5246e64a56",
+    ),
+    "docs/zh-CN/issue127-managed-input-operations.md": (
+        "M",
+        "100644",
+        "100644",
+        "1ee2fc5079c44405029cf89b4bc74a9c1e09fd2a",
+        "4a34f5d002f2b9287f0600ac67d3d84bab4384ec",
+    ),
+    "openspec/changes/issue161-product-correctness/.openspec.yaml": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "cbd245e433b3fb3e7a2e4c189af09bc739ba8e32",
+    ),
+    "openspec/changes/issue161-product-correctness/design.md": (
+        "A",
+        "000000",
+        "100644",
+        None,
+        None,
+    ),
+    "openspec/changes/issue161-product-correctness/proposal.md": (
+        "A",
+        "000000",
+        "100644",
+        None,
+        None,
+    ),
+    "openspec/changes/issue161-product-correctness/specs/adapter-input-config/spec.md": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "e4c4d188b0e0acf6adf9ce9e76e0f55ce8732286",
+    ),
+    "openspec/changes/issue161-product-correctness/specs/execution-output-presence/spec.md": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "e157dc2a3bbd86a276a28632769cb0544bd794c1",
+    ),
+    "openspec/changes/issue161-product-correctness/specs/input-compatibility-rollout/spec.md": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "be553898805bb7957e51cc9fd72c6625a3be7648",
+    ),
+    "openspec/changes/issue161-product-correctness/specs/java-context-documentation-contract/spec.md": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "66da214473b25fa13852f2f61411d92262111bea",
+    ),
+    "openspec/changes/issue161-product-correctness/specs/managed-input-proxy-boundary/spec.md": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "1809176b599238ee531f1112020c2053c4ba9cb0",
+    ),
+    "openspec/changes/issue161-product-correctness/specs/package-source-address-validation/spec.md": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "2ad42fa71c2b538d61a206c9783b6bae8b5bb8d1",
+    ),
+    "openspec/changes/issue161-product-correctness/specs/workbench-runtime-consistency/spec.md": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "c099d56ad22d7a3b059f99ee02532506050efe52",
+    ),
+    "openspec/changes/issue161-product-correctness/tasks.md": (
+        "A",
+        "000000",
+        "100644",
+        None,
+        None,
+    ),
+    "web/src/App.test.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "c9094f1cc283273baab97666e9c069a6a59392e7",
+        "1adfefd534855295c682a87d0432d0576ae39e89",
+    ),
+    "web/src/App.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "45219c44d797791f2cf786f39fe5de1d4cdb560c",
+        "91349157a2f4a67c6e862a7638158af641bf37dd",
+    ),
+    "web/src/components/CredentialBindingsEditor.test.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "046abae7d813bea4f890600afff56c59b29d21f0",
+        "cd809d5bc0ceab60a55245b36900da2f85709464",
+    ),
+    "web/src/components/CredentialBindingsEditor.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "c9649bf2934f111f1fd1393665ef9aeca72473e7",
+        "168f448ff1151aaa3c4bc61c16e63f5d240e1b9e",
+    ),
+    "web/src/components/ExecutionHistoryPanel.d2.test.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "bdef9b20000353662e34ca135c8da4767b41442b",
+        "4d0e342cdb9f8a2890de79fb65e3d7139af26730",
+    ),
+    "web/src/components/ExecutionHistoryPanel.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "90731a9956af7ae51ad2f49dd5e7841661d2ebb6",
+        "e69cc0e0232a08d8db3e72689cff79644f11cf1d",
+    ),
+    "web/src/components/LiveLogWorkspace.test.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "239f701dcbf33f6ac698f8ab261ebc9d4e7c6046",
+        "7d4935a6a5f92ccd39dfba0245e22c5ac97f8c43",
+    ),
+    "web/src/components/OutputView.test.tsx": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "302ffddc4a7fbdae9902f37cbd57f80857e5f6f0",
+    ),
+    "web/src/components/OutputView.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "2a4ce004111013ff42b52f58d9fec3275dc2ac09",
+        "27edf7af844cb4db9609e22f39dbb5714401c749",
+    ),
+    "web/src/components/SystemSettingsDrawer.test.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "d79ddfe4383f9158a9b794673ca0d03a869f2473",
+        "c40317c4ad996d9551fc449e1aabdb04bca4e33c",
+    ),
+    "web/src/components/SystemSettingsDrawer.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "147b6cabd9b6e65e47c0d31fd1d85bbcc0f3ae6d",
+        "2d468388171e50b4e627882839683b02ad58d9ba",
+    ),
+    "web/src/components/TaskRunSettingsPanel.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "ee3b6de1cf6040112f969bf2c073826dca025aa9",
+        "42410bbc4f4b2948df1593c5f507e62e3c031acf",
+    ),
+    "web/src/components/TaskWorkbenchHeader.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "57c1ce7ba5518942a26867aac5ff1b5f5ff0256b",
+        "31f4894e648e049c5ee04544901f032dc49d0d36",
+    ),
+    "web/src/components/WebhookTriggerPanel.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "0b616df10ddf358c5874ec644b22f0290fd21f4a",
+        "771e551a307cc62b3c37687b7e112f75ef46460b",
+    ),
+    "web/src/components/WebhookWorkbenchHeader.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "74d11fa626c3c569173653b107b76a69522187bf",
+        "7bae9e3177ad770afd0845d2098fdb6d33a31a96",
+    ),
+    "web/src/execution-output.ts": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "03c36f35d31b4deb38115bfd2788cba433e30610",
+    ),
+    "web/src/hooks/useExecutionWatcher.test.tsx": (
+        "M",
+        "100644",
+        "100644",
+        "4329ea004ecde042b73a008ea974b5138f1a582a",
+        "a6c9024a502121b3c2bc8c93d201ef52a1b91571",
+    ),
+    "web/src/hooks/useExecutionWatcher.ts": (
+        "M",
+        "100644",
+        "100644",
+        "eec5af6936beddb6441ede2241dff958a5d733aa",
+        "4d5b2fdda247ddad864850e7e9e3abb480e0970e",
+    ),
+    "web/src/hooks/useRuntimeAuthority.test.tsx": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "e6fac49ed3a1e9450dbd3ad3090a6482b5cc96ac",
+    ),
+    "web/src/hooks/useRuntimeAuthority.ts": (
+        "A",
+        "000000",
+        "100644",
+        "0" * 40,
+        "d4c7ac4ff8014d154fbff6f8d6ed1dfb172970e2",
+    ),
+    "web/src/i18n/locales/en/runtime.json": (
+        "M",
+        "100644",
+        "100644",
+        "9305a07842c6fd2e346d93e6c14b1109459a8546",
+        "0e14c1d2e3174046b7a0ab6e00e7f09baf146065",
+    ),
+    "web/src/i18n/locales/en/settings.json": (
+        "M",
+        "100644",
+        "100644",
+        "f058f7299a36967acba0f8bc7445db26bc5b31e5",
+        "494812afed9cb10ebd6b22fd6a5cf8a37f63b040",
+    ),
+    "web/src/i18n/locales/zh-CN/runtime.json": (
+        "M",
+        "100644",
+        "100644",
+        "36ed94e8cf86f64fe096e3d60c73bb69de1e3e51",
+        "439fd618605ae4e0ee071bc0fa0f5750a1488b40",
+    ),
+    "web/src/i18n/locales/zh-CN/settings.json": (
+        "M",
+        "100644",
+        "100644",
+        "badfe2bafaa880f76ea618a6113431985d03d2fd",
+        "0a949ad673e5532a739dbf19032e02a5a7cb36ee",
+    ),
+    "web/src/runtime-refresh-policy.ts": (
+        "M",
+        "100644",
+        "100644",
+        "6f2627334f86109839e57506b45dd55bc03a1c3b",
+        "b423eb221e3ed565539262d6796fd43dd4301011",
+    ),
+}
 AUDITED_SOURCE_MODES = {
     "web/src/index.css": "100644",
     "web/tests/e2e/issue152-popconfirm.spec.ts": "100644",
@@ -136,7 +599,7 @@ def canonical(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
-        if value != value or value in {float("inf"), float("-inf")}:
+        if not math.isfinite(value):
             raise CarryForwardError("noncanonical_value")
         return value
     if isinstance(value, decimal.Decimal):
@@ -247,9 +710,13 @@ def _uuid_text(value: Any, code: str = "selection_invalid") -> str:
     return value
 
 
+def is_audited_mode(mode: Any) -> bool:
+    return mode in {AUDITED_MODE, GROUP2_MODE}
+
+
 def normalize_selection(value: Any, *, mode: str | None = None) -> dict[str, Any]:
     required = {"queued", "cleanup_execution_ids"}
-    if mode == AUDITED_MODE:
+    if is_audited_mode(mode):
         required.add("terminal_executions")
     elif mode is not None:
         raise CarryForwardError("selection_invalid")
@@ -288,7 +755,7 @@ def normalize_selection(value: Any, *, mode: str | None = None) -> dict[str, Any
     terminal_execution_ids: set[int] = set()
     terminal_incident_ids: set[int] = set()
     terminal_disposition_ids: set[str] = set()
-    if mode == AUDITED_MODE:
+    if is_audited_mode(mode):
         raw_terminals = value["terminal_executions"]
         terminal_keys = {
             "execution_id",
@@ -370,10 +837,16 @@ def normalize_selection(value: Any, *, mode: str | None = None) -> dict[str, Any
         "queued": sorted(normalized_queued, key=lambda item: item["execution_id"]),
         "cleanup_execution_ids": sorted(cleanup_ids),
     }
-    if mode == AUDITED_MODE:
+    if is_audited_mode(mode):
         result["terminal_executions"] = sorted(
             terminals, key=lambda item: item["execution_id"]
         )
+    if mode == GROUP2_MODE and (
+        len(result["queued"]) != 9
+        or len(result["cleanup_execution_ids"]) != 3
+        or len(result["terminal_executions"]) != 5
+    ):
+        raise CarryForwardError("group2_selection_count_invalid")
     return result
 
 
@@ -390,7 +863,7 @@ def manifest_mode(value: dict[str, Any] | None) -> str | None:
     mode = value.get("mode")
     if mode is None:
         return None
-    if mode != AUDITED_MODE:
+    if not is_audited_mode(mode):
         raise CarryForwardError("manifest_mode_invalid")
     return mode
 
@@ -906,8 +1379,8 @@ def _responsibility(
 def compare_projection(before: dict[str, Any], after: dict[str, Any]) -> None:
     if set(before) != set(after):
         raise CarryForwardError("projection_table_changed")
-    for table in before:
-        left, right = before[table], after[table]
+    for table, left in before.items():
+        right = after[table]
         if left.get("columns") != right.get("columns"):
             raise CarryForwardError("projection_columns_changed")
         if left.get("primary_key") != right.get("primary_key"):
@@ -1626,6 +2099,499 @@ def capture_files(
     }
 
 
+def _validate_capture_digests(value: Any) -> None:
+    if not isinstance(value, dict) or set(value) != {
+        "runtime",
+        "journal",
+        "materials",
+        "journal_facts",
+        "empty_attempt_shells",
+    }:
+        raise CarryForwardError("file_evidence_invalid")
+    for key in ("runtime", "journal"):
+        tree = value[key]
+        if (
+            not isinstance(tree, dict)
+            or set(tree) != {"root", "entries", "digest"}
+            or not isinstance(tree["entries"], list)
+            or tree["entries"] != sorted(tree["entries"], key=lambda item: item["path"])
+            or len({item["path"] for item in tree["entries"]}) != len(tree["entries"])
+            or tree["digest"] != digest(tree["entries"])
+        ):
+            raise CarryForwardError("file_evidence_invalid")
+    for item in value["materials"].values():
+        if item.get("digest") != digest(item.get("entries")):
+            raise CarryForwardError("file_evidence_invalid")
+
+
+def _window_ns(value: Any, start: int, end: int, code: str) -> None:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < start
+        or value > end
+    ):
+        raise CarryForwardError(code)
+
+
+def _entry_map(value: dict[str, Any], root: str) -> dict[str, dict[str, Any]]:
+    return {item["path"]: item for item in value[root]["entries"]}
+
+
+def _metadata_delta(
+    before: dict[str, Any], after: dict[str, Any], allowed: set[str], code: str
+) -> dict[str, Any]:
+    if set(before) != set(after) or any(
+        before[key] != after[key] for key in before if key not in allowed
+    ):
+        raise CarryForwardError(code)
+    return {
+        key: {"before": before[key], "after": after[key]}
+        for key in sorted(allowed)
+        if before[key] != after[key]
+    }
+
+
+def _validate_startup_proof(value: Any) -> dict[str, Any]:
+    keys = {
+        "container_id",
+        "image_id",
+        "started_at",
+        "restart_count",
+        "nonce",
+        "window_start_ns",
+        "window_end_ns",
+        "preflight_receipt",
+        "log_evidence_digest",
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        raise CarryForwardError("startup_proof_invalid")
+    if (
+        not isinstance(value["container_id"], str)
+        or not value["container_id"]
+        or not isinstance(value["image_id"], str)
+        or not value["image_id"]
+        or not isinstance(value["started_at"], str)
+        or not isinstance(value["restart_count"], int)
+        or isinstance(value["restart_count"], bool)
+        or value["restart_count"] != 0
+        or not isinstance(value["nonce"], str)
+        or re.fullmatch(r"[0-9a-f]{16,64}", value["nonce"]) is None
+        or not isinstance(value["window_start_ns"], int)
+        or isinstance(value["window_start_ns"], bool)
+        or not isinstance(value["window_end_ns"], int)
+        or value["window_end_ns"] < value["window_start_ns"]
+    ):
+        raise CarryForwardError("startup_proof_invalid")
+    _digest_text(value["log_evidence_digest"], "startup_proof_invalid")
+    receipt = value["preflight_receipt"]
+    cleanup = receipt.get("cleanup") if isinstance(receipt, dict) else None
+    capabilities = receipt.get("capabilities") if isinstance(receipt, dict) else None
+    required_capabilities = {
+        "adapter_control_plane_hidden",
+        "adapter_mount_blocked",
+        "bounded_output",
+        "cgroup_kill",
+        "cgroup_namespace_private",
+        "cgroup_v2",
+        "cpu_hard_limit",
+        "memory_hard_limit",
+        "mount_namespace",
+        "no_new_privileges",
+        "nofile_hard_limit",
+        "pid_namespace",
+        "pids_hard_limit",
+        "preflight_passed",
+        "sandbox_cleanup",
+        "swap_hard_limit",
+        "tmpfs_hard_limit",
+    }
+    hidden = (
+        receipt.get("adapter_hidden_cgroup_paths", {})
+        if isinstance(receipt, dict)
+        else {}
+    )
+    namespace = (
+        receipt.get("namespace_identity", {}) if isinstance(receipt, dict) else {}
+    )
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("cgroup_name") != f"dlr-preflight-{value['nonce']}"
+        or receipt.get("status") != "passed"
+        or receipt.get("workspace_residue") is not False
+        or not isinstance(cleanup, dict)
+        or cleanup.get("status") != "completed"
+        or cleanup.get("residue") is not False
+        or cleanup.get("error_code") is not None
+        or cleanup.get("cgroup_name") != receipt.get("cgroup_name")
+        or not isinstance(capabilities, dict)
+        or set(capabilities) != required_capabilities
+        or any(capabilities[key] is not True for key in required_capabilities)
+        or receipt.get("adapter_control_pipe_fds") != []
+        or set(hidden) != {"/run/dlr-cgroup", "/sys/fs/cgroup"}
+        or any(
+            item != {"read_blocked": True, "write_blocked": True}
+            for item in hidden.values()
+        )
+        or receipt.get("agent_outside_attempt") is not True
+        or receipt.get("helper_outside_attempt") is not True
+        or receipt.get("probe_in_attempt") is not True
+        or receipt.get("child_empty_after_kill") is not True
+        or receipt.get("process_exited_after_kill") is not True
+        or receipt.get("worker_cgroup_management")
+        != {"child_limit_write_read": True, "parent_controllers_read": True}
+        or not isinstance(namespace, dict)
+        or set(namespace)
+        != {"boot_id", "parent_device", "parent_inode", "root_device", "root_inode"}
+        or namespace.get("parent_device") != namespace.get("root_device")
+        or namespace.get("parent_inode") == namespace.get("root_inode")
+        or any(
+            re.search(r"(?i)(token|password|secret|cookie|authorization)", key)
+            for key in receipt
+        )
+    ):
+        raise CarryForwardError("startup_proof_invalid")
+    return value
+
+
+def _rfc3339_ns(value: Any) -> int:
+    if not isinstance(value, str):
+        raise CarryForwardError("startup_proof_invalid")
+    match = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})",
+        value,
+    )
+    if match is None:
+        raise CarryForwardError("startup_proof_invalid")
+    zone = "+00:00" if match.group(3) == "Z" else match.group(3)
+    try:
+        seconds = int(dt.datetime.fromisoformat(match.group(1) + zone).timestamp())
+    except ValueError as error:
+        raise CarryForwardError("startup_proof_invalid") from error
+    fraction = int((match.group(2) or "").ljust(9, "0"))
+    return seconds * 1_000_000_000 + fraction
+
+
+def compare_group2_startup_files(
+    before: Any, after: Any, startup_proof: Any
+) -> dict[str, Any]:
+    _validate_capture_digests(before)
+    _validate_capture_digests(after)
+    proof = _validate_startup_proof(startup_proof)
+    if (
+        before["materials"] != after["materials"]
+        or before["journal_facts"] != after["journal_facts"]
+        or before["empty_attempt_shells"] != after["empty_attempt_shells"]
+    ):
+        raise CarryForwardError("group2_startup_files_changed")
+    deltas: list[dict[str, Any]] = []
+    runtime_root_delta = _metadata_delta(
+        before["runtime"]["root"],
+        after["runtime"]["root"],
+        {"mtime_ns"},
+        "group2_startup_files_changed",
+    )
+    if runtime_root_delta:
+        mtime = after["runtime"]["root"]["mtime_ns"]
+        if mtime < before["runtime"]["root"]["mtime_ns"]:
+            raise CarryForwardError("group2_startup_files_changed")
+        _window_ns(
+            mtime,
+            proof["window_start_ns"],
+            proof["window_end_ns"],
+            "group2_startup_files_changed",
+        )
+        deltas.append({"root": "runtime", "path": ".", "fields": runtime_root_delta})
+    if before["journal"]["root"] != after["journal"]["root"]:
+        raise CarryForwardError("group2_startup_files_changed")
+    for root in ("runtime", "journal"):
+        left, right = _entry_map(before, root), _entry_map(after, root)
+        if set(left) != set(right):
+            raise CarryForwardError("group2_startup_files_changed")
+        for path in left:
+            allowed = (
+                {"mtime_ns"}
+                if root == "journal" and path == "sandbox-recovery"
+                else set()
+            )
+            changed = _metadata_delta(
+                left[path], right[path], allowed, "group2_startup_files_changed"
+            )
+            if changed:
+                mtime = right[path]["mtime_ns"]
+                if mtime < left[path]["mtime_ns"]:
+                    raise CarryForwardError("group2_startup_files_changed")
+                _window_ns(
+                    mtime,
+                    proof["window_start_ns"],
+                    proof["window_end_ns"],
+                    "group2_startup_files_changed",
+                )
+                deltas.append({"root": root, "path": path, "fields": changed})
+    expected = {("runtime", "."), ("journal", "sandbox-recovery")}
+    if {(item["root"], item["path"]) for item in deltas} != expected:
+        raise CarryForwardError("group2_startup_files_changed")
+    return {"code": "group2_startup_files_ok", "allowed_deltas": deltas}
+
+
+def _validate_probe_proof(
+    value: Any, *, require_cleanup: bool = True
+) -> dict[str, Any]:
+    keys = {
+        "adapter_id",
+        "execution_id",
+        "worker_id",
+        "attempt_id",
+        "window_start_ns",
+        "window_end_ns",
+        "probe_result",
+        "cleanup",
+        "log_evidence_digest",
+        "event_refs",
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        raise CarryForwardError("probe_proof_invalid")
+    for key in ("adapter_id", "execution_id", "worker_id", "attempt_id"):
+        _positive(value[key], "probe_proof_invalid")
+    if (
+        not isinstance(value["window_start_ns"], int)
+        or isinstance(value["window_start_ns"], bool)
+        or not isinstance(value["window_end_ns"], int)
+        or value["window_end_ns"] < value["window_start_ns"]
+    ):
+        raise CarryForwardError("probe_proof_invalid")
+    _digest_text(value["log_evidence_digest"], "probe_proof_invalid")
+    if not isinstance(value["event_refs"], list) or not value["event_refs"]:
+        raise CarryForwardError("probe_proof_invalid")
+    for item in value["event_refs"]:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"offset", "line_sha256"}
+            or not isinstance(item["offset"], int)
+            or isinstance(item["offset"], bool)
+            or item["offset"] < 0
+            or DIGEST.fullmatch(item["line_sha256"]) is None
+        ):
+            raise CarryForwardError("probe_proof_invalid")
+    cleanup = value["cleanup"]
+    if require_cleanup and (
+        not isinstance(cleanup, dict)
+        or set(cleanup) != {"row", "row_sha256"}
+        or cleanup["row_sha256"] != digest(cleanup["row"])
+    ):
+        raise CarryForwardError("probe_cleanup_invalid")
+    if not require_cleanup and cleanup is not None:
+        raise CarryForwardError("probe_cleanup_invalid")
+    return value
+
+
+def compare_group2_probe_files(
+    before: Any, after: Any, probe_proof: Any
+) -> dict[str, Any]:
+    _validate_capture_digests(before)
+    _validate_capture_digests(after)
+    proof = _validate_probe_proof(probe_proof)
+    if (
+        before["materials"] != after["materials"]
+        or before["journal_facts"] != after["journal_facts"]
+        or before["runtime"]["root"] != after["runtime"]["root"]
+    ):
+        raise CarryForwardError("group2_probe_files_changed")
+    start, end = proof["window_start_ns"], proof["window_end_ns"]
+    attempt_id = proof["attempt_id"]
+    deltas: list[dict[str, Any]] = []
+    for root in ("runtime", "journal"):
+        left, right = _entry_map(before, root), _entry_map(after, root)
+        new_paths = set(right) - set(left)
+        removed = set(left) - set(right)
+        expected_new = (
+            {f"workspaces/attempt-{attempt_id}"} if root == "runtime" else set()
+        )
+        if removed or new_paths != expected_new:
+            raise CarryForwardError("group2_probe_files_changed")
+        for path in set(left):
+            allowed: set[str] = set()
+            if root == "runtime" and path in {
+                "attempt-journal",
+                "workspaces",
+                "version-cache",
+                "version-cache/entries",
+            }:
+                allowed = {"mtime_ns"}
+            elif (
+                root == "runtime"
+                and path == "version-cache/.dlr-cache-reservations.json"
+            ):
+                allowed = {"inode", "mtime_ns"}
+            elif root == "journal" and path == "sandbox-recovery":
+                allowed = {"mtime_ns"}
+            changed = _metadata_delta(
+                left[path], right[path], allowed, "group2_probe_files_changed"
+            )
+            if changed:
+                if "mtime_ns" not in changed:
+                    raise CarryForwardError("group2_probe_files_changed")
+                mtime = right[path]["mtime_ns"]
+                if mtime < left[path]["mtime_ns"]:
+                    raise CarryForwardError("group2_probe_files_changed")
+                _window_ns(mtime, start, end, "group2_probe_files_changed")
+                deltas.append({"root": root, "path": path, "fields": changed})
+        for path in new_paths:
+            item = right[path]
+            if item.get("type") != "directory" or item.get("mode") != 0o700:
+                raise CarryForwardError("group2_probe_files_changed")
+            workspaces = right.get("workspaces")
+            if not isinstance(workspaces, dict) or any(
+                item.get(key) != workspaces.get(key) for key in ("uid", "gid", "device")
+            ):
+                raise CarryForwardError("group2_probe_files_changed")
+            _window_ns(item.get("mtime_ns"), start, end, "group2_probe_files_changed")
+            if any(other.startswith(path + "/") for other in right):
+                raise CarryForwardError("group2_probe_files_changed")
+            deltas.append({"root": root, "path": path, "fields": {"created": item}})
+    journal_root_delta = _metadata_delta(
+        before["journal"]["root"],
+        after["journal"]["root"],
+        {"mtime_ns"},
+        "group2_probe_files_changed",
+    )
+    if journal_root_delta:
+        mtime = after["journal"]["root"]["mtime_ns"]
+        if mtime < before["journal"]["root"]["mtime_ns"]:
+            raise CarryForwardError("group2_probe_files_changed")
+        _window_ns(mtime, start, end, "group2_probe_files_changed")
+        deltas.append({"root": "journal", "path": ".", "fields": journal_root_delta})
+    expected_shells = [
+        *before["empty_attempt_shells"],
+        {
+            "attempt_id": attempt_id,
+            "classification": "owned_empty_shell_without_db_row",
+        },
+    ]
+    if after["empty_attempt_shells"] != sorted(
+        expected_shells, key=lambda item: item["attempt_id"]
+    ):
+        raise CarryForwardError("group2_probe_files_changed")
+    return {"code": "group2_probe_files_ok", "allowed_deltas": deltas}
+
+
+def compare_group2_post_probe(
+    manifest: Any,
+    before_db: Any,
+    after_db: Any,
+    before_files: Any,
+    after_files: Any,
+    probe_proof: Any,
+) -> dict[str, Any]:
+    validated = validate_manifest(manifest)
+    if manifest_mode(validated) != GROUP2_MODE:
+        raise CarryForwardError("manifest_mode_invalid")
+    proof = _validate_probe_proof(probe_proof)
+    for value in (before_db, after_db):
+        if not isinstance(value, dict):
+            raise CarryForwardError("group2_post_probe_invalid")
+        validate_projection_evidence(value.get("projection"), required=AUDITED_TABLES)
+        validate_projection_evidence(
+            value.get("asset_projection"), required=ASSET_TABLES
+        )
+        validate_group2_protected_rows(value.get("protected_rows"))
+        validate_group2_schema_shape(value.get("schema_shape"))
+    if (
+        before_db["projection"] != validated["old_runtime_projection"]
+        or before_db["responsibilities"] != validated["responsibilities"]
+        or before_db["protected_rows"] != validated["protected_rows"]
+        or before_db["asset_projection"] != validated["asset_projection"]
+        or before_db["schema_shape"] != validated["schema_shape"]
+        or before_db["schema_inventory"] != validated["schema_inventory"]
+        or after_db["asset_projection"] != before_db["asset_projection"]
+        or after_db["schema_shape"] != before_db["schema_shape"]
+        or after_db["schema_inventory"] != before_db["schema_inventory"]
+        or after_db["responsibilities"] != before_db["responsibilities"]
+    ):
+        raise CarryForwardError("group2_post_probe_changed")
+    before_ids = before_db["protected_rows"]
+    if (
+        proof["adapter_id"] in before_ids["adapter_ids"]
+        or proof["execution_id"] in before_ids["execution_ids"]
+        or proof["attempt_id"] in before_ids["attempt_ids"]
+    ):
+        raise CarryForwardError("probe_identity_not_new")
+    cleanup_row = proof["cleanup"]["row"]
+    if (
+        not isinstance(cleanup_row, dict)
+        or cleanup_row.get("adapter_id") != proof["adapter_id"]
+        or cleanup_row.get("worker_id") != proof["worker_id"]
+        or cleanup_row.get("status") != "completed"
+        or cleanup_row.get("error_code") is not None
+        or not isinstance(cleanup_row.get("attempts"), int)
+        or isinstance(cleanup_row.get("attempts"), bool)
+        or not 1 <= cleanup_row["attempts"] <= 3
+    ):
+        raise CarryForwardError("probe_cleanup_invalid")
+
+    def timestamp_ns(value: Any) -> int:
+        if not isinstance(value, dict) or set(value) != {"$datetime"}:
+            raise CarryForwardError("probe_timestamp_invalid")
+        try:
+            parsed = dt.datetime.fromisoformat(value["$datetime"])
+        except (TypeError, ValueError) as error:
+            raise CarryForwardError("probe_timestamp_invalid") from error
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return int(parsed.timestamp() * 1_000_000_000)
+
+    cleanup_times = [
+        timestamp_ns(cleanup_row[key])
+        for key in ("created_at", "updated_at", "completed_at")
+    ]
+    if cleanup_times != sorted(cleanup_times) or any(
+        value < proof["window_start_ns"] or value > proof["window_end_ns"]
+        for value in cleanup_times
+    ):
+        raise CarryForwardError("probe_timestamp_invalid")
+    for name in AUDITED_TABLES:
+        left = before_ids["tables"][name]["rows"]
+        right = after_db["protected_rows"]["tables"][name]["rows"]
+        left_by_pk = {digest(row["pk"]): row for row in left}
+        right_by_pk = {digest(row["pk"]): row for row in right}
+        if not set(left_by_pk).issubset(right_by_pk):
+            raise CarryForwardError("group2_post_probe_changed")
+        for key, old in left_by_pk.items():
+            new = right_by_pk[key]
+            if name == "global_execution_admission":
+                if old["stable_hash"] != new["stable_hash"]:
+                    raise CarryForwardError("group2_post_probe_changed")
+                old_updated = timestamp_ns(old["updated_at"])
+                new_updated = timestamp_ns(new["updated_at"])
+                if (
+                    new_updated <= old_updated
+                    or new_updated < proof["window_start_ns"]
+                    or new_updated > proof["window_end_ns"]
+                ):
+                    raise CarryForwardError("group2_post_probe_changed")
+            elif old != new:
+                raise CarryForwardError("group2_post_probe_changed")
+        added = [right_by_pk[key] for key in set(right_by_pk) - set(left_by_pk)]
+        if name == "worker_cleanup_requests":
+            if len(added) != 1 or added[0]["hash"] != proof["cleanup"]["row_sha256"]:
+                raise CarryForwardError("probe_cleanup_invalid")
+        elif added:
+            raise CarryForwardError("group2_post_probe_changed")
+    file_result = compare_group2_probe_files(before_files, after_files, proof)
+    return {
+        "code": "group2_post_probe_ok",
+        "cleanup_row_sha256": proof["cleanup"]["row_sha256"],
+        "post_db_digest": digest(
+            {
+                "protected_rows": after_db["protected_rows"],
+                "asset_projection": after_db["asset_projection"],
+                "schema_shape": after_db["schema_shape"],
+            }
+        ),
+        "file_delta_digest": digest(file_result["allowed_deltas"]),
+    }
+
+
 def validate_file_responsibilities(
     evidence: dict[str, Any], responsibilities: dict[str, Any]
 ) -> None:
@@ -1731,14 +2697,14 @@ def validate_file_responsibilities(
         if (
             path.startswith("attempt-journal/")
             and path != "attempt-journal/.dlr-instance.lock"
-        ):
-            if (
+            and (
                 not re.fullmatch(
                     r"attempt-journal/attempt-[1-9][0-9]*\.attempt\.json", path
                 )
                 or entry.get("type") != "file"
-            ):
-                raise CarryForwardError("attempt_journal_unknown")
+            )
+        ):
+            raise CarryForwardError("attempt_journal_unknown")
         if path.startswith("version-cache"):
             if path not in cache_allowed and not path.startswith(
                 "version-cache/entries/"
@@ -2609,7 +3575,7 @@ def projection_columns(
     if baseline_projection is None:
         return actual_columns
     baseline_columns = list(baseline_projection[name]["columns"])
-    if mode == AUDITED_MODE:
+    if is_audited_mode(mode):
         if actual_columns != baseline_columns:
             raise CarryForwardError("projection_columns_changed")
         return actual_columns
@@ -2666,10 +3632,10 @@ def inspect_database(
     schema_phase: str | None = None,
     mode: str | None = None,
 ) -> dict[str, Any]:
-    if mode not in {None, AUDITED_MODE}:
+    if mode not in {None, AUDITED_MODE, GROUP2_MODE}:
         raise CarryForwardError("manifest_mode_invalid")
     selection = normalize_selection(selection, mode=mode)
-    required_tables = AUDITED_TABLES if mode == AUDITED_MODE else RESPONSIBILITY_TABLES
+    required_tables = AUDITED_TABLES if is_audited_mode(mode) else RESPONSIBILITY_TABLES
     try:
         from sqlalchemy import create_engine, inspect, text
     except ImportError as error:
@@ -2742,7 +3708,36 @@ def inspect_database(
                     candidate_counts,
                     cursor_rows,
                 )
-        for name in required_tables:
+        capture_tables = (
+            tuple(dict.fromkeys((*required_tables, *ASSET_TABLES)))
+            if mode == GROUP2_MODE
+            else required_tables
+        )
+        schema_shape: dict[str, Any] = {}
+        if mode == GROUP2_MODE:
+            for name in sorted(existing):
+                columns = inspector.get_columns(name)
+                primary_key = list(
+                    (inspector.get_pk_constraint(name) or {}).get("constrained_columns")
+                    or []
+                )
+                if not primary_key:
+                    raise CarryForwardError("schema_primary_key_missing")
+                schema_shape[name] = {
+                    "columns": [
+                        {
+                            "name": column["name"],
+                            "type": str(column["type"]),
+                            "nullable": bool(column["nullable"]),
+                            "default": None
+                            if column.get("default") is None
+                            else str(column["default"]),
+                        }
+                        for column in columns
+                    ],
+                    "primary_key": primary_key,
+                }
+        for name in capture_tables:
             if name not in existing:
                 raise CarryForwardError("schema_table_missing")
             actual_columns = [column["name"] for column in inspector.get_columns(name)]
@@ -2756,14 +3751,16 @@ def inspect_database(
                 actual_columns != list(AUDIT_COLUMNS) or actual_primary_key != ["id"]
             ):
                 raise CarryForwardError("audit_schema_invalid")
-            if baseline_projection is not None and actual_primary_key != list(
-                baseline_projection[name]["primary_key"]
+            if (
+                baseline_projection is not None
+                and name in baseline_projection
+                and actual_primary_key != list(baseline_projection[name]["primary_key"])
             ):
                 raise CarryForwardError("projection_primary_key_changed")
             columns = projection_columns(
                 name,
                 actual_columns,
-                baseline_projection,
+                baseline_projection if name in required_tables else None,
                 mode=mode,
             )
             primary_key = actual_primary_key
@@ -2780,7 +3777,7 @@ def inspect_database(
     projection = project_rows(tables, required=required_tables)
     responsibilities = derive_responsibilities(tables, selection, mode=mode)
     terminal_evidence = (
-        derive_terminal_evidence(tables, selection) if mode == AUDITED_MODE else None
+        derive_terminal_evidence(tables, selection) if is_audited_mode(mode) else None
     )
     if terminal_evidence is not None:
         responsibilities = {
@@ -2804,6 +3801,65 @@ def inspect_database(
         "_credential_hashes": credential_hashes,
         "_attempt_statuses": attempt_statuses,
     }
+    if mode == GROUP2_MODE:
+        protected_tables: dict[str, Any] = {}
+        for name in AUDITED_TABLES:
+            source = tables[name]
+            protected_rows = []
+            for row in source["rows"]:
+                protected = {
+                    "pk": {key: canonical(row[key]) for key in source["primary_key"]},
+                    "hash": row_digest(row),
+                }
+                if name == "global_execution_admission":
+                    stable = {
+                        key: item for key, item in row.items() if key != "updated_at"
+                    }
+                    protected.update(
+                        stable_hash=row_digest(stable),
+                        updated_at=canonical(row.get("updated_at")),
+                    )
+                if name == "worker_cleanup_requests":
+                    protected.update(
+                        {
+                            key: canonical(row.get(key))
+                            for key in (
+                                "id",
+                                "adapter_id",
+                                "worker_id",
+                                "status",
+                                "attempts",
+                                "error_code",
+                                "created_at",
+                                "updated_at",
+                                "completed_at",
+                            )
+                        }
+                    )
+                protected_rows.append(protected)
+            protected_tables[name] = {
+                "columns": source["columns"],
+                "primary_key": source["primary_key"],
+                "rows": protected_rows,
+            }
+
+        def ids(name: str) -> list[int]:
+            return sorted(
+                _positive(row["id"], "protected_rows_invalid")
+                for row in tables[name]["rows"]
+            )
+
+        result.update(
+            protected_rows={
+                "tables": protected_tables,
+                "adapter_ids": ids("adapters"),
+                "version_ids": ids("adapter_versions"),
+                "execution_ids": ids("executions"),
+                "attempt_ids": ids("execution_attempts"),
+            },
+            asset_projection=project_rows(tables, required=ASSET_TABLES),
+            schema_shape=schema_shape,
+        )
     return result
 
 
@@ -2854,6 +3910,545 @@ def validate_source_diff(value: Any) -> dict[str, Any]:
     return value
 
 
+def _digest_text(value: Any, code: str) -> str:
+    if not isinstance(value, str) or DIGEST.fullmatch(value) is None:
+        raise CarryForwardError(code)
+    return value
+
+
+def _sha_text(value: Any, code: str) -> str:
+    if not isinstance(value, str) or SHA.fullmatch(value) is None:
+        raise CarryForwardError(code)
+    return value
+
+
+def _group2_expected_rules() -> dict[str, tuple[str, str, str, str | None, str | None]]:
+    rules = dict(GROUP2_PRODUCT_RULES)
+    for path, mode in GROUP2_CONTROLLER_PATHS.items():
+        if path in rules:
+            status, old_mode, new_mode, _, _ = rules[path]
+            rules[path] = (status, old_mode, new_mode, None, None)
+        else:
+            rules[path] = (
+                "A" if path.endswith("incident-preserving-upgrade/spec.md") else "M",
+                "000000"
+                if path.endswith("incident-preserving-upgrade/spec.md")
+                else mode,
+                mode,
+                None,
+                None,
+            )
+    if len(rules) != 64:
+        raise CarryForwardError("group2_source_rules_invalid")
+    return rules
+
+
+def validate_group2_source_diff(value: Any, scope: Any) -> dict[str, Any]:
+    keys = {
+        "from_sha",
+        "to_sha",
+        "from_tree",
+        "to_tree",
+        "raw_diff_sha256",
+        "tree_digest",
+        "entries",
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        raise CarryForwardError("group2_source_diff_invalid")
+    _sha_text(value["from_tree"], "group2_source_diff_invalid")
+    _sha_text(value["to_tree"], "group2_source_diff_invalid")
+    _sha_text(value["from_sha"], "group2_source_diff_invalid")
+    _sha_text(value["to_sha"], "group2_source_diff_invalid")
+    for key in ("raw_diff_sha256", "tree_digest"):
+        _digest_text(value[key], "group2_source_diff_invalid")
+    entries = value["entries"]
+    entry_keys = {"status", "old_mode", "new_mode", "old_oid", "new_oid", "path"}
+    rules = _group2_expected_rules()
+    if (
+        not isinstance(entries, list)
+        or len(entries) != 64
+        or any(
+            not isinstance(item, dict) or set(item) != entry_keys for item in entries
+        )
+        or entries != sorted(entries, key=lambda item: item["path"])
+        or {item["path"] for item in entries} != set(rules)
+        or digest(
+            {
+                "from_tree": value["from_tree"],
+                "to_tree": value["to_tree"],
+                "entries": entries,
+            }
+        )
+        != value["tree_digest"]
+    ):
+        raise CarryForwardError("group2_source_diff_invalid")
+    for item in entries:
+        status, old_mode, new_mode, old_oid, new_oid = rules[item["path"]]
+        if (
+            item["status"] != status
+            or item["old_mode"] != old_mode
+            or item["new_mode"] != new_mode
+            or not isinstance(item["old_oid"], str)
+            or not isinstance(item["new_oid"], str)
+            or SHA.fullmatch(item["old_oid"]) is None
+            or SHA.fullmatch(item["new_oid"]) is None
+            or (old_oid is not None and item["old_oid"] != old_oid)
+            or (new_oid is not None and item["new_oid"] != new_oid)
+        ):
+            raise CarryForwardError("group2_source_diff_invalid")
+        if status == "M" and (
+            item["old_oid"] == "0" * 40 or item["old_oid"] == item["new_oid"]
+        ):
+            raise CarryForwardError("group2_source_diff_invalid")
+        if status == "A" and item["old_oid"] != "0" * 40:
+            raise CarryForwardError("group2_source_diff_invalid")
+    if (
+        value["from_sha"] != GROUP2_FROM_SHA
+        or SHA.fullmatch(value["to_sha"]) is None
+        or not isinstance(scope, dict)
+        or value != scope.get("final_source")
+    ):
+        raise CarryForwardError("group2_source_scope_mismatch")
+    return value
+
+
+def validate_group2_review_scope(value: Any) -> dict[str, Any]:
+    required = {
+        "schema",
+        "mode",
+        "repo",
+        "pr",
+        "approval",
+        "product_anchor",
+        "final_source",
+        "reviews",
+        "controller_files",
+        "image_binding",
+        "migration_graph",
+        "ci",
+        "preservation_reference",
+        "scope_digest",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise CarryForwardError("group2_review_scope_invalid")
+    if value["schema"] != GROUP2_REVIEW_SCHEMA or value["mode"] != GROUP2_MODE:
+        raise CarryForwardError("group2_review_scope_invalid")
+    if (
+        not isinstance(value["repo"], str)
+        or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value["repo"]) is None
+    ):
+        raise CarryForwardError("group2_review_scope_invalid")
+    _positive(value["pr"], "group2_review_scope_invalid")
+    approval = value["approval"]
+    approval_keys = {
+        "request_sha256",
+        "user_approval_sha256",
+        "product_scope_sha256",
+        "review_bindings_sha256",
+    }
+    if not isinstance(approval, dict) or set(approval) != approval_keys:
+        raise CarryForwardError("group2_approval_invalid")
+    for item in approval.values():
+        _digest_text(item, "group2_approval_invalid")
+    if approval["request_sha256"] != GROUP2_REQUEST_DIGEST:
+        raise CarryForwardError("group2_approval_invalid")
+    anchor = value["product_anchor"]
+    anchor_keys = {
+        "base_sha",
+        "head_sha",
+        "base_tree",
+        "head_tree",
+        "raw_diff_sha256",
+        "files",
+    }
+    if not isinstance(anchor, dict) or set(anchor) != anchor_keys:
+        raise CarryForwardError("group2_product_anchor_invalid")
+    expected_anchor = (
+        GROUP2_FROM_SHA,
+        GROUP2_PRODUCT_SHA,
+        GROUP2_FROM_TREE,
+        GROUP2_PRODUCT_TREE,
+        GROUP2_PRODUCT_RAW_DIGEST,
+    )
+    if (
+        tuple(
+            anchor[key]
+            for key in (
+                "base_sha",
+                "head_sha",
+                "base_tree",
+                "head_tree",
+                "raw_diff_sha256",
+            )
+        )
+        != expected_anchor
+    ):
+        raise CarryForwardError("group2_product_anchor_invalid")
+    anchor_entries = anchor["files"]
+    if (
+        not isinstance(anchor_entries, list)
+        or len(anchor_entries) != 57
+        or any(not isinstance(item, dict) for item in anchor_entries)
+        or anchor_entries
+        != sorted(anchor_entries, key=lambda item: item.get("path", ""))
+        or {item.get("path") for item in anchor_entries if isinstance(item, dict)}
+        != set(GROUP2_PRODUCT_RULES)
+    ):
+        raise CarryForwardError("group2_product_anchor_invalid")
+    for item in anchor_entries:
+        rule = (
+            GROUP2_PRODUCT_RULES.get(item.get("path"))
+            if isinstance(item, dict)
+            else None
+        )
+        if (
+            rule is None
+            or set(item)
+            != {"status", "old_mode", "new_mode", "old_oid", "new_oid", "path"}
+            or tuple(item[key] for key in ("status", "old_mode", "new_mode"))
+            != rule[:3]
+            or (rule[3] is not None and item["old_oid"] != rule[3])
+            or (rule[4] is not None and item["new_oid"] != rule[4])
+        ):
+            raise CarryForwardError("group2_product_anchor_invalid")
+    final_source = value["final_source"]
+    validate_group2_source_diff(final_source, value)
+    reviews = value["reviews"]
+    review_keys = {"name", "report_sha256", "reviewed_commit", "coverage", "status"}
+    final_blobs = {item["path"]: item["new_oid"] for item in final_source["entries"]}
+    if (
+        not isinstance(reviews, list)
+        or len(reviews) < 4
+        or any(
+            not isinstance(item, dict) or set(item) != review_keys for item in reviews
+        )
+        or any(item["status"] != "APPROVED" for item in reviews)
+        or any(
+            _digest_text(item["report_sha256"], "group2_reviews_invalid")
+            != item["report_sha256"]
+            for item in reviews
+        )
+        or any(
+            _sha_text(item["reviewed_commit"], "group2_reviews_invalid")
+            != item["reviewed_commit"]
+            for item in reviews
+        )
+        or not all(
+            isinstance(item["coverage"], list)
+            and all(
+                isinstance(entry, dict)
+                and set(entry) == {"path", "blob_oid"}
+                and isinstance(entry["path"], str)
+                and SHA.fullmatch(entry["blob_oid"]) is not None
+                and final_blobs.get(entry["path"]) == entry["blob_oid"]
+                for entry in item["coverage"]
+            )
+            for item in reviews
+        )
+        or {entry["path"] for item in reviews for entry in item["coverage"]}
+        != set(_group2_expected_rules())
+    ):
+        raise CarryForwardError("group2_reviews_invalid")
+    controller = value["controller_files"]
+    if not isinstance(controller, dict) or set(controller) != {"files", "digest"}:
+        raise CarryForwardError("group2_controller_files_invalid")
+    files = controller["files"]
+    if not isinstance(files, dict) or set(files) != GROUP2_CONTROLLER_FILES:
+        raise CarryForwardError("group2_controller_files_invalid")
+    for item in files.values():
+        _digest_text(item, "group2_controller_files_invalid")
+    _digest_text(controller["digest"], "group2_controller_files_invalid")
+    if controller["digest"] != digest(files):
+        raise CarryForwardError("group2_controller_files_invalid")
+    image_binding = value["image_binding"]
+    if not isinstance(image_binding, dict) or set(image_binding) != {
+        "old_image_ids",
+        "candidate_image_ids",
+    }:
+        raise CarryForwardError("group2_image_binding_invalid")
+    for key in ("old_image_ids", "candidate_image_ids"):
+        if not isinstance(image_binding[key], dict) or not image_binding[key]:
+            raise CarryForwardError("group2_image_binding_invalid")
+    migration = value["migration_graph"]
+    if not isinstance(migration, dict) or set(migration) != {
+        "from_files",
+        "to_files",
+        "graph_digest",
+        "head",
+    }:
+        raise CarryForwardError("group2_migration_graph_invalid")
+    if (
+        migration["head"] != "0040_issue152_dispositions"
+        or migration["from_files"] != migration["to_files"]
+    ):
+        raise CarryForwardError("group2_migration_graph_invalid")
+    _digest_text(migration["graph_digest"], "group2_migration_graph_invalid")
+    migration_files = migration["from_files"]
+    if (
+        not isinstance(migration_files, list)
+        or any(
+            not isinstance(item, dict) or set(item) != {"path", "mode", "oid"}
+            for item in migration_files
+        )
+        or migration_files != sorted(migration_files, key=lambda item: item["path"])
+        or any(
+            item["mode"] not in {"100644", "100755"}
+            or not isinstance(item["oid"], str)
+            or SHA.fullmatch(item["oid"]) is None
+            for item in migration_files
+        )
+    ):
+        raise CarryForwardError("group2_migration_graph_invalid")
+    ci = value["ci"]
+    if not isinstance(ci, dict) or set(ci) != {
+        "head_sha",
+        "run_id",
+        "run_attempt",
+        "workflow_path",
+        "event",
+        "jobs",
+        "evidence_sha256",
+    }:
+        raise CarryForwardError("group2_ci_invalid")
+    _positive(ci["run_id"], "group2_ci_invalid")
+    _positive(ci["run_attempt"], "group2_ci_invalid")
+    if (
+        ci["head_sha"] != final_source["to_sha"]
+        or ci["workflow_path"] != ".github/workflows/ci.yml"
+        or ci["event"] != "pull_request"
+    ):
+        raise CarryForwardError("group2_ci_invalid")
+    jobs = ci["jobs"]
+    if (
+        not isinstance(jobs, list)
+        or any(
+            not isinstance(item, dict) or set(item) != {"id", "name", "conclusion"}
+            for item in jobs
+        )
+        or jobs != sorted(jobs, key=lambda item: (item["name"], item["id"]))
+        or any(item["conclusion"].lower() != "success" for item in jobs)
+        or any(
+            sum(item["name"] == name for item in jobs) != 1
+            for name in ("backend", "web", "local-preview", "compose-smoke")
+        )
+    ):
+        raise CarryForwardError("group2_ci_invalid")
+    _digest_text(ci["evidence_sha256"], "group2_ci_invalid")
+    reference = value["preservation_reference"]
+    reference_keys = {"snapshot", "snapshot_digest", "review_report_sha256"}
+    if not isinstance(reference, dict) or set(reference) != reference_keys:
+        raise CarryForwardError("group2_preservation_reference_invalid")
+    _digest_text(reference["snapshot_digest"], "group2_preservation_reference_invalid")
+    _digest_text(
+        reference["review_report_sha256"], "group2_preservation_reference_invalid"
+    )
+    snapshot = reference["snapshot"]
+    if (
+        not isinstance(snapshot, dict)
+        or set(snapshot) != {"selection", "db", "files", "lineage"}
+        or reference["snapshot_digest"] != digest(snapshot)
+        or not isinstance(snapshot["lineage"], list)
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"name", "sha256"}
+            or DIGEST.fullmatch(item["sha256"]) is None
+            for item in snapshot["lineage"]
+        )
+    ):
+        raise CarryForwardError("group2_preservation_reference_invalid")
+    _digest_text(value["scope_digest"], "group2_review_scope_invalid")
+    if (
+        digest({key: item for key, item in value.items() if key != "scope_digest"})
+        != value["scope_digest"]
+    ):
+        raise CarryForwardError("group2_review_scope_digest_mismatch")
+    return value
+
+
+def validate_group2_protected_rows(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {
+        "tables",
+        "adapter_ids",
+        "version_ids",
+        "execution_ids",
+        "attempt_ids",
+    }:
+        raise CarryForwardError("protected_rows_invalid")
+    if set(value["tables"]) != set(AUDITED_TABLES):
+        raise CarryForwardError("protected_rows_invalid")
+    for key in ("adapter_ids", "version_ids", "execution_ids", "attempt_ids"):
+        ids = value[key]
+        if (
+            not isinstance(ids, list)
+            or ids != sorted(set(ids))
+            or any(
+                not isinstance(item, int) or isinstance(item, bool) or item <= 0
+                for item in ids
+            )
+        ):
+            raise CarryForwardError("protected_rows_invalid")
+    for name, table in value["tables"].items():
+        if not isinstance(table, dict) or set(table) != {
+            "columns",
+            "primary_key",
+            "rows",
+        }:
+            raise CarryForwardError("protected_rows_invalid")
+        columns, primary_key, rows = (
+            table["columns"],
+            table["primary_key"],
+            table["rows"],
+        )
+        if (
+            not isinstance(columns, list)
+            or not columns
+            or not isinstance(primary_key, list)
+            or not primary_key
+            or not set(primary_key).issubset(columns)
+            or not isinstance(rows, list)
+        ):
+            raise CarryForwardError("protected_rows_invalid")
+        expected_keys = {"pk", "hash"}
+        if name == "global_execution_admission":
+            expected_keys |= {"stable_hash", "updated_at"}
+        if name == "worker_cleanup_requests":
+            expected_keys |= {
+                "id",
+                "adapter_id",
+                "worker_id",
+                "status",
+                "attempts",
+                "error_code",
+                "created_at",
+                "updated_at",
+                "completed_at",
+            }
+        row_keys = []
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != expected_keys:
+                raise CarryForwardError("protected_rows_invalid")
+            if not isinstance(row["pk"], dict) or set(row["pk"]) != set(primary_key):
+                raise CarryForwardError("protected_rows_invalid")
+            row_keys.append(
+                tuple(_protected_pk_order(row["pk"][key]) for key in primary_key)
+            )
+            _digest_text(row["hash"], "protected_rows_invalid")
+            if name == "global_execution_admission":
+                _digest_text(row["stable_hash"], "protected_rows_invalid")
+        if row_keys != sorted(set(row_keys)):
+            raise CarryForwardError("protected_rows_invalid")
+    return value
+
+
+def _protected_pk_order(value: Any) -> tuple[int, Any]:
+    if value is None:
+        return (0, "")
+    if isinstance(value, bool):
+        return (1, int(value))
+    if isinstance(value, int):
+        return (2, value)
+    if isinstance(value, float):
+        return (3, value)
+    if isinstance(value, str):
+        return (4, value)
+    if isinstance(value, dict) and len(value) == 1:
+        marker, item = next(iter(value.items()))
+        if marker == "$decimal":
+            return (2, decimal.Decimal(item))
+        if marker in {"$datetime", "$uuid", "$bytes"}:
+            return (4, item)
+    return (9, canonical_bytes(value))
+
+
+def validate_group2_schema_shape(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value:
+        raise CarryForwardError("schema_shape_invalid")
+    for name, table in value.items():
+        if (
+            not isinstance(name, str)
+            or re.fullmatch(r"[a-z][a-z0-9_]*", name) is None
+            or not isinstance(table, dict)
+            or set(table) != {"columns", "primary_key"}
+        ):
+            raise CarryForwardError("schema_shape_invalid")
+        columns = table["columns"]
+        primary_key = table["primary_key"]
+        if (
+            not isinstance(columns, list)
+            or not columns
+            or any(
+                not isinstance(item, dict)
+                or set(item) != {"name", "type", "nullable", "default"}
+                or not isinstance(item["name"], str)
+                or not isinstance(item["type"], str)
+                or type(item["nullable"]) is not bool
+                or (
+                    item["default"] is not None and not isinstance(item["default"], str)
+                )
+                for item in columns
+            )
+            or not isinstance(primary_key, list)
+            or not primary_key
+            or not set(primary_key).issubset({item["name"] for item in columns})
+        ):
+            raise CarryForwardError("schema_shape_invalid")
+    return value
+
+
+def validate_group2_manifest_extensions(manifest: Any) -> None:
+    scope = validate_group2_review_scope(manifest.get("review_scope"))
+    if (
+        manifest.get("review_scope_digest") != scope["scope_digest"]
+        or manifest.get("ci_binding") != scope["ci"]
+        or manifest.get("preservation_reference_digest")
+        != scope["preservation_reference"]["snapshot_digest"]
+        or manifest.get("source_diff") != scope["final_source"]
+        or manifest.get("from_sha") != scope["final_source"]["from_sha"]
+        or manifest.get("to_sha") != scope["final_source"]["to_sha"]
+        or manifest.get("repo") != scope["repo"]
+        or manifest.get("pr") != scope["pr"]
+        or manifest.get("controller_files_digest")
+        != scope["controller_files"]["digest"]
+        or manifest.get("migration_graph_digest")
+        != scope["migration_graph"]["graph_digest"]
+        or manifest.get("old_image_ids") != scope["image_binding"]["old_image_ids"]
+        or manifest.get("candidate_image_ids")
+        != scope["image_binding"]["candidate_image_ids"]
+    ):
+        raise CarryForwardError("group2_manifest_binding_invalid")
+    validate_group2_source_diff(manifest["source_diff"], scope)
+    validate_group2_protected_rows(manifest.get("protected_rows"))
+    validate_projection_evidence(
+        manifest.get("asset_projection"), required=ASSET_TABLES
+    )
+    shape = validate_group2_schema_shape(manifest.get("schema_shape"))
+    if set(shape) != set(manifest["schema_inventory"]["tables"]):
+        raise CarryForwardError("schema_shape_invalid")
+    validate_group2_account_entry(manifest.get("account_entry"))
+    log_evidence = manifest.get("log_evidence")
+    if (
+        not isinstance(log_evidence, dict)
+        or set(log_evidence)
+        != {"profile_digest", "files", "roots", "observed_at_ns", "evidence_digest"}
+        or log_evidence["profile_digest"] != manifest["account_entry"]["profile_digest"]
+        or log_evidence["evidence_digest"]
+        != digest(
+            {
+                key: item
+                for key, item in log_evidence.items()
+                if key != "evidence_digest"
+            }
+        )
+    ):
+        raise CarryForwardError("log_evidence_invalid")
+
+
+def _compare_group2_db_strict(before: dict[str, Any], after: dict[str, Any]) -> None:
+    for key in ("protected_rows", "asset_projection", "schema_shape"):
+        if before.get(key) != after.get(key):
+            raise CarryForwardError(f"group2_{key}_changed")
+
+
 def validate_manifest(value: Any) -> dict[str, Any]:
     required = {
         "format_version",
@@ -2882,12 +4477,35 @@ def validate_manifest(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise CarryForwardError("manifest_shape_invalid")
     version = value.get("format_version")
-    mode = value.get("mode") if version == AUDITED_FORMAT_VERSION else None
+    mode = (
+        value.get("mode")
+        if version in {AUDITED_FORMAT_VERSION, GROUP2_FORMAT_VERSION}
+        else None
+    )
     if version == AUDITED_FORMAT_VERSION:
         required = {*required, "mode", "source_diff"}
+    elif version == GROUP2_FORMAT_VERSION:
+        required = {
+            *required,
+            "mode",
+            "source_diff",
+            "review_scope",
+            "review_scope_digest",
+            "ci_binding",
+            "preservation_reference_digest",
+            "protected_rows",
+            "asset_projection",
+            "schema_shape",
+            "account_entry",
+            "log_evidence",
+        }
     if set(value) != required:
         raise CarryForwardError("manifest_shape_invalid")
-    if version not in {FORMAT_VERSION, AUDITED_FORMAT_VERSION}:
+    if type(version) is not int or version not in {
+        FORMAT_VERSION,
+        AUDITED_FORMAT_VERSION,
+        GROUP2_FORMAT_VERSION,
+    }:
         raise CarryForwardError("manifest_version_invalid")
     if version == AUDITED_FORMAT_VERSION:
         if type(version) is not int:
@@ -2900,6 +4518,14 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         ):
             raise CarryForwardError("candidate_schema_path_unknown")
         validate_source_diff(value["source_diff"])
+    elif version == GROUP2_FORMAT_VERSION:
+        if mode != GROUP2_MODE:
+            raise CarryForwardError("manifest_mode_invalid")
+        if (
+            value["from_schema"] != "0040_issue152_dispositions"
+            or value["to_schema"] != "0040_issue152_dispositions"
+        ):
+            raise CarryForwardError("candidate_schema_path_unknown")
     if not isinstance(value["manifest_id"], str) or not MANIFEST_ID.fullmatch(
         value["manifest_id"]
     ):
@@ -2929,9 +4555,9 @@ def validate_manifest(value: Any) -> dict[str, Any]:
     validate_storage_identity(value["storage_identity"])
     validate_projection_evidence(
         value["old_runtime_projection"],
-        required=AUDITED_TABLES if mode == AUDITED_MODE else RESPONSIBILITY_TABLES,
+        required=AUDITED_TABLES if is_audited_mode(mode) else RESPONSIBILITY_TABLES,
     )
-    if mode == AUDITED_MODE:
+    if is_audited_mode(mode):
         responsibilities = value["responsibilities"]
         if (
             not isinstance(responsibilities, dict)
@@ -2954,6 +4580,8 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         )
     ):
         raise CarryForwardError("schema_inventory_invalid")
+    if mode == GROUP2_MODE:
+        validate_group2_manifest_extensions(value)
     if digest(manifest_payload(value)) != value["manifest_digest"]:
         raise CarryForwardError("manifest_digest_mismatch")
     return value
@@ -2994,6 +4622,8 @@ def _command_check_db(args: argparse.Namespace) -> dict[str, Any]:
         compare_projection(baseline_projection, result["projection"])
         if baseline["responsibilities"] != result["responsibilities"]:
             raise CarryForwardError("responsibility_changed")
+        if mode == GROUP2_MODE:
+            _compare_group2_db_strict(baseline, result)
     write_private(args.output, result)
     return {"code": "db_ok", "tables": len(result["projection"])}
 
@@ -3088,6 +4718,8 @@ def _command_capture_state(args: argparse.Namespace) -> dict[str, Any]:
         compare_projection(baseline_projection, db["projection"])
         if baseline["responsibilities"] != db["responsibilities"]:
             raise CarryForwardError("responsibility_changed")
+        if mode == GROUP2_MODE:
+            _compare_group2_db_strict(baseline, db)
         baseline_files = baseline.get("file_evidence", baseline)
         if baseline_files != files:
             raise CarryForwardError("file_evidence_changed")
@@ -3138,7 +4770,7 @@ def _command_kernel(args: argparse.Namespace) -> dict[str, Any]:
 def _command_plan(args: argparse.Namespace) -> dict[str, Any]:
     context = read_private(args.context)
     mode = context.get("mode")
-    if mode not in {None, AUDITED_MODE}:
+    if mode not in {None, AUDITED_MODE, GROUP2_MODE}:
         raise CarryForwardError("manifest_mode_invalid")
     selection = normalize_selection(read_private(args.ids), mode=mode)
     db = read_private(args.db)
@@ -3176,9 +4808,13 @@ def _command_plan(args: argparse.Namespace) -> dict[str, Any]:
     }:
         raise CarryForwardError("kernel_identity_unknown")
     value = {
-        "format_version": AUDITED_FORMAT_VERSION
-        if mode == AUDITED_MODE
-        else FORMAT_VERSION,
+        "format_version": (
+            GROUP2_FORMAT_VERSION
+            if mode == GROUP2_MODE
+            else AUDITED_FORMAT_VERSION
+            if mode == AUDITED_MODE
+            else FORMAT_VERSION
+        ),
         "manifest_id": context["manifest_id"],
         "created_at": context["created_at"],
         "repo": context["repo"],
@@ -3203,6 +4839,30 @@ def _command_plan(args: argparse.Namespace) -> dict[str, Any]:
     if mode == AUDITED_MODE:
         value["mode"] = mode
         value["source_diff"] = validate_source_diff(context.get("source_diff"))
+    elif mode == GROUP2_MODE:
+        scope = validate_group2_review_scope(context.get("review_scope"))
+        snapshot = scope["preservation_reference"]["snapshot"]
+        if (
+            snapshot["selection"] != selection
+            or snapshot["db"] != db
+            or snapshot["files"] != files
+        ):
+            raise CarryForwardError("group2_preservation_reference_mismatch")
+        value.update(
+            mode=mode,
+            source_diff=validate_group2_source_diff(context.get("source_diff"), scope),
+            review_scope=scope,
+            review_scope_digest=scope["scope_digest"],
+            ci_binding=scope["ci"],
+            preservation_reference_digest=scope["preservation_reference"][
+                "snapshot_digest"
+            ],
+            protected_rows=db["protected_rows"],
+            asset_projection=db["asset_projection"],
+            schema_shape=db["schema_shape"],
+            account_entry=context["account_entry"],
+            log_evidence=context["log_evidence"],
+        )
     manifest = seal_manifest(value)
     write_private(args.output, manifest)
     return {"code": "manifest_ready", "manifest_id": manifest["manifest_id"]}
@@ -3216,6 +4876,1660 @@ def _command_compare(args: argparse.Namespace) -> dict[str, Any]:
     return {"code": "projection_ok", "tables": len(before["projection"])}
 
 
+def _closed_request(value: Any, operation: str, fields: set[str]) -> dict[str, Any]:
+    required = {"mode", "operation", *fields}
+    if (
+        not isinstance(value, dict)
+        or set(value) != required
+        or value["mode"] != GROUP2_MODE
+        or value["operation"] != operation
+    ):
+        raise CarryForwardError("group2_runtime_request_invalid")
+    return value
+
+
+def _run_json(arguments: list[str], code: str) -> Any:
+    try:
+        completed = subprocess.run(
+            arguments, check=True, capture_output=True, text=True, timeout=60
+        )
+        return json.loads(completed.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        raise CarryForwardError(code) from error
+
+
+def _read_explicit_env(path: Path) -> dict[str, str]:
+    _secure_file(path)
+    result: dict[str, str] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.fullmatch(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)", line)
+        if match is None or match.group(1) in result:
+            raise CarryForwardError("account_env_invalid")
+        value = match.group(2)
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        result[match.group(1)] = value
+    required_ports = {"DLR_WEB_HOST_PORT", "DLR_ACCOUNT_WEB_HOST_PORT"}
+    if not required_ports.issubset(result):
+        raise CarryForwardError("account_port_missing")
+    for name in required_ports:
+        inherited = os.environ.get(name)
+        if inherited is not None and inherited != result[name]:
+            raise CarryForwardError("account_env_override")
+    return result
+
+
+def _loopback_binding(value: Any) -> tuple[str, str]:
+    if not isinstance(value, str) or not value:
+        raise CarryForwardError("account_binding_invalid")
+    if value.startswith("["):
+        match = re.fullmatch(r"\[([^]]+)\]:([1-9][0-9]{0,4})", value)
+    else:
+        match = re.fullmatch(r"([^:]+):([1-9][0-9]{0,4})", value)
+    if match is None:
+        raise CarryForwardError("account_binding_invalid")
+    host, port = match.groups()
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError as error:
+        raise CarryForwardError("account_binding_invalid") from error
+    if not address.is_loopback or int(port) > 65535:
+        raise CarryForwardError("account_binding_invalid")
+    return host, port
+
+
+def _compose_json(project: str, release: Path, env_file: Path) -> dict[str, Any]:
+    if not release.is_absolute() or ".." in release.parts or not release.is_dir():
+        raise CarryForwardError("account_release_invalid")
+    compose_file = release / "docker-compose.yml"
+    overlay_file = release / "compose.preview.json"
+    if not compose_file.is_file() or not overlay_file.is_file():
+        raise CarryForwardError("account_release_invalid")
+    return _run_json(
+        [
+            "docker",
+            "compose",
+            "--project-name",
+            project,
+            "--env-file",
+            str(env_file),
+            "-f",
+            str(compose_file),
+            "-f",
+            str(overlay_file),
+            "config",
+            "--format",
+            "json",
+        ],
+        "account_compose_invalid",
+    )
+
+
+def _service_profile(config: dict[str, Any], service: str) -> dict[str, Any]:
+    value = config.get("services", {}).get(service)
+    if not isinstance(value, dict):
+        raise CarryForwardError("account_compose_invalid")
+    declared_volumes = config.get("volumes") or {}
+    mounts = []
+    for item in value.get("volumes", []):
+        if not isinstance(item, dict):
+            raise CarryForwardError("account_compose_invalid")
+        source = item.get("source")
+        if item.get("type") == "volume":
+            declaration = declared_volumes.get(source)
+            if not isinstance(declaration, dict):
+                raise CarryForwardError("account_compose_invalid")
+            source = declaration.get("name")
+        mounts.append(
+            {
+                "type": item.get("type"),
+                "source": source,
+                "destination": item.get("target"),
+                "rw": not bool(item.get("read_only", False)),
+            }
+        )
+    ports = []
+    for item in value.get("ports", []):
+        if not isinstance(item, dict):
+            raise CarryForwardError("account_binding_invalid")
+        ports.append(
+            {
+                "host_ip": item.get("host_ip"),
+                "published": str(item.get("published")),
+                "target": int(item.get("target")),
+                "protocol": item.get("protocol", "tcp"),
+            }
+        )
+    declared_networks = config.get("networks") or {}
+    network_names = []
+    for name in value.get("networks") or {}:
+        declaration = declared_networks.get(name)
+        if not isinstance(declaration, dict) or not isinstance(
+            declaration.get("name"), str
+        ):
+            raise CarryForwardError("account_compose_invalid")
+        network_names.append(declaration["name"])
+    return {
+        "image": value.get("image"),
+        "command": value.get("command"),
+        "effective_command": None,
+        "networks": sorted(network_names),
+        "mounts": sorted(
+            mounts, key=lambda item: (str(item["destination"]), str(item["source"]))
+        ),
+        "ports": sorted(ports, key=lambda item: (item["target"], item["published"])),
+    }
+
+
+def _command_part(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return value
+    raise CarryForwardError("account_image_config_invalid")
+
+
+def _image_command(image_id: str) -> list[list[str] | None]:
+    raw = _run_json(
+        ["docker", "image", "inspect", image_id], "account_image_config_invalid"
+    )
+    if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict):
+        raise CarryForwardError("account_image_config_invalid")
+    config = raw[0].get("Config")
+    if not isinstance(config, dict) or config.get("Volumes") is not None:
+        raise CarryForwardError("account_image_config_invalid")
+    return [_command_part(config.get("Entrypoint")), _command_part(config.get("Cmd"))]
+
+
+def _effective_command(
+    config: dict[str, Any], service: str, image_command: list[list[str] | None]
+) -> list[list[str] | None]:
+    service_value = config.get("services", {}).get(service)
+    if not isinstance(service_value, dict):
+        raise CarryForwardError("account_compose_invalid")
+    entrypoint = service_value.get("entrypoint")
+    command = service_value.get("command")
+    return [
+        image_command[0] if entrypoint is None else _command_part(entrypoint),
+        image_command[1] if command is None else _command_part(command),
+    ]
+
+
+def _profile_port_bindings(profile: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
+    result: dict[str, list[dict[str, str]]] = {}
+    for port in profile["ports"]:
+        key = f"{port['target']}/{port['protocol']}"
+        result.setdefault(key, []).append(
+            {"HostIp": port["host_ip"], "HostPort": port["published"]}
+        )
+    return result
+
+
+def _container_matches_profile(
+    container: Any, profile: Any, project: str, service: str
+) -> bool:
+    return bool(
+        isinstance(container, dict)
+        and isinstance(profile, dict)
+        and container.get("labels", {}).get("com.docker.compose.project") == project
+        and container.get("labels", {}).get("com.docker.compose.service") == service
+        and isinstance(container.get("command"), list)
+        and len(container["command"]) == 2
+        and container["command"] == profile.get("effective_command")
+        and container.get("port_bindings") == _profile_port_bindings(profile)
+        and container.get("mounts") == profile.get("mounts")
+        and container.get("networks") == profile.get("networks")
+    )
+
+
+def _inspect_container(project: str, service: str) -> dict[str, Any]:
+    raw = _run_json(
+        ["docker", "inspect", f"{project}-{service}-1"], "account_inspect_invalid"
+    )
+    if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict):
+        raise CarryForwardError("account_inspect_invalid")
+    item = raw[0]
+    state = item.get("State") or {}
+    network = item.get("NetworkSettings") or {}
+    host = item.get("HostConfig") or {}
+    config = item.get("Config") or {}
+    return {
+        "container_id": item.get("Id"),
+        "image_id": item.get("Image"),
+        "status": state.get("Status"),
+        "health": (state.get("Health") or {}).get("Status"),
+        "started_at": state.get("StartedAt"),
+        "restart_count": item.get("RestartCount"),
+        "command": [
+            _command_part(config.get("Entrypoint")),
+            _command_part(config.get("Cmd")),
+        ],
+        "labels": config.get("Labels") or {},
+        "port_bindings": host.get("PortBindings") or {},
+        "mounts": sorted(
+            [
+                {
+                    "type": mount.get("Type"),
+                    "source": (
+                        mount.get("Name")
+                        if mount.get("Type") == "volume"
+                        else mount.get("Source")
+                    ),
+                    "destination": mount.get("Destination"),
+                    "rw": mount.get("RW"),
+                }
+                for mount in item.get("Mounts", [])
+            ],
+            key=lambda mount: str(mount["destination"]),
+        ),
+        "networks": sorted((network.get("Networks") or {}).keys()),
+    }
+
+
+def capture_group2_account_entry(request: Any) -> dict[str, Any]:
+    value = _closed_request(
+        request,
+        "account-capture",
+        {
+            "project",
+            "from_sha",
+            "to_sha",
+            "old_release",
+            "candidate_release",
+            "env_file",
+            "old_image_ids",
+            "candidate_image_ids",
+        },
+    )
+    if not isinstance(value["project"], str) or not re.fullmatch(
+        r"[a-z0-9][a-z0-9_-]*", value["project"]
+    ):
+        raise CarryForwardError("account_project_invalid")
+    for key in ("from_sha", "to_sha"):
+        _sha_text(value[key], "account_sha_invalid")
+    env_file = Path(value["env_file"])
+    env = _read_explicit_env(env_file)
+    old = _compose_json(value["project"], Path(value["old_release"]), env_file)
+    candidate = _compose_json(
+        value["project"], Path(value["candidate_release"]), env_file
+    )
+    old_profiles = {
+        name: _service_profile(old, name)
+        for name in ("control", "worker", "web", "account-web")
+    }
+    candidate_profiles = {
+        name: _service_profile(candidate, name)
+        for name in ("control", "worker", "web", "account-web")
+    }
+    candidate_account = candidate_profiles["account-web"]
+    expected_bindings = {
+        "account-web": _loopback_binding(env["DLR_ACCOUNT_WEB_HOST_PORT"]),
+        "web": _loopback_binding(env["DLR_WEB_HOST_PORT"]),
+    }
+    for service, (host, published) in expected_bindings.items():
+        ports = candidate_profiles[service]["ports"]
+        if ports != [
+            {
+                "host_ip": host,
+                "published": published,
+                "target": 80,
+                "protocol": "tcp",
+            }
+        ]:
+            raise CarryForwardError("account_binding_invalid")
+    if old_profiles["control"]["ports"] or old_profiles["worker"]["ports"]:
+        raise CarryForwardError("account_binding_invalid")
+    port = candidate_account["ports"][0]
+    old_containers = {
+        name: _inspect_container(value["project"], name) for name in old_profiles
+    }
+    old_images = value["old_image_ids"]
+    candidate_images = value["candidate_image_ids"]
+    if (
+        not isinstance(old_images, dict)
+        or not old_images
+        or not isinstance(candidate_images, dict)
+        or not candidate_images
+    ):
+        raise CarryForwardError("account_image_invalid")
+
+    def bound_image(images: dict[str, Any], service: str, sha: str) -> str:
+        matches = [
+            image for tag, image in images.items() if tag.endswith(f"-{service}:{sha}")
+        ]
+        if len(matches) != 1 or not isinstance(matches[0], str) or not matches[0]:
+            raise CarryForwardError("account_image_invalid")
+        return matches[0]
+
+    candidate_image_ids_by_service = {}
+    for service in ("control", "worker", "web"):
+        old_image = bound_image(old_images, service, value["from_sha"])
+        candidate_image = bound_image(candidate_images, service, value["to_sha"])
+        if (
+            old_containers[service]["image_id"] != old_image
+            or old_images.get(old_profiles[service]["image"]) != old_image
+            or candidate_images.get(candidate_profiles[service]["image"])
+            != candidate_image
+        ):
+            raise CarryForwardError("account_image_invalid")
+        candidate_image_ids_by_service[service] = candidate_image
+    web_image = bound_image(candidate_images, "web", value["to_sha"])
+    if (
+        old_profiles["account-web"]["image"] != old_profiles["web"]["image"]
+        or candidate_profiles["account-web"]["image"]
+        != candidate_profiles["web"]["image"]
+    ):
+        raise CarryForwardError("account_image_invalid")
+    if not isinstance(web_image, str):
+        raise CarryForwardError("account_image_invalid")
+    candidate_image_ids_by_service["account-web"] = web_image
+    image_commands: dict[str, list[list[str] | None]] = {}
+
+    def image_command(image_id: str) -> list[list[str] | None]:
+        if image_id not in image_commands:
+            image_commands[image_id] = _image_command(image_id)
+        return image_commands[image_id]
+
+    for service, old_service_profile in old_profiles.items():
+        old_service_profile["effective_command"] = _effective_command(
+            old, service, image_command(old_containers[service]["image_id"])
+        )
+        candidate_profiles[service]["effective_command"] = _effective_command(
+            candidate,
+            service,
+            image_command(candidate_image_ids_by_service[service]),
+        )
+        old_profile = {
+            key: item for key, item in old_service_profile.items() if key != "image"
+        }
+        candidate_profile = {
+            key: item
+            for key, item in candidate_profiles[service].items()
+            if key != "image"
+        }
+        if old_profile != candidate_profile:
+            raise CarryForwardError("account_profile_changed")
+    for service, container in old_containers.items():
+        if not _container_matches_profile(
+            container, old_profiles[service], value["project"], service
+        ):
+            raise CarryForwardError("account_old_binding_invalid")
+    log_files = []
+    log_roots = []
+    for service, profile in candidate_profiles.items():
+        target = f"/var/lib/dlr/platform-logs/{service}"
+        matches = [
+            mount for mount in profile["mounts"] if mount["destination"] == target
+        ]
+        if len(matches) != 1 or not isinstance(matches[0]["source"], str):
+            raise CarryForwardError("account_log_mount_invalid")
+        names = (
+            ("access.log", "error.log")
+            if service in {"web", "account-web"}
+            else (f"{service}.log",)
+        )
+        log_files.extend(str(Path(matches[0]["source"]) / name) for name in names)
+        log_roots.append(
+            {"path": matches[0]["source"], "allowed_new_files": sorted(names)}
+        )
+    profile = {
+        "project": value["project"],
+        "from_sha": value["from_sha"],
+        "to_sha": value["to_sha"],
+        "old_containers": old_containers,
+        "old_profiles": old_profiles,
+        "candidate_profiles": candidate_profiles,
+        "candidate_web_image_id": web_image,
+        "candidate_image_ids_by_service": candidate_image_ids_by_service,
+        "ports": {"account": port, "token": candidate_profiles["web"]["ports"]},
+        "log_files": sorted(log_files),
+        "log_roots": sorted(log_roots, key=lambda item: item["path"]),
+    }
+    profile["profile_digest"] = digest(profile)
+    return profile
+
+
+def validate_group2_account_entry(value: Any) -> dict[str, Any]:
+    keys = {
+        "project",
+        "from_sha",
+        "to_sha",
+        "old_containers",
+        "old_profiles",
+        "candidate_profiles",
+        "candidate_web_image_id",
+        "candidate_image_ids_by_service",
+        "ports",
+        "log_files",
+        "log_roots",
+        "profile_digest",
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        raise CarryForwardError("account_entry_invalid")
+    if value["profile_digest"] != digest(
+        {key: item for key, item in value.items() if key != "profile_digest"}
+    ):
+        raise CarryForwardError("account_entry_invalid")
+    services = {"control", "worker", "web", "account-web"}
+    if (
+        not isinstance(value["project"], str)
+        or re.fullmatch(r"[a-z0-9][a-z0-9_-]*", value["project"]) is None
+        or SHA.fullmatch(value["from_sha"]) is None
+        or SHA.fullmatch(value["to_sha"]) is None
+        or not isinstance(value["old_profiles"], dict)
+        or set(value["old_profiles"]) != services
+        or not isinstance(value["candidate_profiles"], dict)
+        or set(value["candidate_profiles"]) != services
+        or not isinstance(value["old_containers"], dict)
+        or set(value["old_containers"]) != services
+        or not isinstance(value["ports"], dict)
+        or set(value["ports"]) != {"account", "token"}
+    ):
+        raise CarryForwardError("account_entry_invalid")
+    account_ports = value["candidate_profiles"]["account-web"].get("ports")
+    if (
+        not isinstance(account_ports, list)
+        or len(account_ports) != 1
+        or value["ports"]["account"] != account_ports[0]
+        or value["ports"]["token"] != value["candidate_profiles"]["web"].get("ports")
+    ):
+        raise CarryForwardError("account_entry_invalid")
+    profile_keys = {
+        "image",
+        "command",
+        "effective_command",
+        "networks",
+        "mounts",
+        "ports",
+    }
+    container_keys = {
+        "container_id",
+        "image_id",
+        "status",
+        "health",
+        "started_at",
+        "restart_count",
+        "command",
+        "labels",
+        "port_bindings",
+        "mounts",
+        "networks",
+    }
+    if any(
+        not isinstance(profile, dict) or set(profile) != profile_keys
+        for group in (value["old_profiles"], value["candidate_profiles"])
+        for profile in group.values()
+    ) or any(
+        not isinstance(container, dict) or set(container) != container_keys
+        for container in value["old_containers"].values()
+    ):
+        raise CarryForwardError("account_entry_invalid")
+    if not isinstance(value["log_files"], list) or value["log_files"] != sorted(
+        set(value["log_files"])
+    ):
+        raise CarryForwardError("account_entry_invalid")
+    if (
+        not isinstance(value["candidate_image_ids_by_service"], dict)
+        or set(value["candidate_image_ids_by_service"])
+        != {"control", "worker", "web", "account-web"}
+        or value["candidate_image_ids_by_service"]["account-web"]
+        != value["candidate_web_image_id"]
+        or value["candidate_image_ids_by_service"].get("web")
+        != value["candidate_web_image_id"]
+        or any(
+            not isinstance(image, str) or not image
+            for image in value["candidate_image_ids_by_service"].values()
+        )
+        or not isinstance(value["log_roots"], list)
+        or value["log_roots"]
+        != sorted(value["log_roots"], key=lambda item: item.get("path", ""))
+    ):
+        raise CarryForwardError("account_entry_invalid")
+    approved = set(value["log_files"])
+    expected_roots = []
+    for service, service_profile in value["candidate_profiles"].items():
+        target = f"/var/lib/dlr/platform-logs/{service}"
+        matches = [
+            mount
+            for mount in service_profile.get("mounts", [])
+            if mount.get("destination") == target
+        ]
+        if len(matches) != 1 or not isinstance(matches[0].get("source"), str):
+            raise CarryForwardError("account_entry_invalid")
+        names = (
+            ["access.log", "error.log"]
+            if service in {"web", "account-web"}
+            else [f"{service}.log"]
+        )
+        expected_roots.append(
+            {"path": matches[0]["source"], "allowed_new_files": names}
+        )
+    if value["log_roots"] != sorted(expected_roots, key=lambda item: item["path"]):
+        raise CarryForwardError("account_entry_invalid")
+    for root in value["log_roots"]:
+        if (
+            not isinstance(root, dict)
+            or set(root) != {"path", "allowed_new_files"}
+            or not isinstance(root["path"], str)
+            or not Path(root["path"]).is_absolute()
+            or not isinstance(root["allowed_new_files"], list)
+            or root["allowed_new_files"] != sorted(set(root["allowed_new_files"]))
+            or any(
+                not isinstance(name, str)
+                or not name
+                or "/" in name
+                or name in {".", ".."}
+                for name in root["allowed_new_files"]
+            )
+            or any(
+                str(Path(root["path"]) / name) not in approved
+                for name in root["allowed_new_files"]
+            )
+        ):
+            raise CarryForwardError("account_entry_invalid")
+    return value
+
+
+def check_group2_entry_boundaries(request: Any) -> dict[str, Any]:
+    value = _closed_request(
+        request,
+        "account-check",
+        {"profile", "project", "to_sha", "candidate_image_ids"},
+    )
+    profile = validate_group2_account_entry(value["profile"])
+    if value["project"] != profile["project"] or value["to_sha"] != profile["to_sha"]:
+        raise CarryForwardError("account_profile_changed")
+    containers = {
+        name: _inspect_container(value["project"], name)
+        for name in ("control", "worker", "web", "account-web")
+    }
+    images = value["candidate_image_ids"]
+    expected = {}
+    for service in ("control", "worker", "web"):
+        matches = [
+            image
+            for tag, image in images.items()
+            if tag.endswith(f"-{service}:{value['to_sha']}")
+        ]
+        if len(matches) != 1:
+            raise CarryForwardError("account_image_invalid")
+        expected[service] = matches[0]
+    if (
+        containers["account-web"]["image_id"] != expected["web"]
+        or containers["web"]["image_id"] != expected["web"]
+        or containers["control"]["image_id"] != expected["control"]
+        or containers["worker"]["image_id"] != expected["worker"]
+        or any(
+            item["status"] != "running" or item["health"] != "healthy"
+            for item in containers.values()
+        )
+    ):
+        raise CarryForwardError("account_candidate_invalid")
+    for service, container in containers.items():
+        if (
+            container["image_id"] != profile["candidate_image_ids_by_service"][service]
+            or container.get("command")
+            != profile["old_containers"][service].get("command")
+            or not _container_matches_profile(
+                container,
+                profile["candidate_profiles"][service],
+                value["project"],
+                service,
+            )
+        ):
+            raise CarryForwardError("account_binding_changed")
+    binding = profile["ports"]["account"]
+    host = binding["host_ip"]
+    authority = f"[{host}]" if ":" in host else host
+    account_csrf = _http_result(
+        f"http://{authority}:{binding['published']}/api/auth/account/csrf"
+    )
+    if (
+        account_csrf["status"] != 200
+        or account_csrf["body_status"] != "ok"
+        or not account_csrf["csrf_cookie"]
+        or not account_csrf["csrf_cookie_path"]
+        or not account_csrf["csrf_cookie_samesite_lax"]
+        or account_csrf["csrf_cookie_httponly"]
+        or account_csrf["redirect"]
+    ):
+        raise CarryForwardError("account_entry_unhealthy")
+    return {
+        "containers": containers,
+        "profile_digest": profile["profile_digest"],
+        "account_csrf": account_csrf,
+    }
+
+
+def capture_log_prefix(profile: Any) -> dict[str, Any]:
+    profile = validate_group2_account_entry(profile)
+    files = []
+    roots = []
+    observed_paths = set()
+    for declaration in profile["log_roots"]:
+        root = Path(declaration["path"])
+        root_info = root.lstat()
+        if not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode):
+            raise CarryForwardError("log_root_invalid")
+        entries = []
+        for path in sorted(root.rglob("*")):
+            info = path.lstat()
+            relative = path.relative_to(root).as_posix()
+            common = {
+                "path": relative,
+                "device": info.st_dev,
+                "inode": info.st_ino,
+                "mode": stat.S_IMODE(info.st_mode),
+                "uid": info.st_uid,
+                "gid": info.st_gid,
+            }
+            if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                entries.append({**common, "type": "directory"})
+                continue
+            if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                raise CarryForwardError("log_file_invalid")
+            content, stable = _read_stable_log(path)
+            if stable != info:
+                raise CarryForwardError("log_file_unstable")
+            item = {
+                "path": str(path),
+                "exists": True,
+                **{
+                    key: common[key]
+                    for key in ("device", "inode", "mode", "uid", "gid")
+                },
+                "size": len(content),
+                "prefix_sha256": hashlib.sha256(content).hexdigest(),
+            }
+            files.append(item)
+            observed_paths.add(str(path))
+            entries.append({**common, "type": "file"})
+        roots.append(
+            {
+                "path": str(root),
+                "device": root_info.st_dev,
+                "inode": root_info.st_ino,
+                "mode": stat.S_IMODE(root_info.st_mode),
+                "uid": root_info.st_uid,
+                "gid": root_info.st_gid,
+                "entries": entries,
+                "allowed_new_files": declaration["allowed_new_files"],
+            }
+        )
+    for text_path in profile["log_files"]:
+        if text_path not in observed_paths:
+            files.append({"path": text_path, "exists": False})
+    files.sort(key=lambda item: item["path"])
+    result = {
+        "profile_digest": profile["profile_digest"],
+        "files": files,
+        "roots": roots,
+        "observed_at_ns": time.time_ns(),
+    }
+    result["evidence_digest"] = digest(result)
+    return result
+
+
+def read_log_append(baseline: Any) -> dict[str, Any]:
+    capture_keys = {
+        "profile_digest",
+        "files",
+        "roots",
+        "observed_at_ns",
+        "evidence_digest",
+    }
+    append_keys = {
+        "profile_digest",
+        "files",
+        "roots",
+        "baseline_evidence_digest",
+        "observed_after_ns",
+        "evidence_digest",
+    }
+    if (
+        not isinstance(baseline, dict)
+        or frozenset(baseline)
+        not in {
+            frozenset(capture_keys),
+            frozenset(append_keys),
+        }
+        or baseline["evidence_digest"]
+        != digest(
+            {key: item for key, item in baseline.items() if key != "evidence_digest"}
+        )
+    ):
+        raise CarryForwardError("log_evidence_invalid")
+    baseline_digest = baseline["evidence_digest"]
+    chained = set(baseline) == append_keys
+    baseline_files = []
+    for item in baseline["files"]:
+        if not chained:
+            baseline_files.append(item)
+            continue
+        if not isinstance(item, dict) or not {
+            "path",
+            "exists",
+            "appended_text",
+            "end_size",
+            "end_sha256",
+        }.issubset(item):
+            raise CarryForwardError("log_evidence_invalid")
+        _digest_text(item["end_sha256"], "log_evidence_invalid")
+        if item["exists"]:
+            required = {
+                "path",
+                "exists",
+                "device",
+                "inode",
+                "mode",
+                "uid",
+                "gid",
+                "size",
+                "prefix_sha256",
+                "appended_text",
+                "end_size",
+                "end_sha256",
+            }
+            if set(item) != required:
+                raise CarryForwardError("log_evidence_invalid")
+            baseline_files.append(
+                {
+                    key: item[key]
+                    for key in (
+                        "path",
+                        "exists",
+                        "device",
+                        "inode",
+                        "mode",
+                        "uid",
+                        "gid",
+                    )
+                }
+                | {
+                    "size": item["end_size"],
+                    "prefix_sha256": item["end_sha256"],
+                }
+            )
+        else:
+            if set(item) != {
+                "path",
+                "exists",
+                "appended_text",
+                "end_size",
+                "end_sha256",
+            } or (item["appended_text"], item["end_size"], item["end_sha256"]) != (
+                "",
+                0,
+                hashlib.sha256(b"").hexdigest(),
+            ):
+                raise CarryForwardError("log_evidence_invalid")
+            baseline_files.append({"path": item["path"], "exists": False})
+    expected_paths = {item["path"] for item in baseline_files}
+    current_paths = set()
+    output_roots = []
+    for root_item in baseline["roots"]:
+        root = Path(root_item["path"])
+        info = root.lstat()
+        identity = (
+            info.st_dev,
+            info.st_ino,
+            stat.S_IMODE(info.st_mode),
+            info.st_uid,
+            info.st_gid,
+        )
+        expected_identity = tuple(
+            root_item[key] for key in ("device", "inode", "mode", "uid", "gid")
+        )
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or identity != expected_identity
+        ):
+            raise CarryForwardError("log_root_changed")
+        entries = []
+        for path in sorted(root.rglob("*")):
+            child = path.lstat()
+            relative = path.relative_to(root).as_posix()
+            common = {
+                "path": relative,
+                "device": child.st_dev,
+                "inode": child.st_ino,
+                "mode": stat.S_IMODE(child.st_mode),
+                "uid": child.st_uid,
+                "gid": child.st_gid,
+            }
+            if stat.S_ISDIR(child.st_mode) and not stat.S_ISLNK(child.st_mode):
+                entries.append({**common, "type": "directory"})
+            elif stat.S_ISREG(child.st_mode) and not stat.S_ISLNK(child.st_mode):
+                entries.append({**common, "type": "file"})
+                current_paths.add(str(path))
+            else:
+                raise CarryForwardError("log_file_invalid")
+        old_entries = {item["path"]: item for item in root_item["entries"]}
+        new_entries = {item["path"]: item for item in entries}
+        for relative, old in old_entries.items():
+            if relative not in new_entries or new_entries[relative] != old:
+                raise CarryForwardError("log_root_changed")
+        allowed_new = set(root_item["allowed_new_files"])
+        additions = set(new_entries) - set(old_entries)
+        if additions - allowed_new or any(
+            new_entries[name]["type"] != "file" for name in additions
+        ):
+            raise CarryForwardError("log_unknown_path")
+        output_roots.append({**root_item, "entries": entries})
+    if current_paths - expected_paths:
+        raise CarryForwardError("log_unknown_path")
+    output = []
+    for item in baseline_files:
+        path = Path(item["path"])
+        if not item["exists"]:
+            if not path.exists():
+                output.append(
+                    {
+                        **item,
+                        "appended_text": "",
+                        "end_size": 0,
+                        "end_sha256": hashlib.sha256(b"").hexdigest(),
+                    }
+                )
+                continue
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                raise CarryForwardError("log_file_invalid")
+            content, stable = _read_stable_log(path)
+            if stable != info:
+                raise CarryForwardError("log_file_unstable")
+            try:
+                appended_text = content.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise CarryForwardError("log_append_invalid") from error
+            output.append(
+                {
+                    "path": item["path"],
+                    "exists": True,
+                    "device": info.st_dev,
+                    "inode": info.st_ino,
+                    "mode": stat.S_IMODE(info.st_mode),
+                    "uid": info.st_uid,
+                    "gid": info.st_gid,
+                    "size": 0,
+                    "prefix_sha256": hashlib.sha256(b"").hexdigest(),
+                    "appended_text": appended_text,
+                    "end_size": len(content),
+                    "end_sha256": hashlib.sha256(content).hexdigest(),
+                }
+            )
+            continue
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise CarryForwardError("log_file_invalid")
+        if (
+            info.st_dev,
+            info.st_ino,
+            stat.S_IMODE(info.st_mode),
+            info.st_uid,
+            info.st_gid,
+        ) != (
+            item["device"],
+            item["inode"],
+            item["mode"],
+            item["uid"],
+            item["gid"],
+        ) or info.st_size < item["size"]:
+            raise CarryForwardError("log_prefix_changed")
+        content, stable = _read_stable_log(path)
+        if stable != info:
+            raise CarryForwardError("log_file_unstable")
+        prefix, appended = content[: item["size"]], content[item["size"] :]
+        if hashlib.sha256(prefix).hexdigest() != item["prefix_sha256"]:
+            raise CarryForwardError("log_prefix_changed")
+        try:
+            appended_text = appended.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise CarryForwardError("log_append_invalid") from error
+        output.append(
+            {
+                **item,
+                "appended_text": appended_text,
+                "end_size": info.st_size,
+                "end_sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
+    result = {
+        "profile_digest": baseline["profile_digest"],
+        "files": output,
+        "roots": output_roots,
+        "baseline_evidence_digest": baseline_digest,
+        "observed_after_ns": time.time_ns(),
+    }
+    result["evidence_digest"] = digest(result)
+    return result
+
+
+def _read_stable_log(path: Path) -> tuple[bytes, os.stat_result]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+    except OSError as error:
+        raise CarryForwardError("log_read_failed") from error
+    finally:
+        if "descriptor" in locals():
+            os.close(descriptor)
+    if not stat.S_ISREG(before.st_mode) or (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_uid,
+        before.st_gid,
+        before.st_size,
+    ) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_uid,
+        after.st_gid,
+        after.st_size,
+    ):
+        raise CarryForwardError("log_file_unstable")
+    return b"".join(chunks), before
+
+
+def _http_result(
+    url: str, *, method: str = "GET", headers: dict[str, str] | None = None
+) -> dict[str, Any]:
+    class NoRedirect(urllib_request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    request = urllib_request.Request(url, method=method, headers=headers or {})
+    try:
+        with urllib_request.build_opener(
+            urllib_request.ProxyHandler({}), NoRedirect()
+        ).open(request, timeout=10) as response:
+            status, raw, response_headers = (
+                response.status,
+                response.read(64 * 1024),
+                response.headers,
+            )
+    except urllib_error.HTTPError as error:
+        status, raw, response_headers = error.code, error.read(64 * 1024), error.headers
+    try:
+        body = json.loads(raw) if raw else None
+    except json.JSONDecodeError:
+        body = None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    code = detail.get("code") if isinstance(detail, dict) else None
+    cookies = response_headers.get_all("Set-Cookie", [])
+    csrf = next(
+        (item for item in cookies if item.startswith("dlr_account_csrf=")), None
+    )
+    return {
+        "status": status,
+        "code": code,
+        "body_status": body.get("status") if isinstance(body, dict) else None,
+        "csrf_cookie": csrf is not None,
+        "csrf_cookie_path": bool(
+            csrf and re.search(r"(?:^|;)\s*Path=/\s*(?:;|$)", csrf, re.IGNORECASE)
+        ),
+        "csrf_cookie_samesite_lax": bool(
+            csrf and re.search(r"(?:^|;)\s*SameSite=lax\s*(?:;|$)", csrf, re.IGNORECASE)
+        ),
+        "csrf_cookie_httponly": bool(
+            csrf and re.search(r"(?:^|;)\s*HttpOnly\s*(?:;|$)", csrf, re.IGNORECASE)
+        ),
+        "redirect": 300 <= status < 400,
+    }
+
+
+def _entry_probe(request: Any) -> dict[str, Any]:
+    value = _closed_request(request, "entry-probe", {"profile", "env_file"})
+    profile = validate_group2_account_entry(value["profile"])
+    env = _read_explicit_env(Path(value["env_file"]))
+    token = env.get("DLR_ADMIN_TOKEN")
+    if not token:
+        raise CarryForwardError("admin_token_missing")
+    account_binding = profile["ports"]["account"]
+    account_port = account_binding["published"]
+    token_ports = profile["ports"]["token"]
+    if not isinstance(token_ports, list) or len(token_ports) != 1:
+        raise CarryForwardError("account_binding_invalid")
+    token_port = token_ports[0]["published"]
+    account_host = account_binding["host_ip"]
+    token_host = token_ports[0]["host_ip"]
+
+    def authority(host: str, port: str) -> str:
+        rendered = f"[{host}]" if ":" in host else host
+        return f"http://{rendered}:{port}"
+
+    account = authority(account_host, account_port)
+    token_url = authority(token_host, token_port)
+    probes = {
+        "account_csrf": _http_result(account + "/api/auth/account/csrf"),
+        "token_csrf": _http_result(token_url + "/api/auth/account/csrf"),
+        "account_admin": _http_result(
+            account + "/api/auth/admin/verify",
+            headers={"Authorization": f"Bearer {token}"},
+        ),
+        "token_admin": _http_result(
+            token_url + "/api/auth/admin/verify",
+            headers={"Authorization": f"Bearer {token}"},
+        ),
+        "token_admin_missing": _http_result(token_url + "/api/auth/admin/verify"),
+        "token_admin_invalid": _http_result(
+            token_url + "/api/auth/admin/verify",
+            headers={"Authorization": "Bearer group2-invalid-probe"},
+        ),
+        "account_me": _http_result(account + "/api/auth/account/me"),
+        "account_me_bearer": _http_result(
+            account + "/api/auth/account/me",
+            headers={"Authorization": f"Bearer {token}"},
+        ),
+        "account_write_no_csrf": _http_result(
+            account + "/api/auth/account/logout", method="POST"
+        ),
+        "account_write_bad_csrf": _http_result(
+            account + "/api/auth/account/logout",
+            method="POST",
+            headers={"Cookie": "dlr_account_csrf=left", "X-CSRF-Token": "right"},
+        ),
+        "token_spoof_header": _http_result(
+            token_url + "/api/auth/account/csrf",
+            headers={"X-DLR-Entry-Mode": "account"},
+        ),
+        "token_internal_prefix": _http_result(
+            token_url + "/__dlr_account/api/auth/account/csrf"
+        ),
+        "account_internal_prefix": _http_result(
+            account + "/__dlr_account/api/auth/admin/verify",
+            headers={"Authorization": f"Bearer {token}"},
+        ),
+    }
+    expected_status_code = {
+        "token_csrf": (401, "account_entry_required"),
+        "account_admin": (401, "token_entry_required"),
+        "token_admin_missing": (401, "unauthorized"),
+        "token_admin_invalid": (401, "unauthorized"),
+        "account_me": (401, "account_session_required"),
+        "account_me_bearer": (401, "account_session_required"),
+        "account_write_no_csrf": (403, "account_csrf_invalid"),
+        "account_write_bad_csrf": (403, "account_csrf_invalid"),
+        "token_spoof_header": (401, "account_entry_required"),
+    }
+    account_csrf = probes["account_csrf"]
+    if (
+        account_csrf["status"] != 200
+        or account_csrf["body_status"] != "ok"
+        or not account_csrf["csrf_cookie"]
+        or not account_csrf["csrf_cookie_path"]
+        or not account_csrf["csrf_cookie_samesite_lax"]
+        or account_csrf["csrf_cookie_httponly"]
+        or probes["token_admin"]["status"] != 200
+        or probes["token_admin"]["body_status"] != "ok"
+        or any(
+            (probes[name]["status"], probes[name]["code"]) != expected
+            for name, expected in expected_status_code.items()
+        )
+        or any(item["redirect"] for item in probes.values())
+        or probes["token_internal_prefix"]["status"] == 200
+        and probes["token_internal_prefix"]["body_status"] == "ok"
+        or probes["account_internal_prefix"]["status"] == 200
+        and probes["account_internal_prefix"]["body_status"] == "ok"
+    ):
+        raise CarryForwardError("entry_boundary_invalid")
+    return {
+        "profile_digest": profile["profile_digest"],
+        "probes": probes,
+        "passed": True,
+    }
+
+
+def _appended_log(logs: Any, suffix: str) -> dict[str, Any]:
+    if not isinstance(logs, dict) or not isinstance(logs.get("files"), list):
+        raise CarryForwardError("log_evidence_invalid")
+    matches = [item for item in logs["files"] if item.get("path", "").endswith(suffix)]
+    if len(matches) != 1 or not isinstance(matches[0].get("appended_text"), str):
+        raise CarryForwardError("log_evidence_invalid")
+    return matches[0]
+
+
+def _appended_text(logs: Any, suffix: str) -> str:
+    return _appended_log(logs, suffix)["appended_text"]
+
+
+def _validate_log_link(
+    before: Any, after: Any, profile_digest: str | None = None
+) -> tuple[int, int]:
+    capture_keys = {
+        "profile_digest",
+        "files",
+        "roots",
+        "observed_at_ns",
+        "evidence_digest",
+    }
+    append_keys = {
+        "profile_digest",
+        "files",
+        "roots",
+        "baseline_evidence_digest",
+        "observed_after_ns",
+        "evidence_digest",
+    }
+    if (
+        not isinstance(before, dict)
+        or set(before) not in (capture_keys, append_keys)
+        or not isinstance(after, dict)
+        or set(after) != append_keys
+        or before["evidence_digest"]
+        != digest(
+            {key: item for key, item in before.items() if key != "evidence_digest"}
+        )
+        or after["evidence_digest"]
+        != digest(
+            {key: item for key, item in after.items() if key != "evidence_digest"}
+        )
+        or after["baseline_evidence_digest"] != before["evidence_digest"]
+        or after["profile_digest"] != before["profile_digest"]
+        or profile_digest is not None
+        and before["profile_digest"] != profile_digest
+    ):
+        raise CarryForwardError("log_evidence_link_invalid")
+    start = before.get("observed_after_ns", before.get("observed_at_ns"))
+    end = after["observed_after_ns"]
+    if (
+        not isinstance(start, int)
+        or isinstance(start, bool)
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+        or end < start
+    ):
+        raise CarryForwardError("log_evidence_link_invalid")
+    return start, end
+
+
+def _startup_proof(request: Any) -> dict[str, Any]:
+    value = _closed_request(
+        request,
+        "startup-proof",
+        {
+            "profile",
+            "logs_before",
+            "logs_after",
+            "container_before",
+            "container_after",
+            "window_start_ns",
+            "window_end_ns",
+        },
+    )
+    profile = validate_group2_account_entry(value["profile"])
+    logs_before = value["logs_before"]
+    logs_after = value["logs_after"]
+    try:
+        _validate_log_link(logs_before, logs_after, profile["profile_digest"])
+    except CarryForwardError as error:
+        raise CarryForwardError("startup_log_evidence_invalid") from error
+    text_value = _appended_text(value["logs_after"], "/worker/worker.log")
+    marker = "sandbox preflight receipt: "
+    receipts = []
+    for line in text_value.splitlines():
+        if marker not in line:
+            continue
+        try:
+            receipt = json.loads(line.split(marker, 1)[1])
+        except json.JSONDecodeError as error:
+            raise CarryForwardError("startup_proof_invalid") from error
+        receipts.append(receipt)
+    if (
+        len(receipts) != 1
+        or text_value.count("sandbox preflight passed; rabbitmq execution gate=True")
+        != 1
+    ):
+        raise CarryForwardError("startup_proof_invalid")
+    receipt = receipts[0]
+    match = re.fullmatch(
+        r"dlr-preflight-([0-9a-f]{16,64})", str(receipt.get("cgroup_name"))
+    )
+    after = value["container_after"]
+    before = value["container_before"]
+    window_start = value["window_start_ns"]
+    window_end = value["window_end_ns"]
+    if (
+        match is None
+        or not isinstance(after, dict)
+        or not isinstance(after.get("image_id"), str)
+        or after.get("restart_count") != 0
+        or not isinstance(before, dict)
+        or before.get("container_id") == after.get("container_id")
+        or after.get("image_id") != profile["candidate_image_ids_by_service"]["worker"]
+        or after.get("command") != profile["old_containers"]["worker"].get("command")
+        or after.get("status") != "running"
+        or after.get("health") != "healthy"
+        or not _container_matches_profile(
+            after, profile["candidate_profiles"]["worker"], profile["project"], "worker"
+        )
+        or not isinstance(window_start, int)
+        or isinstance(window_start, bool)
+        or not isinstance(window_end, int)
+        or isinstance(window_end, bool)
+        or window_end < window_start
+        or not window_start <= _rfc3339_ns(after.get("started_at")) <= window_end
+    ):
+        raise CarryForwardError("startup_proof_invalid")
+    proof = {
+        "container_id": after["container_id"],
+        "image_id": after["image_id"],
+        "started_at": after["started_at"],
+        "restart_count": after["restart_count"],
+        "nonce": match.group(1),
+        "window_start_ns": value["window_start_ns"],
+        "window_end_ns": value["window_end_ns"],
+        "preflight_receipt": receipt,
+        "log_evidence_digest": value["logs_after"]["evidence_digest"],
+    }
+    return _validate_startup_proof(proof)
+
+
+_ACCESS = re.compile(
+    r"(?P<client>\[[0-9A-Fa-f:]+\]|[0-9A-Fa-f:.]+):[0-9]+\s+-\s+"
+    r'"(?P<method>GET|POST|PATCH|DELETE) (?P<path>/api/[^ ]+) HTTP/[0-9.]+" '
+    r"(?P<status>[0-9]{3})"
+)
+
+
+def _access_client(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    try:
+        return ipaddress.ip_address(value.strip("[]"))
+    except ValueError as error:
+        raise CarryForwardError("probe_log_unparseable") from error
+
+
+def derive_group2_probe_provenance(request: Any) -> dict[str, Any]:
+    value = _closed_request(
+        request,
+        "probe-proof",
+        {"logs_before", "logs_after", "probe_result", "before_db", "cleanup"},
+    )
+    window_start, window_end = _validate_log_link(
+        value["logs_before"], value["logs_after"]
+    )
+    log_item = _appended_log(value["logs_after"], "/control/control.log")
+    text_value = log_item["appended_text"]
+    events = []
+    byte_offset = log_item.get("size", 0)
+    if (
+        not isinstance(byte_offset, int)
+        or isinstance(byte_offset, bool)
+        or byte_offset < 0
+    ):
+        raise CarryForwardError("log_evidence_invalid")
+    for raw_line in text_value.splitlines(keepends=True):
+        line = raw_line.rstrip("\r\n")
+        offset = byte_offset
+        byte_offset += len(raw_line.encode("utf-8"))
+        match = _ACCESS.search(line)
+        if match:
+            events.append(
+                (
+                    offset,
+                    _access_client(match.group("client")),
+                    match.group("method"),
+                    match.group("path"),
+                    int(match.group("status")),
+                    line,
+                )
+            )
+        elif " /api/" in line and "HTTP/" in line:
+            raise CarryForwardError("probe_log_unparseable")
+    probe_result = value["probe_result"]
+    if (
+        not isinstance(probe_result, dict)
+        or set(probe_result) != {"execution_id", "status", "workspace_cleanup_status"}
+        or probe_result["status"] != "succeeded"
+        or probe_result["workspace_cleanup_status"] != "completed"
+    ):
+        raise CarryForwardError("probe_result_invalid")
+    execution_id = _positive(probe_result["execution_id"], "probe_result_invalid")
+    adapter_creates = [
+        (o, p)
+        for o, client, m, p, s, _ in events
+        if m == "POST" and p == "/api/adapters" and s == 201
+    ]
+    if len(adapter_creates) != 1:
+        raise CarryForwardError("probe_provenance_invalid")
+    candidates = []
+    for _, client, method, path, status, _ in events:
+        match = re.fullmatch(r"/api/adapters/([1-9][0-9]*)/executions", path)
+        if method == "POST" and match and status == 202:
+            candidates.append(int(match.group(1)))
+    if len(candidates) != 1:
+        raise CarryForwardError("probe_provenance_invalid")
+    adapter_id = candidates[0]
+    starts = []
+    results = []
+    for _, _, method, path, status, _ in events:
+        match = re.fullmatch(
+            r"/api/workers/([1-9][0-9]*)/attempts/([1-9][0-9]*)/(start|result)", path
+        )
+        if method == "POST" and match and 200 <= status < 300:
+            target = starts if match.group(3) == "start" else results
+            target.append((int(match.group(1)), int(match.group(2))))
+    if len(starts) != 1 or results != starts:
+        raise CarryForwardError("probe_provenance_invalid")
+    worker_id, attempt_id = starts[0]
+    required_paths = {
+        ("POST", f"/api/adapters/{adapter_id}/versions"),
+        ("PATCH", f"/api/adapters/{adapter_id}"),
+        ("POST", f"/api/adapters/{adapter_id}/executions"),
+        ("DELETE", f"/api/adapters/{adapter_id}"),
+        ("POST", f"/api/workers/{worker_id}/attempts/{attempt_id}/start"),
+        ("POST", f"/api/workers/{worker_id}/attempts/{attempt_id}/result"),
+        ("POST", f"/api/workers/executions/{execution_id}/workspace-cleanup"),
+    }
+    observed = {
+        (method, path)
+        for _, _, method, path, status, _ in events
+        if 200 <= status < 300
+    }
+    if not required_paths.issubset(observed):
+        raise CarryForwardError("probe_provenance_invalid")
+
+    def offsets(method: str, path: str, status: int | None = None) -> list[int]:
+        return [
+            offset
+            for offset, _, event_method, event_path, event_status, _ in events
+            if event_method == method
+            and event_path == path
+            and (status is None or event_status == status)
+        ]
+
+    prefix_sequence = [
+        offsets("POST", "/api/adapters", 201),
+        offsets("POST", f"/api/adapters/{adapter_id}/versions"),
+        offsets("PATCH", f"/api/adapters/{adapter_id}"),
+        offsets("POST", f"/api/adapters/{adapter_id}/executions", 202),
+        offsets("POST", f"/api/workers/{worker_id}/attempts/{attempt_id}/start"),
+        offsets("POST", f"/api/workers/{worker_id}/attempts/{attempt_id}/result"),
+        offsets("POST", f"/api/workers/executions/{execution_id}/workspace-cleanup"),
+    ]
+    deletes = offsets("DELETE", f"/api/adapters/{adapter_id}", 204)
+    if any(len(item) != 1 for item in prefix_sequence) or len(deletes) != 1:
+        raise CarryForwardError("probe_provenance_invalid")
+    final_gets = [
+        offset
+        for offset in offsets("GET", f"/api/executions/{execution_id}", 200)
+        if prefix_sequence[-1][0] < offset < deletes[0]
+    ]
+    if not final_gets:
+        raise CarryForwardError("probe_provenance_invalid")
+    ordered = [item[0] for item in prefix_sequence] + [final_gets[-1], deletes[0]]
+    if ordered != sorted(ordered):
+        raise CarryForwardError("probe_event_order_invalid")
+    nonempty_claims = offsets("POST", f"/api/workers/{worker_id}/v3/claim", 200)
+    empty_claims = offsets("POST", f"/api/workers/{worker_id}/v3/claim", 204)
+    if len(nonempty_claims) != 1 or nonempty_claims[0] > prefix_sequence[4][0]:
+        raise CarryForwardError("probe_claim_chain_invalid")
+    cleanup_claims = offsets("POST", f"/api/workers/{worker_id}/cleanups/claim", 200)
+    empty_cleanup_claims = offsets(
+        "POST", f"/api/workers/{worker_id}/cleanups/claim", 204
+    )
+    cleanup_results = []
+    for offset, _, method, path, status, _ in events:
+        match = re.fullmatch(
+            rf"/api/workers/{worker_id}/cleanups/([1-9][0-9]*)/result", path
+        )
+        if method == "POST" and match:
+            cleanup_results.append((offset, int(match.group(1)), status))
+    if len(cleanup_claims) > 1 or len(cleanup_results) > 1:
+        raise CarryForwardError("probe_cleanup_log_invalid")
+    if cleanup_results and (
+        len(cleanup_claims) != 1
+        or cleanup_results[0][2] != 204
+        or not ordered[-1] < cleanup_claims[0] < cleanup_results[0][0]
+    ):
+        raise CarryForwardError("probe_cleanup_log_invalid")
+    for _, client, method, path, event_status, _ in events:
+        attempt_match = re.fullmatch(
+            r"/api/workers/([1-9][0-9]*)/attempts/([1-9][0-9]*)/(start|renew|progress|result)",
+            path,
+        )
+        if attempt_match and (
+            int(attempt_match.group(1)) != worker_id
+            or int(attempt_match.group(2)) != attempt_id
+        ):
+            raise CarryForwardError("probe_provenance_invalid")
+        business_request = path == "/api/adapters" or path.startswith(
+            ("/api/adapters/", "/api/executions/")
+        )
+        if business_request and not client.is_loopback:
+            raise CarryForwardError("probe_business_not_loopback")
+        if business_request:
+            expected_business = {
+                ("POST", "/api/adapters"): 201,
+                ("POST", f"/api/adapters/{adapter_id}/versions"): 201,
+                ("PATCH", f"/api/adapters/{adapter_id}"): 200,
+                ("POST", f"/api/adapters/{adapter_id}/executions"): 202,
+                ("DELETE", f"/api/adapters/{adapter_id}"): 204,
+                ("GET", f"/api/executions/{execution_id}"): 200,
+            }.get((method, path))
+            if event_status != expected_business:
+                raise CarryForwardError("probe_business_request_unknown")
+        if method in {"POST", "PATCH", "DELETE"}:
+            allowed_write = (
+                (method, path) in required_paths
+                or (method == "POST" and path == "/api/adapters")
+                or method == "POST"
+                and path
+                in {
+                    f"/api/workers/{worker_id}/heartbeat",
+                    f"/api/workers/{worker_id}/v3/claim",
+                    f"/api/workers/{worker_id}/cleanups/claim",
+                }
+                or attempt_match is not None
+                and int(attempt_match.group(1)) == worker_id
+                and int(attempt_match.group(2)) == attempt_id
+                or method == "POST"
+                and re.fullmatch(
+                    rf"/api/workers/{worker_id}/cleanups/[1-9][0-9]*/result", path
+                )
+                is not None
+            )
+            if not allowed_write:
+                raise CarryForwardError("probe_business_write_unknown")
+            if path == f"/api/workers/{worker_id}/heartbeat":
+                valid_status = event_status == 204
+            elif path in {
+                f"/api/workers/{worker_id}/v3/claim",
+                f"/api/workers/{worker_id}/cleanups/claim",
+            }:
+                valid_status = event_status in {200, 204}
+            elif attempt_match is not None:
+                valid_status = event_status == 200
+            elif re.fullmatch(
+                rf"/api/workers/{worker_id}/cleanups/[1-9][0-9]*/result", path
+            ):
+                valid_status = event_status == 204
+            else:
+                expected_status = {
+                    ("POST", "/api/adapters"): 201,
+                    ("POST", f"/api/adapters/{adapter_id}/versions"): 201,
+                    ("PATCH", f"/api/adapters/{adapter_id}"): 200,
+                    ("POST", f"/api/adapters/{adapter_id}/executions"): 202,
+                    ("DELETE", f"/api/adapters/{adapter_id}"): 204,
+                    (
+                        "POST",
+                        f"/api/workers/executions/{execution_id}/workspace-cleanup",
+                    ): 200,
+                }.get((method, path))
+                valid_status = event_status == expected_status
+            if not valid_status:
+                raise CarryForwardError("probe_critical_request_failed")
+    if len(empty_claims) + len(nonempty_claims) != len(
+        offsets("POST", f"/api/workers/{worker_id}/v3/claim")
+    ) or len(empty_cleanup_claims) + len(cleanup_claims) != len(
+        offsets("POST", f"/api/workers/{worker_id}/cleanups/claim")
+    ):
+        raise CarryForwardError("probe_claim_chain_invalid")
+    before = value["before_db"]["protected_rows"]
+    if (
+        adapter_id in before["adapter_ids"]
+        or execution_id in before["execution_ids"]
+        or attempt_id in before["attempt_ids"]
+    ):
+        raise CarryForwardError("probe_identity_not_new")
+    cleanup = value["cleanup"]
+    if cleanup is not None:
+        row = cleanup.get("row") if isinstance(cleanup, dict) else None
+        cleanup_id = row.get("id") if isinstance(row, dict) else None
+        if (
+            not isinstance(cleanup_id, int)
+            or isinstance(cleanup_id, bool)
+            or cleanup_id <= 0
+        ):
+            raise CarryForwardError("probe_cleanup_invalid")
+        if (
+            len(cleanup_claims) != 1
+            or len(cleanup_results) != 1
+            or cleanup_results[0][1:] != (cleanup_id, 204)
+        ):
+            raise CarryForwardError("probe_cleanup_log_invalid")
+    proof = {
+        "adapter_id": adapter_id,
+        "execution_id": execution_id,
+        "worker_id": worker_id,
+        "attempt_id": attempt_id,
+        "window_start_ns": window_start,
+        "window_end_ns": window_end,
+        "probe_result": probe_result,
+        "cleanup": cleanup,
+        "log_evidence_digest": value["logs_after"]["evidence_digest"],
+        "event_refs": [
+            {"offset": offset, "line_sha256": hashlib.sha256(line.encode()).hexdigest()}
+            for offset, _, _, _, _, line in events
+        ],
+    }
+    return _validate_probe_proof(proof, require_cleanup=cleanup is not None)
+
+
+def wait_group2_probe_cleanup(request: Any) -> dict[str, Any]:
+    value = _closed_request(
+        request, "probe-cleanup", {"provenance", "before_db", "timeout_seconds"}
+    )
+    provenance = _validate_probe_proof(value["provenance"], require_cleanup=False)
+    timeout = value["timeout_seconds"]
+    if (
+        not isinstance(timeout, int)
+        or isinstance(timeout, bool)
+        or not 1 <= timeout <= 120
+    ):
+        raise CarryForwardError("probe_cleanup_timeout_invalid")
+    try:
+        from sqlalchemy import create_engine, inspect, text
+    except ImportError as error:
+        raise CarryForwardError("sqlalchemy_unavailable") from error
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise CarryForwardError("database_url_missing")
+    old_rows = value["before_db"]["protected_rows"]["tables"][
+        "worker_cleanup_requests"
+    ]["rows"]
+    old_pks = {digest(row["pk"]) for row in old_rows}
+    deadline = time.monotonic() + timeout
+    while True:
+        engine = create_engine(url)
+        with engine.connect() as connection:
+            connection.execute(
+                text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            )
+            inspector = inspect(connection)
+            columns = [
+                column["name"]
+                for column in inspector.get_columns("worker_cleanup_requests")
+            ]
+            primary_key = list(
+                (inspector.get_pk_constraint("worker_cleanup_requests") or {}).get(
+                    "constrained_columns"
+                )
+                or []
+            )
+            quoted = ",".join(f'"{column}"' for column in columns)
+            order = ",".join(f'"{column}"' for column in primary_key)
+            rows = [
+                dict(row)
+                for row in connection.execute(
+                    text(
+                        f'SELECT {quoted} FROM "worker_cleanup_requests" ORDER BY {order}'
+                    )
+                ).mappings()
+            ]
+        fresh = [
+            row
+            for row in rows
+            if digest({key: canonical(row[key]) for key in primary_key}) not in old_pks
+        ]
+        matching = [
+            row
+            for row in fresh
+            if row.get("adapter_id") == provenance["adapter_id"]
+            and row.get("worker_id") == provenance["worker_id"]
+        ]
+        if len(fresh) > 1 or len(matching) > 1:
+            raise CarryForwardError("probe_cleanup_ambiguous")
+        if matching:
+            row = matching[0]
+            if row.get("status") == "failed" or row.get("error_code") is not None:
+                raise CarryForwardError("probe_cleanup_failed")
+            if row.get("status") == "completed":
+                canonical_row = canonical(row)
+                return {"row": canonical_row, "row_sha256": digest(canonical_row)}
+        if time.monotonic() >= deadline:
+            raise CarryForwardError("probe_cleanup_timeout")
+        time.sleep(0.5)
+
+
+def group2_runtime(request: Any) -> dict[str, Any]:
+    if not isinstance(request, dict) or request.get("mode") != GROUP2_MODE:
+        raise CarryForwardError("group2_runtime_request_invalid")
+    operation = request.get("operation")
+    if operation == "account-capture":
+        return {"account_entry": capture_group2_account_entry(request)}
+    if operation == "account-check":
+        return {"account_check": check_group2_entry_boundaries(request)}
+    if operation == "entry-probe":
+        return {"entry_probe": _entry_probe(request)}
+    if operation == "log-capture":
+        value = _closed_request(request, operation, {"profile"})
+        return {"log_evidence": capture_log_prefix(value["profile"])}
+    if operation == "log-append":
+        value = _closed_request(request, operation, {"baseline"})
+        return {"log_evidence": read_log_append(value["baseline"])}
+    if operation == "startup-proof":
+        return {"startup_proof": _startup_proof(request)}
+    if operation == "probe-proof":
+        return {"probe_proof": derive_group2_probe_provenance(request)}
+    if operation == "probe-cleanup":
+        return {"cleanup": wait_group2_probe_cleanup(request)}
+    raise CarryForwardError("group2_runtime_operation_invalid")
+
+
+def _command_group2_runtime(args: argparse.Namespace) -> dict[str, Any]:
+    request = read_private(args.request)
+    result = group2_runtime(request)
+    write_private(args.output, result)
+    return {"code": "group2_runtime_ok", "operation": request["operation"]}
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
@@ -3224,7 +6538,7 @@ def parser() -> argparse.ArgumentParser:
     db.add_argument("--output", type=Path, required=True)
     db.add_argument("--baseline", type=Path)
     db.add_argument("--schema-phase", choices=("before", "after"))
-    db.add_argument("--mode", choices=(AUDITED_MODE,))
+    db.add_argument("--mode", choices=(AUDITED_MODE, GROUP2_MODE))
     capture = commands.add_parser("capture")
     capture.add_argument("--runtime-root", type=Path, required=True)
     capture.add_argument("--journal-root", type=Path, required=True)
@@ -3237,7 +6551,7 @@ def parser() -> argparse.ArgumentParser:
     state.add_argument("--ids", type=Path)
     state.add_argument("--baseline", type=Path)
     state.add_argument("--schema-phase", choices=("before", "after"))
-    state.add_argument("--mode", choices=(AUDITED_MODE,))
+    state.add_argument("--mode", choices=(AUDITED_MODE, GROUP2_MODE))
     state.add_argument("--runtime-root", type=Path, required=True)
     state.add_argument("--journal-root", type=Path, required=True)
     state.add_argument("--material-root", action="append", default=[])
@@ -3259,6 +6573,9 @@ def parser() -> argparse.ArgumentParser:
     compare = commands.add_parser("compare")
     compare.add_argument("--before", type=Path, required=True)
     compare.add_argument("--after", type=Path, required=True)
+    runtime = commands.add_parser("group2-runtime")
+    runtime.add_argument("--request", type=Path, required=True)
+    runtime.add_argument("--output", type=Path, required=True)
     return root
 
 
@@ -3275,13 +6592,15 @@ def main() -> None:
             result = _command_kernel(args)
         elif args.command == "plan":
             result = _command_plan(args)
-        else:
+        elif args.command == "compare":
             result = _command_compare(args)
+        else:
+            result = _command_group2_runtime(args)
         print(json.dumps(result, sort_keys=True))
     except CarryForwardError as error:
         print(json.dumps({"code": error.code}, sort_keys=True), file=sys.stderr)
         raise SystemExit(2) from None
-    except Exception:
+    except Exception:  # noqa: BLE001 - fail closed without exposing private details
         print(
             json.dumps({"code": "verifier_internal_error"}, sort_keys=True),
             file=sys.stderr,

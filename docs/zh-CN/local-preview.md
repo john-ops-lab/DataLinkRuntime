@@ -79,6 +79,46 @@ python3 "$DLR_PREVIEW_HOME/preview.py" resume
 
 此模式的私有 IDs 文件须增加非空 `terminal_executions`。每项绑定一个原 Execution、Incident、disposition UUID、终态与代次、输出摘要、两个错误码和 Attempt 数量。预期必须来自已单独封存并复核的验收快照，不能直接把 fresh 行回填成自我批准计划。queued 与 terminal 身份不得重叠；terminal 可以同时进入 `cleanup_execution_ids`，仍为 pending/deferred cleanup 的 terminal 必须显式进入。规划在同一个只读事务内读取完整 17 列审计表及真实 `id` 主键，并与原十三张责任表一起验证。全审计表必须精确等于显式 disposition 集；验证器还核对 actor、请求摘要、Incident/Outbox 关系、终态、无 replay、资源释放和 Adapter/global Admission 总量，并在后续各阶段保持完整十四表投影。已 published 的取消 Outbox 原行保持不变，`last_error_code` 可以继续为 null；规范取消码属于 Execution 与 disposition 审计事实。
 
+### 第二组一次性 v4 保全更新
+
+`audited-group2-same-schema-v1` 只用于已批准的第二组精确候选。它不扩大普通模式、manifest v2 或第一组 v3 的适用范围，也不能用于新的提交。最终提交完成独立审查和精确 CI 后，integration owner 制作 `group2-reviewed-scope-v1` 私有记录；记录绑定完整 64 路径 raw diff、54 个冻结产品 blob、六个运行时 controller 文件、迁移图、四项 CI、镜像、批准副本、审查报告和第一组保全参考。
+
+review scope JSON 旁必须有同名 `.evidence` 目录。例如 `review-scope.json` 对应 `review-scope.evidence/`；目录内只有以下固定文件，文件名中的摘要是文件本身的 SHA-256：
+
+```text
+approval/REQUEST-ready.md
+approval/USER-APPROVAL.json
+approval/product-scope.json
+approval/review-bindings.json
+reviews/<REPORT_SHA256>
+ci/<EVIDENCE_SHA256>
+preservation/<REVIEW_REPORT_SHA256>
+```
+
+CI 原件必须是 GitHub REST 的完整 `{run,jobs}` 聚合：`run` 保留 Actions run 原对象，`jobs` 保留带 `total_count` 的完整 jobs 响应。控制器核对 run 的 ID、attempt、HEAD、workflow path、event 和成功终态，并要求四个 scope job 与原件中的唯一成功 job 完全一致。独立代码审查报告只能包含一条 `group2-independent-review-v1` machine record，固定字段为 `schema/status/reviewed_commit/source_kind/coverage/blocking_findings`；每个 coverage 项逐 byte 核 Git mode、blob OID 和 SHA-256，重复路径或同报告中的相反结论都会拒绝。保全报告同样只能包含一条 `group2-preservation-review-v1` 记录，并精确绑定 snapshot digest 与 lineage。所有 evidence 目录必须为私有目录，文件必须为私有、单链接 regular file。
+
+先由旧 trusted controller 对精确最终提交完成 stage，并保持原 busy 现场；暂停后才冻结含镜像身份的 scope。随后从该提交的干净工作区调用官方安装器入口。专用入口不接受 `--start`，只在官方安装器真实取得 operation→config 双锁后放行复制，并在安装后保持 paused：
+
+```sh
+DLR_PREVIEW_HOME=<PRIVATE_CONTROLLER_ROOT> \
+  python3 tools/local-preview/preview.py install-group2 \
+  --review-scope <PRIVATE_REVIEW_SCOPE_JSON>
+
+python3 "$DLR_PREVIEW_HOME/preview.py" plan-carry-forward \
+  --mode audited-group2-same-schema-v1 \
+  --review-scope <PRIVATE_REVIEW_SCOPE_JSON> \
+  --to-sha <EXACT_FINAL_SHA> \
+  --ids-file <PRIVATE_GROUP2_IDS_JSON> \
+  --output <PRIVATE_MANIFEST_V4_JSON>
+python3 "$DLR_PREVIEW_HOME/preview.py" select <PR_NUMBER> \
+  --carry-forward <PRIVATE_MANIFEST_V4_JSON>
+python3 "$DLR_PREVIEW_HOME/preview.py" resume
+```
+
+v4 在停 Control 后重新读取完整责任、审计、业务资产、session、文件和日志前缀；再停 Worker/Web/account-web，验证真实 idle kernel，完成 custom-format 备份和同 schema Alembic no-op。从 plan 的原始日志前缀开始，每个停写、备份、迁移、启动、probe 和后置健康阶段都连续验证同一文件身份与前缀；阶段转换从上一 append 的完整 end hash 派生下一 baseline，允许正常追加但拒绝截断、替换和旧前缀改写。候选同时启动 `control worker web account-web`，account-web 必须使用候选 Web 镜像和原 loopback 绑定。控制器只运行一次官方 RabbitMQ→Worker probe，等待其 cleanup 自然完成，并以本轮日志窗口证明唯一 Adapter/Execution/Attempt/Worker/cleanup 归属。动态启动文件变化、probe 后数据库与文件保全、双入口边界和后置健康全部通过后，才依次写 receipt、current SHA 和 ready，并一次性消费 manifest。receipt 的十个阶段摘要由 VM 原件重算，且精确绑定 manifest、account profile、probe、post-preservation、current SHA、ready transaction 与宿主 safe state。中途失败保留 transaction、attention、备份和现场，不恢复旧应用、不重跑 probe、不覆盖已消费 manifest。
+
+同 SHA 离线恢复只接受最后成功 state、ready transaction、私有 receipt 和已消费 v4 manifest 全部一致的提交。任何 recreate 前先持久写入宿主 attention 和 VM `recovering` transaction；失败后普通 tick 不能用一次健康结果洗回 Ready。部署 Ready 前会把最终 DB/文件保全基线和选择集保存为 receipt 摘要绑定的私有恢复基线；恢复先严格重采这份基线，再强制重建 Worker，以本轮新 container、StartedAt、唯一 startup preflight、日志窗口和动态文件比较证明恢复没有改动旧资产，随后恢复其余三个应用并复核账号绑定、真实 account CSRF GET 与完整双入口边界。恢复不重新检查 GitHub/CI，不执行迁移、正式 probe、业务清理或第二次消费。receipt/profile/恢复基线缺失、account-web 漂移或保全摘要不一致均进入 attention；`acknowledge` 不能绕过这些检查。`status` 只显示安全摘要，不显示账号端口、日志、session、mount 或私有对象 ID。
+
 验证器在 REPEATABLE READ READ ONLY 事务中按固定 allowlist 读取 Execution、Attempt、Slot、Incident、Outbox、Adapter/Global Admission、Input Lease/Hold、Credential Snapshot、idempotency、schedule outcome 和 Worker cleanup request。它保存旧列、主键、逐行哈希和计数，不把原数据库值写到公开回执。只有清单内 queued＋open Incident、未释放 Admission、当前代 Outbox、无 active Attempt/Slot，且没有其他 queued/running/retry_wait 或 Worker cleanup 责任时才通过。
 
 cleanup 只从事实派生，不写数据库：

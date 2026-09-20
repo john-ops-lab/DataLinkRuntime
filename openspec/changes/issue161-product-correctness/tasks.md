@@ -40,9 +40,9 @@
 
 - [x] 7.1 统一Settings、Compose和.env.example缺省true，更新默认断言及双语启停/升级说明；无变量/true/false配置矩阵和Compose渲染通过，显式false旧配置不被覆盖。
 - [ ] 7.2 未设置开关的隔离候选环境经真实API完成上传、保存、实际Worker运行；精确修复SHA在真实Chrome完成上传、页面保存和运行，浏览器现场原有显式true配置保留，并与无变量默认行为证据分别记录。五语言各至少一次文件内容/元数据/哈希读取；格式覆盖XLSX/CSV/LOG/JSON，实际Excel等相关模板及现有日志Adapter示例分别独立执行；随产品发布的日志模板若在精确候选catalog中不存在，按目录证据标N/A。已有实际用户日志模板仍按来源和版本验收，矩阵逐格标注，不要求无依据的全笛卡尔积。
-- [ ] 7.3 完成ArtifactStore重启持久化、配额拒绝、active Lease保护及自然到期/删除回收回归，检查历史摘要/输出保留；新增证据与原BLOCKED/失败分离，capability ready仅算配置检查。
-- [ ] 7.4 显式false环境重跑原有允许/拒绝、none/json及治理分支，证明关闭不清文件/表/历史、不扩大行为，文档所述恢复步骤与实际配置一致。
-- [ ] 7.5 修复实际 Excel 模板暴露的 Python harness 模块登记缺失；保留原始失败，以真实子进程验证延迟注解/dataclass 与失败时 registry 恢复，独立 review 后在新候选 Worker 重跑原模板及 XLSX oracle，不修改模板规避加载问题。
+- [x] 7.3 完成ArtifactStore重启持久化、配额拒绝、active Lease保护及自然到期/删除回收回归，检查历史摘要/输出保留；新增证据与原BLOCKED/失败分离，capability ready仅算配置检查。
+- [x] 7.4 显式false环境重跑原有允许/拒绝、none/json及治理分支，证明关闭不清文件/表/历史、不扩大行为，文档所述恢复步骤与实际配置一致。
+- [x] 7.5 修复实际 Excel 模板暴露的 Python harness 模块登记缺失；保留原始失败，以真实子进程验证延迟注解/dataclass 与失败时 registry 恢复，独立 review 后在新候选 Worker 重跑原模板及 XLSX oracle，不修改模板规避加载问题。
 
 ## 8. #157：四类依赖源校验
 
@@ -60,6 +60,6 @@
 
 - [ ] 10.1 逐项完成针对性静态/单元/集成检查并记录提交检查点，最终head运行Backend Ruff/format/Mypy/full pytest、Web ESLint/TS/Vitest/build、OpenSpec strict及适用CI；实际结果和未执行项可追溯。
 - [ ] 10.2 独立Review最终head和本组风险矩阵，回归第一组取消/可靠运行与本组关键真实路径；审查修复产生新head时重跑受影响Gate，不把旧SHA结果冒充当前。
-- [ ] 10.3 由integration owner冻结第二组同schema保全部署的exact SHA、完整路径集合、schema与数据保护/备份恢复合同，完成适用授权；此项是固定环境更新和合并前阻断门禁，缺失不得部署、合并或进入第三组，独立产品实施及普通PR准备可继续，现行audited-web-same-schema拒绝不得绕过。
+- [ ] 10.3 按已获专项批准的 D10 实现并独立审查六文件内 v4 合同，完成 scope/锁内重核、原责任/审计/资产/session 保全、双入口、动态探针自然 cleanup 和同 SHA recover 正负回归；由 integration owner 冻结最终 exact SHA/完整 raw diff/blob/mode/迁移图/controller/images/CI/批准绑定，再执行正式固定更新。专项批准不替代这些部署和合并门禁，不得绕过第一组模式或进入第三组。
 - [ ] 10.4 创建唯一开放非draft PR，依次完成精确PR HEAD Hosted CI/Review、在10.3通过后选择PR完成固定部署与关键运行Gate、合并、精确merged-main CI及实际部署/必要回归；记录各SHA，既有固定环境数据/卷/凭据/第一组证据保持，禁止先合并后补候选部署验收。
 - [ ] 10.5 汇总八子项独立验收、修复SHA和剩余用户手工验收，主Issue保持开放、原归档Issue不重开；不使用自动关闭关键字，完成本次临时文件清理和公共材料敏感信息扫描。

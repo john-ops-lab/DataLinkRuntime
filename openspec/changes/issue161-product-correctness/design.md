@@ -114,6 +114,22 @@ Settings default、Compose `${DLR_MANAGED_FILES_ENABLED:-true}`、`.env.example`
 
 在可检索 Java 合同里保留短而可执行的代表性示例，测试提取同一示例与 `java_runtime.SOURCE` 编译，使用当前真实 harness、input/config 和合成 secret 环境执行；oracle 断言配置值、输入转换输出、info/warn/error 分流和仅布尔凭据存在性。正文及 stdout/stderr 扫描合成 secret，证明无真值泄漏。测试故意将字段改成方法时应编译失败，证明绑定的是 Runtime 合同而不是文档字符串快照。没有 JDK 时不能计 PASS，使用已有 JDK CI/验证环境，不为本项更改 Runtime。
 
+### D10. 已批准的第二组一次性同 schema 保全部署
+
+本组单独使用 `audited-group2-same-schema-v1` / manifest v4，保持 `0040_issue152_dispositions` 的完整迁移图与内容不变。普通模式、v2 和第一组 v3 的准入及拒绝规则不变；既有 manifest、探针或成功状态不得重绑新 head。批准仅覆盖本组产品修复和 proposal 明列的六个 controller/doc 文件及四个 OpenSpec 文件，不扩到后续组、安装器、部署配置或新 helper。
+
+独立 review 后的私有范围记录冻结部署 base、最终 head/tree、完整 raw diff 摘要、每个路径的 status/mode/blob、迁移图、controller 摘要、CI run/attempt、镜像和本次批准来源。它由独立审查与 integration owner 冻结，不能由运行时 planner 从当前 diff/数据库自批。安装、plan、select、最终切换都在既有锁内重核真实对象；不把 commit 自身 SHA 写进自身源码。仅允许闭合集合中逐项已审的 A/M 普通文件且固定 mode/type；删除、重命名、复制、类型或 mode 变化及未知差异全部拒绝。
+
+fresh 只读重复读快照先与第一组独立封存事实核对，再保护全部原责任行、完整处置审计、旧业务资产和 user_sessions 的实际列/PK/行摘要。此前合法探针留下的行、文件和空目录也属于旧资产。原 queued、cleanup、terminal 及零 Attempt 的 pending 占位不能被新流程终结或忽略。Token/Master Key、显式开关和持久策略、卷/mount/backing、原材料与 runtime/journal 的内容、mode/owner 保持。
+
+正式次序是停 Control 后同事务重核、停其余应用、证明真实 idle kernel、制作可由 `pg_restore --list` 列出的新备份并核资产、同 schema Alembic no-op、再次保全核对、启动候选、真实新 RabbitMQ→Worker 探针、自然 cleanup、完整后置保全，最后才写 receipt/current/ready 并消费一次 manifest。探针增量通过当次对象、请求、窗口及内容来源精确归属；原行不变，只有证明属于本次且已经 completed 的新 cleanup、计数/字节回到原值的唯一 `global_execution_admission.updated_at` 时间戳（旧 Adapter admission 全字段不变）和明确新文件/目录元数据可接受。不得复用第一组固定 ID/时间或全局忽略 mtime；未知变化保持 attention，不回退数据库或重置原责任。
+
+仅新模式启动 `control worker web account-web`。account-web 使用同一个冻结候选 Web image，原 loopback 绑定、command、network、mount 来自现有私有显式 env、Compose 与实际旧容器的三方一致核验，缺值不能猜测或 fallback；较旧且 stopped 的原 account 镜像可被更新。部署后验证实际两容器 image ID、健康及真实代理认证/CSRF/隔离边界；首页 200 或内部 Control 探针不算通过。原日志只允许可归属的追加，旧内容前缀、mode/owner 保留。
+
+有效 v4 ready receipt 与已消费 manifest、transaction、current SHA 一致时，同 SHA recover 恢复并重新核验双入口，不产生第二次业务探针；旧模式仍维持原三应用行为。没有 ready 证据的未完成切换不能被 recover 洗成成功。
+
+账号业务验收优先使用适用且已授权的普通会话；缺失时，专项批准包含通过正常 API 创建本轮唯一普通测试用户、仅该用户首次改密/重登录、自有新对象及独立新对象的 ACL 负例。结束正常清理对象、登出、停用并保留新用户行，旧用户/密码/权限/会话均不变。该账号业务增量与正式部署探针分开登记；不得以一套 cleanup 解释另一套对象。
+
 ## Verification Matrix
 
 | 检查点 | 必须证明 | 方法/不能替代的证据 |
@@ -139,13 +155,13 @@ Settings default、Compose `${DLR_MANAGED_FILES_ENABLED:-true}`、`.env.example`
 - [代理上限较大] → 只扩托管路由，后端仍以实际 L/配额/磁盘限制流式读取，固定有限总量及认证不变。
 - [默认开启把依赖问题暴露出来] → 五语言/格式/模板真实矩阵；明确失败归因，保持 D021/D027 排除范围。
 - [旧非法源阻塞正常修复] → list/start 不校验历史，修复/delete 可行；PATCH 最终组合校验在写入前。
-- [固定环境保全更新超出现行合同] → 实施可继续，部署不得伪装为第一组仅 CSS 模式；由 integration owner 另行完成可审查合同和授权。
+- [固定环境保全更新超出第一组合同] → 按已批准的 D10 独立模式实施并重新审查；最终 Git/CI/原责任及双入口证据缺失时仍禁止部署成功与合并。
 
 ## Migration Plan
 
 1. 在第二组唯一集成分支按 153A→153B→155A→155B→150A→150B→157→159 串行推进，每项保留对应提交、目标测试与证据。Worker 子任务为 LOCAL_FAST，不 push/PR；整组远端交付由 integration owner 按已授权模式处理。
 2. 预计 Alembic head 保持 `0040`，没有 schema/历史数据迁移；最终验证 migration diff、metadata 与 fresh head 一致，发现新增迁移需求时重新审查，不能假定同 schema 即可更新。
-3. 第二组 backend/Nginx/Compose 等变更明确超出第一组 `audited-web-same-schema`。冻结 exact source/target SHA、完整路径集合、schema、持久卷/审计/queued 等保护清单与备份恢复方案；控制器 attention 不绕过，现行模式拒绝不能靠扩大通配路径解决。第二组专用保全合同与适用批准是固定环境更新和合并前的阻断门禁；缺失时可以继续独立产品实施和普通 PR 准备，不得部署、合并或进入第三组。
+3. 第二组 backend/Nginx/Compose 等变更通过已批准 D10 的本组专用合同交付，不能扩大第一组模式。冻结 exact source/target SHA、完整路径集合、schema、持久卷/审计/queued 等保护清单与备份恢复方案；控制器 attention 不绕过，现行模式拒绝不能靠扩大通配路径解决。专项批准已经获得，最终配套实现审查、scope/CI 与正式保全证据仍是固定环境更新和合并前阻断门禁，不得进入第三组。
 4. 远端交付顺序固定为：创建唯一开放且非 draft 的最终 PR（控制器接受的选择对象）→精确 PR HEAD 的 Hosted CI/独立 Review→在第3项合同及批准满足后选择该 PR，完成固定环境部署和关键运行门禁→所有门禁通过后按既有授权 merge→精确 merged-main CI 与实际部署 SHA 核对/必要回归。不得等全部部署 Gate 通过才创建 PR，也不得先 merge 再补候选部署验收。通用默认值变化不覆盖现有显式 false。
 5. 回退只在授权的保全程序内处理应用版本；不降级数据库、不删卷、不撤销或重置历史/queued/Incident。托管开关可显式关闭以阻止新增，并按既有规则收敛在途 Lease，Blob 与历史保留。旧 UI 对 null 的展示退化不允许回填历史掩盖。
 6. 主 Issue 保持开放，原归档 Issue 保持归档。机器检查、合并、部署和用户最终验收分别记录；不使用自动关闭关键字，不把剩余强制人工门禁变成非阻塞。组间推进以 #161 明确门禁为准。

@@ -10,6 +10,7 @@
 - #157：按四类依赖源的现有地址语义校验创建及 PATCH 合并后的最终组合；前端字段可见、错误脱敏、旧非法记录可修复/删除，保存不探测网络。
 - #159：以实际 Java Context 公共字段和 logger 方法纠正文档与示例，并对真实 Runtime 编译运行。
 - 按以上顺序保留独立提交与测试检查点，同组只有一个最终 PR；逐项机器检查不替代最终 head 的 CI、独立 Review、运行验证和用户手工验收。
+- 根据本组专项批准，新增仅供本组精确候选的一次性 `audited-group2-same-schema-v1` / manifest v4 保全部署合同；保留第一组责任、完整审计和全部旧资产，沿原绑定启动账号入口，并完成动态探针后的保全验证。
 
 ## Capabilities
 
@@ -20,6 +21,7 @@
 - `managed-input-proxy-boundary`: 两套入口有界上传路由与后端净文件策略一致性。
 - `package-source-address-validation`: 四类源创建/修改的最终有效地址校验与冷环境选源验证。
 - `java-context-documentation-contract`: AI 文档、关联示例与真实 Java Runtime 的编译执行合同。
+- `incident-preserving-upgrade`: 增加第二组专用同 schema 保全更新及双入口验收要求；不改变第一组已有合同。
 
 ### Modified Capabilities
 
@@ -32,6 +34,6 @@
 
 预计无需 Alembic 迁移，不批量修复历史 JSON/输出、旧非法源或部署环境变量；现有显式 false 不被默认值覆盖。若后续证据要求 schema/Worker wire protocol 或持久运行责任变更，须重新审查方案与部署门禁，不能混入本组最小实现。
 
-第二组包含后端、Nginx 和 Compose 变化，超出第一组 `audited-web-same-schema` 保全更新合同；同 schema 本身不是部署授权。固定保留环境的更新由 integration owner 单独冻结可审查的最小合同与真实 diff，获得适用授权后执行。产品实施、最终 PR、合并、部署、用户验收和 Issue 关闭分别记账，主 Issue 保持开放，原 #156/#158/#154 归档状态保持不变。
+第二组包含后端、Nginx 和 Compose 变化，超出第一组 `audited-web-same-schema` 保全更新合同；本组已获针对具体范围的专项批准，同 schema 本身仍不是部署授权。配套只修改 `tools/local-preview/` 下的 `preview.py`、`deploy.sh`、`carry_forward.py`、`tests/test_preview.py`、`tests/test_carry_forward.py` 及 `docs/zh-CN/local-preview.md`，同步本组 proposal/design/tasks 和新增 incident-preserving-upgrade delta。安装器、验证器、资产工具、端口与配置字段不扩展。最终实现仍须独立审查、冻结完整 Git 差异与精确 HEAD CI 后，由官方安装器和控制器执行。产品实施、最终 PR、合并、部署、用户验收和 Issue 关闭分别记账，主 Issue 保持开放，原 #156/#158/#154 归档状态保持不变。
 
 非目标：#129、第三组缓存治理、第四组 Prompt/会话改造、外部 PyPI 准备故障、S3 Java 原模板故障、托管上传自动重写 Nginx、STAGED 离页提示/过期提示扩建，以及第一组运行状态机再设计。

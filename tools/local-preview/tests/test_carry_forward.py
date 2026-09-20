@@ -14,7 +14,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import carry_forward as carry
 
-
 SHA_A, SHA_B = "a" * 40, "b" * 40
 
 
@@ -240,6 +239,313 @@ def audited_case():
     return data, selection
 
 
+def group2_selection():
+    queued = [
+        {"execution_id": index, "incident_ids": [100 + index]} for index in range(1, 10)
+    ]
+    terminals = [
+        {
+            "execution_id": 20 + index,
+            "incident_id": 220 + index,
+            "disposition_id": str(uuid.UUID(int=500 + index)),
+            "expected_status": "cancelled",
+            "expected_generation": 1,
+            "expected_output_digest": carry.digest(None),
+            "expected_error_code": "execution_cancelled",
+            "expected_last_error_code": "execution_cancelled",
+            "expected_attempt_count": 0,
+        }
+        for index in range(5)
+    ]
+    return {
+        "queued": queued,
+        "cleanup_execution_ids": [20, 21, 22],
+        "terminal_executions": terminals,
+    }
+
+
+def group2_scope():
+    rules = carry._group2_expected_rules()
+    entries = []
+    for index, (path, rule) in enumerate(sorted(rules.items()), 1):
+        status, old_mode, new_mode, old_oid, new_oid = rule
+        entries.append(
+            {
+                "status": status,
+                "old_mode": old_mode,
+                "new_mode": new_mode,
+                "old_oid": old_oid or ("0" * 40 if status == "A" else f"{index:040x}"),
+                "new_oid": new_oid or f"{index + 1000:040x}",
+                "path": path,
+            }
+        )
+    source = {
+        "from_sha": carry.GROUP2_FROM_SHA,
+        "to_sha": SHA_B,
+        "from_tree": carry.GROUP2_FROM_TREE,
+        "to_tree": "c" * 40,
+        "raw_diff_sha256": "d" * 64,
+        "entries": entries,
+    }
+    source["tree_digest"] = carry.digest(
+        {
+            "from_tree": source["from_tree"],
+            "to_tree": source["to_tree"],
+            "entries": entries,
+        }
+    )
+    anchor_entries = []
+    for index, (path, rule) in enumerate(sorted(carry.GROUP2_PRODUCT_RULES.items()), 1):
+        status, old_mode, new_mode, old_oid, new_oid = rule
+        anchor_entries.append(
+            {
+                "status": status,
+                "old_mode": old_mode,
+                "new_mode": new_mode,
+                "old_oid": old_oid
+                or ("0" * 40 if status == "A" else f"{index + 2000:040x}"),
+                "new_oid": new_oid or f"{index + 3000:040x}",
+                "path": path,
+            }
+        )
+    coverage = [{"path": item["path"], "blob_oid": item["new_oid"]} for item in entries]
+    snapshot = {
+        "selection": group2_selection(),
+        "db": {},
+        "files": {},
+        "lineage": [{"name": "group1-final", "sha256": "e" * 64}],
+    }
+    files = {
+        name: hashlib.sha256(name.encode()).hexdigest()
+        for name in carry.GROUP2_CONTROLLER_FILES
+    }
+    scope = {
+        "schema": carry.GROUP2_REVIEW_SCHEMA,
+        "mode": carry.GROUP2_MODE,
+        "repo": "owner/repo",
+        "pr": 161,
+        "approval": {
+            "request_sha256": carry.GROUP2_REQUEST_DIGEST,
+            "user_approval_sha256": "1" * 64,
+            "product_scope_sha256": "2" * 64,
+            "review_bindings_sha256": "3" * 64,
+        },
+        "product_anchor": {
+            "base_sha": carry.GROUP2_FROM_SHA,
+            "head_sha": carry.GROUP2_PRODUCT_SHA,
+            "base_tree": carry.GROUP2_FROM_TREE,
+            "head_tree": carry.GROUP2_PRODUCT_TREE,
+            "raw_diff_sha256": carry.GROUP2_PRODUCT_RAW_DIGEST,
+            "files": anchor_entries,
+        },
+        "final_source": source,
+        "reviews": [
+            {
+                "name": f"review-{index}",
+                "report_sha256": f"{index + 4:064x}",
+                "reviewed_commit": SHA_B,
+                "coverage": coverage if index == 3 else [],
+                "status": "APPROVED",
+            }
+            for index in range(4)
+        ],
+        "controller_files": {"files": files, "digest": carry.digest(files)},
+        "image_binding": {
+            "old_image_ids": {"project-web:old": "sha256:" + "a" * 64},
+            "candidate_image_ids": {"project-web:" + SHA_B: "sha256:" + "b" * 64},
+        },
+        "migration_graph": {
+            "from_files": [{"path": "0040.py", "mode": "100644", "oid": "4" * 40}],
+            "to_files": [{"path": "0040.py", "mode": "100644", "oid": "4" * 40}],
+            "graph_digest": "5" * 64,
+            "head": "0040_issue152_dispositions",
+        },
+        "ci": {
+            "head_sha": SHA_B,
+            "run_id": 9,
+            "run_attempt": 1,
+            "workflow_path": ".github/workflows/ci.yml",
+            "event": "pull_request",
+            "jobs": [
+                {"id": index + 1, "name": name, "conclusion": "success"}
+                for index, name in enumerate(
+                    ("backend", "compose-smoke", "local-preview", "web")
+                )
+            ],
+            "evidence_sha256": "6" * 64,
+        },
+        "preservation_reference": {
+            "snapshot": snapshot,
+            "snapshot_digest": carry.digest(snapshot),
+            "review_report_sha256": "7" * 64,
+        },
+    }
+    scope["scope_digest"] = carry.digest(scope)
+    return scope
+
+
+def group2_manifest():
+    scope = group2_scope()
+    data, _ = audited_case()
+    runtime_projection = carry.project_rows(data, required=carry.AUDITED_TABLES)
+    asset_projection = {
+        name: {"columns": ["id"], "primary_key": ["id"], "rows": [], "count": 0}
+        for name in carry.ASSET_TABLES
+    }
+    protected = {
+        "tables": {
+            name: {
+                "columns": runtime_projection[name]["columns"],
+                "primary_key": runtime_projection[name]["primary_key"],
+                "rows": [],
+            }
+            for name in carry.AUDITED_TABLES
+        },
+        "adapter_ids": [],
+        "version_ids": [],
+        "execution_ids": [],
+        "attempt_ids": [],
+    }
+    inventory = sorted(set(carry.AUDITED_TABLES) | set(carry.ASSET_TABLES))
+    shape = {
+        name: {
+            "columns": [
+                {"name": "id", "type": "BIGINT", "nullable": False, "default": None}
+            ],
+            "primary_key": ["id"],
+        }
+        for name in inventory
+    }
+    candidate_profiles = {}
+    log_files = []
+    log_roots = []
+    for service in ("control", "worker", "web", "account-web"):
+        root = f"/private/logs/{service}"
+        names = (
+            ["access.log", "error.log"]
+            if service in {"web", "account-web"}
+            else [f"{service}.log"]
+        )
+        candidate_profiles[service] = {
+            "image": "image",
+            "command": [service],
+            "effective_command": [None, [service]],
+            "networks": ["dlr_default"],
+            "mounts": [
+                {
+                    "type": "bind",
+                    "source": root,
+                    "destination": f"/var/lib/dlr/platform-logs/{service}",
+                    "rw": True,
+                }
+            ],
+            "ports": [],
+        }
+        log_roots.append({"path": root, "allowed_new_files": names})
+        log_files.extend(f"{root}/{name}" for name in names)
+    candidate_profiles["web"]["ports"] = [
+        {
+            "host_ip": "127.0.0.1",
+            "published": "8080",
+            "target": 80,
+            "protocol": "tcp",
+        }
+    ]
+    candidate_profiles["account-web"]["ports"] = [
+        {
+            "host_ip": "127.0.0.1",
+            "published": "8081",
+            "target": 80,
+            "protocol": "tcp",
+        }
+    ]
+    profile = {
+        "project": "dlr",
+        "from_sha": carry.GROUP2_FROM_SHA,
+        "to_sha": SHA_B,
+        "old_containers": {
+            service: {
+                "container_id": "old-" + service,
+                "image_id": "old-image",
+                "status": "exited",
+                "health": "healthy",
+                "started_at": "2026-09-19T00:00:00Z",
+                "restart_count": 0,
+                "command": [None, [service]],
+                "labels": {
+                    "com.docker.compose.project": "dlr",
+                    "com.docker.compose.service": service,
+                },
+                "port_bindings": {},
+                "mounts": candidate_profiles[service]["mounts"],
+                "networks": candidate_profiles[service]["networks"],
+            }
+            for service in candidate_profiles
+        },
+        "old_profiles": copy.deepcopy(candidate_profiles),
+        "candidate_profiles": candidate_profiles,
+        "candidate_web_image_id": "sha256:" + "b" * 64,
+        "candidate_image_ids_by_service": {
+            service: "sha256:" + "b" * 64
+            for service in ("control", "worker", "web", "account-web")
+        },
+        "ports": {
+            "account": candidate_profiles["account-web"]["ports"][0],
+            "token": candidate_profiles["web"]["ports"],
+        },
+        "log_files": sorted(log_files),
+        "log_roots": sorted(log_roots, key=lambda item: item["path"]),
+    }
+    profile["profile_digest"] = carry.digest(profile)
+    logs = {
+        "profile_digest": profile["profile_digest"],
+        "files": [],
+        "roots": [],
+        "observed_at_ns": 1,
+    }
+    logs["evidence_digest"] = carry.digest(logs)
+    payload = {
+        "format_version": carry.GROUP2_FORMAT_VERSION,
+        "mode": carry.GROUP2_MODE,
+        "source_diff": scope["final_source"],
+        "review_scope": scope,
+        "review_scope_digest": scope["scope_digest"],
+        "ci_binding": scope["ci"],
+        "preservation_reference_digest": scope["preservation_reference"][
+            "snapshot_digest"
+        ],
+        "protected_rows": protected,
+        "asset_projection": asset_projection,
+        "schema_shape": shape,
+        "account_entry": profile,
+        "log_evidence": logs,
+        "manifest_id": "1" * 32,
+        "created_at": "2026-09-20T00:00:00+00:00",
+        "repo": scope["repo"],
+        "pr": scope["pr"],
+        "from_sha": carry.GROUP2_FROM_SHA,
+        "to_sha": SHA_B,
+        "from_schema": "0040_issue152_dispositions",
+        "to_schema": "0040_issue152_dispositions",
+        "controller_files_digest": scope["controller_files"]["digest"],
+        "migration_graph_digest": scope["migration_graph"]["graph_digest"],
+        "old_image_ids": scope["image_binding"]["old_image_ids"],
+        "candidate_image_ids": scope["image_binding"]["candidate_image_ids"],
+        "selection": group2_selection(),
+        "responsibilities": {
+            "executions": [],
+            "terminal_executions": [{} for _ in range(5)],
+        },
+        "old_runtime_projection": runtime_projection,
+        "schema_inventory": {"tables": inventory},
+        "storage_identity": [],
+        "old_containers": [],
+        "file_evidence": {},
+        "kernel_evidence": {},
+    }
+    return carry.seal_manifest(payload)
+
+
 class SelectionTests(unittest.TestCase):
     def test_closed_selection_and_no_wildcards_or_duplicates(self):
         value = {
@@ -270,6 +576,120 @@ class SelectionTests(unittest.TestCase):
         ):
             with self.assertRaises(carry.CarryForwardError):
                 carry.normalize_selection(bad)
+
+    def test_group2_selection_is_exact_q9_c3_t5_and_allows_terminal_cleanup_overlap(
+        self,
+    ):
+        value = group2_selection()
+        self.assertEqual(
+            carry.normalize_selection(value, mode=carry.GROUP2_MODE), value
+        )
+        for key in ("queued", "cleanup_execution_ids", "terminal_executions"):
+            changed = copy.deepcopy(value)
+            changed[key].pop()
+            with (
+                self.subTest(key=key),
+                self.assertRaisesRegex(
+                    carry.CarryForwardError, "group2_selection_count_invalid"
+                ),
+            ):
+                carry.normalize_selection(changed, mode=carry.GROUP2_MODE)
+
+
+class Group2ScopeTests(unittest.TestCase):
+    def test_scope_and_exact_64_path_source_are_closed(self):
+        scope = group2_scope()
+        self.assertIs(carry.validate_group2_review_scope(scope), scope)
+        self.assertEqual(len(scope["final_source"]["entries"]), 64)
+        self.assertIs(
+            carry.validate_group2_source_diff(scope["final_source"], scope),
+            scope["final_source"],
+        )
+        self.assertEqual(len(carry.GROUP2_PRODUCT_RULES), 57)
+        self.assertEqual(
+            sum(
+                rule[3] is not None and rule[4] is not None
+                for rule in carry.GROUP2_PRODUCT_RULES.values()
+            ),
+            54,
+        )
+        self.assertEqual(len(carry._group2_expected_rules()), 64)
+
+    def test_scope_rejects_missing_duplicate_and_unreviewed_product_blob(self):
+        for mutate, code in (
+            (
+                lambda scope: scope["product_anchor"]["files"].__setitem__(
+                    1, copy.deepcopy(scope["product_anchor"]["files"][0])
+                ),
+                "group2_product_anchor_invalid",
+            ),
+            (
+                lambda scope: scope["final_source"]["entries"][0].__setitem__(
+                    "new_oid", "f" * 40
+                ),
+                "group2_source_diff_invalid",
+            ),
+        ):
+            scope = group2_scope()
+            mutate(scope)
+            scope["scope_digest"] = carry.digest(
+                {key: item for key, item in scope.items() if key != "scope_digest"}
+            )
+            with (
+                self.subTest(code=code),
+                self.assertRaisesRegex(carry.CarryForwardError, code),
+            ):
+                carry.validate_group2_review_scope(scope)
+
+    def test_assets_table_contract_includes_all_assets_and_sessions_without_import(
+        self,
+    ):
+        import ast
+
+        source = Path(carry.__file__).with_name("assets.py").read_text()
+        module = ast.parse(source)
+        tables_value = next(
+            ast.literal_eval(node.value)
+            for node in module.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "TABLES"
+                for target in node.targets
+            )
+        )
+        self.assertEqual(carry.ASSET_TABLES, (*tables_value, "user_sessions"))
+
+    def test_v4_manifest_is_closed_and_v3_cannot_receive_group2_fields(self):
+        manifest = group2_manifest()
+        self.assertIs(carry.validate_manifest(manifest), manifest)
+        for key in ("schema_shape", "review_scope", "account_entry"):
+            changed = copy.deepcopy(manifest)
+            changed.pop(key)
+            changed["manifest_digest"] = carry.digest(carry.manifest_payload(changed))
+            with (
+                self.subTest(key=key),
+                self.assertRaisesRegex(
+                    carry.CarryForwardError, "manifest_shape_invalid"
+                ),
+            ):
+                carry.validate_manifest(changed)
+        changed = copy.deepcopy(manifest)
+        changed["format_version"] = carry.AUDITED_FORMAT_VERSION
+        changed["mode"] = carry.AUDITED_MODE
+        changed["manifest_digest"] = carry.digest(carry.manifest_payload(changed))
+        with self.assertRaisesRegex(carry.CarryForwardError, "manifest_shape_invalid"):
+            carry.validate_manifest(changed)
+
+    def test_protected_rows_reject_duplicate_or_unsorted_primary_keys(self):
+        protected = group2_manifest()["protected_rows"]
+        row = {"pk": {"id": 7}, "hash": "a" * 64}
+        for rows in ([row, copy.deepcopy(row)], [{**row, "pk": {"id": 8}}, row]):
+            changed = copy.deepcopy(protected)
+            changed["tables"]["executions"]["rows"] = rows
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "protected_rows_invalid"
+            ):
+                carry.validate_group2_protected_rows(changed)
 
 
 class ResponsibilityTests(unittest.TestCase):
@@ -455,12 +875,12 @@ class AuditedResponsibilityTests(unittest.TestCase):
         for label, execution_cleanup, attempt_cleanup in cases:
             with self.subTest(label=label):
                 data, selection = audited_case()
-                data["executions"]["rows"][0][
-                    "workspace_cleanup_status"
-                ] = execution_cleanup
-                data["execution_attempts"]["rows"][0][
-                    "cleanup_summary"
-                ] = attempt_cleanup
+                data["executions"]["rows"][0]["workspace_cleanup_status"] = (
+                    execution_cleanup
+                )
+                data["execution_attempts"]["rows"][0]["cleanup_summary"] = (
+                    attempt_cleanup
+                )
                 with self.assertRaisesRegex(
                     carry.CarryForwardError,
                     "cleanup_state_unknown|attempt_cleanup_state_unknown",
@@ -612,13 +1032,15 @@ class AuditedResponsibilityTests(unittest.TestCase):
             ["id", "status"],
         )
         for changed in (["id", "status", "new_column"], ["status", "id"], ["id"]):
-            with self.subTest(columns=changed):
-                with self.assertRaisesRegex(
+            with (
+                self.subTest(columns=changed),
+                self.assertRaisesRegex(
                     carry.CarryForwardError, "projection_columns_changed"
-                ):
-                    carry.projection_columns(
-                        "executions", changed, baseline, mode=carry.AUDITED_MODE
-                    )
+                ),
+            ):
+                carry.projection_columns(
+                    "executions", changed, baseline, mode=carry.AUDITED_MODE
+                )
         self.assertEqual(
             carry.projection_columns(
                 "executions", ["id", "status", "forward_addition"], baseline, mode=None
@@ -720,6 +1142,168 @@ class FileEvidenceTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(value))
         path.chmod(0o600)
+
+    def _startup_proof(self, start, end):
+        nonce = "a" * 32
+        capabilities = {
+            name: True
+            for name in (
+                "adapter_control_plane_hidden",
+                "adapter_mount_blocked",
+                "bounded_output",
+                "cgroup_kill",
+                "cgroup_namespace_private",
+                "cgroup_v2",
+                "cpu_hard_limit",
+                "memory_hard_limit",
+                "mount_namespace",
+                "no_new_privileges",
+                "nofile_hard_limit",
+                "pid_namespace",
+                "pids_hard_limit",
+                "preflight_passed",
+                "sandbox_cleanup",
+                "swap_hard_limit",
+                "tmpfs_hard_limit",
+            )
+        }
+        return {
+            "container_id": "container-new",
+            "image_id": "sha256:" + "b" * 64,
+            "started_at": "2026-09-20T00:00:00Z",
+            "restart_count": 0,
+            "nonce": nonce,
+            "window_start_ns": start,
+            "window_end_ns": end,
+            "preflight_receipt": {
+                "cgroup_name": f"dlr-preflight-{nonce}",
+                "status": "passed",
+                "workspace_residue": False,
+                "capabilities": capabilities,
+                "adapter_control_pipe_fds": [],
+                "adapter_hidden_cgroup_paths": {
+                    "/run/dlr-cgroup": {
+                        "read_blocked": True,
+                        "write_blocked": True,
+                    },
+                    "/sys/fs/cgroup": {
+                        "read_blocked": True,
+                        "write_blocked": True,
+                    },
+                },
+                "agent_outside_attempt": True,
+                "helper_outside_attempt": True,
+                "probe_in_attempt": True,
+                "child_empty_after_kill": True,
+                "process_exited_after_kill": True,
+                "worker_cgroup_management": {
+                    "child_limit_write_read": True,
+                    "parent_controllers_read": True,
+                },
+                "namespace_identity": {
+                    "boot_id": "boot",
+                    "parent_device": 1,
+                    "parent_inode": 2,
+                    "root_device": 1,
+                    "root_inode": 3,
+                },
+                "cleanup": {
+                    "cgroup_name": f"dlr-preflight-{nonce}",
+                    "status": "completed",
+                    "residue": False,
+                    "error_code": None,
+                },
+            },
+            "log_evidence_digest": "f" * 64,
+        }
+
+    def test_group2_startup_allows_only_two_window_bound_mtimes(self):
+        before = carry.capture_files(self.runtime, self.journal)
+        start = (
+            max(
+                before["runtime"]["root"]["mtime_ns"],
+                next(
+                    item
+                    for item in before["journal"]["entries"]
+                    if item["path"] == "sandbox-recovery"
+                )["mtime_ns"],
+            )
+            + 1_000_000
+        )
+        os.utime(self.runtime, ns=(start, start))
+        recovery = self.journal / "sandbox-recovery"
+        os.utime(recovery, ns=(start + 1, start + 1))
+        after = carry.capture_files(self.runtime, self.journal)
+        original = copy.deepcopy(before), copy.deepcopy(after)
+        result = carry.compare_group2_startup_files(
+            before, after, self._startup_proof(start, start + 10)
+        )
+        self.assertEqual(result["code"], "group2_startup_files_ok")
+        self.assertEqual((before, after), original)
+        changed = copy.deepcopy(after)
+        changed["runtime"]["entries"][0]["mtime_ns"] += 1
+        changed["runtime"]["digest"] = carry.digest(changed["runtime"]["entries"])
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "group2_startup_files_changed"
+        ):
+            carry.compare_group2_startup_files(
+                before, changed, self._startup_proof(start, start + 10)
+            )
+
+    def test_group2_probe_requires_owned_empty_shell_identity(self):
+        before = carry.capture_files(self.runtime, self.journal)
+        after = copy.deepcopy(before)
+        workspaces = next(
+            item for item in after["runtime"]["entries"] if item["path"] == "workspaces"
+        )
+        created = dict(
+            workspaces,
+            path="workspaces/attempt-99",
+            mtime_ns=workspaces["mtime_ns"] + 1,
+        )
+        after["runtime"]["entries"].append(created)
+        after["runtime"]["entries"].sort(key=lambda item: item["path"])
+        after["runtime"]["digest"] = carry.digest(after["runtime"]["entries"])
+        after["empty_attempt_shells"] = [
+            {"attempt_id": 99, "classification": "owned_empty_shell_without_db_row"}
+        ]
+        cleanup_row = {
+            "id": 1,
+            "adapter_id": 77,
+            "worker_id": 88,
+            "status": "completed",
+            "attempts": 1,
+            "error_code": None,
+            "created_at": {"$datetime": "2026-09-20T00:00:00+00:00"},
+            "updated_at": {"$datetime": "2026-09-20T00:00:01+00:00"},
+            "completed_at": {"$datetime": "2026-09-20T00:00:01+00:00"},
+        }
+        proof = {
+            "adapter_id": 77,
+            "execution_id": 78,
+            "worker_id": 88,
+            "attempt_id": 99,
+            "window_start_ns": workspaces["mtime_ns"],
+            "window_end_ns": workspaces["mtime_ns"] + 10,
+            "probe_result": {
+                "execution_id": 78,
+                "status": "succeeded",
+                "workspace_cleanup_status": "completed",
+            },
+            "cleanup": {"row": cleanup_row, "row_sha256": carry.digest(cleanup_row)},
+            "log_evidence_digest": "e" * 64,
+            "event_refs": [{"offset": 0, "line_sha256": "d" * 64}],
+        }
+        self.assertEqual(
+            carry.compare_group2_probe_files(before, after, proof)["code"],
+            "group2_probe_files_ok",
+        )
+        after["runtime"]["entries"][-1]["uid"] += 1
+        after["runtime"]["digest"] = carry.digest(after["runtime"]["entries"])
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "group2_probe_files_changed"
+        ):
+            carry.compare_group2_probe_files(before, after, proof)
 
     def test_never_claimed_rejects_workspace(self):
         workspace = self.runtime / "workspaces/attempt-3/dlr-exec-7"
@@ -1354,11 +1938,11 @@ class ManifestAndProjectionTests(unittest.TestCase):
                     side_effect=carry.CarryForwardError("candidate_table_not_empty"),
                 ),
                 mock.patch.object(carry, "capture_files") as capture_files,
-            ):
-                with self.assertRaisesRegex(
+                self.assertRaisesRegex(
                     carry.CarryForwardError, "candidate_table_not_empty"
-                ):
-                    carry._command_capture_state(args)
+                ),
+            ):
+                carry._command_capture_state(args)
             capture_files.assert_not_called()
             self.assertFalse(args.db_output.exists())
             self.assertFalse(args.files_output.exists())
@@ -1470,6 +2054,877 @@ class ManifestAndProjectionTests(unittest.TestCase):
             }
             with self.assertRaisesRegex(carry.CarryForwardError, "kernel_not_idle"):
                 carry.compare_kernel(baseline, dict(after, children=children))
+
+
+class Group2RuntimeTests(unittest.TestCase):
+    def _reseal_log(self, evidence):
+        evidence["evidence_digest"] = carry.digest(
+            {key: item for key, item in evidence.items() if key != "evidence_digest"}
+        )
+
+    def _log_window(self, text, size=0):
+        before = {
+            "profile_digest": "b" * 64,
+            "files": [],
+            "roots": [],
+            "observed_at_ns": 10,
+        }
+        before["evidence_digest"] = carry.digest(before)
+        after = {
+            "profile_digest": before["profile_digest"],
+            "files": [
+                {
+                    "path": "/logs/control/control.log",
+                    "size": size,
+                    "appended_text": text,
+                }
+            ],
+            "roots": [],
+            "baseline_evidence_digest": before["evidence_digest"],
+            "observed_after_ns": 20,
+        }
+        after["evidence_digest"] = carry.digest(after)
+        return before, after
+
+    def _profile(self, path):
+        base = path.parent.parent if path.parent.name == "worker" else path.parent
+        candidate_profiles = {}
+        log_files = []
+        log_roots = []
+        for service in ("control", "worker", "web", "account-web"):
+            root = base / service
+            root.mkdir(parents=True, exist_ok=True)
+            names = (
+                ["access.log", "error.log"]
+                if service in {"web", "account-web"}
+                else [f"{service}.log"]
+            )
+            candidate_profiles[service] = {
+                "image": f"dlr-{service}",
+                "command": [service],
+                "effective_command": [None, [service]],
+                "networks": ["dlr_default"],
+                "mounts": [
+                    {
+                        "type": "bind",
+                        "source": str(root),
+                        "destination": f"/var/lib/dlr/platform-logs/{service}",
+                        "rw": True,
+                    }
+                ],
+                "ports": [],
+            }
+            log_roots.append({"path": str(root), "allowed_new_files": sorted(names)})
+            log_files.extend(str(root / name) for name in names)
+        candidate_profiles["web"]["ports"] = [
+            {
+                "host_ip": "127.0.0.1",
+                "published": "8080",
+                "target": 80,
+                "protocol": "tcp",
+            }
+        ]
+        candidate_profiles["account-web"]["ports"] = [
+            {
+                "host_ip": "127.0.0.1",
+                "published": "8081",
+                "target": 80,
+                "protocol": "tcp",
+            }
+        ]
+        value = {
+            "project": "dlr",
+            "from_sha": SHA_A,
+            "to_sha": SHA_B,
+            "old_containers": {
+                service: {
+                    "container_id": "old-" + service,
+                    "image_id": "old-image",
+                    "status": "exited",
+                    "health": "healthy",
+                    "started_at": "2026-09-19T00:00:00Z",
+                    "restart_count": 0,
+                    "command": [None, [service]],
+                    "labels": {
+                        "com.docker.compose.project": "dlr",
+                        "com.docker.compose.service": service,
+                    },
+                    "port_bindings": {},
+                    "mounts": candidate_profiles[service]["mounts"],
+                    "networks": candidate_profiles[service]["networks"],
+                }
+                for service in candidate_profiles
+            },
+            "old_profiles": copy.deepcopy(candidate_profiles),
+            "candidate_profiles": candidate_profiles,
+            "candidate_web_image_id": "sha256:" + "b" * 64,
+            "candidate_image_ids_by_service": {
+                service: "sha256:" + "b" * 64
+                for service in ("control", "worker", "web", "account-web")
+            },
+            "ports": {
+                "account": candidate_profiles["account-web"]["ports"][0],
+                "token": candidate_profiles["web"]["ports"],
+            },
+            "log_files": sorted(log_files),
+            "log_roots": sorted(log_roots, key=lambda item: item["path"]),
+        }
+        value["profile_digest"] = carry.digest(value)
+        return value
+
+    def test_log_prefix_append_preserves_original_bytes_and_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "worker" / "worker.log"
+            path.parent.mkdir()
+            path.write_text("before\n")
+            profile = self._profile(path)
+            baseline = carry.capture_log_prefix(profile)
+            with path.open("a") as stream:
+                stream.write("after\n")
+            evidence = carry.read_log_append(baseline)
+            worker = next(
+                item for item in evidence["files"] if item["path"] == str(path)
+            )
+            self.assertEqual(worker["appended_text"], "after\n")
+            self.assertEqual(
+                worker["end_sha256"],
+                hashlib.sha256(b"before\nafter\n").hexdigest(),
+            )
+            self.assertEqual(
+                evidence["baseline_evidence_digest"], baseline["evidence_digest"]
+            )
+            with path.open("a") as stream:
+                stream.write("later\n")
+            chained = carry.read_log_append(evidence)
+            chained_worker = next(
+                item for item in chained["files"] if item["path"] == str(path)
+            )
+            self.assertEqual(chained_worker["appended_text"], "later\n")
+            self.assertEqual(
+                chained["baseline_evidence_digest"], evidence["evidence_digest"]
+            )
+            carry._validate_log_link(evidence, chained, profile["profile_digest"])
+            path.write_text("replaced\n")
+            with self.assertRaisesRegex(carry.CarryForwardError, "log_prefix_changed"):
+                carry.read_log_append(baseline)
+
+    def test_log_roots_reject_unknown_paths_symlinks_and_directory_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "worker" / "worker.log"
+            path.parent.mkdir()
+            path.write_text("before\n")
+            profile = self._profile(path)
+            baseline = carry.capture_log_prefix(profile)
+            (path.parent / "unknown.log").write_text("unexpected\n")
+            with self.assertRaisesRegex(carry.CarryForwardError, "log_unknown_path"):
+                carry.read_log_append(baseline)
+            (path.parent / "unknown.log").unlink()
+            path.parent.chmod(0o777)
+            with self.assertRaisesRegex(carry.CarryForwardError, "log_root_changed"):
+                carry.read_log_append(baseline)
+            path.parent.chmod(0o755)
+            missing = Path(directory) / "account-web" / "access.log"
+            missing.symlink_to(path)
+            with self.assertRaisesRegex(carry.CarryForwardError, "log_file_invalid"):
+                carry.read_log_append(baseline)
+
+    def test_group2_runtime_rejects_unknown_operation_and_fields(self):
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "group2_runtime_operation_invalid"
+        ):
+            carry.group2_runtime(
+                {"mode": carry.GROUP2_MODE, "operation": "write-ready"}
+            )
+
+    def test_compose_uses_formal_overlay_and_loopback_parser_supports_ipv6(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = Path(directory)
+            (release / "docker-compose.yml").write_text("services: {}\n")
+            (release / "compose.preview.json").write_text('{"services":{}}\n')
+            env = release / "preview.env"
+            env.write_text(
+                "DLR_WEB_HOST_PORT=[::1]:8080\n"
+                "DLR_ACCOUNT_WEB_HOST_PORT=127.0.0.1:8081\n"
+            )
+            env.chmod(0o600)
+            seen = []
+            with mock.patch.object(
+                carry,
+                "_run_json",
+                side_effect=lambda args, code: seen.append(args) or {},
+            ):
+                carry._compose_json("dlr", release, env)
+            self.assertEqual(seen[0].count("-f"), 2)
+            self.assertIn(str(release / "compose.preview.json"), seen[0])
+            self.assertEqual(carry._loopback_binding("[::1]:8080"), ("::1", "8080"))
+            for invalid in ("8080", "0.0.0.0:8080", "203.0.113.8:8080"):
+                with self.assertRaisesRegex(
+                    carry.CarryForwardError, "account_binding_invalid"
+                ):
+                    carry._loopback_binding(invalid)
+        self.assertIsNone(carry._command_part(None))
+        self.assertEqual(carry._command_part("single command"), ["single command"])
+        self.assertEqual(carry._command_part(["one", "two"]), ["one", "two"])
+        config = {"services": {"worker": {"entrypoint": None, "command": ["override"]}}}
+        self.assertEqual(
+            carry._effective_command(config, "worker", [["entry"], ["default"]]),
+            [["entry"], ["override"]],
+        )
+        with (
+            mock.patch.object(
+                carry,
+                "_run_json",
+                return_value=[
+                    {
+                        "Config": {
+                            "Entrypoint": None,
+                            "Cmd": ["run"],
+                            "Volumes": {"/unexpected": {}},
+                        }
+                    }
+                ],
+            ),
+            self.assertRaisesRegex(
+                carry.CarryForwardError, "account_image_config_invalid"
+            ),
+        ):
+            carry._image_command("sha256:image")
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "group2_runtime_request_invalid"
+        ):
+            carry.group2_runtime(
+                {
+                    "mode": carry.GROUP2_MODE,
+                    "operation": "log-capture",
+                    "profile": {},
+                    "unknown": True,
+                }
+            )
+
+    def test_probe_log_chain_is_unique_and_cleanup_follows_delete(self):
+        lines = [
+            'x 127.0.0.1:1001 - "POST /api/adapters HTTP/1.1" 201',
+            'x 127.0.0.1:1002 - "POST /api/adapters/77/versions HTTP/1.1" 201',
+            'x 127.0.0.1:1003 - "PATCH /api/adapters/77 HTTP/1.1" 200',
+            'x 127.0.0.1:1004 - "POST /api/adapters/77/executions HTTP/1.1" 202',
+            'x 127.0.0.1:1005 - "GET /api/executions/78 HTTP/1.1" 200',
+            'x 172.18.0.6:1006 - "POST /api/workers/88/v3/claim HTTP/1.1" 200',
+            'x 172.18.0.6:1007 - "POST /api/workers/88/attempts/99/start HTTP/1.1" 200',
+            'x 172.18.0.6:1008 - "POST /api/workers/88/attempts/99/result HTTP/1.1" 200',
+            'x 172.18.0.6:1009 - "POST /api/workers/executions/78/workspace-cleanup HTTP/1.1" 200',
+            'x 127.0.0.1:1010 - "GET /api/executions/78 HTTP/1.1" 200',
+            'x 127.0.0.1:1011 - "DELETE /api/adapters/77 HTTP/1.1" 204',
+        ]
+        before_logs, after_logs = self._log_window("\n".join(lines), size=123)
+        before_db = {
+            "protected_rows": {
+                "adapter_ids": [1],
+                "execution_ids": [2],
+                "attempt_ids": [3],
+            }
+        }
+        request = {
+            "mode": carry.GROUP2_MODE,
+            "operation": "probe-proof",
+            "logs_before": before_logs,
+            "logs_after": after_logs,
+            "probe_result": {
+                "execution_id": 78,
+                "status": "succeeded",
+                "workspace_cleanup_status": "completed",
+            },
+            "before_db": before_db,
+            "cleanup": None,
+        }
+        partial = carry.derive_group2_probe_provenance(request)
+        self.assertEqual(partial["attempt_id"], 99)
+        self.assertEqual(partial["event_refs"][0]["offset"], 123)
+        cleanup_row = {"id": 66, "adapter_id": 77, "worker_id": 88}
+        cleanup = {"row": cleanup_row, "row_sha256": carry.digest(cleanup_row)}
+        lines += [
+            'x 172.18.0.6:1012 - "POST /api/workers/88/cleanups/claim HTTP/1.1" 200',
+            'x 172.18.0.6:1013 - "POST /api/workers/88/cleanups/66/result HTTP/1.1" 204',
+        ]
+        request["logs_before"], request["logs_after"] = self._log_window(
+            "\n".join(lines), size=123
+        )
+        request["cleanup"] = cleanup
+        final = carry.derive_group2_probe_provenance(request)
+        self.assertEqual(final["cleanup"], cleanup)
+        request["cleanup"] = None
+        self.assertIsNone(carry.derive_group2_probe_provenance(request)["cleanup"])
+        request["cleanup"] = cleanup
+        request["logs_after"]["files"][0]["appended_text"] = "\n".join(
+            [*lines, 'x 127.0.0.1:1014 - "POST /api/users HTTP/1.1" 201']
+        )
+        self._reseal_log(request["logs_after"])
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "probe_business_write_unknown"
+        ):
+            carry.derive_group2_probe_provenance(request)
+
+    def test_probe_rejects_nonloopback_business_extra_claim_and_cleanup(self):
+        oracle = """t INFO access 127.0.0.1:1001 - "POST /api/adapters HTTP/1.1" 201
+t INFO access 127.0.0.1:1002 - "POST /api/adapters/14/versions HTTP/1.1" 201
+t INFO access 127.0.0.1:1003 - "PATCH /api/adapters/14 HTTP/1.1" 200
+t INFO access 127.0.0.1:1004 - "POST /api/adapters/14/executions HTTP/1.1" 202
+t INFO access 127.0.0.1:1005 - "GET /api/executions/48 HTTP/1.1" 200
+t INFO access 172.18.0.6:1006 - "POST /api/workers/1/v3/claim HTTP/1.1" 200
+t INFO access 172.18.0.6:1007 - "POST /api/workers/1/attempts/47/start HTTP/1.1" 200
+t INFO access 172.18.0.6:1008 - "POST /api/workers/1/attempts/47/result HTTP/1.1" 200
+t INFO access 172.18.0.6:1009 - "POST /api/workers/executions/48/workspace-cleanup HTTP/1.1" 200
+t INFO access 127.0.0.1:1010 - "GET /api/executions/48 HTTP/1.1" 200
+t INFO access 127.0.0.1:1011 - "DELETE /api/adapters/14 HTTP/1.1" 204
+t INFO access 172.18.0.6:1012 - "POST /api/workers/1/cleanups/claim HTTP/1.1" 200
+t INFO access 172.18.0.6:1013 - "POST /api/workers/1/cleanups/24/result HTTP/1.1" 204"""
+        before_logs, after_logs = self._log_window(oracle)
+        request = {
+            "mode": carry.GROUP2_MODE,
+            "operation": "probe-proof",
+            "logs_before": before_logs,
+            "logs_after": after_logs,
+            "probe_result": {
+                "execution_id": 48,
+                "status": "succeeded",
+                "workspace_cleanup_status": "completed",
+            },
+            "before_db": {
+                "protected_rows": {
+                    "adapter_ids": [],
+                    "execution_ids": [],
+                    "attempt_ids": [],
+                }
+            },
+            "cleanup": None,
+        }
+        self.assertEqual(
+            carry.derive_group2_probe_provenance(request)["adapter_id"], 14
+        )
+        for needle, replacement, code in (
+            ("127.0.0.1:", "203.0.113.8:", "probe_business_not_loopback"),
+            (
+                "t INFO access 172.18.0.6:1012",
+                'x 172.18.0.6:6000 - "POST /api/workers/1/v3/claim HTTP/1.1" 200\n'
+                + "t INFO access 172.18.0.6:1012",
+                "probe_claim_chain_invalid",
+            ),
+            (
+                "t INFO access 172.18.0.6:1012",
+                'x 172.18.0.6:6000 - "POST /api/workers/1/cleanups/999/result HTTP/1.1" 204\n'
+                + "t INFO access 172.18.0.6:1012",
+                "probe_cleanup_log_invalid",
+            ),
+        ):
+            changed = copy.deepcopy(request)
+            changed["logs_after"]["files"][0]["appended_text"] = oracle.replace(
+                needle, replacement, 1
+            )
+            self._reseal_log(changed["logs_after"])
+            with self.assertRaisesRegex(carry.CarryForwardError, code):
+                carry.derive_group2_probe_provenance(changed)
+        request["logs_after"]["files"][0]["appended_text"] = "\n".join(
+            line for line in oracle.splitlines() if "DELETE /api/adapters" not in line
+        )
+        self._reseal_log(request["logs_after"])
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "probe_provenance_invalid"
+        ):
+            carry.derive_group2_probe_provenance(request)
+
+    def test_account_capture_binds_old_and_candidate_service_images(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            env_file = root / "preview.env"
+            env_file.write_text(
+                "DLR_WEB_HOST_PORT=127.0.0.1:8080\n"
+                "DLR_ACCOUNT_WEB_HOST_PORT=127.0.0.1:8081\n"
+            )
+            env_file.chmod(0o600)
+
+            def config(sha):
+                services = {}
+                for service in ("control", "worker", "web", "account-web"):
+                    image_service = "web" if service == "account-web" else service
+                    services[service] = {
+                        "image": f"project-{image_service}:{sha}",
+                        "command": [service],
+                        "networks": {"default": {}},
+                        "volumes": [
+                            {
+                                "type": "bind",
+                                "source": str(root / service),
+                                "target": f"/var/lib/dlr/platform-logs/{service}",
+                                "read_only": False,
+                            }
+                        ],
+                        "ports": (
+                            [
+                                {
+                                    "host_ip": "127.0.0.1",
+                                    "published": 8081,
+                                    "target": 80,
+                                    "protocol": "tcp",
+                                }
+                            ]
+                            if service == "account-web"
+                            else [
+                                {
+                                    "host_ip": "127.0.0.1",
+                                    "published": 8080,
+                                    "target": 80,
+                                    "protocol": "tcp",
+                                }
+                            ]
+                            if service == "web"
+                            else []
+                        ),
+                    }
+                return {
+                    "services": services,
+                    "networks": {"default": {"name": "project_default"}},
+                }
+
+            old_images = {
+                f"project-{service}:{SHA_A}": f"old-{service}"
+                for service in ("control", "worker", "web")
+            }
+            candidate_images = {
+                f"project-{service}:{SHA_B}": f"new-{service}"
+                for service in ("control", "worker", "web")
+            }
+
+            def inspected(_project, service):
+                image_service = "web" if service == "account-web" else service
+                return {
+                    "container_id": "old-" + service,
+                    "image_id": old_images.get(
+                        f"project-{image_service}:{SHA_A}", "older-account"
+                    ),
+                    "status": "exited",
+                    "health": None,
+                    "started_at": "old",
+                    "restart_count": 0,
+                    "command": [None, [service]],
+                    "labels": {
+                        "com.docker.compose.project": "project",
+                        "com.docker.compose.service": service,
+                    },
+                    "port_bindings": (
+                        {
+                            "80/tcp": [
+                                {
+                                    "HostIp": "127.0.0.1",
+                                    "HostPort": "8081"
+                                    if service == "account-web"
+                                    else "8080",
+                                }
+                            ]
+                        }
+                        if service in {"web", "account-web"}
+                        else {}
+                    ),
+                    "mounts": [
+                        {
+                            "type": "bind",
+                            "source": str(root / service),
+                            "destination": f"/var/lib/dlr/platform-logs/{service}",
+                            "rw": True,
+                        }
+                    ],
+                    "networks": ["project_default"],
+                }
+
+            request = {
+                "mode": carry.GROUP2_MODE,
+                "operation": "account-capture",
+                "project": "project",
+                "from_sha": SHA_A,
+                "to_sha": SHA_B,
+                "old_release": str(root / "old"),
+                "candidate_release": str(root / "new"),
+                "env_file": str(env_file),
+                "old_image_ids": old_images,
+                "candidate_image_ids": candidate_images,
+            }
+            with (
+                mock.patch.object(
+                    carry, "_compose_json", side_effect=[config(SHA_A), config(SHA_B)]
+                ),
+                mock.patch.object(
+                    carry, "_image_command", return_value=[None, ["image-default"]]
+                ),
+                mock.patch.object(carry, "_inspect_container", side_effect=inspected),
+                mock.patch.dict(os.environ, {}, clear=True),
+            ):
+                profile = carry.capture_group2_account_entry(request)
+            self.assertEqual(profile["candidate_web_image_id"], "new-web")
+            self.assertEqual(
+                profile["candidate_profiles"]["web"]["networks"],
+                ["project_default"],
+            )
+
+            def wrong_inspected(project, service):
+                value = inspected(project, service)
+                if service == "worker":
+                    value["image_id"] = "wrong"
+                return value
+
+            with (
+                mock.patch.object(
+                    carry, "_compose_json", side_effect=[config(SHA_A), config(SHA_B)]
+                ),
+                mock.patch.object(
+                    carry, "_image_command", return_value=[None, ["image-default"]]
+                ),
+                mock.patch.object(
+                    carry, "_inspect_container", side_effect=wrong_inspected
+                ),
+                mock.patch.dict(os.environ, {}, clear=True),
+                self.assertRaisesRegex(
+                    carry.CarryForwardError, "account_image_invalid"
+                ),
+            ):
+                carry.capture_group2_account_entry(request)
+
+            def wrong_binding(project, service):
+                value = inspected(project, service)
+                if service == "account-web":
+                    value["labels"] = {
+                        **value["labels"],
+                        "com.docker.compose.project": "other",
+                    }
+                return value
+
+            with (
+                mock.patch.object(
+                    carry, "_compose_json", side_effect=[config(SHA_A), config(SHA_B)]
+                ),
+                mock.patch.object(
+                    carry, "_image_command", return_value=[None, ["image-default"]]
+                ),
+                mock.patch.object(
+                    carry, "_inspect_container", side_effect=wrong_binding
+                ),
+                mock.patch.dict(os.environ, {}, clear=True),
+                self.assertRaisesRegex(
+                    carry.CarryForwardError, "account_old_binding_invalid"
+                ),
+            ):
+                carry.capture_group2_account_entry(request)
+
+    def test_entry_probe_covers_token_csrf_and_spoof_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            env_file = root / "preview.env"
+            env_file.write_text(
+                "DLR_WEB_HOST_PORT=127.0.0.1:8080\n"
+                "DLR_ACCOUNT_WEB_HOST_PORT=127.0.0.1:8081\n"
+                "DLR_ADMIN_TOKEN=private-test-token\n"
+            )
+            env_file.chmod(0o600)
+            profile = self._profile(root / "worker.log")
+            base = {
+                "status": 401,
+                "code": "unauthorized",
+                "body_status": None,
+                "csrf_cookie": False,
+                "csrf_cookie_path": False,
+                "csrf_cookie_samesite_lax": False,
+                "csrf_cookie_httponly": False,
+                "redirect": False,
+            }
+
+            def response(url, method="GET", headers=None):
+                headers = headers or {}
+                if url.endswith("/api/auth/account/csrf"):
+                    if ":8081" in url:
+                        return {
+                            **base,
+                            "status": 200,
+                            "code": None,
+                            "body_status": "ok",
+                            "csrf_cookie": True,
+                            "csrf_cookie_path": True,
+                            "csrf_cookie_samesite_lax": True,
+                        }
+                    return {**base, "code": "account_entry_required"}
+                if url.endswith("/api/auth/admin/verify"):
+                    if ":8081" in url:
+                        return {**base, "code": "token_entry_required"}
+                    if headers.get("Authorization") == "Bearer private-test-token":
+                        return {
+                            **base,
+                            "status": 200,
+                            "code": None,
+                            "body_status": "ok",
+                        }
+                if url.endswith("/api/auth/account/me"):
+                    return {**base, "code": "account_session_required"}
+                if url.endswith("/api/auth/account/logout"):
+                    return {**base, "status": 403, "code": "account_csrf_invalid"}
+                return base
+
+            request = {
+                "mode": carry.GROUP2_MODE,
+                "operation": "entry-probe",
+                "profile": profile,
+                "env_file": str(env_file),
+            }
+            with (
+                mock.patch.object(carry, "_http_result", side_effect=response),
+                mock.patch.dict(os.environ, {}, clear=True),
+            ):
+                self.assertTrue(carry._entry_probe(request)["passed"])
+
+            def redirected(url, method="GET", headers=None):
+                value = response(url, method, headers)
+                if url.endswith("/api/auth/account/csrf") and ":8081" in url:
+                    value = {**value, "redirect": True}
+                return value
+
+            with (
+                mock.patch.object(carry, "_http_result", side_effect=redirected),
+                mock.patch.dict(os.environ, {}, clear=True),
+                self.assertRaisesRegex(
+                    carry.CarryForwardError, "entry_boundary_invalid"
+                ),
+            ):
+                carry._entry_probe(request)
+
+    def test_account_check_closes_all_bindings_and_real_account_csrf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "worker" / "worker.log"
+            path.parent.mkdir()
+            profile = self._profile(path)
+
+            def inspected(_project, service):
+                service_profile = profile["candidate_profiles"][service]
+                return {
+                    "container_id": "new-" + service,
+                    "image_id": profile["candidate_image_ids_by_service"][service],
+                    "status": "running",
+                    "health": "healthy",
+                    "started_at": "2026-09-20T00:00:00Z",
+                    "restart_count": 0,
+                    "command": [None, service_profile["command"]],
+                    "labels": {
+                        "com.docker.compose.project": "dlr",
+                        "com.docker.compose.service": service,
+                    },
+                    "port_bindings": carry._profile_port_bindings(service_profile),
+                    "mounts": service_profile["mounts"],
+                    "networks": service_profile["networks"],
+                }
+
+            ok = {
+                "status": 200,
+                "code": None,
+                "body_status": "ok",
+                "csrf_cookie": True,
+                "csrf_cookie_path": True,
+                "csrf_cookie_samesite_lax": True,
+                "csrf_cookie_httponly": False,
+                "redirect": False,
+            }
+            request = {
+                "mode": carry.GROUP2_MODE,
+                "operation": "account-check",
+                "profile": profile,
+                "project": "dlr",
+                "to_sha": SHA_B,
+                "candidate_image_ids": {
+                    f"dlr-{service}:{SHA_B}": "sha256:" + "b" * 64
+                    for service in ("control", "worker", "web")
+                },
+            }
+            with (
+                mock.patch.object(carry, "_inspect_container", side_effect=inspected),
+                mock.patch.object(carry, "_http_result", return_value=ok) as http,
+            ):
+                result = carry.check_group2_entry_boundaries(request)
+            self.assertEqual(result["account_csrf"], ok)
+            self.assertIn("127.0.0.1:8081", http.call_args.args[0])
+
+            for service, field, changed in (
+                ("web", "command", [None, ["changed"]]),
+                ("control", "port_bindings", {"8000/tcp": []}),
+                ("account-web", "networks", ["other"]),
+            ):
+
+                def wrong(
+                    _project, current, *, target=service, key=field, value=changed
+                ):
+                    item = inspected(_project, current)
+                    if current == target:
+                        item[key] = value
+                    return item
+
+                with (
+                    self.subTest(service=service, field=field),
+                    mock.patch.object(carry, "_inspect_container", side_effect=wrong),
+                    mock.patch.object(carry, "_http_result", return_value=ok),
+                    self.assertRaisesRegex(
+                        carry.CarryForwardError, "account_binding_changed"
+                    ),
+                ):
+                    carry.check_group2_entry_boundaries(request)
+
+            unhealthy = {**ok, "csrf_cookie_samesite_lax": False}
+            with (
+                mock.patch.object(carry, "_inspect_container", side_effect=inspected),
+                mock.patch.object(carry, "_http_result", return_value=unhealthy),
+                self.assertRaisesRegex(
+                    carry.CarryForwardError, "account_entry_unhealthy"
+                ),
+            ):
+                carry.check_group2_entry_boundaries(request)
+
+    def test_startup_proof_binds_log_image_window_and_full_capabilities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker = Path(directory) / "worker" / "worker.log"
+            worker.parent.mkdir()
+            profile = self._profile(worker)
+            nonce = "1" * 32
+            capabilities = {
+                name: True
+                for name in (
+                    "adapter_control_plane_hidden",
+                    "adapter_mount_blocked",
+                    "bounded_output",
+                    "cgroup_kill",
+                    "cgroup_namespace_private",
+                    "cgroup_v2",
+                    "cpu_hard_limit",
+                    "memory_hard_limit",
+                    "mount_namespace",
+                    "no_new_privileges",
+                    "nofile_hard_limit",
+                    "pid_namespace",
+                    "pids_hard_limit",
+                    "preflight_passed",
+                    "sandbox_cleanup",
+                    "swap_hard_limit",
+                    "tmpfs_hard_limit",
+                )
+            }
+            receipt = {
+                "cgroup_name": f"dlr-preflight-{nonce}",
+                "status": "passed",
+                "workspace_residue": False,
+                "capabilities": capabilities,
+                "adapter_control_pipe_fds": [],
+                "adapter_hidden_cgroup_paths": {
+                    path: {"read_blocked": True, "write_blocked": True}
+                    for path in ("/run/dlr-cgroup", "/sys/fs/cgroup")
+                },
+                "agent_outside_attempt": True,
+                "helper_outside_attempt": True,
+                "probe_in_attempt": True,
+                "child_empty_after_kill": True,
+                "process_exited_after_kill": True,
+                "worker_cgroup_management": {
+                    "child_limit_write_read": True,
+                    "parent_controllers_read": True,
+                },
+                "namespace_identity": {
+                    "boot_id": "00000000-0000-4000-8000-000000000001",
+                    "parent_device": 30,
+                    "parent_inode": 51,
+                    "root_device": 30,
+                    "root_inode": 197,
+                },
+                "cleanup": {
+                    "cgroup_name": f"dlr-preflight-{nonce}",
+                    "error_code": None,
+                    "residue": False,
+                    "status": "completed",
+                },
+                "error_code": "resource_exceeded_disk",
+                "helper_diagnostic": {
+                    "errno": 28,
+                    "error_code": "resource_exceeded_disk",
+                },
+            }
+            before = carry.capture_log_prefix(profile)
+            worker.write_text(
+                "sandbox preflight receipt: "
+                + json.dumps(receipt, sort_keys=True)
+                + "\nsandbox preflight passed; rabbitmq execution gate=True\n"
+            )
+            after = carry.read_log_append(before)
+            service_profile = profile["candidate_profiles"]["worker"]
+            container_after = {
+                "container_id": "new-worker",
+                "image_id": profile["candidate_image_ids_by_service"]["worker"],
+                "status": "running",
+                "health": "healthy",
+                "started_at": "2026-09-20T00:00:01.123456789Z",
+                "restart_count": 0,
+                "command": [None, service_profile["command"]],
+                "labels": {
+                    "com.docker.compose.project": "dlr",
+                    "com.docker.compose.service": "worker",
+                },
+                "port_bindings": {},
+                "mounts": service_profile["mounts"],
+                "networks": service_profile["networks"],
+            }
+            start = 1_789_862_401_000_000_000
+            request = {
+                "mode": carry.GROUP2_MODE,
+                "operation": "startup-proof",
+                "profile": profile,
+                "logs_before": before,
+                "logs_after": after,
+                "container_before": {"container_id": "old-worker"},
+                "container_after": container_after,
+                "window_start_ns": start,
+                "window_end_ns": start + 999_999_999,
+            }
+            self.assertEqual(carry._startup_proof(request)["nonce"], nonce)
+            for mutate, code in (
+                (
+                    lambda value: value["container_after"].__setitem__(
+                        "image_id", "wrong-image"
+                    ),
+                    "startup_proof_invalid",
+                ),
+                (
+                    lambda value: value["container_after"].__setitem__(
+                        "started_at", "1900-01-01T00:00:00Z"
+                    ),
+                    "startup_proof_invalid",
+                ),
+                (
+                    lambda value: value["logs_after"].__setitem__(
+                        "baseline_evidence_digest", "f" * 64
+                    ),
+                    "startup_log_evidence_invalid",
+                ),
+            ):
+                changed = copy.deepcopy(request)
+                mutate(changed)
+                with self.assertRaisesRegex(carry.CarryForwardError, code):
+                    carry._startup_proof(changed)
+            changed = copy.deepcopy(request)
+            log = changed["logs_after"]["files"]
+            worker_item = next(item for item in log if item["path"] == str(worker))
+            worker_item["appended_text"] = worker_item["appended_text"].replace(
+                '"preflight_passed": true', '"preflight_passed": false'
+            )
+            changed["logs_after"]["evidence_digest"] = carry.digest(
+                {
+                    key: item
+                    for key, item in changed["logs_after"].items()
+                    if key != "evidence_digest"
+                }
+            )
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "startup_proof_invalid"
+            ):
+                carry._startup_proof(changed)
 
 
 if __name__ == "__main__":
