@@ -426,34 +426,74 @@ PY
       "$release/recovery-baseline" "$recovery/before-db.json" \
       "$recovery/before-files.json" "$carry_manifest" "$root/carry-forward" \
       "$previous_recovery_id" "$previous_recovery_digest" "$recovery/baseline.json" <<'PY'
-import importlib.util, json, pathlib, sys
+import importlib.util, json, pathlib, re, sys
 spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-receipt=json.load(open(sys.argv[2])); baseline=sys.argv[3]
-db=json.load(open(baseline+'/db.json')); files=json.load(open(baseline+'/files.json'))
+receipt=json.load(open(sys.argv[2])); baseline=pathlib.Path(sys.argv[3])
+db=json.load(open(baseline/'db.json')); files=json.load(open(baseline/'files.json'))
+logs=json.load(open(baseline/'logs-after.json'))['log_evidence']
 actual_db=json.load(open(sys.argv[4])); actual_files=json.load(open(sys.argv[5]))
-value={'result':json.load(open(baseline+'/post-preservation.json')),'db':db,'files':files}
+value={'result':json.load(open(baseline/'post-preservation.json')),'db':db,'files':files}
 assert m.digest(value)==receipt['post_preservation_digest']==receipt['stages']['post_preservation']
 manifest=m.validate_manifest(m.read_private(pathlib.Path(sys.argv[6]))); root=pathlib.Path(sys.argv[7])
+group2=root/'check'/manifest['manifest_id']/'group2'
+post_health={'account_check':json.load(open(group2/'account-after.json'))['account_check'],
+             'entry_probe':json.load(open(group2/'entry-after.json'))['entry_probe'],
+             'logs_after':json.load(open(group2/'log-after-health.json'))['log_evidence']}
+assert m.digest(post_health)==receipt['stages']['post_health']
+assert logs==post_health['logs_after']
 previous_id,previous_digest=sys.argv[8:10]
-deployment={'db':db,'files':files,'post_preservation':value['result']}
+deployment={'db':db,'files':files,'post_preservation':value['result'],'logs_after':logs}
+visiting=set()
+def validate_prior(identity, expected_digest):
+    assert isinstance(identity,str) and re.fullmatch(r'[0-9a-f]{32}',identity)
+    assert isinstance(expected_digest,str) and re.fullmatch(r'[0-9a-f]{64}',expected_digest)
+    assert identity not in visiting
+    visiting.add(identity)
+    try:
+        prior=root/f'recovery-{manifest["to_sha"]}-{identity}'
+        def read(name): return json.load(open(prior/name))
+        prior_baseline=read('baseline.json'); completion=read('completion.json')
+        assert prior_baseline['deployment']==deployment
+        reference=prior_baseline['predecessor']
+        if reference['kind']=='deployment':
+            expected={'kind':'deployment','recovery_id':None,'evidence_digest':None,
+                      'db':db,'files':files,'logs_after':logs}
+        elif reference.get('kind')=='recovery':
+            parent=validate_prior(reference['recovery_id'],reference['evidence_digest'])
+            expected={'kind':'recovery','recovery_id':parent['recovery_id'],
+                      'evidence_digest':parent['evidence_digest'],'db':parent['after_db'],
+                      'files':parent['after_files'],'logs_after':parent['logs_after']}
+        else:
+            raise AssertionError('Invalid recovery predecessor kind')
+        assert reference==expected
+        evidence={'request':read('startup-request.json'),'proof':read('startup.json')['startup_proof'],
+          'before_db':read('before-db.json'),'after_db':read('after-db.json'),
+          'before_files':read('before-files.json'),'after_files':read('after-files.json'),
+          'account_check':read('account.json')['account_check'],'entry_probe':read('entry.json')['entry_probe'],
+          'logs_before':read('log-before.json')['log_evidence'],'logs_after':read('log-after.json')['log_evidence'],
+          'preservation':read('preservation.json')}
+        result=m.validate_group2_recovery_evidence(manifest,prior_baseline,evidence,deployment)
+        evidence_digest=m.digest({'baseline':prior_baseline,'evidence':evidence})
+        expected_completion={'schema':'group2-recovery-completion-v1','recovery_id':identity,
+          'sha':manifest['to_sha'],'manifest_id':manifest['manifest_id'],
+          'manifest_digest':manifest['manifest_digest'],'evidence_digest':evidence_digest,
+          'predecessor':{key:expected[key] for key in ('kind','recovery_id','evidence_digest')},
+          'result':result}
+        assert completion==expected_completion and evidence_digest==expected_digest
+        return {'recovery_id':identity,'evidence_digest':evidence_digest,
+                'after_db':evidence['after_db'],'after_files':evidence['after_files'],
+                'logs_after':evidence['logs_after']}
+    finally:
+        visiting.remove(identity)
 if previous_id=='-':
     assert previous_digest=='-'
-    predecessor={'kind':'deployment','recovery_id':None,'evidence_digest':None,'db':db,'files':files}
+    predecessor={'kind':'deployment','recovery_id':None,'evidence_digest':None,
+                 'db':db,'files':files,'logs_after':logs}
 else:
-    prior=root/f'recovery-{manifest["to_sha"]}-{previous_id}'
-    prior_baseline=json.load(open(prior/'baseline.json')); completion=json.load(open(prior/'completion.json'))
-    def read(name): return json.load(open(prior/name))
-    evidence={'request':read('startup-request.json'),'proof':read('startup.json')['startup_proof'],
-      'before_db':read('before-db.json'),'after_db':read('after-db.json'),
-      'before_files':read('before-files.json'),'after_files':read('after-files.json'),
-      'account_check':read('account.json')['account_check'],'entry_probe':read('entry.json')['entry_probe'],
-      'logs_before':read('log-before.json')['log_evidence'],'logs_after':read('log-after.json')['log_evidence'],
-      'preservation':read('preservation.json')}
-    result=m.validate_group2_recovery_evidence(manifest,prior_baseline,evidence)
-    digest=m.digest({'baseline':prior_baseline,'evidence':evidence})
-    assert digest==previous_digest==completion['evidence_digest'] and result==completion['result']
-    predecessor={'kind':'recovery','recovery_id':previous_id,'evidence_digest':digest,
-                 'db':evidence['after_db'],'files':evidence['after_files']}
+    prior=validate_prior(previous_id,previous_digest)
+    predecessor={'kind':'recovery','recovery_id':prior['recovery_id'],
+                 'evidence_digest':prior['evidence_digest'],'db':prior['after_db'],
+                 'files':prior['after_files'],'logs_after':prior['logs_after']}
 current={'deployment':deployment,'predecessor':predecessor,
          'fresh':{'db':actual_db,'files':actual_files}}
 m._validate_group2_recovery_lineage(deployment,predecessor,current['fresh'])
@@ -464,9 +504,9 @@ import importlib.util, pathlib, sys
 spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[2]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.write_private(pathlib.Path(sys.argv[1]),m._inspect_container(sys.argv[3],'worker'))
 PY
-    python3 - "$recovery/log-before-request.json" "$release/receipt.json" <<'PY'
+    python3 - "$recovery/log-before-request.json" "$recovery/baseline.json" <<'PY'
 import json, os, sys
-receipt=json.load(open(sys.argv[2])); value={'mode':'audited-group2-same-schema-v1','operation':'log-capture','profile':receipt['account_entry']}
+baseline=json.load(open(sys.argv[2])); value={'mode':'audited-group2-same-schema-v1','operation':'log-append','baseline':baseline['predecessor']['logs_after']}
 with open(sys.argv[1]+'.tmp','w') as out: json.dump(value,out); out.flush(); os.fsync(out.fileno())
 os.replace(sys.argv[1]+'.tmp',sys.argv[1])
 PY
@@ -888,7 +928,9 @@ evidence={
  'logs_after':read(evidence_path/'log-after.json')['log_evidence'],
  'preservation':read(evidence_path/'preservation.json'),
 }
-result=m.validate_group2_recovery_evidence(manifest,baseline,evidence)
+result=m.validate_group2_recovery_evidence(
+    manifest,baseline,evidence,baseline['deployment']
+)
 evidence_digest=m.digest({'baseline':baseline,'evidence':evidence})
 completion={'schema':'group2-recovery-completion-v1','recovery_id':sys.argv[5],
  'sha':sys.argv[6],'manifest_id':manifest['manifest_id'],
@@ -1093,6 +1135,7 @@ PY
   install -m 600 "$group2/final/db.json" "$release/recovery-baseline/db.json"
   install -m 600 "$group2/final/files.json" "$release/recovery-baseline/files.json"
   install -m 600 "$group2/post-preservation.json" "$release/recovery-baseline/post-preservation.json"
+  install -m 600 "$group2/log-after-health.json" "$release/recovery-baseline/logs-after.json"
   python3 - "$release" "$backup" "$carry_manifest" "$group2" \
     "$root/carry_forward.py" <<'PY'
 import hashlib, importlib.util, json, os, pathlib, sys

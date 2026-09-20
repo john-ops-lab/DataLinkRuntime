@@ -1733,91 +1733,114 @@ def consume_manifest(manifest_path):
         raise
 
 
-def validate_group2_recovery_evidence(
-    manifest, recovery_id, expected_predecessor=None, *, check_predecessor=True
-):
-    base = f"carry-forward/recovery-{manifest['to_sha']}-{recovery_id}"
+def validate_group2_recovery_evidence(manifest, recovery_id, expected_deployment):
+    cache = {}
+    visiting = set()
 
-    def vm_json(relative):
-        return json.loads(vm_command("cat", vm_path(f"{base}/{relative}")).stdout)
-
-    baseline = vm_json("baseline.json")
-    evidence = {
-        "request": vm_json("startup-request.json"),
-        "proof": vm_json("startup.json")["startup_proof"],
-        "before_db": vm_json("before-db.json"),
-        "after_db": vm_json("after-db.json"),
-        "before_files": vm_json("before-files.json"),
-        "after_files": vm_json("after-files.json"),
-        "account_check": vm_json("account.json")["account_check"],
-        "entry_probe": vm_json("entry.json")["entry_probe"],
-        "logs_before": vm_json("log-before.json")["log_evidence"],
-        "logs_after": vm_json("log-after.json")["log_evidence"],
-        "preservation": vm_json("preservation.json"),
-    }
-    completion = vm_json("completion.json")
-    expected_reference = (
-        {
-            "kind": "deployment",
-            "recovery_id": None,
-            "evidence_digest": None,
-        }
-        if expected_predecessor is None
-        else {
-            "kind": "recovery",
-            "recovery_id": expected_predecessor["recovery_id"],
-            "evidence_digest": expected_predecessor["evidence_digest"],
-        }
-    )
-    predecessor = baseline.get("predecessor")
-    if check_predecessor and (
-        not isinstance(predecessor, dict)
-        or {key: predecessor.get(key) for key in expected_reference}
-        != expected_reference
-    ):
-        raise RuntimeError("Group2 recovery predecessor binding changed")
-    if check_predecessor and expected_predecessor is not None:
-        prior = (
-            f"carry-forward/recovery-{manifest['to_sha']}-"
-            f"{expected_predecessor['recovery_id']}"
-        )
-        prior_db = json.loads(
-            vm_command("cat", vm_path(f"{prior}/after-db.json")).stdout
-        )
-        prior_files = json.loads(
-            vm_command("cat", vm_path(f"{prior}/after-files.json")).stdout
-        )
+    def validate_node(identity):
+        if identity in cache:
+            return cache[identity]
+        if identity in visiting:
+            raise RuntimeError("Group2 recovery predecessor cycle")
         if (
-            baseline["predecessor"]["db"] != prior_db
-            or baseline["predecessor"]["files"] != prior_files
+            not isinstance(identity, str)
+            or re.fullmatch(r"[0-9a-f]{32}", identity) is None
         ):
-            raise RuntimeError("Group2 recovery predecessor evidence changed")
-    evidence_digest = carry_forward.digest(
-        {"baseline": baseline, "evidence": evidence}
-    )
-    try:
-        result = carry_forward.validate_group2_recovery_evidence(
-            manifest, baseline, evidence
-        )
-    except carry_forward.CarryForwardError as error:
-        raise RuntimeError("Group2 recovery evidence is not valid") from error
-    if completion != {
-        "schema": "group2-recovery-completion-v1",
-        "recovery_id": recovery_id,
-        "sha": manifest["to_sha"],
-        "manifest_id": manifest["manifest_id"],
-        "manifest_digest": manifest["manifest_digest"],
-        "evidence_digest": evidence_digest,
-        "predecessor": {
-            "kind": baseline["predecessor"]["kind"],
-            "recovery_id": baseline["predecessor"]["recovery_id"],
-            "evidence_digest": baseline["predecessor"]["evidence_digest"],
-        },
-        "result": result,
-    }:
-        raise RuntimeError("Group2 recovery completion binding changed")
-    return evidence_digest
+            raise RuntimeError("Invalid Group2 recovery identity")
+        visiting.add(identity)
+        try:
+            node = load_node(identity)
+        finally:
+            visiting.remove(identity)
+        cache[identity] = node
+        return node
 
+    def load_node(identity):
+        base = f"carry-forward/recovery-{manifest['to_sha']}-{identity}"
+
+        def vm_json(relative):
+            return json.loads(vm_command("cat", vm_path(f"{base}/{relative}")).stdout)
+
+        baseline = vm_json("baseline.json")
+        evidence = {
+            "request": vm_json("startup-request.json"),
+            "proof": vm_json("startup.json")["startup_proof"],
+            "before_db": vm_json("before-db.json"),
+            "after_db": vm_json("after-db.json"),
+            "before_files": vm_json("before-files.json"),
+            "after_files": vm_json("after-files.json"),
+            "account_check": vm_json("account.json")["account_check"],
+            "entry_probe": vm_json("entry.json")["entry_probe"],
+            "logs_before": vm_json("log-before.json")["log_evidence"],
+            "logs_after": vm_json("log-after.json")["log_evidence"],
+            "preservation": vm_json("preservation.json"),
+        }
+        completion = vm_json("completion.json")
+        if (
+            not isinstance(baseline, dict)
+            or baseline.get("deployment") != expected_deployment
+        ):
+            raise RuntimeError("Group2 recovery deployment root changed")
+        predecessor = baseline.get("predecessor")
+        if not isinstance(predecessor, dict):
+            raise RuntimeError("Group2 recovery predecessor binding changed")
+        if predecessor.get("kind") == "deployment":
+            expected_predecessor = {
+                "kind": "deployment",
+                "recovery_id": None,
+                "evidence_digest": None,
+                "db": expected_deployment["db"],
+                "files": expected_deployment["files"],
+                "logs_after": expected_deployment["logs_after"],
+            }
+        elif predecessor.get("kind") == "recovery":
+            prior = validate_node(predecessor.get("recovery_id"))
+            expected_predecessor = {
+                "kind": "recovery",
+                "recovery_id": prior["recovery_id"],
+                "evidence_digest": prior["evidence_digest"],
+                "db": prior["after_db"],
+                "files": prior["after_files"],
+                "logs_after": prior["logs_after"],
+            }
+        else:
+            raise RuntimeError("Group2 recovery predecessor binding changed")
+        if predecessor != expected_predecessor:
+            raise RuntimeError("Group2 recovery predecessor evidence changed")
+        evidence_digest = carry_forward.digest(
+            {"baseline": baseline, "evidence": evidence}
+        )
+        try:
+            result = carry_forward.validate_group2_recovery_evidence(
+                manifest, baseline, evidence, expected_deployment
+            )
+        except carry_forward.CarryForwardError as error:
+            raise RuntimeError("Group2 recovery evidence is not valid") from error
+        expected_completion = {
+            "schema": "group2-recovery-completion-v1",
+            "recovery_id": identity,
+            "sha": manifest["to_sha"],
+            "manifest_id": manifest["manifest_id"],
+            "manifest_digest": manifest["manifest_digest"],
+            "evidence_digest": evidence_digest,
+            "predecessor": {
+                key: expected_predecessor[key]
+                for key in ("kind", "recovery_id", "evidence_digest")
+            },
+            "result": result,
+        }
+        if completion != expected_completion:
+            raise RuntimeError("Group2 recovery completion binding changed")
+        return {
+            "recovery_id": identity,
+            "evidence_digest": evidence_digest,
+            "predecessor": expected_completion["predecessor"],
+            "after_db": evidence["after_db"],
+            "after_files": evidence["after_files"],
+            "logs_after": evidence["logs_after"],
+        }
+
+    return validate_node(recovery_id)
 
 def validate_group2_recovery(previous, recovery_id=None):
     if previous.get("mode") != carry_forward.GROUP2_MODE:
@@ -1844,16 +1867,23 @@ def validate_group2_recovery(previous, recovery_id=None):
     ):
         raise RuntimeError("Consumed Group2 manifest binding changed")
     private_receipt = receipt(previous)
+    receipt_evidence = group2_receipt_evidence(private_receipt, manifest)
     safe_result = validate_group2_receipt(
         private_receipt,
         previous,
         manifest,
-        group2_receipt_evidence(private_receipt, manifest),
+        receipt_evidence,
     )
     expected_safe = safe_result["carry_forward"]
     if safe != expected_safe:
         raise RuntimeError("Group2 deployed safe reference changed")
     validate_group2_vm_commit(manifest)
+    expected_deployment = {
+        "db": receipt_evidence["probe"]["after_db"],
+        "files": receipt_evidence["probe"]["after_files"],
+        "post_preservation": receipt_evidence["probe"]["result"],
+        "logs_after": receipt_evidence["post_health"]["logs_after"],
+    }
     last_recovery = previous.get("last_recovery")
     tx = transaction()
     if last_recovery is not None:
@@ -1867,15 +1897,13 @@ def validate_group2_recovery(previous, recovery_id=None):
         ):
             raise RuntimeError("Invalid Group2 recovery safe reference")
         if recovery_id is None:
-            digest = validate_group2_recovery_evidence(
-                manifest,
-                last_recovery["recovery_id"],
-                check_predecessor=False,
+            node = validate_group2_recovery_evidence(
+                manifest, last_recovery["recovery_id"], expected_deployment
             )
             if (
-                digest != last_recovery["evidence_digest"]
+                node["evidence_digest"] != last_recovery["evidence_digest"]
                 or tx.get("recovery_id") != last_recovery["recovery_id"]
-                or tx.get("recovery_evidence_digest") != digest
+                or tx.get("recovery_evidence_digest") != node["evidence_digest"]
             ):
                 raise RuntimeError("Group2 recovery safe reference changed")
     if recovery_id is not None:
@@ -1883,17 +1911,25 @@ def validate_group2_recovery(previous, recovery_id=None):
             r"[0-9a-f]{32}", recovery_id
         ):
             raise RuntimeError("Invalid Group2 recovery identity")
+        node = validate_group2_recovery_evidence(
+            manifest, recovery_id, expected_deployment
+        )
+        expected_predecessor = (
+            {"kind": "deployment", "recovery_id": None, "evidence_digest": None}
+            if last_recovery is None
+            else {"kind": "recovery", **last_recovery}
+        )
+        if recovery_id != (last_recovery or {}).get("recovery_id") and (
+            node["predecessor"] != expected_predecessor
+        ):
+            raise RuntimeError("Group2 recovery predecessor binding changed")
         if (
             last_recovery is not None
             and recovery_id == last_recovery["recovery_id"]
+            and node["evidence_digest"] != last_recovery["evidence_digest"]
         ):
-            recovery_digest = validate_group2_recovery_evidence(
-                manifest, recovery_id, check_predecessor=False
-            )
-        else:
-            recovery_digest = validate_group2_recovery_evidence(
-                manifest, recovery_id, last_recovery
-            )
+            raise RuntimeError("Group2 recovery safe reference changed")
+        recovery_digest = node["evidence_digest"]
         if (
             tx.get("recovery_id") != recovery_id
             or tx.get("recovery_evidence_digest") != recovery_digest

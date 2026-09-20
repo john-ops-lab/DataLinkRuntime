@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ctypes
 import datetime as dt
 import decimal
 import hashlib
@@ -4429,7 +4430,14 @@ def validate_group2_manifest_extensions(manifest: Any) -> None:
     if (
         not isinstance(log_evidence, dict)
         or set(log_evidence)
-        != {"profile_digest", "files", "roots", "observed_at_ns", "evidence_digest"}
+        != {
+            "profile_digest",
+            "files",
+            "roots",
+            "clock",
+            "observed_at_ns",
+            "evidence_digest",
+        }
         or log_evidence["profile_digest"] != manifest["account_entry"]["profile_digest"]
         or log_evidence["evidence_digest"]
         != digest(
@@ -4441,6 +4449,7 @@ def validate_group2_manifest_extensions(manifest: Any) -> None:
         )
     ):
         raise CarryForwardError("log_evidence_invalid")
+    _validate_log_clock(log_evidence["clock"], log_evidence["observed_at_ns"])
 
 
 def _compare_group2_db_strict(before: dict[str, Any], after: dict[str, Any]) -> None:
@@ -5564,6 +5573,43 @@ def validate_group2_account_check(profile: Any, result: Any) -> dict[str, Any]:
     return result
 
 
+class _Timespec(ctypes.Structure):
+    _fields_ = (("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long))
+
+
+def _log_observation() -> tuple[dict[str, Any], int]:
+    if sys.platform == "darwin":
+        precise = time.time_ns()
+        resolution_ns = max(
+            1, math.ceil(time.get_clock_info("time").resolution * 1_000_000_000)
+        )
+        return {
+            "kind": "precise-realtime",
+            "lower_bound_ns": precise,
+            "resolution_ns": resolution_ns,
+        }, precise
+    if sys.platform != "linux":
+        raise CarryForwardError("log_clock_unavailable")
+    library = ctypes.CDLL(None, use_errno=True)
+    clock_id = 5  # Linux CLOCK_REALTIME_COARSE ABI value.
+    current = _Timespec()
+    resolution = _Timespec()
+    if library.clock_gettime(clock_id, ctypes.byref(current)) != 0:
+        raise CarryForwardError("log_clock_unavailable")
+    if library.clock_getres(clock_id, ctypes.byref(resolution)) != 0:
+        raise CarryForwardError("log_clock_unavailable")
+    lower_bound_ns = current.tv_sec * 1_000_000_000 + current.tv_nsec
+    resolution_ns = resolution.tv_sec * 1_000_000_000 + resolution.tv_nsec
+    precise = time.time_ns()
+    if resolution_ns <= 0 or lower_bound_ns > precise:
+        raise CarryForwardError("log_clock_invalid")
+    return {
+        "kind": "linux-realtime-coarse",
+        "lower_bound_ns": lower_bound_ns,
+        "resolution_ns": resolution_ns,
+    }, precise
+
+
 def capture_log_prefix(profile: Any) -> dict[str, Any]:
     profile = validate_group2_account_entry(profile)
     files = []
@@ -5626,11 +5672,13 @@ def capture_log_prefix(profile: Any) -> dict[str, Any]:
         if text_path not in observed_paths:
             files.append({"path": text_path, "exists": False})
     files.sort(key=lambda item: item["path"])
+    clock, observed_at_ns = _log_observation()
     result = {
         "profile_digest": profile["profile_digest"],
         "files": files,
         "roots": roots,
-        "observed_at_ns": time.time_ns(),
+        "clock": clock,
+        "observed_at_ns": observed_at_ns,
     }
     result["evidence_digest"] = digest(result)
     return result
@@ -5641,6 +5689,7 @@ def read_log_append(baseline: Any) -> dict[str, Any]:
         "profile_digest",
         "files",
         "roots",
+        "clock",
         "observed_at_ns",
         "evidence_digest",
     }
@@ -5648,6 +5697,7 @@ def read_log_append(baseline: Any) -> dict[str, Any]:
         "profile_digest",
         "files",
         "roots",
+        "clock",
         "baseline_evidence_digest",
         "observed_after_ns",
         "evidence_digest",
@@ -5672,6 +5722,7 @@ def read_log_append(baseline: Any) -> dict[str, Any]:
     )
     if not isinstance(observed_before_ns, int) or isinstance(observed_before_ns, bool):
         raise CarryForwardError("log_evidence_invalid")
+    _validate_log_clock(baseline["clock"], observed_before_ns)
     baseline_files = []
     for item in baseline["files"]:
         if not chained:
@@ -5918,23 +5969,29 @@ def read_log_append(baseline: Any) -> dict[str, Any]:
                 "end_sha256": hashlib.sha256(content).hexdigest(),
             }
         )
-    observed_after_ns = time.time_ns()
+    clock, observed_after_ns = _log_observation()
     for previous, current in zip(baseline["roots"], output_roots, strict=True):
-        if current["mtime_ns"] != previous["mtime_ns"]:
+        previous_entries = {item["path"] for item in previous["entries"]}
+        current_entries = {item["path"] for item in current["entries"]}
+        if current_entries - previous_entries:
             _window_ns(
                 current["mtime_ns"],
-                observed_before_ns,
+                max(previous["mtime_ns"], baseline["clock"]["lower_bound_ns"]),
                 observed_after_ns,
                 "log_root_changed",
             )
+        elif current["mtime_ns"] != previous["mtime_ns"]:
+            raise CarryForwardError("log_root_changed")
     result = {
         "profile_digest": baseline["profile_digest"],
         "files": output,
         "roots": output_roots,
+        "clock": clock,
         "baseline_evidence_digest": baseline_digest,
         "observed_after_ns": observed_after_ns,
     }
     result["evidence_digest"] = digest(result)
+    _validate_log_link(baseline, result, baseline["profile_digest"])
     return result
 
 
@@ -6158,6 +6215,16 @@ def validate_group2_entry_probe(profile: Any, result: Any) -> dict[str, Any]:
     return result
 
 
+def _validate_group2_worker_lifetime(started: Any, current: Any) -> None:
+    fields = ("container_id", "image_id", "started_at", "restart_count")
+    if (
+        not isinstance(started, dict)
+        or not isinstance(current, dict)
+        or any(started.get(key) != current.get(key) for key in fields)
+    ):
+        raise CarryForwardError("group2_worker_lifetime_changed")
+
+
 def _appended_log(logs: Any, suffix: str) -> dict[str, Any]:
     if not isinstance(logs, dict) or not isinstance(logs.get("files"), list):
         raise CarryForwardError("log_evidence_invalid")
@@ -6171,6 +6238,28 @@ def _appended_text(logs: Any, suffix: str) -> str:
     return _appended_log(logs, suffix)["appended_text"]
 
 
+def _validate_log_clock(value: Any, precise_ns: Any) -> dict[str, Any]:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"kind", "lower_bound_ns", "resolution_ns"}
+        or value["kind"] not in {"linux-realtime-coarse", "precise-realtime"}
+        or not isinstance(value["lower_bound_ns"], int)
+        or isinstance(value["lower_bound_ns"], bool)
+        or value["lower_bound_ns"] < 0
+        or not isinstance(value["resolution_ns"], int)
+        or isinstance(value["resolution_ns"], bool)
+        or value["resolution_ns"] <= 0
+        or not isinstance(precise_ns, int)
+        or isinstance(precise_ns, bool)
+        or precise_ns < 0
+        or value["lower_bound_ns"] > precise_ns
+        or value["kind"] == "precise-realtime"
+        and value["lower_bound_ns"] != precise_ns
+    ):
+        raise CarryForwardError("log_clock_invalid")
+    return value
+
+
 def _validate_log_link(
     before: Any, after: Any, profile_digest: str | None = None
 ) -> tuple[int, int]:
@@ -6178,6 +6267,7 @@ def _validate_log_link(
         "profile_digest",
         "files",
         "roots",
+        "clock",
         "observed_at_ns",
         "evidence_digest",
     }
@@ -6185,6 +6275,7 @@ def _validate_log_link(
         "profile_digest",
         "files",
         "roots",
+        "clock",
         "baseline_evidence_digest",
         "observed_after_ns",
         "evidence_digest",
@@ -6218,6 +6309,15 @@ def _validate_log_link(
         or end < start
     ):
         raise CarryForwardError("log_evidence_link_invalid")
+    before_clock = _validate_log_clock(before["clock"], start)
+    after_clock = _validate_log_clock(after["clock"], end)
+    if (
+        after_clock["kind"] != before_clock["kind"]
+        or after_clock["resolution_ns"] != before_clock["resolution_ns"]
+        or after_clock["lower_bound_ns"] < before_clock["lower_bound_ns"]
+    ):
+        raise CarryForwardError("log_evidence_link_invalid")
+    _validate_log_segment_transition(before, after, start, end)
     return start, end
 
 
@@ -6319,7 +6419,7 @@ def _log_endpoint_files(value: Any) -> dict[str, dict[str, Any]]:
 
 
 def _validate_log_root_transition(
-    previous: Any, current: Any, start_ns: int, end_ns: int
+    previous: Any, current: Any, previous_clock_ns: int, end_ns: int
 ) -> None:
     if not isinstance(previous, list) or not isinstance(current, list):
         raise CarryForwardError("log_evidence_invalid")
@@ -6419,9 +6519,48 @@ def _validate_log_root_transition(
         if additions:
             if new["mtime_ns"] < old["mtime_ns"]:
                 raise CarryForwardError("log_evidence_link_invalid")
-            _window_ns(new["mtime_ns"], start_ns, end_ns, "log_evidence_link_invalid")
+            _window_ns(
+                new["mtime_ns"],
+                max(old["mtime_ns"], previous_clock_ns),
+                end_ns,
+                "log_evidence_link_invalid",
+            )
         elif new["mtime_ns"] != old["mtime_ns"]:
             raise CarryForwardError("log_evidence_link_invalid")
+
+
+def _validate_log_segment_transition(
+    before: Any, after: Any, start_ns: int, end_ns: int
+) -> None:
+    previous_files = _log_endpoint_files(before)
+    current_files = _log_endpoint_files(after)
+    if set(previous_files) != set(current_files):
+        raise CarryForwardError("log_evidence_link_invalid")
+    current_items = {item["path"]: item for item in after["files"]}
+    empty_digest = hashlib.sha256(b"").hexdigest()
+    for path, previous in previous_files.items():
+        current = current_items[path]
+        if previous["exists"]:
+            if (
+                not current["exists"]
+                or any(
+                    current[key] != previous[key]
+                    for key in ("device", "inode", "mode", "uid", "gid")
+                )
+                or (current["size"], current["prefix_sha256"])
+                != (previous["size"], previous["prefix_sha256"])
+            ):
+                raise CarryForwardError("log_evidence_link_invalid")
+        elif current["exists"] and (
+            current["size"], current["prefix_sha256"]
+        ) != (0, empty_digest):
+            raise CarryForwardError("log_evidence_link_invalid")
+    _validate_log_root_transition(
+        before.get("roots"),
+        after.get("roots"),
+        before["clock"]["lower_bound_ns"],
+        end_ns,
+    )
 
 
 def combine_group2_log_window(before: Any, *segments: Any) -> dict[str, Any]:
@@ -6431,38 +6570,11 @@ def combine_group2_log_window(before: Any, *segments: Any) -> dict[str, Any]:
     previous = before
     accumulated = {path: "" for path in initial}
     for segment in segments:
-        start_ns, end_ns = _validate_log_link(previous, segment)
-        previous_files = _log_endpoint_files(previous)
-        segment_endpoint = _log_endpoint_files(segment)
-        if set(previous_files) != set(segment_endpoint):
-            raise CarryForwardError("log_evidence_link_invalid")
+        _validate_log_link(previous, segment)
         segment_items = {item["path"]: item for item in segment["files"]}
-        empty_digest = hashlib.sha256(b"").hexdigest()
-        for path, old in previous_files.items():
+        for path in initial:
             item = segment_items[path]
-            if old["exists"]:
-                if (
-                    not item["exists"]
-                    or any(
-                        item[key] != old[key]
-                        for key in ("device", "inode", "mode", "uid", "gid")
-                    )
-                    or (item["size"], item["prefix_sha256"])
-                    != (
-                        old["size"],
-                        old["prefix_sha256"],
-                    )
-                ):
-                    raise CarryForwardError("log_evidence_link_invalid")
-            elif item["exists"] and (item["size"], item["prefix_sha256"]) != (
-                0,
-                empty_digest,
-            ):
-                raise CarryForwardError("log_evidence_link_invalid")
             accumulated[path] += item["appended_text"]
-        _validate_log_root_transition(
-            previous.get("roots"), segment.get("roots"), start_ns, end_ns
-        )
         previous = segment
     final = _log_endpoint_files(previous)
     output = []
@@ -6502,6 +6614,7 @@ def combine_group2_log_window(before: Any, *segments: Any) -> dict[str, Any]:
         "profile_digest": before["profile_digest"],
         "files": output,
         "roots": previous["roots"],
+        "clock": previous["clock"],
         "baseline_evidence_digest": before["evidence_digest"],
         "observed_after_ns": previous["observed_after_ns"],
     }
@@ -7134,7 +7247,12 @@ def validate_group2_receipt_evidence(manifest: Any, evidence: Any) -> dict[str, 
         "logs_after",
     }:
         raise CarryForwardError("group2_receipt_evidence_invalid")
-    validate_group2_account_check(manifest["account_entry"], health["account_check"])
+    account_check = validate_group2_account_check(
+        manifest["account_entry"], health["account_check"]
+    )
+    _validate_group2_worker_lifetime(
+        request.get("container_after"), account_check.get("containers", {}).get("worker")
+    )
     validate_group2_entry_probe(manifest["account_entry"], health["entry_probe"])
     if health["logs_before"] != probe["logs_final"]:
         raise CarryForwardError("group2_receipt_evidence_changed")
@@ -7205,10 +7323,17 @@ def _validate_group2_recovery_lineage(
 ) -> None:
     if (
         not isinstance(deployment, dict)
-        or set(deployment) != {"db", "files", "post_preservation"}
+        or set(deployment) != {"db", "files", "post_preservation", "logs_after"}
         or not isinstance(predecessor, dict)
         or set(predecessor)
-        != {"kind", "recovery_id", "evidence_digest", "db", "files"}
+        != {
+            "kind",
+            "recovery_id",
+            "evidence_digest",
+            "db",
+            "files",
+            "logs_after",
+        }
         or predecessor["kind"] not in {"deployment", "recovery"}
         or not isinstance(fresh, dict)
         or set(fresh) != {"db", "files"}
@@ -7220,6 +7345,7 @@ def _validate_group2_recovery_lineage(
             or predecessor["evidence_digest"] is not None
             or predecessor["db"] != deployment["db"]
             or predecessor["files"] != deployment["files"]
+            or predecessor["logs_after"] != deployment["logs_after"]
         ):
             raise CarryForwardError("group2_recovery_lineage_changed")
     elif (
@@ -7237,7 +7363,7 @@ def _validate_group2_recovery_lineage(
 
 
 def validate_group2_recovery_evidence(
-    manifest: Any, baseline: Any, evidence: Any
+    manifest: Any, baseline: Any, evidence: Any, expected_deployment: Any
 ) -> dict[str, Any]:
     manifest = validate_manifest(manifest)
     validate_group2_manifest_extensions(manifest)
@@ -7245,7 +7371,9 @@ def validate_group2_recovery_evidence(
         not isinstance(baseline, dict)
         or set(baseline) != {"deployment", "predecessor", "fresh"}
         or not isinstance(baseline.get("deployment"), dict)
-        or set(baseline["deployment"]) != {"db", "files", "post_preservation"}
+        or set(baseline["deployment"])
+        != {"db", "files", "post_preservation", "logs_after"}
+        or baseline["deployment"] != expected_deployment
         or not isinstance(baseline.get("fresh"), dict)
         or set(baseline["fresh"]) != {"db", "files"}
         or not isinstance(evidence, dict)
@@ -7303,6 +7431,11 @@ def validate_group2_recovery_evidence(
         raise CarryForwardError("group2_recovery_evidence_invalid")
     _validate_group2_recovery_lineage(
         deployment, baseline["predecessor"], fresh
+    )
+    _validate_log_link(
+        baseline["predecessor"]["logs_after"],
+        evidence["logs_before"],
+        manifest["account_entry"]["profile_digest"],
     )
     for key in (
         "projection",

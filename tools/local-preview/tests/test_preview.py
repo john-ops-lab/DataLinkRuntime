@@ -771,6 +771,164 @@ class Group2ControllerGateTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(setattr, preview, "_group2_install_context", None)
 
+    def test_recovery_host_replays_every_ancestor_from_receipt_root(self):
+        sha = "b" * 40
+        manifest = {
+            "to_sha": sha,
+            "manifest_id": "1" * 32,
+            "manifest_digest": "2" * 64,
+        }
+        deployment = {
+            "db": {"root": "db"},
+            "files": {"root": "files"},
+            "post_preservation": {"code": "group2_post_probe_ok"},
+            "logs_after": {"root": "logs"},
+        }
+        first_id, second_id = "3" * 32, "4" * 32
+
+        def raw(identity, predecessor, number):
+            baseline = {
+                "deployment": copy.deepcopy(deployment),
+                "predecessor": copy.deepcopy(predecessor),
+                "fresh": {
+                    "db": copy.deepcopy(predecessor["db"]),
+                    "files": copy.deepcopy(predecessor["files"]),
+                },
+            }
+            evidence = {
+                "request": {"node": number},
+                "proof": {"node": number},
+                "before_db": baseline["fresh"]["db"],
+                "after_db": {"node": number, "db": True},
+                "before_files": baseline["fresh"]["files"],
+                "after_files": {"node": number, "files": True},
+                "account_check": {"node": number},
+                "entry_probe": {"node": number},
+                "logs_before": {"node": number, "before": True},
+                "logs_after": {"node": number, "after": True},
+                "preservation": {"node": number},
+            }
+            evidence_digest = carry_forward.digest(
+                {"baseline": baseline, "evidence": evidence}
+            )
+            result = {"node": number, "validated": True}
+            completion = {
+                "schema": "group2-recovery-completion-v1",
+                "recovery_id": identity,
+                "sha": sha,
+                "manifest_id": manifest["manifest_id"],
+                "manifest_digest": manifest["manifest_digest"],
+                "evidence_digest": evidence_digest,
+                "predecessor": {
+                    key: predecessor[key]
+                    for key in ("kind", "recovery_id", "evidence_digest")
+                },
+                "result": result,
+            }
+            return baseline, evidence, completion, result
+
+        root_predecessor = {
+            "kind": "deployment",
+            "recovery_id": None,
+            "evidence_digest": None,
+            "db": deployment["db"],
+            "files": deployment["files"],
+            "logs_after": deployment["logs_after"],
+        }
+        first = raw(first_id, root_predecessor, 1)
+        second_predecessor = {
+            "kind": "recovery",
+            "recovery_id": first_id,
+            "evidence_digest": first[2]["evidence_digest"],
+            "db": first[1]["after_db"],
+            "files": first[1]["after_files"],
+            "logs_after": first[1]["logs_after"],
+        }
+        second = raw(second_id, second_predecessor, 2)
+        objects = {}
+        for identity, node in ((first_id, first), (second_id, second)):
+            baseline, evidence, completion, _ = node
+            base = f"carry-forward/recovery-{sha}-{identity}"
+            objects[f"{base}/baseline.json"] = baseline
+            objects[f"{base}/startup-request.json"] = evidence["request"]
+            objects[f"{base}/startup.json"] = {"startup_proof": evidence["proof"]}
+            for name in ("before-db", "after-db", "before-files", "after-files"):
+                objects[f"{base}/{name}.json"] = evidence[name.replace("-", "_")]
+            objects[f"{base}/account.json"] = {
+                "account_check": evidence["account_check"]
+            }
+            objects[f"{base}/entry.json"] = {"entry_probe": evidence["entry_probe"]}
+            objects[f"{base}/log-before.json"] = {
+                "log_evidence": evidence["logs_before"]
+            }
+            objects[f"{base}/log-after.json"] = {
+                "log_evidence": evidence["logs_after"]
+            }
+            objects[f"{base}/preservation.json"] = evidence["preservation"]
+            objects[f"{base}/completion.json"] = completion
+
+        def read_vm(*args):
+            key = str(args[-1]).lstrip("/")
+            if key not in objects:
+                raise RuntimeError("missing recovery evidence")
+            return SimpleNamespace(returncode=0, stdout=json.dumps(objects[key]))
+
+        validate = lambda _manifest, _baseline, evidence, _deployment: {
+            "node": evidence["after_db"]["node"],
+            "validated": True,
+        }
+        with (
+            patch.object(preview, "vm_command", side_effect=read_vm),
+            patch.object(preview, "vm_path", side_effect=lambda value: value),
+            patch.object(
+                carry_forward,
+                "validate_group2_recovery_evidence",
+                side_effect=validate,
+            ),
+        ):
+            node = preview.validate_group2_recovery_evidence(
+                manifest, second_id, deployment
+            )
+            self.assertEqual(node["evidence_digest"], second[2]["evidence_digest"])
+
+        foreign = copy.deepcopy(objects)
+        foreign[
+            f"carry-forward/recovery-{sha}-{first_id}/baseline.json"
+        ]["deployment"]["db"] = {"foreign": True}
+        objects.clear()
+        objects.update(foreign)
+        with (
+            patch.object(preview, "vm_command", side_effect=read_vm),
+            patch.object(preview, "vm_path", side_effect=lambda value: value),
+            self.assertRaisesRegex(RuntimeError, "deployment root changed"),
+        ):
+            preview.validate_group2_recovery_evidence(
+                manifest, second_id, deployment
+            )
+
+        objects.clear()
+        for identity, node in ((first_id, first), (second_id, second)):
+            baseline, evidence, completion, _ = node
+            base = f"carry-forward/recovery-{sha}-{identity}"
+            objects[f"{base}/baseline.json"] = baseline
+            objects[f"{base}/startup-request.json"] = evidence["request"]
+            objects[f"{base}/startup.json"] = {"startup_proof": evidence["proof"]}
+            for name in ("before-db", "after-db", "before-files", "after-files"):
+                objects[f"{base}/{name}.json"] = evidence[name.replace("-", "_")]
+            objects[f"{base}/account.json"] = {"account_check": evidence["account_check"]}
+            objects[f"{base}/entry.json"] = {"entry_probe": evidence["entry_probe"]}
+            objects[f"{base}/log-before.json"] = {"log_evidence": evidence["logs_before"]}
+            objects[f"{base}/log-after.json"] = {"log_evidence": evidence["logs_after"]}
+            objects[f"{base}/preservation.json"] = evidence["preservation"]
+            objects[f"{base}/completion.json"] = completion
+        del objects[f"carry-forward/recovery-{sha}-{first_id}/completion.json"]
+        with (
+            patch.object(preview, "vm_command", side_effect=read_vm),
+            patch.object(preview, "vm_path", side_effect=lambda value: value),
+            self.assertRaisesRegex(RuntimeError, "missing recovery evidence"),
+        ):
+            preview.validate_group2_recovery_evidence(manifest, second_id, deployment)
+
     def test_install_guard_runs_only_under_nested_real_locks_and_flag_recovers(self):
         context = {"operation_held": False}
         preview._group2_install_context = context
@@ -1665,12 +1823,15 @@ _validate_capture_digests = _real._validate_capture_digests
 def _validate_group2_recovery_lineage(deployment,predecessor,fresh):
     assert predecessor['db']==fresh['db']
     assert predecessor['files']==fresh['files']
+    if predecessor['kind']=='deployment':
+        assert predecessor['logs_after']==deployment['logs_after']
 def validate_manifest(value): return value
 def validate_group2_manifest_extensions(value): return None
 def compare_group2_startup_files(before, after, proof):
     _real._validate_startup_proof(proof)
     return {'code':'group2_startup_files_ok','allowed_deltas':[]}
-def validate_group2_recovery_evidence(manifest, baseline, evidence):
+def validate_group2_recovery_evidence(manifest, baseline, evidence, expected_deployment):
+    assert baseline['deployment']==expected_deployment
     assert evidence['before_db']==baseline['fresh']['db']
     assert evidence['before_files']==baseline['fresh']['files']
     assert evidence['after_db']==baseline['fresh']['db']
@@ -1685,6 +1846,9 @@ def validate_group2_recovery_evidence(manifest, baseline, evidence):
         manifest['account_entry'],evidence['entry_probe'])
     _real._validate_log_link(
         evidence['logs_before'],evidence['logs_after'],
+        manifest['account_entry']['profile_digest'])
+    _real._validate_log_link(
+        baseline['predecessor']['logs_after'],evidence['logs_before'],
         manifest['account_entry']['profile_digest'])
     result={'startup_result':preservation,'preservation':preservation,
             'account_ready':True,'entry_ready':True,
@@ -1893,6 +2057,32 @@ if __name__ == '__main__': _real.main()
         (baseline / "post-preservation.json").write_text(
             json.dumps(post_preservation)
         )
+        deployment_logs = carry_forward.capture_log_prefix(profile)
+        (baseline / "logs-after.json").write_text(
+            json.dumps({"log_evidence": deployment_logs})
+        )
+        check_group2 = (
+            root
+            / "carry-forward"
+            / "check"
+            / manifest["manifest_id"]
+            / "group2"
+        )
+        check_group2.mkdir(parents=True)
+        (check_group2 / "account-after.json").write_text(
+            json.dumps({"account_check": {}})
+        )
+        (check_group2 / "entry-after.json").write_text(
+            json.dumps({"entry_probe": {}})
+        )
+        (check_group2 / "log-after-health.json").write_text(
+            json.dumps({"log_evidence": deployment_logs})
+        )
+        post_health = {
+            "account_check": {},
+            "entry_probe": {},
+            "logs_after": deployment_logs,
+        }
         bundle_digest = carry_forward.digest(post_bundle)
         (release / "receipt.json").write_text(
             json.dumps(
@@ -1905,7 +2095,10 @@ if __name__ == '__main__': _real.main()
                     },
                     "review_scope_digest": manifest["review_scope_digest"],
                     "post_preservation_digest": bundle_digest,
-                    "stages": {"post_preservation": bundle_digest},
+                    "stages": {
+                        "post_preservation": bundle_digest,
+                        "post_health": carry_forward.digest(post_health),
+                    },
                 }
             )
         )
