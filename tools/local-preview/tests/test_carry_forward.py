@@ -2278,7 +2278,7 @@ class Group2RuntimeTests(unittest.TestCase):
             prior[side]["prepare-sandbox-host.sh"]["sha256"] = hashlib.sha256(
                 prepare_raw
             ).hexdigest()
-            prior[side]["prepare-sandbox-host.sh"]["mode"] = 0o755
+            prior[side]["prepare-sandbox-host.sh"]["mode"] = 0o644
         parent_chain = {
             "request": {"incident_id": carry.GROUP2_PARTIAL_INCIDENT_ID},
             "result": {"receipt": {"ok": True}},
@@ -2796,7 +2796,7 @@ class Group2RuntimeTests(unittest.TestCase):
         commands = {}
         for action, (started, ended) in times.items():
             argv = (
-                ["/tmp/prepare-sandbox-host.sh", "--unit", "dlr-preview.service",
+                ["bash", "/tmp/prepare-sandbox-host.sh", "--unit", "dlr-preview.service",
                  "--cpu-quota", "250%", "--memory-max", "2G"]
                 if action == "prepare-keeper"
                 else ["docker", "start", ids[action.removeprefix("start-")]]
@@ -2813,6 +2813,20 @@ class Group2RuntimeTests(unittest.TestCase):
                            "content_b64": base64.b64encode(carry.canonical_bytes(result)).decode()},
             }
         carry._validate_group2_reboot_commands(commands, request, evidence)
+        direct = copy.deepcopy(commands)
+        for key in ("intent", "result"):
+            value = json.loads(base64.b64decode(
+                direct["prepare-keeper"][key]["content_b64"]
+            ))
+            value["argv"] = value["argv"][1:]
+            direct["prepare-keeper"][key] = {
+                "sha256": carry.digest(value),
+                "content_b64": base64.b64encode(
+                    carry.canonical_bytes(value)
+                ).decode(),
+            }
+        with self.assertRaises(carry.CarryForwardError):
+            carry._validate_group2_reboot_commands(direct, request, evidence)
         changed = copy.deepcopy(commands)
         intent = json.loads(base64.b64decode(changed["start-control"]["intent"]["content_b64"]))
         result = json.loads(base64.b64decode(changed["start-control"]["result"]["content_b64"]))
@@ -3120,6 +3134,25 @@ class Group2RuntimeTests(unittest.TestCase):
                     directory, "start-postgres",
                     ["docker", "start", "postgres-id"], 30,
                 )
+
+    def test_reboot_prepare_action_runs_bound_non_executable_script_with_bash(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            directory.chmod(0o700)
+            script = directory / "prepare-sandbox-host.sh"
+            script.write_text('#!/usr/bin/env bash\nprintf "keeper:%s\\n" "$1"\n')
+            script.chmod(0o644)
+            argv = ["bash", str(script), "--unit"]
+            result = carry._run_group2_reboot_action(
+                directory, "prepare-keeper", argv, 30,
+            )
+            self.assertEqual(script.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(result["argv"], argv)
+            self.assertEqual(result["stdout"], "keeper:--unit\n")
+            intent = carry.read_private(
+                directory / "command-prepare-keeper-intent.json"
+            )
+            self.assertEqual(intent["argv"], argv)
 
     def test_reboot_vm_failure_closes_phase_and_prevents_next_action_or_replay(self):
         with tempfile.TemporaryDirectory() as temporary:

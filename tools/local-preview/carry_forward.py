@@ -9763,8 +9763,8 @@ def validate_group2_post_finalize_reboot_request(
         or vm_prepare != prior["vm_files"]["prepare-sandbox-host.sh"]
         or host_prepare.get("sha256") != prepare["sha256"]
         or vm_prepare.get("sha256") != prepare["sha256"]
-        or not host_prepare.get("mode", 0) & 0o111
-        or not vm_prepare.get("mode", 0) & 0o111
+        or host_prepare.get("mode") != 0o644
+        or vm_prepare.get("mode") != 0o644
         or prepare["parameters"] != prior["parameters"].get("keeper")
     ):
         raise CarryForwardError("group2_reboot_prepare_script_changed")
@@ -12144,10 +12144,10 @@ def _validate_group2_reboot_commands(
         if action == "prepare-keeper":
             argv = intent["argv"]
             valid_argv = (
-                isinstance(argv, list) and len(argv) == 7
-                and isinstance(argv[0], str)
-                and Path(argv[0]).name == "prepare-sandbox-host.sh"
-                and argv[1:] == ["--unit", params["unit"], "--cpu-quota",
+                isinstance(argv, list) and len(argv) == 8
+                and argv[0] == "bash" and isinstance(argv[1], str)
+                and Path(argv[1]).name == "prepare-sandbox-host.sh"
+                and argv[2:] == ["--unit", params["unit"], "--cpu-quota",
                                   params["cpu_quota"], "--memory-max",
                                   params["memory_max"]]
             )
@@ -14676,7 +14676,7 @@ def _recover_group2_post_finalize_reboot_vm_once(
     keeper_start_ns = time.time_ns()
     _run_group2_reboot_action(
         directory, "prepare-keeper",
-        [str(script), "--unit", params["unit"], "--cpu-quota", params["cpu_quota"],
+        ["bash", str(script), "--unit", params["unit"], "--cpu-quota", params["cpu_quota"],
          "--memory-max", params["memory_max"]],
         _reboot_timeout(request, 180),
     )
