@@ -2,7 +2,37 @@
 # Trusted controller, executed only in the dedicated Colima VM.
 set -euo pipefail
 umask 077
-if [ "${1:-}" = finalize-group2-partial ]; then
+if [ "${1:-}" = recover-group2-post-finalize-reboot ]; then
+  [ "$#" -eq 5 ] || exit 2
+  root=${2:?fixed root required}
+  incident_id=${3:?incident id required}
+  finalize_id=${4:?finalize id required}
+  boot_id=${5:?boot id required}
+  [[ "$root" =~ ^/[a-zA-Z0-9_./-]+$ ]] && [[ "$root" != */ ]] && [[ "$root" != *".."* ]] || exit 2
+  [[ "$incident_id" =~ ^[0-9a-f]{32}$ ]] || exit 2
+  [[ "$finalize_id" =~ ^[0-9a-f]{32}$ ]] || exit 2
+  [[ "$boot_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || exit 2
+  [ ! -L "$0" ] || exit 2
+  tool_root=$(cd -P "$(dirname "$0")" && pwd)
+  [ "$tool_root" = "$root/incidents/$incident_id/finalize/$finalize_id/reboot/$boot_id/tool" ] || exit 2
+  [ -f "$tool_root/deploy.sh" ] && [ ! -L "$tool_root/deploy.sh" ] || exit 2
+  [ -f "$tool_root/carry_forward.py" ] && [ ! -L "$tool_root/carry_forward.py" ] || exit 2
+  python3 - "$root/incidents/$incident_id/finalize/$finalize_id/reboot/$boot_id/request.json" \
+    "$tool_root/deploy.sh" "$tool_root/carry_forward.py" <<'PYREBOOTTOOL' || exit 2
+import hashlib, json, pathlib, sys
+request_path, deploy_path, carry_path = map(pathlib.Path, sys.argv[1:])
+request = json.loads(request_path.read_bytes())
+expected = request['tool']['controller_files']
+for name, path in (('deploy.sh', deploy_path), ('carry_forward.py', carry_path)):
+    assert path.is_file() and not path.is_symlink()
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == expected[name]
+PYREBOOTTOOL
+  exec 9>"$root/deploy.lock"
+  flock -n 9 || exit 1
+  exec python3 "$tool_root/carry_forward.py" post-finalize-reboot-vm \
+    --root "$root" --incident-id "$incident_id" --finalize-id "$finalize_id" \
+    --boot-id "$boot_id"
+elif [ "${1:-}" = finalize-group2-partial ]; then
   root=${2:?fixed root required}
   incident_id=${3:?incident id required}
   finalize_id=${4:?finalize id required}

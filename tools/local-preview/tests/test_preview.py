@@ -284,6 +284,38 @@ class ControllerTests(unittest.TestCase):
                 preview.main()
             finalize.assert_not_called()
 
+    def test_post_finalize_reboot_cli_is_unique_and_rejects_general_options(self):
+        request = Path(self.temp.name) / "reboot-request.json"
+        approval = Path(self.temp.name) / "USER-APPROVAL.json"
+        request.write_text("{}")
+        approval.write_text("{}")
+        base = [
+            "preview.py", "recover-group2-post-finalize-reboot",
+            "--reboot-request", str(request),
+            "--reboot-approval", str(approval),
+        ]
+        with (
+            patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+            patch.object(sys, "argv", base),
+            patch.object(
+                preview, "recover_group2_post_finalize_reboot",
+                return_value={"incident_id": "1" * 32, "boot_id": "2" * 36},
+            ) as recover,
+            patch("builtins.print"),
+        ):
+            preview.main()
+        recover.assert_called_once_with(request, approval)
+        for extra in (["7"], ["--to-sha", B], ["--finalize-request", request]):
+            with (
+                self.subTest(extra=extra),
+                patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+                patch.object(sys, "argv", [*base, *map(str, extra)]),
+                patch.object(preview, "recover_group2_post_finalize_reboot") as recover,
+                self.assertRaises(SystemExit),
+            ):
+                preview.main()
+            recover.assert_not_called()
+
     def test_partial_finalize_review_recomputes_git_content_hash(self):
         source = Path(self.temp.name) / "tools" / "local-preview"
         source.mkdir(parents=True)
@@ -356,6 +388,98 @@ class ControllerTests(unittest.TestCase):
             preview._partial_finalize_scope_binding(changed, scope, snapshot)
         )
 
+    def test_post_finalize_reboot_scope_binds_only_new_tool(self):
+        files = {name: str(index) * 64 for index, name in enumerate(
+            sorted(carry_forward.GROUP2_CONTROLLER_FILES), 1
+        )}
+        snapshot = {"selection": {}, "db": {}, "files": {}, "lineage": []}
+        scope = {
+            "final_source": {"to_sha": "d" * 40},
+            "controller_files": {"files": files},
+            "preservation_reference": {"snapshot": snapshot},
+        }
+        chain = {
+            "request": {"tool": {
+                "sha": "d" * 40, "controller_files": copy.deepcopy(files)
+            }},
+            "source_artifacts": {"parent-finalize.json": {
+                "content_b64": "parent tool remains nested and independent"
+            }},
+        }
+        self.assertTrue(
+            preview._post_finalize_reboot_scope_binding(chain, scope, snapshot)
+        )
+        changed = copy.deepcopy(chain)
+        changed["request"]["tool"]["sha"] = "e" * 40
+        self.assertFalse(
+            preview._post_finalize_reboot_scope_binding(changed, scope, snapshot)
+        )
+
+    def test_post_finalize_reboot_authority_rechecks_bytes_and_metadata(self):
+        host_names = set(carry_forward.GROUP2_CONTROLLER_FILES) | {"config.json"}
+        host_descriptors = {}
+        for name in host_names:
+            path = Path(self.temp.name) / name
+            path.write_bytes((name + "\n").encode())
+            path.chmod(0o600)
+            host_descriptors[name] = preview._post_finalize_reboot_file_evidence(path)
+        vm_names = set(carry_forward.GROUP2_POST_FINALIZE_REBOOT_VM_INSTALLED) | {
+            "current-sha"
+        }
+        vm_raw = {name: ("vm-" + name + "\n").encode() for name in vm_names}
+        vm_descriptors = {
+            name: {
+                "exists": True, "kind": "regular",
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "mode": 0o600, "uid": 1000, "gid": 1000, "symlink": False,
+            }
+            for name, raw in vm_raw.items()
+        }
+
+        def command(*arguments, check=True):
+            name = Path(arguments[-1]).name
+            if arguments[:2] in (("test", "-e"), ("test", "-f")):
+                return SimpleNamespace(returncode=0, stdout="")
+            if arguments[:2] == ("test", "-L"):
+                return SimpleNamespace(returncode=1, stdout="")
+            if arguments[:3] == ("stat", "-c", "%a %u %g"):
+                return SimpleNamespace(returncode=0, stdout="600 1000 1000\n")
+            if arguments[0] == "sha256sum":
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=hashlib.sha256(vm_raw[name]).hexdigest() + "  file\n",
+                )
+            raise AssertionError(arguments)
+
+        prior = {
+            "host_files": {"config.json": host_descriptors["config.json"]},
+            "vm_files": {"current-sha": vm_descriptors["current-sha"]},
+            "installed": {
+                "host": {
+                    name: host_descriptors[name]
+                    for name in carry_forward.GROUP2_CONTROLLER_FILES
+                },
+                "vm": {
+                    name: vm_descriptors[name]
+                    for name in carry_forward.GROUP2_POST_FINALIZE_REBOOT_VM_INSTALLED
+                },
+            },
+        }
+        with (
+            patch.object(preview, "vm_path", side_effect=lambda value: "/vm/" + value),
+            patch.object(preview, "vm_command", side_effect=command),
+        ):
+            actual = preview._post_finalize_reboot_authority(
+                prior, {"host": ["config.json"], "vm": ["current-sha"]}
+            )
+            self.assertEqual(actual["host_files"], prior["host_files"])
+            changed = copy.deepcopy(prior)
+            changed["host_files"]["config.json"]["mode"] = 0o644
+            with self.assertRaisesRegex(ValueError, "host authority changed"):
+                preview._post_finalize_reboot_authority(
+                    changed, {"host": ["config.json"], "vm": ["current-sha"]}
+                )
+
     def test_partial_finalize_deploy_entry_returns_before_normal_actions(self):
         root = Path(self.temp.name) / "vm-root"
         incident_id = "1" * 32
@@ -391,6 +515,274 @@ class ControllerTests(unittest.TestCase):
         )
         self.assertFalse((root / "backups").exists())
         self.assertFalse((root / "transaction.json").exists())
+
+    def test_post_finalize_reboot_deploy_entry_is_closed_and_executes_vm_mode(self):
+        root = (Path(self.temp.name) / "vm-root").resolve()
+        incident_id = "1" * 32
+        finalize_id = "2" * 32
+        boot_id = "12345678-1234-1234-1234-123456789abc"
+        base = root / "incidents" / incident_id / "finalize" / finalize_id / "reboot" / boot_id
+        tool = base / "tool"
+        tool.mkdir(parents=True)
+        deploy = tool / "deploy.sh"
+        deploy.write_bytes((Path(preview.__file__).parent / "deploy.sh").read_bytes())
+        deploy.chmod(0o755)
+        helper = tool / "carry_forward.py"
+        helper.write_text(
+            "import json, pathlib, sys\n"
+            "root=pathlib.Path(sys.argv[sys.argv.index('--root')+1])\n"
+            "(root/'reboot-args.json').write_text(json.dumps(sys.argv[1:]))\n"
+        )
+        (base / "request.json").write_text(json.dumps({"tool": {"controller_files": {
+            "deploy.sh": hashlib.sha256(deploy.read_bytes()).hexdigest(),
+            "carry_forward.py": hashlib.sha256(helper.read_bytes()).hexdigest(),
+        }}}))
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        (fake_bin / "flock").write_text("#!/bin/sh\nexit 0\n")
+        (fake_bin / "flock").chmod(0o755)
+        arguments = [
+            str(deploy), "recover-group2-post-finalize-reboot", str(root),
+            incident_id, finalize_id, boot_id,
+        ]
+        result = subprocess.run(
+            arguments,
+            env={**os.environ, "PATH": str(fake_bin) + ":" + os.environ["PATH"]},
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads((root / "reboot-args.json").read_text()),
+            ["post-finalize-reboot-vm", "--root", str(root), "--incident-id",
+             incident_id, "--finalize-id", finalize_id, "--boot-id", boot_id],
+        )
+        extra = subprocess.run(
+            [*arguments, "unexpected"], capture_output=True, text=True,
+            timeout=10, check=False,
+        )
+        self.assertEqual(extra.returncode, 2)
+        self.assertFalse((root / "backups").exists())
+        self.assertFalse((root / "transaction.json").exists())
+
+    def test_post_finalize_reboot_host_round_trip_is_append_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve() / "host"
+            vm_root = Path(temporary).resolve() / "vm"
+            inputs = Path(temporary).resolve() / "inputs"
+            source = Path(temporary).resolve() / "source" / "tools" / "local-preview"
+            for directory in (root, vm_root, inputs, source):
+                directory.mkdir(parents=True, mode=0o700)
+            incident_id = "1" * 32
+            finalize_id = "2" * 32
+            boot_id = "12345678-1234-1234-1234-123456789abc"
+            prefix = f"incidents/{incident_id}/finalize/{finalize_id}/reboot/{boot_id}"
+            for base_root in (root, vm_root):
+                (base_root / Path(prefix).parent.parent).mkdir(
+                    parents=True, mode=0o700
+                )
+            controller = {}
+            for name in carry_forward.GROUP2_CONTROLLER_FILES:
+                raw = ("source-" + name).encode()
+                (source / name).write_bytes(raw)
+                controller[name] = hashlib.sha256(raw).hexdigest()
+            before = {name: (name + " frozen\n").encode() for name in (
+                "state.json", "config.json", "transaction.json", "current-sha"
+            )}
+            for name in ("state.json", "config.json"):
+                (root / name).write_bytes(before[name])
+            for name in ("transaction.json", "current-sha"):
+                (vm_root / name).write_bytes(before[name])
+            now = preview.time.time_ns()
+            request = {
+                "incident_id": incident_id,
+                "finalize_id": finalize_id,
+                "boot_id": boot_id,
+                "request_digest": "a" * 64,
+                "tool": {
+                    "sha": "d" * 40, "tree": "e" * 40,
+                    "controller_files": controller,
+                    "source_scope_digest": "1" * 64,
+                    "review_report_sha256": "2" * 64,
+                    "ci_evidence_sha256": "3" * 64,
+                },
+                "window": {
+                    "not_before_ns": now - 1_000_000_000,
+                    "deadline_ns": now + 30_000_000_000,
+                    "successor_deadline_ns": now + 60_000_000_000,
+                },
+                "prior": {},
+            }
+            approval = {"schema": "group2-post-finalize-reboot-approval-v1"}
+            request_path = inputs / "reboot.json"
+            approval_path = inputs / "USER-APPROVAL.json"
+            record_path = inputs / "USER-APPROVAL.txt"
+            request_path.write_text(json.dumps(request))
+            approval_path.write_text(json.dumps(approval))
+            record_path.write_text("approved")
+            evidence_dir = inputs / "reboot.evidence"
+            evidence_dir.mkdir(mode=0o700)
+            for name in carry_forward.GROUP2_POST_FINALIZE_REBOOT_FILES:
+                value = (
+                    {"source": {"source_scope": {}}, "ci": {}}
+                    if name == "source-review.json" else {}
+                )
+                path = evidence_dir / name
+                path.write_text(json.dumps(value))
+                path.chmod(0o600)
+            for path in (request_path, approval_path, record_path):
+                path.chmod(0o600)
+            validated = {
+                "request": request, "approval": approval,
+                "authority_paths": {"host": [], "vm": []},
+            }
+            evidence = {"verified": {"files": {}}}
+            receipt = {
+                "receipt_digest": "9" * 64,
+                "stage_digests": {
+                    name: str(index) * 64
+                    for index, name in enumerate(
+                        carry_forward.GROUP2_POST_FINALIZE_REBOOT_PHASES[:-1], 1
+                    )
+                },
+            }
+            result = {
+                "schema": "group2-post-finalize-reboot-result-v1",
+                "evidence": evidence, "receipt": receipt,
+            }
+            chain = {
+                "request": request, "approval": approval, "result": result,
+            }
+            snapshot = {"selection": {}, "db": {}, "files": {}, "lineage": []}
+            commands = []
+
+            def mapped(value):
+                return vm_root / Path(value).relative_to("/vm")
+
+            def vm_write(relative, raw):
+                path = vm_root / relative
+                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                path.write_bytes(raw)
+
+            def command(*arguments, check=True):
+                commands.append(tuple(arguments))
+                if arguments == ("cat", "/proc/sys/kernel/random/boot_id"):
+                    return SimpleNamespace(returncode=0, stdout=boot_id + "\n")
+                if arguments[:3] == ("test", "!", "-e"):
+                    return SimpleNamespace(returncode=int(mapped(arguments[3]).exists()), stdout="")
+                if arguments[:2] == ("test", "-L"):
+                    return SimpleNamespace(returncode=1, stdout="")
+                if arguments[:2] == ("test", "-f"):
+                    path = mapped(arguments[2])
+                    return SimpleNamespace(returncode=0 if path.is_file() else 1, stdout="")
+                if arguments[0] in {"install", "mkdir"}:
+                    target = mapped(arguments[-1])
+                    target.mkdir(parents=True, exist_ok=arguments[0] == "install", mode=0o700)
+                    return SimpleNamespace(returncode=0, stdout="")
+                if arguments[0] == "sha256sum":
+                    raw = mapped(arguments[1]).read_bytes()
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=hashlib.sha256(raw).hexdigest() + "  f\n",
+                    )
+                if arguments[0] == "cat":
+                    path = mapped(arguments[1])
+                    return SimpleNamespace(returncode=0, stdout=path.read_text())
+                raise AssertionError(arguments)
+
+            class Process:
+                def __init__(self, arguments, **_kwargs):
+                    commands.append(tuple(arguments))
+                    directory = vm_root / prefix
+                    (directory / "result.json").write_text(json.dumps(result))
+                    (directory / "receipt.json").write_text(json.dumps(receipt))
+                    (directory / "chain.json").write_text(json.dumps(chain))
+                    (directory / "preservation-snapshot.json").write_text(json.dumps(snapshot))
+
+                def poll(self):
+                    return None
+
+                def wait(self, timeout=None):
+                    directory = vm_root / prefix
+                    (directory / "phase.json").write_text(json.dumps({
+                        "schema": "group2-post-finalize-reboot-phase-v1",
+                        "incident_id": incident_id, "finalize_id": finalize_id,
+                        "boot_id": boot_id, "phase": "host_verified",
+                        "completed_stages": list(carry_forward.GROUP2_POST_FINALIZE_REBOOT_PHASES),
+                        "pending_action": None,
+                        "evidence_digests": receipt["stage_digests"],
+                    }))
+                    return 0
+
+            with (
+                patch.object(preview, "ROOT", root),
+                patch.object(
+                    preview, "settings",
+                    return_value={"vm_root": "/vm", "profile": "test"},
+                ),
+                patch.object(preview, "vm_path", side_effect=lambda value: "/vm/" + value),
+                patch.object(preview, "vm_private_write", side_effect=vm_write),
+                patch.object(preview, "vm_command", side_effect=command),
+                patch.object(
+                    preview, "operation_lock",
+                    return_value=preview.contextlib.nullcontext(),
+                ),
+                patch.object(
+                    preview, "config_lock",
+                    return_value=preview.contextlib.nullcontext(),
+                ),
+                patch.object(
+                    preview, "_incident_tool_files",
+                    return_value=(source, "d" * 40, controller),
+                ),
+                patch.object(preview, "_validate_incident_worktree_source"),
+                patch.object(preview, "_validate_partial_review_source"),
+                patch.object(
+                    preview, "_post_finalize_reboot_authority",
+                    return_value={"frozen": True},
+                ),
+                patch.object(preview.subprocess, "check_output", return_value="e" * 40 + "\n"),
+                patch.object(preview.subprocess, "Popen", Process),
+                patch.object(
+                    carry_forward,
+                    "validate_group2_post_finalize_reboot_request",
+                    return_value=validated,
+                ),
+                patch.object(carry_forward, "_validate_group2_partial_tool"),
+                patch.object(
+                    carry_forward,
+                    "validate_group2_post_finalize_reboot_result",
+                    return_value=receipt,
+                ),
+                patch.object(
+                    carry_forward,
+                    "validate_group2_post_finalize_reboot_preservation",
+                    return_value=snapshot,
+                ),
+            ):
+                output = preview.recover_group2_post_finalize_reboot(
+                    request_path, approval_path
+                )
+                with self.assertRaisesRegex(ValueError, "already used"):
+                    preview.recover_group2_post_finalize_reboot(
+                        request_path, approval_path
+                    )
+            self.assertEqual(output["receipt_digest"], receipt["receipt_digest"])
+            host_result = root / prefix
+            self.assertTrue((host_result / "host-readback.json").is_file())
+            self.assertEqual(
+                json.loads((host_result / "phase.json").read_text())["phase"],
+                "host_verified",
+            )
+            self.assertEqual((root / "state.json").read_bytes(), before["state.json"])
+            self.assertEqual((root / "config.json").read_bytes(), before["config.json"])
+            self.assertEqual(
+                (vm_root / "transaction.json").read_bytes(),
+                before["transaction.json"],
+            )
+            self.assertEqual((vm_root / "current-sha").read_bytes(), before["current-sha"])
+            flattened = " ".join(" ".join(item) for item in commands)
+            for forbidden in (" compose ", " up ", " restart ", "pg_restore", "alembic"):
+                self.assertNotIn(forbidden, " " + flattened + " ")
 
     def test_partial_finalize_host_orchestration_commits_only_after_vm_cas(self):
         def run_case(valid_transaction):
@@ -1691,6 +2083,92 @@ class Group2ControllerGateTests(unittest.TestCase):
             self.assertEqual(
                 preview.validate_group2_artifacts(scope, scope_path), directory
             )
+        original_preservation_digest = scope["preservation_reference"][
+            "review_report_sha256"
+        ]
+        original_preservation_path = (
+            directory / "preservation" / original_preservation_digest
+        )
+        original_preservation_raw = original_preservation_path.read_bytes()
+        original_preservation_path.unlink()
+        reboot_chain = {
+            "schema": "group2-post-finalize-reboot-chain-v1",
+            "source_artifacts": {
+                "parent-finalize.json": {
+                    "content_b64": base64.b64encode(json.dumps({
+                        "schema": "group2-partial-finalize-chain-v1"
+                    }).encode()).decode()
+                }
+            },
+        }
+        reboot_review = {
+            **preservation_value,
+            "source_kind": "group2_post_finalize_reboot_v1",
+        }
+        reboot_report = (
+            "```json\n" + json.dumps(reboot_review) + "\n```\n"
+            "```json\n" + json.dumps(reboot_chain) + "\n```\n"
+        ).encode()
+        reboot_digest = hashlib.sha256(reboot_report).hexdigest()
+        reboot_path = directory / "preservation" / reboot_digest
+        reboot_path.write_bytes(reboot_report)
+        reboot_path.chmod(0o600)
+        scope["preservation_reference"]["review_report_sha256"] = reboot_digest
+        with (
+            patch.object(preview, "GROUP2_APPROVAL_HASHES", approval_hashes),
+            patch.object(
+                preview, "GROUP2_HISTORICAL_REVIEWS",
+                {historical_name: historical_digest},
+            ),
+            patch.object(
+                preview, "git",
+                return_value=f"100644 blob {blob_oid}\tbackend/example.py",
+            ),
+            patch.object(preview, "git_bytes", return_value=reviewed_bytes),
+            patch.object(
+                carry_forward,
+                "validate_group2_post_finalize_reboot_preservation",
+                return_value=scope["preservation_reference"]["snapshot"],
+            ),
+            patch.object(
+                preview, "_post_finalize_reboot_scope_binding", return_value=True
+            ),
+        ):
+            self.assertEqual(
+                preview.validate_group2_artifacts(scope, scope_path), directory
+            )
+        reboot_path.unlink()
+        ambiguous = reboot_report + (
+            "```json\n"
+            + json.dumps({"schema": "group2-partial-finalize-chain-v1"})
+            + "\n```\n"
+        ).encode()
+        ambiguous_digest = hashlib.sha256(ambiguous).hexdigest()
+        ambiguous_path = directory / "preservation" / ambiguous_digest
+        ambiguous_path.write_bytes(ambiguous)
+        ambiguous_path.chmod(0o600)
+        scope["preservation_reference"]["review_report_sha256"] = ambiguous_digest
+        with (
+            patch.object(preview, "GROUP2_APPROVAL_HASHES", approval_hashes),
+            patch.object(
+                preview, "GROUP2_HISTORICAL_REVIEWS",
+                {historical_name: historical_digest},
+            ),
+            patch.object(
+                preview, "git",
+                return_value=f"100644 blob {blob_oid}\tbackend/example.py",
+            ),
+            patch.object(preview, "git_bytes", return_value=reviewed_bytes),
+            self.assertRaisesRegex(ValueError, "missing or ambiguous"),
+        ):
+            preview.validate_group2_artifacts(scope, scope_path)
+        ambiguous_path.unlink()
+        original_preservation_path.write_bytes(original_preservation_raw)
+        original_preservation_path.chmod(0o600)
+        scope["preservation_reference"][
+            "review_report_sha256"
+        ] = original_preservation_digest
+        self.assertTrue(original_preservation_path.is_file())
         original_ci_digest = scope["ci"]["evidence_sha256"]
         original_ci_path = directory / "ci" / original_ci_digest
         original_ci = original_ci_path.read_bytes()

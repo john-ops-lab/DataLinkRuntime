@@ -172,6 +172,24 @@ DLR_PREVIEW_HOME=<PRIVATE_CONTROLLER_ROOT> \
 
 入口为 `finalize-group2-partial --finalize-request <REQUEST> --finalize-approval <APPROVAL>`，只接受本事故的新 `finalize_id` 和六件闭合证据。新的 `group2-partial-finalize-chain-v1` 必须经完整重算，保全报告使用 `group2_partial_finalize_v1` 来源；不能与旧事故链混用。同一事故已存在收尾记录时拒绝重放或另建一次。
 
+### 受限收尾后的单次 VM 重启承接
+
+受限收尾已经闭合后，如果绑定的 VM 发生重启，只能使用一次性的 `recover-group2-post-finalize-reboot` 入口恢复原旧软件。这个入口不重做 D11/D12，不安装候选，不执行迁移、还原、业务探针或普通 recover，也不修改正式 `state.json`、`current-sha`、`transaction.json`、`config.json`、`attention.json`、父收尾原件、旧 receipt 或 consumed 记录。
+
+```sh
+python3 tools/local-preview/preview.py recover-group2-post-finalize-reboot \
+  --reboot-request <PRIVATE_REBOOT_REQUEST_JSON> \
+  --reboot-approval <PRIVATE_REBOOT_APPROVAL_JSON>
+```
+
+请求同名 `.evidence` 目录只接受五份固定私有输入：`parent-finalize.json`、`stopped-platform.json`、`prior-success.json`、`source-review.json` 和 `scope-approval.json`。执行批准必须是同目录的 `USER-APPROVAL.json`，并由 `USER-APPROVAL.txt` 绑定请求摘要、工具 SHA、当前 boot 和固定动作。仅允许实施、审查和 CI 的 scope 批准不能代替这份执行批准。
+
+控制器先在宿主 operation→config 锁内重新核对干净提交、完整 source diff、独立 review、真实 CI 原件、六个 controller 字节、父收尾链、旧成功控制面字节和当前 boot。随后按事故、收尾和 boot 派生唯一目录并排他占位，只暂存同提交的 `deploy.sh` 与 `carry_forward.py`。任何已有目录、失败尝试或换请求 ID 的重入都拒绝；本入口没有 force、retry 或 resume。
+
+VM 分阶段保存 stopped、keeper-ready、database-ready、applications-started 和 verified 原件，并把 keeper 与五次容器启动各自先落盘的 intent/result 原始字节绑定进最终 receipt。它先按原参数建立唯一 keeper，仅启动原 PostgreSQL/RabbitMQ 容器并完成完整数据库、文件、日志、队列和不可消费责任门禁；全部通过后才单次启动原 Control/Worker/Web 容器。`account-web` 始终保持停止。启动只使用原容器 ID，不执行 `compose up`、recreate 或 restart；同 ID、镜像、静态 profile、零 RestartCount、新 StartedAt、唯一 preflight nonce、当前 boot 的 kernel/cgroup/namespace 以及只允许两处 mtime 推进都必须成立。
+
+VM 先落盘 result、receipt、chain 和 preservation snapshot；宿主读取全部原字节，用相同纯校验器重新计算，再写入 host readback。任一动作、健康等待、采集或落盘失败都保留实际 phase 和已取得 raw，不自动重试、回滚或补造证据。成功只建立 `group2_post_finalize_reboot_v1` 的独立保全来源；后继仍需独立 reviewer、新 exact scope、官方 install/plan/once 及完整部署验收。代码、测试、审查或 CI 通过都不构成生产启动批准。
+
 ## 安装或更新控制器
 
 当前安装器用于接管私有配置指定的既有环境，要求 macOS、Python 3.11+、`gh` 登录、Colima、已有 LaunchAgent、`source.git` 源码缓存、`config.json`、`state.json`、`preview.env`，以及 VM 内已准备好的 sandbox 脚本。它不负责首次创建 VM 或生成凭据，也不改变默认 Docker context。若 carry-forward plan 正在占用配置，安装器会先等待它结束再暂停更新；暂停后若 controller operation 仍忙，安装器保持 paused 并退出。取得操作与配置边界后，它才卸载 watcher；随后必须取得 watcher singleton，才会备份、替换文件或传输 VM 脚本。

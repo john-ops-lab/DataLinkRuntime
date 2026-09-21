@@ -21,6 +21,7 @@ import json
 import math
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -31,6 +32,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+from urllib.parse import quote, unquote, urlsplit
 
 FORMAT_VERSION = 2
 AUDITED_FORMAT_VERSION = 3
@@ -173,6 +175,155 @@ GROUP2_PARTIAL_FINALIZE_ACTIONS = [
     "read-current-preservation",
     "finalize-control-plane",
 ]
+GROUP2_POST_FINALIZE_REBOOT_FILES = {
+    "parent-finalize.json",
+    "stopped-platform.json",
+    "prior-success.json",
+    "source-review.json",
+    "scope-approval.json",
+}
+GROUP2_POST_FINALIZE_REBOOT_ACTIONS = [
+    "stage-isolated-reboot-tool",
+    "prepare-bound-sandbox-keeper",
+    "start-bound-postgres-rabbitmq",
+    "start-bound-control-worker-web",
+    "persist-post-finalize-reboot-source",
+]
+GROUP2_POST_FINALIZE_REBOOT_PHASES = (
+    "stopped",
+    "keeper_ready",
+    "database_ready",
+    "applications_started",
+    "verified",
+    "host_verified",
+)
+GROUP2_POST_FINALIZE_REBOOT_LOOPS = {
+    "demo_bootstrap",
+    "scheduler",
+    "retention",
+    "artifact_gc",
+    "orphan_audit",
+    "admission",
+    "attempt",
+    "infrastructure_dlq",
+    "topology",
+    "outbox",
+    "worker_startup",
+}
+GROUP2_POST_FINALIZE_REBOOT_SOURCES = {
+    "demo_bootstrap": {"backend/src/dlr/control/app.py": "4151e3b52931223cd3a85be51ee19eb4293e6cc2956c9057058807f4f1d49233"},
+    "scheduler": {"backend/src/dlr/control/app.py": "4151e3b52931223cd3a85be51ee19eb4293e6cc2956c9057058807f4f1d49233"},
+    "retention": {
+        "backend/src/dlr/control/services/retention.py": "d05f239b6bb61dece95fecbbda895621847fd65198ff9bae0f6e071120a1a1a7",
+        "backend/src/dlr/control/services/idempotency.py": "4182eca3239a8f8b1d22f7edd1c42a420de73422e488cf007488f7f3f730bf3b",
+    },
+    "artifact_gc": {
+        "backend/src/dlr/control/services/managed_input_gc.py": "886990b07dcfce78636cd24a64e3cbf7481a3f246f6323ad27e859cace99eabb",
+        "backend/src/dlr/control/services/managed_input_upload.py": "ddbda206b69283754ed35ecf080530e00227d70b341b9ed6b32077969bc1f52b",
+    },
+    "orphan_audit": {
+        "backend/src/dlr/control/services/managed_input_gc.py": "886990b07dcfce78636cd24a64e3cbf7481a3f246f6323ad27e859cace99eabb",
+        "backend/src/dlr/control/services/artifact_store.py": "06e65580af705e0516a5427be8f91dcd76abbfa0dd9b0a58c08b62b41a793562",
+    },
+    "admission": {"backend/src/dlr/control/services/admission.py": "4af0a4caeece03cc1503d96836bb10b47ab528a72771f1641ea5acfc3eaf541b"},
+    "attempt": {"backend/src/dlr/control/services/attempt.py": "15fe7fa972b606c496a63360dc70240aa5399394bfe0e1e96340f959247c6269"},
+    "infrastructure_dlq": {"backend/src/dlr/control/services/rabbitmq.py": "91e2182448d6908bd4eb21b9f7acf48a55ebb55670a3f6dbba107b1b088b0b3e"},
+    "topology": {"backend/src/dlr/control/services/rabbitmq.py": "91e2182448d6908bd4eb21b9f7acf48a55ebb55670a3f6dbba107b1b088b0b3e"},
+    "outbox": {"backend/src/dlr/control/services/outbox.py": "ec1ad2df985c556d9c438d9662f856609fd55b71919d4ac12d6f3f79fac9018e"},
+    "worker_startup": {
+        "backend/src/dlr/worker/agent.py": "bd47921f231c8057f7ec06222c0d0e83e2878352ba35a9faea8cae50fad4283d",
+        "backend/src/dlr/worker/workspace.py": "954dc3fb1207f78698a891217b05a3ff268c43f8d6ce7590eca176c032bb0289",
+    },
+    "configuration": {
+        "backend/src/dlr/common/config.py": "b88ea4297e634b98846949da2014292f5c7e0399761bdffe0309b4fad1090d4e",
+        "backend/src/dlr/worker/consumer.py": "1afba22fdc2704389acf77b7330e0ac3f10a1751c22f7bd12abe218118a50315",
+        "backend/src/dlr/control/services/dispatch.py": "cd7c827258a7c6f87bd4851df843d01ff16a2f3428cb0ebb04f0525128e79ba7",
+        "backend/src/dlr/control/services/infrastructure_dlq.py": "cb39ef8c7df3d316601c0aa4e968cc9a7bed3ab48455437e5be912f1eca256e5",
+    },
+}
+GROUP2_POST_FINALIZE_REBOOT_PREPARE_SHA256 = (
+    "bc0ae4442c9ecfa37e7aef2d655da223f648d5658a8fed96fb7ff599d7aabe7c"
+)
+GROUP2_POST_FINALIZE_REBOOT_HOST_CONTROL_FILES = {
+    "state.json", "config.json", "attention.json", "preview.env",
+    "installation.json", "prepare-sandbox-host.sh",
+}
+GROUP2_POST_FINALIZE_REBOOT_VM_CONTROL_FILES = {
+    "current-sha", "transaction.json", "deployment.json", "preview.env",
+    "build.env", "compose.local.json", "prepare-sandbox-host.sh",
+}
+GROUP2_POST_FINALIZE_REBOOT_HOST_FINALIZE_FILES = {
+    "USER-APPROVAL.txt", "abandonment.json", "approval.json", "chain.json",
+    "host-authority.json", "phase.json", "preservation-snapshot.json",
+    "receipt.json", "request.json", "result.json",
+}
+GROUP2_POST_FINALIZE_REBOOT_VM_FINALIZE_FILES = {
+    "USER-APPROVAL.txt", "approval.json", "current.json", "host-authority.json",
+    "host-validated.json", "phase.json", "receipt.json", "request.json",
+    "result.json",
+}
+GROUP2_POST_FINALIZE_REBOOT_VM_INSTALLED = {
+    "deploy.sh", "carry_forward.py", "verify.py", "assets.py",
+}
+GROUP2_REBOOT_ADMISSION_TABLES = {
+    "users", "credentials", "adapters", "adapter_input_configs",
+    "adapter_schedules", "workers", "executions", "execution_attempts",
+    "adapter_execution_slots", "adapter_execution_admission",
+    "global_execution_admission", "execution_outbox",
+    "execution_idempotency_records", "execution_artifact_holds",
+    "execution_input_artifact_leases", "managed_input_artifacts",
+    "adapter_input_artifact_bindings", "managed_input_upload_reservations",
+    "artifact_deletion_jobs", "managed_input_capacity", "managed_input_settings",
+    "worker_cleanup_requests", "runtime_reconciliation_cursors",
+}
+GROUP2_REBOOT_ADMISSION_COLUMNS = {
+    "users": {"id", "username"}, "credentials": {"id", "name"},
+    "adapters": {"id", "adapter_type", "archived_at"},
+    "adapter_input_configs": {"adapter_id", "source_type", "revision"},
+    "adapter_schedules": {"id", "adapter_id", "enabled", "next_run_at"},
+    "workers": {"id", "name"},
+    "executions": {"id", "adapter_id", "trigger", "status", "dispatch_backend",
+        "logical_input_bytes", "admission_released_at", "created_at",
+        "dispatch_generation", "next_attempt_at", "target_worker_id_snapshot"},
+    "execution_attempts": {"id", "execution_id", "adapter_id", "worker_id", "status", "lease_expires_at"},
+    "adapter_execution_slots": {"adapter_id", "slot_no", "active_attempt_id", "lease_expires_at"},
+    "adapter_execution_admission": {"adapter_id", "outstanding_count", "outstanding_bytes"},
+    "global_execution_admission": {"singleton_key", "outstanding_count", "outstanding_bytes"},
+    "execution_outbox": {"id", "execution_id", "dispatch_generation", "message_id", "routing_key", "status", "available_at", "lease_expires_at", "published_at"},
+    "execution_idempotency_records": {"id", "execution_id", "expires_at"},
+    "execution_artifact_holds": {"id", "execution_id", "artifact_id", "expires_at", "purged_at"},
+    "execution_input_artifact_leases": {"execution_id", "artifact_id"},
+    "managed_input_artifacts": {"id", "adapter_id", "upload_session_id", "upload_reservation_id", "storage_key", "status", "size_bytes", "sha256", "expires_at", "delete_attempts", "delete_lease_until"},
+    "adapter_input_artifact_bindings": {"adapter_id", "artifact_id", "ordinal", "input_config_revision"},
+    "managed_input_upload_reservations": {"id", "adapter_id", "upload_session_id", "reserved_bytes", "status", "expires_at"},
+    "artifact_deletion_jobs": {"id", "storage_key", "status", "delete_attempts", "delete_lease_until"},
+    "managed_input_capacity": {"id", "actual_bytes", "reserved_bytes"},
+    "worker_cleanup_requests": {"id", "worker_id", "adapter_id", "status", "attempts", "created_at"},
+    "runtime_reconciliation_cursors": {"name", "after_id", "upper_id"},
+}
+GROUP2_REBOOT_ADMISSION_PRIMARY_KEYS = {
+    **{name: ("id",) for name in GROUP2_REBOOT_ADMISSION_COLUMNS
+       if name not in {"adapter_input_configs", "adapter_execution_slots",
+                       "adapter_execution_admission", "global_execution_admission",
+                       "execution_input_artifact_leases", "adapter_input_artifact_bindings",
+                       "runtime_reconciliation_cursors"}},
+    "adapter_input_configs": ("adapter_id",),
+    "adapter_execution_slots": ("adapter_id", "slot_no"),
+    "adapter_execution_admission": ("adapter_id",),
+    "global_execution_admission": ("singleton_key",),
+    "execution_input_artifact_leases": ("execution_id", "artifact_id"),
+    "adapter_input_artifact_bindings": ("adapter_id", "artifact_id"),
+    "runtime_reconciliation_cursors": ("name",),
+    "managed_input_settings": ("id",),
+}
+GROUP2_REBOOT_MUTATION_GUARD_TABLES = (
+    "managed_input_upload_reservations", "artifact_deletion_jobs",
+    "managed_input_capacity", "managed_input_settings",
+)
+GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID = "371ecfb7f47e4309a6eab7dd0e4e6bef"
+BOOT_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
 GROUP2_PARTIAL_FIXED_HASHES = {
     "official_attempt": "b19732783fb607a2f49143eb109ab5ef552327f97a7113a6fddea5428b372d5c",
     "phase": "00ca97f2dbdb192c6d2b5567d77785c57a017c806f460679ce9f3f18d583b17c",
@@ -3738,6 +3889,7 @@ def inspect_database(
     to_revision: str | None = None,
     schema_phase: str | None = None,
     mode: str | None = None,
+    group2_reboot_admission: bool = False,
 ) -> dict[str, Any]:
     if mode not in {None, AUDITED_MODE, GROUP2_MODE}:
         raise CarryForwardError("manifest_mode_invalid")
@@ -3752,6 +3904,10 @@ def inspect_database(
         raise CarryForwardError("database_url_missing")
     engine = create_engine(url)
     tables: dict[str, dict[str, Any]] = {}
+    reboot_admission_raw: dict[str, list[dict[str, Any]]] | None = None
+    reboot_database_rows: dict[str, dict[str, Any]] | None = None
+    reboot_mutation_guard_rows: dict[str, dict[str, Any]] | None = None
+    reboot_db_clock: Any = None
     with engine.connect() as connection:
         connection.execute(
             text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -3881,6 +4037,48 @@ def inspect_database(
                 "primary_key": primary_key,
                 "rows": [dict(row) for row in values],
             }
+        if group2_reboot_admission:
+            if not GROUP2_REBOOT_ADMISSION_TABLES.issubset(existing):
+                raise CarryForwardError("group2_reboot_admission_schema_invalid")
+            reboot_admission_raw = {}
+            for name in sorted(GROUP2_REBOOT_ADMISSION_TABLES):
+                actual_columns = [column["name"] for column in inspector.get_columns(name)]
+                selected = (
+                    actual_columns if name == "managed_input_settings"
+                    else sorted(GROUP2_REBOOT_ADMISSION_COLUMNS[name])
+                )
+                if not set(selected).issubset(actual_columns):
+                    raise CarryForwardError("group2_reboot_admission_schema_invalid")
+                primary_key = GROUP2_REBOOT_ADMISSION_PRIMARY_KEYS[name]
+                quoted = ",".join(f'"{column}"' for column in selected)
+                order = ",".join(f'"{column}"' for column in primary_key)
+                rows = connection.execute(
+                    text(f'SELECT {quoted} FROM "{name}" ORDER BY {order}')
+                ).mappings()
+                reboot_admission_raw[name] = [dict(row) for row in rows]
+            reboot_database_rows = {
+                name: tables[name] for name in tables
+            }
+            reboot_mutation_guard_rows = {}
+            for name in GROUP2_REBOOT_MUTATION_GUARD_TABLES:
+                actual_columns = [column["name"] for column in inspector.get_columns(name)]
+                primary_key = list(
+                    (inspector.get_pk_constraint(name) or {}).get("constrained_columns") or []
+                )
+                if not primary_key:
+                    raise CarryForwardError("group2_reboot_admission_schema_invalid")
+                quoted = ",".join(f'"{column}"' for column in actual_columns)
+                order = ",".join(f'"{column}"' for column in primary_key)
+                rows = connection.execute(
+                    text(f'SELECT {quoted} FROM "{name}" ORDER BY {order}')
+                ).mappings()
+                reboot_mutation_guard_rows[name] = {
+                    "columns": actual_columns, "primary_key": primary_key,
+                    "rows": [dict(row) for row in rows],
+                }
+            reboot_db_clock = connection.execute(
+                text("SELECT clock_timestamp()")
+            ).scalar_one()
     projection = project_rows(tables, required=required_tables)
     responsibilities = derive_responsibilities(tables, selection, mode=mode)
     terminal_evidence = (
@@ -3967,6 +4165,11 @@ def inspect_database(
             asset_projection=project_rows(tables, required=ASSET_TABLES),
             schema_shape=schema_shape,
         )
+    if group2_reboot_admission:
+        result["_reboot_admission_raw"] = reboot_admission_raw
+        result["_reboot_database_rows"] = reboot_database_rows
+        result["_reboot_mutation_guard_rows"] = reboot_mutation_guard_rows
+        result["_reboot_db_clock"] = reboot_db_clock
     return result
 
 
@@ -4791,6 +4994,7 @@ def _material_roots(values: list[str]) -> dict[str, Path]:
 
 
 def _command_capture_state(args: argparse.Namespace) -> dict[str, Any]:
+    admission_vm_lower_ns = time.time_ns()
     baseline = read_private(args.baseline) if args.baseline else None
     if baseline and "manifest_digest" in baseline:
         baseline = validate_manifest(baseline)
@@ -4818,7 +5022,13 @@ def _command_capture_state(args: argparse.Namespace) -> dict[str, Any]:
         to_revision=baseline.get("to_schema") if baseline else None,
         schema_phase=args.schema_phase,
         mode=mode,
+        group2_reboot_admission=bool(getattr(args, "admission_output", None)),
     )
+    admission_raw = db.pop("_reboot_admission_raw", None)
+    admission_database_rows = db.pop("_reboot_database_rows", None)
+    admission_mutation_guard_rows = db.pop("_reboot_mutation_guard_rows", None)
+    admission_clock = db.pop("_reboot_db_clock", None)
+    admission_vm_upper_ns = time.time_ns()
     credential_hashes = db.pop("_credential_hashes")
     attempt_statuses = db.pop("_attempt_statuses")
     files = capture_files(
@@ -4841,6 +5051,16 @@ def _command_capture_state(args: argparse.Namespace) -> dict[str, Any]:
             raise CarryForwardError("file_evidence_changed")
     write_private(args.db_output, db)
     write_private(args.files_output, files)
+    if getattr(args, "admission_output", None):
+        write_private(
+            args.admission_output,
+            {"raw_tables": admission_raw, "database_rows": admission_database_rows,
+             "mutation_guard_rows": admission_mutation_guard_rows,
+             "db_clock": admission_clock,
+             "vm_lower_ns": admission_vm_lower_ns,
+             "vm_upper_ns": admission_vm_upper_ns,
+             "database_digest": digest(db), "files_digest": digest(files)},
+        )
     return {
         "code": "state_ok",
         "tables": len(db["projection"]),
@@ -7026,6 +7246,8 @@ def _worker_startup_proof(
     profile: dict[str, Any],
     expected_image: str,
     expected_profile: dict[str, Any],
+    *,
+    require_same_container: bool = False,
 ) -> dict[str, Any]:
     """Validate the Worker-specific startup facts shared by deploy and incident restore."""
     logs_before = value["logs_before"]
@@ -7067,7 +7289,11 @@ def _worker_startup_proof(
         or not isinstance(after.get("image_id"), str)
         or after.get("restart_count") != 0
         or not isinstance(before, dict)
-        or before.get("container_id") == after.get("container_id")
+        or (
+            before.get("container_id") != after.get("container_id")
+            if require_same_container
+            else before.get("container_id") == after.get("container_id")
+        )
         or after.get("image_id") != expected_image
         or after.get("command") != profile["old_containers"]["worker"].get("command")
         or after.get("status") != "running"
@@ -7097,6 +7323,46 @@ def _worker_startup_proof(
         "log_evidence_digest": value["logs_after"]["evidence_digest"],
     }
     return _validate_startup_proof(proof)
+
+
+def _same_container_worker_startup_proof(
+    value: dict[str, Any],
+    profile: dict[str, Any],
+    expected_image: str,
+    expected_profile: dict[str, Any],
+    prior_nonces: Any,
+) -> dict[str, Any]:
+    """Validate this reboot's stopped-to-running transition without weakening old callers."""
+    before = value.get("container_before")
+    after = value.get("container_after")
+    if (
+        not isinstance(before, dict)
+        or not isinstance(after, dict)
+        or before.get("status") == "running"
+        or before.get("health") not in {None, "unhealthy"}
+        or before.get("started_at") == after.get("started_at")
+        or not isinstance(prior_nonces, list)
+        or len(prior_nonces) != len(set(prior_nonces))
+        or any(
+            not isinstance(item, str)
+            or re.fullmatch(r"[0-9a-f]{16,64}", item) is None
+            for item in prior_nonces
+        )
+    ):
+        raise CarryForwardError("group2_reboot_startup_invalid")
+    try:
+        proof = _worker_startup_proof(
+            value,
+            profile,
+            expected_image,
+            expected_profile,
+            require_same_container=True,
+        )
+    except CarryForwardError as error:
+        raise CarryForwardError("group2_reboot_startup_invalid") from error
+    if proof["nonce"] in prior_nonces:
+        raise CarryForwardError("group2_reboot_startup_invalid")
+    return proof
 
 
 _ACCESS = re.compile(
@@ -9063,6 +9329,2086 @@ def validate_group2_partial_finalize_preservation(
     )
 
 
+def _post_finalize_reboot_parent(value: Any, code: str) -> dict[str, Any]:
+    value = _closed_object(
+        value, {"chain", "original_reference", "snapshot", "review"}, code
+    )
+    snapshot = validate_group2_partial_finalize_preservation(
+        value["chain"], value["original_reference"]
+    )
+    review = _closed_object(
+        value["review"], {"schema", "status", "snapshot_digest", "lineage"}, code
+    )
+    if (
+        value["chain"].get("request", {}).get("incident_id")
+        != GROUP2_PARTIAL_INCIDENT_ID
+        or value["chain"].get("request", {}).get("finalize_id")
+        != GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID
+        or value["snapshot"] != snapshot
+        or review["schema"] != "group2-preservation-review-v1"
+        or review["status"] != "APPROVED"
+        or review["snapshot_digest"] != digest(snapshot)
+        or review["lineage"] != snapshot["lineage"]
+    ):
+        raise CarryForwardError(code)
+    return {"snapshot": snapshot, "review": review}
+
+
+def group2_post_finalize_reboot_expected_authority_paths(
+    prior_success: Any,
+) -> dict[str, list[str]]:
+    """Derive the closed host/VM roster from fixed controls and the parent success."""
+    code = "group2_reboot_prior_changed"
+    prior_success = _closed_object(prior_success, {"schema", "host", "vm"}, code)
+    if (
+        prior_success["schema"] != "group2-prior-success-evidence-v1"
+        or not isinstance(prior_success["host"], dict)
+        or not isinstance(prior_success["vm"], dict)
+    ):
+        raise CarryForwardError(code)
+    prefix = (
+        f"incidents/{GROUP2_PARTIAL_INCIDENT_ID}/finalize/"
+        f"{GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID}/"
+    )
+    return {
+        "host": sorted(
+            GROUP2_POST_FINALIZE_REBOOT_HOST_CONTROL_FILES
+            | set(prior_success["host"])
+            | {prefix + name for name in GROUP2_POST_FINALIZE_REBOOT_HOST_FINALIZE_FILES}
+        ),
+        "vm": sorted(
+            GROUP2_POST_FINALIZE_REBOOT_VM_CONTROL_FILES
+            | set(prior_success["vm"])
+            | {prefix + name for name in GROUP2_POST_FINALIZE_REBOOT_VM_FINALIZE_FILES}
+        ),
+    }
+
+
+def _group2_reboot_file_descriptor(value: Any, code: str) -> dict[str, Any]:
+    if value == {"exists": False}:
+        return value
+    value = _closed_object(
+        value, {"exists", "kind", "sha256", "mode", "uid", "gid", "symlink"}, code
+    )
+    if (
+        value["exists"] is not True
+        or value["kind"] != "regular"
+        or value["symlink"] is not False
+        or not isinstance(value["mode"], int)
+        or isinstance(value["mode"], bool)
+        or value["mode"] & ~0o7777
+        or any(not isinstance(value[key], int) or isinstance(value[key], bool)
+               for key in ("uid", "gid"))
+    ):
+        raise CarryForwardError(code)
+    _digest_text(value["sha256"], code)
+    return value
+
+
+def _group2_reboot_path_descriptor(path: Path) -> dict[str, Any]:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"exists": False}
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise CarryForwardError("group2_reboot_authority_changed")
+    output = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            output.update(chunk)
+    return {
+        "exists": True, "kind": "regular", "sha256": output.hexdigest(),
+        "mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid, "gid": info.st_gid,
+        "symlink": False,
+    }
+
+
+def _verify_group2_reboot_vm_authority(
+    root: Path, validated: dict[str, Any]
+) -> None:
+    prior = validated["request"]["prior"]
+    actual_files = {
+        relative: _group2_reboot_path_descriptor(root / relative)
+        for relative in validated["authority_paths"]["vm"]
+    }
+    actual_installed = {
+        name: _group2_reboot_path_descriptor(root / name)
+        for name in GROUP2_POST_FINALIZE_REBOOT_VM_INSTALLED
+    }
+    if (
+        actual_files != prior["vm_files"]
+        or actual_installed != prior["installed"]["vm"]
+        or actual_files["prepare-sandbox-host.sh"]
+        != validated["platform"]["prepare_script"]["vm"]
+    ):
+        raise CarryForwardError("group2_reboot_authority_changed")
+
+
+def validate_group2_post_finalize_reboot_request(
+    request: Any, approval: Any, user_record: bytes, artifacts: Any
+) -> dict[str, Any]:
+    """Validate the one-boot closed request and independent execution approval."""
+    code = "group2_reboot_request_invalid"
+    request = _closed_object(
+        request,
+        {"schema", "incident_id", "finalize_id", "boot_id", "parent", "prior",
+         "tool", "window", "evidence_files", "request_digest"},
+        code,
+    )
+    if (
+        request["schema"] != "group2-post-finalize-reboot-request-v1"
+        or request["incident_id"] != GROUP2_PARTIAL_INCIDENT_ID
+        or request["finalize_id"] != GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID
+        or BOOT_ID.fullmatch(str(request["boot_id"])) is None
+        or request["request_digest"]
+        != digest({key: value for key, value in request.items() if key != "request_digest"})
+    ):
+        raise CarryForwardError(code)
+    parent = _closed_object(
+        request["parent"],
+        {"request_sha256", "receipt_sha256", "chain_sha256", "snapshot_sha256",
+         "review_sha256"},
+        code,
+    )
+    for value in parent.values():
+        _digest_text(value, code)
+    prior = _closed_object(
+        request["prior"],
+        {"sha", "schema", "host_files", "vm_files", "installed", "containers",
+         "images", "storage", "parameters"},
+        code,
+    )
+    if prior["sha"] != GROUP2_FROM_SHA or prior["schema"] != "0040_issue152_dispositions":
+        raise CarryForwardError(code)
+    for name in ("host_files", "vm_files", "installed", "containers", "images", "parameters"):
+        if not isinstance(prior[name], dict):
+            raise CarryForwardError(code)
+    if not isinstance(prior["storage"], list):
+        raise CarryForwardError(code)
+    if set(prior["containers"]) != {
+        "postgres", "rabbitmq", "control", "worker", "web", "account-web"
+    }:
+        raise CarryForwardError(code)
+    for container in prior["containers"].values():
+        if (
+            not isinstance(container, dict)
+            or not isinstance(container.get("container_id"), str)
+            or not container["container_id"]
+            or not isinstance(container.get("image_id"), str)
+        ):
+            raise CarryForwardError(code)
+        _digest_text(container.get("inspect_static_digest"), code)
+        _digest_text(container.get("stopped_state_digest"), code)
+    tool = _closed_object(
+        request["tool"],
+        {"sha", "tree", "controller_files", "source_scope_digest",
+         "review_report_sha256", "ci_evidence_sha256"},
+        code,
+    )
+    _sha_text(tool["sha"], code)
+    _sha_text(tool["tree"], code)
+    if not isinstance(tool["controller_files"], dict) or set(
+        tool["controller_files"]
+    ) != GROUP2_CONTROLLER_FILES:
+        raise CarryForwardError(code)
+    for value in (
+        *tool["controller_files"].values(), tool["source_scope_digest"],
+        tool["review_report_sha256"], tool["ci_evidence_sha256"],
+    ):
+        _digest_text(value, code)
+    window = _closed_object(
+        request["window"],
+        {"not_before_ns", "deadline_ns", "successor_deadline_ns"}, code,
+    )
+    if (
+        not isinstance(window["not_before_ns"], int)
+        or isinstance(window["not_before_ns"], bool)
+        or not isinstance(window["deadline_ns"], int)
+        or isinstance(window["deadline_ns"], bool)
+        or window["deadline_ns"] <= window["not_before_ns"]
+        or not isinstance(window["successor_deadline_ns"], int)
+        or isinstance(window["successor_deadline_ns"], bool)
+        or window["successor_deadline_ns"] <= window["deadline_ns"]
+    ):
+        raise CarryForwardError(code)
+    evidence_files = _closed_object(
+        request["evidence_files"], GROUP2_POST_FINALIZE_REBOOT_FILES, code
+    )
+    if not isinstance(artifacts, dict) or set(artifacts) != GROUP2_POST_FINALIZE_REBOOT_FILES:
+        raise CarryForwardError(code)
+    parsed, raw_hashes = {}, {}
+    for name, value in artifacts.items():
+        parsed[name], raw_hashes[name] = _reconcile_artifact_value(value)
+        _digest_text(evidence_files[name], code)
+        if evidence_files[name] != raw_hashes[name]:
+            raise CarryForwardError("group2_reboot_artifact_digest_mismatch")
+    parent_value = _post_finalize_reboot_parent(parsed["parent-finalize.json"], code)
+    parent_chain = parsed["parent-finalize.json"]["chain"]
+    if (
+        parent["request_sha256"] != digest(parent_chain.get("request"))
+        or parent["receipt_sha256"]
+        != digest(parent_chain.get("result", {}).get("receipt"))
+        or parent["chain_sha256"] != digest(parent_chain)
+        or parent["snapshot_sha256"] != digest(parent_value["snapshot"])
+        or parent["review_sha256"] != digest(parent_value["review"])
+    ):
+        raise CarryForwardError("group2_reboot_parent_changed")
+    prior_success = _closed_object(
+        parsed["prior-success.json"], {"schema", "host", "vm"}, code
+    )
+    authority_paths = group2_post_finalize_reboot_expected_authority_paths(
+        prior_success
+    )
+    platform = _closed_object(
+        parsed["stopped-platform.json"],
+        {"schema", "prior", "account_entry", "prior_nonces", "prepare_script"},
+        code,
+    )
+    if (
+        platform["schema"] != "group2-post-finalize-reboot-platform-v1"
+        or platform["prior"] != prior
+        or not isinstance(platform["account_entry"], dict)
+        or not isinstance(platform["prior_nonces"], list)
+        or len(platform["prior_nonces"]) != len(set(platform["prior_nonces"]))
+    ):
+        raise CarryForwardError("group2_reboot_prior_changed")
+    if (
+        set(prior["host_files"]) != set(authority_paths["host"])
+        or set(prior["vm_files"]) != set(authority_paths["vm"])
+        or set(prior["installed"]) != {"host", "vm"}
+        or set(prior["installed"]["host"]) != GROUP2_CONTROLLER_FILES
+        or set(prior["installed"]["vm"])
+        != GROUP2_POST_FINALIZE_REBOOT_VM_INSTALLED
+    ):
+        raise CarryForwardError("group2_reboot_prior_changed")
+    for roster in (prior["host_files"], prior["vm_files"],
+                   prior["installed"]["host"], prior["installed"]["vm"]):
+        for descriptor in roster.values():
+            _group2_reboot_file_descriptor(descriptor, code)
+    if prior["host_files"]["attention.json"] != {"exists": False}:
+        raise CarryForwardError("group2_reboot_prior_changed")
+    for side in ("host", "vm"):
+        for path, old in prior_success[side].items():
+            descriptor = prior[f"{side}_files"][path]
+            if (
+                not isinstance(old, dict)
+                or old.get("exists") != descriptor["exists"]
+                or (
+                    old.get("exists") is True
+                    and old.get("sha256") != descriptor.get("sha256")
+                )
+            ):
+                raise CarryForwardError("group2_reboot_prior_changed")
+    prepare = _closed_object(
+        platform["prepare_script"],
+        {"sha256", "content_b64", "source_mode", "host", "vm", "parameters"},
+        code,
+    )
+    host_prepare = _group2_reboot_file_descriptor(prepare["host"], code)
+    vm_prepare = _group2_reboot_file_descriptor(prepare["vm"], code)
+    prepare_raw = _validate_embedded_bytes(
+        {"sha256": prepare["sha256"], "content_b64": prepare["content_b64"]}, code
+    )
+    if (
+        prepare["source_mode"] != "100755"
+        or prepare["sha256"] != GROUP2_POST_FINALIZE_REBOOT_PREPARE_SHA256
+        or hashlib.sha256(prepare_raw).hexdigest()
+        != GROUP2_POST_FINALIZE_REBOOT_PREPARE_SHA256
+        or host_prepare != prior["host_files"]["prepare-sandbox-host.sh"]
+        or vm_prepare != prior["vm_files"]["prepare-sandbox-host.sh"]
+        or host_prepare.get("sha256") != prepare["sha256"]
+        or vm_prepare.get("sha256") != prepare["sha256"]
+        or not host_prepare.get("mode", 0) & 0o111
+        or not vm_prepare.get("mode", 0) & 0o111
+        or prepare["parameters"] != prior["parameters"].get("keeper")
+    ):
+        raise CarryForwardError("group2_reboot_prepare_script_changed")
+    source_bundle = _closed_object(
+        parsed["source-review.json"], {"schema", "source", "ci"}, code
+    )
+    source = source_bundle["source"]
+    ci = source_bundle["ci"]
+    partial_tool = {key: tool[key] for key in (
+        "sha", "controller_files", "source_scope_digest",
+        "review_report_sha256", "ci_evidence_sha256",
+    )}
+    _validate_group2_partial_tool(partial_tool, source, ci)
+    if (
+        source_bundle["schema"] != "group2-post-finalize-reboot-source-review-v1"
+        or source["source_scope"]["to_tree"] != tool["tree"]
+        or source["tool_review"]["sha256"] != tool["review_report_sha256"]
+        or digest(ci) != tool["ci_evidence_sha256"]
+    ):
+        raise CarryForwardError("group2_reboot_source_invalid")
+    scope = _closed_object(
+        parsed["scope-approval.json"],
+        {"schema", "status", "execution", "request_scope"},
+        code,
+    )
+    if (
+        scope["schema"] != "group2-post-finalize-reboot-scope-approval-v1"
+        or scope["status"] != "APPROVED"
+        or scope["execution"] is not False
+        or scope["request_scope"] != "implementation-review-ci-only"
+    ):
+        raise CarryForwardError("group2_reboot_execution_approval_missing")
+    approval = _closed_object(
+        approval,
+        {"schema", "request_digest", "tool_sha", "boot_id", "actions",
+         "user_record_sha256"},
+        code,
+    )
+    if (
+        approval["schema"] != "group2-post-finalize-reboot-approval-v1"
+        or approval["request_digest"] != request["request_digest"]
+        or approval["tool_sha"] != tool["sha"]
+        or approval["boot_id"] != request["boot_id"]
+        or approval["actions"] != GROUP2_POST_FINALIZE_REBOOT_ACTIONS
+    ):
+        raise CarryForwardError("group2_reboot_execution_approval_missing")
+    _digest_text(approval["user_record_sha256"], code)
+    try:
+        record = json.loads(user_record)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise CarryForwardError("group2_reboot_user_record_invalid") from error
+    record = _closed_object(
+        record,
+        {"schema", "request_digest", "tool_sha", "boot_id", "actions",
+         "presented_request", "user_reply"},
+        "group2_reboot_user_record_invalid",
+    )
+    if (
+        hashlib.sha256(user_record).hexdigest() != approval["user_record_sha256"]
+        or record["schema"] != "group2-post-finalize-reboot-user-record-v1"
+        or record["request_digest"] != request["request_digest"]
+        or record["tool_sha"] != tool["sha"]
+        or record["boot_id"] != request["boot_id"]
+        or record["actions"] != GROUP2_POST_FINALIZE_REBOOT_ACTIONS
+        or record["presented_request"] != " ".join(
+            (request["request_digest"], tool["sha"], request["boot_id"],
+             *GROUP2_POST_FINALIZE_REBOOT_ACTIONS)
+        )
+        or not isinstance(record["user_reply"], str)
+        or not record["user_reply"].strip()
+    ):
+        raise CarryForwardError("group2_reboot_user_record_invalid")
+    return {
+        "request": request,
+        "approval": approval,
+        "user_record": record,
+        "platform": platform,
+        "authority_paths": authority_paths,
+        "prior_success": prior_success,
+        "parent": parent_value,
+    }
+
+
+def validate_group2_post_finalize_reboot_stopped(
+    validated: Any, stopped: Any
+) -> dict[str, Any]:
+    code = "group2_reboot_stopped_invalid"
+    validated = _closed_object(
+        validated,
+        {"request", "approval", "user_record", "platform", "authority_paths",
+         "prior_success", "parent"}, code,
+    )
+    stopped = _closed_object(
+        stopped,
+        {"schema", "boot_id", "files", "logs", "containers", "images", "storage",
+         "container_inspect", "authority", "postgres"},
+        code,
+    )
+    request, parent = validated["request"], validated["parent"]["snapshot"]
+    postgres = _closed_object(
+        stopped["postgres"], {"database_read", "data_pg_version"}, code
+    )
+    if (
+        stopped["schema"] != "group2-post-finalize-reboot-stopped-v1"
+        or stopped["boot_id"] != request["boot_id"]
+        or stopped["files"] != parent["files"]
+        or postgres["database_read"] is not False
+        or not isinstance(postgres["data_pg_version"], str)
+        or not postgres["data_pg_version"]
+        or stopped["containers"] != {
+            name: _reboot_expected_container(item)
+            for name, item in request["prior"]["containers"].items()
+        }
+        or stopped["images"] != request["prior"]["images"]
+        or stopped["storage"] != request["prior"]["storage"]
+        or stopped["authority"] != {
+            "host_files": request["prior"]["host_files"],
+            "vm_files": request["prior"]["vm_files"],
+            "installed": request["prior"]["installed"],
+            "keeper": "missing",
+        }
+    ):
+        raise CarryForwardError(code)
+    for service, item in stopped["containers"].items():
+        if not isinstance(item, dict) or item.get("status") == "running":
+            raise CarryForwardError(code)
+        if service == "account-web" and item != _reboot_expected_container(
+            request["prior"]["containers"][service]
+        ):
+            raise CarryForwardError(code)
+        try:
+            _validate_reboot_container_raw(
+                stopped["container_inspect"][service], request["prior"]["containers"][service],
+                item,
+                stopped=True,
+            )
+        except (KeyError, CarryForwardError) as error:
+            raise CarryForwardError(code) from error
+    if set(stopped["container_inspect"]) != set(stopped["containers"]):
+        raise CarryForwardError(code)
+    return stopped
+
+
+def _group2_admission_ns(value: Any, code: str) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, dt.datetime):
+        value = value.isoformat()
+    if isinstance(value, dict) and set(value) == {"$datetime"}:
+        value = value["$datetime"]
+    if not isinstance(value, str):
+        raise CarryForwardError(code)
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise CarryForwardError(code) from error
+    if parsed.tzinfo is None:
+        raise CarryForwardError(code)
+    epoch = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
+    delta = parsed.astimezone(dt.timezone.utc) - epoch
+    return (
+        delta.days * 86_400 * 1_000_000_000
+        + delta.seconds * 1_000_000_000
+        + delta.microseconds * 1_000
+    )
+
+
+def derive_group2_reboot_configuration(
+    control_inspect: Any, worker_inspect: Any, workers: Any
+) -> dict[str, Any]:
+    code = "group2_reboot_configuration_invalid"
+
+    def env_values(raw: Any, *, folded: bool) -> tuple[dict[str, str], list[str]]:
+        config = raw.get("Config") if isinstance(raw, dict) else None
+        env = config.get("Env") if isinstance(config, dict) else None
+        if not isinstance(env, list) or any(not isinstance(item, str) or "=" not in item for item in env):
+            raise CarryForwardError(code)
+        result: dict[str, str] = {}
+        original: dict[str, str] = {}
+        for item in env:
+            name, value = item.split("=", 1)
+            key = name.casefold() if folded else name
+            if not name:
+                raise CarryForwardError(code)
+            if key in result:
+                if not folded or original[key] == name or result[key] != value:
+                    raise CarryForwardError(code)
+                continue
+            result[key] = value
+            original[key] = name
+        return result, env
+
+    def integer(env: dict[str, str], name: str, default: int, minimum: int,
+                maximum: int | None = None) -> int:
+        raw = env.get(name.casefold(), str(default))
+        if re.fullmatch(r"[+]?[0-9]+", raw) is None:
+            raise CarryForwardError(code)
+        value = int(raw)
+        if value < minimum or (maximum is not None and value > maximum):
+            raise CarryForwardError(code)
+        return value
+
+    control, control_raw = env_values(control_inspect, folded=True)
+    worker, worker_raw = env_values(worker_inspect, folded=False)
+    policies = {
+        "webhook": {
+            "days": integer(control, "DLR_EXECUTION_RETENTION_WEBHOOK_DAYS", 30, 1),
+            "max_per_adapter": integer(control, "DLR_EXECUTION_RETENTION_WEBHOOK_MAX_PER_ADAPTER", 100, 1),
+        },
+        "manual": {
+            "days": integer(control, "DLR_EXECUTION_RETENTION_TASK_DAYS", 30, 1),
+            "max_per_adapter": integer(control, "DLR_EXECUTION_RETENTION_TASK_MAX_PER_ADAPTER", 1000, 1),
+        },
+        "schedule": {
+            "days": integer(control, "DLR_EXECUTION_RETENTION_SCHEDULE_DAYS", 90, 1),
+            "max_per_adapter": integer(control, "DLR_EXECUTION_RETENTION_SCHEDULE_MAX_PER_ADAPTER", 1000, 1),
+        },
+    }
+    alert = integer(control, "DLR_ARTIFACT_DELETE_ALERT_THRESHOLD", 5, 1, 100)
+    def floating(name: str, default: float, minimum: float, maximum: float) -> float:
+        raw = control.get(name.casefold(), str(default))
+        try:
+            value = float(raw)
+        except ValueError as error:
+            raise CarryForwardError(code) from error
+        if not math.isfinite(value) or value <= minimum or value > maximum:
+            raise CarryForwardError(code)
+        return value
+
+    worker_name = worker.get("DLR_WORKER_NAME", "worker-1")
+    if not worker_name:
+        raise CarryForwardError(code)
+    slots_raw = worker.get("DLR_WORKER_EXECUTION_SLOTS", "2")
+    if re.fullmatch(r"[+-]?[0-9]+", slots_raw) is None:
+        raise CarryForwardError(code)
+    slots = max(1, int(slots_raw))
+    if not isinstance(workers, list) or any(
+        not isinstance(row, dict) or set(row) != {"id", "name"} for row in workers
+    ):
+        raise CarryForwardError(code)
+    matches = [row for row in workers if row["name"] == worker_name]
+    if len(matches) != 1 or not isinstance(matches[0]["id"], int) or isinstance(matches[0]["id"], bool):
+        raise CarryForwardError(code)
+    rabbit_url = control.get("dlr_rabbitmq_url")
+    worker_url = worker.get("DLR_RABBITMQ_URL")
+    if not rabbit_url or not worker_url:
+        raise CarryForwardError(code)
+    parsed = urlsplit(rabbit_url)
+    raw_vhost = control.get("dlr_rabbitmq_vhost")
+    if raw_vhost is not None:
+        if parsed.path not in {"", "/"} or not raw_vhost:
+            raise CarryForwardError(code)
+        effective = parsed._replace(path=f"/{quote(raw_vhost, safe='')}")
+        vhost = raw_vhost
+    else:
+        effective = parsed
+        vhost = unquote(parsed.path[1:] if parsed.path.startswith("/") else parsed.path) or "/"
+    worker_parsed = urlsplit(worker_url)
+    worker_vhost = unquote(
+        worker_parsed.path[1:] if worker_parsed.path.startswith("/") else worker_parsed.path
+    ) or "/"
+    try:
+        effective_port = effective.port
+        worker_port = worker_parsed.port
+    except ValueError as error:
+        raise CarryForwardError(code) from error
+    effective_port = effective_port or (5671 if effective.scheme == "amqps" else 5672)
+    worker_port = worker_port or (5671 if worker_parsed.scheme == "amqps" else 5672)
+    if (
+        effective.scheme not in {"amqp", "amqps"}
+        or not effective.hostname or not effective.username
+        or not effective.password or unquote(effective.username).casefold() == "guest"
+        or not worker_parsed.password
+        or (worker_parsed.scheme, worker_parsed.hostname, worker_port,
+            unquote(worker_parsed.username or ""), unquote(worker_parsed.password),
+            worker_vhost)
+        != (effective.scheme, effective.hostname, effective_port,
+            unquote(effective.username or ""), unquote(effective.password), vhost)
+    ):
+        raise CarryForwardError(code)
+    queue_max_length = integer(control, "DLR_RABBITMQ_QUEUE_MAX_LENGTH", 2000, 1, 1_000_000)
+    queue_max_bytes = integer(control, "DLR_RABBITMQ_QUEUE_MAX_BYTES", 64 * 1024 * 1024, 1024, 10 * 1024 * 1024 * 1024)
+    delivery_limit = integer(control, "DLR_RABBITMQ_DELIVERY_LIMIT", 5, 1, 100)
+    consumer_timeout = integer(control, "DLR_RABBITMQ_CONSUMER_TIMEOUT_MS", 300_000, 1000, 900_000)
+    retry_base = floating("DLR_RABBITMQ_RETRY_BASE_SECONDS", 1.0, 0, 300)
+    retry_max = floating("DLR_RABBITMQ_RETRY_MAX_SECONDS", 60.0, 0, 3600)
+    if retry_base > retry_max:
+        raise CarryForwardError(code)
+    delayed_type = control.get("dlr_rabbitmq_delayed_retry_type", "all")
+    if delayed_type not in {"all", "returned"}:
+        raise CarryForwardError(code)
+    common = {
+        "x-queue-type": "quorum", "x-max-length": queue_max_length,
+        "x-max-length-bytes": queue_max_bytes, "x-overflow": "reject-publish",
+        "x-delivery-limit": delivery_limit,
+    }
+    work_arguments = {
+        **common, "x-dead-letter-exchange": "dlr.execution.infrastructure.dlx",
+        "x-dead-letter-routing-key": "infrastructure",
+        "x-dead-letter-strategy": "at-least-once",
+        "x-consumer-timeout": consumer_timeout,
+        "x-delayed-retry-type": delayed_type,
+        "x-delayed-retry-min": max(1, int(retry_base * 1000)),
+        "x-delayed-retry-max": max(1, int(retry_max * 1000)),
+    }
+    queue_scope = [
+        {"vhost": vhost, "name": f"dlr.worker.{row['id']}.q", "type": "quorum",
+         "state": "running", "arguments": work_arguments}
+        for row in workers
+    ] + [{
+        "vhost": vhost, "name": "dlr.execution.infrastructure.dlq",
+        "type": "quorum", "state": "running", "arguments": common,
+    }]
+    source_digest = digest({
+        "derivation": "group2-old3d-env-and-worker-v1",
+        "control_inspect_digest": digest(control_inspect),
+        "worker_inspect_digest": digest(worker_inspect),
+        "control_env_digest": digest(control_raw),
+        "worker_env_digest": digest(worker_raw),
+        "source_blobs": GROUP2_POST_FINALIZE_REBOOT_SOURCES,
+        "workers_raw_digest": digest(workers),
+    })
+    settings = {
+        "master_key_configured": bool(control.get("dlr_master_key", "")),
+        "retention": policies, "artifact_delete_alert_threshold": alert,
+        "orphan_grace_seconds": 300, "journal_retry_backoff_seconds": 60,
+        "source_digest": source_digest,
+    }
+    return {
+        "schema": "group2-old3d-derived-configuration-v1",
+        "control_inspect": control_inspect, "worker_inspect": worker_inspect,
+        "raw_workers": workers,
+        "worker_name": worker_name, "worker_id": matches[0]["id"],
+        "execution_slots": slots, "effective_settings": settings,
+        "rabbitmq": {
+            "vhost": vhost, "scheme": effective.scheme,
+            "host": effective.hostname,
+            "port": effective_port,
+            "user": unquote(effective.username or ""), "queues": queue_scope,
+        },
+        "source_digest": source_digest,
+    }
+
+
+def derive_group2_reboot_start_admission(
+    raw_tables: Any, raw_files: Any, settings: Any, *, t0_ns: int,
+    horizon_ns: int, preserved_queued_ids: list[int], worker_id: int,
+) -> dict[str, Any]:
+    """Derive old-3d immediate and timed mutations from fixed raw facts."""
+    code = "group2_reboot_start_admission_invalid"
+    if not isinstance(raw_tables, dict) or set(raw_tables) != GROUP2_REBOOT_ADMISSION_TABLES:
+        raise CarryForwardError(code)
+    if any(not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
+           for rows in raw_tables.values()):
+        raise CarryForwardError(code)
+    for name, rows in raw_tables.items():
+        expected_columns = GROUP2_REBOOT_ADMISSION_COLUMNS.get(name)
+        primary_key = GROUP2_REBOOT_ADMISSION_PRIMARY_KEYS[name]
+        if (
+            any(
+                (set(row) != expected_columns if expected_columns is not None
+                 else "id" not in row)
+                for row in rows
+            )
+            or len({canonical_bytes([row[key] for key in primary_key]) for row in rows})
+            != len(rows)
+        ):
+            raise CarryForwardError(code)
+    settings = _closed_object(
+        settings,
+        {"master_key_configured", "retention", "artifact_delete_alert_threshold",
+         "orphan_grace_seconds", "journal_retry_backoff_seconds", "source_digest"},
+        code,
+    )
+    if (
+        not isinstance(settings["master_key_configured"], bool)
+        or settings["orphan_grace_seconds"] != 300
+        or settings["journal_retry_backoff_seconds"] != 60
+        or not isinstance(settings["artifact_delete_alert_threshold"], int)
+        or isinstance(settings["artifact_delete_alert_threshold"], bool)
+        or settings["artifact_delete_alert_threshold"] <= 0
+    ):
+        raise CarryForwardError(code)
+    _digest_text(settings["source_digest"], code)
+    policies = _closed_object(settings["retention"], {"webhook", "manual", "schedule"}, code)
+    for policy in policies.values():
+        policy = _closed_object(policy, {"days", "max_per_adapter"}, code)
+        if any(not isinstance(policy[key], int) or isinstance(policy[key], bool)
+               or policy[key] < 0 for key in policy):
+            raise CarryForwardError(code)
+    hard: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+
+    def immediate(kind: str, origin: str, primary_key: Any) -> None:
+        events.append({"kind": kind, "origin": origin, "primary_key": primary_key,
+                       "threshold_ns": t0_ns, "operator": "immediate"})
+
+    def timed(kind: str, origin: str, primary_key: Any, threshold: Any,
+              operator: str = "le") -> None:
+        events.append({"kind": kind, "origin": origin, "primary_key": primary_key,
+                       "threshold_ns": _group2_admission_ns(threshold, code),
+                       "operator": operator})
+
+    if worker_id not in {row["id"] for row in raw_tables["workers"]}:
+        hard.append({"kind": "worker_identity_missing", "primary_key": worker_id})
+    if sum(row["name"] == "expired_attempts"
+           for row in raw_tables["runtime_reconciliation_cursors"]) != 1:
+        hard.append({"kind": "attempt_cursor_missing", "primary_key": "expired_attempts"})
+
+    users = raw_tables["users"]
+    credentials = raw_tables["credentials"]
+    if not any(row.get("username") == "admin" for row in users):
+        immediate("admin_missing", "users", "admin")
+    if settings["master_key_configured"]:
+        for name in ("demo-passwd", "demo-token"):
+            if not any(row.get("name") == name for row in credentials):
+                immediate("demo_credential_missing", "credentials", name)
+    for row in raw_tables["adapter_schedules"]:
+        if row.get("enabled") is True:
+            hard.append({"kind": "enabled_schedule", "primary_key": row.get("id")})
+    executions = {row.get("id"): row for row in raw_tables["executions"]}
+    adapters = {row.get("id") for row in raw_tables["adapters"]}
+    adapter_expected = {adapter: [0, 0] for adapter in adapters}
+    rabbit_active = {"queued", "running", "retry_wait"}
+    retention_terminal = {"succeeded", "dead_letter", "cancelled", "expired"}
+    idempotency_terminal = retention_terminal | {"failed", "timeout"}
+    for row in executions.values():
+        if row.get("dispatch_backend") == "rabbitmq" and row.get("status") in rabbit_active:
+            bucket = adapter_expected.setdefault(row.get("adapter_id"), [0, 0])
+            bucket[0] += 1; bucket[1] += int(row.get("logical_input_bytes") or 0)
+        if (row.get("dispatch_backend") == "rabbitmq"
+                and row.get("status") in retention_terminal
+                and row.get("admission_released_at") is None):
+            immediate("terminal_rabbit_unreleased", "executions", row.get("id"))
+    counters = {row.get("adapter_id"): row for row in raw_tables["adapter_execution_admission"]}
+    for adapter in sorted(adapters):
+        row = counters.get(adapter); expected = adapter_expected.get(adapter, [0, 0])
+        if row is None or [row.get("outstanding_count"), row.get("outstanding_bytes")] != expected:
+            immediate("adapter_counter_mismatch", "adapter_execution_admission", adapter)
+    global_rows = raw_tables["global_execution_admission"]
+    expected_global = [sum(x[0] for x in adapter_expected.values()),
+                       sum(x[1] for x in adapter_expected.values())]
+    if len(global_rows) != 1 or global_rows[0].get("singleton_key") != "global" or [
+        global_rows[0].get("outstanding_count"), global_rows[0].get("outstanding_bytes")
+    ] != expected_global:
+        immediate("global_counter_mismatch", "global_execution_admission", "global")
+    for row in raw_tables["execution_attempts"]:
+        if row.get("status") in {"claimed", "running"}:
+            hard.append({"kind": "active_attempt", "primary_key": row.get("id")})
+            timed("expired_attempt", "execution_attempts", row.get("id"), row.get("lease_expires_at"))
+    for row in raw_tables["adapter_execution_slots"]:
+        if row.get("active_attempt_id") is not None:
+            hard.append({"kind": "occupied_slot", "primary_key": [row.get("adapter_id"), row.get("slot_no")]})
+    for row in executions.values():
+        if row.get("dispatch_backend") == "rabbitmq" and row.get("status") == "retry_wait":
+            hard.append({"kind": "retry_wait", "primary_key": row.get("id")})
+            if row.get("next_attempt_at") is not None:
+                timed("retry_dispatch", "executions", row.get("id"), row["next_attempt_at"])
+    holds = raw_tables["execution_artifact_holds"]
+    for row in holds:
+        if row.get("purged_at") is None:
+            timed("expire_artifact_hold", "execution_artifact_holds", row.get("id"), row.get("expires_at"))
+    outbox = raw_tables["execution_outbox"]
+    for row in outbox:
+        if row.get("status") == "pending":
+            hard.append({"kind": "pending_outbox", "primary_key": row.get("id")})
+            threshold = row.get("available_at")
+            if row.get("lease_expires_at") is not None and _group2_admission_ns(row["lease_expires_at"], code) > _group2_admission_ns(threshold, code):
+                threshold = row["lease_expires_at"]
+            timed("outbox_publish", "execution_outbox", row.get("id"), threshold)
+    for execution_id in preserved_queued_ids:
+        row = executions.get(execution_id)
+        matches = [item for item in outbox if item.get("execution_id") == execution_id
+                   and item.get("dispatch_generation") == (row or {}).get("dispatch_generation")]
+        if row is None or len(matches) != 1 or matches[0].get("status") != "published":
+            hard.append({"kind": "current_generation_unpublished", "primary_key": execution_id})
+    idempotency = raw_tables["execution_idempotency_records"]
+    idem_by_execution = {row.get("execution_id") for row in idempotency}
+    pending_by_execution = {row.get("execution_id") for row in outbox if row.get("status") == "pending"}
+    for row in idempotency:
+        execution = executions.get(row.get("execution_id"))
+        if execution is not None and execution.get("status") in idempotency_terminal:
+            timed("expired_idempotency", "execution_idempotency_records", row.get("id"), row.get("expires_at"))
+    eligible: list[tuple[dict[str, Any], dict[str, int]]] = []
+    day_ns = 86_400 * 1_000_000_000
+    for row in executions.values():
+        policy = policies.get(row.get("trigger"))
+        if (policy is not None and row.get("status") in retention_terminal
+                and row.get("admission_released_at") is not None
+                and row.get("id") not in idem_by_execution
+                and row.get("id") not in pending_by_execution):
+            eligible.append((row, policy))
+            threshold = _group2_admission_ns(row.get("created_at"), code) + policy["days"] * day_ns
+            timed("execution_retention_age", "executions", row.get("id"), threshold, "lt")
+    grouped: dict[tuple[Any, Any], list[tuple[dict[str, Any], dict[str, int]]]] = {}
+    for item in eligible:
+        grouped.setdefault((item[0].get("adapter_id"), item[0].get("trigger")), []).append(item)
+    for rows in grouped.values():
+        rows.sort(key=lambda item: (_group2_admission_ns(item[0].get("created_at"), code), item[0].get("id")), reverse=True)
+        max_rows = rows[0][1]["max_per_adapter"] if rows else 0
+        for row, _policy in rows[max_rows:]:
+            immediate("execution_retention_count", "executions", row.get("id"))
+    artifacts = {row.get("id"): row for row in raw_tables["managed_input_artifacts"]}
+    bindings = raw_tables["adapter_input_artifact_bindings"]
+    configs = {row.get("adapter_id"): row for row in raw_tables["adapter_input_configs"]}
+    bound_ids = {row.get("artifact_id") for row in bindings}
+    for row in raw_tables["managed_input_upload_reservations"]:
+        if row.get("status") == "ACTIVE":
+            timed("upload_reservation_expiry", "managed_input_upload_reservations", row.get("id"), row.get("expires_at"))
+    for binding in bindings:
+        artifact = artifacts.get(binding.get("artifact_id")); config = configs.get(binding.get("adapter_id"))
+        if artifact is None or config is None or artifact.get("adapter_id") != binding.get("adapter_id"):
+            hard.append({"kind": "invalid_binding", "primary_key": [binding.get("adapter_id"), binding.get("artifact_id")]})
+        elif config.get("source_type") == "managed_files":
+            checksum = artifact.get("sha256")
+            if artifact.get("status") != "READY" or not isinstance(checksum, str) or re.fullmatch(r"[0-9a-fA-F]{64}", checksum) is None:
+                immediate("binding_invalid", "adapter_input_artifact_bindings", [binding.get("adapter_id"), binding.get("artifact_id")])
+            elif artifact.get("expires_at") is not None:
+                timed("binding_expiry", "managed_input_artifacts", artifact.get("id"), artifact["expires_at"])
+    for row in artifacts.values():
+        if row.get("status") == "STAGED" and row.get("id") not in bound_ids and row.get("expires_at") is not None:
+            timed("staged_artifact_expiry", "managed_input_artifacts", row.get("id"), row["expires_at"])
+    leases = raw_tables["execution_input_artifact_leases"]
+    alert = settings["artifact_delete_alert_threshold"]
+    for row in artifacts.values():
+        candidate = row.get("status") in {"PENDING_DELETE", "DELETING"} or (row.get("status") == "DELETE_FAILED" and int(row.get("delete_attempts") or 0) < alert)
+        protected = any(lease.get("artifact_id") == row.get("id") and (executions.get(lease.get("execution_id")) or {}).get("status") in {"pending", "queued", "running", "retry_wait"} for lease in leases)
+        if candidate and not protected:
+            thresholds = [t0_ns if row.get("delete_lease_until") is None else _group2_admission_ns(row["delete_lease_until"], code)]
+            thresholds.extend(_group2_admission_ns(h["expires_at"], code) for h in holds if h.get("artifact_id") == row.get("id") and h.get("purged_at") is None)
+            timed("artifact_delete", "managed_input_artifacts", row.get("id"), max(thresholds))
+    for row in raw_tables["artifact_deletion_jobs"]:
+        if row.get("status") in {"PENDING", "DELETING"} or (row.get("status") == "DELETE_FAILED" and int(row.get("delete_attempts") or 0) < alert):
+            timed("deletion_job", "artifact_deletion_jobs", row.get("id"), row.get("delete_lease_until") or t0_ns)
+    if not isinstance(raw_files, dict) or set(raw_files) != {"journal_facts", "artifact_store"}:
+        raise CarryForwardError(code)
+    journal = _closed_object(raw_files["journal_facts"], {"attempt", "cleanup", "sandbox_recovery"}, code)
+    if any(journal.values()):
+        hard.append({"kind": "worker_journal_candidate", "primary_key": "journal"})
+    known = {row.get("storage_key") for row in artifacts.values() if row.get("status") != "DELETED"} | {row.get("storage_key") for row in raw_tables["artifact_deletion_jobs"]}
+    if not isinstance(raw_files["artifact_store"], list):
+        raise CarryForwardError(code)
+    for item in raw_files["artifact_store"]:
+        if not isinstance(item, dict) or item.get("storage_key") is None or item.get("mtime_ns") is None:
+            raise CarryForwardError(code)
+        if item["storage_key"] not in known:
+            timed("artifact_orphan", "artifact_store", item["storage_key"], int(item["mtime_ns"]) + 300 * 1_000_000_000, "lt")
+    for row in raw_tables["worker_cleanup_requests"]:
+        if row.get("worker_id") == worker_id and row.get("status") == "pending":
+            immediate("adapter_cleanup_claim", "worker_cleanup_requests", row.get("id"))
+        if row.get("status") == "running":
+            hard.append({"kind": "cleanup_in_progress", "primary_key": row.get("id")})
+    events.sort(key=lambda item: (item["threshold_ns"], item["kind"], str(item["primary_key"])))
+    current = [item for item in events if item["operator"] == "immediate"
+               or item["threshold_ns"] < t0_ns
+               or item["operator"] == "le" and item["threshold_ns"] == t0_ns]
+    horizon = [item for item in events if item["operator"] == "immediate" or item["threshold_ns"] <= horizon_ns]
+    earliest = ({"kind": "none", "origins": []} if not events else {"kind": "bounded", "event": events[0]})
+    return {"hard_precondition_failures": hard, "current": current,
+            "within_horizon": horizon, "earliest_natural_change": earliest,
+            "evaluated_through_ns": horizon_ns,
+            "source_digest": digest({"tables": raw_tables, "files": raw_files,
+                                     "settings": settings})}
+
+
+def _validate_group2_reboot_raw_database_binding(
+    raw_tables: dict[str, list[dict[str, Any]]], database_rows: Any, database: Any
+) -> None:
+    code = "group2_reboot_start_admission_invalid"
+    if not isinstance(database, dict) or not isinstance(database_rows, dict):
+        raise CarryForwardError(code)
+    projection = database.get("projection")
+    asset_projection = database.get("asset_projection")
+    if not isinstance(projection, dict) or not isinstance(asset_projection, dict):
+        raise CarryForwardError(code)
+    expected_names = set(projection) | set(asset_projection)
+    if set(database_rows) != expected_names:
+        raise CarryForwardError(code)
+    if (
+        project_rows(database_rows, required=tuple(projection)) != projection
+        or project_rows(database_rows, required=tuple(asset_projection))
+        != asset_projection
+    ):
+        raise CarryForwardError(code)
+    for name in set(raw_tables) & set(database_rows):
+        rows = raw_tables[name]
+        source = database_rows[name]
+        primary_key = source.get("primary_key") if isinstance(source, dict) else None
+        full_rows = source.get("rows") if isinstance(source, dict) else None
+        if not isinstance(primary_key, list) or not isinstance(full_rows, list):
+            raise CarryForwardError(code)
+        full_by_pk = {
+            canonical_bytes([row[key] for key in primary_key]): canonical(row)
+            for row in full_rows if isinstance(row, dict)
+        }
+        if len(full_by_pk) != len(full_rows) or len(rows) != len(full_rows):
+            raise CarryForwardError(code)
+        for row in rows:
+            try:
+                full = full_by_pk[
+                    canonical_bytes([row[key] for key in primary_key])
+                ]
+            except (KeyError, TypeError) as error:
+                raise CarryForwardError(code) from error
+            if any(canonical(item) != full.get(key) for key, item in row.items()):
+                raise CarryForwardError(code)
+
+
+def _validate_group2_reboot_mutation_guard(
+    value: Any, raw_tables: dict[str, list[dict[str, Any]]] | None = None
+) -> dict[str, Any]:
+    code = "group2_reboot_start_admission_invalid"
+    if not isinstance(value, dict) or set(value) != set(GROUP2_REBOOT_MUTATION_GUARD_TABLES):
+        raise CarryForwardError(code)
+    for name, source in value.items():
+        source = _closed_object(source, {"columns", "primary_key", "rows"}, code)
+        columns, primary_key, rows = source["columns"], source["primary_key"], source["rows"]
+        if (
+            not isinstance(columns, list) or not columns
+            or len(columns) != len(set(columns)) or any(not isinstance(item, str) for item in columns)
+            or not isinstance(primary_key, list) or not primary_key
+            or not set(primary_key).issubset(columns)
+            or not isinstance(rows, list)
+            or any(not isinstance(row, dict) or set(row) != set(columns) for row in rows)
+            or len({canonical_bytes([row[key] for key in primary_key]) for row in rows}) != len(rows)
+        ):
+            raise CarryForwardError(code)
+        if raw_tables is not None:
+            full = {
+                canonical_bytes([row[key] for key in primary_key]): canonical(row)
+                for row in rows
+            }
+            subset = raw_tables.get(name)
+            if not isinstance(subset, list) or len(subset) != len(rows):
+                raise CarryForwardError(code)
+            for row in subset:
+                try:
+                    target = full[canonical_bytes([row[key] for key in primary_key])]
+                except (KeyError, TypeError) as error:
+                    raise CarryForwardError(code) from error
+                if any(canonical(item) != target.get(key) for key, item in row.items()):
+                    raise CarryForwardError(code)
+    return value
+
+
+def validate_group2_reboot_start_admission(
+    value: Any, database: Any, parameters: Any, deadline_ns: int,
+    successor_deadline_ns: int, rabbitmq_image_id: str,
+    expected_queued_ids: list[int] | None = None,
+    prior_containers: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    code = "group2_reboot_start_admission_invalid"
+    value = _closed_object(
+        value,
+        {"schema", "database_digest", "parameters_digest", "clock", "deadline_ns",
+         "successor_deadline_ns", "sources", "raw_tables", "database_rows", "raw_files",
+         "configuration", "effective_settings", "preserved_queued_ids", "worker_id", "rabbitmq",
+         "mutation_guard_rows", "derived"}, code,
+    )
+    clock = _closed_object(value["clock"], {"db_utc_ns", "vm_lower_ns", "vm_upper_ns"}, code)
+    if (
+        value["schema"] != "group2-post-finalize-reboot-start-admission-v1"
+        or value["database_digest"] != digest(database)
+        or value["parameters_digest"] != digest(parameters)
+        or value["deadline_ns"] != deadline_ns
+        or value["successor_deadline_ns"] != successor_deadline_ns
+        or not all(isinstance(clock[key], int) and not isinstance(clock[key], bool) for key in clock)
+        or not clock["vm_lower_ns"] <= clock["db_utc_ns"] <= clock["vm_upper_ns"]
+        or not clock["db_utc_ns"] <= deadline_ns < successor_deadline_ns
+        or value["sources"] != GROUP2_POST_FINALIZE_REBOOT_SOURCES
+        or not isinstance(value["preserved_queued_ids"], list)
+        or any(not isinstance(item, int) or isinstance(item, bool) for item in value["preserved_queued_ids"])
+        or (expected_queued_ids is not None
+            and value["preserved_queued_ids"] != expected_queued_ids)
+        or not isinstance(value["worker_id"], int) or isinstance(value["worker_id"], bool)
+        or not isinstance(value["effective_settings"], dict)
+        or value["worker_id"] not in {
+            row.get("id") for row in value["raw_tables"].get("workers", [])
+            if isinstance(row, dict)
+        }
+    ):
+        raise CarryForwardError(code)
+    configuration = derive_group2_reboot_configuration(
+        value["configuration"].get("control_inspect")
+        if isinstance(value["configuration"], dict) else None,
+        value["configuration"].get("worker_inspect")
+        if isinstance(value["configuration"], dict) else None,
+        value["raw_tables"]["workers"],
+    )
+    if (
+        value["configuration"] != configuration
+        or value["worker_id"] != configuration["worker_id"]
+        or value["effective_settings"] != configuration["effective_settings"]
+    ):
+        raise CarryForwardError(code)
+    _validate_group2_reboot_raw_database_binding(
+        value["raw_tables"], value["database_rows"], database
+    )
+    _validate_group2_reboot_mutation_guard(
+        value["mutation_guard_rows"], value["raw_tables"]
+    )
+    derived = derive_group2_reboot_start_admission(
+        value["raw_tables"], value["raw_files"], value["effective_settings"],
+        t0_ns=clock["db_utc_ns"], horizon_ns=successor_deadline_ns,
+        preserved_queued_ids=value["preserved_queued_ids"], worker_id=value["worker_id"],
+    )
+    if value["derived"] != derived or derived["hard_precondition_failures"] or derived["current"] or derived["within_horizon"]:
+        raise CarryForwardError("group2_reboot_consumption_candidate")
+    rabbit = _closed_object(
+        value["rabbitmq"], {"image_id", "version", "plugins", "config_digest",
+         "queue_scope", "raw_response_digest", "queues",
+         "topology", "feature_flags", "external_before", "external_after", "network"}, code,
+    )
+    rabbit_configuration = configuration["rabbitmq"]
+    expected_queues = rabbit_configuration["queues"]
+    if (
+        rabbit["image_id"] != rabbitmq_image_id or rabbit["version"] != "4.3.5"
+        or rabbit["config_digest"] != digest(rabbit_configuration)
+        or rabbit["queue_scope"] != expected_queues or not isinstance(expected_queues, list)
+        or not expected_queues
+        or not isinstance(rabbit["plugins"], list)
+        or DIGEST.fullmatch(str(rabbit["raw_response_digest"])) is None
+        or not isinstance(rabbit["queues"], list)
+        or not isinstance(rabbit["topology"], dict)
+        or not isinstance(rabbit["feature_flags"], list)
+        or rabbit["raw_response_digest"]
+        != digest({"queues": rabbit["queues"], "topology": rabbit["topology"],
+                   "feature_flags": rabbit["feature_flags"],
+                   "external_before": rabbit["external_before"],
+                   "external_after": rabbit["external_after"],
+                   "network": rabbit["network"]})
+    ):
+        raise CarryForwardError("group2_reboot_queue_unsafe")
+    _validate_group2_rabbit_topology(
+        rabbit["topology"], configuration, rabbit["plugins"]
+    )
+    flags = {}
+    for row in rabbit["feature_flags"]:
+        row = _closed_object(row, {"name", "state"}, code)
+        if not isinstance(row["name"], str) or row["name"] in flags \
+                or row["state"] not in {"enabled", "disabled", "unavailable"}:
+            raise CarryForwardError("group2_reboot_queue_unsafe")
+        flags[row["name"]] = row["state"]
+    if any(flags.get(name) != "enabled" for name in (
+        "feature_flags_v2", "quorum_queue", "stream_queue", "rabbitmq_4.3.0"
+    )):
+        raise CarryForwardError("group2_reboot_queue_unsafe")
+    if prior_containers is not None:
+        _validate_group2_reboot_network_boundary(rabbit["network"], prior_containers)
+    for external in (rabbit["external_before"], rabbit["external_after"]):
+        if external != {"connections": [], "channels": [], "consumers": []}:
+            raise CarryForwardError("group2_reboot_queue_unsafe")
+    expected = {(item.get("vhost"), item.get("name")) for item in expected_queues if isinstance(item, dict)}
+    expected_names = [
+        *(f"dlr.worker.{row['id']}.q" for row in value["raw_tables"]["workers"]),
+        "dlr.execution.infrastructure.dlq",
+    ]
+    if [item.get("name") for item in expected_queues] != expected_names:
+        raise CarryForwardError("group2_reboot_queue_unsafe")
+    seen = set()
+    for queue in rabbit["queues"]:
+        queue = _closed_object(
+            queue, {"name", "vhost", "type", "state", "arguments",
+                    "messages_total", "messages_ready", "messages_unacknowledged",
+                    "ra"}, code
+        )
+        identity = (queue["vhost"], queue["name"])
+        expected_item = next(
+            (item for item in expected_queues if isinstance(item, dict)
+             and (item.get("vhost"), item.get("name")) == identity), None
+        )
+        ra = _closed_object(queue["ra"], {"total", "dlx", "checked_out"}, code)
+        if (
+            identity in seen or identity not in expected
+            or not isinstance(expected_item, dict)
+            or {key: queue[key] for key in ("vhost", "name", "type", "state", "arguments")}
+            != expected_item
+            or _rabbit_ra_result(ra["total"], "total") != 0
+            or _rabbit_ra_result(ra["dlx"], "dlx") != [0, 0]
+            or _rabbit_ra_result(ra["checked_out"], "checked_out") != 0
+        ):
+            raise CarryForwardError("group2_reboot_queue_unsafe")
+        seen.add(identity)
+    if seen != expected or len(expected) != len(expected_queues):
+        raise CarryForwardError("group2_reboot_queue_unsafe")
+    return value
+
+
+def _rabbit_ra_result(value: Any, kind: str) -> Any:
+    code = "group2_reboot_queue_unsafe"
+    value = _closed_object(value, {"raw", "value"}, code)
+    raw = value["raw"]
+    if not isinstance(raw, str):
+        raise CarryForwardError(code)
+    if kind in {"total", "checked_out"}:
+        match = re.fullmatch(r"\{ok,(\d+),\{.+\}\}", raw)
+        if match is None:
+            raise CarryForwardError(code)
+        parsed: Any = int(match.group(1))
+    elif kind == "dlx":
+        match = re.fullmatch(r"\{ok,\{(\d+),(\d+)\},\{.+\}\}", raw)
+        if match is None:
+            raise CarryForwardError(code)
+        parsed = [int(match.group(1)), int(match.group(2))]
+    else:
+        raise CarryForwardError(code)
+    if value["value"] != parsed:
+        raise CarryForwardError(code)
+    return parsed
+
+
+def _validate_group2_rabbit_topology(
+    topology: Any, configuration: dict[str, Any], plugins: Any
+) -> None:
+    code = "group2_reboot_queue_unsafe"
+    topology = _closed_object(topology, {"exchanges", "bindings", "policies"}, code)
+    if not isinstance(plugins, list) or any(
+        not isinstance(item, str)
+        or re.search(r"(?i)(federation|shovel|delayed_message_exchange)", item)
+        for item in plugins
+    ):
+        raise CarryForwardError(code)
+    exchanges = [
+        item for item in topology["exchanges"]
+        if isinstance(item, dict) and str(item.get("name", "")).startswith("dlr.")
+    ]
+    if sorted(exchanges, key=lambda item: item.get("name", "")) != [
+        {"name": "dlr.execution.dispatch.v1", "type": "direct", "durable": True},
+        {"name": "dlr.execution.infrastructure.dlx", "type": "direct", "durable": True},
+    ]:
+        raise CarryForwardError(code)
+    expected_bindings = [
+        {"source_name": "dlr.execution.dispatch.v1",
+         "destination_name": f"dlr.worker.{row['id']}.q",
+         "destination_kind": "queue", "routing_key": f"worker.{row['id']}",
+         "arguments": {}}
+        for row in configuration["raw_workers"]
+    ] + [{
+        "source_name": "dlr.execution.infrastructure.dlx",
+        "destination_name": "dlr.execution.infrastructure.dlq",
+        "destination_kind": "queue", "routing_key": "infrastructure",
+        "arguments": {},
+    }]
+    bindings = [
+        item for item in topology["bindings"] if isinstance(item, dict)
+        and (str(item.get("source_name", "")).startswith("dlr.")
+             or str(item.get("destination_name", "")).startswith("dlr."))
+    ]
+    if sorted(bindings, key=canonical_bytes) != sorted(expected_bindings, key=canonical_bytes):
+        raise CarryForwardError(code)
+    if topology["policies"] != []:
+        raise CarryForwardError(code)
+
+
+def _validate_group2_reboot_network_boundary(
+    value: Any, prior_containers: Any
+) -> dict[str, Any]:
+    code = "group2_reboot_network_unsafe"
+    value = _closed_object(
+        value, {"network_id", "container_inspect", "network_inspect",
+                "container_states", "raw_digest"}, code,
+    )
+    if (
+        not isinstance(prior_containers, dict)
+        or set(prior_containers) != {"postgres", "rabbitmq", "control", "worker", "web", "account-web"}
+        or not isinstance(value["network_id"], str) or not value["network_id"]
+        or not isinstance(value["container_inspect"], dict)
+        or set(value["container_inspect"]) != set(prior_containers)
+        or not isinstance(value["container_states"], dict)
+        or set(value["container_states"]) != set(prior_containers)
+        or value["raw_digest"] != digest({
+            "network_id": value["network_id"],
+            "container_inspect": value["container_inspect"],
+            "network_inspect": value["network_inspect"],
+            "container_states": value["container_states"],
+        })
+    ):
+        raise CarryForwardError(code)
+    network = value["network_inspect"]
+    if not isinstance(network, dict) or network.get("Id") != value["network_id"]:
+        raise CarryForwardError(code)
+    endpoints = network.get("Containers")
+    if not isinstance(endpoints, dict):
+        raise CarryForwardError(code)
+    expected_ids = {item.get("container_id") for item in prior_containers.values()}
+    if None in expected_ids or set(endpoints) != expected_ids:
+        raise CarryForwardError(code)
+    for service, expected in prior_containers.items():
+        raw = value["container_inspect"][service]
+        current = value["container_states"][service]
+        should_run = service in {"postgres", "rabbitmq"}
+        _validate_reboot_container_raw(raw, expected, current, stopped=False)
+        networks = (raw.get("NetworkSettings") or {}).get("Networks")
+        if not isinstance(networks, dict) or len(networks) != 1:
+            raise CarryForwardError(code)
+        attached = next(iter(networks.values()))
+        endpoint = endpoints.get(expected["container_id"])
+        if (
+            not isinstance(attached, dict) or not isinstance(endpoint, dict)
+            or attached.get("NetworkID") != value["network_id"]
+            or attached.get("EndpointID") != endpoint.get("EndpointID")
+            or attached.get("IPAddress") != str(endpoint.get("IPv4Address", "")).split("/", 1)[0]
+            or endpoint.get("Name") != str(raw.get("Name", "")).removeprefix("/")
+            or bool(current.get("status") == "running") != should_run
+            or (should_run and current.get("health") != "healthy")
+        ):
+            raise CarryForwardError(code)
+    rabbit_host = value["container_inspect"]["rabbitmq"].get("HostConfig") or {}
+    if rabbit_host.get("PortBindings") not in ({}, None):
+        raise CarryForwardError(code)
+    return value
+
+
+def _capture_group2_reboot_network_boundary(
+    request: dict[str, Any], project: str
+) -> dict[str, Any]:
+    prior = request["prior"]["containers"]
+    inspections = {
+        service: _inspect_reboot_container_raw(item["container_id"])
+        for service, item in prior.items()
+    }
+    states = {service: _inspect_container(project, service) for service in prior}
+    networks = (inspections["rabbitmq"].get("NetworkSettings") or {}).get("Networks")
+    if not isinstance(networks, dict) or len(networks) != 1:
+        raise CarryForwardError("group2_reboot_network_unsafe")
+    network_id = next(iter(networks.values())).get("NetworkID")
+    if not isinstance(network_id, str) or not network_id:
+        raise CarryForwardError("group2_reboot_network_unsafe")
+    try:
+        raw = json.loads(_checked_output(["docker", "network", "inspect", network_id]))
+    except (json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
+        raise CarryForwardError("group2_reboot_network_unsafe") from error
+    if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict):
+        raise CarryForwardError("group2_reboot_network_unsafe")
+    value = {
+        "network_id": network_id, "container_inspect": inspections,
+        "network_inspect": raw[0], "container_states": states,
+    }
+    value["raw_digest"] = digest(value)
+    return _validate_group2_reboot_network_boundary(value, prior)
+
+
+def _group2_reboot_container_endpoint(raw: Any) -> tuple[str, str]:
+    networks = (raw.get("NetworkSettings") or {}).get("Networks") if isinstance(raw, dict) else None
+    if not isinstance(networks, dict) or len(networks) != 1:
+        raise CarryForwardError("group2_reboot_rabbit_identity_invalid")
+    endpoint = next(iter(networks.values()))
+    network_id = endpoint.get("NetworkID") if isinstance(endpoint, dict) else None
+    address = endpoint.get("IPAddress") if isinstance(endpoint, dict) else None
+    if not isinstance(network_id, str) or not network_id or not isinstance(address, str) or not address:
+        raise CarryForwardError("group2_reboot_rabbit_identity_invalid")
+    return network_id, address
+
+
+def _group2_reboot_rabbit_address(value: Any) -> str:
+    code = "group2_reboot_rabbit_identity_invalid"
+    if not isinstance(value, list) or any(
+        not isinstance(item, int) or isinstance(item, bool) for item in value
+    ):
+        raise CarryForwardError(code)
+    try:
+        if len(value) == 4 and all(0 <= item <= 255 for item in value):
+            return str(ipaddress.IPv4Address(bytes(value)))
+        if len(value) == 8 and all(0 <= item <= 65535 for item in value):
+            numeric = 0
+            for item in value:
+                numeric = (numeric << 16) | item
+            address = ipaddress.IPv6Address(numeric)
+            return str(address.ipv4_mapped or address)
+    except ipaddress.AddressValueError as error:
+        raise CarryForwardError(code) from error
+    raise CarryForwardError(code)
+
+
+def _validate_group2_reboot_rabbit_identity_sample(
+    sample: Any, configuration: dict[str, Any], *, rabbit_ip: str,
+    control_ip: str, worker_ip: str,
+) -> dict[str, Any]:
+    code = "group2_reboot_rabbit_identity_invalid"
+    sample = _closed_object(sample, {"connections", "channels", "consumers"}, code)
+    connection_keys = {"pid", "peer_host", "peer_port", "host", "port", "user", "vhost",
+                       "protocol", "client_properties", "state"}
+    channel_keys = {"pid", "connection", "user", "vhost", "number", "consumer_count",
+                    "messages_unacknowledged", "prefetch_count"}
+    consumer_keys = {"queue_name", "channel_pid", "consumer_tag", "ack_required",
+                     "prefetch_count", "active", "arguments"}
+    for rows, keys in ((sample["connections"], connection_keys),
+                       (sample["channels"], channel_keys),
+                       (sample["consumers"], consumer_keys)):
+        if not isinstance(rows, list) or any(
+            not isinstance(row, dict) or set(row) != keys for row in rows
+        ):
+            raise CarryForwardError(code)
+    connections = {row["pid"]: row for row in sample["connections"]}
+    channels = {row["pid"]: row for row in sample["channels"]}
+    if (
+        len(connections) != len(sample["connections"])
+        or len(channels) != len(sample["channels"])
+        or len({row["consumer_tag"] for row in sample["consumers"]})
+        != len(sample["consumers"])
+    ):
+        raise CarryForwardError(code)
+    rabbit = configuration["rabbitmq"]
+    connection_roles = {}
+    for pid, row in connections.items():
+        peer = _group2_reboot_rabbit_address(row["peer_host"])
+        host = _group2_reboot_rabbit_address(row["host"])
+        if not isinstance(row["client_properties"], list) or any(
+            not isinstance(item, list) or len(item) != 3 for item in row["client_properties"]
+        ):
+            raise CarryForwardError(code)
+        if (
+            peer not in {worker_ip, control_ip}
+            or host != rabbit_ip or row["port"] != rabbit["port"]
+            or row["user"] != rabbit["user"] or row["vhost"] != rabbit["vhost"]
+            or row["protocol"] != [0, 9, 1] or row["state"] != "running"
+            or not isinstance(row["peer_port"], int) or isinstance(row["peer_port"], bool)
+        ):
+            raise CarryForwardError(code)
+        connection_roles[pid] = "worker" if peer == worker_ip else "control"
+    worker_connections = [pid for pid, role in connection_roles.items() if role == "worker"]
+    if len(worker_connections) != 1:
+        raise CarryForwardError(code)
+    for row in channels.values():
+        if (
+            row["connection"] not in connections
+            or row["user"] != rabbit["user"] or row["vhost"] != rabbit["vhost"]
+            or any(not isinstance(row[key], int) or isinstance(row[key], bool) or row[key] < 0
+                   for key in ("number", "consumer_count", "messages_unacknowledged", "prefetch_count"))
+        ):
+            raise CarryForwardError(code)
+    worker_id = configuration["worker_id"]
+    slots = configuration["execution_slots"]
+    expected_queue = f"dlr.worker.{worker_id}.q"
+    observed_slots: dict[int, int] = {}
+    epochs = set()
+    for row in sample["consumers"]:
+        channel = channels.get(row["channel_pid"])
+        connection = connections.get(channel["connection"]) if channel else None
+        match = re.fullmatch(
+            rf"dlr-worker-{worker_id}-e([1-9][0-9]*)-s([0-9]+)-t([1-9][0-9]*)",
+            str(row["consumer_tag"]),
+        )
+        if (
+            channel is None or connection is None
+            or connection_roles.get(channel["connection"]) != "worker"
+            or row["queue_name"] != expected_queue or match is None
+            or row["ack_required"] is not True or row["prefetch_count"] != 1
+            or row["active"] is not True or row["arguments"] != []
+        ):
+            raise CarryForwardError(code)
+        epoch, slot, ticket = map(int, match.groups())
+        if slot in observed_slots:
+            raise CarryForwardError(code)
+        observed_slots[slot] = ticket
+        epochs.add(epoch)
+    if (
+        not isinstance(slots, int) or isinstance(slots, bool) or slots <= 0
+        or set(observed_slots) != set(range(slots)) or len(epochs) != 1
+    ):
+        raise CarryForwardError(code)
+    for row in channels.values():
+        joined = [item for item in sample["consumers"] if item["channel_pid"] == row["pid"]]
+        connection_role = connection_roles[row["connection"]]
+        if (
+            row["consumer_count"] != len(joined)
+            or row["messages_unacknowledged"] != 0
+            or (connection_role == "control" and joined)
+        ):
+            raise CarryForwardError(code)
+    worker_connection = connections[worker_connections[0]]
+    worker_channels = sorted(
+        (row for row in channels.values() if row["connection"] == worker_connections[0]),
+        key=canonical_bytes,
+    )
+    if len(worker_channels) != 1 or worker_channels[0]["consumer_count"] != slots:
+        raise CarryForwardError(code)
+    worker_consumers = sorted(sample["consumers"], key=canonical_bytes)
+    return {"connection": worker_connection, "channels": worker_channels,
+            "consumers": worker_consumers}
+
+
+def validate_group2_reboot_rabbit_identity(
+    value: Any, configuration: Any, container_inspect: Any
+) -> dict[str, Any]:
+    code = "group2_reboot_rabbit_identity_invalid"
+    value = _closed_object(
+        value, {"schema", "captured_start_ns", "captured_end_ns", "container_binding",
+                "samples", "raw_digest"}, code,
+    )
+    if (
+        value["schema"] != "group2-post-finalize-reboot-rabbit-identity-v1"
+        or not isinstance(value["captured_start_ns"], int)
+        or isinstance(value["captured_start_ns"], bool)
+        or not isinstance(value["captured_end_ns"], int)
+        or isinstance(value["captured_end_ns"], bool)
+        or value["captured_end_ns"] < value["captured_start_ns"]
+        or not isinstance(configuration, dict)
+        or not isinstance(container_inspect, dict)
+        or set(container_inspect) != {"postgres", "rabbitmq", "control", "worker", "web", "account-web"}
+        or not isinstance(value["samples"], list) or len(value["samples"]) != 2
+    ):
+        raise CarryForwardError(code)
+    rabbit_network, rabbit_ip = _group2_reboot_container_endpoint(container_inspect["rabbitmq"])
+    control_network, control_ip = _group2_reboot_container_endpoint(container_inspect["control"])
+    worker_network, worker_ip = _group2_reboot_container_endpoint(container_inspect["worker"])
+    state_binding = {}
+    for service in ("rabbitmq", "control", "worker"):
+        raw = container_inspect[service]
+        state = raw.get("State") if isinstance(raw, dict) else None
+        if not isinstance(state, dict) or state.get("Status") != "running" \
+                or not isinstance(state.get("Pid"), int) or state.get("Pid") <= 0 \
+                or not isinstance(state.get("StartedAt"), str) or not state.get("StartedAt"):
+            raise CarryForwardError(code)
+        network_id, address = _group2_reboot_container_endpoint(raw)
+        state_binding[service] = {
+            "container_id": raw.get("Id"), "image_id": raw.get("Image"),
+            "network_id": network_id, "ip": address, "pid": state["Pid"],
+            "started_at": state["StartedAt"], "config_env_digest": digest((raw.get("Config") or {}).get("Env")),
+        }
+    if (
+        rabbit_network != control_network or rabbit_network != worker_network
+        or value["container_binding"] != state_binding
+        or state_binding["control"]["config_env_digest"]
+        != digest((configuration.get("control_inspect", {}).get("Config") or {}).get("Env"))
+        or state_binding["worker"]["config_env_digest"]
+        != digest((configuration.get("worker_inspect", {}).get("Config") or {}).get("Env"))
+        or value["raw_digest"] != digest({
+            key: item for key, item in value.items() if key != "raw_digest"
+        })
+    ):
+        raise CarryForwardError(code)
+    graphs = [
+        _validate_group2_reboot_rabbit_identity_sample(
+            sample, configuration, rabbit_ip=rabbit_ip,
+            control_ip=control_ip, worker_ip=worker_ip,
+        )
+        for sample in value["samples"]
+    ]
+    if graphs[0] != graphs[1]:
+        raise CarryForwardError(code)
+    return value
+
+
+def capture_group2_reboot_rabbit_identity(
+    request: dict[str, Any], configuration: dict[str, Any]
+) -> dict[str, Any]:
+    rabbit_id = request["prior"]["containers"]["rabbitmq"]["container_id"]
+    vhost = configuration["rabbitmq"]["vhost"]
+
+    def query(*arguments: str) -> list[dict[str, Any]]:
+        try:
+            raw = subprocess.check_output(
+                ["docker", "exec", rabbit_id, "rabbitmqctl", "-q", *arguments,
+                 "--formatter", "json"],
+                text=True, timeout=_reboot_timeout(request, 10),
+            )
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
+            raise CarryForwardError("group2_reboot_rabbit_identity_invalid") from error
+        if not isinstance(parsed, list) or any(not isinstance(row, dict) for row in parsed):
+            raise CarryForwardError("group2_reboot_rabbit_identity_invalid")
+        return parsed
+
+    def sample() -> dict[str, Any]:
+        return {
+            "connections": query(
+                "list_connections", "pid", "peer_host", "peer_port", "host", "port",
+                "user", "vhost", "protocol", "client_properties", "state",
+            ),
+            "channels": query(
+                "list_channels", "pid", "connection", "user", "vhost", "number",
+                "consumer_count", "messages_unacknowledged", "prefetch_count",
+            ),
+            "consumers": query(
+                "list_consumers", "-p", vhost, "queue_name", "channel_pid", "consumer_tag",
+                "ack_required", "prefetch_count", "active", "arguments",
+            ),
+        }
+
+    while True:
+        started = time.time_ns()
+        inspections = {
+            service: _inspect_reboot_container_raw(
+                request["prior"]["containers"][service]["container_id"]
+            )
+            for service in request["prior"]["containers"]
+        }
+        samples = [sample(), sample()]
+        binding = {}
+        for service in ("rabbitmq", "control", "worker"):
+            raw = inspections[service]
+            network_id, address = _group2_reboot_container_endpoint(raw)
+            state = raw.get("State") or {}
+            binding[service] = {
+                "container_id": raw.get("Id"), "image_id": raw.get("Image"),
+                "network_id": network_id, "ip": address, "pid": state.get("Pid"),
+                "started_at": state.get("StartedAt"),
+                "config_env_digest": digest((raw.get("Config") or {}).get("Env")),
+            }
+        value = {
+            "schema": "group2-post-finalize-reboot-rabbit-identity-v1",
+            "captured_start_ns": started, "captured_end_ns": time.time_ns(),
+            "container_binding": binding, "samples": samples,
+        }
+        value["raw_digest"] = digest(value)
+        try:
+            return validate_group2_reboot_rabbit_identity(value, configuration, inspections)
+        except CarryForwardError:
+            retryable = samples[0] != samples[1]
+            for current in samples:
+                channel_ids = {
+                    row.get("pid") for row in current.get("channels", [])
+                    if isinstance(row, dict)
+                }
+                connection_ids = {
+                    row.get("pid") for row in current.get("connections", [])
+                    if isinstance(row, dict)
+                }
+                retryable = retryable or len(current.get("consumers", [])) != configuration["execution_slots"]
+                retryable = retryable or any(
+                    isinstance(row, dict) and row.get("connection") not in connection_ids
+                    for row in current.get("channels", [])
+                ) or any(
+                    isinstance(row, dict) and row.get("channel_pid") not in channel_ids
+                    for row in current.get("consumers", [])
+                )
+            if not retryable:
+                raise
+            if time.time_ns() >= request["window"]["deadline_ns"]:
+                raise
+            time.sleep(min(1.0, _reboot_timeout(request, 1)))
+
+
+def _group2_reboot_artifact_inventory(artifact_entries: Any) -> list[dict[str, Any]]:
+    code = "group2_reboot_start_admission_invalid"
+    if not isinstance(artifact_entries, list):
+        raise CarryForwardError(code)
+    inventory = []
+    for item in artifact_entries:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            raise CarryForwardError(code)
+        path = item["path"]
+        if item.get("type") == "directory" and (
+            path in {"objects", "parts", "quarantine"}
+            or re.fullmatch(r"(?:objects|parts|quarantine)/[0-9a-f]{2}", path)
+        ):
+            continue
+        file_match = re.fullmatch(
+            r"(objects|parts|quarantine)/([0-9a-f]{2})/([0-9a-f]{64})(\.part)?",
+            path,
+        )
+        if item.get("type") != "file" or file_match is None:
+            raise CarryForwardError(code)
+        namespace, prefix, storage_key, suffix = file_match.groups()
+        if (
+            prefix != storage_key[:2]
+            or (namespace == "objects" and suffix is not None)
+            or (namespace == "parts" and suffix != ".part")
+        ):
+            raise CarryForwardError(code)
+        if namespace == "quarantine":
+            continue
+        inventory.append({"storage_key": storage_key, "mtime_ns": item.get("mtime_ns"),
+                          "stat_digest": digest(item), "path": path})
+    return inventory
+
+
+def capture_group2_reboot_start_admission(
+    root: Path, directory: Path, request: dict[str, Any], database: dict[str, Any],
+    files: dict[str, Any], seed: Any, project: str, parent_selection: dict[str, Any],
+) -> dict[str, Any]:
+    """Complete the same-transaction DB seed with fresh file and broker facts."""
+    code = "group2_reboot_start_admission_invalid"
+    seed = _closed_object(
+        seed, {"raw_tables", "database_rows", "mutation_guard_rows",
+               "db_clock", "vm_lower_ns", "vm_upper_ns",
+               "database_digest", "files_digest"}, code
+    )
+    if seed["database_digest"] != digest(database) or seed["files_digest"] != digest(files):
+        raise CarryForwardError(code)
+    parameters = request["prior"]["parameters"]
+    control_raw = _inspect_reboot_container_raw(
+        request["prior"]["containers"]["control"]["container_id"]
+    )
+    worker_raw = _inspect_reboot_container_raw(
+        request["prior"]["containers"]["worker"]["container_id"]
+    )
+    for service, raw in (("control", control_raw), ("worker", worker_raw)):
+        current = _inspect_container(project, service)
+        _validate_reboot_container_raw(
+            raw, request["prior"]["containers"][service], current, stopped=True
+        )
+    configuration = derive_group2_reboot_configuration(
+        control_raw, worker_raw, seed["raw_tables"]["workers"]
+    )
+    settings = configuration["effective_settings"]
+    worker_id = configuration["worker_id"]
+    queued = [item["execution_id"] for item in parent_selection.get("queued", [])]
+    journal = files.get("journal_facts")
+    materials = files.get("materials", {})
+    artifact_entries = materials.get("artifacts", {}).get("entries", []) if isinstance(materials, dict) else []
+    inventory = _group2_reboot_artifact_inventory(artifact_entries)
+
+    rabbit_parameters = configuration["rabbitmq"]
+    rabbit_id = request["prior"]["containers"]["rabbitmq"]["container_id"]
+
+    def rabbit_json(*arguments: str) -> Any:
+        try:
+            return json.loads(_checked_output(["docker", "exec", rabbit_id, *arguments]))
+        except (json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
+            raise CarryForwardError("group2_reboot_queue_unsafe") from error
+
+    def rabbit_external() -> dict[str, Any]:
+        return {
+            "connections": rabbit_json("rabbitmqctl", "-q", "list_connections", "name", "--formatter", "json"),
+            "channels": rabbit_json("rabbitmqctl", "-q", "list_channels", "pid", "--formatter", "json"),
+            "consumers": rabbit_json("rabbitmqctl", "-q", "list_consumers", "-p", rabbit_parameters["vhost"], "queue_name", "consumer_tag", "--formatter", "json"),
+        }
+
+    def rabbit_ra(queue_name: str, function: str, kind: str) -> dict[str, Any]:
+        vhost = base64.b64encode(rabbit_parameters["vhost"].encode()).decode()
+        name = base64.b64encode(queue_name.encode()).decode()
+        expression = (
+            f'V=base64:decode(<<"{vhost}">>),N=base64:decode(<<"{name}">>),'
+            '{ok,Q}=rabbit_amqqueue:lookup(rabbit_misc:r(V,queue,N)),'
+            f'ra:consistent_query(amqqueue:get_pid(Q),{{rabbit_fifo,{function},[]}},5000).'
+        )
+        raw = subprocess.check_output(
+            ["docker", "exec", rabbit_id, "rabbitmqctl", "-q", "eval", expression],
+            text=True, timeout=_reboot_timeout(request, 10),
+        ).strip()
+        total_match = re.fullmatch(r"\{ok,(\d+),\{.+\}\}", raw)
+        dlx_match = re.fullmatch(r"\{ok,\{(\d+),(\d+)\},\{.+\}\}", raw)
+        provisional = {"raw": raw, "value": (
+            [int(item) for item in dlx_match.groups()] if kind == "dlx" and dlx_match
+            else int(total_match.group(1)) if total_match else None
+        )}
+        _rabbit_ra_result(provisional, kind)
+        return provisional
+
+    topology = {
+        "exchanges": rabbit_json("rabbitmqctl", "-q", "list_exchanges", "-p", rabbit_parameters["vhost"], "name", "type", "durable", "--formatter", "json"),
+        "bindings": rabbit_json("rabbitmqctl", "-q", "list_bindings", "-p", rabbit_parameters["vhost"], "source_name", "destination_name", "destination_kind", "routing_key", "arguments", "--formatter", "json"),
+        "policies": rabbit_json("rabbitmqctl", "-q", "list_policies", "-p", rabbit_parameters["vhost"], "name", "pattern", "definition", "priority", "apply-to", "--formatter", "json"),
+    }
+    feature_flags = rabbit_json(
+        "rabbitmqctl", "-q", "list_feature_flags", "name", "state", "--formatter", "json"
+    )
+    external_before = rabbit_external()
+    queue_rows = rabbit_json(
+        "rabbitmqctl", "-q", "list_queues", "-p", rabbit_parameters["vhost"],
+        "name", "type", "state", "arguments", "messages", "messages_ready",
+        "messages_unacknowledged", "--formatter", "json",
+    )
+    by_name = {row.get("name"): row for row in queue_rows if isinstance(row, dict)}
+    queues = []
+    for expected_queue in rabbit_parameters["queues"]:
+        row = by_name.get(expected_queue["name"])
+        if row is None:
+            raise CarryForwardError("group2_reboot_queue_unsafe")
+        queues.append({
+            "vhost": rabbit_parameters["vhost"], "name": row["name"],
+            "type": row["type"], "state": row["state"],
+            "arguments": row["arguments"], "messages_total": row["messages"],
+            "messages_ready": row["messages_ready"],
+            "messages_unacknowledged": row["messages_unacknowledged"],
+            "ra": {
+                "total": rabbit_ra(row["name"], "query_messages_total", "total"),
+                "dlx": rabbit_ra(row["name"], "query_stat_dlx", "dlx"),
+                "checked_out": rabbit_ra(row["name"], "query_messages_checked_out", "checked_out"),
+            },
+        })
+    if set(by_name) != {item["name"] for item in rabbit_parameters["queues"]}:
+        raise CarryForwardError("group2_reboot_queue_unsafe")
+    external_after = rabbit_external()
+    network = _capture_group2_reboot_network_boundary(request, project)
+    t0_ns = _group2_admission_ns(seed["db_clock"], code)
+    raw_files = {"journal_facts": journal, "artifact_store": inventory}
+    derived = derive_group2_reboot_start_admission(
+        seed["raw_tables"], raw_files, settings, t0_ns=t0_ns,
+        horizon_ns=request["window"]["successor_deadline_ns"],
+        preserved_queued_ids=queued, worker_id=worker_id,
+    )
+    rabbit = {
+        "image_id": request["prior"]["containers"]["rabbitmq"]["image_id"],
+        "version": _checked_output(["docker", "exec", rabbit_id, "rabbitmqctl", "version"]),
+        "plugins": _checked_output(["docker", "exec", rabbit_id, "rabbitmq-plugins", "list", "-e", "-m"]).splitlines(),
+        "config_digest": digest(rabbit_parameters),
+        "queue_scope": rabbit_parameters["queues"],
+        "raw_response_digest": digest({"queues": queues, "topology": topology,
+                                       "feature_flags": feature_flags,
+                                       "external_before": external_before,
+                                       "external_after": external_after,
+                                       "network": network}),
+        "queues": queues,
+        "topology": topology, "feature_flags": feature_flags,
+        "external_before": external_before, "external_after": external_after,
+        "network": network,
+    }
+    value = {
+        "schema": "group2-post-finalize-reboot-start-admission-v1",
+        "database_digest": digest(database), "parameters_digest": digest(parameters),
+        "clock": {"db_utc_ns": t0_ns, "vm_lower_ns": seed["vm_lower_ns"],
+                  "vm_upper_ns": seed["vm_upper_ns"]},
+        "deadline_ns": request["window"]["deadline_ns"],
+        "successor_deadline_ns": request["window"]["successor_deadline_ns"],
+        "sources": GROUP2_POST_FINALIZE_REBOOT_SOURCES,
+        "raw_tables": seed["raw_tables"], "database_rows": seed["database_rows"],
+        "mutation_guard_rows": seed["mutation_guard_rows"],
+        "raw_files": raw_files, "configuration": configuration,
+        "effective_settings": settings, "preserved_queued_ids": queued,
+        "worker_id": worker_id, "rabbitmq": rabbit, "derived": derived,
+    }
+    validate_group2_reboot_start_admission(
+        value, database, parameters, request["window"]["deadline_ns"],
+        request["window"]["successor_deadline_ns"], rabbit["image_id"],
+        queued, request["prior"]["containers"],
+    )
+    _atomic_incident_json(directory / "start-admission.json", value)
+    return value
+
+
+def _post_finalize_reboot_stage(value: Any, phase: str) -> dict[str, Any]:
+    fields = {
+        "schema", "phase", "boot_id", "files", "logs", "containers", "images",
+        "container_inspect", "storage", "authority", "window_start_ns", "window_end_ns",
+    }
+    if phase in {"keeper_ready", "applications_started", "verified"}:
+        fields.add("kernel")
+    if phase == "stopped":
+        fields.add("postgres")
+    if phase in {"database_ready", "applications_started", "verified"}:
+        fields.update(("db", "postgres", "start_admission"))
+    if phase in {"applications_started", "verified"}:
+        fields.update(("startup_request", "startup_proof", "startup_files",
+                       "rabbit_identity", "mutation_guard"))
+    value = _closed_object(value, fields, "group2_reboot_stage_invalid")
+    if (
+        value["schema"] != "group2-post-finalize-reboot-stage-v1"
+        or value["phase"] != phase
+        or not isinstance(value["window_start_ns"], int)
+        or isinstance(value["window_start_ns"], bool)
+        or not isinstance(value["window_end_ns"], int)
+        or isinstance(value["window_end_ns"], bool)
+        or value["window_end_ns"] < value["window_start_ns"]
+    ):
+        raise CarryForwardError("group2_reboot_stage_invalid")
+    return value
+
+
+def _validate_group2_reboot_empty_log_segment(before: Any, after: Any) -> None:
+    try:
+        start, end = _validate_log_link(before, after)
+        _validate_log_segment_transition(before, after, start, end)
+    except CarryForwardError as error:
+        raise CarryForwardError("group2_reboot_transition_invalid") from error
+    if any(
+        not isinstance(item, dict) or item.get("appended_text") != ""
+        for item in after.get("files", [])
+    ):
+        raise CarryForwardError("group2_reboot_transition_invalid")
+
+
+def validate_group2_post_finalize_reboot_transition(
+    validated: Any, previous: Any, current: Any, phase: str
+) -> dict[str, Any]:
+    code = "group2_reboot_transition_invalid"
+    if phase not in GROUP2_POST_FINALIZE_REBOOT_PHASES[1:-1]:
+        raise CarryForwardError(code)
+    previous_phase = GROUP2_POST_FINALIZE_REBOOT_PHASES[
+        GROUP2_POST_FINALIZE_REBOOT_PHASES.index(phase) - 1
+    ]
+    previous = _post_finalize_reboot_stage(previous, previous_phase)
+    current = _post_finalize_reboot_stage(current, phase)
+    request = validated["request"]
+    if (
+        previous["boot_id"] != request["boot_id"]
+        or current["boot_id"] != request["boot_id"]
+        or current["images"] != previous["images"]
+        or current["storage"] != previous["storage"]
+        or current["window_start_ns"] < request["window"]["not_before_ns"]
+        or current["window_end_ns"] > request["window"]["deadline_ns"]
+        or current["window_start_ns"] < previous["window_end_ns"]
+    ):
+        raise CarryForwardError(code)
+    if set(current["container_inspect"]) != set(request["prior"]["containers"]):
+        raise CarryForwardError(code)
+    for service, raw in current["container_inspect"].items():
+        _validate_reboot_container_raw(
+            raw, request["prior"]["containers"][service],
+            current["containers"][service], stopped=False
+        )
+    if phase == "keeper_ready":
+        _validate_group2_reboot_empty_log_segment(previous["logs"], current["logs"])
+        if (
+            {key: value for key, value in current["authority"].items() if key != "keeper"}
+            != {key: value for key, value in previous["authority"].items() if key != "keeper"}
+            or previous["authority"].get("keeper") != "missing"
+            or not isinstance(current["authority"].get("keeper"), dict)
+            or current["files"] != previous["files"]
+            or current["containers"] != previous["containers"]
+            or current["kernel"].get("boot_id") != request["boot_id"]
+            or current["kernel"].get("namespace_evidence") is None
+        ):
+            raise CarryForwardError(code)
+    elif phase == "database_ready":
+        _validate_group2_reboot_empty_log_segment(previous["logs"], current["logs"])
+        if (
+            current["authority"] != previous["authority"]
+            or current["db"] != validated["parent"]["snapshot"]["db"]
+            or current["files"] != previous["files"]
+        ):
+            raise CarryForwardError(code)
+        validate_group2_reboot_start_admission(
+            current["start_admission"], current["db"], request["prior"]["parameters"],
+            request["window"]["deadline_ns"],
+            request["window"]["successor_deadline_ns"],
+            current["containers"]["rabbitmq"].get("image_id"),
+            [item["execution_id"] for item in validated["parent"]["snapshot"].get("selection", {}).get("queued", [])],
+            request["prior"]["containers"],
+        )
+        for service in ("postgres", "rabbitmq"):
+            before, after = previous["containers"][service], current["containers"][service]
+            if (
+                before.get("container_id") != after.get("container_id")
+                or before.get("image_id") != after.get("image_id")
+                or after.get("status") != "running"
+                or after.get("health") != "healthy"
+            ):
+                raise CarryForwardError(code)
+        if any(
+            current["containers"][name] != previous["containers"][name]
+            for name in ("control", "worker", "web", "account-web")
+        ):
+            raise CarryForwardError(code)
+    elif phase == "applications_started":
+        if (
+            current["authority"] != previous["authority"]
+            or current["db"] != previous["db"]
+            or current["postgres"] != previous["postgres"]
+            or current["start_admission"] != previous["start_admission"]
+        ):
+            raise CarryForwardError(code)
+        profile = validated["platform"]["account_entry"]
+        worker_profile = profile["old_profiles"]["worker"]
+        proof = _same_container_worker_startup_proof(
+            current["startup_request"], profile,
+            previous["containers"]["worker"]["image_id"], worker_profile,
+            validated["platform"]["prior_nonces"],
+        )
+        if current["startup_proof"] != proof:
+            raise CarryForwardError(code)
+        _validate_group2_reboot_mutation_guard(current["mutation_guard"])
+        if current["mutation_guard"] != previous["start_admission"]["mutation_guard_rows"]:
+            raise CarryForwardError(code)
+        validate_group2_reboot_rabbit_identity(
+            current["rabbit_identity"], current["start_admission"]["configuration"],
+            current["container_inspect"],
+        )
+        if not (
+            current["window_start_ns"] <= current["rabbit_identity"]["captured_start_ns"]
+            <= current["rabbit_identity"]["captured_end_ns"] <= current["window_end_ns"]
+        ):
+            raise CarryForwardError(code)
+        result = compare_group2_startup_files(
+            previous["files"], current["files"], proof
+        )
+        if current["startup_files"] != result:
+            raise CarryForwardError(code)
+        for service in ("control", "worker", "web"):
+            before, after = previous["containers"][service], current["containers"][service]
+            if (
+                before.get("container_id") != after.get("container_id")
+                or before.get("image_id") != after.get("image_id")
+                or after.get("status") != "running"
+                or after.get("health") != "healthy"
+                or after.get("restart_count") != 0
+            ):
+                raise CarryForwardError(code)
+        if current["containers"]["account-web"] != previous["containers"]["account-web"]:
+            raise CarryForwardError(code)
+    else:
+        _validate_group2_reboot_mutation_guard(current["mutation_guard"])
+        validate_group2_reboot_rabbit_identity(
+            current["rabbit_identity"], current["start_admission"]["configuration"],
+            current["container_inspect"],
+        )
+        if not (
+            current["window_start_ns"] <= current["rabbit_identity"]["captured_start_ns"]
+            <= current["rabbit_identity"]["captured_end_ns"] <= current["window_end_ns"]
+        ):
+            raise CarryForwardError(code)
+        if (
+            current["authority"] != previous["authority"]
+            or current["db"] != previous["db"]
+            or current["files"] != previous["files"]
+            or current["startup_proof"] != previous["startup_proof"]
+            or current["startup_files"] != previous["startup_files"]
+            or current["startup_request"] != previous["startup_request"]
+            or current["postgres"] != previous["postgres"]
+            or current["start_admission"] != previous["start_admission"]
+            or current["mutation_guard"] != previous["mutation_guard"]
+            or current["containers"] != previous["containers"]
+        ):
+            raise CarryForwardError(code)
+        for key in (
+            "boot_id", "unit", "control_group", "keeper_pid", "keeper_starttime",
+            "description", "parent_device", "parent_inode",
+        ):
+            if current["kernel"].get(key) != previous["kernel"].get(key):
+                raise CarryForwardError(code)
+        try:
+            _validate_log_link(
+                previous["logs"], current["logs"],
+                validated["platform"]["account_entry"]["profile_digest"],
+            )
+        except CarryForwardError as error:
+            raise CarryForwardError(code) from error
+    return current
+
+
+def validate_group2_post_finalize_reboot_result(
+    validated: Any, evidence: Any
+) -> dict[str, Any]:
+    code = "group2_reboot_result_invalid"
+    evidence = _closed_object(
+        evidence,
+        {"stopped", "keeper_ready", "database_ready", "applications_started",
+         "verified", "authority", "commands"},
+        code,
+    )
+    stopped_raw = evidence["stopped"]
+    stopped = validate_group2_post_finalize_reboot_stopped(validated, stopped_raw)
+    stopped_stage = {
+        **stopped,
+        "schema": "group2-post-finalize-reboot-stage-v1",
+        "phase": "stopped",
+        "window_start_ns": validated["request"]["window"]["not_before_ns"],
+        "window_end_ns": validated["request"]["window"]["not_before_ns"],
+    }
+    current = stopped_stage
+    for phase in GROUP2_POST_FINALIZE_REBOOT_PHASES[1:-1]:
+        current = validate_group2_post_finalize_reboot_transition(
+            validated, current, evidence[phase], phase
+        )
+    authority = _closed_object(
+        evidence["authority"], {"before", "after"}, code
+    )
+    if authority["before"] != authority["after"]:
+        raise CarryForwardError("group2_reboot_authority_changed")
+    request = validated["request"]
+    _validate_group2_reboot_commands(evidence["commands"], request)
+    receipt = {
+        "schema": "group2-post-finalize-reboot-receipt-v1",
+        "incident_id": request["incident_id"],
+        "finalize_id": request["finalize_id"],
+        "boot_id": request["boot_id"],
+        "request_digest": request["request_digest"],
+        "tool_sha": request["tool"]["sha"],
+        "parent_snapshot_digest": digest(validated["parent"]["snapshot"]),
+        "startup_proof": current["startup_proof"],
+        "startup_files": current["startup_files"],
+        "stage_digests": {
+            name: digest(evidence[name])
+            for name in (
+                "stopped", "keeper_ready", "database_ready",
+                "applications_started", "verified",
+            )
+        },
+        "authority_digest": digest(authority),
+        "evidence_digest": digest(evidence),
+    }
+    receipt["receipt_digest"] = digest(receipt)
+    return receipt
+
+
+def _validate_group2_reboot_commands(value: Any, request: dict[str, Any]) -> None:
+    code = "group2_reboot_command_evidence_invalid"
+    actions = ("prepare-keeper", "start-postgres", "start-rabbitmq",
+               "start-control", "start-worker", "start-web")
+    value = _closed_object(value, set(actions), code)
+    previous_end = request["window"]["not_before_ns"]
+    params = request["prior"]["parameters"]["keeper"]
+    for action in actions:
+        pair = _closed_object(value[action], {"intent", "result"}, code)
+        try:
+            intent = json.loads(_validate_embedded_bytes(pair["intent"], code))
+            result = json.loads(_validate_embedded_bytes(pair["result"], code))
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise CarryForwardError(code) from error
+        intent = _closed_object(
+            intent, {"schema", "action", "argv", "started_at_ns"}, code
+        )
+        result = _closed_object(
+            result,
+            {"schema", "action", "argv", "started_at_ns", "ended_at_ns",
+             "returncode", "stdout", "stderr"}, code,
+        )
+        if action == "prepare-keeper":
+            argv = intent["argv"]
+            valid_argv = (
+                isinstance(argv, list) and len(argv) == 7
+                and isinstance(argv[0], str)
+                and Path(argv[0]).name == "prepare-sandbox-host.sh"
+                and argv[1:] == ["--unit", params["unit"], "--cpu-quota",
+                                  params["cpu_quota"], "--memory-max",
+                                  params["memory_max"]]
+            )
+        else:
+            service = action.removeprefix("start-")
+            valid_argv = intent["argv"] == [
+                "docker", "start", request["prior"]["containers"][service]["container_id"]
+            ]
+        if (
+            intent["schema"] != "group2-post-finalize-reboot-command-intent-v1"
+            or result["schema"] != "group2-post-finalize-reboot-command-result-v1"
+            or intent["action"] != action or result["action"] != action
+            or result["argv"] != intent["argv"] or not valid_argv
+            or result["started_at_ns"] != intent["started_at_ns"]
+            or not isinstance(intent["started_at_ns"], int)
+            or not isinstance(result["ended_at_ns"], int)
+            or intent["started_at_ns"] < previous_end
+            or result["ended_at_ns"] < intent["started_at_ns"]
+            or result["ended_at_ns"] > request["window"]["deadline_ns"]
+            or result["returncode"] != 0
+            or not isinstance(result["stdout"], str)
+            or not isinstance(result["stderr"], str)
+        ):
+            raise CarryForwardError(code)
+        previous_end = result["ended_at_ns"]
+
+
+def validate_group2_post_finalize_reboot_preservation(chain: Any) -> dict[str, Any]:
+    code = "group2_reboot_chain_invalid"
+    chain = _closed_object(
+        chain,
+        {"schema", "request", "approval", "user_record", "source_artifacts", "result"},
+        code,
+    )
+    if chain["schema"] != "group2-post-finalize-reboot-chain-v1":
+        raise CarryForwardError(code)
+    source = _closed_object(
+        chain["source_artifacts"], GROUP2_POST_FINALIZE_REBOOT_FILES, code
+    )
+    raw = {name: _validate_embedded_bytes(value, code) for name, value in source.items()}
+    user_record = _validate_embedded_bytes(chain["user_record"], code)
+    validated = validate_group2_post_finalize_reboot_request(
+        chain["request"], chain["approval"], user_record, raw
+    )
+    result = _closed_object(chain["result"], {"schema", "evidence", "receipt"}, code)
+    if result["schema"] != "group2-post-finalize-reboot-result-v1":
+        raise CarryForwardError(code)
+    receipt = validate_group2_post_finalize_reboot_result(validated, result["evidence"])
+    if result["receipt"] != receipt:
+        raise CarryForwardError(code)
+    parent = validated["parent"]["snapshot"]
+    request = validated["request"]
+    return {
+        "selection": parent["selection"],
+        "db": parent["db"],
+        "files": result["evidence"]["verified"]["files"],
+        "lineage": [
+            *parent["lineage"],
+            {
+                "name": (
+                    f"incident/{request['incident_id']}/finalize/{request['finalize_id']}"
+                    f"/reboot/{request['boot_id']}/request"
+                ),
+                "sha256": request["request_digest"],
+            },
+            {
+                "name": (
+                    f"incident/{request['incident_id']}/finalize/{request['finalize_id']}"
+                    f"/reboot/{request['boot_id']}/receipt"
+                ),
+                "sha256": receipt["receipt_digest"],
+            },
+            {
+                "name": (
+                    f"incident/{request['incident_id']}/finalize/{request['finalize_id']}"
+                    f"/reboot/{request['boot_id']}/chain"
+                ),
+                "sha256": streaming_digest(chain),
+            },
+        ],
+    }
+
+
 def _validate_group2_partial_finalize_preservation(
     chain: Any, original_reference: Any, validated: Any
 ) -> dict[str, Any]:
@@ -10096,6 +12442,9 @@ def _capture_reconcile_state(
     name: str,
     manifest: dict[str, Any],
     project: str,
+    *,
+    admission_output: Path | None = None,
+    timeout: int = 300,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     output = directory / name
     output.mkdir(mode=0o700)
@@ -10169,8 +12518,194 @@ def _capture_reconcile_state(
             "--db-output", "/evidence/db.json", "--files-output", "/evidence/files.json",
         )
     )
-    subprocess.run(arguments, check=True, timeout=300)
+    if admission_output is not None:
+        arguments.extend(("--admission-output", f"/evidence/{admission_output.name}"))
+    subprocess.run(arguments, check=True, timeout=timeout)
     return read_private(output / "db.json"), read_private(output / "files.json")
+
+
+def _reboot_volume(
+    storage: list[dict[str, Any]], service: str, destination: str
+) -> str:
+    matches = [
+        item.get("source") for item in storage
+        if isinstance(item, dict) and item.get("service") == service
+        and item.get("destination") == destination and item.get("type") == "volume"
+    ]
+    if len(matches) != 1 or not isinstance(matches[0], str) or not matches[0]:
+        raise CarryForwardError("group2_reboot_storage_changed")
+    return matches[0]
+
+
+def _capture_group2_reboot_files(
+    directory: Path, request: dict[str, Any], project: str, name: str
+) -> dict[str, Any]:
+    """Read stopped volumes with the frozen old Control image and no network."""
+    output = directory / name
+    output.mkdir(mode=0o700)
+    storage = request["prior"]["storage"]
+    runtime = _reboot_volume(storage, "worker", "/var/lib/dlr/runtime")
+    journal = _reboot_volume(storage, "worker", "/var/lib/dlr/journal")
+    builtin = _reboot_volume(storage, "control", "/var/lib/dlr/builtin-packages")
+    artifacts = [
+        item for item in storage if isinstance(item, dict)
+        and item.get("service") == "control" and item.get("type") == "volume"
+        and item.get("destination") != "/var/lib/dlr/builtin-packages"
+    ]
+    if len(artifacts) != 1:
+        raise CarryForwardError("group2_reboot_storage_changed")
+    worker_user = _checked_output([
+        "docker", "inspect", request["prior"]["containers"]["worker"]["container_id"],
+        "--format", "{{.Config.User}}",
+    ]).split(":", 1)[0] or "0"
+    if not worker_user.isdigit():
+        raise CarryForwardError("group2_reboot_storage_changed")
+    arguments = [
+        "docker", "run", "--rm", "--read-only", "--network", "none",
+        "--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH", "--user", "0:0",
+        "--security-opt", "no-new-privileges=true", "--pids-limit", "64",
+        "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m",
+        "--env", "PYTHONDONTWRITEBYTECODE=1",
+        "--mount", f"type=bind,source={directory / 'tool' / 'carry_forward.py'},target=/opt/dlr/carry_forward.py,readonly",
+        "--mount", f"type=bind,source={output},target=/evidence",
+        "--mount", f"type=volume,source={runtime},target=/var/lib/dlr/runtime,readonly,volume-nocopy",
+        "--mount", f"type=volume,source={journal},target=/var/lib/dlr/journal,readonly,volume-nocopy",
+        "--mount", f"type=volume,source={builtin},target=/var/lib/dlr/builtin-packages,readonly,volume-nocopy",
+        "--mount", f"type=volume,source={artifacts[0]['source']},target={artifacts[0]['destination']},readonly,volume-nocopy",
+        "--entrypoint", "python", request["prior"]["containers"]["control"]["image_id"],
+        "/opt/dlr/carry_forward.py", "capture",
+        "--runtime-root", "/var/lib/dlr/runtime", "--journal-root", "/var/lib/dlr/journal",
+        "--material-root", "builtin=/var/lib/dlr/builtin-packages",
+        "--material-root", f"artifacts={artifacts[0]['destination']}",
+        "--expected-uid", worker_user, "--output", "/evidence/files.json",
+    ]
+    subprocess.run(arguments, check=True, timeout=_reboot_timeout(request, 300))
+    return read_private(output / "files.json")
+
+
+def _reboot_timeout(request: dict[str, Any], maximum: int) -> int:
+    remaining = (request["window"]["deadline_ns"] - time.time_ns()) // 1_000_000_000
+    if remaining < 5:
+        raise CarryForwardError("group2_reboot_window_expired")
+    return max(1, min(maximum, int(remaining)))
+
+
+def _wait_reboot_container(
+    request: dict[str, Any], project: str, service: str
+) -> dict[str, Any]:
+    deadline = time.monotonic() + _reboot_timeout(request, 180)
+    while True:  # tick first; sleeping never delays the first observation
+        current = _inspect_container(project, service)
+        if current.get("status") == "running" and current.get("health") == "healthy":
+            return current
+        if current.get("status") in {"dead", "removing"} or time.monotonic() >= deadline:
+            raise CarryForwardError(f"group2_reboot_{service}_start_failed")
+        time.sleep(0.25)
+
+
+def _start_reboot_container(
+    directory: Path, request: dict[str, Any], project: str, service: str
+) -> dict[str, Any]:
+    expected = request["prior"]["containers"][service]
+    before = _inspect_container(project, service)
+    if before != _reboot_expected_container(expected) or before.get("status") == "running":
+        raise CarryForwardError("group2_reboot_container_changed")
+    _run_group2_reboot_action(
+        directory, f"start-{service}", ["docker", "start", expected["container_id"]],
+        _reboot_timeout(request, 180),
+    )
+    after = _wait_reboot_container(request, project, service)
+    if (
+        after.get("container_id") != expected.get("container_id")
+        or after.get("image_id") != expected.get("image_id")
+    ):
+        raise CarryForwardError("group2_reboot_container_changed")
+    return after
+
+
+def _run_group2_reboot_action(
+    directory: Path, name: str, arguments: list[str], timeout: int
+) -> dict[str, Any]:
+    if not re.fullmatch(r"(?:prepare-keeper|start-(?:postgres|rabbitmq|control|worker|web))", name):
+        raise CarryForwardError("group2_reboot_action_invalid")
+    intent = directory / f"command-{name}-intent.json"
+    result_path = directory / f"command-{name}-result.json"
+    if intent.exists() or result_path.exists():
+        raise CarryForwardError("group2_reboot_replay_rejected")
+    started = time.time_ns()
+    _atomic_incident_json(intent, {
+        "schema": "group2-post-finalize-reboot-command-intent-v1",
+        "action": name, "argv": arguments, "started_at_ns": started,
+    })
+    try:
+        completed = subprocess.run(
+            arguments, check=False, capture_output=True, text=True, timeout=timeout,
+        )
+        record = {
+            "schema": "group2-post-finalize-reboot-command-result-v1",
+            "action": name, "argv": arguments, "started_at_ns": started,
+            "ended_at_ns": time.time_ns(), "returncode": completed.returncode,
+            "stdout": completed.stdout, "stderr": completed.stderr,
+        }
+    except subprocess.TimeoutExpired as error:
+        record = {
+            "schema": "group2-post-finalize-reboot-command-result-v1",
+            "action": name, "argv": arguments, "started_at_ns": started,
+            "ended_at_ns": time.time_ns(), "returncode": None,
+            "stdout": error.stdout or "", "stderr": error.stderr or "",
+            "error": "timeout",
+        }
+    _atomic_incident_json(result_path, record)
+    if record.get("returncode") != 0:
+        raise CarryForwardError(f"group2_reboot_{name.replace('-', '_')}_failed")
+    return record
+
+
+def _inspect_reboot_container_raw(container_id: str) -> dict[str, Any]:
+    try:
+        values = json.loads(_checked_output(["docker", "inspect", container_id]))
+    except (json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
+        raise CarryForwardError("group2_reboot_container_changed") from error
+    if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
+        raise CarryForwardError("group2_reboot_container_changed")
+    return values[0]
+
+
+def _reboot_container_static(value: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        key: value.get(key)
+        for key in ("Id", "Image", "Name", "Config", "HostConfig", "Mounts")
+    }
+    if isinstance(result["Mounts"], list):
+        result["Mounts"] = sorted(
+            result["Mounts"], key=lambda item: (
+                item.get("Destination", "") if isinstance(item, dict) else ""
+            )
+        )
+    return result
+
+
+def _reboot_expected_container(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: item for key, item in value.items()
+        if key not in {"inspect_static_digest", "stopped_state_digest"}
+    }
+
+
+def _validate_reboot_container_raw(
+    raw: Any, expected: dict[str, Any], current: dict[str, Any], *, stopped: bool
+) -> None:
+    if (
+        not isinstance(raw, dict)
+        or digest(_reboot_container_static(raw)) != expected.get("inspect_static_digest")
+        or raw.get("Id") != expected.get("container_id")
+        or raw.get("Image") != expected.get("image_id")
+        or not isinstance(raw.get("State"), dict)
+        or raw["State"].get("Status") != current.get("status")
+        or raw.get("RestartCount", 0) != current.get("restart_count")
+        or (stopped and digest(raw["State"]) != expected.get("stopped_state_digest"))
+    ):
+        raise CarryForwardError("group2_reboot_container_changed")
 
 
 def _capture_reconcile_stage(
@@ -10186,10 +12721,15 @@ def _capture_reconcile_stage(
     baseline_authority: dict[str, Any],
     runtime_volume: str,
     journal_volume: str,
+    admission_output: Path | None = None,
+    timeout: int = 300,
 ) -> dict[str, Any]:
     window_start_ns = time.time_ns()
     logs = read_log_append(previous_logs)
-    db, files = _capture_reconcile_state(root, directory, name, manifest, project)
+    db, files = _capture_reconcile_state(
+        root, directory, name, manifest, project,
+        admission_output=admission_output, timeout=timeout
+    )
     kernel_arguments: dict[str, Any] = {
         "require_idle": require_idle,
         "expected_description": (
@@ -10216,7 +12756,7 @@ def _capture_reconcile_stage(
         )
     }
     storage = _live_storage_identity(project)
-    return {
+    result = {
         "db": db,
         "files": files,
         "logs": logs,
@@ -10226,6 +12766,12 @@ def _capture_reconcile_stage(
         "window_start_ns": window_start_ns,
         "window_end_ns": time.time_ns(),
     }
+    if admission_output is not None:
+        seed = read_private(admission_output)
+        result["mutation_guard"] = _validate_group2_reboot_mutation_guard(
+            seed.get("mutation_guard_rows") if isinstance(seed, dict) else None
+        )
+    return result
 
 
 def reconcile_group2_vm(root: Path, incident_id: str) -> dict[str, Any]:
@@ -10519,6 +13065,37 @@ def _validate_group2_partial_finalize_directory(
     return directory
 
 
+def _validate_group2_post_finalize_reboot_directory(
+    root: Path, incident_id: str, finalize_id: str, boot_id: str
+) -> Path:
+    """Resolve the sole prepared reboot attempt without following a symlink."""
+    code = "group2_reboot_replay_rejected"
+    reboot_root = root / "incidents" / incident_id / "finalize" / finalize_id / "reboot"
+    directory = reboot_root / boot_id
+    try:
+        root_info = reboot_root.lstat()
+        directory_info = directory.lstat()
+        canonical_root = reboot_root.resolve(strict=True)
+        canonical_directory = directory.resolve(strict=True)
+        children = {item.name for item in reboot_root.iterdir()}
+    except OSError as error:
+        raise CarryForwardError(code) from error
+    if (
+        incident_id != GROUP2_PARTIAL_INCIDENT_ID
+        or finalize_id != GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID
+        or BOOT_ID.fullmatch(boot_id) is None
+        or not stat.S_ISDIR(root_info.st_mode)
+        or stat.S_ISLNK(root_info.st_mode)
+        or not stat.S_ISDIR(directory_info.st_mode)
+        or stat.S_ISLNK(directory_info.st_mode)
+        or canonical_root != reboot_root
+        or canonical_directory != directory
+        or children != {boot_id}
+    ):
+        raise CarryForwardError(code)
+    return directory
+
+
 def finalize_group2_partial_vm(
     root: Path, incident_id: str, finalize_id: str
 ) -> dict[str, Any]:
@@ -10767,12 +13344,459 @@ def finalize_group2_partial_vm(
             "receipt_digest": receipt["receipt_digest"]}
 
 
+def _reboot_phase(
+    directory: Path, request: dict[str, Any], phase: str,
+    completed: list[str], pending_action: str | None,
+    evidence_digests: dict[str, str],
+) -> None:
+    _atomic_incident_json(
+        directory / "phase.json",
+        {
+            "schema": "group2-post-finalize-reboot-phase-v1",
+            "incident_id": request["incident_id"],
+            "finalize_id": request["finalize_id"],
+            "boot_id": request["boot_id"],
+            "phase": phase,
+            "completed_stages": completed,
+            "pending_action": pending_action,
+            "evidence_digests": evidence_digests,
+        },
+    )
+
+
+def _recover_group2_post_finalize_reboot_vm_once(
+    root: Path, incident_id: str, finalize_id: str, boot_id: str
+) -> dict[str, Any]:
+    """Execute the one prepared same-container reboot recovery, once."""
+    root = root.resolve(strict=True)
+    directory = _validate_group2_post_finalize_reboot_directory(
+        root, incident_id, finalize_id, boot_id
+    )
+    request = read_private(directory / "request.json")
+    approval = read_private(directory / "USER-APPROVAL.json")
+    user_record = (directory / "USER-APPROVAL.txt").read_bytes()
+    artifacts = {
+        name: (directory / "evidence" / name).read_bytes()
+        for name in GROUP2_POST_FINALIZE_REBOOT_FILES
+    }
+    validated = validate_group2_post_finalize_reboot_request(
+        request, approval, user_record, artifacts
+    )
+    attempt = _closed_object(
+        read_private(directory / "attempt.json"),
+        {"schema", "incident_id", "finalize_id", "boot_id", "request_digest",
+         "tool_sha", "window", "status"},
+        "group2_reboot_replay_rejected",
+    )
+    if (
+        request["incident_id"] != incident_id
+        or request["finalize_id"] != finalize_id
+        or request["boot_id"] != boot_id
+        or attempt != {
+            "schema": "group2-post-finalize-reboot-attempt-v1",
+            "incident_id": incident_id, "finalize_id": finalize_id,
+            "boot_id": boot_id, "request_digest": request["request_digest"],
+            "tool_sha": request["tool"]["sha"], "window": request["window"],
+            "status": "claimed",
+        }
+        or read_private(directory / "phase.json")
+        != {
+            "schema": "group2-post-finalize-reboot-phase-v1",
+            "incident_id": incident_id, "finalize_id": finalize_id,
+            "boot_id": boot_id, "phase": "prepared", "completed_stages": [],
+            "pending_action": None, "evidence_digests": {},
+        }
+    ):
+        raise CarryForwardError("group2_reboot_replay_rejected")
+    tool_directory = directory / "tool"
+    if (
+        not tool_directory.is_dir() or tool_directory.is_symlink()
+        or {item.name for item in tool_directory.iterdir()}
+        != {"deploy.sh", "carry_forward.py"}
+    ):
+        raise CarryForwardError("group2_reboot_tool_changed")
+    for name in ("deploy.sh", "carry_forward.py"):
+        path = tool_directory / name
+        info = path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or hashlib.sha256(path.read_bytes()).hexdigest()
+            != request["tool"]["controller_files"][name]
+        ):
+            raise CarryForwardError("group2_reboot_tool_changed")
+    profile = validated["platform"]["account_entry"]
+    project = profile["project"]
+    _verify_group2_reboot_vm_authority(root, validated)
+    completed: list[str] = []
+    digests: dict[str, str] = {}
+    _reboot_phase(directory, request, "stopped", completed, "capture-stopped", digests)
+    stopped = {
+        "schema": "group2-post-finalize-reboot-stopped-v1",
+        "boot_id": boot_id,
+        "files": _capture_group2_reboot_files(directory, request, project, "stopped-files"),
+        "logs": capture_log_prefix(profile),
+        "containers": {
+            service: _inspect_container(project, service)
+            for service in ("postgres", "rabbitmq", "control", "worker", "web", "account-web")
+        },
+        "container_inspect": {
+            service: _inspect_reboot_container_raw(
+                request["prior"]["containers"][service]["container_id"]
+            )
+            for service in ("postgres", "rabbitmq", "control", "worker", "web", "account-web")
+        },
+        "images": request["prior"]["images"],
+        "storage": _live_storage_identity(project),
+        "authority": {
+            "host_files": request["prior"]["host_files"],
+            "vm_files": request["prior"]["vm_files"],
+            "installed": request["prior"]["installed"],
+            "keeper": "missing",
+        },
+        "postgres": {
+            "database_read": False,
+            "data_pg_version": request["prior"]["parameters"]["postgres"]["data_pg_version"],
+        },
+    }
+    validate_group2_post_finalize_reboot_stopped(validated, stopped)
+    _atomic_incident_json(directory / "stopped.json", stopped)
+    completed.append("stopped"); digests["stopped"] = digest(stopped)
+    params = request["prior"]["parameters"]["keeper"]
+    script = root / "prepare-sandbox-host.sh"
+    _verify_group2_reboot_vm_authority(root, validated)
+    _reboot_phase(directory, request, "stopped", completed, "prepare-bound-sandbox-keeper", digests)
+    keeper_start_ns = time.time_ns()
+    _run_group2_reboot_action(
+        directory, "prepare-keeper",
+        [str(script), "--unit", params["unit"], "--cpu-quota", params["cpu_quota"],
+         "--memory-max", params["memory_max"]],
+        _reboot_timeout(request, 180),
+    )
+    expected_description = (
+        f"DataLinkRuntime Sandbox {params['unit']} CPU={params['cpu_quota']} "
+        f"Memory={params['memory_max']}"
+    )
+    kernel = capture_kernel(
+        params["unit"], require_idle=True, expected_description=expected_description
+    )
+    keeper = {
+        "schema": "group2-post-finalize-reboot-stage-v1", "phase": "keeper_ready",
+        "boot_id": boot_id, "files": stopped["files"],
+        "logs": read_log_append(stopped["logs"]),
+        "containers": stopped["containers"], "images": stopped["images"],
+        "container_inspect": stopped["container_inspect"],
+        "storage": stopped["storage"],
+        "authority": {**stopped["authority"], "keeper": {
+            key: kernel[key] for key in ("boot_id", "unit", "control_group", "keeper_pid", "keeper_starttime")
+        }},
+        "kernel": kernel, "window_start_ns": keeper_start_ns,
+        "window_end_ns": time.time_ns(),
+    }
+    stopped_stage = {**stopped, "schema": "group2-post-finalize-reboot-stage-v1",
+                     "phase": "stopped",
+                     "window_start_ns": request["window"]["not_before_ns"],
+                     "window_end_ns": request["window"]["not_before_ns"]}
+    validate_group2_post_finalize_reboot_transition(
+        validated, stopped_stage, keeper, "keeper_ready"
+    )
+    _atomic_incident_json(directory / "keeper-ready.json", keeper)
+    completed.append("keeper_ready"); digests["keeper_ready"] = digest(keeper)
+    _verify_group2_reboot_vm_authority(root, validated)
+    _reboot_phase(directory, request, "keeper_ready", completed, "start-bound-postgres-rabbitmq", digests)
+    database_start_ns = time.time_ns()
+    for service in ("postgres", "rabbitmq"):
+        _start_reboot_container(directory, request, project, service)
+    manifest = {
+        "selection": validated["parent"]["snapshot"]["selection"],
+        "storage_identity": request["prior"]["storage"],
+        "old_image_ids": {
+            f"dlr-preview-control:{GROUP2_FROM_SHA}": request["prior"]["containers"]["control"]["image_id"]
+        },
+    }
+    admission_seed_path = directory / "database-state" / "admission-seed.json"
+    db, files = _capture_reconcile_state(
+        root, directory, "database-state", manifest, project,
+        admission_output=admission_seed_path,
+        timeout=_reboot_timeout(request, 300),
+    )
+    admission = capture_group2_reboot_start_admission(
+        root, directory, request, db, files, read_private(admission_seed_path), project,
+        validated["parent"]["snapshot"]["selection"],
+    )
+    database = {
+        "schema": "group2-post-finalize-reboot-stage-v1", "phase": "database_ready",
+        "boot_id": boot_id, "files": files, "logs": read_log_append(keeper["logs"]),
+        "containers": {service: _inspect_container(project, service) for service in stopped["containers"]},
+        "container_inspect": {
+            service: _inspect_reboot_container_raw(
+                request["prior"]["containers"][service]["container_id"]
+            ) for service in stopped["containers"]
+        },
+        "images": stopped["images"], "storage": _live_storage_identity(project),
+        "authority": keeper["authority"], "db": db,
+        "postgres": {
+            "database_read": True,
+            "data_pg_version": _checked_output(["docker", "exec", request["prior"]["containers"]["postgres"]["container_id"], "cat", "/var/lib/postgresql/data/PG_VERSION"]),
+        },
+        "start_admission": admission, "window_start_ns": database_start_ns,
+        "window_end_ns": time.time_ns(),
+    }
+    validate_group2_post_finalize_reboot_transition(
+        validated, keeper, database, "database_ready"
+    )
+    _atomic_incident_json(directory / "database-ready.json", database)
+    completed.append("database_ready"); digests["database_ready"] = digest(database)
+    _verify_group2_reboot_vm_authority(root, validated)
+    _reboot_phase(directory, request, "database_ready", completed, "start-bound-control-worker-web", digests)
+    start_ns = time.time_ns()
+    for service in ("control", "worker", "web"):
+        _start_reboot_container(directory, request, project, service)
+    end_ns = time.time_ns()
+    live = _capture_reconcile_stage(
+        root, directory, "applications-state", manifest, project, database["logs"],
+        {"sandbox_unit": params["unit"], "sandbox_cpu_quota": params["cpu_quota"],
+         "sandbox_memory_max": params["memory_max"]}, require_idle=False,
+        baseline_authority=None,
+        runtime_volume=_reboot_volume(request["prior"]["storage"], "worker", "/var/lib/dlr/runtime"),
+        journal_volume=_reboot_volume(request["prior"]["storage"], "worker", "/var/lib/dlr/journal"),
+        admission_output=directory / "applications-state" / "mutation-seed.json",
+        timeout=_reboot_timeout(request, 300),
+    )
+    startup_request = {
+        "mode": GROUP2_MODE, "operation": "startup-proof", "profile": profile,
+        "logs_before": database["logs"], "logs_after": live["logs"],
+        "container_before": database["containers"]["worker"],
+        "container_after": live["containers"]["worker"],
+        "window_start_ns": start_ns, "window_end_ns": end_ns,
+    }
+    proof = _same_container_worker_startup_proof(
+        startup_request, profile,
+        request["prior"]["containers"]["worker"]["image_id"],
+        profile["old_profiles"]["worker"], validated["platform"]["prior_nonces"],
+    )
+    applications = {
+        "schema": "group2-post-finalize-reboot-stage-v1", "phase": "applications_started",
+        "boot_id": boot_id, **live, "images": stopped["images"],
+        "container_inspect": {
+            service: _inspect_reboot_container_raw(
+                request["prior"]["containers"][service]["container_id"]
+            ) for service in stopped["containers"]
+        },
+        "authority": keeper["authority"], "postgres": database["postgres"],
+        "start_admission": admission, "startup_request": startup_request,
+        "startup_proof": proof,
+        "startup_files": compare_group2_startup_files(database["files"], live["files"], proof),
+    }
+    applications["rabbit_identity"] = capture_group2_reboot_rabbit_identity(
+        request, admission["configuration"]
+    )
+    applications["window_end_ns"] = time.time_ns()
+    validate_group2_post_finalize_reboot_transition(
+        validated, database, applications, "applications_started"
+    )
+    _atomic_incident_json(directory / "applications-started.json", applications)
+    completed.append("applications_started"); digests["applications_started"] = digest(applications)
+    fresh = _capture_reconcile_stage(
+        root, directory, "verified-state", manifest, project, applications["logs"],
+        {"sandbox_unit": params["unit"], "sandbox_cpu_quota": params["cpu_quota"],
+         "sandbox_memory_max": params["memory_max"]}, require_idle=False,
+        baseline_authority=applications["kernel"].get("old_worker_authority"),
+        runtime_volume=_reboot_volume(request["prior"]["storage"], "worker", "/var/lib/dlr/runtime"),
+        journal_volume=_reboot_volume(request["prior"]["storage"], "worker", "/var/lib/dlr/journal"),
+        admission_output=directory / "verified-state" / "mutation-seed.json",
+        timeout=_reboot_timeout(request, 300),
+    )
+    verified = {
+        "schema": "group2-post-finalize-reboot-stage-v1", "phase": "verified",
+        "boot_id": boot_id, **fresh, "images": stopped["images"],
+        "container_inspect": {
+            service: _inspect_reboot_container_raw(
+                request["prior"]["containers"][service]["container_id"]
+            ) for service in stopped["containers"]
+        },
+        "authority": keeper["authority"], "postgres": database["postgres"],
+        "start_admission": admission, "startup_request": startup_request,
+        "startup_proof": proof, "startup_files": applications["startup_files"],
+    }
+    verified["rabbit_identity"] = capture_group2_reboot_rabbit_identity(
+        request, admission["configuration"]
+    )
+    verified["window_end_ns"] = time.time_ns()
+    validate_group2_post_finalize_reboot_transition(validated, applications, verified, "verified")
+    _atomic_incident_json(directory / "verified.json", verified)
+    completed.append("verified"); digests["verified"] = digest(verified)
+    _verify_group2_reboot_vm_authority(root, validated)
+    evidence = {
+        "stopped": stopped, "keeper_ready": keeper, "database_ready": database,
+        "applications_started": applications, "verified": verified,
+        "authority": {"before": stopped["authority"], "after": stopped["authority"]},
+        "commands": {
+            action: {
+                "intent": _embedded_file_value(directory / f"command-{action}-intent.json"),
+                "result": _embedded_file_value(directory / f"command-{action}-result.json"),
+            }
+            for action in ("prepare-keeper", "start-postgres", "start-rabbitmq",
+                           "start-control", "start-worker", "start-web")
+        },
+    }
+    receipt = validate_group2_post_finalize_reboot_result(validated, evidence)
+    result = {"schema": "group2-post-finalize-reboot-result-v1",
+              "evidence": evidence, "receipt": receipt}
+    source_artifacts = {
+        name: _embedded_file_value(directory / "evidence" / name)
+        for name in GROUP2_POST_FINALIZE_REBOOT_FILES
+    }
+    chain = {
+        "schema": "group2-post-finalize-reboot-chain-v1", "request": request,
+        "approval": approval, "user_record": _embedded_file_value(directory / "USER-APPROVAL.txt"),
+        "source_artifacts": source_artifacts, "result": result,
+    }
+    snapshot = validate_group2_post_finalize_reboot_preservation(chain)
+    for name, value in (("result.json", result), ("receipt.json", receipt),
+                        ("chain.json", chain), ("preservation-snapshot.json", snapshot)):
+        _atomic_incident_json(directory / name, value)
+    _reboot_phase(directory, request, "verified", completed, "host-readback", digests)
+    deadline = time.monotonic() + _reboot_timeout(request, 300)
+    acknowledgement_path = directory / "host-validated.json"
+    while True:
+        if acknowledgement_path.exists():
+            acknowledgement = read_private(acknowledgement_path)
+            break
+        if time.monotonic() >= deadline:
+            raise CarryForwardError("group2_reboot_host_validation_timeout")
+        time.sleep(0.25)
+    if acknowledgement != {
+        "incident_id": incident_id, "finalize_id": finalize_id, "boot_id": boot_id,
+        "receipt_digest": receipt["receipt_digest"],
+    }:
+        raise CarryForwardError("group2_reboot_host_validation_invalid")
+    completed.append("host_verified")
+    _reboot_phase(directory, request, "host_verified", completed, None,
+                  receipt["stage_digests"])
+    return {"code": "group2_post_finalize_reboot_vm_ok",
+            "receipt_digest": receipt["receipt_digest"]}
+
+
+def _write_group2_reboot_failure(
+    directory: Path, request: Any, error: BaseException
+) -> None:
+    """Persist the last durable boundary without replacing an earlier failure."""
+    failure_path = directory / "failure.json"
+    if failure_path.exists():
+        return
+    phase_path = directory / "phase.json"
+    try:
+        phase = read_private(phase_path)
+    except (CarryForwardError, OSError):
+        phase = None
+    action_records: dict[str, Any] = {}
+    for action in (
+        "prepare-keeper", "start-postgres", "start-rabbitmq",
+        "start-control", "start-worker", "start-web",
+    ):
+        records: dict[str, Any] = {}
+        for kind in ("intent", "result"):
+            path = directory / f"command-{action}-{kind}.json"
+            if path.is_file() and not path.is_symlink():
+                records[kind] = _embedded_file_value(path)
+        if records:
+            action_records[action] = records
+    captured: dict[str, Any] = {}
+    for name in (
+        "stopped.json", "keeper-ready.json", "database-ready.json",
+        "applications-started.json", "verified.json", "result.json",
+        "receipt.json", "chain.json", "preservation-snapshot.json",
+    ):
+        path = directory / name
+        if path.is_file() and not path.is_symlink():
+            captured[name] = {
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "size": path.stat().st_size,
+            }
+    code = error.code if isinstance(error, CarryForwardError) else "verifier_internal_error"
+    now = time.time_ns()
+    value = {
+        "schema": "group2-post-finalize-reboot-failure-v1",
+        "incident_id": request.get("incident_id") if isinstance(request, dict) else None,
+        "finalize_id": request.get("finalize_id") if isinstance(request, dict) else None,
+        "boot_id": request.get("boot_id") if isinstance(request, dict) else None,
+        "request_digest": request.get("request_digest") if isinstance(request, dict) else None,
+        "failed_at_ns": now,
+        "code": code,
+        "last_phase": phase,
+        "action_records": action_records,
+        "captured_files": captured,
+    }
+    data = canonical_bytes(value) + b"\n"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(failure_path, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+    finally:
+        os.close(descriptor)
+    parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+    if isinstance(phase, dict) and isinstance(request, dict):
+        failed_phase = dict(phase)
+        failed_phase.update({
+            "phase": "failed", "pending_action": "failure.json",
+            "error_code": code, "failure_digest": digest(value),
+        })
+        _atomic_incident_json(phase_path, failed_phase)
+
+
+def recover_group2_post_finalize_reboot_vm(
+    root: Path, incident_id: str, finalize_id: str, boot_id: str
+) -> dict[str, Any]:
+    directory: Path | None = None
+    request: Any = None
+    previous_handler: Any = None
+
+    def interrupted(_signum: int, _frame: Any) -> None:
+        raise CarryForwardError("group2_reboot_interrupted")
+
+    try:
+        resolved = root.resolve(strict=True)
+        directory = _validate_group2_post_finalize_reboot_directory(
+            resolved, incident_id, finalize_id, boot_id
+        )
+        request = read_private(directory / "request.json")
+        if (directory / "failure.json").exists():
+            raise CarryForwardError("group2_reboot_replay_rejected")
+        if hasattr(signal, "SIGTERM"):
+            previous_handler = signal.signal(signal.SIGTERM, interrupted)
+        return _recover_group2_post_finalize_reboot_vm_once(
+            resolved, incident_id, finalize_id, boot_id
+        )
+    except BaseException as error:
+        if directory is not None and isinstance(error, (Exception, KeyboardInterrupt)):
+            _write_group2_reboot_failure(directory, request, error)
+        raise
+    finally:
+        if previous_handler is not None:
+            signal.signal(signal.SIGTERM, previous_handler)
+
+
 def _command_reconcile_vm(args: argparse.Namespace) -> dict[str, Any]:
     return reconcile_group2_vm(args.root, args.incident_id)
 
 
 def _command_finalize_partial_vm(args: argparse.Namespace) -> dict[str, Any]:
     return finalize_group2_partial_vm(args.root, args.incident_id, args.finalize_id)
+
+
+def _command_post_finalize_reboot_vm(args: argparse.Namespace) -> dict[str, Any]:
+    return recover_group2_post_finalize_reboot_vm(
+        args.root, args.incident_id, args.finalize_id, args.boot_id
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -10803,6 +13827,7 @@ def parser() -> argparse.ArgumentParser:
     state.add_argument("--expected-uid", type=int)
     state.add_argument("--db-output", type=Path, required=True)
     state.add_argument("--files-output", type=Path, required=True)
+    state.add_argument("--admission-output", type=Path)
     kernel = commands.add_parser("check-kernel")
     kernel.add_argument("--unit", required=True)
     kernel.add_argument("--expected-description")
@@ -10828,6 +13853,11 @@ def parser() -> argparse.ArgumentParser:
     finalize.add_argument("--root", type=Path, required=True)
     finalize.add_argument("--incident-id", required=True)
     finalize.add_argument("--finalize-id", required=True)
+    reboot = commands.add_parser("post-finalize-reboot-vm")
+    reboot.add_argument("--root", type=Path, required=True)
+    reboot.add_argument("--incident-id", required=True)
+    reboot.add_argument("--finalize-id", required=True)
+    reboot.add_argument("--boot-id", required=True)
     return root
 
 
@@ -10852,13 +13882,21 @@ def main() -> None:
             if MANIFEST_ID.fullmatch(args.incident_id) is None:
                 raise CarryForwardError("group2_reconcile_request_invalid")
             result = _command_reconcile_vm(args)
-        else:
+        elif args.command == "finalize-partial-vm":
             if (
                 MANIFEST_ID.fullmatch(args.incident_id) is None
                 or MANIFEST_ID.fullmatch(args.finalize_id) is None
             ):
                 raise CarryForwardError("group2_partial_finalize_request_invalid")
             result = _command_finalize_partial_vm(args)
+        else:
+            if (
+                args.incident_id != GROUP2_PARTIAL_INCIDENT_ID
+                or args.finalize_id != GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID
+                or BOOT_ID.fullmatch(args.boot_id) is None
+            ):
+                raise CarryForwardError("group2_reboot_request_invalid")
+            result = _command_post_finalize_reboot_vm(args)
         print(json.dumps(result, sort_keys=True))
     except CarryForwardError as error:
         print(json.dumps({"code": error.code}, sort_keys=True), file=sys.stderr)

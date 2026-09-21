@@ -1,4 +1,5 @@
 import copy
+import base64
 import hashlib
 import json
 import os
@@ -2225,6 +2226,868 @@ class ManifestAndProjectionTests(unittest.TestCase):
 
 
 class Group2RuntimeTests(unittest.TestCase):
+    def _reboot_request(self):
+        prepare_raw = (Path(__file__).parents[3] / "scripts" / "prepare-sandbox-host.sh").read_bytes()
+        containers = {
+            name: {"container_id": name, "image_id": "sha256:" + name,
+                   "inspect_static_digest": carry.digest({
+                       "Id": name, "Image": "sha256:" + name, "Name": "/" + name,
+                       "Config": {}, "HostConfig": {}, "Mounts": [],
+                   }),
+                   "stopped_state_digest": carry.digest({"Status": "exited"})}
+            for name in ("postgres", "rabbitmq", "control", "worker", "web", "account-web")
+        }
+        prior_success = {
+            "schema": "group2-prior-success-evidence-v1", "host": {}, "vm": {}
+        }
+        authority_paths = carry.group2_post_finalize_reboot_expected_authority_paths(
+            prior_success
+        )
+        descriptor = {
+            "exists": True, "kind": "regular", "sha256": "a" * 64,
+            "mode": 0o600, "uid": os.geteuid(), "gid": os.getegid(),
+            "symlink": False,
+        }
+        prior = {
+            "sha": carry.GROUP2_FROM_SHA,
+            "schema": "0040_issue152_dispositions",
+            "host_files": {
+                name: ({"exists": False} if name == "attention.json"
+                       else copy.deepcopy(descriptor))
+                for name in authority_paths["host"]
+            },
+            "vm_files": {
+                name: copy.deepcopy(descriptor) for name in authority_paths["vm"]
+            },
+            "installed": {
+                "host": {name: copy.deepcopy(descriptor)
+                         for name in carry.GROUP2_CONTROLLER_FILES},
+                "vm": {name: copy.deepcopy(descriptor)
+                       for name in carry.GROUP2_POST_FINALIZE_REBOOT_VM_INSTALLED},
+            },
+            "containers": containers,
+            "images": {name: value["image_id"] for name, value in containers.items()},
+            "storage": [],
+            "parameters": {
+                "keeper": {"unit": "dlr.service", "cpu": "200%", "memory": "2G"},
+                "rabbitmq": {"queues": [{"vhost": "/", "name": "dispatch"}]},
+            },
+        }
+        for side in ("host_files", "vm_files"):
+            prior[side]["prepare-sandbox-host.sh"]["sha256"] = hashlib.sha256(
+                prepare_raw
+            ).hexdigest()
+            prior[side]["prepare-sandbox-host.sh"]["mode"] = 0o755
+        parent_chain = {
+            "request": {"incident_id": carry.GROUP2_PARTIAL_INCIDENT_ID},
+            "result": {"receipt": {"ok": True}},
+        }
+        snapshot = {"selection": {}, "db": {}, "files": {}, "lineage": []}
+        review = {"status": "APPROVED"}
+        artifacts_values = {
+            "parent-finalize.json": {
+                "chain": parent_chain,
+                "original_reference": {},
+                "snapshot": snapshot,
+                "review": review,
+            },
+            "stopped-platform.json": {
+                "schema": "group2-post-finalize-reboot-platform-v1",
+                "prior": prior,
+                "account_entry": {"profile": "frozen"},
+                "prior_nonces": ["1" * 32],
+                "prepare_script": {
+                    "sha256": hashlib.sha256(prepare_raw).hexdigest(),
+                    "content_b64": base64.b64encode(prepare_raw).decode(),
+                    "source_mode": "100755",
+                    "host": copy.deepcopy(
+                        prior["host_files"]["prepare-sandbox-host.sh"]
+                    ),
+                    "vm": copy.deepcopy(
+                        prior["vm_files"]["prepare-sandbox-host.sh"]
+                    ),
+                    "parameters": prior["parameters"]["keeper"],
+                },
+            },
+            "prior-success.json": prior_success,
+            "source-review.json": {
+                "schema": "group2-post-finalize-reboot-source-review-v1",
+                "source": {
+                    "source_scope": {"to_tree": "e" * 40},
+                    "tool_review": {"sha256": "f" * 64},
+                },
+                "ci": {"raw": "ci"},
+            },
+            "scope-approval.json": {
+                "schema": "group2-post-finalize-reboot-scope-approval-v1",
+                "status": "APPROVED",
+                "execution": False,
+                "request_scope": "implementation-review-ci-only",
+            },
+        }
+        artifacts = {
+            name: carry.canonical_bytes(value) for name, value in artifacts_values.items()
+        }
+        tool = {
+            "sha": "1" * 40,
+            "tree": "e" * 40,
+            "controller_files": {name: "2" * 64 for name in carry.GROUP2_CONTROLLER_FILES},
+            "source_scope_digest": "3" * 64,
+            "review_report_sha256": "f" * 64,
+            "ci_evidence_sha256": carry.digest(artifacts_values["source-review.json"]["ci"]),
+        }
+        request = {
+            "schema": "group2-post-finalize-reboot-request-v1",
+            "incident_id": carry.GROUP2_PARTIAL_INCIDENT_ID,
+            "finalize_id": carry.GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID,
+            "boot_id": "00000000-0000-4000-8000-000000000001",
+            "parent": {
+                "request_sha256": carry.digest(parent_chain["request"]),
+                "receipt_sha256": carry.digest(parent_chain["result"]["receipt"]),
+                "chain_sha256": carry.digest(parent_chain),
+                "snapshot_sha256": carry.digest(snapshot),
+                "review_sha256": carry.digest(review),
+            },
+            "prior": prior,
+            "tool": tool,
+            "window": {"not_before_ns": 100, "deadline_ns": 200,
+                       "successor_deadline_ns": 300},
+            "evidence_files": {
+                name: hashlib.sha256(raw).hexdigest() for name, raw in artifacts.items()
+            },
+        }
+        request["request_digest"] = carry.digest(request)
+        actions = carry.GROUP2_POST_FINALIZE_REBOOT_ACTIONS
+        user = {
+            "schema": "group2-post-finalize-reboot-user-record-v1",
+            "request_digest": request["request_digest"],
+            "tool_sha": tool["sha"],
+            "boot_id": request["boot_id"],
+            "actions": actions,
+            "presented_request": " ".join(
+                (request["request_digest"], tool["sha"], request["boot_id"], *actions)
+            ),
+            "user_reply": "approve exact reboot",
+        }
+        user_raw = carry.canonical_bytes(user)
+        approval = {
+            "schema": "group2-post-finalize-reboot-approval-v1",
+            "request_digest": request["request_digest"],
+            "tool_sha": tool["sha"],
+            "boot_id": request["boot_id"],
+            "actions": actions,
+            "user_record_sha256": hashlib.sha256(user_raw).hexdigest(),
+        }
+        return request, approval, user_raw, artifacts, snapshot, review
+
+    def test_reboot_request_binds_raw_parent_source_window_and_prepare_script(self):
+        request, approval, user, artifacts, snapshot, review = self._reboot_request()
+        parent = {"snapshot": snapshot, "review": review}
+        with (
+            mock.patch.object(carry, "_post_finalize_reboot_parent", return_value=parent),
+            mock.patch.object(carry, "_validate_group2_partial_tool"),
+        ):
+            validated = carry.validate_group2_post_finalize_reboot_request(
+                request, approval, user, artifacts
+            )
+            self.assertEqual(validated["parent"], parent)
+            for mutate in (
+                lambda value: value["window"].__setitem__("successor_deadline_ns", 200),
+                lambda value: value["parent"].__setitem__("receipt_sha256", "0" * 64),
+            ):
+                changed = copy.deepcopy(request)
+                mutate(changed)
+                changed["request_digest"] = carry.digest(
+                    {key: item for key, item in changed.items() if key != "request_digest"}
+                )
+                changed_approval = copy.deepcopy(approval)
+                changed_approval["request_digest"] = changed["request_digest"]
+                with self.assertRaises(carry.CarryForwardError):
+                    carry.validate_group2_post_finalize_reboot_request(
+                        changed, changed_approval, user, artifacts
+                    )
+            changed_artifacts = dict(artifacts)
+            platform = json.loads(changed_artifacts["stopped-platform.json"])
+            platform["prepare_script"]["source_mode"] = "100644"
+            changed_artifacts["stopped-platform.json"] = carry.canonical_bytes(platform)
+            with self.assertRaises(carry.CarryForwardError):
+                carry.validate_group2_post_finalize_reboot_request(
+                    request, approval, user, changed_artifacts
+                )
+
+    def test_reboot_transitions_are_ordered_and_start_only_same_ids(self):
+        containers = {
+            name: {
+                "container_id": name + "-id",
+                "image_id": name + "-image",
+                "status": "exited",
+                "health": None,
+                "restart_count": 0,
+                "inspect_static_digest": carry.digest({
+                    "Id": name + "-id", "Image": name + "-image",
+                    "Name": "/" + name, "Config": {}, "HostConfig": {}, "Mounts": [],
+                }),
+                "stopped_state_digest": carry.digest({"Status": "exited"}),
+            }
+            for name in ("postgres", "rabbitmq", "control", "worker", "web", "account-web")
+        }
+        prior = {
+            "containers": copy.deepcopy(containers),
+            "images": {name: item["image_id"] for name, item in containers.items()},
+            "storage": [],
+            "host_files": {}, "vm_files": {}, "installed": {},
+            "parameters": {"rabbitmq": {"queues": [{"vhost": "/", "name": "q"}]}},
+        }
+        validated = {
+            "request": {
+                "boot_id": "00000000-0000-4000-8000-000000000001",
+                "window": {"not_before_ns": 100, "deadline_ns": 900,
+                           "successor_deadline_ns": 1000},
+                "prior": prior,
+            },
+            "approval": {}, "user_record": {},
+            "platform": {"account_entry": {"old_profiles": {"worker": {}}},
+                         "prior_nonces": []},
+            "authority_paths": {"host": [], "vm": []},
+            "prior_success": {
+                "schema": "group2-prior-success-evidence-v1", "host": {}, "vm": {}
+            },
+            "parent": {"snapshot": {"db": {"rows": "same"},
+                                    "files": {"tree": "same"}}},
+        }
+        stopped = {
+            "schema": "group2-post-finalize-reboot-stopped-v1",
+            "boot_id": validated["request"]["boot_id"],
+            "files": {"tree": "same"}, "logs": {"prefix": "same"},
+            "containers": {
+                name: carry._reboot_expected_container(item)
+                for name, item in containers.items()
+            }, "images": prior["images"],
+            "container_inspect": {
+                name: {
+                    "Id": item["container_id"], "Image": item["image_id"],
+                    "Name": "/" + name, "Config": {}, "HostConfig": {}, "Mounts": [],
+                    "State": {"Status": "exited"},
+                }
+                for name, item in containers.items()
+            },
+            "storage": prior["storage"],
+            "authority": {"host_files": {}, "vm_files": {}, "installed": {},
+                          "keeper": "missing"},
+            "postgres": {"database_read": False, "data_pg_version": "17"},
+        }
+        carry.validate_group2_post_finalize_reboot_stopped(validated, stopped)
+        stopped_stage = {
+            **stopped, "schema": "group2-post-finalize-reboot-stage-v1",
+            "phase": "stopped", "window_start_ns": 100, "window_end_ns": 100,
+        }
+        keeper = {
+            key: copy.deepcopy(value) for key, value in stopped_stage.items()
+            if key != "postgres"
+        }
+        keeper.update(
+            phase="keeper_ready", window_start_ns=110, window_end_ns=120,
+            authority={**stopped["authority"], "keeper": {"pid": 7}},
+            kernel={"boot_id": validated["request"]["boot_id"],
+                    "namespace_evidence": {}, "unit": "dlr.service"},
+        )
+        with mock.patch.object(carry, "_validate_group2_reboot_empty_log_segment"):
+            carry.validate_group2_post_finalize_reboot_transition(
+                validated, stopped_stage, keeper, "keeper_ready"
+            )
+        database = {**copy.deepcopy(keeper), "phase": "database_ready",
+                    "window_start_ns": 130, "window_end_ns": 140,
+                    "db": {"rows": "same"},
+                    "postgres": {"database_read": True, "data_pg_version": "17"},
+                    "start_admission": {"gate": "raw", "configuration": {},
+                                        "mutation_guard_rows": {}}}
+        database.pop("kernel")
+        for name in ("postgres", "rabbitmq"):
+            database["containers"][name]["status"] = "running"
+            database["containers"][name]["health"] = "healthy"
+            database["container_inspect"][name]["State"]["Status"] = "running"
+        with (
+            mock.patch.object(carry, "validate_group2_reboot_start_admission"),
+            mock.patch.object(carry, "_validate_group2_reboot_empty_log_segment"),
+        ):
+            carry.validate_group2_post_finalize_reboot_transition(
+                validated, keeper, database, "database_ready"
+            )
+        application = {**copy.deepcopy(database), "phase": "applications_started",
+                       "window_start_ns": 150, "window_end_ns": 200,
+                       "kernel": copy.deepcopy(keeper["kernel"]),
+                       "startup_request": {"raw": "worker"},
+                       "startup_proof": {"nonce": "a" * 32},
+                       "startup_files": {"changed": ["two-mtimes"]},
+                       "rabbit_identity": {"raw": "broker", "captured_start_ns": 160,
+                                           "captured_end_ns": 190},
+                       "mutation_guard": {}}
+        for name in ("control", "worker", "web"):
+            application["containers"][name]["status"] = "running"
+            application["containers"][name]["health"] = "healthy"
+            application["container_inspect"][name]["State"]["Status"] = "running"
+        with (
+            mock.patch.object(
+                carry, "_same_container_worker_startup_proof",
+                return_value=application["startup_proof"],
+            ),
+            mock.patch.object(
+                carry, "compare_group2_startup_files",
+                return_value=application["startup_files"],
+            ),
+            mock.patch.object(carry, "validate_group2_reboot_rabbit_identity"),
+            mock.patch.object(carry, "_validate_group2_reboot_mutation_guard"),
+        ):
+            carry.validate_group2_post_finalize_reboot_transition(
+                validated, database, application, "applications_started"
+            )
+            replaced = copy.deepcopy(application)
+            replaced["containers"]["worker"]["container_id"] = "replacement"
+            with self.assertRaises(carry.CarryForwardError):
+                carry.validate_group2_post_finalize_reboot_transition(
+                    validated, database, replaced, "applications_started"
+                )
+        reordered = copy.deepcopy(database)
+        reordered["window_start_ns"] = 119
+        with self.assertRaises(carry.CarryForwardError):
+            carry.validate_group2_post_finalize_reboot_transition(
+                validated, keeper, reordered, "database_ready"
+            )
+
+    def test_reboot_directory_is_single_fixed_boot_and_rejects_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            boot_id = "00000000-0000-4000-8000-000000000001"
+            reboot = (
+                root / "incidents" / carry.GROUP2_PARTIAL_INCIDENT_ID / "finalize"
+                / carry.GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID / "reboot"
+            )
+            directory = reboot / boot_id
+            directory.mkdir(parents=True)
+            self.assertEqual(
+                carry._validate_group2_post_finalize_reboot_directory(
+                    root, carry.GROUP2_PARTIAL_INCIDENT_ID,
+                    carry.GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID, boot_id,
+                ),
+                directory,
+            )
+            extra = reboot / "00000000-0000-4000-8000-000000000002"
+            extra.mkdir()
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "group2_reboot_replay_rejected"
+            ):
+                carry._validate_group2_post_finalize_reboot_directory(
+                    root, carry.GROUP2_PARTIAL_INCIDENT_ID,
+                    carry.GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID, boot_id,
+                )
+            extra.rmdir()
+            directory.rmdir()
+            target = reboot / "target"
+            target.mkdir()
+            directory.symlink_to(target, target_is_directory=True)
+            target.rename(reboot / "00000000-0000-4000-8000-000000000002")
+            with self.assertRaises(carry.CarryForwardError):
+                carry._validate_group2_post_finalize_reboot_directory(
+                    root, carry.GROUP2_PARTIAL_INCIDENT_ID,
+                    carry.GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID, boot_id,
+                )
+
+    def test_reboot_container_metadata_is_separate_and_mount_order_is_stable(self):
+        normalized = {
+            "container_id": "same-id", "image_id": "same-image",
+            "status": "exited", "health": None, "started_at": "old",
+            "restart_count": 0,
+        }
+        raw = {
+            "Id": "same-id", "Image": "same-image", "Name": "/worker",
+            "Config": {"Env": []}, "HostConfig": {"NetworkMode": "preview"},
+            "Mounts": [
+                {"Destination": "/z", "Source": "z"},
+                {"Destination": "/a", "Source": "a"},
+            ],
+            "State": {"Status": "exited", "Pid": 0, "ExitCode": 0},
+            "RestartCount": 0,
+        }
+        reordered = copy.deepcopy(raw)
+        reordered["Mounts"].reverse()
+        expected = {
+            **normalized,
+            "inspect_static_digest": carry.digest(carry._reboot_container_static(raw)),
+            "stopped_state_digest": carry.digest(raw["State"]),
+        }
+        self.assertEqual(
+            carry.digest(carry._reboot_container_static(raw)),
+            carry.digest(carry._reboot_container_static(reordered)),
+        )
+        self.assertEqual(carry._reboot_expected_container(expected), normalized)
+        carry._validate_reboot_container_raw(raw, expected, normalized, stopped=True)
+
+    def test_reboot_artifact_inventory_uses_storage_keys_and_preserves_quarantine(self):
+        key = "ab" + "1" * 62
+        part = "cd" + "2" * 62
+        quarantined = "ef" + "3" * 62
+        entries = [
+            {"path": name, "type": "directory"}
+            for name in (
+                "objects", "objects/ab", "parts", "parts/cd",
+                "quarantine", "quarantine/ef",
+            )
+        ] + [
+            {"path": f"objects/ab/{key}", "type": "file", "mtime_ns": 11},
+            {"path": f"parts/cd/{part}.part", "type": "file", "mtime_ns": 12},
+            {"path": f"quarantine/ef/{quarantined}", "type": "file", "mtime_ns": 13},
+            {"path": f"quarantine/ef/{quarantined}.part", "type": "file", "mtime_ns": 14},
+        ]
+        inventory = carry._group2_reboot_artifact_inventory(entries)
+        self.assertEqual([item["storage_key"] for item in inventory], [key, part])
+        self.assertEqual([item["path"] for item in inventory], [
+            f"objects/ab/{key}", f"parts/cd/{part}.part",
+        ])
+        for bad in (
+            {"path": f"objects/ff/{key}", "type": "file", "mtime_ns": 1},
+            {"path": f"objects/ab/{key}.part", "type": "file", "mtime_ns": 1},
+            {"path": "objects/link", "type": "symlink"},
+            {"path": "unknown", "type": "directory"},
+        ):
+            with self.assertRaises(carry.CarryForwardError):
+                carry._group2_reboot_artifact_inventory([bad])
+
+    def test_reboot_network_boundary_binds_all_original_endpoints(self):
+        prior, raw, states, endpoints = {}, {}, {}, {}
+        network_id = "network-id"
+        for index, service in enumerate(
+            ("postgres", "rabbitmq", "control", "worker", "web", "account-web"), 1
+        ):
+            container_id = f"{index:064x}"
+            current = {
+                "container_id": container_id, "image_id": f"image-{service}",
+                "status": "running" if service in {"postgres", "rabbitmq"} else "exited",
+                "health": "healthy" if service in {"postgres", "rabbitmq"} else None,
+                "restart_count": 0,
+            }
+            address = f"172.20.0.{index}"
+            inspect = {
+                "Id": container_id, "Image": current["image_id"], "Name": f"/{service}",
+                "Config": {}, "HostConfig": {"PortBindings": {}}, "Mounts": [],
+                "State": {"Status": current["status"]}, "RestartCount": 0,
+                "NetworkSettings": {"Networks": {"preview": {
+                    "NetworkID": network_id, "EndpointID": f"endpoint-{index}",
+                    "IPAddress": address,
+                }}},
+            }
+            prior[service] = {
+                **current,
+                "inspect_static_digest": carry.digest(carry._reboot_container_static(inspect)),
+                "stopped_state_digest": carry.digest(inspect["State"]),
+            }
+            raw[service], states[service] = inspect, current
+            endpoints[container_id] = {
+                "Name": service, "EndpointID": f"endpoint-{index}",
+                "MacAddress": "", "IPv4Address": address + "/16", "IPv6Address": "",
+            }
+        value = {
+            "network_id": network_id, "container_inspect": raw,
+            "network_inspect": {"Id": network_id, "Containers": endpoints},
+            "container_states": states,
+        }
+        value["raw_digest"] = carry.digest(value)
+        self.assertEqual(carry._validate_group2_reboot_network_boundary(value, prior), value)
+        changed = copy.deepcopy(value)
+        changed["network_inspect"]["Containers"]["foreign"] = {}
+        changed["raw_digest"] = carry.digest({
+            key: item for key, item in changed.items() if key != "raw_digest"
+        })
+        with self.assertRaises(carry.CarryForwardError):
+            carry._validate_group2_reboot_network_boundary(changed, prior)
+
+    def test_reboot_post_app_rabbit_identity_binds_slots_to_fresh_worker_ip(self):
+        configuration = carry.derive_group2_reboot_configuration(
+            {"Config": {"Env": ["DLR_RABBITMQ_URL=amqp://dlr:secret@rabbitmq:5672/%2F"]}},
+            {"Config": {"Env": ["DLR_RABBITMQ_URL=amqp://dlr:secret@rabbitmq:5672/%2F",
+                                   "DLR_WORKER_EXECUTION_SLOTS=2"]}},
+            [{"id": 7, "name": "worker-1"}],
+        )
+        inspections = {}
+        for index, service in enumerate(
+            ("postgres", "rabbitmq", "control", "worker", "web", "account-web"), 1
+        ):
+            inspections[service] = {
+                "Id": f"id-{service}", "Image": f"image-{service}",
+                "Config": {"Env": copy.deepcopy(
+                    configuration["control_inspect"]["Config"]["Env"] if service == "control"
+                    else configuration["worker_inspect"]["Config"]["Env"] if service == "worker"
+                    else []
+                )},
+                "State": {"Status": "running", "Pid": 100 + index,
+                          "StartedAt": f"2026-09-21T00:00:0{index}Z"},
+                "NetworkSettings": {"Networks": {"preview": {
+                    "NetworkID": "net", "IPAddress": f"172.20.0.{index}",
+                }}},
+            }
+        def mapped(address):
+            octets = [int(item) for item in address.split(".")]
+            return [0, 0, 0, 0, 0, 65535,
+                    (octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]]
+
+        rabbit_ip = "172.20.0.2"; control_ip = "172.20.0.3"; worker_ip = "172.20.0.4"
+        connections = [
+            {"pid": "conn-worker", "peer_host": mapped(worker_ip), "peer_port": 41000,
+             "host": mapped(rabbit_ip), "port": 5672, "user": "dlr", "vhost": "/",
+             "protocol": [0, 9, 1], "client_properties": [],
+             "state": "running"},
+            {"pid": "conn-control", "peer_host": mapped(control_ip), "peer_port": 41001,
+             "host": mapped(rabbit_ip), "port": 5672, "user": "dlr", "vhost": "/",
+             "protocol": [0, 9, 1], "client_properties": [],
+             "state": "running"},
+        ]
+        channels = [
+            {"pid": "chan-worker", "connection": "conn-worker", "user": "dlr",
+             "vhost": "/", "number": 1, "consumer_count": 2,
+             "messages_unacknowledged": 0, "prefetch_count": 0},
+            {"pid": "chan-control", "connection": "conn-control", "user": "dlr",
+             "vhost": "/", "number": 1, "consumer_count": 0,
+             "messages_unacknowledged": 0, "prefetch_count": 0},
+        ]
+        consumers = [
+            {"queue_name": "dlr.worker.7.q", "channel_pid": "chan-worker",
+             "consumer_tag": f"dlr-worker-7-e9-s{slot}-t{slot + 1}",
+             "ack_required": True, "prefetch_count": 1, "active": True,
+             "arguments": []}
+            for slot in range(2)
+        ]
+        binding = {}
+        for service in ("rabbitmq", "control", "worker"):
+            raw = inspections[service]; state = raw["State"]
+            binding[service] = {
+                "container_id": raw["Id"], "image_id": raw["Image"],
+                "network_id": "net",
+                "ip": next(iter(raw["NetworkSettings"]["Networks"].values()))["IPAddress"],
+                "pid": state["Pid"], "started_at": state["StartedAt"],
+                "config_env_digest": carry.digest(raw["Config"]["Env"]),
+            }
+        value = {
+            "schema": "group2-post-finalize-reboot-rabbit-identity-v1",
+            "captured_start_ns": 1, "captured_end_ns": 2,
+            "container_binding": binding, "samples": [
+                {"connections": connections, "channels": channels, "consumers": consumers},
+                copy.deepcopy({"connections": connections, "channels": channels,
+                               "consumers": consumers}),
+            ],
+        }
+        value["raw_digest"] = carry.digest(value)
+        self.assertEqual(
+            carry.validate_group2_reboot_rabbit_identity(value, configuration, inspections),
+            value,
+        )
+        for mutate in (
+            lambda changed: changed["samples"][0]["consumers"].pop(),
+            lambda changed: changed["samples"][0]["connections"][0].update(
+                peer_host=mapped("172.20.0.99")),
+            lambda changed: changed["samples"][0]["consumers"][0].update(queue_name="foreign"),
+            lambda changed: changed["samples"][0]["consumers"][1].update(
+                consumer_tag="dlr-worker-7-e9-s0-t2"),
+        ):
+            changed = copy.deepcopy(value); mutate(changed)
+            changed["raw_digest"] = carry.digest({
+                key: item for key, item in changed.items() if key != "raw_digest"
+            })
+            with self.assertRaises(carry.CarryForwardError):
+                carry.validate_group2_reboot_rabbit_identity(
+                    changed, configuration, inspections
+                )
+
+    def test_reboot_configuration_accepts_equal_proxy_case_aliases_only(self):
+        control = {"Config": {"Env": [
+            "DLR_RABBITMQ_URL=amqp://dlr:secret@rabbitmq:5672/%2F",
+            "HTTP_PROXY=http://proxy.invalid", "http_proxy=http://proxy.invalid",
+            "HTTPS_PROXY=http://proxy.invalid", "https_proxy=http://proxy.invalid",
+            "NO_PROXY=localhost", "no_proxy=localhost",
+        ]}}
+        worker = {"Config": {"Env": [
+            "DLR_RABBITMQ_URL=amqp://dlr:secret@rabbitmq:5672/%2F",
+        ]}}
+        derived = carry.derive_group2_reboot_configuration(
+            control, worker, [{"id": 1, "name": "worker-1"}]
+        )
+        self.assertEqual(derived["worker_id"], 1)
+        changed = copy.deepcopy(control)
+        changed["Config"]["Env"][2] = "http_proxy=http://different.invalid"
+        with self.assertRaises(carry.CarryForwardError):
+            carry.derive_group2_reboot_configuration(
+                changed, worker, [{"id": 1, "name": "worker-1"}]
+            )
+
+    def test_reboot_action_persists_intent_and_failure_before_raising(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            directory.chmod(0o700)
+            completed = subprocess.CompletedProcess(
+                ["docker", "start", "postgres-id"], 17, "started\n", "failed\n"
+            )
+            with (
+                mock.patch.object(carry.subprocess, "run", return_value=completed),
+                self.assertRaisesRegex(
+                    carry.CarryForwardError, "group2_reboot_start_postgres_failed"
+                ),
+            ):
+                carry._run_group2_reboot_action(
+                    directory, "start-postgres",
+                    ["docker", "start", "postgres-id"], 30,
+                )
+            intent = carry.read_private(directory / "command-start-postgres-intent.json")
+            result = carry.read_private(directory / "command-start-postgres-result.json")
+            self.assertEqual(intent["action"], "start-postgres")
+            self.assertEqual(result["returncode"], 17)
+            self.assertEqual(result["stdout"], "started\n")
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "group2_reboot_replay_rejected"
+            ):
+                carry._run_group2_reboot_action(
+                    directory, "start-postgres",
+                    ["docker", "start", "postgres-id"], 30,
+                )
+
+    def test_reboot_vm_failure_closes_phase_and_prevents_next_action_or_replay(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            root.chmod(0o700)
+            boot_id = "00000000-0000-4000-8000-000000000001"
+            directory = (
+                root / "incidents" / carry.GROUP2_PARTIAL_INCIDENT_ID / "finalize"
+                / carry.GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID / "reboot"
+                / boot_id
+            )
+            directory.mkdir(parents=True, mode=0o700)
+            request = {
+                "incident_id": carry.GROUP2_PARTIAL_INCIDENT_ID,
+                "finalize_id": carry.GROUP2_POST_FINALIZE_REBOOT_PARENT_FINALIZE_ID,
+                "boot_id": boot_id, "request_digest": "a" * 64,
+            }
+            carry.write_private(directory / "request.json", request)
+            carry.write_private(directory / "phase.json", {
+                "schema": "group2-post-finalize-reboot-phase-v1",
+                "incident_id": request["incident_id"],
+                "finalize_id": request["finalize_id"], "boot_id": boot_id,
+                "phase": "database_ready", "completed_stages": ["stopped"],
+                "pending_action": "start-bound-control-worker-web",
+                "evidence_digests": {"stopped": "b" * 64},
+            })
+            calls = []
+
+            def fail_after_start(*_args):
+                carry._run_group2_reboot_action(
+                    directory, "start-control", ["docker", "start", "control-id"], 30,
+                )
+                calls.append("control")
+                raise carry.CarryForwardError("group2_reboot_control_start_failed")
+
+            completed = subprocess.CompletedProcess(
+                ["docker", "start", "control-id"], 0, "control-id\n", ""
+            )
+            with (
+                mock.patch.object(carry.subprocess, "run", return_value=completed),
+                mock.patch.object(
+                    carry, "_recover_group2_post_finalize_reboot_vm_once",
+                    side_effect=fail_after_start,
+                ) as execute,
+                self.assertRaisesRegex(
+                    carry.CarryForwardError, "group2_reboot_control_start_failed"
+                ),
+            ):
+                carry.recover_group2_post_finalize_reboot_vm(
+                    root, request["incident_id"], request["finalize_id"], boot_id
+                )
+            self.assertEqual(calls, ["control"])
+            failure = carry.read_private(directory / "failure.json")
+            self.assertEqual(failure["code"], "group2_reboot_control_start_failed")
+            self.assertIn("start-control", failure["action_records"])
+            self.assertEqual(
+                carry.read_private(directory / "phase.json")["pending_action"],
+                "failure.json",
+            )
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "group2_reboot_replay_rejected"
+            ):
+                carry.recover_group2_post_finalize_reboot_vm(
+                    root, request["incident_id"], request["finalize_id"], boot_id
+                )
+            self.assertEqual(execute.call_count, 1)
+            self.assertFalse((directory / "command-start-worker-intent.json").exists())
+
+    def _reboot_admission(self):
+        topology = {
+            "exchanges": [
+                {"name": "dlr.execution.dispatch.v1", "type": "direct", "durable": True},
+                {"name": "dlr.execution.infrastructure.dlx", "type": "direct", "durable": True},
+            ],
+            "bindings": [
+                {"source_name": "dlr.execution.dispatch.v1",
+                 "destination_name": "dlr.worker.1.q", "destination_kind": "queue",
+                 "routing_key": "worker.1", "arguments": {}},
+                {"source_name": "dlr.execution.infrastructure.dlx",
+                 "destination_name": "dlr.execution.infrastructure.dlq",
+                 "destination_kind": "queue", "routing_key": "infrastructure",
+                 "arguments": {}},
+            ],
+            "policies": [],
+        }
+        parameters = {"frozen": "parent"}
+        raw = {name: [] for name in carry.GROUP2_REBOOT_ADMISSION_TABLES}
+        raw["users"] = [{"id": 1, "username": "admin"}]
+        raw["credentials"] = [
+            {"id": 1, "name": "demo-passwd"}, {"id": 2, "name": "demo-token"},
+        ]
+        raw["workers"] = [{"id": 1, "name": "worker-1"}]
+        raw["global_execution_admission"] = [
+            {"singleton_key": "global", "outstanding_count": 0, "outstanding_bytes": 0}
+        ]
+        raw["managed_input_capacity"] = [
+            {"id": 1, "actual_bytes": 0, "reserved_bytes": 0}
+        ]
+        raw["runtime_reconciliation_cursors"] = [
+            {"name": "expired_attempts", "after_id": 0, "upper_id": 0}
+        ]
+        projection = {}
+        database_rows = {}
+        for name, columns in carry.GROUP2_REBOOT_ADMISSION_COLUMNS.items():
+            rows = raw[name]
+            primary_key = list(carry.GROUP2_REBOOT_ADMISSION_PRIMARY_KEYS[name])
+            ordered = sorted(
+                rows,
+                key=lambda row: carry.canonical_bytes(
+                    [row[key] for key in primary_key]
+                ),
+            )
+            projection[name] = {
+                "columns": sorted(columns), "primary_key": primary_key,
+                "rows": [carry.row_digest(row) for row in ordered],
+                "count": len(rows),
+            }
+            database_rows[name] = {
+                "columns": sorted(columns), "primary_key": primary_key,
+                "rows": copy.deepcopy(rows),
+            }
+        database = {"projection": projection, "asset_projection": {},
+                    "protected_rows": {"tables": {}}}
+        configuration = carry.derive_group2_reboot_configuration(
+            {"Config": {"Env": ["DLR_MASTER_KEY=configured",
+                                   "DLR_RABBITMQ_URL=amqp://dlr:secret@rabbitmq:5672/%2F"]}},
+            {"Config": {"Env": ["DLR_RABBITMQ_URL=amqp://dlr:secret@rabbitmq:5672/%2F"]}},
+            raw["workers"],
+        )
+        settings = configuration["effective_settings"]
+        raw_files = {
+            "journal_facts": {"attempt": [], "cleanup": [], "sandbox_recovery": []},
+            "artifact_store": [],
+        }
+        derived = carry.derive_group2_reboot_start_admission(
+            raw, raw_files, settings, t0_ns=10_000_000_000,
+            horizon_ns=30_000_000_000,
+            preserved_queued_ids=[], worker_id=1,
+        )
+        rabbit = {
+            "image_id": "sha256:" + "a" * 64, "version": "4.3.5",
+            "plugins": ["rabbitmq_management"],
+            "config_digest": carry.digest(configuration["rabbitmq"]),
+            "queue_scope": copy.deepcopy(configuration["rabbitmq"]["queues"]),
+            "topology": topology, "raw_response_digest": "",
+        }
+        queues = [{**item, "messages_total": 0, "messages_ready": 0,
+                   "messages_unacknowledged": 0}
+                  for item in configuration["rabbitmq"]["queues"]]
+        rabbit["queues"] = [
+            {**item, "ra": {
+                "total": {"raw": "{ok,0,{ra,node}}", "value": 0},
+                "dlx": {"raw": "{ok,{0,0},{ra,node}}", "value": [0, 0]},
+                "checked_out": {"raw": "{ok,0,{ra,node}}", "value": 0},
+            }} for item in queues
+        ]
+        rabbit["external_before"] = {"connections": [], "channels": [], "consumers": []}
+        rabbit["external_after"] = copy.deepcopy(rabbit["external_before"])
+        rabbit["network"] = {"synthetic": "component-only"}
+        rabbit["feature_flags"] = [
+            {"name": name, "state": "enabled"}
+            for name in ("feature_flags_v2", "quorum_queue", "stream_queue", "rabbitmq_4.3.0")
+        ]
+        rabbit["raw_response_digest"] = carry.digest(
+            {"queues": rabbit["queues"], "topology": topology,
+             "feature_flags": rabbit["feature_flags"],
+             "external_before": rabbit["external_before"],
+             "external_after": rabbit["external_after"],
+             "network": rabbit["network"]}
+        )
+        value = {
+            "schema": "group2-post-finalize-reboot-start-admission-v1",
+            "database_digest": carry.digest(database),
+            "parameters_digest": carry.digest(parameters),
+            "clock": {"db_utc_ns": 10_000_000_000, "vm_lower_ns": 9_000_000_000,
+                      "vm_upper_ns": 11_000_000_000},
+            "deadline_ns": 20_000_000_000,
+            "successor_deadline_ns": 30_000_000_000,
+            "sources": copy.deepcopy(carry.GROUP2_POST_FINALIZE_REBOOT_SOURCES),
+            "raw_tables": raw, "database_rows": database_rows,
+            "mutation_guard_rows": {
+                name: {
+                    "columns": sorted(
+                        {key for row in raw[name] for key in row}
+                        or set(carry.GROUP2_REBOOT_ADMISSION_PRIMARY_KEYS[name])
+                    ),
+                    "primary_key": list(carry.GROUP2_REBOOT_ADMISSION_PRIMARY_KEYS[name]),
+                    "rows": copy.deepcopy(raw[name]),
+                }
+                for name in carry.GROUP2_REBOOT_MUTATION_GUARD_TABLES
+            },
+            "raw_files": raw_files, "configuration": configuration,
+            "effective_settings": settings, "preserved_queued_ids": [],
+            "worker_id": 1, "rabbitmq": rabbit, "derived": derived,
+        }
+        value["mutation_guard_rows"]["managed_input_capacity"] = {
+            "columns": ["id", "actual_bytes", "reserved_bytes", "updated_at"],
+            "primary_key": ["id"],
+            "rows": [{"id": 1, "actual_bytes": 0, "reserved_bytes": 0,
+                      "updated_at": "2026-09-21T00:00:00+00:00"}],
+        }
+        return value, database, parameters
+
+    def test_reboot_admission_derives_candidates_and_complete_rabbit_totals(self):
+        self.assertEqual(
+            carry._group2_admission_ns(
+                "1970-01-02T00:00:00.000001+00:00", "test_invalid"
+            ),
+            86_400_000_001_000,
+        )
+        value, database, parameters = self._reboot_admission()
+        self.assertEqual(carry.validate_group2_reboot_start_admission(
+            value, database, parameters, 20_000_000_000, 30_000_000_000,
+            "sha256:" + "a" * 64), value)
+        mutations = (
+            lambda changed: changed["sources"]["retention"].update({"caller.py": "0" * 64}),
+            lambda changed: changed["raw_tables"]["execution_outbox"].append(
+                {"id": 7, "execution_id": 8, "dispatch_generation": 1,
+                 "status": "pending", "available_at": 151, "lease_expires_at": None}),
+            lambda changed: changed["raw_files"]["journal_facts"]["attempt"].append({"id": 1}),
+            lambda changed: changed["rabbitmq"]["queues"][0]["ra"]["dlx"].update(
+                {"raw": "{ok,{1,13},{ra,node}}", "value": [1, 13]}),
+            lambda changed: changed["rabbitmq"]["queues"].pop(),
+        )
+        for mutate in mutations:
+            changed = copy.deepcopy(value); mutate(changed)
+            with self.assertRaises(carry.CarryForwardError):
+                carry.validate_group2_reboot_start_admission(
+                    changed, database, parameters, 20_000_000_000,
+                    30_000_000_000, "sha256:" + "a" * 64)
+        changed = copy.deepcopy(value)
+        changed["rabbitmq"]["feature_flags"][0]["state"] = "disabled"
+        changed["rabbitmq"]["raw_response_digest"] = carry.digest({
+            key: changed["rabbitmq"][key]
+            for key in ("queues", "topology", "feature_flags", "external_before",
+                        "external_after", "network")
+        })
+        with self.assertRaises(carry.CarryForwardError):
+            carry.validate_group2_reboot_start_admission(
+                changed, database, parameters, 20_000_000_000,
+                30_000_000_000, "sha256:" + "a" * 64)
+
     def _reseal_log(self, evidence):
         evidence["evidence_digest"] = carry.digest(
             {key: item for key, item in evidence.items() if key != "evidence_digest"}
@@ -2303,6 +3166,14 @@ class Group2RuntimeTests(unittest.TestCase):
         }
         after["evidence_digest"] = carry.digest(after)
         return before, after
+
+    def test_reboot_empty_log_segment_uses_real_append_contract(self):
+        before, after = self._log_window("")
+        carry._validate_group2_reboot_empty_log_segment(before, after)
+        changed = copy.deepcopy(after)
+        self._replace_log_text(changed, "new line\n")
+        with self.assertRaises(carry.CarryForwardError):
+            carry._validate_group2_reboot_empty_log_segment(before, changed)
 
     def _profile(self, path):
         base = path.parent.parent if path.parent.name == "worker" else path.parent
@@ -4468,6 +5339,32 @@ t INFO access 172.18.0.6:1013 - "POST /api/workers/1/cleanups/24/result HTTP/1.1
                 "window_end_ns": end,
             }
             self.assertEqual(carry._startup_proof(request)["nonce"], nonce)
+            same_request = copy.deepcopy(request)
+            same_request["container_before"] = {
+                "container_id": "new-worker",
+                "status": "exited",
+                "health": None,
+                "started_at": "2026-09-19T00:00:00Z",
+            }
+            same_proof = carry._same_container_worker_startup_proof(
+                same_request,
+                profile,
+                profile["candidate_image_ids_by_service"]["worker"],
+                profile["candidate_profiles"]["worker"],
+                ["2" * 32],
+            )
+            self.assertEqual(same_proof["container_id"], "new-worker")
+            reused = copy.deepcopy(same_request)
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "group2_reboot_startup_invalid"
+            ):
+                carry._same_container_worker_startup_proof(
+                    reused,
+                    profile,
+                    profile["candidate_image_ids_by_service"]["worker"],
+                    profile["candidate_profiles"]["worker"],
+                    [nonce],
+                )
             for mutate, code in (
                 (
                     lambda value: value["container_after"].__setitem__(

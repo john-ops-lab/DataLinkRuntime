@@ -67,6 +67,6 @@
 - [ ] 10.7 获得绑定精确请求及工具 SHA 的专项批准后，fresh 全量核对原保全事实，单次恢复旧 PostgreSQL/Control/Worker/Web 软件并保留停止的 account-web；验证并持久化事故 receipt 后按 D11 顺序对账，失败 manifest 不消费。独立审查新保全链后重新完成 10.3 正常 v4 部署，不复用失败事务或旧探针。
 - [ ] 10.8 按用户接受的 D12 单事故证据例外，实现不重启、不写业务数据的受限事后收尾及独立保全来源；保存历史缺口与替代来源，修正真实标签形状比较，覆盖真实输入/CLI/阶段持久化与拒绝反例，完成独立审查和精确提交 CI，不把通过代码门禁当作执行批准。
 - [ ] 10.9 取得绑定最终工具、具体缺口条款、请求及动作的专项批准，重新核当前完整保全和原件后单次提交 D12 受限结果与控制面对账；原 D11 失败保留，失败 manifest 不消费，独立验证新保全来源后接续 10.3，正式部署及合并门禁不豁免。
-- [ ] 10.10 按本轮新增范围批准，在原六文件内实现 D13 单次 post-finalize reboot 入口与新来源边；复用完整 F 链、收集器、DB/files/log 与 startup 证明，分离旧数据不变及新 boot 身份有效。停止原件先核 F，PG/Rabbit 启动后才取完整 DB，旧责任可消费性未证明时不得启动应用；仅 start 原五容器，account-web 原 stopped 保持，不改安装器、原成功/失败原件或通用 recover。
+- [x] 10.10 按本轮新增范围批准，在原六文件内实现 D13 单次 post-finalize reboot 入口与新来源边；复用完整 F 链、收集器、DB/files/log 与 startup 证明，分离旧数据不变及新 boot 身份有效。停止原件先核 F，PG/Rabbit 启动后才取完整 DB，旧责任可消费性未证明时不得启动应用；仅 start 原五容器，account-web 原 stopped 保持，不改安装器、原成功/失败原件或通用 recover。
 - [ ] 10.11 完成 D13 真实输入形状的完整正例、全部阶段/动作/落盘故障及批准/父链/boot/PG/责任/文件/日志/namespace/重复 startup/来源伪造反例，隔离自有容器验证同 ID start；确认旧 startup/跨 boot/来源拒绝规则不退化，完成独立增量审查、最终 exact SHA CI 与 strict OpenSpec，不运行生产恢复作测试。
 - [ ] 10.12 冻结最终工具、请求、来源及单次动作并取得专项执行批准后，才执行 D13；保留真实阶段及失败原件，双端重算新 receipt/chain/snapshot，旧控制面字节不变。独立 reviewer 签署新来源后以新 exact scope/install/plan/once 接续 10.3；已有产品、D11/D12 工作不重做，候选缓存仍不算部署或 live compatibility。

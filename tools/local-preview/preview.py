@@ -1233,10 +1233,17 @@ def validate_group2_artifacts(scope, scope_path):
         for item in machine_records(preservation_path)
         if item.get("schema") == "group2-partial-finalize-chain-v1"
     ]
+    reboot_chain_records = [
+        item
+        for item in machine_records(preservation_path)
+        if item.get("schema") == "group2-post-finalize-reboot-chain-v1"
+    ]
     if source_kind == "private_snapshot":
-        valid_source = not chain_records and not partial_chain_records
+        valid_source = (
+            not chain_records and not partial_chain_records and not reboot_chain_records
+        )
     elif source_kind == "group2_starting_reconcile_v1":
-        if len(chain_records) != 1 or partial_chain_records:
+        if len(chain_records) != 1 or partial_chain_records or reboot_chain_records:
             raise ValueError("Group2 reconciliation chain is missing or ambiguous")
         try:
             snapshot = carry_forward.validate_group2_reconcile_preservation(
@@ -1249,7 +1256,7 @@ def validate_group2_artifacts(scope, scope_path):
             raise ValueError("Group2 reconciliation chain is invalid") from error
         valid_source = snapshot == scope["preservation_reference"]["snapshot"]
     elif source_kind == "group2_partial_finalize_v1":
-        if len(partial_chain_records) != 1 or chain_records:
+        if len(partial_chain_records) != 1 or chain_records or reboot_chain_records:
             raise ValueError("Group2 partial finalize chain is missing or ambiguous")
         chain = partial_chain_records[0]
         try:
@@ -1262,6 +1269,17 @@ def validate_group2_artifacts(scope, scope_path):
         except (KeyError, carry_forward.CarryForwardError) as error:
             raise ValueError("Group2 partial finalize chain is invalid") from error
         valid_source = _partial_finalize_scope_binding(chain, scope, snapshot)
+    elif source_kind == "group2_post_finalize_reboot_v1":
+        if len(reboot_chain_records) != 1 or chain_records or partial_chain_records:
+            raise ValueError("Group2 post-finalize reboot chain is missing or ambiguous")
+        chain = reboot_chain_records[0]
+        try:
+            snapshot = carry_forward.validate_group2_post_finalize_reboot_preservation(
+                chain
+            )
+        except (KeyError, carry_forward.CarryForwardError) as error:
+            raise ValueError("Group2 post-finalize reboot chain is invalid") from error
+        valid_source = _post_finalize_reboot_scope_binding(chain, scope, snapshot)
     else:
         valid_source = False
     if not (
@@ -1279,6 +1297,20 @@ def validate_group2_artifacts(scope, scope_path):
 
 
 def _partial_finalize_scope_binding(chain, scope, snapshot):
+    tool = chain.get("request", {}).get("tool", {})
+    return (
+        snapshot == scope["preservation_reference"]["snapshot"]
+        and tool.get("sha") == scope["final_source"]["to_sha"]
+        and tool.get("controller_files") == scope["controller_files"]["files"]
+    )
+
+
+def _post_finalize_reboot_scope_binding(chain, scope, snapshot):
+    """Bind only the new reboot tool to its successor scope.
+
+    The nested partial-finalize parent is independently revalidated by the pure
+    preservation validator and deliberately retains its original tool binding.
+    """
     tool = chain.get("request", {}).get("tool", {})
     return (
         snapshot == scope["preservation_reference"]["snapshot"]
@@ -3068,6 +3100,415 @@ def finalize_group2_partial(request_path, approval_path):
             "receipt_digest": receipt["receipt_digest"]}
 
 
+def _post_finalize_reboot_file_evidence(path):
+    path = Path(path)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"exists": False}
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ValueError("Post-finalize reboot authority is not a regular file")
+    return {
+        "exists": True,
+        "kind": "regular",
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "mode": stat.S_IMODE(info.st_mode),
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+        "symlink": False,
+    }
+
+
+def _post_finalize_reboot_vm_file_evidence(relative):
+    path = vm_path(relative)
+    if vm_command("test", "-e", path, check=False).returncode:
+        if not vm_command("test", "-L", path, check=False).returncode:
+            raise ValueError("Post-finalize reboot VM authority is a symlink")
+        return {"exists": False}
+    if (
+        vm_command("test", "-f", path, check=False).returncode != 0
+        or vm_command("test", "-L", path, check=False).returncode == 0
+    ):
+        raise ValueError("Post-finalize reboot VM authority is not a regular file")
+    metadata = vm_command("stat", "-c", "%a %u %g", path).stdout.strip().split()
+    if len(metadata) != 3:
+        raise ValueError("Post-finalize reboot VM authority metadata is invalid")
+    return {
+        "exists": True,
+        "kind": "regular",
+        "sha256": vm_command("sha256sum", path).stdout.split()[0],
+        "mode": int(metadata[0], 8),
+        "uid": int(metadata[1]),
+        "gid": int(metadata[2]),
+        "symlink": False,
+    }
+
+
+def _post_finalize_reboot_authority(prior, authority_paths):
+    """Read the request-bound host/VM bytes without changing control state."""
+    if (
+        set(prior["host_files"]) != set(authority_paths["host"])
+        or set(prior["vm_files"]) != set(authority_paths["vm"])
+        or set(prior["installed"]) != {"host", "vm"}
+        or set(prior["installed"]["host"])
+        != carry_forward.GROUP2_CONTROLLER_FILES
+        or set(prior["installed"]["vm"])
+        != carry_forward.GROUP2_POST_FINALIZE_REBOOT_VM_INSTALLED
+    ):
+        raise ValueError("Post-finalize reboot installed authority is invalid")
+    actual = {"host_files": {}, "vm_files": {}, "installed": {"host": {}, "vm": {}}}
+    for relative, expected in prior["host_files"].items():
+        if (
+            not isinstance(relative, str)
+            or not re.fullmatch(r"[a-zA-Z0-9_./-]+", relative)
+            or relative.startswith("/")
+            or ".." in Path(relative).parts
+        ):
+            raise ValueError("Post-finalize reboot host authority path is invalid")
+        observed = _post_finalize_reboot_file_evidence(ROOT / relative)
+        if observed != expected:
+            raise ValueError("Post-finalize reboot host authority changed")
+        actual["host_files"][relative] = observed
+    for relative, expected in prior["vm_files"].items():
+        if (
+            not isinstance(relative, str)
+            or not re.fullmatch(r"[a-zA-Z0-9_./-]+", relative)
+            or relative.startswith("/")
+            or ".." in Path(relative).parts
+        ):
+            raise ValueError("Post-finalize reboot VM authority path is invalid")
+        observed = _post_finalize_reboot_vm_file_evidence(relative)
+        if observed != expected:
+            raise ValueError("Post-finalize reboot VM authority changed")
+        actual["vm_files"][relative] = observed
+    for name, expected in prior["installed"]["host"].items():
+        observed = _post_finalize_reboot_file_evidence(ROOT / name)
+        if observed != expected:
+            raise ValueError("Post-finalize reboot host controller changed")
+        actual["installed"]["host"][name] = observed
+    for name, expected in prior["installed"]["vm"].items():
+        observed = _post_finalize_reboot_vm_file_evidence(name)
+        if observed != expected:
+            raise ValueError("Post-finalize reboot VM controller changed")
+        actual["installed"]["vm"][name] = observed
+    return actual
+
+
+def recover_group2_post_finalize_reboot(request_path, approval_path):
+    """Run the single boot-bound post-finalize recovery orchestration."""
+    request_path, request_bytes = _read_incident_input(request_path)
+    approval_path, approval_bytes = _read_incident_input(approval_path)
+    if approval_path.name != "USER-APPROVAL.json" or approval_path.parent != request_path.parent:
+        raise ValueError("Post-finalize reboot approval must be the fixed sibling file")
+    _record_path, user_record = _read_incident_input(
+        approval_path.parent / "USER-APPROVAL.txt"
+    )
+    try:
+        request = json.loads(request_bytes)
+        approval = json.loads(approval_bytes)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("Post-finalize reboot request or approval is invalid") from error
+    evidence_directory = request_path.with_suffix(".evidence")
+    if (
+        not evidence_directory.is_dir()
+        or evidence_directory.is_symlink()
+        or evidence_directory.stat().st_mode & 0o077
+        or {item.name for item in evidence_directory.iterdir()}
+        != carry_forward.GROUP2_POST_FINALIZE_REBOOT_FILES
+    ):
+        raise ValueError("Post-finalize reboot evidence directory is invalid")
+    artifacts = {
+        name: _read_incident_input(evidence_directory / name)[1]
+        for name in carry_forward.GROUP2_POST_FINALIZE_REBOOT_FILES
+    }
+    try:
+        validated = carry_forward.validate_group2_post_finalize_reboot_request(
+            request, approval, user_record, artifacts
+        )
+    except carry_forward.CarryForwardError as error:
+        raise ValueError("Post-finalize reboot request is not execution-approved") from error
+    source_bundle = json.loads(artifacts["source-review.json"])
+    incident_id = request["incident_id"]
+    finalize_id = request["finalize_id"]
+    boot_id = request["boot_id"]
+    prefix = f"incidents/{incident_id}/finalize/{finalize_id}/reboot/{boot_id}"
+    with operation_lock(blocking=False):
+        with config_lock():
+            if (
+                _read_incident_input(request_path)[1] != request_bytes
+                or _read_incident_input(approval_path)[1] != approval_bytes
+                or _read_incident_input(
+                    approval_path.parent / "USER-APPROVAL.txt"
+                )[1] != user_record
+                or any(
+                    _read_incident_input(evidence_directory / name)[1] != raw
+                    for name, raw in artifacts.items()
+                )
+            ):
+                raise ValueError("Post-finalize reboot input bytes changed")
+            source, head, tool_files = _incident_tool_files()
+            if (
+                head != request["tool"]["sha"]
+                or tool_files != request["tool"]["controller_files"]
+            ):
+                raise ValueError("Post-finalize reboot source controller binding changed")
+            repository = source.parents[1]
+            tree = subprocess.check_output(
+                ["/usr/bin/git", "-C", str(repository), "rev-parse", "HEAD^{tree}"],
+                env=ENV, text=True, timeout=30,
+            ).strip()
+            if tree != request["tool"]["tree"]:
+                raise ValueError("Post-finalize reboot source tree changed")
+            _validate_incident_worktree_source(
+                repository, source_bundle["source"]["source_scope"]
+            )
+            _validate_partial_review_source(
+                source, head,
+                {"artifacts": {"source-review.json": source_bundle["source"]}},
+            )
+            carry_forward._validate_group2_partial_tool(
+                {
+                    key: request["tool"][key]
+                    for key in (
+                        "sha", "controller_files", "source_scope_digest",
+                        "review_report_sha256", "ci_evidence_sha256",
+                    )
+                },
+                source_bundle["source"],
+                source_bundle["ci"],
+            )
+            now = time.time_ns()
+            if not request["window"]["not_before_ns"] <= now < request["window"]["deadline_ns"]:
+                raise ValueError("Post-finalize reboot execution window is not active")
+            actual_boot = vm_command(
+                "cat", "/proc/sys/kernel/random/boot_id"
+            ).stdout.strip()
+            if actual_boot != boot_id:
+                raise ValueError("Post-finalize reboot boot identity changed")
+            authority_before = _post_finalize_reboot_authority(
+                request["prior"], validated["authority_paths"]
+            )
+            reboot_root = (
+                ROOT / "incidents" / incident_id / "finalize" / finalize_id / "reboot"
+            )
+            host_directory = ROOT / prefix
+            finalize_root = reboot_root.parent
+            try:
+                finalize_info = finalize_root.lstat()
+            except OSError as error:
+                raise ValueError(
+                    "Post-finalize reboot parent finalization is unavailable"
+                ) from error
+            if (
+                not stat.S_ISDIR(finalize_info.st_mode)
+                or stat.S_ISLNK(finalize_info.st_mode)
+                or finalize_info.st_uid != os.geteuid()
+                or finalize_info.st_mode & 0o077
+                or reboot_root.exists()
+                or reboot_root.is_symlink()
+            ):
+                raise ValueError("Post-finalize reboot identity was already used")
+            vm_reboot_root = vm_path(
+                f"incidents/{incident_id}/finalize/{finalize_id}/reboot"
+            )
+            if (
+                vm_command(
+                    "test", "!", "-e", vm_reboot_root, check=False
+                ).returncode
+                or vm_command(
+                    "test", "-L", vm_reboot_root, check=False
+                ).returncode == 0
+            ):
+                raise ValueError("Post-finalize reboot identity was already used in VM")
+            reboot_root.mkdir(mode=0o700)
+            host_directory.mkdir(mode=0o700)
+            evidence_host = host_directory / "evidence"
+            tool_host = host_directory / "tool"
+            evidence_host.mkdir(mode=0o700)
+            tool_host.mkdir(mode=0o700)
+            for path, raw in (
+                (host_directory / "request.json", request_bytes),
+                (host_directory / "USER-APPROVAL.json", approval_bytes),
+                (host_directory / "USER-APPROVAL.txt", user_record),
+            ):
+                write_private_bytes(path, raw)
+            for name, raw in artifacts.items():
+                write_private_bytes(evidence_host / name, raw)
+            for name in ("deploy.sh", "carry_forward.py"):
+                write_private_bytes(tool_host / name, (source / name).read_bytes())
+            prepared = carry_forward.canonical_bytes({
+                "schema": "group2-post-finalize-reboot-phase-v1",
+                "incident_id": incident_id,
+                "finalize_id": finalize_id,
+                "boot_id": boot_id,
+                "phase": "prepared",
+                "completed_stages": [],
+                "pending_action": None,
+                "evidence_digests": {},
+            })
+            attempt = carry_forward.canonical_bytes({
+                "schema": "group2-post-finalize-reboot-attempt-v1",
+                "incident_id": incident_id,
+                "finalize_id": finalize_id,
+                "boot_id": boot_id,
+                "request_digest": request["request_digest"],
+                "tool_sha": request["tool"]["sha"],
+                "window": request["window"],
+                "status": "claimed",
+            })
+            write_private_bytes(host_directory / "phase.json", prepared)
+            write_private_bytes(host_directory / "attempt.json", attempt)
+            reboot_descriptor = os.open(
+                reboot_root, os.O_RDONLY | os.O_DIRECTORY
+            )
+            try:
+                os.fsync(reboot_descriptor)
+            finally:
+                os.close(reboot_descriptor)
+            vm_command(
+                "mkdir", "-m", "700",
+                vm_reboot_root,
+            )
+            vm_command("mkdir", "-m", "700", vm_path(prefix))
+            write_private_bytes(
+                host_directory / "host-authority-before.json",
+                carry_forward.canonical_bytes(authority_before),
+            )
+            for relative, raw in (
+                ("request.json", request_bytes),
+                ("USER-APPROVAL.json", approval_bytes),
+                ("USER-APPROVAL.txt", user_record),
+                ("phase.json", prepared),
+                ("attempt.json", attempt),
+            ):
+                vm_private_write(f"{prefix}/{relative}", raw)
+            for name, raw in artifacts.items():
+                vm_private_write(f"{prefix}/evidence/{name}", raw)
+            for name in ("deploy.sh", "carry_forward.py"):
+                raw = (source / name).read_bytes()
+                vm_private_write(f"{prefix}/tool/{name}", raw)
+                actual = vm_command(
+                    "sha256sum", vm_path(f"{prefix}/tool/{name}")
+                ).stdout.split()[0]
+                if actual != tool_files[name]:
+                    raise RuntimeError("Post-finalize reboot VM tool transfer changed")
+            with (ROOT / "deploy.log").open("a") as output:
+                process = subprocess.Popen(
+                    [COLIMA, "ssh", "-p", settings()["profile"], "--", "sudo", "bash",
+                     vm_path(f"{prefix}/tool/deploy.sh"),
+                     "recover-group2-post-finalize-reboot", settings()["vm_root"],
+                     incident_id, finalize_id, boot_id],
+                    env=ENV, stdout=output, stderr=subprocess.STDOUT,
+                )
+                vm_outputs = (
+                    "result.json", "receipt.json", "chain.json",
+                    "preservation-snapshot.json",
+                )
+                while any(
+                    vm_command(
+                        "test", "-f", vm_path(f"{prefix}/{name}"), check=False
+                    ).returncode
+                    for name in vm_outputs
+                ):
+                    code = process.poll()
+                    if code is not None:
+                        raise RuntimeError(
+                            f"Post-finalize reboot VM orchestration failed ({code})"
+                        )
+                    remaining = (request["window"]["deadline_ns"] - time.time_ns()) / 1e9
+                    if remaining <= 0:
+                        process.kill()
+                        process.wait()
+                        raise RuntimeError("Post-finalize reboot VM orchestration timed out")
+                    time.sleep(min(0.25, remaining))
+            result_bytes = vm_command("cat", vm_path(f"{prefix}/result.json")).stdout.encode()
+            receipt_bytes = vm_command("cat", vm_path(f"{prefix}/receipt.json")).stdout.encode()
+            chain_bytes = vm_command("cat", vm_path(f"{prefix}/chain.json")).stdout.encode()
+            snapshot_bytes = vm_command(
+                "cat", vm_path(f"{prefix}/preservation-snapshot.json")
+            ).stdout.encode()
+            try:
+                result = json.loads(result_bytes)
+                receipt = json.loads(receipt_bytes)
+                chain = json.loads(chain_bytes)
+                vm_snapshot = json.loads(snapshot_bytes)
+            except (UnicodeError, json.JSONDecodeError) as error:
+                raise RuntimeError("Post-finalize reboot VM result is invalid") from error
+            recomputed_receipt = carry_forward.validate_group2_post_finalize_reboot_result(
+                validated, result["evidence"]
+            )
+            if result != {
+                "schema": "group2-post-finalize-reboot-result-v1",
+                "evidence": result["evidence"],
+                "receipt": recomputed_receipt,
+            } or receipt != recomputed_receipt:
+                raise RuntimeError("Post-finalize reboot VM receipt changed")
+            snapshot = carry_forward.validate_group2_post_finalize_reboot_preservation(chain)
+            if (
+                chain.get("request") != request
+                or chain.get("approval") != approval
+                or chain.get("result") != result
+                or vm_snapshot != snapshot
+            ):
+                raise RuntimeError("Post-finalize reboot VM chain changed")
+            write_private_bytes(host_directory / "result.json", result_bytes)
+            write_private_bytes(host_directory / "receipt.json", receipt_bytes)
+            write_private_bytes(host_directory / "chain.json", chain_bytes)
+            write_private_bytes(host_directory / "preservation-snapshot.json", snapshot_bytes)
+            authority_after = _post_finalize_reboot_authority(
+                request["prior"], validated["authority_paths"]
+            )
+            if authority_after != authority_before:
+                raise RuntimeError("Post-finalize reboot control-plane authority changed")
+            write_private_bytes(
+                host_directory / "host-authority-after.json",
+                carry_forward.canonical_bytes(authority_after),
+            )
+            acknowledgement = {
+                "incident_id": incident_id,
+                "finalize_id": finalize_id,
+                "boot_id": boot_id,
+                "receipt_digest": receipt["receipt_digest"],
+            }
+            acknowledgement_bytes = carry_forward.canonical_bytes(acknowledgement)
+            write_private_bytes(
+                host_directory / "host-readback.json", acknowledgement_bytes
+            )
+            vm_private_write(f"{prefix}/host-validated.json", acknowledgement_bytes)
+            remaining = (request["window"]["deadline_ns"] - time.time_ns()) / 1e9
+            if remaining <= 0:
+                raise RuntimeError("Post-finalize reboot host validation exceeded deadline")
+            if process.wait(timeout=min(300, remaining)):
+                raise RuntimeError("Post-finalize reboot VM host acknowledgement failed")
+            final_phase_bytes = vm_command(
+                "cat", vm_path(f"{prefix}/phase.json")
+            ).stdout.encode()
+            final_phase = json.loads(final_phase_bytes)
+            if (
+                set(final_phase) != {
+                    "schema", "incident_id", "finalize_id", "boot_id", "phase",
+                    "completed_stages", "pending_action", "evidence_digests",
+                }
+                or final_phase["schema"] != "group2-post-finalize-reboot-phase-v1"
+                or final_phase["incident_id"] != incident_id
+                or final_phase["finalize_id"] != finalize_id
+                or final_phase["boot_id"] != boot_id
+                or final_phase["phase"] != "host_verified"
+                or final_phase["completed_stages"]
+                != list(carry_forward.GROUP2_POST_FINALIZE_REBOOT_PHASES)
+                or final_phase["pending_action"] is not None
+                or final_phase["evidence_digests"] != receipt["stage_digests"]
+            ):
+                raise RuntimeError("Post-finalize reboot VM phase is incomplete")
+            write_private_bytes(host_directory / "phase.json", final_phase_bytes)
+    return {
+        "incident_id": incident_id,
+        "finalize_id": finalize_id,
+        "boot_id": boot_id,
+        "receipt_digest": receipt["receipt_digest"],
+    }
+
+
 def main():
     if not os.environ.get("DLR_PREVIEW_HOME"):
         sys.exit("Set DLR_PREVIEW_HOME to your private installation directory")
@@ -3087,6 +3528,7 @@ def main():
             "install-group2",
             "reconcile-group2-starting",
             "finalize-group2-partial",
+            "recover-group2-post-finalize-reboot",
         ],
     )
     parser.add_argument("pr", nargs="?", type=int)
@@ -3102,7 +3544,36 @@ def main():
     parser.add_argument("--incident-approval", type=Path)
     parser.add_argument("--finalize-request", type=Path)
     parser.add_argument("--finalize-approval", type=Path)
+    parser.add_argument("--reboot-request", type=Path)
+    parser.add_argument("--reboot-approval", type=Path)
     args = parser.parse_args()
+    if args.command == "recover-group2-post-finalize-reboot":
+        if (
+            args.pr is not None
+            or args.reboot_request is None
+            or args.reboot_approval is None
+            or any(
+                value is not None
+                for value in (
+                    args.to_sha, args.ids_file, args.output, args.carry_forward,
+                    args.mode, args.review_scope, args.incident_request,
+                    args.incident_approval, args.finalize_request,
+                    args.finalize_approval,
+                )
+            )
+        ):
+            parser.error(
+                "recover-group2-post-finalize-reboot requires "
+                "--reboot-request and --reboot-approval"
+            )
+        print(json.dumps(recover_group2_post_finalize_reboot(
+            args.reboot_request, args.reboot_approval
+        ), indent=2))
+        return
+    if args.reboot_request is not None or args.reboot_approval is not None:
+        parser.error(
+            "reboot request inputs require recover-group2-post-finalize-reboot"
+        )
     if args.command == "finalize-group2-partial":
         if (
             args.pr is not None
@@ -3113,7 +3584,8 @@ def main():
                 for value in (
                     args.to_sha, args.ids_file, args.output, args.carry_forward,
                     args.mode, args.review_scope, args.incident_request,
-                    args.incident_approval,
+                    args.incident_approval, args.reboot_request,
+                    args.reboot_approval,
                 )
             )
         ):
@@ -3142,6 +3614,8 @@ def main():
                     args.review_scope,
                     args.finalize_request,
                     args.finalize_approval,
+                    args.reboot_request,
+                    args.reboot_approval,
                 )
             )
         ):
@@ -3171,6 +3645,8 @@ def main():
                     args.mode,
                     args.finalize_request,
                     args.finalize_approval,
+                    args.reboot_request,
+                    args.reboot_approval,
                 )
             )
         ):
