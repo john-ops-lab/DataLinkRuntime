@@ -96,3 +96,37 @@
 #### Scenario: 后继正式部署接纳受限来源
 - **WHEN** 独立 reviewer 对真实受限结果签署保全报告，并为后继候选组装 scope
 - **THEN** 系统从专用闭合记录重算原 selection/DB、核验后的 files 及明确引用缺口结果的 lineage；缺失、重复、改标或摘要不符均拒绝，正常 v4 完整验收仍须另行通过
+
+### Requirement: 本次收尾后 VM 重启使用单次旧容器启动证明
+系统 SHALL 仅为已闭合受限收尾之后这一次绑定的 VM boot 提供 `recover-group2-post-finalize-reboot`；MUST 将父收尾链、独立来源 review、原成功版本/镜像/卷/显式配置、完整 stopped 容器原件、当前 boot 与 missing keeper、精确工具/审查/CI/请求/动作绑定专项执行批准。新增实现范围批准 MUST NOT 代替实际启动批准；普通 recover、原 D11/D12 及其他事故的拒绝规则 MUST 保持。
+
+#### Scenario: 停止现场无法对齐父来源
+- **WHEN** stopped 文件、材料、journal facts、日志旧前缀、卷/backing、PG 镜像 RootFS/数据目录版本、容器静态 profile 或原控制面原件不能与完整重算的父 F reference 对齐
+- **THEN** 系统在创建 keeper 或启动任何原容器前拒绝；PG 停止时明确完整 DB 尚未采集，不用 fresh 文件或伪造 DB/活 Worker authority 自批新根
+
+#### Scenario: 数据库就绪后责任发生变化
+- **WHEN** 唯一 keeper 按原参数核验通过，原 PG/RabbitMQ 容器 start 并健康后，完整六块 DB、schema、PG 身份、责任/审计/资产/session 或文件不能与 F 严格核对，或只读 SQL/队列元数据发现 pending outbox、retry_wait、active Attempt/slot/cleanup、原 queued 当前代 outbox 未 published、相关 dispatch/DLQ 的总量或 ready/unacked/delayed/DLX 内部在途非零、enabled Schedule、bootstrap/admission 修补候选、retention 年龄/数量/idempotency 候选、到期 dead-letter hold、GC reservation/binding/staged/deletion/retry lease/磁盘 orphan 或 Worker journal recovery/cleanup 可消费工作，或这些来源无法完整核对
+- **THEN** 系统保存该阶段完整原件和真实状态并停止，Control/Worker/Web 不启动；不修改旧行/消息、恢复备份、迁移、清理责任或放宽比较
+
+#### Scenario: 本次新 boot 下启动同一旧 Worker
+- **WHEN** 仅一次 start 原 Control/Worker/Web 的已绑定容器 ID，account-web 保持原 stopped
+- **THEN** 系统保持原 ID/image/完整 profile，核新的 StartedAt 在唯一窗口内、零 restart、一份新 nonce 的完整 preflight/cleanup/residue 和连续日志；新 keeper/Worker PID、namespace/cgroup 身份须来自当前 boot 的实际内核证据，同 boot 内保持连续，不盲复用旧 boot 身份比较器或允许自动 recreate
+
+#### Scenario: 缺少运行副作用或后续停留的完整依据
+- **WHEN** keeper 脚本实际 raw/hash/mode/owner/来源未独立冻结，原 Rabbit 版本/插件下的内部在途统计或已证明覆盖的总量缺失且无不适用证据，恢复窗口超时，或原行/策略导出的最早自然变更时间不能覆盖请求冻结的紧接后继验证期限
+- **THEN** 系统拒绝相应动作或成功结果，保留最早变更时间及候选原件，不把缺字段视为 0、不假定父四工具摘要覆盖 keeper 脚本、不以窗口内通过宣称无限期安全；后继必须在证据有效期内 fresh 核对，不因正常远期保留策略直接拒绝，也不得为放行改配置或增加定时停止/续跑
+
+#### Scenario: 本次启动产生目录元数据变化
+- **WHEN** 本次完整 startup 和新生命周期证明通过且所有旧 DB/责任/审计/排队记录不变
+- **THEN** 系统只允许 runtime 根及 journal/sandbox-recovery 两处目录 mtime 在本次窗口中单调变化，并保留旧日志前缀、内容、权限、owner、卷和其他文件身份；第三路径、第二次本轮 startup、旧 nonce 或额外业务消费均拒绝
+
+#### Scenario: 执行动作或落盘中断
+- **WHEN** 工具暂存、keeper、PG/Rabbit、应用启动、阶段采集、result/receipt/chain 落盘或宿主读回任一点中断
+- **THEN** 系统保留此前落盘的操作意图、实际阶段和已有原件，不自动 retry/resume、回退或补造；父事故/收尾/boot 唯一目录阻止换请求 ID 重放，旧 state/current/transaction/config/attention、安装字节、成功与失败原件不变
+
+### Requirement: 重启后来源只能由父链及本次证明唯一导出
+系统 SHALL 仅通过专用 `group2_post_finalize_reboot_v1` 来源接纳本次成功结果；MUST 先严格重算原 F 链及原参考，再验证本次逐阶段证据，唯一导出父 selection/DB、已证明的本次 files 和追加 request/receipt/chain 摘要的 lineage。新来源 MUST 由独立 reviewer 冻结，绑定本次工具/controller 与后继 exact scope；原父工具绑定和旧来源规则不得改写。
+
+#### Scenario: 后继候选承接新的保全来源
+- **WHEN** preview 安装、规划、选择或最终切换读取本次来源
+- **THEN** 系统重算完整父链和本次链，拒绝缺失/重复/摘要不符、fresh 自批、改标普通 snapshot、父 F 冒绑新工具或未经证明的其他 boot；原 state/transaction 和 F 成功不重做，后继仍须 live compatibility、正式四应用/双入口/真实 Chrome 及原合并门禁，纯构建缓存不替代这些门禁

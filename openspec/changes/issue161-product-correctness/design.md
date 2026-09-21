@@ -160,6 +160,30 @@ fresh 只读重复读快照先与第一组独立封存事实核对，再保护�
 
 后继正常 v4 只能通过独立 reviewer 核验的新专用来源接纳唯一 snapshot：原 selection/DB、经核验的恢复后 files，以及绑定新请求/受限结果/原件链的 lineage。不得将部分证据塞入 D11 旧链、以 null/布尔值填充缺失 raw，或改标普通 private snapshot。后续仍须重新 stage/install/plan/once 和完整四应用、双入口及业务验收。
 
+### D13. 已完成受限收尾后本次 VM 重启的单次承接
+
+本次新增范围仅覆盖已闭合 D12 收尾之后、当前 VM boot 下的一次旧软件启动。当前状态应为旧成功 SHA/schema/images/state/ready transaction 不变、原六容器均停止、keeper 不存在、paused 且无 carry/attention；这些是请求必须 fresh 核对的条件，不是从文档读取的运行事实。D11/D12 历史成功、失败、缺口及原件保持，不重做收尾，不将本次新生命周期塞入旧链。范围批准只允许实现、测试、独立审查和 exact CI；执行前仍须实际用户批准精确工具 SHA、请求摘要、当前 boot 和下述动作。
+
+入口固定为 `recover-group2-post-finalize-reboot --reboot-request <private.json> --reboot-approval <approval.json>`，不接受任意命令、目标版本、force/retry/resume。闭合请求绑定完整父 D12 chain/receipt/snapshot 原字节及摘要、独立父来源 review、旧成功 receipt/consumed、host/VM authority 和安装字节、原六容器完整 inspect、镜像 RootFS、卷/backing、显式配置、当前 boot 及 missing keeper 原件，以及本次干净工具提交的差异/审查/CI。宿主 operation→config 锁和 VM deploy 锁不变；隔离工具仅为同提交 deploy/carry 两文件。以父事故/收尾和 boot 派生唯一私有目录，原子占位后任何重入或更换请求 ID 均拒绝，不能靠换目录重放。
+
+数据比较与生命周期比较分开，固定顺序如下；每阶段先持久化操作意图，再执行单次动作、保存完整结果与窗口并纯比较，失败禁止进入下一阶段：
+
+1. **stopped**：完整重算父 D12 链导出 F reference；只读采集原卷内 runtime/journal/materials、旧日志连续前缀、容器完整 State/静态 profile、PG 镜像 RootFS/数据目录版本、host/VM 原件，逐项对齐 F。所有五个旧业务容器必须保持父链 ID/image/config/mount，只有已绑定 reboot 导致的 stopped State 变化可被记录；account-web 的原 stopped State、ID/image/binding 也不变。此时不得调用要求活 Worker PID 的 authority 采集器，不伪造 DB 或 kernel；PG 停止时明确 DB 尚不可读，DB 预期只取父链。
+2. **keeper-ready**：只调用已冻结旧 `prepare-sandbox-host.sh`，使用原私有 unit/CPU/memory 参数创建该唯一 keeper；该脚本不在父 F 的四 VM 工具摘要内，新 stopped-platform 必须显式保存其 raw/hash/mode/owner/非 symlink 来源并对照旧成功仓库同名源码，工具验证及动作紧前重核同一字节和参数。核当前 boot、unit/description/limits/Delegate、PID/starttime、cgroup、实际 mount/namespace/FD 和无残留。stopped 时的静态 Worker profile 与父链严格比较，新的 idle 扫描使用当前 boot 下核实的卷/mount 目标，不能把旧 boot 的 PID、namespace 编号或 authority 当作当前扫描来源。keeper 准备不得改变文件、日志、卷或控制面原件。
+3. **database-ready**：只对请求冻结的原 PG/RabbitMQ 容器 ID 执行 `docker start`，不 recreate；等待二者真实健康后，用现有只读 DB/files 收集器取完整六块 DB 并与 F 严格相等，核 schema、PG 主版本/完整 RootFS/数据卷、全部责任/审计/资产/session、文件和连续日志。任何失败保留此阶段真实状态，Control/Worker/Web 不启动。应用启动前另取只读 SQL/队列元数据原件并绑定同次完整 DB：无 pending outbox、retry_wait、active Attempt/占用 slot/待执行 cleanup，原 queued 当前 generation 的 outbox 均已 published 且原保护摘要不变，全部相关 dispatch/DLQ 队列及内部在途总量为 0（包含 ready/unacked/delayed/DLX，缺字段不能当 0），无 enabled Schedule。按旧成功源码逐项覆盖 demo bootstrap、scheduler、retention、artifact GC、orphan audit、admission、attempt、DLQ、topology、outbox 启动循环及 Worker 启动恢复：分别保存实际只读行/时间/队列配置来源，证明请求冻结的完整有界窗口内不新增业务、不消费原责任、不删除或改写旧资产。具体包括 bootstrap admin/demo 已满足存在条件；admission counter 存在且实际聚合一致、terminal Rabbit execution 已有 admission_released_at；retention 年龄和 max_per_adapter 数量两分支及到期 terminal idempotency；attempt dead-letter hold 到期分支；GC upload reservation/binding/staged/deletion/retry lease 和磁盘 orphan；Worker journal recovery 和 adapter cleanup claim。retention/GC/admission 首次 tick 在 sleep 之前，不能用轮询间隔作保护，也不能用 open Incident 当 claim 阻断。Rabbit 检查只能 list 元数据，不能 get/ack/purge；topology 核全部可能承载旧消息的队列/路由及原配置，无未绑定生产者/消费者；正常幂等声明或按原配置创建已证明不存在旧消息的空队列不视为数据漂移，危险未知路由或无法覆盖的消息路径拒绝。未知循环、缺失证据、任何到期/数量清理候选、窗口余量不足或未绑定生产者均拒绝，不能改旧行/消息、先启动后回滚或增加例外白名单。
+4. **applications-started**：仅一次启动原 Control/Worker/Web 三个 ID，不用 `compose up`、recreate、restart、依赖启动或候选镜像；account-web 始终停止。完整记录每次命令及实际容器 State，Worker 必须保持原 ID/image/完整 profile，新的 StartedAt 在本次唯一窗口内、restart_count 为 0、恰有一份新的完整 preflight receipt/nonce、gate 日志、cleanup/residue 证明。nonce 与父链全部已出现的 startup 不同；健康等待失败、重复 startup 或任何额外业务处理均失败，不能重试。
+5. **verified**：用本次新 keeper/Worker 的完整 live authority 验证 PID/starttime、标签固定投影与独立完整 profile、namespace、真实 cgroup tree/限制、卷来源和预检 namespace 身份一致，再取完整 DB/files/logs/containers/storage/authority 复核。DB 与原责任、审计及排队记录全部不变；日志仅接受有来源的本次启动/健康追加，旧前缀/权限/内容不变。复用完整 startup 文件比较，只允许 `runtime` 根与 `journal/sandbox-recovery` 这两处目录的 mtime 在本次精确窗口中单调变化，两处都须有本次证明；其他目录、内容、权限、owner、材料和 journal facts 不变。
+
+`compare_kernel`、`_validate_restored_running_kernel` 及 D12 transition 都要求旧 keeper/boot 身份连续，不能跨 boot 直接复用或删除其失败条件。新增纯校验仅把 F→本次的允许变化限定为上述已记录生命周期身份；同一新 boot 内 keeper 的 PID/starttime/parent identity 从 keeper-ready 到 verified 仍完全一致。新 cgroup/namespace inode 与 PID 不能要求数值必然不同，但必须绑定本次 boot、启动窗口和实际内核来源。原 `_worker_startup_proof` 的容器替换规则保留；提取共同的完整 preflight/log/window/profile 校验，本入口使用单独严格的 same-ID stopped→running 分支，不能将旧分支改成任意 ID 都接受。旧持久卷 device/inode/backing 和文件身份不因跨 boot 获得豁免，未知变化拒绝。
+
+队列空证明先绑定原 Rabbit image 的实际版本、插件及配置能力；适用的 delayed/DLX 路径必须有覆盖内部在途的原始统计，或由该版本源码证明覆盖这些状态的总量，不适用必须有该原版本/配置不存在此路径的证据，字段缺失本身既不等于 0，也不能套用最新版本字段猜测。请求分别冻结本次恢复和紧接后继验证的具体截止时间，查询原行/策略导出最早可能自然变更时间及候选来源；必须覆盖整个约定验证期间，超窗不能产有效结果。正常远期保留策略不是本次失败条件，不承诺无限期不变；在约定期间内或无法覆盖后继验证时会实际消费保护集的候选才阻断应用启动。后继正式 plan 必须在证据有效期内 fresh 完整比较，过期即拒绝接续；不新增配置冻结、定时停止或自动续作。
+
+VM 先保存独立 result/receipt/chain，宿主读回全量重算后保存同一结果及 snapshot。成功与失败都只追加本次目录中的真实 phase、命令结果及已取得原件；原 state/current/transaction/config/attention、正式安装、D12 成功原件、D11 失败、旧 receipt/consumed 和失败 manifest 均不写、不重新消费。中断只表示停留在已发生阶段，禁止自动续作、补造缺失 raw 或自动再启动；新结果不代表候选已部署。
+
+后继来源新增且仅新增 `group2_post_finalize_reboot_v1`。验证器必须先用原严格验证器重算父 D12 链及其原参考，再逐边验证本次 stopped→keeper→DB→唯一 startup→verified 证据，唯一导出父 selection/DB、本次已证明 files 和追加 request/receipt/chain 摘要的 lineage。`preview.validate_group2_artifacts` 在该分支重算完整嵌套来源，绑定本次工具 head/controller 到后继 scope，严格检查父 F 原 tool/review 绑定；不把父 F 工具改绑为新 head，不放宽 `_partial_finalize_scope_binding` 或其他旧来源规则。独立 reviewer 冻结新引用后，仍须新 exact scope/install/plan/once、live DB compatibility 及正式四应用/双入口/真实 Chrome/合并门禁。此前纯构建缓存不替代任一门禁。
+
+实现仍限 proposal 的六个 controller/doc 文件和四个 planning 文件；复用收集器、原始日志、纯 DB/files 比较及完整 startup 证明，只增加本次闭合编排与来源边，不复制完整事故框架、不新增 helper/安装器/配置字段。
+
 ## Verification Matrix
 
 | 检查点 | 必须证明 | 方法/不能替代的证据 |
@@ -174,6 +198,7 @@ fresh 只读重复读快照先与第一组独立封存事实核对，再保护�
 | 159 | 检索内容实际公共字段与日志方法、示例可编译执行 | 提取文档代码与真实 Java SOURCE 编译运行，配置/输出/日志/secret不泄漏 |
 | 最终组 | 新 head 无遗漏、第一组可靠性不退化 | Backend Ruff/format/Mypy/full pytest、Web ESLint/TS/Vitest/build、OpenSpec strict、适用CI/独立Review、最终head关键运行 |
 | 专项事故恢复 | 完整正例与批准/来源/并发/漂移/日志/idle/PG/账号/持久化反例 | 离线纯函数与编排故障注入、精确代码 Review/CI；获专项批准后才采 fresh 原件并执行一次，原失败与恢复结果分别留证 |
+| 本次 VM 重启承接 | 闭合 F 来源、stopped 文件和日志、PG 后完整 DB、新 boot/同 ID 唯一 startup、两处 mtime、旧责任不消费、来源冻结及不重放 | 真实形状离线正反例、各动作/持久化边界故障注入、隔离自有容器的同 ID start 验证；独立审查/exact CI 后另获具体执行批准，生产启动不得作为开发测试 |
 
 复现与运行证据保留在私有交付目录，公共材料只记录合成预期、结果摘要、公开 SHA 和无敏感定位。不提交本机端口、路径、私有对象 ID、Token/Key、运行日志、完整请求头或截图中的账号信息。所有 NOT_RUN/BLOCKED/旧 SHA 证据明确标记。
 
