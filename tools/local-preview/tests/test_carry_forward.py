@@ -2269,7 +2269,8 @@ class Group2RuntimeTests(unittest.TestCase):
             "images": {name: value["image_id"] for name, value in containers.items()},
             "storage": [],
             "parameters": {
-                "keeper": {"unit": "dlr.service", "cpu": "200%", "memory": "2G"},
+                "keeper": {"unit": "dlr.service", "cpu_quota": "200%",
+                           "memory_max": "2G"},
                 "rabbitmq": {"queues": [{"vhost": "/", "name": "dispatch"}]},
             },
         }
@@ -2391,6 +2392,12 @@ class Group2RuntimeTests(unittest.TestCase):
                         for name, value in request["prior"]["containers"].items()
                     },
                     "storage": request["prior"]["storage"],
+                    "kernel": {
+                        "unit": "dlr.service",
+                        "description": (
+                            "DataLinkRuntime Sandbox dlr.service CPU=200% Memory=2G"
+                        ),
+                    },
                 },
                 "authority": {"prior_success": {"host": {}, "vm": {}}},
             },
@@ -2733,6 +2740,20 @@ class Group2RuntimeTests(unittest.TestCase):
             "volume_backings": backings,
         }
         self.assertEqual(carry._validate_group2_reboot_keeper_kernel(kernel, request), kernel)
+        changed_inventory = copy.deepcopy(backings)
+        changed_inventory["host_mountinfo"].append(
+            {"filesystem": "sysfs", "major_minor": "0:8",
+             "root": "/", "mountpoint": "/sys"}
+        )
+        self.assertTrue(carry._group2_reboot_backings_stable(
+            backings, changed_inventory
+        ))
+        missing_inventory = copy.deepcopy(backings)
+        missing_inventory["host_mountinfo"] = []
+        with self.assertRaises(carry.CarryForwardError):
+            carry._validate_group2_reboot_backing_derivations(
+                missing_inventory, request, "group2_reboot_kernel_changed"
+            )
         for mutation in (
             lambda value: value.__setitem__("keeper_pid", True),
             lambda value: value["namespace_evidence"]["scans"][0]["related"].append({}),
@@ -4103,6 +4124,11 @@ class Group2RuntimeTests(unittest.TestCase):
                         with path.open("r+b", buffering=0) as stream:
                             stream.seek(len(original))
                             stream.write(b"Y" * len(tail))
+                        os.utime(
+                            path,
+                            ns=(info.st_atime_ns, info.st_mtime_ns + 1),
+                        )
+                        self.assertNotEqual(path.stat().st_mtime_ns, info.st_mtime_ns)
                     elif event == "overwrite-hide-mtime-change-atime":
                         with path.open("r+b", buffering=0) as stream:
                             stream.write(b"W" * len(original))
@@ -6711,10 +6737,11 @@ class Group2StartingReconcileTests(unittest.TestCase):
 
             def utc_text(value):
                 import datetime
-
-                return datetime.datetime.fromtimestamp(
-                    value / 1_000_000_000, tz=datetime.timezone.utc
-                ).isoformat(timespec="microseconds")
+                seconds, nanoseconds = divmod(value, 1_000_000_000)
+                base = datetime.datetime.fromtimestamp(
+                    seconds, tz=datetime.timezone.utc
+                ).strftime("%Y-%m-%dT%H:%M:%S")
+                return f"{base}.{nanoseconds:09d}+00:00"
 
             phase = {
                 "schema": "group2-starting-reconcile-phase-v1",

@@ -3484,6 +3484,7 @@ def _scan_related_mount_namespaces(
                     members.append({
                         "pid": member_pid, "tid": member_tid,
                         "pid_starttime": stat_fields[21], "cgroup": cgroup,
+                        "cgroup_namespace": namespaces[1],
                     })
                 record.update(mounts=matches, members=members)
             related.append(record)
@@ -9621,6 +9622,28 @@ def validate_group2_post_finalize_reboot_request(
     parent_manifest = (
         parent_originals.get("manifest") if isinstance(parent_originals, dict) else None
     )
+    parent_kernel = (
+        parent_current.get("kernel") if isinstance(parent_current, dict) else None
+    )
+    parent_unit = parent_kernel.get("unit") if isinstance(parent_kernel, dict) else None
+    parent_description = (
+        parent_kernel.get("description") if isinstance(parent_kernel, dict) else None
+    )
+    keeper_match = (
+        re.fullmatch(
+            rf"DataLinkRuntime Sandbox {re.escape(parent_unit)} "
+            r"CPU=([1-9][0-9]*%) Memory=([1-9][0-9]*[KMG])",
+            parent_description,
+        )
+        if isinstance(parent_unit, str) and parent_unit
+        and isinstance(parent_description, str)
+        else None
+    )
+    parent_keeper = (
+        {"unit": parent_unit, "cpu_quota": keeper_match.group(1),
+         "memory_max": keeper_match.group(2)}
+        if keeper_match is not None else None
+    )
     if (
         not isinstance(parent_current, dict)
         or not isinstance(parent_authority, dict)
@@ -9646,6 +9669,7 @@ def validate_group2_post_finalize_reboot_request(
             service: container.get("image_id")
             for service, container in parent_current.get("containers", {}).items()
         }
+        or prior["parameters"].get("keeper") != parent_keeper
     ):
         raise CarryForwardError("group2_reboot_prior_changed")
     expected_prior_success = parent_authority.get("prior_success")
@@ -11555,6 +11579,37 @@ def _validate_group2_reboot_namespace_evidence(
     return scans
 
 
+def _validate_group2_reboot_backing_derivations(
+    backings: Any, request: dict[str, Any], code: str,
+) -> None:
+    if (
+        not isinstance(backings, dict)
+        or set(backings) != {
+            "schema", "boot_id", "host_mount_namespace", "host_mountinfo", "volumes",
+        }
+        or backings.get("schema") != "group2-post-finalize-reboot-volume-backings-v1"
+        or backings.get("boot_id") != request["boot_id"]
+        or not isinstance(backings.get("host_mountinfo"), list)
+        or not isinstance(backings.get("volumes"), dict)
+        or set(backings["volumes"]) != {"runtime", "journal"}
+    ):
+        raise CarryForwardError(code)
+    for key in ("runtime", "journal"):
+        item = backings["volumes"][key]
+        inspect = item.get("inspect") if isinstance(item, dict) else None
+        selected, mount, derived = _derive_group2_reboot_backing_mount(
+            inspect.get("Mountpoint") if isinstance(inspect, dict) else None,
+            item.get("device") if isinstance(item, dict) else None,
+            backings["host_mountinfo"], code,
+        )
+        if (
+            item.get("host_mount") != selected
+            or item.get("mount") != mount
+            or item.get("derived_mount") != derived
+        ):
+            raise CarryForwardError(code)
+
+
 def _validate_group2_reboot_running_kernel(
     keeper: Any, current: Any, proof: dict[str, Any], worker: dict[str, Any],
     raw_worker: Any, profile: dict[str, Any], request: dict[str, Any],
@@ -11577,6 +11632,7 @@ def _validate_group2_reboot_running_kernel(
     worker_agent = children.get(f"{container_id}/agent") if isinstance(children, dict) else None
     current_backings = current.get("volume_backings")
     keeper_backings = keeper["volume_backings"]
+    _validate_group2_reboot_backing_derivations(current_backings, request, code)
     if (
         current["unit_properties"] != keeper["unit_properties"]
         or not isinstance(current_backings, dict)
@@ -11635,11 +11691,14 @@ def _validate_group2_reboot_running_kernel(
             not isinstance(members, list) or not members
             or any(
                 not isinstance(member, dict)
-                or set(member) != {"pid", "tid", "pid_starttime", "cgroup"}
+                or set(member) != {
+                    "pid", "tid", "pid_starttime", "cgroup", "cgroup_namespace",
+                }
                 or member["pid"] != authority.get("pid")
                 or type(member["tid"]) is not int or member["tid"] <= 0
                 or re.fullmatch(r"[1-9][0-9]*", str(member["pid_starttime"])) is None
                 or member["cgroup"] != expected_cgroup
+                or member["cgroup_namespace"] != authority.get("cgroup_namespace")
                 for member in members
             )
             or not any(
@@ -11681,6 +11740,7 @@ def _validate_group2_reboot_running_kernel(
         or state.get("StartedAt") != authority.get("started_at")
         or authority.get("runtime_config") != expected_runtime_config
         or type(nano_cpus) is not int or nano_cpus <= 0
+        or quota <= 0 or period <= 0
         or quota * 1_000_000_000 != nano_cpus * period
         or type(memory) is not int or memory <= 0
         or worker_limits["memory.max"] != str(memory)
@@ -11951,9 +12011,20 @@ def validate_group2_post_finalize_reboot_transition(
             current["containers"]["worker"], current["container_inspect"]["worker"],
             validated["platform"]["account_entry"], request,
         )
-        if any(
-            current["kernel"][key] != previous["kernel"][key]
-            for key in set(current["kernel"]) - {"namespace_evidence"}
+        stable_kernel_keys = set(current["kernel"]) - {
+            "namespace_evidence", "volume_backings",
+        }
+        if (
+            stable_kernel_keys
+            != set(previous["kernel"]) - {"namespace_evidence", "volume_backings"}
+            or any(
+                current["kernel"][key] != previous["kernel"][key]
+                for key in stable_kernel_keys
+            )
+            or not _group2_reboot_backings_stable(
+                previous["kernel"]["volume_backings"],
+                current["kernel"]["volume_backings"],
+            )
         ):
             raise CarryForwardError(code)
         current_namespace = current["kernel"]["namespace_evidence"]
