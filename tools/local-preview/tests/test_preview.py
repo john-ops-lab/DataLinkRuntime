@@ -388,7 +388,7 @@ class ControllerTests(unittest.TestCase):
             preview._partial_finalize_scope_binding(changed, scope, snapshot)
         )
 
-    def test_post_finalize_reboot_scope_binds_only_new_tool(self):
+    def test_post_finalize_reboot_scope_binds_new_tool_and_successor_window(self):
         files = {name: str(index) * 64 for index, name in enumerate(
             sorted(carry_forward.GROUP2_CONTROLLER_FILES), 1
         )}
@@ -399,20 +399,27 @@ class ControllerTests(unittest.TestCase):
             "preservation_reference": {"snapshot": snapshot},
         }
         chain = {
-            "request": {"tool": {
-                "sha": "d" * 40, "controller_files": copy.deepcopy(files)
-            }},
+            "request": {
+                "tool": {
+                    "sha": "d" * 40,
+                    "controller_files": copy.deepcopy(files),
+                },
+                "window": {"successor_deadline_ns": 123},
+            },
             "source_artifacts": {"parent-finalize.json": {
                 "content_b64": "parent tool remains nested and independent"
             }},
         }
         self.assertTrue(
-            preview._post_finalize_reboot_scope_binding(chain, scope, snapshot)
+            preview._post_finalize_reboot_scope_binding(chain, scope, snapshot, 123)
         )
         changed = copy.deepcopy(chain)
         changed["request"]["tool"]["sha"] = "e" * 40
         self.assertFalse(
-            preview._post_finalize_reboot_scope_binding(changed, scope, snapshot)
+            preview._post_finalize_reboot_scope_binding(changed, scope, snapshot, 123)
+        )
+        self.assertFalse(
+            preview._post_finalize_reboot_scope_binding(chain, scope, snapshot, 124)
         )
 
     def test_post_finalize_reboot_authority_rechecks_bytes_and_metadata(self):
@@ -654,6 +661,8 @@ class ControllerTests(unittest.TestCase):
             }
             snapshot = {"selection": {}, "db": {}, "files": {}, "lineage": []}
             commands = []
+            fault = {"name": None}
+            real_write_private_bytes = preview.write_private_bytes
 
             def mapped(value):
                 return vm_root / Path(value).relative_to("/vm")
@@ -693,13 +702,38 @@ class ControllerTests(unittest.TestCase):
                 def __init__(self, arguments, **_kwargs):
                     commands.append(tuple(arguments))
                     directory = vm_root / prefix
-                    (directory / "result.json").write_text(json.dumps(result))
-                    (directory / "receipt.json").write_text(json.dumps(receipt))
+                    if fault["name"] == "vm_exit":
+                        (directory / "phase.json").write_text(json.dumps({
+                            "schema": "group2-post-finalize-reboot-phase-v1",
+                            "incident_id": incident_id,
+                            "finalize_id": finalize_id,
+                            "boot_id": boot_id,
+                            "phase": "failed",
+                            "completed_stages": ["stopped"],
+                            "pending_action": "failure.json",
+                            "evidence_digests": {"stopped": "1" * 64},
+                        }))
+                        (directory / "failure.json").write_text(
+                            json.dumps({"code": "injected_vm_failure"})
+                        )
+                        return
+                    result_raw = (
+                        "{invalid result"
+                        if fault["name"] == "readback_parse"
+                        else json.dumps(result)
+                    )
+                    (directory / "result.json").write_text(result_raw)
+                    receipt_raw = (
+                        {**receipt, "receipt_digest": "8" * 64}
+                        if fault["name"] == "receipt_mismatch"
+                        else receipt
+                    )
+                    (directory / "receipt.json").write_text(json.dumps(receipt_raw))
                     (directory / "chain.json").write_text(json.dumps(chain))
                     (directory / "preservation-snapshot.json").write_text(json.dumps(snapshot))
 
                 def poll(self):
-                    return None
+                    return 2 if fault["name"] == "vm_exit" else None
 
                 def wait(self, timeout=None):
                     directory = vm_root / prefix
@@ -713,6 +747,19 @@ class ControllerTests(unittest.TestCase):
                     }))
                     return 0
 
+            def validate_result(*_arguments):
+                if fault["name"] == "result_validation":
+                    raise carry_forward.CarryForwardError("injected_result_failure")
+                return receipt
+
+            def host_write(path, raw):
+                if (
+                    fault["name"] == "final_host_write"
+                    and path == root / prefix / "preservation-snapshot.json"
+                ):
+                    raise OSError("injected final host write failure")
+                return real_write_private_bytes(path, raw)
+
             with (
                 patch.object(preview, "ROOT", root),
                 patch.object(
@@ -722,6 +769,7 @@ class ControllerTests(unittest.TestCase):
                 patch.object(preview, "vm_path", side_effect=lambda value: "/vm/" + value),
                 patch.object(preview, "vm_private_write", side_effect=vm_write),
                 patch.object(preview, "vm_command", side_effect=command),
+                patch.object(preview, "write_private_bytes", side_effect=host_write),
                 patch.object(
                     preview, "operation_lock",
                     return_value=preview.contextlib.nullcontext(),
@@ -751,7 +799,7 @@ class ControllerTests(unittest.TestCase):
                 patch.object(
                     carry_forward,
                     "validate_group2_post_finalize_reboot_result",
-                    return_value=receipt,
+                    side_effect=validate_result,
                 ),
                 patch.object(
                     carry_forward,
@@ -759,6 +807,81 @@ class ControllerTests(unittest.TestCase):
                     return_value=snapshot,
                 ),
             ):
+                for fault_name, message, raw_names in (
+                    (
+                        "vm_exit",
+                        "VM orchestration failed",
+                        {"phase.raw", "failure.raw"},
+                    ),
+                    (
+                        "readback_parse",
+                        "VM result is invalid",
+                        {
+                            "phase.raw", "result.raw", "receipt.raw", "chain.raw",
+                            "preservation-snapshot.raw",
+                        },
+                    ),
+                    (
+                        "receipt_mismatch",
+                        "VM receipt changed",
+                        {
+                            "phase.raw", "result.raw", "receipt.raw", "chain.raw",
+                            "preservation-snapshot.raw",
+                        },
+                    ),
+                    (
+                        "result_validation",
+                        "injected_result_failure",
+                        {
+                            "phase.raw", "result.raw", "receipt.raw", "chain.raw",
+                            "preservation-snapshot.raw",
+                        },
+                    ),
+                    (
+                        "final_host_write",
+                        "final host write failure",
+                        {
+                            "phase.raw", "result.raw", "receipt.raw", "chain.raw",
+                            "preservation-snapshot.raw",
+                        },
+                    ),
+                ):
+                    fault["name"] = fault_name
+                    with self.assertRaisesRegex(Exception, message):
+                        preview.recover_group2_post_finalize_reboot(
+                            request_path, approval_path
+                        )
+                    failed_host = root / prefix
+                    failure = json.loads(
+                        (failed_host / "host-failure.json").read_text()
+                    )
+                    failure_raw = (failed_host / "host-failure.json").read_bytes()
+                    self.assertEqual(failure["status"], "failed")
+                    self.assertEqual(
+                        set(failure["vm_raw_digests"]), raw_names
+                    )
+                    self.assertEqual(
+                        json.loads((failed_host / "phase.json").read_text())[
+                            "phase"
+                        ],
+                        "failed",
+                    )
+                    if fault_name == "readback_parse":
+                        self.assertEqual(
+                            (failed_host / "vm-readback/result.raw").read_bytes(),
+                            b"{invalid result",
+                        )
+                    with self.assertRaisesRegex(ValueError, "already used"):
+                        preview.recover_group2_post_finalize_reboot(
+                            request_path, approval_path
+                        )
+                    self.assertEqual(
+                        (failed_host / "host-failure.json").read_bytes(),
+                        failure_raw,
+                    )
+                    shutil.rmtree(root / Path(prefix).parent)
+                    shutil.rmtree(vm_root / Path(prefix).parent)
+                fault["name"] = None
                 output = preview.recover_group2_post_finalize_reboot(
                     request_path, approval_path
                 )
@@ -768,6 +891,14 @@ class ControllerTests(unittest.TestCase):
                     )
             self.assertEqual(output["receipt_digest"], receipt["receipt_digest"])
             host_result = root / prefix
+            self.assertFalse((host_result / "host-failure.json").exists())
+            self.assertEqual(
+                {path.name for path in (host_result / "vm-readback").iterdir()},
+                {
+                    "result.raw", "receipt.raw", "chain.raw",
+                    "preservation-snapshot.raw", "phase.raw",
+                },
+            )
             self.assertTrue((host_result / "host-readback.json").is_file())
             self.assertEqual(
                 json.loads((host_result / "phase.json").read_text())["phase"],
@@ -2091,8 +2222,18 @@ class Group2ControllerGateTests(unittest.TestCase):
         )
         original_preservation_raw = original_preservation_path.read_bytes()
         original_preservation_path.unlink()
+        reboot_controller_files = {"preview.py": "f" * 64}
+        successor_deadline_ns = 1_000_000
+        scope["controller_files"] = {"files": reboot_controller_files}
         reboot_chain = {
             "schema": "group2-post-finalize-reboot-chain-v1",
+            "request": {
+                "tool": {
+                    "sha": B,
+                    "controller_files": reboot_controller_files,
+                },
+                "window": {"successor_deadline_ns": successor_deadline_ns},
+            },
             "source_artifacts": {
                 "parent-finalize.json": {
                     "content_b64": base64.b64encode(json.dumps({
@@ -2130,13 +2271,20 @@ class Group2ControllerGateTests(unittest.TestCase):
                 "validate_group2_post_finalize_reboot_preservation",
                 return_value=scope["preservation_reference"]["snapshot"],
             ),
-            patch.object(
-                preview, "_post_finalize_reboot_scope_binding", return_value=True
-            ),
+            patch.object(preview.time, "time_ns", return_value=successor_deadline_ns),
         ):
             self.assertEqual(
                 preview.validate_group2_artifacts(scope, scope_path), directory
             )
+            with (
+                patch.object(
+                    preview.time,
+                    "time_ns",
+                    return_value=successor_deadline_ns + 1,
+                ),
+                self.assertRaisesRegex(ValueError, "successor window expired"),
+            ):
+                preview.validate_group2_artifacts(scope, scope_path)
         reboot_path.unlink()
         ambiguous = reboot_report + (
             "```json\n"
@@ -2165,6 +2313,7 @@ class Group2ControllerGateTests(unittest.TestCase):
         ambiguous_path.unlink()
         original_preservation_path.write_bytes(original_preservation_raw)
         original_preservation_path.chmod(0o600)
+        scope.pop("controller_files")
         scope["preservation_reference"][
             "review_report_sha256"
         ] = original_preservation_digest

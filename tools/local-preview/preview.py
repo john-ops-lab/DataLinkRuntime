@@ -1279,7 +1279,20 @@ def validate_group2_artifacts(scope, scope_path):
             )
         except (KeyError, carry_forward.CarryForwardError) as error:
             raise ValueError("Group2 post-finalize reboot chain is invalid") from error
-        valid_source = _post_finalize_reboot_scope_binding(chain, scope, snapshot)
+        now_ns = time.time_ns()
+        successor_deadline_ns = (
+            chain.get("request", {})
+            .get("window", {})
+            .get("successor_deadline_ns")
+        )
+        if (
+            type(successor_deadline_ns) is not int
+            or now_ns > successor_deadline_ns
+        ):
+            raise ValueError("Group2 post-finalize reboot successor window expired")
+        valid_source = _post_finalize_reboot_scope_binding(
+            chain, scope, snapshot, now_ns
+        )
     else:
         valid_source = False
     if not (
@@ -1305,17 +1318,22 @@ def _partial_finalize_scope_binding(chain, scope, snapshot):
     )
 
 
-def _post_finalize_reboot_scope_binding(chain, scope, snapshot):
+def _post_finalize_reboot_scope_binding(chain, scope, snapshot, now_ns):
     """Bind only the new reboot tool to its successor scope.
 
     The nested partial-finalize parent is independently revalidated by the pure
     preservation validator and deliberately retains its original tool binding.
     """
     tool = chain.get("request", {}).get("tool", {})
+    successor_deadline_ns = (
+        chain.get("request", {}).get("window", {}).get("successor_deadline_ns")
+    )
     return (
         snapshot == scope["preservation_reference"]["snapshot"]
         and tool.get("sha") == scope["final_source"]["to_sha"]
         and tool.get("controller_files") == scope["controller_files"]["files"]
+        and type(successor_deadline_ns) is int
+        and now_ns <= successor_deadline_ns
     )
 
 
@@ -3365,142 +3383,287 @@ def recover_group2_post_finalize_reboot(request_path, approval_path):
                 os.fsync(reboot_descriptor)
             finally:
                 os.close(reboot_descriptor)
-            vm_command(
-                "mkdir", "-m", "700",
-                vm_reboot_root,
-            )
-            vm_command("mkdir", "-m", "700", vm_path(prefix))
-            write_private_bytes(
-                host_directory / "host-authority-before.json",
-                carry_forward.canonical_bytes(authority_before),
-            )
-            for relative, raw in (
-                ("request.json", request_bytes),
-                ("USER-APPROVAL.json", approval_bytes),
-                ("USER-APPROVAL.txt", user_record),
-                ("phase.json", prepared),
-                ("attempt.json", attempt),
-            ):
-                vm_private_write(f"{prefix}/{relative}", raw)
-            for name, raw in artifacts.items():
-                vm_private_write(f"{prefix}/evidence/{name}", raw)
-            for name in ("deploy.sh", "carry_forward.py"):
-                raw = (source / name).read_bytes()
-                vm_private_write(f"{prefix}/tool/{name}", raw)
-                actual = vm_command(
-                    "sha256sum", vm_path(f"{prefix}/tool/{name}")
-                ).stdout.split()[0]
-                if actual != tool_files[name]:
-                    raise RuntimeError("Post-finalize reboot VM tool transfer changed")
-            with (ROOT / "deploy.log").open("a") as output:
-                process = subprocess.Popen(
-                    [COLIMA, "ssh", "-p", settings()["profile"], "--", "sudo", "bash",
-                     vm_path(f"{prefix}/tool/deploy.sh"),
-                     "recover-group2-post-finalize-reboot", settings()["vm_root"],
-                     incident_id, finalize_id, boot_id],
-                    env=ENV, stdout=output, stderr=subprocess.STDOUT,
-                )
-                vm_outputs = (
-                    "result.json", "receipt.json", "chain.json",
-                    "preservation-snapshot.json",
-                )
-                while any(
-                    vm_command(
-                        "test", "-f", vm_path(f"{prefix}/{name}"), check=False
-                    ).returncode
-                    for name in vm_outputs
-                ):
-                    code = process.poll()
-                    if code is not None:
-                        raise RuntimeError(
-                            f"Post-finalize reboot VM orchestration failed ({code})"
-                        )
-                    remaining = (request["window"]["deadline_ns"] - time.time_ns()) / 1e9
-                    if remaining <= 0:
-                        process.kill()
-                        process.wait()
-                        raise RuntimeError("Post-finalize reboot VM orchestration timed out")
-                    time.sleep(min(0.25, remaining))
-            result_bytes = vm_command("cat", vm_path(f"{prefix}/result.json")).stdout.encode()
-            receipt_bytes = vm_command("cat", vm_path(f"{prefix}/receipt.json")).stdout.encode()
-            chain_bytes = vm_command("cat", vm_path(f"{prefix}/chain.json")).stdout.encode()
-            snapshot_bytes = vm_command(
-                "cat", vm_path(f"{prefix}/preservation-snapshot.json")
-            ).stdout.encode()
+            readback_directory = host_directory / "vm-readback"
+            host_boundary = "attempt-claimed"
+
+            def persist_exclusive(path, raw):
+                if not path.parent.is_dir() or path.parent.stat().st_mode & 0o077:
+                    raise ValueError("Private evidence parent must be mode 0700")
+                with tempfile.NamedTemporaryFile(
+                    dir=path.parent, delete=False
+                ) as output:
+                    temporary = Path(output.name)
+                    os.chmod(temporary, 0o600)
+                    output.write(raw)
+                    output.flush()
+                    os.fsync(output.fileno())
+                try:
+                    os.link(temporary, path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+
+            def persist_vm_raw(name, raw):
+                path = readback_directory / (name.removesuffix(".json") + ".raw")
+                persist_exclusive(path, raw)
+                return path
+
             try:
-                result = json.loads(result_bytes)
-                receipt = json.loads(receipt_bytes)
-                chain = json.loads(chain_bytes)
-                vm_snapshot = json.loads(snapshot_bytes)
-            except (UnicodeError, json.JSONDecodeError) as error:
-                raise RuntimeError("Post-finalize reboot VM result is invalid") from error
-            recomputed_receipt = carry_forward.validate_group2_post_finalize_reboot_result(
-                validated, result["evidence"]
-            )
-            if result != {
-                "schema": "group2-post-finalize-reboot-result-v1",
-                "evidence": result["evidence"],
-                "receipt": recomputed_receipt,
-            } or receipt != recomputed_receipt:
-                raise RuntimeError("Post-finalize reboot VM receipt changed")
-            snapshot = carry_forward.validate_group2_post_finalize_reboot_preservation(chain)
-            if (
-                chain.get("request") != request
-                or chain.get("approval") != approval
-                or chain.get("result") != result
-                or vm_snapshot != snapshot
-            ):
-                raise RuntimeError("Post-finalize reboot VM chain changed")
-            write_private_bytes(host_directory / "result.json", result_bytes)
-            write_private_bytes(host_directory / "receipt.json", receipt_bytes)
-            write_private_bytes(host_directory / "chain.json", chain_bytes)
-            write_private_bytes(host_directory / "preservation-snapshot.json", snapshot_bytes)
-            authority_after = _post_finalize_reboot_authority(
-                request["prior"], validated["authority_paths"]
-            )
-            if authority_after != authority_before:
-                raise RuntimeError("Post-finalize reboot control-plane authority changed")
-            write_private_bytes(
-                host_directory / "host-authority-after.json",
-                carry_forward.canonical_bytes(authority_after),
-            )
-            acknowledgement = {
-                "incident_id": incident_id,
-                "finalize_id": finalize_id,
-                "boot_id": boot_id,
-                "receipt_digest": receipt["receipt_digest"],
-            }
-            acknowledgement_bytes = carry_forward.canonical_bytes(acknowledgement)
-            write_private_bytes(
-                host_directory / "host-readback.json", acknowledgement_bytes
-            )
-            vm_private_write(f"{prefix}/host-validated.json", acknowledgement_bytes)
-            remaining = (request["window"]["deadline_ns"] - time.time_ns()) / 1e9
-            if remaining <= 0:
-                raise RuntimeError("Post-finalize reboot host validation exceeded deadline")
-            if process.wait(timeout=min(300, remaining)):
-                raise RuntimeError("Post-finalize reboot VM host acknowledgement failed")
-            final_phase_bytes = vm_command(
-                "cat", vm_path(f"{prefix}/phase.json")
-            ).stdout.encode()
-            final_phase = json.loads(final_phase_bytes)
-            if (
-                set(final_phase) != {
-                    "schema", "incident_id", "finalize_id", "boot_id", "phase",
-                    "completed_stages", "pending_action", "evidence_digests",
+                readback_directory.mkdir(mode=0o700)
+                host_boundary = "vm-directory-create"
+                vm_command(
+                    "mkdir", "-m", "700",
+                    vm_reboot_root,
+                )
+                vm_command("mkdir", "-m", "700", vm_path(prefix))
+                host_boundary = "vm-directory-created"
+                write_private_bytes(
+                    host_directory / "host-authority-before.json",
+                    carry_forward.canonical_bytes(authority_before),
+                )
+                for relative, raw in (
+                    ("request.json", request_bytes),
+                    ("USER-APPROVAL.json", approval_bytes),
+                    ("USER-APPROVAL.txt", user_record),
+                    ("phase.json", prepared),
+                    ("attempt.json", attempt),
+                ):
+                    vm_private_write(f"{prefix}/{relative}", raw)
+                for name, raw in artifacts.items():
+                    vm_private_write(f"{prefix}/evidence/{name}", raw)
+                for name in ("deploy.sh", "carry_forward.py"):
+                    raw = (source / name).read_bytes()
+                    vm_private_write(f"{prefix}/tool/{name}", raw)
+                    actual = vm_command(
+                        "sha256sum", vm_path(f"{prefix}/tool/{name}")
+                    ).stdout.split()[0]
+                    if actual != tool_files[name]:
+                        raise RuntimeError("Post-finalize reboot VM tool transfer changed")
+                host_boundary = "vm-inputs-staged"
+                with (ROOT / "deploy.log").open("a") as output:
+                    process = subprocess.Popen(
+                        [COLIMA, "ssh", "-p", settings()["profile"], "--", "sudo", "bash",
+                         vm_path(f"{prefix}/tool/deploy.sh"),
+                         "recover-group2-post-finalize-reboot", settings()["vm_root"],
+                         incident_id, finalize_id, boot_id],
+                        env=ENV, stdout=output, stderr=subprocess.STDOUT,
+                    )
+                    host_boundary = "vm-orchestration-started"
+                    vm_outputs = (
+                        "result.json", "receipt.json", "chain.json",
+                        "preservation-snapshot.json",
+                    )
+                    while any(
+                        vm_command(
+                            "test", "-f", vm_path(f"{prefix}/{name}"), check=False
+                        ).returncode
+                        for name in vm_outputs
+                    ):
+                        code = process.poll()
+                        if code is not None:
+                            raise RuntimeError(
+                                f"Post-finalize reboot VM orchestration failed ({code})"
+                            )
+                        remaining = (request["window"]["deadline_ns"] - time.time_ns()) / 1e9
+                        if remaining <= 0:
+                            process.kill()
+                            process.wait()
+                            raise RuntimeError("Post-finalize reboot VM orchestration timed out")
+                        time.sleep(min(0.25, remaining))
+                host_boundary = "vm-outputs-ready"
+                result_bytes = vm_command(
+                    "cat", vm_path(f"{prefix}/result.json")
+                ).stdout.encode()
+                persist_vm_raw("result.json", result_bytes)
+                receipt_bytes = vm_command(
+                    "cat", vm_path(f"{prefix}/receipt.json")
+                ).stdout.encode()
+                persist_vm_raw("receipt.json", receipt_bytes)
+                chain_bytes = vm_command(
+                    "cat", vm_path(f"{prefix}/chain.json")
+                ).stdout.encode()
+                persist_vm_raw("chain.json", chain_bytes)
+                snapshot_bytes = vm_command(
+                    "cat", vm_path(f"{prefix}/preservation-snapshot.json")
+                ).stdout.encode()
+                persist_vm_raw("preservation-snapshot.json", snapshot_bytes)
+                host_boundary = "vm-outputs-read-back"
+                try:
+                    result = json.loads(result_bytes)
+                    receipt = json.loads(receipt_bytes)
+                    chain = json.loads(chain_bytes)
+                    vm_snapshot = json.loads(snapshot_bytes)
+                except (UnicodeError, json.JSONDecodeError) as error:
+                    raise RuntimeError("Post-finalize reboot VM result is invalid") from error
+                recomputed_receipt = carry_forward.validate_group2_post_finalize_reboot_result(
+                    validated, result["evidence"]
+                )
+                if result != {
+                    "schema": "group2-post-finalize-reboot-result-v1",
+                    "evidence": result["evidence"],
+                    "receipt": recomputed_receipt,
+                } or receipt != recomputed_receipt:
+                    raise RuntimeError("Post-finalize reboot VM receipt changed")
+                snapshot = carry_forward.validate_group2_post_finalize_reboot_preservation(chain)
+                if (
+                    chain.get("request") != request
+                    or chain.get("approval") != approval
+                    or chain.get("result") != result
+                    or vm_snapshot != snapshot
+                ):
+                    raise RuntimeError("Post-finalize reboot VM chain changed")
+                host_boundary = "vm-outputs-validated"
+                write_private_bytes(host_directory / "result.json", result_bytes)
+                write_private_bytes(host_directory / "receipt.json", receipt_bytes)
+                write_private_bytes(host_directory / "chain.json", chain_bytes)
+                write_private_bytes(host_directory / "preservation-snapshot.json", snapshot_bytes)
+                host_boundary = "validated-outputs-persisted"
+                authority_after = _post_finalize_reboot_authority(
+                    request["prior"], validated["authority_paths"]
+                )
+                if authority_after != authority_before:
+                    raise RuntimeError("Post-finalize reboot control-plane authority changed")
+                write_private_bytes(
+                    host_directory / "host-authority-after.json",
+                    carry_forward.canonical_bytes(authority_after),
+                )
+                acknowledgement = {
+                    "incident_id": incident_id,
+                    "finalize_id": finalize_id,
+                    "boot_id": boot_id,
+                    "receipt_digest": receipt["receipt_digest"],
                 }
-                or final_phase["schema"] != "group2-post-finalize-reboot-phase-v1"
-                or final_phase["incident_id"] != incident_id
-                or final_phase["finalize_id"] != finalize_id
-                or final_phase["boot_id"] != boot_id
-                or final_phase["phase"] != "host_verified"
-                or final_phase["completed_stages"]
-                != list(carry_forward.GROUP2_POST_FINALIZE_REBOOT_PHASES)
-                or final_phase["pending_action"] is not None
-                or final_phase["evidence_digests"] != receipt["stage_digests"]
-            ):
-                raise RuntimeError("Post-finalize reboot VM phase is incomplete")
-            write_private_bytes(host_directory / "phase.json", final_phase_bytes)
+                acknowledgement_bytes = carry_forward.canonical_bytes(acknowledgement)
+                write_private_bytes(
+                    host_directory / "host-readback.json", acknowledgement_bytes
+                )
+                host_boundary = "host-acknowledgement-persisted"
+                vm_private_write(f"{prefix}/host-validated.json", acknowledgement_bytes)
+                host_boundary = "host-acknowledgement-sent"
+                remaining = (request["window"]["deadline_ns"] - time.time_ns()) / 1e9
+                if remaining <= 0:
+                    raise RuntimeError("Post-finalize reboot host validation exceeded deadline")
+                if process.wait(timeout=min(300, remaining)):
+                    raise RuntimeError("Post-finalize reboot VM host acknowledgement failed")
+                final_phase_bytes = vm_command(
+                    "cat", vm_path(f"{prefix}/phase.json")
+                ).stdout.encode()
+                persist_vm_raw("phase.json", final_phase_bytes)
+                host_boundary = "vm-final-phase-read-back"
+                final_phase = json.loads(final_phase_bytes)
+                if (
+                    set(final_phase) != {
+                        "schema", "incident_id", "finalize_id", "boot_id", "phase",
+                        "completed_stages", "pending_action", "evidence_digests",
+                    }
+                    or final_phase["schema"] != "group2-post-finalize-reboot-phase-v1"
+                    or final_phase["incident_id"] != incident_id
+                    or final_phase["finalize_id"] != finalize_id
+                    or final_phase["boot_id"] != boot_id
+                    or final_phase["phase"] != "host_verified"
+                    or final_phase["completed_stages"]
+                    != list(carry_forward.GROUP2_POST_FINALIZE_REBOOT_PHASES)
+                    or final_phase["pending_action"] is not None
+                    or final_phase["evidence_digests"] != receipt["stage_digests"]
+                ):
+                    raise RuntimeError("Post-finalize reboot VM phase is incomplete")
+                write_private_bytes(host_directory / "phase.json", final_phase_bytes)
+                host_boundary = "host-verified"
+            except BaseException as error:
+                readback_errors = []
+                if readback_directory.is_dir():
+                    for name in (
+                        "phase.json",
+                        "failure.json",
+                        "result.json",
+                        "receipt.json",
+                        "chain.json",
+                        "preservation-snapshot.json",
+                    ):
+                        raw_path = readback_directory / (
+                            name.removesuffix(".json") + ".raw"
+                        )
+                        if raw_path.exists():
+                            continue
+                        try:
+                            remote = vm_path(f"{prefix}/{name}")
+                            if vm_command(
+                                "test", "-f", remote, check=False
+                            ).returncode:
+                                continue
+                            raw = vm_command("cat", remote).stdout.encode()
+                            persist_vm_raw(name, raw)
+                        except BaseException as readback_error:
+                            readback_errors.append({
+                                "name": name,
+                                "error_type": type(readback_error).__name__,
+                                "message": str(readback_error),
+                            })
+                raw_digests = {}
+                if readback_directory.is_dir():
+                    for path in sorted(readback_directory.iterdir()):
+                        if path.is_file() and not path.is_symlink():
+                            raw_digests[path.name] = hashlib.sha256(
+                                path.read_bytes()
+                            ).hexdigest()
+                try:
+                    phase_before = (host_directory / "phase.json").read_bytes()
+                except OSError:
+                    phase_before = b""
+                failure = {
+                    "schema": "group2-post-finalize-reboot-host-failure-v1",
+                    "incident_id": incident_id,
+                    "finalize_id": finalize_id,
+                    "boot_id": boot_id,
+                    "status": "failed",
+                    "failed_boundary": host_boundary,
+                    "error": {
+                        "type": type(error).__name__,
+                        "message": str(error),
+                    },
+                    "host_phase_before_sha256": hashlib.sha256(
+                        phase_before
+                    ).hexdigest(),
+                    "vm_raw_digests": raw_digests,
+                    "readback_errors": readback_errors,
+                }
+                failure_written = False
+                try:
+                    persist_exclusive(
+                        host_directory / "host-failure.json",
+                        carry_forward.canonical_bytes(failure),
+                    )
+                    failure_written = True
+                except BaseException as preservation_error:
+                    error.add_note(
+                        "Host failure preservation also failed: "
+                        + repr(preservation_error)
+                    )
+                if failure_written and phase_before == prepared:
+                    failed_phase = carry_forward.canonical_bytes({
+                        "schema": "group2-post-finalize-reboot-phase-v1",
+                        "incident_id": incident_id,
+                        "finalize_id": finalize_id,
+                        "boot_id": boot_id,
+                        "phase": "failed",
+                        "completed_stages": [],
+                        "pending_action": "host-failure.json",
+                        "evidence_digests": {},
+                    })
+                    try:
+                        write_private_bytes(
+                            host_directory / "phase.json", failed_phase
+                        )
+                    except BaseException as phase_error:
+                        error.add_note(
+                            "Host failure phase persistence also failed: "
+                            + repr(phase_error)
+                        )
+                raise
     return {
         "incident_id": incident_id,
         "finalize_id": finalize_id,

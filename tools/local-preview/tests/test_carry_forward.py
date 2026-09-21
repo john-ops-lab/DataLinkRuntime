@@ -2382,10 +2382,31 @@ class Group2RuntimeTests(unittest.TestCase):
 
     def test_reboot_request_binds_raw_parent_source_window_and_prepare_script(self):
         request, approval, user, artifacts, snapshot, review = self._reboot_request()
-        parent = {"snapshot": snapshot, "review": review}
+        parent = {
+            "snapshot": snapshot, "review": review,
+            "evidence": {
+                "current": {
+                    "containers": {
+                        name: carry._reboot_expected_container(value)
+                        for name, value in request["prior"]["containers"].items()
+                    },
+                    "storage": request["prior"]["storage"],
+                },
+                "authority": {"prior_success": {"host": {}, "vm": {}}},
+            },
+            "validated": {"context": {"originals": {
+                "manifest": {"account_entry": artifacts and {"profile": "frozen"}},
+                "first_startup": {"proof": {"nonce": "1" * 32}},
+            }}},
+            "receipt": {"startup_proof": {"nonce": "1" * 32}},
+        }
         with (
             mock.patch.object(carry, "_post_finalize_reboot_parent", return_value=parent),
             mock.patch.object(carry, "_validate_group2_partial_tool"),
+            mock.patch.object(carry, "validate_group2_account_entry",
+                              side_effect=lambda value: value),
+            mock.patch.object(carry, "_group2_partial_history",
+                              return_value={"proof": {"nonce": "1" * 32}}),
         ):
             validated = carry.validate_group2_post_finalize_reboot_request(
                 request, approval, user, artifacts
@@ -2446,14 +2467,22 @@ class Group2RuntimeTests(unittest.TestCase):
                 "prior": prior,
             },
             "approval": {}, "user_record": {},
-            "platform": {"account_entry": {"old_profiles": {"worker": {}}},
+            "platform": {"account_entry": {"old_profiles": {"worker": {}},
+                                             "profile_digest": "d" * 64},
                          "prior_nonces": []},
             "authority_paths": {"host": [], "vm": []},
             "prior_success": {
                 "schema": "group2-prior-success-evidence-v1", "host": {}, "vm": {}
             },
             "parent": {"snapshot": {"db": {"rows": "same"},
-                                    "files": {"tree": "same"}}},
+                                    "files": {"tree": "same"}},
+                       "evidence": {
+                           "current": {"logs": {"parent": True},
+                                       "kernel": {"boot_id": "old-boot"}},
+                           "postgres": {"schema": "0040_issue152_dispositions",
+                                        "binary_version": "16", "server_version": "16",
+                                        "data_pg_version": "17"},
+                       }},
         }
         stopped = {
             "schema": "group2-post-finalize-reboot-stopped-v1",
@@ -2474,31 +2503,50 @@ class Group2RuntimeTests(unittest.TestCase):
             "storage": prior["storage"],
             "authority": {"host_files": {}, "vm_files": {}, "installed": {},
                           "keeper": "missing"},
-            "postgres": {"database_read": False, "data_pg_version": "17"},
+            "postgres": {"database_read": False, "binary_version": "16",
+                         "data_pg_version": "17", "image_id": "postgres-image",
+                         "rootfs_layers": ["sha256:" + "a" * 64]},
+            "platform": {"boot_id": validated["request"]["boot_id"],
+                         "unit": {"load_state": "not-found", "active_state": "inactive",
+                                  "sub_state": "dead"}},
+            "window_start_ns": 100, "window_end_ns": 100,
         }
-        carry.validate_group2_post_finalize_reboot_stopped(validated, stopped)
+        with (
+            mock.patch.object(carry, "_validate_group2_reboot_postgres"),
+            mock.patch.object(carry, "_validate_log_link"),
+            mock.patch.object(carry, "_validate_reconcile_quiet_logs"),
+        ):
+            carry.validate_group2_post_finalize_reboot_stopped(validated, stopped)
         stopped_stage = {
             **stopped, "schema": "group2-post-finalize-reboot-stage-v1",
             "phase": "stopped", "window_start_ns": 100, "window_end_ns": 100,
         }
         keeper = {
             key: copy.deepcopy(value) for key, value in stopped_stage.items()
-            if key != "postgres"
+            if key != "platform"
         }
         keeper.update(
             phase="keeper_ready", window_start_ns=110, window_end_ns=120,
-            authority={**stopped["authority"], "keeper": {"pid": 7}},
+            authority={**stopped["authority"], "keeper": None},
             kernel={"boot_id": validated["request"]["boot_id"],
                     "namespace_evidence": {}, "unit": "dlr.service"},
         )
+        keeper["authority"]["keeper"] = keeper["kernel"]
         with mock.patch.object(carry, "_validate_group2_reboot_empty_log_segment"):
-            carry.validate_group2_post_finalize_reboot_transition(
-                validated, stopped_stage, keeper, "keeper_ready"
-            )
+            with (
+                mock.patch.object(carry, "_validate_group2_reboot_keeper_kernel"),
+                mock.patch.object(carry, "_validate_group2_reboot_parent_volume_identity"),
+            ):
+                carry.validate_group2_post_finalize_reboot_transition(
+                    validated, stopped_stage, keeper, "keeper_ready"
+                )
         database = {**copy.deepcopy(keeper), "phase": "database_ready",
                     "window_start_ns": 130, "window_end_ns": 140,
                     "db": {"rows": "same"},
-                    "postgres": {"database_read": True, "data_pg_version": "17"},
+                    "postgres": {"database_read": True, "schema": "0040_issue152_dispositions",
+                                 "binary_version": "16", "server_version": "16",
+                                 "data_pg_version": "17", "image_id": "postgres-image",
+                                 "rootfs_layers": ["sha256:" + "a" * 64]},
                     "start_admission": {"gate": "raw", "configuration": {},
                                         "mutation_guard_rows": {}}}
         database.pop("kernel")
@@ -2509,6 +2557,7 @@ class Group2RuntimeTests(unittest.TestCase):
         with (
             mock.patch.object(carry, "validate_group2_reboot_start_admission"),
             mock.patch.object(carry, "_validate_group2_reboot_empty_log_segment"),
+            mock.patch.object(carry, "_validate_group2_reboot_postgres"),
         ):
             carry.validate_group2_post_finalize_reboot_transition(
                 validated, keeper, database, "database_ready"
@@ -2526,6 +2575,13 @@ class Group2RuntimeTests(unittest.TestCase):
             application["containers"][name]["status"] = "running"
             application["containers"][name]["health"] = "healthy"
             application["container_inspect"][name]["State"]["Status"] = "running"
+        application["startup_request"] = {
+            "profile": validated["platform"]["account_entry"],
+            "logs_before": database["logs"], "logs_after": application["logs"],
+            "container_before": database["containers"]["worker"],
+            "container_after": application["containers"]["worker"],
+            "window_start_ns": 150, "window_end_ns": 200,
+        }
         with (
             mock.patch.object(
                 carry, "_same_container_worker_startup_proof",
@@ -2537,6 +2593,10 @@ class Group2RuntimeTests(unittest.TestCase):
             ),
             mock.patch.object(carry, "validate_group2_reboot_rabbit_identity"),
             mock.patch.object(carry, "_validate_group2_reboot_mutation_guard"),
+            mock.patch.object(carry, "_validate_group2_reboot_postgres"),
+            mock.patch.object(carry, "_validate_group2_reboot_running_kernel"),
+            mock.patch.object(carry, "_validate_log_link"),
+            mock.patch.object(carry, "_validate_reconcile_log_activity"),
         ):
             carry.validate_group2_post_finalize_reboot_transition(
                 validated, database, application, "applications_started"
@@ -2553,6 +2613,196 @@ class Group2RuntimeTests(unittest.TestCase):
             carry.validate_group2_post_finalize_reboot_transition(
                 validated, keeper, reordered, "database_ready"
             )
+
+    def test_reboot_postgres_and_new_boot_keeper_evidence_are_sourceful(self):
+        expected = {
+            "schema": "0040_issue152_dispositions",
+            "binary_version": "postgres (PostgreSQL) 16.15",
+            "server_version": "16.15", "data_pg_version": "16",
+        }
+        stopped_pg = {
+            "database_read": False, "binary_version": expected["binary_version"],
+            "data_pg_version": "16", "image_id": "sha256:postgres",
+            "rootfs_layers": ["sha256:" + "a" * 64],
+        }
+        self.assertEqual(
+            carry._validate_group2_reboot_postgres(
+                stopped_pg, expected, "sha256:postgres", running=False
+            ),
+            stopped_pg,
+        )
+        running_pg = {**stopped_pg, "database_read": True,
+                      "schema": expected["schema"],
+                      "server_version": expected["server_version"]}
+        carry._validate_group2_reboot_postgres(
+            running_pg, expected, "sha256:postgres", running=True,
+            baseline=stopped_pg,
+        )
+        for mutation in (
+            lambda value: value.__setitem__("schema", "0041_forged"),
+            lambda value: value.__setitem__("rootfs_layers", []),
+            lambda value: value.__setitem__("database_read", False),
+        ):
+            changed = copy.deepcopy(running_pg); mutation(changed)
+            with self.assertRaises(carry.CarryForwardError):
+                carry._validate_group2_reboot_postgres(
+                    changed, expected, "sha256:postgres", running=True,
+                    baseline=stopped_pg,
+                )
+
+        request = {
+            "boot_id": "00000000-0000-4000-8000-000000000001",
+            "prior": {
+                "storage": [
+                    {"service": "worker", "type": "volume", "source": "runtime",
+                     "destination": "/var/lib/dlr/runtime", "read_only": False},
+                    {"service": "worker", "type": "volume", "source": "journal",
+                     "destination": "/var/lib/dlr/journal", "read_only": False},
+                ],
+                "parameters": {"keeper": {
+                    "unit": "dlr-preview.service", "cpu_quota": "250%",
+                    "memory_max": "2G",
+                }},
+            },
+        }
+        device = os.makedev(1, 2)
+        host_mount = {"filesystem": "ext4", "major_minor": "1:2",
+                      "root": "/", "mountpoint": "/"}
+        volumes = {}
+        for name in ("runtime", "journal"):
+            mountpoint = f"/var/lib/docker/volumes/{name}/_data"
+            mount = {**host_mount, "root": mountpoint}
+            volumes[name] = {
+                "name": name, "device": device, "inode": 10,
+                "mount": mount,
+                "inspect": {"Name": name, "Mountpoint": mountpoint},
+                "mountpoint_stat": {"device": device, "inode": 10,
+                                    "type": "directory", "mode": 0o755,
+                                    "uid": 0, "gid": 0},
+                "host_mount": host_mount,
+                "derived_mount": {"filesystem": "ext4", "major_minor": "1:2",
+                                  "root": mountpoint, "mountpoint": mountpoint},
+            }
+        backings = {
+            "schema": "group2-post-finalize-reboot-volume-backings-v1",
+            "boot_id": request["boot_id"], "host_mount_namespace": "mnt:[11]",
+            "host_mountinfo": [
+                {"filesystem": "proc", "major_minor": "0:7",
+                 "root": "/", "mountpoint": "/proc"},
+                host_mount,
+            ],
+            "volumes": volumes,
+        }
+        targets = sorted(
+            (item["mount"]["filesystem"], item["mount"]["major_minor"],
+             item["mount"]["root"])
+            for item in volumes.values()
+        )
+        scan = {"task_count": 1, "namespace_count": 1, "mountinfo_bytes": 1,
+                "fd_entries": 0, "related_count": 0, "pin_count": 0,
+                "related": [], "pins": [],
+                "target_digest": carry.digest({"related": [], "pins": []})}
+        description = "DataLinkRuntime Sandbox dlr-preview.service CPU=250% Memory=2G"
+        limit_keys = {
+            "cpu.max": "250000 100000", "memory.max": str(2 * 1024 ** 3),
+            "memory.swap.max": "0", "pids.max": "max",
+            "cgroup.subtree_control": "cpu memory pids", "cgroup.procs": "",
+            "uid": 0, "gid": 0,
+        }
+        kernel = {
+            "boot_id": request["boot_id"], "unit": "dlr-preview.service",
+            "control_group": "/system.slice/dlr-preview.service", "keeper_pid": 7,
+            "keeper_starttime": "99", "description": description,
+            "parent_device": 1, "parent_inode": 2,
+            "children": {"agent": {"populated": 1, "process_count": 1,
+                                    "process_digest": carry.digest([7]),
+                                    "device": 1, "inode": 3}},
+            "old_worker_authority": None,
+            "namespace_evidence": {
+                "schema": "group2-post-finalize-reboot-namespace-evidence-v1",
+                "mode": "keeper_idle", "targets": targets,
+                "scans": [copy.deepcopy(scan), copy.deepcopy(scan)],
+            },
+            "retired_markers": [],
+            "unit_properties": {"ActiveState": "active", "Delegate": "yes",
+                                "ControlGroup": "/system.slice/dlr-preview.service",
+                                "MainPID": "7", "Description": description,
+                                "InvocationID": "a" * 32},
+            "cgroup_limits": {".": copy.deepcopy(limit_keys),
+                              "agent": copy.deepcopy(limit_keys)},
+            "volume_backings": backings,
+        }
+        self.assertEqual(carry._validate_group2_reboot_keeper_kernel(kernel, request), kernel)
+        for mutation in (
+            lambda value: value.__setitem__("keeper_pid", True),
+            lambda value: value["namespace_evidence"]["scans"][0]["related"].append({}),
+            lambda value: value["namespace_evidence"]["scans"][0].__setitem__(
+                "task_count", 8193
+            ),
+            lambda value: value["cgroup_limits"]["."].__setitem__("cpu.max", "0 0"),
+            lambda value: value["volume_backings"]["volumes"]["runtime"]
+            ["derived_mount"].__setitem__("root", "/forged"),
+        ):
+            changed = copy.deepcopy(kernel); mutation(changed)
+            with self.assertRaises(carry.CarryForwardError):
+                carry._validate_group2_reboot_keeper_kernel(changed, request)
+
+    def test_reboot_commands_are_joined_to_their_completed_stage(self):
+        ids = {
+            name: f"{name}-id"
+            for name in ("postgres", "rabbitmq", "control", "worker", "web")
+        }
+        request = {
+            "window": {"not_before_ns": 100, "deadline_ns": 300},
+            "prior": {
+                "parameters": {"keeper": {
+                    "unit": "dlr-preview.service", "cpu_quota": "250%",
+                    "memory_max": "2G",
+                }},
+                "containers": {name: {"container_id": value} for name, value in ids.items()},
+            },
+        }
+        evidence = {
+            "keeper_ready": {"window_start_ns": 110, "window_end_ns": 130},
+            "database_ready": {"window_start_ns": 131, "window_end_ns": 160},
+            "applications_started": {"window_start_ns": 161, "window_end_ns": 220},
+        }
+        times = {
+            "prepare-keeper": (111, 120), "start-postgres": (132, 135),
+            "start-rabbitmq": (136, 140), "start-control": (162, 165),
+            "start-worker": (166, 170), "start-web": (171, 175),
+        }
+        commands = {}
+        for action, (started, ended) in times.items():
+            argv = (
+                ["/tmp/prepare-sandbox-host.sh", "--unit", "dlr-preview.service",
+                 "--cpu-quota", "250%", "--memory-max", "2G"]
+                if action == "prepare-keeper"
+                else ["docker", "start", ids[action.removeprefix("start-")]]
+            )
+            intent = {"schema": "group2-post-finalize-reboot-command-intent-v1",
+                      "action": action, "argv": argv, "started_at_ns": started}
+            result = {"schema": "group2-post-finalize-reboot-command-result-v1",
+                      "action": action, "argv": argv, "started_at_ns": started,
+                      "ended_at_ns": ended, "returncode": 0, "stdout": "", "stderr": ""}
+            commands[action] = {
+                "intent": {"sha256": carry.digest(intent),
+                           "content_b64": base64.b64encode(carry.canonical_bytes(intent)).decode()},
+                "result": {"sha256": carry.digest(result),
+                           "content_b64": base64.b64encode(carry.canonical_bytes(result)).decode()},
+            }
+        carry._validate_group2_reboot_commands(commands, request, evidence)
+        changed = copy.deepcopy(commands)
+        intent = json.loads(base64.b64decode(changed["start-control"]["intent"]["content_b64"]))
+        result = json.loads(base64.b64decode(changed["start-control"]["result"]["content_b64"]))
+        intent["started_at_ns"] = result["started_at_ns"] = 150
+        for key, value in (("intent", intent), ("result", result)):
+            changed["start-control"][key] = {
+                "sha256": carry.digest(value),
+                "content_b64": base64.b64encode(carry.canonical_bytes(value)).decode(),
+            }
+        with self.assertRaises(carry.CarryForwardError):
+            carry._validate_group2_reboot_commands(changed, request, evidence)
 
     def test_reboot_directory_is_single_fixed_boot_and_rejects_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2665,13 +2915,15 @@ class Group2RuntimeTests(unittest.TestCase):
                 "health": "healthy" if service in {"postgres", "rabbitmq"} else None,
                 "restart_count": 0,
             }
-            address = f"172.20.0.{index}"
+            running = service in {"postgres", "rabbitmq"}
+            address = f"172.20.0.{index}" if running else ""
             inspect = {
                 "Id": container_id, "Image": current["image_id"], "Name": f"/{service}",
                 "Config": {}, "HostConfig": {"PortBindings": {}}, "Mounts": [],
                 "State": {"Status": current["status"]}, "RestartCount": 0,
                 "NetworkSettings": {"Networks": {"preview": {
-                    "NetworkID": network_id, "EndpointID": f"endpoint-{index}",
+                    "NetworkID": network_id,
+                    "EndpointID": f"endpoint-{index}" if running else "",
                     "IPAddress": address,
                 }}},
             }
@@ -2681,10 +2933,11 @@ class Group2RuntimeTests(unittest.TestCase):
                 "stopped_state_digest": carry.digest(inspect["State"]),
             }
             raw[service], states[service] = inspect, current
-            endpoints[container_id] = {
-                "Name": service, "EndpointID": f"endpoint-{index}",
-                "MacAddress": "", "IPv4Address": address + "/16", "IPv6Address": "",
-            }
+            if running:
+                endpoints[container_id] = {
+                    "Name": service, "EndpointID": f"endpoint-{index}",
+                    "MacAddress": "", "IPv4Address": address + "/16", "IPv6Address": "",
+                }
         value = {
             "network_id": network_id, "container_inspect": raw,
             "network_inspect": {"Id": network_id, "Containers": endpoints},
@@ -2923,13 +3176,22 @@ class Group2RuntimeTests(unittest.TestCase):
             "bindings": [
                 {"source_name": "dlr.execution.dispatch.v1",
                  "destination_name": "dlr.worker.1.q", "destination_kind": "queue",
-                 "routing_key": "worker.1", "arguments": {}},
+                 "routing_key": "worker.1", "arguments": []},
                 {"source_name": "dlr.execution.infrastructure.dlx",
                  "destination_name": "dlr.execution.infrastructure.dlq",
                  "destination_kind": "queue", "routing_key": "infrastructure",
-                 "arguments": {}},
+                 "arguments": []},
+                {"source_name": "", "destination_name": "dlr.worker.1.q",
+                 "destination_kind": "queue", "routing_key": "dlr.worker.1.q",
+                 "arguments": []},
+                {"source_name": "",
+                 "destination_name": "dlr.execution.infrastructure.dlq",
+                 "destination_kind": "queue",
+                 "routing_key": "dlr.execution.infrastructure.dlq",
+                 "arguments": []},
             ],
             "policies": [],
+            "operator_policies": [],
         }
         parameters = {"frozen": "parent"}
         raw = {name: [] for name in carry.GROUP2_REBOOT_ADMISSION_TABLES}
@@ -2992,9 +3254,19 @@ class Group2RuntimeTests(unittest.TestCase):
             "queue_scope": copy.deepcopy(configuration["rabbitmq"]["queues"]),
             "topology": topology, "raw_response_digest": "",
         }
-        queues = [{**item, "messages_total": 0, "messages_ready": 0,
-                   "messages_unacknowledged": 0}
-                  for item in configuration["rabbitmq"]["queues"]]
+        queues = [
+            {
+                **item,
+                "arguments": [
+                    [key, "signedint" if isinstance(value, int) else "longstr", value]
+                    for key, value in item["arguments"].items()
+                ],
+                "messages_total": 0, "messages_ready": 0,
+                "messages_unacknowledged": 0,
+                "effective_policy_definition": {},
+            }
+            for item in configuration["rabbitmq"]["queues"]
+        ]
         rabbit["queues"] = [
             {**item, "ra": {
                 "total": {"raw": "{ok,0,{ra,node}}", "value": 0},
@@ -3060,6 +3332,21 @@ class Group2RuntimeTests(unittest.TestCase):
         self.assertEqual(carry.validate_group2_reboot_start_admission(
             value, database, parameters, 20_000_000_000, 30_000_000_000,
             "sha256:" + "a" * 64), value)
+        operator_policy = copy.deepcopy(value["rabbitmq"]["topology"])
+        operator_policy["operator_policies"] = [{
+            "vhost": "/", "name": "expire-sink", "pattern": "^dlr\\.",
+            "apply-to": "queues", "definition": {"message-ttl": 60000},
+            "priority": 0,
+        }]
+        with self.assertRaises(carry.CarryForwardError):
+            carry._validate_group2_rabbit_topology(
+                operator_policy, value["configuration"], value["rabbitmq"]["plugins"]
+            )
+        with self.assertRaises(carry.CarryForwardError):
+            carry._group2_rabbit_amqp_table([
+                ["x-queue-type", "longstr", "quorum"],
+                ["x-queue-type", "longstr", "classic"],
+            ])
         mutations = (
             lambda changed: changed["sources"]["retention"].update({"caller.py": "0" * 64}),
             lambda changed: changed["raw_tables"]["execution_outbox"].append(
@@ -5775,6 +6062,13 @@ class Group2StartingReconcileTests(unittest.TestCase):
         (runtime / "version-cache" / ".dlr-cache-reservations.lock").touch(mode=0o644)
         (journal / "sandbox-recovery").mkdir(mode=0o700)
         files = carry.capture_files(runtime, journal)
+        storage_identity = [
+            {"service": "worker", "type": "volume", "source": "runtime",
+             "destination": "/var/lib/dlr/runtime", "read_only": False},
+            {"service": "worker", "type": "volume", "source": "journal",
+             "destination": "/var/lib/dlr/journal", "read_only": False},
+        ]
+        manifest["storage_identity"] = storage_identity
 
         profile = Group2RuntimeTests()._profile(root / "logs" / "worker" / "worker.log")
         prior_images = {
@@ -5998,7 +6292,10 @@ class Group2StartingReconcileTests(unittest.TestCase):
                     "com.docker.compose.project": profile["project"],
                     "com.docker.compose.service": service,
                 },
-                "port_bindings": carry._profile_port_bindings(service_profile),
+                "port_bindings": (
+                    {} if service in {"postgres", "rabbitmq"}
+                    else carry._profile_port_bindings(service_profile)
+                ),
                 "mounts": service_profile["mounts"],
                 "networks": service_profile["networks"],
             }
@@ -6030,7 +6327,12 @@ class Group2StartingReconcileTests(unittest.TestCase):
                 "attempt_journal_root": "/var/lib/dlr/runtime/attempt-journal",
                 "cgroup_path": "/run/dlr-cgroup",
             },
-            "volumes": {"runtime": {"name": "runtime"}, "journal": {"name": "journal"}},
+            "volumes": {
+                "runtime": {"name": "runtime", "device": os.makedev(1, 2),
+                            "inode": 101},
+                "journal": {"name": "journal", "device": os.makedev(1, 2),
+                            "inode": 102},
+            },
         }
         child = lambda pid: {
             "populated": 1, "process_count": 1,
@@ -6080,7 +6382,7 @@ class Group2StartingReconcileTests(unittest.TestCase):
                 ),
             }
         )
-        request["restore"]["storage_identity_digest"] = carry.digest([])
+        request["restore"]["storage_identity_digest"] = carry.digest(storage_identity)
         request["evidence_files"] = {
             name: hashlib.sha256(value).hexdigest() for name, value in artifacts.items()
         }
@@ -6149,7 +6451,7 @@ class Group2StartingReconcileTests(unittest.TestCase):
         def stage(logs, kernel, stage_containers, start, end):
             return {
                 "db": db, "files": startup_files, "logs": logs, "kernel": kernel,
-                "containers": stage_containers, "storage": [],
+                "containers": stage_containers, "storage": storage_identity,
                 "window_start_ns": start, "window_end_ns": end,
             }
 
@@ -6205,7 +6507,8 @@ class Group2StartingReconcileTests(unittest.TestCase):
                     },
                 },
             },
-            "storage": carry.digest([]), "token_health": {"status": 200, "database": True},
+            "storage": carry.digest(storage_identity),
+            "token_health": {"status": 200, "database": True},
         }
         return request, approval, artifacts, validated, evidence, reference, first_files_result
 

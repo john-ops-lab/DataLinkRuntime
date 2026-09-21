@@ -3371,6 +3371,33 @@ def _related_mount_namespaces(authority: dict[str, Any]) -> dict[str, Any]:
         for value in old_namespaces
     ):
         raise CarryForwardError("kernel_identity_unknown")
+    scanned = _scan_related_mount_namespaces(targets, old_namespaces)
+    return {
+        key: value for key, value in scanned.items()
+        if key not in {"related", "pins"}
+    }
+
+
+def _scan_related_mount_namespaces(
+    targets: set[tuple[str, str, str]], tracked_namespaces: set[str], *,
+    include_records: bool = False,
+) -> dict[str, Any]:
+    if (
+        not isinstance(targets, set) or not targets
+        or any(
+            not isinstance(item, tuple) or len(item) != 3
+            or any(not isinstance(value, str) or not value for value in item)
+            for item in targets
+        )
+        or not isinstance(tracked_namespaces, set)
+        or any(
+            not isinstance(value, str)
+            or re.fullmatch(r"(?:mnt|cgroup):\[[1-9][0-9]*\]", value) is None
+            for value in tracked_namespaces
+        )
+    ):
+        raise CarryForwardError("kernel_identity_unknown")
+    old_namespaces = tracked_namespaces
     proc = Path("/proc")
     deadline = time.monotonic() + 20
     budget = {"mountinfo_bytes": 0, "fd_entries": 0}
@@ -3438,12 +3465,28 @@ def _related_mount_namespaces(authority: dict[str, Any]) -> dict[str, Any]:
             raise
         matches = [item for item in mounts if _selected_mount_matches(item, targets)]
         if matches:
-            related.append(
-                {
-                    "namespace": namespace,
-                    "mounts_digest": digest(matches),
-                }
-            )
+            record = {"namespace": namespace, "mounts_digest": digest(matches)}
+            if include_records:
+                members = []
+                for (member_pid, member_tid), namespaces in sorted(task_namespaces.items()):
+                    if namespaces[0] != namespace:
+                        continue
+                    task = (proc / str(member_pid) / "task" / str(member_tid))
+                    try:
+                        stat_fields = _read_text(task / "stat").split()
+                        cgroup = _read_text(task / "cgroup")
+                    except CarryForwardError:
+                        if task.exists():
+                            raise
+                        continue
+                    if len(stat_fields) < 22:
+                        raise CarryForwardError("kernel_identity_unknown")
+                    members.append({
+                        "pid": member_pid, "tid": member_tid,
+                        "pid_starttime": stat_fields[21], "cgroup": cgroup,
+                    })
+                record.update(mounts=matches, members=members)
+            related.append(record)
         for item in mounts:
             if item.get("filesystem") != "nsfs":
                 continue
@@ -3523,6 +3566,8 @@ def _related_mount_namespaces(authority: dict[str, Any]) -> dict[str, Any]:
         "related_count": len(related),
         "pin_count": len(pins),
         "target_digest": digest(target),
+        "related": related,
+        "pins": pins,
     }
 
 
@@ -9325,7 +9370,7 @@ def validate_group2_partial_finalize_preservation(
     chain: Any, original_reference: Any
 ) -> dict[str, Any]:
     return _validate_group2_partial_finalize_preservation(
-        chain, original_reference, None
+        chain, original_reference, None, include_context=False
     )
 
 
@@ -9333,9 +9378,10 @@ def _post_finalize_reboot_parent(value: Any, code: str) -> dict[str, Any]:
     value = _closed_object(
         value, {"chain", "original_reference", "snapshot", "review"}, code
     )
-    snapshot = validate_group2_partial_finalize_preservation(
-        value["chain"], value["original_reference"]
+    parent_validation = _validate_group2_partial_finalize_preservation(
+        value["chain"], value["original_reference"], None, include_context=True
     )
+    snapshot = parent_validation["snapshot"]
     review = _closed_object(
         value["review"], {"schema", "status", "snapshot_digest", "lineage"}, code
     )
@@ -9351,7 +9397,10 @@ def _post_finalize_reboot_parent(value: Any, code: str) -> dict[str, Any]:
         or review["lineage"] != snapshot["lineage"]
     ):
         raise CarryForwardError(code)
-    return {"snapshot": snapshot, "review": review}
+    return {"snapshot": snapshot, "review": review,
+            "validated": parent_validation["validated"],
+            "evidence": value["chain"]["result"]["evidence"],
+            "receipt": value["chain"]["result"]["receipt"]}
 
 
 def group2_post_finalize_reboot_expected_authority_paths(
@@ -9425,7 +9474,7 @@ def _group2_reboot_path_descriptor(path: Path) -> dict[str, Any]:
 
 def _verify_group2_reboot_vm_authority(
     root: Path, validated: dict[str, Any]
-) -> None:
+) -> dict[str, Any]:
     prior = validated["request"]["prior"]
     actual_files = {
         relative: _group2_reboot_path_descriptor(root / relative)
@@ -9442,6 +9491,12 @@ def _verify_group2_reboot_vm_authority(
         != validated["platform"]["prepare_script"]["vm"]
     ):
         raise CarryForwardError("group2_reboot_authority_changed")
+    return {
+        "host_files": prior["host_files"], "vm_files": actual_files,
+        "installed": {
+            "host": prior["installed"]["host"], "vm": actual_installed,
+        },
+    }
 
 
 def validate_group2_post_finalize_reboot_request(
@@ -9556,6 +9611,57 @@ def validate_group2_post_finalize_reboot_request(
     prior_success = _closed_object(
         parsed["prior-success.json"], {"schema", "host", "vm"}, code
     )
+    parent_evidence = parent_value["evidence"]
+    parent_current = parent_evidence.get("current")
+    parent_authority = parent_evidence.get("authority")
+    parent_context = parent_value["validated"].get("context")
+    parent_originals = (
+        parent_context.get("originals") if isinstance(parent_context, dict) else None
+    )
+    parent_manifest = (
+        parent_originals.get("manifest") if isinstance(parent_originals, dict) else None
+    )
+    if (
+        not isinstance(parent_current, dict)
+        or not isinstance(parent_authority, dict)
+        or not isinstance(parent_manifest, dict)
+        or {
+            service: {
+                key: item for key, item in _reboot_expected_container(container).items()
+                if key not in {"status", "health"}
+            }
+            for service, container in prior["containers"].items()
+        }
+        != {
+            service: {
+                key: item for key, item in container.items()
+                if key not in {"status", "health"}
+            }
+            for service, container in parent_current.get("containers", {}).items()
+            if isinstance(container, dict)
+        }
+        or parent_current.get("storage") != prior["storage"]
+        or prior["images"]
+        != {
+            service: container.get("image_id")
+            for service, container in parent_current.get("containers", {}).items()
+        }
+    ):
+        raise CarryForwardError("group2_reboot_prior_changed")
+    expected_prior_success = parent_authority.get("prior_success")
+    normalized_prior_success = {
+        side: {
+            name: (
+                {"exists": False}
+                if descriptor == {"exists": False}
+                else {"exists": True, "sha256": descriptor.get("sha256")}
+            )
+            for name, descriptor in prior_success[side].items()
+        }
+        for side in ("host", "vm")
+    }
+    if normalized_prior_success != expected_prior_success:
+        raise CarryForwardError("group2_reboot_prior_changed")
     authority_paths = group2_post_finalize_reboot_expected_authority_paths(
         prior_success
     )
@@ -9567,9 +9673,24 @@ def validate_group2_post_finalize_reboot_request(
     if (
         platform["schema"] != "group2-post-finalize-reboot-platform-v1"
         or platform["prior"] != prior
-        or not isinstance(platform["account_entry"], dict)
+        or validate_group2_account_entry(platform["account_entry"])
+        != parent_manifest.get("account_entry")
         or not isinstance(platform["prior_nonces"], list)
         or len(platform["prior_nonces"]) != len(set(platform["prior_nonces"]))
+    ):
+        raise CarryForwardError("group2_reboot_prior_changed")
+    first_startup = parent_originals.get("first_startup")
+    first_proof = (
+        first_startup.get("proof") if isinstance(first_startup, dict) else None
+    )
+    nonce_values = {
+        first_proof.get("nonce") if isinstance(first_proof, dict) else None,
+        parent_value["receipt"].get("startup_proof", {}).get("nonce"),
+    }
+    if (
+        any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{32}", value) is None
+            for value in nonce_values)
+        or platform["prior_nonces"] != sorted(nonce_values)
     ):
         raise CarryForwardError("group2_reboot_prior_changed")
     if (
@@ -9715,20 +9836,38 @@ def validate_group2_post_finalize_reboot_stopped(
     stopped = _closed_object(
         stopped,
         {"schema", "boot_id", "files", "logs", "containers", "images", "storage",
-         "container_inspect", "authority", "postgres"},
+         "container_inspect", "authority", "postgres", "platform",
+         "window_start_ns", "window_end_ns"},
         code,
     )
-    request, parent = validated["request"], validated["parent"]["snapshot"]
-    postgres = _closed_object(
-        stopped["postgres"], {"database_read", "data_pg_version"}, code
+    request = validated["request"]
+    parent = validated["parent"]["snapshot"]
+    parent_current = validated["parent"]["evidence"]["current"]
+    parent_postgres = validated["parent"]["evidence"]["postgres"]
+    platform = _closed_object(
+        stopped["platform"], {"boot_id", "unit"}, code
+    )
+    unit = _closed_object(
+        platform["unit"], {"load_state", "active_state", "sub_state"}, code
+    )
+    _validate_group2_reboot_postgres(
+        stopped["postgres"], parent_postgres,
+        request["prior"]["containers"]["postgres"]["image_id"], running=False,
     )
     if (
         stopped["schema"] != "group2-post-finalize-reboot-stopped-v1"
         or stopped["boot_id"] != request["boot_id"]
+        or platform["boot_id"] != request["boot_id"]
+        or not isinstance(parent_current.get("kernel"), dict)
+        or parent_current["kernel"].get("boot_id") == request["boot_id"]
+        or unit != {"load_state": "not-found", "active_state": "inactive",
+                    "sub_state": "dead"}
+        or type(stopped["window_start_ns"]) is not int
+        or type(stopped["window_end_ns"]) is not int
+        or stopped["window_start_ns"] < request["window"]["not_before_ns"]
+        or stopped["window_end_ns"] < stopped["window_start_ns"]
+        or stopped["window_end_ns"] > request["window"]["deadline_ns"]
         or stopped["files"] != parent["files"]
-        or postgres["database_read"] is not False
-        or not isinstance(postgres["data_pg_version"], str)
-        or not postgres["data_pg_version"]
         or stopped["containers"] != {
             name: _reboot_expected_container(item)
             for name, item in request["prior"]["containers"].items()
@@ -9760,7 +9899,61 @@ def validate_group2_post_finalize_reboot_stopped(
             raise CarryForwardError(code) from error
     if set(stopped["container_inspect"]) != set(stopped["containers"]):
         raise CarryForwardError(code)
+    try:
+        _validate_log_link(
+            parent_current["logs"], stopped["logs"],
+            validated["platform"]["account_entry"]["profile_digest"],
+        )
+        _validate_reconcile_quiet_logs(stopped["logs"])
+    except (KeyError, CarryForwardError) as error:
+        raise CarryForwardError(code) from error
     return stopped
+
+
+def _validate_group2_reboot_postgres(
+    value: Any, expected: Any, image_id: str, *, running: bool,
+    baseline: Any | None = None,
+) -> dict[str, Any]:
+    code = "group2_reboot_postgres_invalid"
+    fields = {
+        "database_read", "binary_version", "data_pg_version",
+        "image_id", "rootfs_layers",
+    }
+    if running:
+        fields.update(("schema", "server_version"))
+    value = _closed_object(value, fields, code)
+    expected = _closed_object(
+        expected, {"schema", "binary_version", "server_version", "data_pg_version"},
+        code,
+    )
+    layers = value["rootfs_layers"]
+    if (
+        value["database_read"] is not running
+        or value["binary_version"] != expected["binary_version"]
+        or value["data_pg_version"] != expected["data_pg_version"]
+        or value["image_id"] != image_id
+        or not isinstance(layers, list) or not layers
+        or any(not isinstance(layer, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", layer) is None
+               for layer in layers)
+        or (running and (
+            value["schema"] != expected["schema"]
+            or value["server_version"] != expected["server_version"]
+        ))
+    ):
+        raise CarryForwardError(code)
+    if baseline is not None:
+        if not isinstance(baseline, dict):
+            raise CarryForwardError(code)
+        baseline_value = _validate_group2_reboot_postgres(
+            baseline, expected, image_id, running=bool(baseline.get("database_read"))
+        )
+        if (
+            value["rootfs_layers"] != baseline_value["rootfs_layers"]
+            or value["binary_version"] != baseline_value["binary_version"]
+            or value["data_pg_version"] != baseline_value["data_pg_version"]
+        ):
+            raise CarryForwardError(code)
+    return value
 
 
 def _group2_admission_ns(value: Any, code: str) -> int:
@@ -10384,7 +10577,7 @@ def validate_group2_reboot_start_admission(
         queue = _closed_object(
             queue, {"name", "vhost", "type", "state", "arguments",
                     "messages_total", "messages_ready", "messages_unacknowledged",
-                    "ra"}, code
+                    "effective_policy_definition", "ra"}, code
         )
         identity = (queue["vhost"], queue["name"])
         expected_item = next(
@@ -10395,8 +10588,11 @@ def validate_group2_reboot_start_admission(
         if (
             identity in seen or identity not in expected
             or not isinstance(expected_item, dict)
-            or {key: queue[key] for key in ("vhost", "name", "type", "state", "arguments")}
-            != expected_item
+            or {key: queue[key] for key in ("vhost", "name", "type", "state")}
+            != {key: expected_item[key] for key in ("vhost", "name", "type", "state")}
+            or _group2_rabbit_amqp_table(queue["arguments"])
+            != expected_item["arguments"]
+            or queue["effective_policy_definition"] != {}
             or _rabbit_ra_result(ra["total"], "total") != 0
             or _rabbit_ra_result(ra["dlx"], "dlx") != [0, 0]
             or _rabbit_ra_result(ra["checked_out"], "checked_out") != 0
@@ -10435,7 +10631,9 @@ def _validate_group2_rabbit_topology(
     topology: Any, configuration: dict[str, Any], plugins: Any
 ) -> None:
     code = "group2_reboot_queue_unsafe"
-    topology = _closed_object(topology, {"exchanges", "bindings", "policies"}, code)
+    topology = _closed_object(
+        topology, {"exchanges", "bindings", "policies", "operator_policies"}, code
+    )
     if not isinstance(plugins, list) or any(
         not isinstance(item, str)
         or re.search(r"(?i)(federation|shovel|delayed_message_exchange)", item)
@@ -10455,14 +10653,19 @@ def _validate_group2_rabbit_topology(
         {"source_name": "dlr.execution.dispatch.v1",
          "destination_name": f"dlr.worker.{row['id']}.q",
          "destination_kind": "queue", "routing_key": f"worker.{row['id']}",
-         "arguments": {}}
+         "arguments": []}
         for row in configuration["raw_workers"]
     ] + [{
         "source_name": "dlr.execution.infrastructure.dlx",
         "destination_name": "dlr.execution.infrastructure.dlq",
         "destination_kind": "queue", "routing_key": "infrastructure",
-        "arguments": {},
-    }]
+        "arguments": [],
+    }] + [
+        {"source_name": "", "destination_name": item["name"],
+         "destination_kind": "queue", "routing_key": item["name"],
+         "arguments": []}
+        for item in configuration["rabbitmq"]["queues"]
+    ]
     bindings = [
         item for item in topology["bindings"] if isinstance(item, dict)
         and (str(item.get("source_name", "")).startswith("dlr.")
@@ -10470,8 +10673,28 @@ def _validate_group2_rabbit_topology(
     ]
     if sorted(bindings, key=canonical_bytes) != sorted(expected_bindings, key=canonical_bytes):
         raise CarryForwardError(code)
-    if topology["policies"] != []:
+    if topology["policies"] != [] or topology["operator_policies"] != []:
         raise CarryForwardError(code)
+
+
+def _group2_rabbit_amqp_table(value: Any) -> dict[str, Any]:
+    code = "group2_reboot_queue_unsafe"
+    if not isinstance(value, list):
+        raise CarryForwardError(code)
+    result = {}
+    for item in value:
+        if (
+            not isinstance(item, list) or len(item) != 3
+            or not isinstance(item[0], str) or item[0] in result
+            or item[1] not in {"longstr", "signedint"}
+            or (item[1] == "longstr" and not isinstance(item[2], str))
+            or (item[1] == "signedint" and (
+                not isinstance(item[2], int) or isinstance(item[2], bool)
+            ))
+        ):
+            raise CarryForwardError(code)
+        result[item[0]] = item[2]
+    return result
 
 
 def _validate_group2_reboot_network_boundary(
@@ -10504,7 +10727,9 @@ def _validate_group2_reboot_network_boundary(
     endpoints = network.get("Containers")
     if not isinstance(endpoints, dict):
         raise CarryForwardError(code)
-    expected_ids = {item.get("container_id") for item in prior_containers.values()}
+    expected_ids = {
+        prior_containers[name].get("container_id") for name in ("postgres", "rabbitmq")
+    }
     if None in expected_ids or set(endpoints) != expected_ids:
         raise CarryForwardError(code)
     for service, expected in prior_containers.items():
@@ -10518,13 +10743,25 @@ def _validate_group2_reboot_network_boundary(
         attached = next(iter(networks.values()))
         endpoint = endpoints.get(expected["container_id"])
         if (
-            not isinstance(attached, dict) or not isinstance(endpoint, dict)
+            not isinstance(attached, dict)
             or attached.get("NetworkID") != value["network_id"]
-            or attached.get("EndpointID") != endpoint.get("EndpointID")
-            or attached.get("IPAddress") != str(endpoint.get("IPv4Address", "")).split("/", 1)[0]
-            or endpoint.get("Name") != str(raw.get("Name", "")).removeprefix("/")
             or bool(current.get("status") == "running") != should_run
             or (should_run and current.get("health") != "healthy")
+        ):
+            raise CarryForwardError(code)
+        if should_run and (
+            not isinstance(endpoint, dict)
+            or attached.get("EndpointID") != endpoint.get("EndpointID")
+            or attached.get("IPAddress")
+            != str(endpoint.get("IPv4Address", "")).split("/", 1)[0]
+            or endpoint.get("Name") != str(raw.get("Name", "")).removeprefix("/")
+        ):
+            raise CarryForwardError(code)
+        if not should_run and endpoint is not None:
+            raise CarryForwardError(code)
+        if not should_run and (
+            attached.get("EndpointID") not in {"", None}
+            or attached.get("IPAddress") not in {"", None}
         ):
             raise CarryForwardError(code)
     rabbit_host = value["container_inspect"]["rabbitmq"].get("HostConfig") or {}
@@ -10964,7 +11201,8 @@ def capture_group2_reboot_start_admission(
     topology = {
         "exchanges": rabbit_json("rabbitmqctl", "-q", "list_exchanges", "-p", rabbit_parameters["vhost"], "name", "type", "durable", "--formatter", "json"),
         "bindings": rabbit_json("rabbitmqctl", "-q", "list_bindings", "-p", rabbit_parameters["vhost"], "source_name", "destination_name", "destination_kind", "routing_key", "arguments", "--formatter", "json"),
-        "policies": rabbit_json("rabbitmqctl", "-q", "list_policies", "-p", rabbit_parameters["vhost"], "name", "pattern", "definition", "priority", "apply-to", "--formatter", "json"),
+        "policies": rabbit_json("rabbitmqctl", "-q", "list_policies", "-p", rabbit_parameters["vhost"], "--formatter", "json"),
+        "operator_policies": rabbit_json("rabbitmqctl", "-q", "list_operator_policies", "-p", rabbit_parameters["vhost"], "--formatter", "json"),
     }
     feature_flags = rabbit_json(
         "rabbitmqctl", "-q", "list_feature_flags", "name", "state", "--formatter", "json"
@@ -10973,7 +11211,7 @@ def capture_group2_reboot_start_admission(
     queue_rows = rabbit_json(
         "rabbitmqctl", "-q", "list_queues", "-p", rabbit_parameters["vhost"],
         "name", "type", "state", "arguments", "messages", "messages_ready",
-        "messages_unacknowledged", "--formatter", "json",
+        "messages_unacknowledged", "effective_policy_definition", "--formatter", "json",
     )
     by_name = {row.get("name"): row for row in queue_rows if isinstance(row, dict)}
     queues = []
@@ -10987,6 +11225,7 @@ def capture_group2_reboot_start_admission(
             "arguments": row["arguments"], "messages_total": row["messages"],
             "messages_ready": row["messages_ready"],
             "messages_unacknowledged": row["messages_unacknowledged"],
+            "effective_policy_definition": row["effective_policy_definition"],
             "ra": {
                 "total": rabbit_ra(row["name"], "query_messages_total", "total"),
                 "dlx": rabbit_ra(row["name"], "query_stat_dlx", "dlx"),
@@ -11050,8 +11289,10 @@ def _post_finalize_reboot_stage(value: Any, phase: str) -> dict[str, Any]:
     }
     if phase in {"keeper_ready", "applications_started", "verified"}:
         fields.add("kernel")
-    if phase == "stopped":
+    if phase in {"stopped", "keeper_ready"}:
         fields.add("postgres")
+    if phase == "stopped":
+        fields.add("platform")
     if phase in {"database_ready", "applications_started", "verified"}:
         fields.update(("db", "postgres", "start_admission"))
     if phase in {"applications_started", "verified"}:
@@ -11082,6 +11323,448 @@ def _validate_group2_reboot_empty_log_segment(before: Any, after: Any) -> None:
         for item in after.get("files", [])
     ):
         raise CarryForwardError("group2_reboot_transition_invalid")
+
+
+def _derive_group2_reboot_backing_mount(
+    mountpoint: Any, device: Any, mounts: Any, code: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    try:
+        mountpoint_path = Path(mountpoint)
+        if (
+            not isinstance(mountpoint, str) or not mountpoint
+            or not mountpoint_path.is_absolute()
+            or type(device) is not int or device < 0
+            or not isinstance(mounts, list)
+        ):
+            raise ValueError("backing input shape")
+        major_minor = f"{os.major(device)}:{os.minor(device)}"
+        candidates = []
+        for host_mount in mounts:
+            if not isinstance(host_mount, dict):
+                raise ValueError("mountinfo row shape")
+            try:
+                relative = mountpoint_path.relative_to(Path(host_mount["mountpoint"]))
+            except ValueError:
+                continue
+            if host_mount.get("major_minor") != major_minor:
+                continue
+            candidates.append((
+                len(Path(host_mount["mountpoint"]).parts), relative, host_mount,
+            ))
+        if not candidates:
+            raise ValueError("backing mount missing")
+        depth = max(value[0] for value in candidates)
+        deepest = [value for value in candidates if value[0] == depth]
+        if len(deepest) != 1:
+            raise ValueError("ambiguous backing mount")
+        _depth, relative, raw_selected = deepest[0]
+        host_mount = dict(raw_selected)
+        mount = dict(raw_selected)
+        mount["root"] = str(Path(raw_selected["root"]) / relative)
+        derived = {
+            "filesystem": mount["filesystem"],
+            "major_minor": mount["major_minor"],
+            "root": mount["root"],
+            "mountpoint": mountpoint,
+        }
+    except (KeyError, TypeError, ValueError) as error:
+        raise CarryForwardError(code) from error
+    return host_mount, mount, derived
+
+
+def _validate_group2_reboot_keeper_kernel(
+    kernel: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    code = "group2_reboot_kernel_changed"
+    fields = {
+        "boot_id", "unit", "control_group", "keeper_pid", "keeper_starttime",
+        "description", "parent_device", "parent_inode", "children",
+        "old_worker_authority", "namespace_evidence", "retired_markers",
+        "unit_properties", "cgroup_limits", "volume_backings",
+    }
+    if not isinstance(kernel, dict) or set(kernel) != fields:
+        raise CarryForwardError(code)
+    params = request["prior"]["parameters"]["keeper"]
+    children = kernel.get("children")
+    agent = children.get("agent") if isinstance(children, dict) else None
+    namespace = kernel.get("namespace_evidence")
+    properties = kernel["unit_properties"]
+    limits = kernel["cgroup_limits"]
+    backings = kernel["volume_backings"]
+    scans = _validate_group2_reboot_namespace_evidence(
+        namespace, "keeper_idle", backings
+    )
+    expected_description = (
+        f"DataLinkRuntime Sandbox {params['unit']} CPU={params['cpu_quota']} "
+        f"Memory={params['memory_max']}"
+    )
+    cpu_match = re.fullmatch(r"([1-9][0-9]*)%", params["cpu_quota"])
+    memory_match = re.fullmatch(r"([1-9][0-9]*)([KMG])", params["memory_max"])
+    try:
+        cpu_quota, cpu_period = map(int, str(limits["."]["cpu.max"]).split())
+        memory_bytes = int(memory_match.group(1)) * {
+            "K": 1024, "M": 1024 ** 2, "G": 1024 ** 3,
+        }[memory_match.group(2)]
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        raise CarryForwardError(code) from error
+    volumes = backings.get("volumes") if isinstance(backings, dict) else None
+    if (
+        kernel.get("boot_id") != request["boot_id"]
+        or kernel.get("unit") != params["unit"]
+        or kernel.get("control_group") != f"/system.slice/{params['unit']}"
+        or type(kernel.get("keeper_pid")) is not int or kernel["keeper_pid"] <= 0
+        or re.fullmatch(r"[1-9][0-9]*", str(kernel.get("keeper_starttime"))) is None
+        or kernel.get("description") != expected_description
+        or type(kernel.get("parent_device")) is not int or kernel["parent_device"] < 0
+        or type(kernel.get("parent_inode")) is not int or kernel["parent_inode"] <= 0
+        or not isinstance(children, dict) or set(children) != {"agent"}
+        or not isinstance(agent, dict)
+        or set(agent) != {"populated", "process_count", "process_digest", "device", "inode"}
+        or any(type(agent.get(name)) is not int for name in (
+            "populated", "process_count", "device", "inode"
+        ))
+        or agent["device"] < 0 or agent["inode"] <= 0
+        or agent.get("populated") != 1 or agent.get("process_count") != 1
+        or agent.get("process_digest") != digest([kernel["keeper_pid"]])
+        or any(scan["related"] or scan["pins"] for scan in scans)
+        or kernel.get("retired_markers") != []
+        or kernel.get("old_worker_authority") is not None
+        or not isinstance(properties, dict)
+        or set(properties) != {"ActiveState", "Delegate", "ControlGroup", "MainPID",
+                               "Description", "InvocationID"}
+        or properties != {
+            "ActiveState": "active", "Delegate": "yes",
+            "ControlGroup": f"/system.slice/{params['unit']}",
+            "MainPID": str(kernel["keeper_pid"]), "Description": expected_description,
+            "InvocationID": properties.get("InvocationID"),
+        }
+        or re.fullmatch(r"[0-9a-fA-F]{32}", str(properties.get("InvocationID"))) is None
+        or not isinstance(limits, dict) or set(limits) != {".", "agent"}
+        or any(not isinstance(item, dict) or set(item) != {
+            "cpu.max", "memory.max", "memory.swap.max", "pids.max",
+            "cgroup.subtree_control", "cgroup.procs", "uid", "gid",
+        } for item in limits.values())
+        or limits["."]["uid"] != 0 or limits["."]["gid"] != 0
+        or limits["."]["cgroup.procs"] != ""
+        or cpu_match is None or cpu_quota <= 0 or cpu_period <= 0
+        or cpu_quota * 100 != int(cpu_match.group(1)) * cpu_period
+        or limits["."]["memory.max"] != str(memory_bytes)
+        or limits["."]["memory.swap.max"] != "0"
+        or limits["."]["pids.max"] != "max"
+        or not {"cpu", "memory", "pids"}.issubset(
+            set(str(limits["."]["cgroup.subtree_control"]).split())
+        )
+        or not isinstance(backings, dict)
+        or backings.get("schema") != "group2-post-finalize-reboot-volume-backings-v1"
+        or backings.get("boot_id") != request["boot_id"]
+        or re.fullmatch(r"mnt:\[[1-9][0-9]*\]",
+                        str(backings.get("host_mount_namespace"))) is None
+        or not isinstance(backings.get("host_mountinfo"), list)
+        or not isinstance(volumes, dict) or set(volumes) != {"runtime", "journal"}
+    ):
+        raise CarryForwardError(code)
+    for key, service, destination in (
+        ("runtime", "worker", "/var/lib/dlr/runtime"),
+        ("journal", "worker", "/var/lib/dlr/journal"),
+    ):
+        item = volumes[key]
+        mount = item.get("mount") if isinstance(item, dict) else None
+        inspect = item.get("inspect") if isinstance(item, dict) else None
+        mountpoint = inspect.get("Mountpoint") if isinstance(inspect, dict) else None
+        selected, derived_mount, derived = _derive_group2_reboot_backing_mount(
+            mountpoint, item.get("device") if isinstance(item, dict) else None,
+            backings["host_mountinfo"], code,
+        )
+        if (
+            not isinstance(item, dict)
+            or item.get("name") != _reboot_volume(request["prior"]["storage"], service, destination)
+            or type(item.get("device")) is not int or item["device"] < 0
+            or type(item.get("inode")) is not int or item["inode"] <= 0
+            or not isinstance(mount, dict)
+            or any(not isinstance(mount.get(name), str) or not mount[name]
+                   for name in ("filesystem", "major_minor", "root", "mountpoint"))
+            or not isinstance(item.get("inspect"), dict)
+            or item["inspect"].get("Name") != item.get("name")
+            or not isinstance(item.get("mountpoint_stat"), dict)
+            or item["mountpoint_stat"].get("type") != "directory"
+            or item["mountpoint_stat"].get("device") != item.get("device")
+            or item["mountpoint_stat"].get("inode") != item.get("inode")
+            or not isinstance(item.get("host_mount"), dict)
+            or item.get("derived_mount") != derived
+            or item.get("host_mount") != selected
+            or mount != derived_mount
+            or item["mountpoint_stat"].get("device") < 0
+            or selected.get("major_minor") != (
+                f"{os.major(item['mountpoint_stat']['device'])}:"
+                f"{os.minor(item['mountpoint_stat']['device'])}"
+            )
+        ):
+            raise CarryForwardError(code)
+    return kernel
+
+
+def _validate_group2_reboot_namespace_evidence(
+    value: Any, mode: str, backings: Any,
+) -> list[dict[str, Any]]:
+    code = "group2_reboot_kernel_changed"
+    value = _closed_object(value, {"schema", "mode", "targets", "scans"}, code)
+    volumes = backings.get("volumes") if isinstance(backings, dict) else None
+    if not isinstance(volumes, dict):
+        raise CarryForwardError(code)
+    targets = sorted(
+        (item["mount"]["filesystem"], item["mount"]["major_minor"], item["mount"]["root"])
+        for item in volumes.values()
+    )
+    if (
+        value["schema"] != "group2-post-finalize-reboot-namespace-evidence-v1"
+        or value["mode"] != mode or canonical(value["targets"]) != canonical(targets)
+        or not isinstance(value["scans"], list) or len(value["scans"]) != 2
+    ):
+        raise CarryForwardError(code)
+    scans = []
+    keys = {
+        "task_count", "namespace_count", "mountinfo_bytes", "fd_entries",
+        "related_count", "pin_count", "target_digest", "related", "pins",
+    }
+    for raw in value["scans"]:
+        scan = _closed_object(raw, keys, code)
+        if (
+            any(type(scan[name]) is not int or scan[name] < (1 if name in {
+                "task_count", "namespace_count"
+            } else 0) for name in (
+                "task_count", "namespace_count", "mountinfo_bytes", "fd_entries",
+                "related_count", "pin_count",
+            ))
+            or scan["task_count"] > 8192
+            or scan["namespace_count"] > 2048
+            or scan["mountinfo_bytes"] > 128 * 1024 * 1024
+            or scan["fd_entries"] > 65536
+            or not isinstance(scan["related"], list) or not isinstance(scan["pins"], list)
+            or scan["related_count"] != len(scan["related"])
+            or scan["pin_count"] != len(scan["pins"])
+            or scan["target_digest"] != digest({
+                "related": scan["related"], "pins": scan["pins"]
+            })
+        ):
+            raise CarryForwardError(code)
+        scans.append(scan)
+    if any(scans[0][name] != scans[1][name] for name in (
+        "related", "pins", "related_count", "pin_count", "target_digest"
+    )):
+        raise CarryForwardError(code)
+    return scans
+
+
+def _validate_group2_reboot_running_kernel(
+    keeper: Any, current: Any, proof: dict[str, Any], worker: dict[str, Any],
+    raw_worker: Any, profile: dict[str, Any], request: dict[str, Any],
+) -> dict[str, Any]:
+    code = "group2_reboot_kernel_changed"
+    keeper = _validate_group2_reboot_keeper_kernel(keeper, request)
+    if not isinstance(current, dict) or set(current) != set(keeper):
+        raise CarryForwardError(code)
+    for key in (
+        "boot_id", "unit", "control_group", "keeper_pid", "keeper_starttime",
+        "description", "parent_device", "parent_inode",
+    ):
+        if current.get(key) != keeper.get(key):
+            raise CarryForwardError(code)
+    authority = current.get("old_worker_authority")
+    children = current.get("children")
+    container_id = proof["container_id"]
+    agent = children.get("agent") if isinstance(children, dict) else None
+    worker_root = children.get(container_id) if isinstance(children, dict) else None
+    worker_agent = children.get(f"{container_id}/agent") if isinstance(children, dict) else None
+    current_backings = current.get("volume_backings")
+    keeper_backings = keeper["volume_backings"]
+    if (
+        current["unit_properties"] != keeper["unit_properties"]
+        or not isinstance(current_backings, dict)
+        or set(current_backings) != set(keeper_backings)
+        or any(current_backings.get(key) != keeper_backings.get(key) for key in (
+            "schema", "boot_id", "host_mount_namespace", "volumes",
+        ))
+        or any(current["cgroup_limits"].get(key) != keeper["cgroup_limits"].get(key)
+               for key in (".", "agent"))
+    ):
+        raise CarryForwardError(code)
+    scans = _validate_group2_reboot_namespace_evidence(
+        current["namespace_evidence"], "worker_running", current["volume_backings"]
+    )
+    keeper_volumes = keeper["volume_backings"]["volumes"]
+    live_volumes = authority.get("volumes") if isinstance(authority, dict) else None
+    volume_keys = ("name", "device", "inode")
+    mount_keys = ("filesystem", "major_minor", "root")
+    volumes_match = isinstance(live_volumes, dict) and set(live_volumes) == set(keeper_volumes)
+    if volumes_match:
+        for name in keeper_volumes:
+            before, after = keeper_volumes[name], live_volumes[name]
+            volumes_match = volumes_match and all(before.get(key) == after.get(key) for key in volume_keys)
+            volumes_match = volumes_match and all(
+                before.get("mount", {}).get(key) == after.get("mount", {}).get(key)
+                for key in mount_keys
+            )
+    state = raw_worker.get("State") if isinstance(raw_worker, dict) else None
+    config = raw_worker.get("Config") if isinstance(raw_worker, dict) else None
+    host_config = raw_worker.get("HostConfig") if isinstance(raw_worker, dict) else None
+    try:
+        expected_runtime_config = _worker_runtime_config(config)
+        nano_cpus = host_config["NanoCpus"]
+        memory = host_config["Memory"]
+        memory_swap = host_config["MemorySwap"]
+        pids_limit = host_config["PidsLimit"]
+        worker_limits = current["cgroup_limits"][container_id]
+        quota, period = map(int, worker_limits["cpu.max"].split())
+    except (KeyError, TypeError, ValueError, CarryForwardError) as error:
+        raise CarryForwardError(code) from error
+    limit_fields = {
+        "cpu.max", "memory.max", "memory.swap.max", "pids.max",
+        "cgroup.subtree_control", "cgroup.procs", "uid", "gid",
+    }
+    expected_cgroup = f"0::{current['control_group']}/{container_id}/agent"
+    expected_targets = {
+        (item["mount"]["filesystem"], item["mount"]["major_minor"],
+         item["mount"]["root"])
+        for item in current["volume_backings"]["volumes"].values()
+    }
+    for scan in scans:
+        related = scan["related"][0] if len(scan["related"]) == 1 else None
+        members = related.get("members") if isinstance(related, dict) else None
+        mounts = related.get("mounts") if isinstance(related, dict) else None
+        if (
+            not isinstance(members, list) or not members
+            or any(
+                not isinstance(member, dict)
+                or set(member) != {"pid", "tid", "pid_starttime", "cgroup"}
+                or member["pid"] != authority.get("pid")
+                or type(member["tid"]) is not int or member["tid"] <= 0
+                or re.fullmatch(r"[1-9][0-9]*", str(member["pid_starttime"])) is None
+                or member["cgroup"] != expected_cgroup
+                for member in members
+            )
+            or not any(
+                member["tid"] == authority.get("pid")
+                and member["pid_starttime"] == authority.get("pid_starttime")
+                for member in members
+            )
+            or not isinstance(mounts, list) or len(mounts) != 2
+            or related.get("mounts_digest") != digest(mounts)
+            or any(not _selected_mount_matches(mount, expected_targets) for mount in mounts)
+            or {
+                (mount.get("filesystem"), mount.get("major_minor"), mount.get("root"))
+                for mount in mounts
+            } != expected_targets
+        ):
+            raise CarryForwardError(code)
+    if (
+        not isinstance(authority, dict)
+        or any(authority.get(key) != proof[key]
+               for key in ("container_id", "image_id", "started_at"))
+        or any(authority.get(key) != worker.get(key)
+               for key in ("container_id", "image_id", "started_at"))
+        or authority.get("labels") != {
+            key: worker.get("labels", {}).get(key)
+            for key in ("com.docker.compose.project", "com.docker.compose.service")
+        }
+        or type(authority.get("pid")) is not int or authority["pid"] <= 0
+        or not isinstance(authority.get("pid_starttime"), str)
+        or re.fullmatch(r"mnt:\[[1-9][0-9]*\]", str(authority.get("mount_namespace"))) is None
+        or re.fullmatch(r"cgroup:\[[1-9][0-9]*\]", str(authority.get("cgroup_namespace"))) is None
+        or any(
+            scan["pin_count"] != 0 or len(scan["related"]) != 1
+            or scan["related"][0].get("namespace") != authority.get("mount_namespace")
+            for scan in scans
+        )
+        or authority.get("parent_device") != keeper.get("parent_device")
+        or authority.get("parent_inode") != keeper.get("parent_inode")
+        or not isinstance(state, dict) or state.get("Pid") != authority.get("pid")
+        or state.get("StartedAt") != authority.get("started_at")
+        or authority.get("runtime_config") != expected_runtime_config
+        or type(nano_cpus) is not int or nano_cpus <= 0
+        or quota * 1_000_000_000 != nano_cpus * period
+        or type(memory) is not int or memory <= 0
+        or worker_limits["memory.max"] != str(memory)
+        or type(memory_swap) is not int or memory_swap < memory
+        or worker_limits["memory.swap.max"] != str(memory_swap - memory)
+        or type(pids_limit) is not int or pids_limit <= 0
+        or worker_limits["pids.max"] != str(pids_limit)
+        or set(current["cgroup_limits"])
+        != {".", "agent", container_id, f"{container_id}/agent"}
+        or any(
+            not isinstance(item, dict) or set(item) != limit_fields
+            or type(item["uid"]) is not int or type(item["gid"]) is not int
+            for item in current["cgroup_limits"].values()
+        )
+        or not volumes_match
+        or not _container_matches_profile(
+            worker, profile["old_profiles"]["worker"], profile["project"], "worker"
+        )
+        or (authority.get("root_device"), authority.get("root_inode")) != (
+            proof["preflight_receipt"]["namespace_identity"]["root_device"],
+            proof["preflight_receipt"]["namespace_identity"]["root_inode"],
+        )
+        or proof["preflight_receipt"]["namespace_identity"].get("boot_id")
+        != keeper["boot_id"]
+        or proof["preflight_receipt"]["namespace_identity"].get("parent_device")
+        != keeper["parent_device"]
+        or proof["preflight_receipt"]["namespace_identity"].get("parent_inode")
+        != keeper["parent_inode"]
+        or not isinstance(children, dict)
+        or set(children) != {"agent", container_id, f"{container_id}/agent"}
+        or not isinstance(agent, dict)
+        or set(agent) != {"populated", "process_count", "process_digest", "device", "inode"}
+        or agent.get("populated") != 1
+        or agent.get("process_count") != 1
+        or agent.get("process_digest") != digest([current["keeper_pid"]])
+        or (agent.get("device"), agent.get("inode"))
+        != (keeper["children"]["agent"].get("device"), keeper["children"]["agent"].get("inode"))
+        or not isinstance(worker_root, dict)
+        or set(worker_root) != {"populated", "process_count", "process_digest", "device", "inode"}
+        or worker_root.get("populated") != 1
+        or worker_root.get("process_count") != 0
+        or worker_root.get("process_digest") != digest([])
+        or (worker_root.get("device"), worker_root.get("inode"))
+        != (authority.get("root_device"), authority.get("root_inode"))
+        or not isinstance(worker_agent, dict)
+        or set(worker_agent) != {"populated", "process_count", "process_digest", "device", "inode"}
+        or worker_agent.get("populated") != 1
+        or worker_agent.get("process_count") != 1
+        or worker_agent.get("process_digest") != digest([authority.get("pid")])
+        or current.get("retired_markers") != []
+    ):
+        raise CarryForwardError(code)
+    return current
+
+
+def _validate_group2_reboot_parent_volume_identity(
+    parent_kernel: Any, current_kernel: Any
+) -> None:
+    code = "group2_reboot_kernel_changed"
+    parent_authority = (
+        parent_kernel.get("old_worker_authority")
+        if isinstance(parent_kernel, dict) else None
+    )
+    parent_volumes = (
+        parent_authority.get("volumes") if isinstance(parent_authority, dict) else None
+    )
+    current_backings = (
+        current_kernel.get("volume_backings")
+        if isinstance(current_kernel, dict) else None
+    )
+    current_volumes = (
+        current_backings.get("volumes") if isinstance(current_backings, dict) else None
+    )
+    if (
+        not isinstance(parent_volumes, dict)
+        or not isinstance(current_volumes, dict)
+        or set(parent_volumes) != {"runtime", "journal"}
+        or set(current_volumes) != set(parent_volumes)
+        or any(
+            current_volumes[name].get(key) != parent_volumes[name].get(key)
+            for name in parent_volumes for key in ("name", "device", "inode")
+        )
+    ):
+        raise CarryForwardError(code)
 
 
 def validate_group2_post_finalize_reboot_transition(
@@ -11115,15 +11798,19 @@ def validate_group2_post_finalize_reboot_transition(
         )
     if phase == "keeper_ready":
         _validate_group2_reboot_empty_log_segment(previous["logs"], current["logs"])
+        _validate_group2_reboot_keeper_kernel(current["kernel"], request)
+        _validate_group2_reboot_parent_volume_identity(
+            validated["parent"]["evidence"]["current"].get("kernel"),
+            current["kernel"],
+        )
         if (
             {key: value for key, value in current["authority"].items() if key != "keeper"}
             != {key: value for key, value in previous["authority"].items() if key != "keeper"}
             or previous["authority"].get("keeper") != "missing"
-            or not isinstance(current["authority"].get("keeper"), dict)
+            or current["authority"].get("keeper") != current["kernel"]
             or current["files"] != previous["files"]
             or current["containers"] != previous["containers"]
-            or current["kernel"].get("boot_id") != request["boot_id"]
-            or current["kernel"].get("namespace_evidence") is None
+            or current["postgres"] != previous["postgres"]
         ):
             raise CarryForwardError(code)
     elif phase == "database_ready":
@@ -11141,6 +11828,11 @@ def validate_group2_post_finalize_reboot_transition(
             current["containers"]["rabbitmq"].get("image_id"),
             [item["execution_id"] for item in validated["parent"]["snapshot"].get("selection", {}).get("queued", [])],
             request["prior"]["containers"],
+        )
+        _validate_group2_reboot_postgres(
+            current["postgres"], validated["parent"]["evidence"]["postgres"],
+            request["prior"]["containers"]["postgres"]["image_id"],
+            running=True, baseline=previous["postgres"],
         )
         for service in ("postgres", "rabbitmq"):
             before, after = previous["containers"][service], current["containers"][service]
@@ -11173,6 +11865,33 @@ def validate_group2_post_finalize_reboot_transition(
         )
         if current["startup_proof"] != proof:
             raise CarryForwardError(code)
+        keeper_kernel = current["authority"].get("keeper")
+        _validate_group2_reboot_running_kernel(
+            keeper_kernel, current["kernel"], proof,
+            current["containers"]["worker"], current["container_inspect"]["worker"],
+            profile, request,
+        )
+        startup_request = current["startup_request"]
+        if (
+            startup_request.get("profile") != profile
+            or startup_request.get("logs_before") != previous["logs"]
+            or startup_request.get("logs_after") != current["logs"]
+            or startup_request.get("container_before") != previous["containers"]["worker"]
+            or startup_request.get("container_after") != current["containers"]["worker"]
+            or startup_request.get("window_start_ns") < current["window_start_ns"]
+            or startup_request.get("window_end_ns") > current["window_end_ns"]
+        ):
+            raise CarryForwardError(code)
+        try:
+            _validate_log_link(previous["logs"], current["logs"], profile["profile_digest"])
+            _validate_reconcile_log_activity(current["logs"], allow_registration=True)
+        except CarryForwardError as error:
+            raise CarryForwardError(code) from error
+        _validate_group2_reboot_postgres(
+            current["postgres"], validated["parent"]["evidence"]["postgres"],
+            request["prior"]["containers"]["postgres"]["image_id"],
+            running=True, baseline=previous["postgres"],
+        )
         _validate_group2_reboot_mutation_guard(current["mutation_guard"])
         if current["mutation_guard"] != previous["start_admission"]["mutation_guard_rows"]:
             raise CarryForwardError(code)
@@ -11226,17 +11945,41 @@ def validate_group2_post_finalize_reboot_transition(
             or current["containers"] != previous["containers"]
         ):
             raise CarryForwardError(code)
-        for key in (
-            "boot_id", "unit", "control_group", "keeper_pid", "keeper_starttime",
-            "description", "parent_device", "parent_inode",
+        keeper_kernel = current["authority"].get("keeper")
+        _validate_group2_reboot_running_kernel(
+            keeper_kernel, current["kernel"], current["startup_proof"],
+            current["containers"]["worker"], current["container_inspect"]["worker"],
+            validated["platform"]["account_entry"], request,
+        )
+        if any(
+            current["kernel"][key] != previous["kernel"][key]
+            for key in set(current["kernel"]) - {"namespace_evidence"}
         ):
-            if current["kernel"].get(key) != previous["kernel"].get(key):
-                raise CarryForwardError(code)
+            raise CarryForwardError(code)
+        current_namespace = current["kernel"]["namespace_evidence"]
+        previous_namespace = previous["kernel"]["namespace_evidence"]
+        if (
+            {key: current_namespace[key] for key in ("schema", "mode", "targets")}
+            != {key: previous_namespace[key] for key in ("schema", "mode", "targets")}
+            or any(
+                current_namespace["scans"][index][key]
+                != previous_namespace["scans"][index][key]
+                for index in (0, 1)
+                for key in ("related", "pins", "related_count", "pin_count", "target_digest")
+            )
+        ):
+            raise CarryForwardError(code)
+        _validate_group2_reboot_postgres(
+            current["postgres"], validated["parent"]["evidence"]["postgres"],
+            request["prior"]["containers"]["postgres"]["image_id"],
+            running=True, baseline=previous["postgres"],
+        )
         try:
             _validate_log_link(
                 previous["logs"], current["logs"],
                 validated["platform"]["account_entry"]["profile_digest"],
             )
+            _validate_reconcile_quiet_logs(current["logs"])
         except CarryForwardError as error:
             raise CarryForwardError(code) from error
     return current
@@ -11255,11 +11998,8 @@ def validate_group2_post_finalize_reboot_result(
     stopped_raw = evidence["stopped"]
     stopped = validate_group2_post_finalize_reboot_stopped(validated, stopped_raw)
     stopped_stage = {
-        **stopped,
-        "schema": "group2-post-finalize-reboot-stage-v1",
+        **stopped, "schema": "group2-post-finalize-reboot-stage-v1",
         "phase": "stopped",
-        "window_start_ns": validated["request"]["window"]["not_before_ns"],
-        "window_end_ns": validated["request"]["window"]["not_before_ns"],
     }
     current = stopped_stage
     for phase in GROUP2_POST_FINALIZE_REBOOT_PHASES[1:-1]:
@@ -11269,10 +12009,19 @@ def validate_group2_post_finalize_reboot_result(
     authority = _closed_object(
         evidence["authority"], {"before", "after"}, code
     )
-    if authority["before"] != authority["after"]:
+    if (
+        authority["before"] != stopped["authority"]
+        or authority["after"] != current["authority"]
+        or authority["before"].get("keeper") != "missing"
+        or authority["after"].get("keeper") != evidence["keeper_ready"]["kernel"]
+        or any(
+            authority["before"].get(key) != authority["after"].get(key)
+            for key in ("host_files", "vm_files", "installed")
+        )
+    ):
         raise CarryForwardError("group2_reboot_authority_changed")
     request = validated["request"]
-    _validate_group2_reboot_commands(evidence["commands"], request)
+    _validate_group2_reboot_commands(evidence["commands"], request, evidence)
     receipt = {
         "schema": "group2-post-finalize-reboot-receipt-v1",
         "incident_id": request["incident_id"],
@@ -11297,7 +12046,9 @@ def validate_group2_post_finalize_reboot_result(
     return receipt
 
 
-def _validate_group2_reboot_commands(value: Any, request: dict[str, Any]) -> None:
+def _validate_group2_reboot_commands(
+    value: Any, request: dict[str, Any], evidence: dict[str, Any]
+) -> None:
     code = "group2_reboot_command_evidence_invalid"
     actions = ("prepare-keeper", "start-postgres", "start-rabbitmq",
                "start-control", "start-worker", "start-web")
@@ -11348,6 +12099,22 @@ def _validate_group2_reboot_commands(value: Any, request: dict[str, Any]) -> Non
             or result["returncode"] != 0
             or not isinstance(result["stdout"], str)
             or not isinstance(result["stderr"], str)
+        ):
+            raise CarryForwardError(code)
+        if action == "prepare-keeper":
+            phase_start = evidence["keeper_ready"]["window_start_ns"]
+            phase_end = evidence["keeper_ready"]["window_end_ns"]
+        elif action in {"start-postgres", "start-rabbitmq"}:
+            phase_start = evidence["database_ready"]["window_start_ns"]
+            phase_end = evidence["database_ready"]["window_end_ns"]
+        else:
+            phase_start = evidence["applications_started"]["window_start_ns"]
+            phase_end = evidence["applications_started"]["window_end_ns"]
+            if intent["started_at_ns"] < evidence["database_ready"]["window_end_ns"]:
+                raise CarryForwardError(code)
+        if (
+            intent["started_at_ns"] < phase_start
+            or result["ended_at_ns"] > phase_end
         ):
             raise CarryForwardError(code)
         previous_end = result["ended_at_ns"]
@@ -11410,7 +12177,7 @@ def validate_group2_post_finalize_reboot_preservation(chain: Any) -> dict[str, A
 
 
 def _validate_group2_partial_finalize_preservation(
-    chain: Any, original_reference: Any, validated: Any
+    chain: Any, original_reference: Any, validated: Any, *, include_context: bool = False
 ) -> dict[str, Any]:
     code = "group2_partial_finalize_chain_invalid"
     chain = _closed_object(
@@ -11470,7 +12237,7 @@ def _validate_group2_partial_finalize_preservation(
     original = reference["snapshot"]
     request = validated["request"]
     chain_digest = streaming_digest(chain)
-    return {
+    snapshot = {
         "selection": original["selection"],
         "db": original["db"],
         "files": result["evidence"]["current"]["files"],
@@ -11503,6 +12270,9 @@ def _validate_group2_partial_finalize_preservation(
             },
         ],
     }
+    if include_context:
+        return {"snapshot": snapshot, "validated": validated}
+    return snapshot
 
 
 def validate_group2_reconcile_request(
@@ -12537,6 +13307,348 @@ def _reboot_volume(
     return matches[0]
 
 
+def _group2_reboot_volume_backings(
+    request: dict[str, Any]
+) -> dict[str, Any]:
+    mounts = _mountinfo(Path("/proc/1/mountinfo"))
+    boot_id = _read_text(Path("/proc/sys/kernel/random/boot_id"))
+    host_namespace = os.readlink("/proc/1/ns/mnt")
+    if host_namespace != os.readlink("/proc/self/ns/mnt"):
+        raise CarryForwardError("kernel_identity_unknown")
+    result = {}
+    for key, service, destination in (
+        ("runtime", "worker", "/var/lib/dlr/runtime"),
+        ("journal", "worker", "/var/lib/dlr/journal"),
+    ):
+        name = _reboot_volume(request["prior"]["storage"], service, destination)
+        try:
+            raw = json.loads(_checked_output(["docker", "volume", "inspect", name]))
+            if not isinstance(raw, list) or len(raw) != 1:
+                raise ValueError("volume inspect shape")
+            inspect = raw[0]
+            mountpoint = inspect["Mountpoint"]
+            source_raw = Path(mountpoint)
+            source = source_raw.resolve(strict=True)
+            if (
+                not source_raw.is_absolute() or source_raw.is_symlink()
+                or source != source_raw or not source.is_dir()
+                or inspect.get("Name") != name
+            ):
+                raise ValueError("volume mountpoint shape")
+            info = source.lstat()
+        except (KeyError, ValueError, OSError, json.JSONDecodeError,
+                subprocess.SubprocessError) as error:
+            raise CarryForwardError("kernel_identity_unknown") from error
+        host_mount, selected, derived = _derive_group2_reboot_backing_mount(
+            str(source), info.st_dev, mounts, "kernel_identity_unknown",
+        )
+        result[key] = {
+            "name": name, "device": info.st_dev, "inode": info.st_ino,
+            "mount": selected,
+            "inspect": inspect,
+            "mountpoint_stat": {
+                "device": info.st_dev, "inode": info.st_ino, "type": "directory",
+                "mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid, "gid": info.st_gid,
+            },
+            "host_mount": host_mount,
+            "derived_mount": derived,
+        }
+    return {
+        "schema": "group2-post-finalize-reboot-volume-backings-v1",
+        "boot_id": boot_id, "host_mount_namespace": host_namespace,
+        "host_mountinfo": mounts, "volumes": result,
+    }
+
+
+def _group2_reboot_backing_authority(backings: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "volumes": {
+            name: {
+                "name": item["name"], "device": item["device"],
+                "inode": item["inode"], "mount": item["mount"],
+            }
+            for name, item in backings["volumes"].items()
+        }
+    }
+
+
+def _group2_reboot_backings_stable(
+    before: dict[str, Any], after: dict[str, Any]
+) -> bool:
+    keys = ("schema", "boot_id", "host_mount_namespace", "volumes")
+    return all(before.get(key) == after.get(key) for key in keys)
+
+
+def _group2_reboot_kernel_capture_stable(
+    before: dict[str, Any], after: dict[str, Any]
+) -> bool:
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    ignored = {
+        "namespace_evidence", "volume_backings", "unit_properties", "cgroup_limits",
+    }
+    return {
+        key: value for key, value in before.items() if key not in ignored
+    } == {
+        key: value for key, value in after.items() if key not in ignored
+    }
+
+
+def _augment_group2_reboot_kernel(
+    kernel: dict[str, Any], request: dict[str, Any]
+) -> None:
+    params = request["prior"]["parameters"]["keeper"]
+    properties = (
+        "ActiveState", "Delegate", "ControlGroup", "MainPID", "Description",
+        "InvocationID",
+    )
+    try:
+        values = {
+            name: subprocess.run(
+                ["systemctl", "show", params["unit"], f"--property={name}", "--value"],
+                check=True, capture_output=True, text=True,
+                timeout=_reboot_timeout(request, 10),
+            ).stdout.strip()
+            for name in properties
+        }
+        parent = Path("/sys/fs/cgroup") / kernel["control_group"].removeprefix("/")
+        limits = {}
+        for relative in [".", *sorted(kernel["children"])]:
+            path = parent if relative == "." else parent / relative
+            limits[relative] = {
+                name: _read_text(path / name)
+                for name in (
+                    "cpu.max", "memory.max", "memory.swap.max", "pids.max",
+                    "cgroup.subtree_control", "cgroup.procs",
+                )
+            }
+            info = path.lstat()
+            limits[relative].update(uid=info.st_uid, gid=info.st_gid)
+    except (KeyError, OSError, subprocess.SubprocessError) as error:
+        raise CarryForwardError("group2_reboot_kernel_changed") from error
+    repeated = {
+        name: subprocess.run(
+            ["systemctl", "show", params["unit"], f"--property={name}", "--value"],
+            check=True, capture_output=True, text=True,
+            timeout=_reboot_timeout(request, 10),
+        ).stdout.strip()
+        for name in properties
+    }
+    if repeated != values:
+        raise CarryForwardError("group2_reboot_kernel_changed")
+    kernel["unit_properties"] = values
+    kernel["cgroup_limits"] = limits
+
+
+def _capture_group2_reboot_kernel(
+    request: dict[str, Any], *, idle: bool,
+    expected_description: str, worker_container: str | None = None,
+) -> dict[str, Any]:
+    params = request["prior"]["parameters"]["keeper"]
+    if idle:
+        kernel = capture_kernel(
+            params["unit"], require_idle=False,
+            expected_description=expected_description,
+        )
+        children = kernel.get("children")
+        if not isinstance(children, dict) or set(children) != {"agent"}:
+            raise CarryForwardError("kernel_not_idle")
+        backings = _group2_reboot_volume_backings(request)
+        targets = {
+            (item["mount"]["filesystem"], item["mount"]["major_minor"],
+             item["mount"]["root"])
+            for item in backings["volumes"].values()
+        }
+        first = _scan_related_mount_namespaces(targets, set(), include_records=True)
+        second = _scan_related_mount_namespaces(targets, set(), include_records=True)
+        repeated_kernel = capture_kernel(
+            params["unit"], require_idle=False,
+            expected_description=expected_description,
+        )
+        repeated_backings = _group2_reboot_volume_backings(request)
+        if (
+            any(first.get(key) != second.get(key)
+                for key in ("related_count", "pin_count", "target_digest"))
+            or second["related_count"] != 0 or second["pin_count"] != 0
+            or not _group2_reboot_kernel_capture_stable(kernel, repeated_kernel)
+            or not _group2_reboot_backings_stable(backings, repeated_backings)
+        ):
+            raise CarryForwardError("kernel_namespace_active")
+        kernel["old_worker_authority"] = None
+        kernel["namespace_evidence"] = {
+            "schema": "group2-post-finalize-reboot-namespace-evidence-v1",
+            "mode": "keeper_idle", "targets": sorted(targets),
+            "scans": [first, second],
+        }
+        kernel["retired_markers"] = []
+        kernel["volume_backings"] = backings
+        _augment_group2_reboot_kernel(kernel, request)
+        return kernel
+    if not isinstance(worker_container, str) or not worker_container:
+        raise CarryForwardError("kernel_identity_unknown")
+    kernel = capture_kernel(
+        params["unit"], require_idle=False,
+        expected_description=expected_description,
+        worker_container=worker_container,
+        runtime_volume=_reboot_volume(
+            request["prior"]["storage"], "worker", "/var/lib/dlr/runtime"
+        ),
+        journal_volume=_reboot_volume(
+            request["prior"]["storage"], "worker", "/var/lib/dlr/journal"
+        ),
+    )
+    authority = kernel["old_worker_authority"]
+    kernel["volume_backings"] = _group2_reboot_volume_backings(request)
+    first = _scan_related_mount_namespaces(
+        {
+            (item["mount"]["filesystem"], item["mount"]["major_minor"],
+             item["mount"]["root"])
+            for item in authority["volumes"].values()
+        },
+        {authority["mount_namespace"], authority["cgroup_namespace"]},
+        include_records=True,
+    )
+    second = _scan_related_mount_namespaces(
+        {
+            (item["mount"]["filesystem"], item["mount"]["major_minor"],
+             item["mount"]["root"])
+            for item in authority["volumes"].values()
+        },
+        {authority["mount_namespace"], authority["cgroup_namespace"]},
+        include_records=True,
+    )
+    repeated_kernel = capture_kernel(
+        params["unit"], require_idle=False,
+        expected_description=expected_description,
+        worker_container=worker_container,
+        runtime_volume=_reboot_volume(
+            request["prior"]["storage"], "worker", "/var/lib/dlr/runtime"
+        ),
+        journal_volume=_reboot_volume(
+            request["prior"]["storage"], "worker", "/var/lib/dlr/journal"
+        ),
+    )
+    repeated_backings = _group2_reboot_volume_backings(request)
+    stable = ("related_count", "pin_count", "target_digest", "related", "pins")
+    if (
+        any(first.get(key) != second.get(key) for key in stable)
+        or not _group2_reboot_kernel_capture_stable(kernel, repeated_kernel)
+        or not _group2_reboot_backings_stable(kernel["volume_backings"], repeated_backings)
+    ):
+        raise CarryForwardError("kernel_identity_unknown")
+    targets = {
+        (item["mount"]["filesystem"], item["mount"]["major_minor"],
+         item["mount"]["root"])
+        for item in authority["volumes"].values()
+    }
+    kernel["namespace_evidence"] = {
+        "schema": "group2-post-finalize-reboot-namespace-evidence-v1",
+        "mode": "worker_running", "targets": sorted(targets),
+        "scans": [first, second],
+    }
+    _augment_group2_reboot_kernel(kernel, request)
+    return kernel
+
+
+def _capture_group2_reboot_stopped_platform(
+    request: dict[str, Any], unit: str
+) -> dict[str, Any]:
+    try:
+        boot_id = _read_text(Path("/proc/sys/kernel/random/boot_id"))
+        values = [
+            subprocess.run(
+                ["systemctl", "show", unit, f"--property={name}", "--value"],
+                check=True, capture_output=True, text=True,
+                timeout=_reboot_timeout(request, 10),
+            ).stdout.strip()
+            for name in ("LoadState", "ActiveState", "SubState")
+        ]
+    except (OSError, subprocess.SubprocessError) as error:
+        raise CarryForwardError("group2_reboot_stopped_invalid") from error
+    return {
+        "boot_id": boot_id,
+        "unit": dict(zip(("load_state", "active_state", "sub_state"), values)),
+    }
+
+
+def _capture_group2_reboot_postgres(
+    request: dict[str, Any], raw: dict[str, Any], *, running: bool,
+) -> dict[str, Any]:
+    expected = request["prior"]["containers"]["postgres"]
+    image_id = expected["image_id"]
+    timeout = _reboot_timeout(request, 30)
+    try:
+        image_values = json.loads(subprocess.check_output(
+            ["docker", "image", "inspect", image_id], text=True, timeout=timeout,
+        ))
+        if not isinstance(image_values, list) or len(image_values) != 1:
+            raise ValueError("image inspect shape")
+        layers = image_values[0]["RootFS"]["Layers"]
+        if running:
+            container_id = expected["container_id"]
+            binary = subprocess.check_output(
+                ["docker", "exec", container_id, "postgres", "--version"],
+                text=True, timeout=timeout,
+            ).strip()
+            data_version = subprocess.check_output(
+                ["docker", "exec", container_id, "cat",
+                 "/var/lib/postgresql/data/PG_VERSION"],
+                text=True, timeout=timeout,
+            ).strip()
+            env = (raw.get("Config") or {}).get("Env")
+            if not isinstance(env, list):
+                raise ValueError("postgres env shape")
+            variables = {}
+            for item in env:
+                if not isinstance(item, str) or "=" not in item:
+                    raise ValueError("postgres env shape")
+                name, value = item.split("=", 1)
+                if name in {"POSTGRES_USER", "POSTGRES_DB"}:
+                    variables[name] = value
+            user = variables.get("POSTGRES_USER", "postgres")
+            database = variables.get("POSTGRES_DB", user)
+            server = subprocess.check_output(
+                ["docker", "exec", container_id, "psql", "-U", user, "-d", database,
+                 "-Atqc", "SHOW server_version"],
+                text=True, timeout=timeout,
+            ).strip()
+            schema = subprocess.check_output(
+                ["docker", "exec", container_id, "psql", "-U", user, "-d", database,
+                 "-Atqc", "SELECT version_num FROM alembic_version"],
+                text=True, timeout=timeout,
+            ).strip()
+        else:
+            binary = subprocess.check_output(
+                ["docker", "run", "--rm", "--network", "none", "--read-only",
+                 "--entrypoint", "postgres", image_id, "--version"],
+                text=True, timeout=timeout,
+            ).strip()
+            volume = _reboot_volume(
+                request["prior"]["storage"], "postgres", "/var/lib/postgresql/data"
+            )
+            data_version = subprocess.check_output(
+                ["docker", "run", "--rm", "--network", "none", "--read-only",
+                 "--mount", f"type=volume,source={volume},target=/data,readonly,volume-nocopy",
+                 "--entrypoint", "cat", image_id, "/data/PG_VERSION"],
+                text=True, timeout=timeout,
+            ).strip()
+            server = None
+            schema = None
+    except (KeyError, ValueError, OSError, subprocess.SubprocessError) as error:
+        raise CarryForwardError("group2_reboot_postgres_invalid") from error
+    value = {
+        "database_read": running,
+        "binary_version": binary,
+        "data_pg_version": data_version,
+        "image_id": image_id,
+        "rootfs_layers": layers,
+    }
+    if running:
+        value["server_version"] = server
+        value["schema"] = schema
+    return value
+
+
 def _capture_group2_reboot_files(
     directory: Path, request: dict[str, Any], project: str, name: str
 ) -> dict[str, Any]:
@@ -12723,6 +13835,7 @@ def _capture_reconcile_stage(
     journal_volume: str,
     admission_output: Path | None = None,
     timeout: int = 300,
+    reboot_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     window_start_ns = time.time_ns()
     logs = read_log_append(previous_logs)
@@ -12748,7 +13861,16 @@ def _capture_reconcile_stage(
             runtime_volume=runtime_volume,
             journal_volume=journal_volume,
         )
-    kernel = capture_kernel(deployment["sandbox_unit"], **kernel_arguments)
+    if reboot_request is None:
+        kernel = capture_kernel(deployment["sandbox_unit"], **kernel_arguments)
+    else:
+        if require_idle:
+            raise CarryForwardError("group2_reboot_kernel_changed")
+        kernel = _capture_group2_reboot_kernel(
+            reboot_request, idle=False,
+            expected_description=kernel_arguments["expected_description"],
+            worker_container=reboot_request["prior"]["containers"]["worker"]["container_id"],
+        )
     containers = {
         service: _inspect_container(project, service)
         for service in (
@@ -13426,44 +14548,59 @@ def _recover_group2_post_finalize_reboot_vm_once(
             raise CarryForwardError("group2_reboot_tool_changed")
     profile = validated["platform"]["account_entry"]
     project = profile["project"]
-    _verify_group2_reboot_vm_authority(root, validated)
+    params = request["prior"]["parameters"]["keeper"]
+    stopped_authority = _verify_group2_reboot_vm_authority(root, validated)
     completed: list[str] = []
     digests: dict[str, str] = {}
     _reboot_phase(directory, request, "stopped", completed, "capture-stopped", digests)
+    stopped_start_ns = time.time_ns()
+    stopped_raw = {
+        service: _inspect_reboot_container_raw(
+            request["prior"]["containers"][service]["container_id"]
+        )
+        for service in ("postgres", "rabbitmq", "control", "worker", "web", "account-web")
+    }
+    stopped_containers = {
+        service: _inspect_container(project, service) for service in stopped_raw
+    }
     stopped = {
         "schema": "group2-post-finalize-reboot-stopped-v1",
         "boot_id": boot_id,
         "files": _capture_group2_reboot_files(directory, request, project, "stopped-files"),
-        "logs": capture_log_prefix(profile),
-        "containers": {
-            service: _inspect_container(project, service)
-            for service in ("postgres", "rabbitmq", "control", "worker", "web", "account-web")
-        },
-        "container_inspect": {
-            service: _inspect_reboot_container_raw(
-                request["prior"]["containers"][service]["container_id"]
-            )
-            for service in ("postgres", "rabbitmq", "control", "worker", "web", "account-web")
-        },
-        "images": request["prior"]["images"],
+        "logs": read_log_append(validated["parent"]["evidence"]["current"]["logs"]),
+        "containers": stopped_containers,
+        "container_inspect": stopped_raw,
+        "images": {name: item["image_id"] for name, item in stopped_containers.items()},
         "storage": _live_storage_identity(project),
-        "authority": {
-            "host_files": request["prior"]["host_files"],
-            "vm_files": request["prior"]["vm_files"],
-            "installed": request["prior"]["installed"],
-            "keeper": "missing",
-        },
-        "postgres": {
-            "database_read": False,
-            "data_pg_version": request["prior"]["parameters"]["postgres"]["data_pg_version"],
-        },
+        "authority": {**stopped_authority, "keeper": "missing"},
+        "postgres": _capture_group2_reboot_postgres(
+            request, stopped_raw["postgres"], running=False
+        ),
+        "platform": _capture_group2_reboot_stopped_platform(request, params["unit"]),
+        "window_start_ns": stopped_start_ns,
+        "window_end_ns": time.time_ns(),
     }
     validate_group2_post_finalize_reboot_stopped(validated, stopped)
     _atomic_incident_json(directory / "stopped.json", stopped)
     completed.append("stopped"); digests["stopped"] = digest(stopped)
-    params = request["prior"]["parameters"]["keeper"]
     script = root / "prepare-sandbox-host.sh"
     _verify_group2_reboot_vm_authority(root, validated)
+    if (
+        _capture_group2_reboot_stopped_platform(request, params["unit"])
+        != stopped["platform"]
+        or _live_storage_identity(project) != stopped["storage"]
+        or {
+            service: _inspect_container(project, service)
+            for service in stopped["containers"]
+        } != stopped["containers"]
+        or {
+            service: _inspect_reboot_container_raw(
+                request["prior"]["containers"][service]["container_id"]
+            )
+            for service in stopped["containers"]
+        } != stopped["container_inspect"]
+    ):
+        raise CarryForwardError("group2_reboot_stopped_invalid")
     _reboot_phase(directory, request, "stopped", completed, "prepare-bound-sandbox-keeper", digests)
     keeper_start_ns = time.time_ns()
     _run_group2_reboot_action(
@@ -13476,8 +14613,8 @@ def _recover_group2_post_finalize_reboot_vm_once(
         f"DataLinkRuntime Sandbox {params['unit']} CPU={params['cpu_quota']} "
         f"Memory={params['memory_max']}"
     )
-    kernel = capture_kernel(
-        params["unit"], require_idle=True, expected_description=expected_description
+    kernel = _capture_group2_reboot_kernel(
+        request, idle=True, expected_description=expected_description,
     )
     keeper = {
         "schema": "group2-post-finalize-reboot-stage-v1", "phase": "keeper_ready",
@@ -13486,16 +14623,15 @@ def _recover_group2_post_finalize_reboot_vm_once(
         "containers": stopped["containers"], "images": stopped["images"],
         "container_inspect": stopped["container_inspect"],
         "storage": stopped["storage"],
-        "authority": {**stopped["authority"], "keeper": {
-            key: kernel[key] for key in ("boot_id", "unit", "control_group", "keeper_pid", "keeper_starttime")
-        }},
+        "postgres": stopped["postgres"],
+        "authority": {**stopped["authority"], "keeper": kernel},
         "kernel": kernel, "window_start_ns": keeper_start_ns,
         "window_end_ns": time.time_ns(),
     }
-    stopped_stage = {**stopped, "schema": "group2-post-finalize-reboot-stage-v1",
-                     "phase": "stopped",
-                     "window_start_ns": request["window"]["not_before_ns"],
-                     "window_end_ns": request["window"]["not_before_ns"]}
+    stopped_stage = {
+        **stopped, "schema": "group2-post-finalize-reboot-stage-v1",
+        "phase": "stopped",
+    }
     validate_group2_post_finalize_reboot_transition(
         validated, stopped_stage, keeper, "keeper_ready"
     )
@@ -13534,10 +14670,11 @@ def _recover_group2_post_finalize_reboot_vm_once(
         },
         "images": stopped["images"], "storage": _live_storage_identity(project),
         "authority": keeper["authority"], "db": db,
-        "postgres": {
-            "database_read": True,
-            "data_pg_version": _checked_output(["docker", "exec", request["prior"]["containers"]["postgres"]["container_id"], "cat", "/var/lib/postgresql/data/PG_VERSION"]),
-        },
+        "postgres": _capture_group2_reboot_postgres(
+            request, _inspect_reboot_container_raw(
+                request["prior"]["containers"]["postgres"]["container_id"]
+            ), running=True,
+        ),
         "start_admission": admission, "window_start_ns": database_start_ns,
         "window_end_ns": time.time_ns(),
     }
@@ -13551,7 +14688,7 @@ def _recover_group2_post_finalize_reboot_vm_once(
     start_ns = time.time_ns()
     for service in ("control", "worker", "web"):
         _start_reboot_container(directory, request, project, service)
-    end_ns = time.time_ns()
+    startup_end_ns = time.time_ns()
     live = _capture_reconcile_stage(
         root, directory, "applications-state", manifest, project, database["logs"],
         {"sandbox_unit": params["unit"], "sandbox_cpu_quota": params["cpu_quota"],
@@ -13561,13 +14698,14 @@ def _recover_group2_post_finalize_reboot_vm_once(
         journal_volume=_reboot_volume(request["prior"]["storage"], "worker", "/var/lib/dlr/journal"),
         admission_output=directory / "applications-state" / "mutation-seed.json",
         timeout=_reboot_timeout(request, 300),
+        reboot_request=request,
     )
     startup_request = {
         "mode": GROUP2_MODE, "operation": "startup-proof", "profile": profile,
         "logs_before": database["logs"], "logs_after": live["logs"],
         "container_before": database["containers"]["worker"],
         "container_after": live["containers"]["worker"],
-        "window_start_ns": start_ns, "window_end_ns": end_ns,
+        "window_start_ns": start_ns, "window_end_ns": startup_end_ns,
     }
     proof = _same_container_worker_startup_proof(
         startup_request, profile,
@@ -13582,7 +14720,11 @@ def _recover_group2_post_finalize_reboot_vm_once(
                 request["prior"]["containers"][service]["container_id"]
             ) for service in stopped["containers"]
         },
-        "authority": keeper["authority"], "postgres": database["postgres"],
+        "authority": keeper["authority"], "postgres": _capture_group2_reboot_postgres(
+            request, _inspect_reboot_container_raw(
+                request["prior"]["containers"]["postgres"]["container_id"]
+            ), running=True,
+        ),
         "start_admission": admission, "startup_request": startup_request,
         "startup_proof": proof,
         "startup_files": compare_group2_startup_files(database["files"], live["files"], proof),
@@ -13590,6 +14732,7 @@ def _recover_group2_post_finalize_reboot_vm_once(
     applications["rabbit_identity"] = capture_group2_reboot_rabbit_identity(
         request, admission["configuration"]
     )
+    applications["window_start_ns"] = start_ns
     applications["window_end_ns"] = time.time_ns()
     validate_group2_post_finalize_reboot_transition(
         validated, database, applications, "applications_started"
@@ -13605,6 +14748,7 @@ def _recover_group2_post_finalize_reboot_vm_once(
         journal_volume=_reboot_volume(request["prior"]["storage"], "worker", "/var/lib/dlr/journal"),
         admission_output=directory / "verified-state" / "mutation-seed.json",
         timeout=_reboot_timeout(request, 300),
+        reboot_request=request,
     )
     verified = {
         "schema": "group2-post-finalize-reboot-stage-v1", "phase": "verified",
@@ -13614,7 +14758,11 @@ def _recover_group2_post_finalize_reboot_vm_once(
                 request["prior"]["containers"][service]["container_id"]
             ) for service in stopped["containers"]
         },
-        "authority": keeper["authority"], "postgres": database["postgres"],
+        "authority": keeper["authority"], "postgres": _capture_group2_reboot_postgres(
+            request, _inspect_reboot_container_raw(
+                request["prior"]["containers"]["postgres"]["container_id"]
+            ), running=True,
+        ),
         "start_admission": admission, "startup_request": startup_request,
         "startup_proof": proof, "startup_files": applications["startup_files"],
     }
@@ -13625,11 +14773,13 @@ def _recover_group2_post_finalize_reboot_vm_once(
     validate_group2_post_finalize_reboot_transition(validated, applications, verified, "verified")
     _atomic_incident_json(directory / "verified.json", verified)
     completed.append("verified"); digests["verified"] = digest(verified)
-    _verify_group2_reboot_vm_authority(root, validated)
+    final_authority = _verify_group2_reboot_vm_authority(root, validated)
+    if {**final_authority, "keeper": keeper["kernel"]} != verified["authority"]:
+        raise CarryForwardError("group2_reboot_authority_changed")
     evidence = {
         "stopped": stopped, "keeper_ready": keeper, "database_ready": database,
         "applications_started": applications, "verified": verified,
-        "authority": {"before": stopped["authority"], "after": stopped["authority"]},
+        "authority": {"before": stopped["authority"], "after": verified["authority"]},
         "commands": {
             action: {
                 "intent": _embedded_file_value(directory / f"command-{action}-intent.json"),
