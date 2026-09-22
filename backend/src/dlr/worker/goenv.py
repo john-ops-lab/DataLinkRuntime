@@ -98,10 +98,24 @@ def prepare_version_go(
             )
         except CacheError as error:
             raise venv.DependencyPreparationError("version cache is unavailable", "") from error
-        if build is None:
+        if build is None and (directory / "adapter").is_file():
             if dependency_log:
                 dependency_log("Go build cache verified")
             return directory
+        if build is None:
+            try:
+                _, directory, build = venv._begin_version_build(
+                    runtime_root,
+                    adapter_id,
+                    version_id,
+                    identity=identity,
+                    dependency_context=dependency_context,
+                    reservation_bytes=BUILD_RESERVATION_BYTES,
+                    force_replacement=True,
+                )
+            except CacheError as error:
+                raise venv.DependencyPreparationError("version cache is unavailable", "") from error
+        assert build is not None
         if dependency_context is not None:
             dependency_context = dependency_context.with_reservation(
                 build.assert_live, build.lease_lost

@@ -207,12 +207,43 @@ class CleanupTaskPayload(BaseModel):
     kind: Literal["adapter_cleanup"] = "adapter_cleanup"
     cleanup_id: int
     adapter_id: int
+    claim_attempt: int = Field(gt=0)
 
 
 class CleanupResult(BaseModel):
     """Secret-free completion report for an adapter cleanup task."""
 
     success: bool
+    claim_attempt: int | None = Field(default=None, gt=0)
+    error_code: Literal["cache_cleanup_retained", "cache_cleanup_failed"] | None = None
+
+
+class CacheCleanupContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cleanup_id: StrictInt = Field(gt=0)
+    claim_attempt: StrictInt = Field(gt=0)
+
+
+class CacheObservedIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    store_id: str = Field(min_length=1, max_length=128)
+    language: Literal["python", "javascript", "java", "typescript", "go"]
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CacheReplacementContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_id: StrictInt = Field(gt=0)
+    attempt_id: StrictInt = Field(gt=0)
+    fencing_token: StrictInt = Field(gt=0)
+    claim_token: str = Field(min_length=1, max_length=512)
+    old_identity: CacheObservedIdentity
+    target_language: Literal["python", "javascript", "java", "typescript", "go"]
+    target_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class CacheGuardAcquire(BaseModel):
@@ -221,6 +252,9 @@ class CacheGuardAcquire(BaseModel):
     adapter_id: StrictInt = Field(gt=0)
     version_id: StrictInt = Field(gt=0)
     operation_id: uuid.UUID
+    cleanup_context: CacheCleanupContext | None = None
+    observed_identity: CacheObservedIdentity | None = None
+    replacement_context: CacheReplacementContext | None = None
 
 
 class CacheGuardResult(BaseModel):
@@ -250,6 +284,11 @@ class CacheGuardOperationResponse(BaseModel):
     generation: int
     operation_id: uuid.UUID
     phase: Literal["acquired", "completed", "aborted"]
+    operation_kind: Literal["gc", "cleanup", "replacement"] = "gc"
+    cleanup_id: int | None = None
+    cleanup_claim_attempt: int | None = None
+    observed_identity: dict[str, Any] | None = None
+    replacement_context: dict[str, Any] | None = None
 
 
 class CacheGuardPage(BaseModel):

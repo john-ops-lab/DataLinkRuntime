@@ -574,6 +574,43 @@ class CacheLifecycleStore:
             },
         )
 
+    def initialize_legacy_bound(
+        self,
+        key: str,
+        *,
+        identity: Mapping[str, Any],
+        digest: str,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Bind a manifest-owned legacy root without claiming its content is verified."""
+
+        path = self.lifecycle_root / f"{_safe_key(key)}.json"
+        existing = _read_json(path, _LIFECYCLE_FIELDS)
+        if existing is not None:
+            validated = _validated_lifecycle(existing)
+            if (
+                validated["key"] != key
+                or validated["identity"] != dict(identity)
+                or validated["digest"] != digest
+            ):
+                raise CacheError("cache_lifecycle_conflict")
+            return validated
+        timestamp = time.time() if now is None else now
+        value = {
+            "schema": SCHEMA_VERSION,
+            "key": key,
+            "identity": dict(identity),
+            "digest": digest,
+            "bytes": 0,
+            "first_observed_at": timestamp,
+            "last_used_at": timestamp,
+            "pinned": False,
+            "rebuildability": "unknown",
+            "policy_revision": 0,
+        }
+        _write_json(path, value, strict_sync=True)
+        return _validated_lifecycle(value)
+
     def touch_used(self, key: str, *, now: float | None = None) -> None:
         """Advance last-used only after a real use has completed preparation."""
         path = self.lifecycle_root / f"{_safe_key(key)}.json"
@@ -584,6 +621,50 @@ class CacheLifecycleStore:
         updated = dict(existing)
         updated["last_used_at"] = time.time() if now is None else now
         _write_json(path, updated)
+
+    def replace_verified(
+        self,
+        key: str,
+        *,
+        old_identity: Mapping[str, Any],
+        old_digest: str,
+        new_identity: Mapping[str, Any],
+        new_digest: str,
+        bytes_used: int,
+    ) -> None:
+        """Move a verified sidecar to a newly published replacement identity."""
+
+        path = self.lifecycle_root / f"{_safe_key(key)}.json"
+        existing = self.lifecycle(key)
+        if (
+            existing["identity"] == dict(new_identity)
+            and existing["digest"] == new_digest
+            and existing["bytes"] == bytes_used
+            and existing["pinned"] is False
+        ):
+            return
+        if (
+            existing["identity"] != dict(old_identity)
+            or existing["digest"] != old_digest
+            or existing["pinned"] is not False
+        ):
+            raise CacheError("cache_not_eligible")
+        _write_json(
+            path,
+            {
+                "schema": SCHEMA_VERSION,
+                "key": key,
+                "identity": dict(new_identity),
+                "digest": new_digest,
+                "bytes": bytes_used,
+                "first_observed_at": existing["first_observed_at"],
+                "last_used_at": existing["last_used_at"],
+                "pinned": False,
+                "rebuildability": "unknown",
+                "policy_revision": int(existing["policy_revision"]) + 1,
+            },
+            strict_sync=True,
+        )
 
     def begin_use(
         self,
@@ -611,6 +692,7 @@ class CacheLifecycleStore:
         sandbox_recovery_root: Path | None = None,
         resolve: Callable[[int, int | None], str | None],
         max_records: int = 1024,
+        excluded_attempt: tuple[int, int, int] | None = None,
     ) -> JournalProtection:
         """Map old exact journals conservatively without changing their schemas."""
         protected: set[str] = set()
@@ -653,6 +735,13 @@ class CacheLifecycleStore:
                 if value is None:
                     raise ValueError
                 execution_id, attempt_id = _journal_identity(path, kind, value)
+                if (
+                    excluded_attempt is not None
+                    and execution_id == excluded_attempt[0]
+                    and attempt_id == excluded_attempt[1]
+                    and (kind != "attempt" or value.get("fencing_token") == excluded_attempt[2])
+                ):
+                    continue
                 try:
                     key = resolve(execution_id, attempt_id)
                 except Exception:  # noqa: BLE001 - an unavailable resolver is unknown, never safe

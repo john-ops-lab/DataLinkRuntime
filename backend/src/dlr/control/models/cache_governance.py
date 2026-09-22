@@ -3,7 +3,18 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, String, Uuid, func, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    Index,
+    Integer,
+    String,
+    Uuid,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dlr.control.db import Base
@@ -59,6 +70,19 @@ class WorkerCacheOperation(Base):
             "phase IN ('acquired', 'completed', 'aborted')",
             name="ck_worker_cache_operations_phase",
         ),
+        CheckConstraint(
+            "operation_kind IN ('gc', 'cleanup', 'replacement')",
+            name="ck_worker_cache_operations_kind",
+        ),
+        CheckConstraint(
+            "((cleanup_id IS NULL) = (cleanup_claim_attempt IS NULL)) AND "
+            "((operation_kind = 'cleanup') = (cleanup_id IS NOT NULL))",
+            name="ck_worker_cache_operations_cleanup_pair",
+        ),
+        CheckConstraint(
+            "((operation_kind = 'replacement') = (replacement_context IS NOT NULL))",
+            name="ck_worker_cache_operations_replacement_context",
+        ),
         Index(
             "uq_worker_cache_operations_generation",
             "worker_id",
@@ -75,6 +99,17 @@ class WorkerCacheOperation(Base):
     adapter_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
     phase: Mapped[str] = mapped_column(String(16), nullable=False)
+    operation_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="gc", server_default=text("'gc'")
+    )
+    cleanup_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cleanup_claim_attempt: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    observed_identity: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+    replacement_context: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

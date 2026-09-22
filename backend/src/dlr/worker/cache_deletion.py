@@ -21,6 +21,7 @@ from dlr.worker.cache_lifecycle import (
     _sync_directory,
     _write_json,
     cache_key,
+    current_thread_owns_all_uses,
 )
 from dlr.worker.client import ClientError, ControlUnavailableError
 
@@ -45,6 +46,16 @@ _RECORD_FIELDS = frozenset(
         "next_retry_at",
         "last_error",
         "resume_phase",
+        "cleanup_context",
+        "observed_identity",
+        "operation_kind",
+        "replacement_context",
+        "new_staging_name",
+        "new_identity",
+        "new_digest",
+        "new_bytes",
+        "new_root_device",
+        "new_root_inode",
         "created_at",
         "updated_at",
     }
@@ -61,6 +72,9 @@ class GuardClient(Protocol):
         adapter_id: int,
         version_id: int,
         operation_id: uuid.UUID,
+        cleanup_context: Mapping[str, Any] | None = None,
+        observed_identity: Mapping[str, Any] | None = None,
+        replacement_context: Mapping[str, Any] | None = None,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]: ...
 
@@ -99,6 +113,8 @@ class DeletionEligibility:
     identity: Mapping[str, Any]
     digest: str
     last_used_before: float
+    cleanup_context: Mapping[str, Any] | None = None
+    observed_identity: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -212,6 +228,8 @@ def _read_record(path: Path) -> dict[str, Any] | None:
             "completed",
             "aborted",
             "failed",
+            "replacement_prepared",
+            "replacement_old_trashed",
         }
         or not isinstance(value["attempts"], int)
         or isinstance(value["attempts"], bool)
@@ -227,7 +245,63 @@ def _read_record(path: Path) -> dict[str, Any] | None:
             and (
                 not isinstance(value["resume_phase"], str)
                 or value["resume_phase"]
-                not in {"recorded", "trashed", "empty_trash", "receipt_pending"}
+                not in {
+                    "recorded",
+                    "trashed",
+                    "empty_trash",
+                    "receipt_pending",
+                    "replacement_prepared",
+                    "replacement_old_trashed",
+                }
+            )
+        )
+        or (value["cleanup_context"] is not None and not isinstance(value["cleanup_context"], dict))
+        or (
+            value["observed_identity"] is not None
+            and not isinstance(value["observed_identity"], dict)
+        )
+        or not isinstance(value["operation_kind"], str)
+        or value["operation_kind"] not in {"gc", "cleanup", "replacement"}
+        or (value["operation_kind"] == "cleanup") != isinstance(value["cleanup_context"], dict)
+        or (value["operation_kind"] == "replacement" and value["observed_identity"] is not None)
+        or (
+            value["replacement_context"] is not None
+            and not isinstance(value["replacement_context"], dict)
+        )
+        or (
+            value["operation_kind"] == "replacement"
+            and (
+                not isinstance(value["new_staging_name"], str)
+                or not value["new_staging_name"].startswith(".")
+                or value["new_staging_name"] in {".", ".."}
+                or Path(value["new_staging_name"]).name != value["new_staging_name"]
+                or not isinstance(value["new_identity"], dict)
+                or value["new_identity"].get("adapter_id") != value["adapter_id"]
+                or value["new_identity"].get("version_id") != value["version_id"]
+                or not isinstance(value["new_digest"], str)
+                or len(value["new_digest"]) != 64
+                or any(character not in "0123456789abcdef" for character in value["new_digest"])
+                or any(
+                    not isinstance(value[field], int)
+                    or isinstance(value[field], bool)
+                    or value[field] < 0
+                    for field in ("new_bytes", "new_root_device", "new_root_inode")
+                )
+            )
+        )
+        or (
+            value["operation_kind"] != "replacement"
+            and any(
+                value[field] is not None
+                for field in (
+                    "replacement_context",
+                    "new_staging_name",
+                    "new_identity",
+                    "new_digest",
+                    "new_bytes",
+                    "new_root_device",
+                    "new_root_inode",
+                )
             )
         )
     ):
@@ -352,6 +426,9 @@ class CacheDeletionManager:
         *,
         worker_id: int,
         journal_protected: Callable[[str], bool],
+        replacement_owner: tuple[int, int, int, int] | None = None,
+        replacement_journal_roots: tuple[Path, Path] | None = None,
+        replacement_resolve: Callable[[int, int | None], str | None] | None = None,
         retry_seconds: float = 60.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -362,11 +439,65 @@ class CacheDeletionManager:
         self.journal_protected = journal_protected
         self.retry_seconds = retry_seconds
         self.clock = clock
+        self.replacement_owner = replacement_owner
+        self.replacement_journal_roots = replacement_journal_roots
+        self.replacement_resolve = replacement_resolve
+
+    def make_round_budget(
+        self,
+        *,
+        max_nodes: int,
+        max_bytes: int,
+        max_scan_nodes: int,
+        max_hash_bytes: int,
+        deadline: float,
+    ) -> _RoundBudget:
+        return _RoundBudget(
+            deletion=_DeleteBudget(
+                nodes=max(1, max_nodes), bytes=max(1, max_bytes), deadline=deadline
+            ),
+            scan=CacheScanBudget(
+                nodes_remaining=max_scan_nodes,
+                hash_bytes_remaining=max_hash_bytes,
+                deadline=deadline,
+            ),
+        )
+
+    def observed_identity_bounded(
+        self, path: Path, *, budget: _RoundBudget
+    ) -> tuple[dict[str, Any], str] | None:
+        return self.cache.observed_identity_bounded(path, budget=budget.scan)
 
     def _local_safe(self, key: str) -> None:
-        if self.lifecycle.use_records_for_key(key):
+        records = self.lifecycle.use_records_for_key(key)
+        if self.replacement_owner is None:
+            if records:
+                raise CacheError("cache_entry_in_use")
+            if self.journal_protected(key):
+                raise CacheError("cache_journal_protected")
+            return
+        worker_id, execution_id, attempt_id, fencing_token = self.replacement_owner
+        expected = {
+            "worker_id": worker_id,
+            "execution_id": execution_id,
+            "attempt_id": attempt_id,
+            "fencing_token": fencing_token,
+        }
+        if any(
+            any(record[field] != value for field, value in expected.items()) for record in records
+        ):
             raise CacheError("cache_entry_in_use")
-        if self.journal_protected(key):
+        if not current_thread_owns_all_uses(self.lifecycle, records):
+            raise CacheError("cache_entry_in_use")
+        if self.replacement_journal_roots is None or self.replacement_resolve is None:
+            raise CacheError("cache_journal_protected")
+        protection = self.lifecycle.scan_journal_protections(
+            attempt_journal_root=self.replacement_journal_roots[0],
+            cleanup_journal_root=self.replacement_journal_roots[1],
+            resolve=self.replacement_resolve,
+            excluded_attempt=(execution_id, attempt_id, fencing_token),
+        )
+        if protection.block_all or key in protection.protected_keys:
             raise CacheError("cache_journal_protected")
 
     def _guard(self, record: Mapping[str, Any], *, timeout_seconds: float | None = None) -> str:
@@ -386,7 +517,49 @@ class CacheDeletionManager:
             generation=int(record["generation"]),
             phases=frozenset(allowed),
         )
+        if record.get("cleanup_context") is not None and (
+            value.get("cleanup_id") != record["cleanup_context"].get("cleanup_id")
+            or value.get("cleanup_claim_attempt") != record["cleanup_context"].get("claim_attempt")
+            or value.get("observed_identity") != record.get("observed_identity")
+        ):
+            raise CacheError("cache_guard_invalid")
+        if record.get("replacement_context") is not None and (
+            value.get("operation_kind") != "replacement"
+            or value.get("replacement_context") != record["replacement_context"]
+        ):
+            raise CacheError("cache_guard_invalid")
         return str(value["phase"])
+
+    def _active_replacement_guard(
+        self,
+        record: Mapping[str, Any],
+        replacement_context: Mapping[str, Any],
+        *,
+        timeout_seconds: float | None,
+    ) -> None:
+        operation_id = uuid.UUID(str(record["operation_id"]))
+        value = self.client.acquire_cache_guard(
+            self.worker_id,
+            adapter_id=int(record["adapter_id"]),
+            version_id=int(record["version_id"]),
+            operation_id=operation_id,
+            replacement_context=replacement_context,
+            timeout_seconds=timeout_seconds,
+        )
+        _operation_fact(
+            value,
+            worker_id=self.worker_id,
+            adapter_id=int(record["adapter_id"]),
+            version_id=int(record["version_id"]),
+            operation_id=operation_id,
+            generation=int(record["generation"]),
+        )
+        binding = {key: value for key, value in replacement_context.items() if key != "claim_token"}
+        if (
+            value.get("operation_kind") != "replacement"
+            or value.get("replacement_context") != binding
+        ):
+            raise CacheError("cache_guard_invalid")
 
     def begin(
         self,
@@ -398,19 +571,17 @@ class CacheDeletionManager:
         max_scan_nodes: int = 100_000,
         max_hash_bytes: int = 256 * 1024 * 1024,
         max_seconds: float = 10.0,
+        round_budget: _RoundBudget | None = None,
     ) -> DeletionResult:
         key = cache_key(eligibility.adapter_id, eligibility.version_id)
         operation = operation_id or uuid.uuid4()
         deadline = time.monotonic() + max(0.001, max_seconds)
-        budget = _RoundBudget(
-            deletion=_DeleteBudget(
-                nodes=max(1, max_nodes), bytes=max(1, max_bytes), deadline=deadline
-            ),
-            scan=CacheScanBudget(
-                nodes_remaining=max_scan_nodes,
-                hash_bytes_remaining=max_hash_bytes,
-                deadline=deadline,
-            ),
+        budget = round_budget or self.make_round_budget(
+            max_nodes=max_nodes,
+            max_bytes=max_bytes,
+            max_scan_nodes=max_scan_nodes,
+            max_hash_bytes=max_hash_bytes,
+            deadline=deadline,
         )
         with self.lifecycle.entry_lock(key, blocking=False):
             owner = self.lifecycle.owner(self.worker_id)
@@ -439,12 +610,22 @@ class CacheDeletionManager:
             if original_bytes > max_bytes:
                 raise CacheError("cache_budget_exhausted")
             root_device, root_inode = _root_identity(entry)
-            response = self.client.acquire_cache_guard(
-                self.worker_id,
-                adapter_id=eligibility.adapter_id,
-                version_id=eligibility.version_id,
-                operation_id=operation,
-            )
+            if eligibility.cleanup_context is None and eligibility.observed_identity is None:
+                response = self.client.acquire_cache_guard(
+                    self.worker_id,
+                    adapter_id=eligibility.adapter_id,
+                    version_id=eligibility.version_id,
+                    operation_id=operation,
+                )
+            else:
+                response = self.client.acquire_cache_guard(
+                    self.worker_id,
+                    adapter_id=eligibility.adapter_id,
+                    version_id=eligibility.version_id,
+                    operation_id=operation,
+                    cleanup_context=eligibility.cleanup_context,
+                    observed_identity=eligibility.observed_identity,
+                )
             generation = _operation_fact(
                 response,
                 worker_id=self.worker_id,
@@ -473,6 +654,24 @@ class CacheDeletionManager:
                 "next_retry_at": 0.0,
                 "last_error": None,
                 "resume_phase": None,
+                "cleanup_context": (
+                    dict(eligibility.cleanup_context)
+                    if eligibility.cleanup_context is not None
+                    else None
+                ),
+                "observed_identity": (
+                    dict(eligibility.observed_identity)
+                    if eligibility.observed_identity is not None
+                    else None
+                ),
+                "operation_kind": ("cleanup" if eligibility.cleanup_context is not None else "gc"),
+                "replacement_context": None,
+                "new_staging_name": None,
+                "new_identity": None,
+                "new_digest": None,
+                "new_bytes": None,
+                "new_root_device": None,
+                "new_root_inode": None,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -484,12 +683,129 @@ class CacheDeletionManager:
                 budget=budget,
             )
 
+    def begin_replacement(
+        self,
+        *,
+        adapter_id: int,
+        version_id: int,
+        old_identity: Mapping[str, Any],
+        old_digest: str,
+        new_identity: Mapping[str, Any],
+        new_digest: str,
+        new_bytes: int,
+        prepared_staging: Path,
+        replacement_context: Mapping[str, Any],
+        operation_id: uuid.UUID | None = None,
+        max_seconds: float = 10.0,
+    ) -> DeletionResult:
+        """Publish one prepared ready tree while retaining the old root until verified."""
+
+        key = cache_key(adapter_id, version_id)
+        operation = operation_id or uuid.uuid4()
+        deadline = time.monotonic() + max(0.001, max_seconds)
+        budget = _RoundBudget(
+            deletion=_DeleteBudget(nodes=100_000, bytes=256 * 1024 * 1024, deadline=deadline),
+            scan=CacheScanBudget(
+                nodes_remaining=100_000,
+                hash_bytes_remaining=256 * 1024 * 1024,
+                deadline=deadline,
+            ),
+        )
+        with self.lifecycle.entry_lock(key, blocking=False):
+            owner = self.lifecycle.owner(self.worker_id)
+            source = self.cache.entry_path(key)
+            try:
+                facts = self.lifecycle.lifecycle(key)
+            except CacheError as error:
+                if error.code != "cache_lifecycle_unknown" or self.cache.manifest_identity(
+                    source
+                ) != (dict(old_identity), old_digest):
+                    raise
+                facts = self.lifecycle.initialize_legacy_bound(
+                    key, identity=old_identity, digest=old_digest
+                )
+            if (
+                facts["identity"] != dict(old_identity)
+                or facts["digest"] != old_digest
+                or facts["pinned"] is not False
+                or old_identity.get("language") != new_identity.get("language")
+            ):
+                raise CacheError("cache_not_eligible")
+            old_device, old_inode = _root_identity(source)
+            new_device, new_inode = _root_identity(prepared_staging)
+            verified, checked_bytes = self.cache.verify_replacement_staging(
+                prepared_staging, new_identity, new_digest, budget=budget.scan
+            )
+            if not verified or checked_bytes != new_bytes:
+                raise CacheError("cache_identity_unverified")
+            self._local_safe(key)
+            response = self.client.acquire_cache_guard(
+                self.worker_id,
+                adapter_id=adapter_id,
+                version_id=version_id,
+                operation_id=operation,
+                replacement_context=replacement_context,
+            )
+            generation = _operation_fact(
+                response,
+                worker_id=self.worker_id,
+                adapter_id=adapter_id,
+                version_id=version_id,
+                operation_id=operation,
+            )
+            binding = response.get("replacement_context")
+            if not isinstance(binding, dict):
+                raise CacheError("cache_guard_invalid")
+            now = self.clock()
+            record: dict[str, Any] = {
+                "schema": SCHEMA_VERSION,
+                "store_id": owner["store_id"],
+                "operation_id": str(operation),
+                "worker_id": self.worker_id,
+                "adapter_id": adapter_id,
+                "version_id": version_id,
+                "key": key,
+                "generation": generation,
+                "identity": dict(old_identity),
+                "digest": old_digest,
+                "root_device": old_device,
+                "root_inode": old_inode,
+                "original_bytes": 0,
+                "last_used_before": float(facts["last_used_at"]),
+                "phase": "replacement_prepared",
+                "attempts": 0,
+                "next_retry_at": 0.0,
+                "last_error": None,
+                "resume_phase": None,
+                "cleanup_context": None,
+                "observed_identity": None,
+                "operation_kind": "replacement",
+                "replacement_context": binding,
+                "new_staging_name": prepared_staging.name,
+                "new_identity": dict(new_identity),
+                "new_digest": new_digest,
+                "new_bytes": new_bytes,
+                "new_root_device": new_device,
+                "new_root_inode": new_inode,
+                "created_at": now,
+                "updated_at": now,
+            }
+            path = _record_path(self.lifecycle, operation)
+            _write_record(path, record)
+            return self._advance_locked(
+                path,
+                record,
+                budget=budget,
+                active_replacement_context=replacement_context,
+            )
+
     def _advance_locked(
         self,
         path: Path,
         record: dict[str, Any],
         *,
         budget: _RoundBudget,
+        active_replacement_context: Mapping[str, Any] | None = None,
     ) -> DeletionResult:
         operation_id = uuid.UUID(record["operation_id"])
         key = str(record["key"])
@@ -513,6 +829,137 @@ class CacheDeletionManager:
                 return DeletionResult(operation_id, "completed", int(record["original_bytes"]))
             source = self.cache.entry_path(key)
             trash = _trash_path(self.lifecycle, operation_id)
+            if record["phase"] in {"replacement_prepared", "replacement_old_trashed"}:
+                staging = self.cache.entries / str(record["new_staging_name"])
+                source_exists = source.exists()
+                trash_exists = trash.exists()
+                staging_exists = staging.exists()
+                if record["phase"] == "replacement_prepared":
+                    if source_exists and not trash_exists and staging_exists:
+                        _assert_root_identity(source, record)
+                        _assert_root_identity(
+                            staging,
+                            {
+                                "root_device": record["new_root_device"],
+                                "root_inode": record["new_root_inode"],
+                            },
+                        )
+                        verified, _new_bytes = self.cache.verify_replacement_staging(
+                            staging,
+                            record["new_identity"],
+                            str(record["new_digest"]),
+                            budget=budget.scan,
+                        )
+                        if not verified:
+                            raise CacheError("cache_identity_unverified")
+                        self._local_safe(key)
+                        self._guard(
+                            record,
+                            timeout_seconds=max(0.001, deadline - time.monotonic()),
+                        )
+                        if active_replacement_context is not None:
+                            self._active_replacement_guard(
+                                record,
+                                active_replacement_context,
+                                timeout_seconds=max(0.001, deadline - time.monotonic()),
+                            )
+                        with self.cache.accounting_lock():
+                            os.replace(source, trash)
+                            _sync_directory(self.cache.entries, strict=True)
+                        record["phase"] = "replacement_old_trashed"
+                        record["updated_at"] = self.clock()
+                        _write_record(path, record)
+                    elif not source_exists and trash_exists and staging_exists:
+                        _assert_root_identity(trash, record)
+                        record["phase"] = "replacement_old_trashed"
+                        record["updated_at"] = self.clock()
+                        _write_record(path, record)
+                    elif source_exists and trash_exists and not staging_exists:
+                        _assert_root_identity(trash, record)
+                        _assert_root_identity(
+                            source,
+                            {
+                                "root_device": record["new_root_device"],
+                                "root_inode": record["new_root_inode"],
+                            },
+                        )
+                        verified, _new_bytes = self.cache.verify_replacement_target(
+                            source,
+                            record["new_identity"],
+                            str(record["new_digest"]),
+                            budget=budget.scan,
+                        )
+                        if not verified:
+                            raise CacheError("cache_identity_unverified")
+                        record["phase"] = "replacement_old_trashed"
+                    else:
+                        raise CacheError("cache_cleanup_unknown")
+                if record["phase"] == "replacement_old_trashed":
+                    _assert_root_identity(trash, record)
+                    if staging.exists() and not source.exists():
+                        _assert_root_identity(
+                            staging,
+                            {
+                                "root_device": record["new_root_device"],
+                                "root_inode": record["new_root_inode"],
+                            },
+                        )
+                        verified, new_bytes = self.cache.verify_replacement_staging(
+                            staging,
+                            record["new_identity"],
+                            str(record["new_digest"]),
+                            budget=budget.scan,
+                        )
+                        if not verified or new_bytes != record["new_bytes"]:
+                            raise CacheError("cache_identity_unverified")
+                        self._local_safe(key)
+                        self._guard(
+                            record,
+                            timeout_seconds=max(0.001, deadline - time.monotonic()),
+                        )
+                        if active_replacement_context is not None:
+                            self._active_replacement_guard(
+                                record,
+                                active_replacement_context,
+                                timeout_seconds=max(0.001, deadline - time.monotonic()),
+                            )
+                        self.cache.publish_replacement_staging(
+                            staging,
+                            source,
+                            identity=record["new_identity"],
+                            digest=str(record["new_digest"]),
+                            bytes_used=int(record["new_bytes"]),
+                            observe_lifecycle=False,
+                        )
+                    elif not staging.exists() and source.exists():
+                        _assert_root_identity(
+                            source,
+                            {
+                                "root_device": record["new_root_device"],
+                                "root_inode": record["new_root_inode"],
+                            },
+                        )
+                        verified, new_bytes = self.cache.verify_replacement_target(
+                            source,
+                            record["new_identity"],
+                            str(record["new_digest"]),
+                            budget=budget.scan,
+                        )
+                        if not verified or new_bytes != record["new_bytes"]:
+                            raise CacheError("cache_identity_unverified")
+                    else:
+                        raise CacheError("cache_cleanup_unknown")
+                    self.lifecycle.replace_verified(
+                        key,
+                        old_identity=record["identity"],
+                        old_digest=str(record["digest"]),
+                        new_identity=record["new_identity"],
+                        new_digest=str(record["new_digest"]),
+                        bytes_used=int(record["new_bytes"]),
+                    )
+                    record["phase"] = "trashed"
+                    record["updated_at"] = self.clock()
+                    _write_record(path, record)
             if record["phase"] == "recorded":
                 source_exists = source.exists()
                 trash_exists = trash.exists()
@@ -656,6 +1103,19 @@ class CacheDeletionManager:
             version_id=version_id,
             operation_id=operation_id,
         )
+        operation = self.client.check_cache_guard(
+            self.worker_id, operation_id, timeout_seconds=timeout_seconds
+        )
+        if operation.get("operation_kind", "gc") == "replacement":
+            self._abort_replacement_orphan(
+                operation,
+                operation_id=operation_id,
+                adapter_id=adapter_id,
+                version_id=version_id,
+                generation=generation,
+                timeout_seconds=timeout_seconds,
+            )
+            return
         key = cache_key(adapter_id, version_id)
         with self.lifecycle.entry_lock(key, blocking=False):
             self.lifecycle.owner(self.worker_id)
@@ -690,6 +1150,63 @@ class CacheDeletionManager:
                 generation=generation,
                 outcome="aborted",
                 timeout_seconds=max(0.001, deadline - time.monotonic()),
+            )
+            _operation_fact(
+                response,
+                worker_id=self.worker_id,
+                adapter_id=adapter_id,
+                version_id=version_id,
+                operation_id=operation_id,
+                generation=generation,
+                phases=frozenset({"aborted"}),
+            )
+
+    def _abort_replacement_orphan(
+        self,
+        operation: Mapping[str, Any],
+        *,
+        operation_id: uuid.UUID,
+        adapter_id: int,
+        version_id: int,
+        generation: int,
+        timeout_seconds: float | None,
+    ) -> None:
+        """Abort an acquire-response loss only while the original root is untouched."""
+
+        context = operation.get("replacement_context")
+        old = context.get("old_identity") if isinstance(context, dict) else None
+        if not isinstance(old, dict):
+            raise CacheError("cache_cleanup_unknown")
+        key = cache_key(adapter_id, version_id)
+        with self.lifecycle.entry_lock(key, blocking=False):
+            owner = self.lifecycle.owner(self.worker_id)
+            if owner["store_id"] != old.get("store_id"):
+                raise CacheError("cache_cleanup_unknown")
+            self._local_safe(key)
+            source = self.cache.entry_path(key)
+            trash = _trash_path(self.lifecycle, operation_id)
+            if trash.exists():
+                raise CacheError("cache_cleanup_unknown")
+            manifest = self.cache.manifest_identity(source)
+            lifecycle = self.lifecycle.lifecycle(key)
+            expected_identity = {
+                "adapter_id": adapter_id,
+                "version_id": version_id,
+                "language": old.get("language"),
+                "source_sha256": old.get("source_sha256"),
+            }
+            if (
+                manifest != (expected_identity, old.get("digest"))
+                or lifecycle["identity"] != expected_identity
+                or lifecycle["digest"] != old.get("digest")
+            ):
+                raise CacheError("cache_cleanup_unknown")
+            response = self.client.finish_cache_guard(
+                self.worker_id,
+                operation_id,
+                generation=generation,
+                outcome="aborted",
+                timeout_seconds=timeout_seconds,
             )
             _operation_fact(
                 response,
@@ -831,3 +1348,36 @@ class CacheDeletionManager:
             strict_sync=True,
         )
         return processed
+
+    def cleanup_pending(self, cleanup_id: int, *, max_records: int = 1024) -> bool:
+        """Return fail-closed while this cleanup still has a local operation."""
+
+        return self.cleanup_state(cleanup_id, max_records=max_records) != "clear"
+
+    def cleanup_state(self, cleanup_id: int, *, max_records: int = 1024) -> str:
+        """Summarize local operations for one Adapter cleanup without paths."""
+
+        inspected = 0
+        pending = False
+        try:
+            with os.scandir(self.lifecycle.deletion_root) as entries:
+                for item in entries:
+                    if not item.name.endswith(".json"):
+                        continue
+                    inspected += 1
+                    if inspected > max_records:
+                        return "unknown"
+                    record = _read_record(Path(item.path))
+                    context = None if record is None else record.get("cleanup_context")
+                    if (
+                        isinstance(context, dict)
+                        and context.get("cleanup_id") == cleanup_id
+                        and record is not None
+                        and record["phase"] not in _TERMINAL_PHASES
+                    ):
+                        if record["phase"] == "failed":
+                            return "failed"
+                        pending = True
+        except OSError as error:
+            raise CacheError("cache_deletion_record_unavailable") from error
+        return "pending" if pending else "clear"

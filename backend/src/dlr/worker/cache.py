@@ -717,6 +717,85 @@ class VerifiedVersionCache:
             return False
         return manifest.get("digest") == digest
 
+    def observed_identity(self, path: Path) -> tuple[dict[str, Any], str] | None:
+        """Return manifest-bound identity only after full content verification."""
+
+        try:
+            entry = self._direct_entry(path, staging=False, allow_missing=False)
+            manifest = _read_json(entry / _MANIFEST_NAME, {})
+            identity = manifest.get("identity")
+            digest = manifest.get("digest")
+            if (
+                not isinstance(identity, dict)
+                or not isinstance(digest, str)
+                or not self.verify(entry, identity)
+            ):
+                return None
+            return identity, digest
+        except CacheError:
+            return None
+
+    def observed_identity_bounded(
+        self, path: Path, *, budget: CacheScanBudget
+    ) -> tuple[dict[str, Any], str] | None:
+        """Return a verified manifest identity while charging a shared governance budget."""
+
+        try:
+            entry = self._direct_entry(path, staging=False, allow_missing=False)
+            manifest = _read_json(entry / _MANIFEST_NAME, {})
+            identity = manifest.get("identity")
+            digest = manifest.get("digest")
+            if not isinstance(identity, dict) or not isinstance(digest, str):
+                return None
+            actual_digest, total, files, _physical = _tree_facts_bounded(entry, budget=budget)
+            if (
+                manifest.get("digest") != actual_digest
+                or manifest.get("bytes") != total
+                or manifest.get("files") != files
+            ):
+                return None
+            return identity, digest
+        except CacheError as error:
+            if error.code == "cache_scan_budget_exhausted":
+                raise
+            return None
+
+    def manifest_identity(self, path: Path) -> tuple[dict[str, Any], str] | None:
+        """Return a strictly parsed manifest identity without trusting damaged content."""
+
+        try:
+            entry = self._direct_entry(path, staging=False, allow_missing=False)
+            manifest_path = entry / _MANIFEST_NAME
+            info = manifest_path.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or stat.S_ISLNK(info.st_mode)
+                or info.st_size > 1024 * 1024
+            ):
+                return None
+            manifest = _read_json(manifest_path, {})
+            identity = manifest.get("identity")
+            digest = manifest.get("digest")
+            bytes_used = manifest.get("bytes")
+            files = manifest.get("files")
+            if (
+                set(manifest) != _MANIFEST_FIELDS
+                or not isinstance(identity, dict)
+                or not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+                or not isinstance(bytes_used, int)
+                or isinstance(bytes_used, bool)
+                or bytes_used < 0
+                or not isinstance(files, int)
+                or isinstance(files, bool)
+                or files < 0
+            ):
+                return None
+            return identity, digest
+        except (CacheError, OSError, UnicodeError, ValueError, RecursionError):
+            return None
+
     def verify_for_deletion_bounded(
         self,
         path: Path,
@@ -817,6 +896,146 @@ class VerifiedVersionCache:
             raise CacheError("cache_promote_failed") from error
         finally:
             reservation.release()
+
+    def prepare_replacement_staging(
+        self,
+        source: Path,
+        target: Path,
+        *,
+        identity: Mapping[str, Any],
+        reservation: CacheReservation,
+        source_is_tmpfs: bool,
+    ) -> tuple[Path, str, int]:
+        """Create a verified persistent ready staging tree without publishing it."""
+
+        self._assert_active(reservation)
+        target_path = self._direct_entry(target, staging=False, allow_missing=True)
+        if not target_path.exists():
+            raise CacheError("cache_replacement_source_missing")
+        if source_is_tmpfs:
+            source_path = Path(source).resolve(strict=True)
+            staging = self.staging_path(target_path.name, reservation.token)
+            staging.mkdir(mode=0o700)
+            try:
+                _copy_tree_bounded(
+                    source_path,
+                    staging,
+                    limit=reservation.amount,
+                    available_bytes=lambda: (
+                        shutil.disk_usage(self.root).free - self.low_watermark_bytes
+                    ),
+                )
+            except BaseException:
+                with suppress(CacheError):
+                    self.remove_staging(staging)
+                raise
+        else:
+            staging = self._direct_entry(source, staging=True, allow_missing=False)
+        digest, total, files = _tree_facts(staging)
+        if total > reservation.amount:
+            raise CacheError("cache_reservation_insufficient")
+        _write_json(
+            staging / _MANIFEST_NAME,
+            {"bytes": total, "digest": digest, "files": files, "identity": dict(identity)},
+        )
+        _write_ready(staging / _READY_NAME)
+        _make_read_only(staging, public=True)
+        checked_digest, checked_total, checked_files = _tree_facts(staging)
+        if (checked_digest, checked_total, checked_files) != (digest, total, files):
+            raise CacheError("cache_identity_unverified")
+        return staging, digest, total
+
+    def publish_replacement_staging(
+        self,
+        staging: Path,
+        target: Path,
+        *,
+        identity: Mapping[str, Any],
+        digest: str,
+        bytes_used: int,
+        observe_lifecycle: bool = True,
+    ) -> Path:
+        """Publish an already verified staging tree after the old root moved to trash."""
+
+        staging_path = self._direct_entry(staging, staging=True, allow_missing=False)
+        target_path = self._direct_entry(target, staging=False, allow_missing=True)
+        if target_path.exists():
+            raise CacheError("cache_target_conflict")
+        with self.accounting_lock():
+            os.replace(staging_path, target_path)
+            _fsync_directory(self.entries.resolve(strict=True))
+        if observe_lifecycle:
+            self._observe_lifecycle(
+                target_path,
+                identity=identity,
+                digest=digest,
+                bytes_used=bytes_used,
+            )
+        return target_path
+
+    def verify_replacement_staging(
+        self,
+        staging: Path,
+        identity: Mapping[str, Any],
+        digest: str,
+        *,
+        budget: CacheScanBudget | None = None,
+    ) -> tuple[bool, int]:
+        """Recheck a sealed hidden staging tree during replacement recovery."""
+
+        try:
+            staging_path = self._direct_entry(staging, staging=True, allow_missing=False)
+            manifest = _read_json(staging_path / _MANIFEST_NAME, {})
+            if budget is None:
+                actual_digest, total, files = _tree_facts(staging_path)
+            else:
+                actual_digest, total, files, _physical = _tree_facts_bounded(
+                    staging_path, budget=budget
+                )
+            return (
+                manifest.get("identity") == dict(identity)
+                and manifest.get("digest") == digest
+                and manifest.get("bytes") == total
+                and manifest.get("files") == files
+                and actual_digest == digest,
+                total,
+            )
+        except CacheError as error:
+            if error.code == "cache_scan_budget_exhausted":
+                raise
+            return False, 0
+
+    def verify_replacement_target(
+        self,
+        target: Path,
+        identity: Mapping[str, Any],
+        digest: str,
+        *,
+        budget: CacheScanBudget | None = None,
+    ) -> tuple[bool, int]:
+        """Recheck a replacement target without mutating its old sidecar."""
+
+        try:
+            target_path = self._direct_entry(target, staging=False, allow_missing=False)
+            manifest = _read_json(target_path / _MANIFEST_NAME, {})
+            if budget is None:
+                actual_digest, total, files = _tree_facts(target_path)
+            else:
+                actual_digest, total, files, _physical = _tree_facts_bounded(
+                    target_path, budget=budget
+                )
+            return (
+                manifest.get("identity") == dict(identity)
+                and manifest.get("digest") == digest
+                and manifest.get("bytes") == total
+                and manifest.get("files") == files
+                and actual_digest == digest,
+                total,
+            )
+        except CacheError as error:
+            if error.code == "cache_scan_budget_exhausted":
+                raise
+            return False, 0
 
     def promote_from_tmpfs(
         self,
@@ -945,26 +1164,13 @@ class VerifiedVersionCache:
             raise CacheError("cache_staging_cleanup_failed") from error
 
     def remove_entry(self, entry: Path) -> None:
-        """Remove one exact verified entry before a version rebuild."""
-        try:
-            candidate = self._direct_entry(entry, staging=False, allow_missing=True)
-            from dlr.worker.cache_lifecycle import (
-                CacheLifecycleStore,
-                current_thread_owns_all_uses,
-            )
+        """Reject the pre-governance destructive entry point."""
 
-            lifecycle = CacheLifecycleStore(self.root)
-            with lifecycle.entry_lock(candidate.name):
-                use_records = lifecycle.use_records_for_key(candidate.name)
-                if use_records and not current_thread_owns_all_uses(lifecycle, use_records):
-                    raise CacheError("cache_entry_in_use")
-                if not candidate.exists():
-                    return
-                if not candidate.is_dir():
-                    raise CacheError("cache_entry_invalid")
-                _make_writable_for_removal(candidate)
-                shutil.rmtree(candidate)
-        except CacheError:
-            raise
-        except OSError as error:
-            raise CacheError("cache_entry_cleanup_failed") from error
+        candidate = self._direct_entry(entry, staging=False, allow_missing=True)
+        from dlr.worker.cache_lifecycle import CacheLifecycleStore
+
+        lifecycle = CacheLifecycleStore(self.root)
+        with lifecycle.entry_lock(candidate.name):
+            if lifecycle.use_records_for_key(candidate.name):
+                raise CacheError("cache_entry_in_use")
+            raise CacheError("cache_governance_required")

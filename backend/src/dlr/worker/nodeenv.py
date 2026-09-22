@@ -115,11 +115,23 @@ def prepare_version_node(
             )
         except CacheError as error:
             raise venv.DependencyPreparationError("version cache is unavailable", "") from error
-        if build is None and (directory / "adapter.mjs").exists():
+        if build is None and (directory / "adapter.mjs").is_file():
             if dependency_log is not None:
                 for name, version in dependencies.items():
                     dependency_log(f"{name}@{version} 已安装，检查通过")
             return directory
+        if build is None:
+            try:
+                _version_cache, directory, build = venv._begin_version_build(
+                    runtime_root,
+                    adapter_id,
+                    version_id,
+                    identity=identity,
+                    dependency_context=dependency_context,
+                    force_replacement=True,
+                )
+            except CacheError as error:
+                raise venv.DependencyPreparationError("version cache is unavailable", "") from error
         assert build is not None
         if dependency_context is not None:
             dependency_context = dependency_context.with_reservation(

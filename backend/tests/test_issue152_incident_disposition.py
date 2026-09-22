@@ -154,7 +154,7 @@ def test_disposition_migration_preserves_old_incident_without_backfill() -> None
         ]
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0042_issue161_cache_operations"
+                "0043_issue161_legacy_replacement"
             )
             assert (
                 connection.scalar(

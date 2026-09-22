@@ -15,7 +15,7 @@ from dlr.common.config import settings
 from test_unified_runtime_migration import _isolated_schema, _upgrade
 
 PREVIOUS_REVISION = "0041_issue161_cache_guards"
-FINAL_REVISION = "0042_issue161_cache_operations"
+FINAL_REVISION = "0043_issue161_legacy_replacement"
 
 
 def _downgrade(database: str, revision: str) -> None:
@@ -56,6 +56,16 @@ def test_upgrade_adds_independent_operation_table_and_backfills_active_guard() -
         } >= {
             "ck_worker_cache_operations_generation_positive",
             "ck_worker_cache_operations_phase",
+            "ck_worker_cache_operations_kind",
+            "ck_worker_cache_operations_cleanup_pair",
+            "ck_worker_cache_operations_replacement_context",
+        }
+        assert {column["name"] for column in schema.get_columns("worker_cache_operations")} >= {
+            "operation_kind",
+            "cleanup_id",
+            "cleanup_claim_attempt",
+            "observed_identity",
+            "replacement_context",
         }
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
@@ -63,11 +73,12 @@ def test_upgrade_adds_independent_operation_table_and_backfills_active_guard() -
             )
             operation = connection.execute(
                 text(
-                    "SELECT operation_id, worker_id, version_id, adapter_id, generation, phase "
+                    "SELECT operation_id, worker_id, version_id, adapter_id, generation, phase, "
+                    "operation_kind, cleanup_id, replacement_context "
                     "FROM worker_cache_operations"
                 )
             ).one()
-            assert operation == (operation_id, 101, 202, 303, 4, "acquired")
+            assert operation == (operation_id, 101, 202, 303, 4, "acquired", "gc", None, None)
 
 
 def test_downgrade_refuses_unfinished_operation_then_allows_terminal() -> None:
@@ -116,3 +127,52 @@ def test_downgrade_refuses_unfinished_operation_then_allows_terminal() -> None:
             )
             assert connection.scalar(text("SELECT to_regclass('worker_cache_operations')")) is None
             assert connection.scalar(text("SELECT to_regclass('worker_cache_guards')")) is not None
+
+
+@pytest.mark.parametrize("operation_kind", ["cleanup", "replacement"])
+def test_0043_downgrade_refuses_unfinished_specialized_operation(
+    operation_kind: str,
+) -> None:
+    with _isolated_schema(f"issue161_0043_{operation_kind}", "head") as (engine, database):
+        operation_id = uuid.uuid4()
+        cleanup_id = 404 if operation_kind == "cleanup" else None
+        claim_attempt = 2 if operation_kind == "cleanup" else None
+        replacement_context = '{"attempt_id": 505}' if operation_kind == "replacement" else None
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO worker_cache_operations "
+                    "(operation_id, worker_id, version_id, adapter_id, generation, phase, "
+                    "operation_kind, cleanup_id, cleanup_claim_attempt, replacement_context) "
+                    "VALUES (:operation_id, 101, 202, 303, 1, 'acquired', :operation_kind, "
+                    ":cleanup_id, :claim_attempt, CAST(:replacement_context AS jsonb))"
+                ),
+                {
+                    "operation_id": operation_id,
+                    "operation_kind": operation_kind,
+                    "cleanup_id": cleanup_id,
+                    "claim_attempt": claim_attempt,
+                    "replacement_context": replacement_context,
+                },
+            )
+
+        with pytest.raises(RuntimeError, match="cleanup or replacement"):
+            _downgrade(database, "0042_issue161_cache_operations")
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                FINAL_REVISION
+            )
+
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE worker_cache_operations SET phase = 'aborted', finished_at = now() "
+                    "WHERE operation_id = :operation_id"
+                ),
+                {"operation_id": operation_id},
+            )
+        _downgrade(database, "0042_issue161_cache_operations")
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                "0042_issue161_cache_operations"
+            )

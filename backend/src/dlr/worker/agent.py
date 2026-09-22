@@ -16,6 +16,7 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
 from collections.abc import Mapping
 from math import isfinite
 from pathlib import Path
@@ -24,10 +25,9 @@ from typing import Any
 from dlr.common.config import settings
 from dlr.common.platform_logging import configure_platform_logging
 from dlr.worker import cgroup_namespace, executor, sandbox
-from dlr.worker import venv as venv_manager
 from dlr.worker import workspace as workspace_manager
 from dlr.worker.cache import CacheError, VerifiedVersionCache
-from dlr.worker.cache_deletion import CacheDeletionManager
+from dlr.worker.cache_deletion import CacheDeletionManager, DeletionEligibility
 from dlr.worker.cache_lifecycle import CacheLifecycleStore, JournalProtection
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
@@ -273,6 +273,10 @@ class Agent:
         self._sandbox_recovery_blocked = False
         self._cache_journal_protection: JournalProtection | None = None
         self._cache_deletion_manager: CacheDeletionManager | None = None
+        self._active_cleanup_task: dict[str, Any] | None = None
+        self._cleanup_entries: Any | None = None
+        self._cleanup_retry_path: Path | None = None
+        self._cleanup_retained = False
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -559,35 +563,220 @@ class Agent:
             try:
                 self._recover_cleanup_journals(worker_id, startup=False)
                 self._recover_cache_deletions()
-                task = self._client.claim_cleanup(worker_id)
+                task = self._active_cleanup_task or self._client.claim_cleanup(worker_id)
                 if task is not None:
-                    self._execute_cleanup_task(worker_id, task)
+                    self._active_cleanup_task = task
+                    if self._execute_cleanup_task(worker_id, task):
+                        self._active_cleanup_task = None
             except ControlUnavailableError:
                 logger.debug("adapter cleanup deferred: control unavailable")
             except ClientError as error:
                 logger.warning("adapter cleanup rejected: status=%s", error.status)
             self._stop.wait(delay)
 
-    def _execute_cleanup_task(self, worker_id: int, task: dict[str, Any]) -> None:
+    def _execute_cleanup_task(self, worker_id: int, task: dict[str, Any]) -> bool:
         cleanup_id = int(task["cleanup_id"])
         adapter_id = int(task["adapter_id"])
+        claim_attempt = int(task["claim_attempt"])
+        manager = self._cache_deletion_manager
+        if manager is None:
+            self._report_cleanup_with_retry(
+                worker_id,
+                cleanup_id,
+                claim_attempt=claim_attempt,
+                success=False,
+                error_code="cache_cleanup_retained",
+            )
+            return True
         try:
-            venv_manager.cleanup_adapter_environment(self._config.runtime_root, adapter_id)
-        except Exception:  # noqa: BLE001 - cleanup result is retried by Control
+            owner = manager.lifecycle.owner(worker_id)
+            deadline = time.monotonic() + 5.0
+            round_budget = manager.make_round_budget(
+                max_nodes=100_000,
+                max_bytes=256 * 1024 * 1024,
+                max_scan_nodes=100_000,
+                max_hash_bytes=256 * 1024 * 1024,
+                deadline=deadline,
+            )
+            inspected = 0
+            if self._cleanup_entries is None:
+                self._cleanup_entries = os.scandir(manager.cache.entries)
+                self._cleanup_retry_path = None
+                self._cleanup_retained = False
+            exhausted = False
+            while inspected < 100 and time.monotonic() < deadline:
+                retry_path = self._cleanup_retry_path
+                retrying_entry = retry_path is not None
+                if retry_path is not None:
+                    entry_path = retry_path
+                else:
+                    try:
+                        item = next(self._cleanup_entries)
+                    except StopIteration:
+                        exhausted = True
+                        break
+                    entry_path = Path(item.path)
+                inspected += 1
+                if entry_path.name.startswith("."):
+                    self._cleanup_retained = True
+                    self._cleanup_retry_path = None
+                    continue
+                try:
+                    observed = manager.observed_identity_bounded(entry_path, budget=round_budget)
+                except CacheError as error:
+                    if error.code == "cache_scan_budget_exhausted":
+                        if retrying_entry:
+                            self._cleanup_retained = True
+                            self._cleanup_retry_path = None
+                            continue
+                        self._cleanup_retry_path = entry_path
+                        return False
+                    raise
+                if observed is None:
+                    self._cleanup_retained = True
+                    self._cleanup_retry_path = None
+                    continue
+                identity, digest = observed
+                try:
+                    version_id = int(identity["version_id"])
+                    language = str(identity["language"])
+                    source_sha256 = str(identity["source_sha256"])
+                except (KeyError, TypeError, ValueError):
+                    self._cleanup_retained = True
+                    self._cleanup_retry_path = None
+                    continue
+                if (
+                    identity.get("adapter_id") == adapter_id
+                    and entry_path.name != f"{adapter_id}-{version_id}"
+                ):
+                    self._cleanup_retained = True
+                    self._cleanup_retry_path = None
+                    continue
+                if identity.get("adapter_id") != adapter_id:
+                    self._cleanup_retry_path = None
+                    continue
+                facts = manager.lifecycle.lifecycle(entry_path.name)
+                try:
+                    result = manager.begin(
+                        DeletionEligibility(
+                            adapter_id=adapter_id,
+                            version_id=version_id,
+                            identity=identity,
+                            digest=digest,
+                            last_used_before=float(facts["last_used_at"]),
+                            cleanup_context={
+                                "cleanup_id": cleanup_id,
+                                "claim_attempt": claim_attempt,
+                            },
+                            observed_identity={
+                                "store_id": owner["store_id"],
+                                "language": language,
+                                "source_sha256": source_sha256,
+                                "digest": digest,
+                            },
+                        ),
+                        max_seconds=max(0.001, deadline - time.monotonic()),
+                        round_budget=round_budget,
+                    )
+                except CacheError as error:
+                    if error.code in {
+                        "cache_budget_exhausted",
+                        "cache_scan_budget_exhausted",
+                        "cache_lock_busy",
+                    }:
+                        if retrying_entry and error.code != "cache_lock_busy":
+                            self._cleanup_retained = True
+                            self._cleanup_retry_path = None
+                            continue
+                        self._cleanup_retry_path = entry_path
+                        return False
+                    if error.code in {
+                        "cache_not_eligible",
+                        "cache_entry_in_use",
+                        "cache_journal_protected",
+                        "cache_identity_unverified",
+                    }:
+                        self._cleanup_retained = True
+                        self._cleanup_retry_path = None
+                        continue
+                    raise
+                except ClientError as error:
+                    try:
+                        detail = json.loads(error.body).get("detail", {})
+                        code = detail.get("code") if isinstance(detail, dict) else None
+                    except (AttributeError, TypeError, ValueError):
+                        code = None
+                    if error.status == 409 and code in {
+                        "cache_reference_active",
+                        "cache_reclamation_in_progress",
+                    }:
+                        self._cleanup_retained = True
+                        self._cleanup_retry_path = None
+                        continue
+                    raise
+                self._cleanup_retry_path = None
+                if result.status == "failed":
+                    self._cleanup_retained = True
+            if not exhausted:
+                return False
+            self._cleanup_entries.close()
+            self._cleanup_entries = None
+            pre_cache = self._config.runtime_root / "adapters" / str(adapter_id)
+            if pre_cache.exists() or pre_cache.is_symlink():
+                self._cleanup_retained = True
+            cleanup_state = manager.cleanup_state(cleanup_id)
+            if cleanup_state == "pending":
+                return False
+            if cleanup_state in {"failed", "unknown"}:
+                self._cleanup_retained = True
+        except (CacheError, OSError, ValueError, ClientError, ControlUnavailableError):
             logger.warning(
                 "adapter environment cleanup failed for adapter %s",
                 adapter_id,
             )
-            self._report_cleanup_with_retry(worker_id, cleanup_id, success=False)
-            return
-        self._report_cleanup_with_retry(worker_id, cleanup_id, success=True)
+            self._report_cleanup_with_retry(
+                worker_id,
+                cleanup_id,
+                claim_attempt=claim_attempt,
+                success=False,
+                error_code="cache_cleanup_failed",
+            )
+            if self._cleanup_entries is not None:
+                self._cleanup_entries.close()
+            self._cleanup_entries = None
+            self._cleanup_retry_path = None
+            self._cleanup_retained = False
+            return True
+        self._report_cleanup_with_retry(
+            worker_id,
+            cleanup_id,
+            claim_attempt=claim_attempt,
+            success=not self._cleanup_retained,
+            error_code="cache_cleanup_retained" if self._cleanup_retained else None,
+        )
+        self._cleanup_retained = False
+        return True
 
-    def _report_cleanup_with_retry(self, worker_id: int, cleanup_id: int, *, success: bool) -> None:
+    def _report_cleanup_with_retry(
+        self,
+        worker_id: int,
+        cleanup_id: int,
+        *,
+        claim_attempt: int,
+        success: bool,
+        error_code: str | None = None,
+    ) -> None:
         """Bounded transport retries; never send filesystem error text."""
         delay = 2.0
         for attempt in range(1, REPORT_ATTEMPTS + 1):
             try:
-                self._client.report_cleanup(worker_id, cleanup_id, success=success)
+                self._client.report_cleanup(
+                    worker_id,
+                    cleanup_id,
+                    success=success,
+                    claim_attempt=claim_attempt,
+                    error_code=error_code,
+                )
                 return
             except ControlUnavailableError as error:
                 logger.warning(

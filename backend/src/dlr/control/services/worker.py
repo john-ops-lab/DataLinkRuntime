@@ -22,6 +22,7 @@ from dlr.control.models import (
     ManagedInputArtifact,
     ManagedInputArtifactStatus,
     Worker,
+    WorkerCacheOperation,
     WorkerCleanupRequest,
 )
 from dlr.control.schemas.worker import (
@@ -503,7 +504,11 @@ def claim_cleanup(session: Session, worker_id: int) -> CleanupTaskPayload | None
     cleanup.attempts += 1
     cleanup.error_code = None
     session.commit()
-    return CleanupTaskPayload(cleanup_id=cleanup.id, adapter_id=cleanup.adapter_id)
+    return CleanupTaskPayload(
+        cleanup_id=cleanup.id,
+        adapter_id=cleanup.adapter_id,
+        claim_attempt=cleanup.attempts,
+    )
 
 
 def apply_cleanup_result(
@@ -515,6 +520,7 @@ def apply_cleanup_result(
     Control Node never performs a fallback deletion because doing so would
     violate the Worker ownership and offline safety boundary.
     """
+    worker = get_worker(session, worker_id)
     cleanup = session.scalar(
         select(WorkerCleanupRequest).where(WorkerCleanupRequest.id == cleanup_id).with_for_update()
     )
@@ -526,17 +532,37 @@ def apply_cleanup_result(
             "cleanup_not_owned",
             "Worker cleanup request is assigned to another Worker",
         )
+    governance = worker.isolation_capabilities.get("cache_governance_v1") is True
+    if governance and report.claim_attempt is None:
+        raise domain_error(422, "cleanup_claim_attempt_required", "Cleanup claim is required")
+    if report.claim_attempt is not None and report.claim_attempt != cleanup.attempts:
+        raise domain_error(409, "cleanup_stale_claim", "Cleanup claim is stale")
     if cleanup.status == "completed":
         return cleanup
     if cleanup.status != "running":
         raise domain_error(409, "cleanup_not_running", "Worker cleanup request is not running")
 
     if report.success:
+        active_operation = session.scalar(
+            select(WorkerCacheOperation.operation_id)
+            .where(
+                WorkerCacheOperation.worker_id == worker_id,
+                WorkerCacheOperation.cleanup_id == cleanup.id,
+                WorkerCacheOperation.phase == "acquired",
+            )
+            .limit(1)
+        )
+        if active_operation is not None:
+            raise domain_error(
+                409,
+                "cleanup_in_progress",
+                "Worker cleanup still has an active cache operation",
+            )
         cleanup.status = "completed"
         cleanup.error_code = None
         cleanup.completed_at = func.now()
     else:
-        cleanup.error_code = "cleanup_failed"
+        cleanup.error_code = report.error_code or "cleanup_failed"
         cleanup.status = "pending" if cleanup.attempts < 3 else "failed"
     session.commit()
     session.refresh(cleanup)

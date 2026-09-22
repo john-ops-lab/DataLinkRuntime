@@ -18,6 +18,8 @@ from dlr.control.schemas.reliable_runtime import V3TaskPayload
 from dlr.worker import executor, sandbox, workspace
 from dlr.worker.cache import CacheError
 from dlr.worker.cache_lifecycle import CacheLifecycleStore, CacheUse, cache_key
+from dlr.worker.cache_replacement import ReplacementAuthority
+from dlr.worker.cache_replacement import activate as activate_replacement
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
 
 logger = logging.getLogger("dlr.worker.consumer")
@@ -834,17 +836,33 @@ class V3Consumer:
                     }
                 else:
                     try:
-                        result = self._runner(
-                            payload.model_dump(mode="json"),
-                            self._runtime_settings,
-                            progress_callback=progress,
-                            input_downloader=download,
-                            **(
-                                {"builtin_downloader": download_builtin}
-                                if payload.builtin_package_snapshot is not None
-                                else {}
-                            ),
+                        cleanup_root = (
+                            getattr(
+                                self._runtime_settings,
+                                "workspace_cleanup_journal_root",
+                                None,
+                            )
+                            or self._config.runtime_root / "cleanup-journal"
                         )
+                        authority = ReplacementAuthority(
+                            client=self._client,
+                            worker_id=self._config.worker_id,
+                            payload=payload.model_dump(mode="json"),
+                            attempt_journal_root=self._config.attempt_journal_root,
+                            cleanup_journal_root=cleanup_root,
+                        )
+                        with activate_replacement(authority):
+                            result = self._runner(
+                                payload.model_dump(mode="json"),
+                                self._runtime_settings,
+                                progress_callback=progress,
+                                input_downloader=download,
+                                **(
+                                    {"builtin_downloader": download_builtin}
+                                    if payload.builtin_package_snapshot is not None
+                                    else {}
+                                ),
+                            )
                     except Exception:
                         result = {
                             "status": "failed",

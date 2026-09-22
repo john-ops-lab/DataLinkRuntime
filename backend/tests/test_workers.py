@@ -721,14 +721,10 @@ def test_result_rejects_output_truncated_with_zero_size(
 # --- Important 5: reference counting for active versions -----------------------
 
 
-def test_cleanup_preserves_versions_in_keep_set(
+def test_legacy_stale_cleanup_retains_unmanaged_versions(
     tmp_path: object,
 ) -> None:
-    """Important 5: cleanup_stale_venvs only removes versions NOT in the keep set.
-
-    The Agent's _cleanup_venvs() builds the keep set from active version refcounts;
-    this test verifies the filesystem-level contract: kept versions survive, others don't.
-    """
+    """The public legacy helper has no direct deletion path."""
     runtime_root = Path(tmp_path)
     # Create venv directories with .ready markers for v1 and v2.
     for vid in (1, 2):
@@ -742,7 +738,7 @@ def test_cleanup_preserves_versions_in_keep_set(
     assert (venv_manager.version_dir(runtime_root, 1, 1) / ".ready").exists()
     assert (venv_manager.version_dir(runtime_root, 1, 2) / ".ready").exists()
 
-    # A version NOT in the keep set is removed.
+    # A version outside the keep set is retained for the governance coordinator.
     v3_dir = venv_manager.version_dir(runtime_root, 1, 3)
     v3_dir.mkdir(parents=True, exist_ok=True)
     (v3_dir / ".ready").write_text("ready", encoding="utf-8")
@@ -750,10 +746,10 @@ def test_cleanup_preserves_versions_in_keep_set(
     venv_manager.cleanup_stale_venvs(runtime_root, 1, keep_version_ids={1, 2})
 
     assert (venv_manager.version_dir(runtime_root, 1, 1) / ".ready").exists()
-    assert not (venv_manager.version_dir(runtime_root, 1, 3) / ".ready").exists()
+    assert (venv_manager.version_dir(runtime_root, 1, 3) / ".ready").exists()
 
 
-def test_cleanup_adapter_environment_removes_only_private_adapter_tree(
+def test_cleanup_adapter_environment_retains_unknown_pre_cache_tree(
     tmp_path: object,
 ) -> None:
     runtime_root = Path(tmp_path)
@@ -766,5 +762,5 @@ def test_cleanup_adapter_environment_removes_only_private_adapter_tree(
 
     venv_manager.cleanup_adapter_environment(runtime_root, 42)
 
-    assert not (runtime_root / "adapters" / "42").exists()
+    assert (runtime_root / "adapters" / "42").exists()
     assert (shared / "keep.txt").exists()

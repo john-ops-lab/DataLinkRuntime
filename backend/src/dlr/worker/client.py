@@ -139,6 +139,9 @@ class ControlClient:
         adapter_id: int,
         version_id: int,
         operation_id: uuid.UUID,
+        cleanup_context: Mapping[str, Any] | None = None,
+        observed_identity: Mapping[str, Any] | None = None,
+        replacement_context: Mapping[str, Any] | None = None,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         raw = self._expect(
@@ -148,6 +151,21 @@ class ControlClient:
                 "adapter_id": adapter_id,
                 "version_id": version_id,
                 "operation_id": str(operation_id),
+                **(
+                    {"cleanup_context": dict(cleanup_context)}
+                    if cleanup_context is not None
+                    else {}
+                ),
+                **(
+                    {"observed_identity": dict(observed_identity)}
+                    if observed_identity is not None
+                    else {}
+                ),
+                **(
+                    {"replacement_context": dict(replacement_context)}
+                    if replacement_context is not None
+                    else {}
+                ),
             },
             timeout=timeout_seconds,
         )
@@ -338,12 +356,24 @@ class ControlClient:
         body: dict[str, Any] = json.loads(raw) if raw else {}
         return body
 
-    def report_cleanup(self, worker_id: int, cleanup_id: int, *, success: bool) -> None:
+    def report_cleanup(
+        self,
+        worker_id: int,
+        cleanup_id: int,
+        *,
+        success: bool,
+        claim_attempt: int | None = None,
+        error_code: str | None = None,
+    ) -> None:
         """Report only a cleanup outcome; filesystem details stay local."""
         self._expect(
             "POST",
             f"/api/workers/{worker_id}/cleanups/{cleanup_id}/result",
-            {"success": success},
+            {
+                "success": success,
+                **({"claim_attempt": claim_attempt} if claim_attempt is not None else {}),
+                **({"error_code": error_code} if error_code is not None else {}),
+            },
             expected=204,
         )
 

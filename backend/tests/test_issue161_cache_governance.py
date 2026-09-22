@@ -7,11 +7,12 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import event, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import WORKER_TOKEN
@@ -32,8 +33,10 @@ from dlr.control.models import (
 from dlr.control.security import SUPERADMIN_PRINCIPAL
 from dlr.control.services import attempt as attempt_service
 from dlr.control.services import cache_governance
+from dlr.control.services import worker as worker_service
 from dlr.control.services.incident_disposition import dispose_incident
 from dlr.control.services.schedule import scheduler_tick
+from dlr.control.services.worker_protocol import hash_token
 from dlr.worker.client import ControlClient
 from test_issue127_b2_binding import create_artifact
 from test_issue130_b2_runtime import (
@@ -83,6 +86,51 @@ def _force_guard_active(
         guard.generation += 1
         guard.operation_id = uuid.uuid4()
         guard.phase = "acquired"
+
+
+def _start_replacement_attempt(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    worker_id: int,
+    adapter_id: int,
+) -> tuple[dict[str, object], dict[str, object]]:
+    execution = _execution(api_client, adapter_id)
+    claim = api_client.post(
+        f"/api/workers/{worker_id}/v3/claim",
+        json=_dispatch(session_factory, int(execution["id"])),
+        headers=WORKER_HEADERS,
+    )
+    assert claim.status_code == 200, claim.text
+    body = claim.json()
+    payload = body["payload"]
+    start = api_client.post(
+        f"/api/workers/{worker_id}/attempts/{body['attempt_id']}/start",
+        json={
+            "attempt_id": body["attempt_id"],
+            "fencing_token": payload["fencing_token"],
+            "claim_token": payload["claim_token"],
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert start.status_code == 200, start.text
+    return execution, payload
+
+
+def _replacement_context(payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "execution_id": payload["execution_id"],
+        "attempt_id": payload["attempt_id"],
+        "fencing_token": payload["fencing_token"],
+        "claim_token": payload["claim_token"],
+        "old_identity": {
+            "store_id": "legacy-store",
+            "language": "python",
+            "source_sha256": "a" * 64,
+            "digest": "b" * 64,
+        },
+        "target_language": "python",
+        "target_source_sha256": "c" * 64,
+    }
 
 
 def test_guard_first_blocks_future_execution_without_partial_admission(
@@ -681,3 +729,472 @@ def test_worker_client_returns_one_bounded_cache_guard_page(
         None,
     )
     assert paths == ["/api/workers/3/cache/guards?limit=2&after_version_id=7"]
+
+
+def test_replacement_allows_clean_terminal_history_but_current_incident_blocks(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, adapter, version_id = _fixture(api_client, session_factory, monkeypatch, "replace-refs")
+    execution, payload = _start_replacement_attempt(
+        api_client, session_factory, int(worker["id"]), int(adapter["id"])
+    )
+    histories = [_execution(api_client, int(adapter["id"])) for _ in range(4)]
+    with session_factory.begin() as session:
+        for item in histories:
+            row = session.get(Execution, int(item["id"]))
+            assert row is not None
+            row.status = "cancelled"
+            row.workspace_cleanup_status = "completed"
+            row.builtin_package_snapshot = {"identity": str(item["id"])}
+        monkeypatch.setattr(cache_governance, "MAX_REFERENCE_RECORDS", 2)
+    operation_id = uuid.uuid4()
+    acquired = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/acquire",
+        json={
+            "adapter_id": adapter["id"],
+            "version_id": version_id,
+            "operation_id": str(operation_id),
+            "replacement_context": _replacement_context(payload),
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert acquired.status_code == 200, acquired.text
+    assert acquired.json()["operation_kind"] == "replacement"
+    finished = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/{operation_id}/result",
+        json={"generation": acquired.json()["generation"], "outcome": "aborted"},
+        headers=WORKER_HEADERS,
+    )
+    assert finished.status_code == 200, finished.text
+
+    with session_factory.begin() as session:
+        current = session.get(Execution, int(execution["id"]))
+        assert current is not None
+        session.add(
+            ExecutionInfrastructureIncident(
+                execution_id=current.id,
+                dispatch_generation=current.dispatch_generation,
+                kind="replacement_probe",
+                status="open",
+            )
+        )
+    blocked = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/acquire",
+        json={
+            "adapter_id": adapter["id"],
+            "version_id": version_id,
+            "operation_id": str(uuid.uuid4()),
+            "replacement_context": _replacement_context(payload),
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert blocked.status_code == 409
+    assert "incident_open" in blocked.json()["detail"]["params"]["reasons"]
+
+
+def test_legacy_cleanup_bootstraps_deleted_identity_and_fences_result(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, adapter, version_id = _fixture(api_client, session_factory, monkeypatch, "legacy-clean")
+    assert api_client.delete(f"/api/adapters/{adapter['id']}").status_code == 204
+    with session_factory.begin() as session:
+        guard = session.get(WorkerCacheGuard, (int(worker["id"]), version_id))
+        if guard is not None:
+            session.delete(guard)
+    claimed = api_client.post(f"/api/workers/{worker['id']}/cleanups/claim", headers=WORKER_HEADERS)
+    assert claimed.status_code == 200, claimed.text
+    cleanup = claimed.json()
+    operation_id = uuid.uuid4()
+    acquired = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/acquire",
+        json={
+            "adapter_id": adapter["id"],
+            "version_id": version_id,
+            "operation_id": str(operation_id),
+            "cleanup_context": {
+                "cleanup_id": cleanup["cleanup_id"],
+                "claim_attempt": cleanup["claim_attempt"],
+            },
+            "observed_identity": {
+                "store_id": "legacy-store",
+                "language": "python",
+                "source_sha256": "a" * 64,
+                "digest": "b" * 64,
+            },
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert acquired.status_code == 200, acquired.text
+    premature = api_client.post(
+        f"/api/workers/{worker['id']}/cleanups/{cleanup['cleanup_id']}/result",
+        json={"success": True, "claim_attempt": cleanup["claim_attempt"]},
+        headers=WORKER_HEADERS,
+    )
+    assert premature.status_code == 409
+    assert premature.json()["detail"]["code"] == "cleanup_in_progress"
+    completed_guard = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/{operation_id}/result",
+        json={"generation": acquired.json()["generation"], "outcome": "completed"},
+        headers=WORKER_HEADERS,
+    )
+    assert completed_guard.status_code == 200, completed_guard.text
+    completed = api_client.post(
+        f"/api/workers/{worker['id']}/cleanups/{cleanup['cleanup_id']}/result",
+        json={"success": True, "claim_attempt": cleanup["claim_attempt"]},
+        headers=WORKER_HEADERS,
+    )
+    assert completed.status_code == 204, completed.text
+    with session_factory() as session:
+        guard = session.get(WorkerCacheGuard, (int(worker["id"]), version_id))
+        assert guard is not None
+        assert guard.adapter_id == int(adapter["id"])
+        assert guard.phase == "idle"
+
+    orphan = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/acquire",
+        json={
+            "adapter_id": 900_001,
+            "version_id": 900_002,
+            "operation_id": str(uuid.uuid4()),
+            "observed_identity": {
+                "store_id": "legacy-store",
+                "language": "python",
+                "source_sha256": "c" * 64,
+                "digest": "d" * 64,
+            },
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert orphan.status_code == 200, orphan.text
+    assert orphan.json()["operation_kind"] == "gc"
+
+
+def test_replacement_future_snapshot_and_historical_cleanup_boundaries(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, adapter, version_id = _fixture(
+        api_client, session_factory, monkeypatch, "replace-future"
+    )
+    _execution_row, payload = _start_replacement_attempt(
+        api_client, session_factory, int(worker["id"]), int(adapter["id"])
+    )
+    future = _execution(api_client, int(adapter["id"]))
+
+    def acquire() -> tuple[uuid.UUID, object]:
+        operation_id = uuid.uuid4()
+        response = api_client.post(
+            f"/api/workers/{worker['id']}/cache/guards/acquire",
+            json={
+                "adapter_id": adapter["id"],
+                "version_id": version_id,
+                "operation_id": str(operation_id),
+                "replacement_context": _replacement_context(payload),
+            },
+            headers=WORKER_HEADERS,
+        )
+        return operation_id, response
+
+    operation_id, allowed = acquire()
+    assert allowed.status_code == 200, allowed.text
+    assert (
+        api_client.post(
+            f"/api/workers/{worker['id']}/cache/guards/{operation_id}/result",
+            json={"generation": allowed.json()["generation"], "outcome": "aborted"},
+            headers=WORKER_HEADERS,
+        ).status_code
+        == 200
+    )
+    with session_factory.begin() as session:
+        row = session.get(Execution, int(future["id"]))
+        assert row is not None
+        row.builtin_package_snapshot = {"identity": "different"}
+    _operation_id, blocked = acquire()
+    assert blocked.status_code == 409
+    assert "builtin_snapshot_conflict" in blocked.json()["detail"]["params"]["reasons"]
+
+    with session_factory.begin() as session:
+        row = session.get(Execution, int(future["id"]))
+        assert row is not None
+        row.builtin_package_snapshot = payload.get("builtin_package_snapshot")
+        row.status = "dead_letter"
+        row.worker_id = int(worker["id"])
+        row.attempt_count = 1
+        row.workspace_cleanup_status = "completed"
+        now = datetime.now(UTC)
+        session.add(
+            ExecutionAttempt(
+                execution_id=row.id,
+                adapter_id=int(adapter["id"]),
+                attempt_no=1,
+                worker_id=int(worker["id"]),
+                fencing_token=99,
+                lease_expires_at=now,
+                status="failed",
+                claimed_at=now,
+                ended_at=now,
+                cleanup_summary={"workspace_cleanup_status": "deferred"},
+            )
+        )
+    _operation_id, deferred = acquire()
+    assert deferred.status_code == 409
+    assert "attempt_cleanup_incomplete" in deferred.json()["detail"]["params"]["reasons"]
+
+
+def test_replacement_and_late_cleanup_receipt_share_execution_first_lock_order(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, adapter, version_id = _fixture(
+        api_client, session_factory, monkeypatch, "replacement-lock-order"
+    )
+    execution, payload = _start_replacement_attempt(
+        api_client, session_factory, int(worker["id"]), int(adapter["id"])
+    )
+    now = datetime.now(UTC)
+    with session_factory.begin() as session:
+        active = session.get(ExecutionAttempt, int(payload["attempt_id"]))
+        row = session.get(Execution, int(execution["id"]))
+        assert active is not None and row is not None
+        active.attempt_no = 2
+        row.attempt_count = 2
+        session.add(
+            ExecutionAttempt(
+                execution_id=row.id,
+                adapter_id=int(adapter["id"]),
+                attempt_no=1,
+                worker_id=int(worker["id"]),
+                fencing_token=1,
+                status="failed",
+                lease_expires_at=now,
+                claimed_at=now,
+                ended_at=now,
+                cleanup_token_hash=hash_token("old-cleanup"),
+                cleanup_summary={"workspace_cleanup_status": "completed"},
+            )
+        )
+
+    execution_locked = threading.Event()
+    acquire_started = threading.Event()
+
+    def receipt() -> BaseException | None:
+        try:
+            with session_factory() as session:
+                session.execute(text("SET LOCAL lock_timeout='4s'"))
+                connection = session.connection()
+
+                def after_execute(
+                    _connection: object,
+                    _cursor: object,
+                    statement: str,
+                    _parameters: object,
+                    _context: object,
+                    _executemany: bool,
+                ) -> None:
+                    if "FROM executions" in statement and "FOR UPDATE" in statement:
+                        execution_locked.set()
+                        assert acquire_started.wait(3)
+
+                event.listen(connection, "after_cursor_execute", after_execute)
+                worker_service.apply_cleanup_receipt(session, int(execution["id"]), "old-cleanup")
+            return None
+        except BaseException as error:
+            return error
+
+    def acquire() -> BaseException | None:
+        try:
+            acquire_started.set()
+            with session_factory() as session:
+                session.execute(text("SET LOCAL lock_timeout='4s'"))
+                cache_governance.acquire_guard(
+                    session,
+                    worker_id=int(worker["id"]),
+                    adapter_id=int(adapter["id"]),
+                    version_id=version_id,
+                    operation_id=uuid.uuid4(),
+                    replacement_context=_replacement_context(payload),
+                )
+            return None
+        except BaseException as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        receipt_future = pool.submit(receipt)
+        assert execution_locked.wait(3)
+        acquire_future = pool.submit(acquire)
+        errors = [receipt_future.result(8), acquire_future.result(8)]
+    assert errors == [None, None]
+
+
+def test_replacement_rechecks_cancel_and_language_on_idempotent_acquire(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, adapter, version_id = _fixture(
+        api_client, session_factory, monkeypatch, "replacement-refresh"
+    )
+    execution, payload = _start_replacement_attempt(
+        api_client, session_factory, int(worker["id"]), int(adapter["id"])
+    )
+    operation_id = uuid.uuid4()
+    body = {
+        "adapter_id": adapter["id"],
+        "version_id": version_id,
+        "operation_id": str(operation_id),
+        "replacement_context": _replacement_context(payload),
+    }
+    acquired = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/acquire",
+        json=body,
+        headers=WORKER_HEADERS,
+    )
+    assert acquired.status_code == 200, acquired.text
+    with session_factory.begin() as session:
+        row = session.get(Execution, int(execution["id"]))
+        assert row is not None
+        row.cancel_requested = True
+    stale = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/acquire",
+        json=body,
+        headers=WORKER_HEADERS,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "cache_replacement_stale"
+
+    finished = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/{operation_id}/result",
+        json={"generation": acquired.json()["generation"], "outcome": "aborted"},
+        headers=WORKER_HEADERS,
+    )
+    assert finished.status_code == 200, finished.text
+    with session_factory.begin() as session:
+        row = session.get(Execution, int(execution["id"]))
+        assert row is not None
+        row.cancel_requested = False
+
+    conflicting = dict(body)
+    conflicting["operation_id"] = str(uuid.uuid4())
+    context = dict(body["replacement_context"])
+    context["target_language"] = "java"
+    conflicting["replacement_context"] = context
+    language = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/acquire",
+        json=conflicting,
+        headers=WORKER_HEADERS,
+    )
+    assert language.status_code == 409
+
+
+def test_replacement_rejects_direct_worker_responsibility_without_matching_attempt(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, adapter, version_id = _fixture(
+        api_client, session_factory, monkeypatch, "replacement-attempt-identity"
+    )
+    _execution_row, payload = _start_replacement_attempt(
+        api_client, session_factory, int(worker["id"]), int(adapter["id"])
+    )
+    other_worker = _ready_worker(api_client, "replacement-attempt-other-worker")
+    history = _execution(api_client, int(adapter["id"]))
+    now = datetime.now(UTC)
+    with session_factory.begin() as session:
+        row = session.get(Execution, int(history["id"]))
+        assert row is not None
+        row.status = "succeeded"
+        row.worker_id = int(worker["id"])
+        row.attempt_count = 1
+        row.workspace_cleanup_status = "completed"
+        session.add(
+            ExecutionAttempt(
+                execution_id=row.id,
+                adapter_id=int(adapter["id"]),
+                attempt_no=1,
+                worker_id=int(other_worker["id"]),
+                fencing_token=1,
+                status="succeeded",
+                lease_expires_at=now,
+                claimed_at=now,
+                ended_at=now,
+                cleanup_summary={"workspace_cleanup_status": "completed"},
+            )
+        )
+    blocked = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/acquire",
+        json={
+            "adapter_id": adapter["id"],
+            "version_id": version_id,
+            "operation_id": str(uuid.uuid4()),
+            "replacement_context": _replacement_context(payload),
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert blocked.status_code == 409
+    assert "attempt_identity_unknown" in blocked.json()["detail"]["params"]["reasons"]
+
+
+def test_acquire_refresh_revalidates_full_operation_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation_id = uuid.uuid4()
+    actual_identity = {
+        "store_id": "a",
+        "language": "python",
+        "source_sha256": "a" * 64,
+        "digest": "b" * 64,
+    }
+    operation = SimpleNamespace(
+        operation_id=operation_id,
+        worker_id=7,
+        adapter_id=11,
+        version_id=13,
+        operation_kind="gc",
+        cleanup_id=None,
+        cleanup_claim_attempt=None,
+        observed_identity=actual_identity,
+        replacement_context=None,
+        phase="acquired",
+        generation=1,
+    )
+    guard = SimpleNamespace(
+        adapter_id=11, operation_id=operation_id, phase="acquired", generation=1
+    )
+
+    class RacingSession:
+        def __init__(self) -> None:
+            self.operation_reads = 0
+
+        def get(self, model: object, _identity: object, **_kwargs: object) -> object | None:
+            if model is Worker:
+                return SimpleNamespace(isolation_capabilities={"cache_governance_v1": True})
+            if model is Adapter:
+                return None
+            if model is WorkerCacheGuard:
+                return guard
+            if model is cache_governance.WorkerCacheOperation:
+                self.operation_reads += 1
+                return None if self.operation_reads == 1 else operation
+            raise AssertionError(model)
+
+        def scalar(self, _query: object) -> None:
+            return None
+
+    monkeypatch.setattr(cache_governance, "_ensure_guard", lambda *_args, **_kwargs: guard)
+    with pytest.raises(HTTPException) as caught:
+        cache_governance.acquire_guard(
+            RacingSession(),  # type: ignore[arg-type]
+            worker_id=7,
+            adapter_id=11,
+            version_id=13,
+            operation_id=operation_id,
+            observed_identity={**actual_identity, "store_id": "b"},
+        )
+    assert _code(caught.value) == "cache_guard_identity_conflict"

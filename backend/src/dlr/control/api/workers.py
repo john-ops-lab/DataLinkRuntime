@@ -111,6 +111,21 @@ def acquire_cache_guard(
             adapter_id=payload.adapter_id,
             version_id=payload.version_id,
             operation_id=payload.operation_id,
+            cleanup_context=(
+                payload.cleanup_context.model_dump()
+                if payload.cleanup_context is not None
+                else None
+            ),
+            observed_identity=(
+                payload.observed_identity.model_dump()
+                if payload.observed_identity is not None
+                else None
+            ),
+            replacement_context=(
+                payload.replacement_context.model_dump()
+                if payload.replacement_context is not None
+                else None
+            ),
         )
     )
 
