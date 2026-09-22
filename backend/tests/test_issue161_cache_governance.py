@@ -28,6 +28,7 @@ from dlr.control.models import (
     ExecutionOutbox,
     Worker,
     WorkerCacheGuard,
+    WorkerCacheOperation,
     WorkerCleanupRequest,
 )
 from dlr.control.security import SUPERADMIN_PRINCIPAL
@@ -729,6 +730,153 @@ def test_worker_client_returns_one_bounded_cache_guard_page(
         None,
     )
     assert paths == ["/api/workers/3/cache/guards?limit=2&after_version_id=7"]
+
+
+def test_cache_reference_batch_is_read_only_and_preserves_old_resolver(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, adapter, version_id = _fixture(
+        api_client, session_factory, monkeypatch, "reference-batch"
+    )
+    with session_factory() as session:
+        before = (
+            session.query(WorkerCacheGuard).count(),
+            session.query(WorkerCacheOperation).count(),
+        )
+    resolved = api_client.post(
+        f"/api/workers/{worker['id']}/cache/references/resolve",
+        json={
+            "kind": "cache_keys_v1",
+            "items": [{"adapter_id": adapter["id"], "version_id": version_id}],
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json() | {"sampled_at": 0} == {
+        "kind": "cache_keys_v1",
+        "worker_id": worker["id"],
+        "sampled_at": 0,
+        "complete": True,
+        "items": [
+            {
+                "adapter_id": adapter["id"],
+                "version_id": version_id,
+                "status": "clear",
+                "reasons": [],
+            }
+        ],
+    }
+    with session_factory() as session:
+        assert (
+            session.query(WorkerCacheGuard).count(),
+            session.query(WorkerCacheOperation).count(),
+        ) == before
+
+    old = _execution(api_client, int(adapter["id"]))
+    legacy = api_client.post(
+        f"/api/workers/{worker['id']}/cache/references/resolve",
+        json={"execution_id": old["id"], "attempt_id": None},
+        headers=WORKER_HEADERS,
+    )
+    assert legacy.status_code == 200
+    assert set(legacy.json()) == {"key", "adapter_id", "version_id"}
+
+
+def test_cache_reference_batch_classifies_refs_guard_and_missing_without_writes(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, adapter, version_id = _fixture(
+        api_client, session_factory, monkeypatch, "reference-batch-protected"
+    )
+    _execution(api_client, int(adapter["id"]))
+    response = api_client.post(
+        f"/api/workers/{worker['id']}/cache/references/resolve",
+        json={
+            "kind": "cache_keys_v1",
+            "items": [
+                {"adapter_id": adapter["id"], "version_id": version_id},
+                {"adapter_id": adapter["id"], "version_id": version_id + 999},
+            ],
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["complete"] is False
+    assert body["items"][0]["status"] == "protected"
+    assert "execution_queued" in body["items"][0]["reasons"]
+    assert body["items"][1] == {
+        "adapter_id": adapter["id"],
+        "version_id": version_id + 999,
+        "status": "unknown",
+        "reasons": ["cache_identity_unknown"],
+    }
+    with session_factory() as session:
+        assert session.query(WorkerCacheGuard).count() == 1
+        assert session.query(WorkerCacheOperation).count() == 0
+
+
+def test_cache_reference_batch_requires_governance_capability(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, adapter, version_id = _fixture(
+        api_client, session_factory, monkeypatch, "reference-batch-capability"
+    )
+    with session_factory.begin() as session:
+        row = session.get(Worker, int(worker["id"]))
+        assert row is not None
+        row.isolation_capabilities = {}
+    response = api_client.post(
+        f"/api/workers/{worker['id']}/cache/references/resolve",
+        json={
+            "kind": "cache_keys_v1",
+            "items": [{"adapter_id": adapter["id"], "version_id": version_id}],
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "cache_governance_unsupported"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"kind": "cache_keys_v1", "items": [{"adapter_id": True, "version_id": 1}]},
+        {
+            "kind": "cache_keys_v1",
+            "items": [
+                {"adapter_id": 1, "version_id": 2},
+                {"adapter_id": 1, "version_id": 2},
+            ],
+        },
+        {
+            "kind": "cache_keys_v1",
+            "items": [{"adapter_id": 1, "version_id": 2, "path": "/tmp/x"}],
+        },
+        {
+            "kind": "cache_keys_v1",
+            "items": [{"adapter_id": 1, "version_id": 2}],
+            "execution_id": 3,
+        },
+        {
+            "kind": "cache_keys_v1",
+            "items": [{"adapter_id": index + 1, "version_id": index + 1} for index in range(201)],
+        },
+    ],
+)
+def test_cache_reference_batch_rejects_malformed_payloads(
+    api_client: TestClient, payload: dict[str, object]
+) -> None:
+    response = api_client.post(
+        "/api/workers/1/cache/references/resolve", json=payload, headers=WORKER_HEADERS
+    )
+    assert response.status_code == 422
 
 
 def test_replacement_allows_clean_terminal_history_but_current_incident_blocks(

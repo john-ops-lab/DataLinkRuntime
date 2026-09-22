@@ -132,6 +132,30 @@ class ControlClient:
             raise ClientError(502, "invalid cache reference response")
         return key
 
+    def resolve_cache_key_references(
+        self,
+        worker_id: int,
+        items: list[tuple[int, int]],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        raw = self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cache/references/resolve",
+            {
+                "kind": "cache_keys_v1",
+                "items": [
+                    {"adapter_id": adapter_id, "version_id": version_id}
+                    for adapter_id, version_id in items
+                ],
+            },
+            timeout=max(0.001, min(self._timeout_seconds, timeout_seconds)),
+        )
+        body = json.loads(raw)
+        if not isinstance(body, dict) or body.get("kind") != "cache_keys_v1":
+            raise ClientError(502, "invalid cache reference response")
+        return cast(dict[str, Any], body)
+
     def acquire_cache_guard(
         self,
         worker_id: int,

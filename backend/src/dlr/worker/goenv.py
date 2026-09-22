@@ -99,6 +99,15 @@ def prepare_version_go(
         except CacheError as error:
             raise venv.DependencyPreparationError("version cache is unavailable", "") from error
         if build is None and (directory / "adapter").is_file():
+            if builtin_materials is not None:
+                venv.reconcile_builtin_rebuildability(
+                    runtime_root,
+                    adapter_id=adapter_id,
+                    version_id=version_id,
+                    identity=identity,
+                    builtin_materials=builtin_materials,
+                    external_dependencies_present=bool(dependencies),
+                )
             if dependency_log:
                 dependency_log("Go build cache verified")
             return directory
@@ -224,8 +233,24 @@ def prepare_version_go(
                     shutil.rmtree(path)
             if dependency_log:
                 dependency_log("Go compilation completed")
-            return build.finish(identity)
+            return build.finish(
+                identity,
+                automatic_offline_proof=(
+                    builtin_materials is not None
+                    and venv.builtin_rebuildability_verified(
+                        builtin_materials,
+                        external_dependencies_present=bool(dependencies),
+                    )
+                ),
+            )
         except (OSError, CacheError, venv.DependencyPreparationError) as error:
+            if isinstance(error, venv.DependencyPreparationError):
+                venv.record_dependency_source_failure(
+                    runtime_root,
+                    language="go",
+                    source_url=proxy_url,
+                    error=error,
+                )
             build.abort()
             if isinstance(error, venv.DependencyPreparationError):
                 raise

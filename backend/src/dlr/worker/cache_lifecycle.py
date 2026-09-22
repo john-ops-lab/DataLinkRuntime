@@ -9,6 +9,7 @@ governance.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -42,6 +43,8 @@ _LIFECYCLE_FIELDS = frozenset(
         "policy_revision",
     }
 )
+_LIFECYCLE_POLICY_FIELDS = frozenset({"pin_audit", "rebuild_proof", "source_unavailable"})
+_SOURCE_FAILURE_FIELDS = frozenset({"schema", "source_scope", "error_code", "observed_at"})
 _USE_FIELDS = frozenset(
     {"schema", "key", "worker_id", "execution_id", "attempt_id", "fencing_token", "started_at"}
 )
@@ -231,7 +234,129 @@ def _validated_lifecycle(value: dict[str, Any]) -> dict[str, Any]:
         or policy_revision < 0
     ):
         raise CacheError("cache_lifecycle_invalid")
-    return value
+    normalized = dict(value)
+    for field in _LIFECYCLE_POLICY_FIELDS:
+        normalized.setdefault(field, None)
+    pin_audit = normalized["pin_audit"]
+    if pin_audit is not None:
+        if (
+            not isinstance(pin_audit, dict)
+            or set(pin_audit) != {"actor", "reason", "changed_at"}
+            or not isinstance(pin_audit.get("actor"), str)
+            or not pin_audit["actor"]
+            or len(pin_audit["actor"]) > 128
+            or not isinstance(pin_audit.get("reason"), str)
+            or len(pin_audit["reason"]) > 256
+            or not isinstance(pin_audit.get("changed_at"), (int, float))
+            or isinstance(pin_audit.get("changed_at"), bool)
+        ):
+            raise CacheError("cache_lifecycle_invalid")
+        try:
+            changed_at = float(pin_audit["changed_at"])
+        except (OverflowError, TypeError, ValueError) as error:
+            raise CacheError("cache_lifecycle_invalid") from error
+        if not math.isfinite(changed_at):
+            raise CacheError("cache_lifecycle_invalid")
+    proof = normalized["rebuild_proof"]
+    if proof is not None and (
+        not isinstance(proof, dict)
+        or set(proof)
+        not in (
+            {
+                "identity",
+                "digest",
+                "source_policy",
+                "evidence_note",
+                "actor",
+                "confirmed_at",
+                "valid_until",
+                "automatic",
+            },
+            {
+                "identity",
+                "digest",
+                "source_policy",
+                "evidence_note",
+                "actor",
+                "confirmed_at",
+                "valid_until",
+                "automatic",
+                "source_scope",
+            },
+        )
+        or not isinstance(proof.get("identity"), dict)
+        or not isinstance(proof.get("digest"), str)
+        or not isinstance(proof.get("source_policy"), str)
+        or proof["source_policy"] not in {"verified_offline", "managed_online"}
+        or not isinstance(proof.get("evidence_note"), str)
+        or not proof["evidence_note"]
+        or len(proof["evidence_note"]) > 256
+        or not isinstance(proof.get("actor"), str)
+        or not proof["actor"]
+        or len(proof["actor"]) > 128
+        or type(proof.get("automatic")) is not bool
+        or (
+            proof.get("source_scope") is not None
+            and (
+                not isinstance(proof.get("source_scope"), str)
+                or not proof["source_scope"]
+                or len(proof["source_scope"]) > 128
+            )
+        )
+    ):
+        raise CacheError("cache_lifecycle_invalid")
+    if proof is not None:
+        try:
+            confirmed_at = float(proof["confirmed_at"])
+            valid_until = float(proof["valid_until"])
+        except (OverflowError, TypeError, ValueError) as error:
+            raise CacheError("cache_lifecycle_invalid") from error
+        if (
+            not math.isfinite(confirmed_at)
+            or not math.isfinite(valid_until)
+            or valid_until <= confirmed_at
+            or valid_until - confirmed_at > 86_400
+        ):
+            raise CacheError("cache_lifecycle_invalid")
+    unavailable = normalized["source_unavailable"]
+    if unavailable is not None and (
+        not isinstance(unavailable, dict)
+        or set(unavailable)
+        not in (
+            {"identity", "digest", "error_code", "observed_at"},
+            {"identity", "digest", "error_code", "observed_at", "source_scope"},
+        )
+        or not isinstance(unavailable.get("identity"), dict)
+        or not isinstance(unavailable.get("digest"), str)
+        or not isinstance(unavailable.get("error_code"), str)
+        or not unavailable["error_code"]
+        or len(unavailable["error_code"]) > 128
+        or not isinstance(unavailable.get("observed_at"), (int, float))
+        or not math.isfinite(float(unavailable["observed_at"]))
+        or (
+            unavailable.get("source_scope") is not None
+            and (
+                not isinstance(unavailable.get("source_scope"), str)
+                or not unavailable["source_scope"]
+                or len(unavailable["source_scope"]) > 128
+            )
+        )
+    ):
+        raise CacheError("cache_lifecycle_invalid")
+    return normalized
+
+
+def _read_lifecycle(path: Path) -> dict[str, Any] | None:
+    value = _read_bounded_json(path, max_bytes=_STATE_MAX_BYTES)
+    if value is None:
+        return None
+    fields = set(value)
+    if value.get("schema") != SCHEMA_VERSION or frozenset(fields) not in {
+        _LIFECYCLE_FIELDS,
+        _LIFECYCLE_FIELDS | _LIFECYCLE_POLICY_FIELDS,
+    }:
+        raise CacheError("cache_lifecycle_invalid")
+    return _validated_lifecycle(value)
 
 
 def _validated_use(path: Path, value: dict[str, Any]) -> dict[str, Any]:
@@ -494,7 +619,7 @@ class CacheLifecycleStore:
 
     def lifecycle(self, key: str) -> dict[str, Any]:
         path = self.lifecycle_root / f"{_safe_key(key)}.json"
-        value = _read_json(path, _LIFECYCLE_FIELDS)
+        value = _read_lifecycle(path)
         if value is None:
             raise CacheError("cache_lifecycle_unknown")
         validated = _validated_lifecycle(value)
@@ -541,8 +666,7 @@ class CacheLifecycleStore:
         """Initialize/update lifecycle data after exact content verification."""
         timestamp = time.time() if now is None else now
         path = self.lifecycle_root / f"{_safe_key(key)}.json"
-        raw_existing = _read_json(path, _LIFECYCLE_FIELDS)
-        existing = _validated_lifecycle(raw_existing) if raw_existing is not None else None
+        existing = _read_lifecycle(path)
         first_observed = timestamp
         pinned = False
         rebuildability = "unknown"
@@ -558,21 +682,22 @@ class CacheLifecycleStore:
             pinned = bool(existing["pinned"])
             rebuildability = str(existing["rebuildability"])
             policy_revision = int(existing["policy_revision"])
-        _write_json(
-            path,
-            {
-                "schema": SCHEMA_VERSION,
-                "key": key,
-                "identity": dict(identity),
-                "digest": digest,
-                "bytes": bytes_used,
-                "first_observed_at": first_observed,
-                "last_used_at": last_used,
-                "pinned": pinned,
-                "rebuildability": rebuildability,
-                "policy_revision": policy_revision,
-            },
-        )
+        updated = {
+            "schema": SCHEMA_VERSION,
+            "key": key,
+            "identity": dict(identity),
+            "digest": digest,
+            "bytes": bytes_used,
+            "first_observed_at": first_observed,
+            "last_used_at": last_used,
+            "pinned": pinned,
+            "rebuildability": rebuildability,
+            "policy_revision": policy_revision,
+        }
+        if existing is not None:
+            for field in _LIFECYCLE_POLICY_FIELDS:
+                updated[field] = existing[field]
+        _write_json(path, updated)
 
     def initialize_legacy_bound(
         self,
@@ -585,9 +710,9 @@ class CacheLifecycleStore:
         """Bind a manifest-owned legacy root without claiming its content is verified."""
 
         path = self.lifecycle_root / f"{_safe_key(key)}.json"
-        existing = _read_json(path, _LIFECYCLE_FIELDS)
+        existing = _read_lifecycle(path)
         if existing is not None:
-            validated = _validated_lifecycle(existing)
+            validated = existing
             if (
                 validated["key"] != key
                 or validated["identity"] != dict(identity)
@@ -614,13 +739,261 @@ class CacheLifecycleStore:
     def touch_used(self, key: str, *, now: float | None = None) -> None:
         """Advance last-used only after a real use has completed preparation."""
         path = self.lifecycle_root / f"{_safe_key(key)}.json"
-        raw_existing = _read_json(path, _LIFECYCLE_FIELDS)
-        existing = _validated_lifecycle(raw_existing) if raw_existing is not None else None
+        existing = _read_lifecycle(path)
         if existing is None:
             return
         updated = dict(existing)
         updated["last_used_at"] = time.time() if now is None else now
         _write_json(path, updated)
+
+    def set_pin(
+        self,
+        key: str,
+        *,
+        identity: Mapping[str, Any],
+        digest: str,
+        pinned: bool,
+        actor: str,
+        reason: str,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        timestamp = time.time() if now is None else now
+        if not actor or len(actor) > 128 or len(reason) > 256 or not math.isfinite(timestamp):
+            raise CacheError("cache_policy_invalid")
+        with self.entry_lock(key):
+            value = self.lifecycle(key)
+            if value["identity"] != dict(identity) or value["digest"] != digest:
+                raise CacheError("cache_identity_conflict")
+            updated = dict(value)
+            updated["pinned"] = pinned
+            updated["pin_audit"] = {
+                "actor": actor,
+                "reason": reason,
+                "changed_at": timestamp,
+            }
+            updated["policy_revision"] = int(value["policy_revision"]) + 1
+            _write_json(self.lifecycle_root / f"{_safe_key(key)}.json", updated, strict_sync=True)
+            return _validated_lifecycle(updated)
+
+    def confirm_rebuildability(
+        self,
+        key: str,
+        *,
+        identity: Mapping[str, Any],
+        digest: str,
+        source_policy: str,
+        evidence_note: str,
+        actor: str,
+        valid_until: float,
+        now: float | None = None,
+        automatic: bool = False,
+        source_scope: str | None = None,
+    ) -> dict[str, Any]:
+        timestamp = time.time() if now is None else now
+        if (
+            source_policy not in {"verified_offline", "managed_online"}
+            or not evidence_note
+            or len(evidence_note) > 256
+            or not actor
+            or len(actor) > 128
+            or not math.isfinite(timestamp)
+            or not math.isfinite(valid_until)
+            or valid_until <= timestamp
+            or valid_until - timestamp > 86_400
+            or (source_scope is not None and (not source_scope or len(source_scope) > 128))
+        ):
+            raise CacheError("cache_rebuild_proof_invalid")
+        with self.entry_lock(key):
+            value = self.lifecycle(key)
+            if value["identity"] != dict(identity) or value["digest"] != digest:
+                raise CacheError("cache_identity_conflict")
+            updated = dict(value)
+            updated["rebuildability"] = "confirmed"
+            updated["rebuild_proof"] = {
+                "identity": dict(identity),
+                "digest": digest,
+                "source_policy": source_policy,
+                "evidence_note": evidence_note,
+                "actor": actor,
+                "confirmed_at": timestamp,
+                "valid_until": valid_until,
+                "automatic": automatic,
+                "source_scope": source_scope,
+            }
+            updated["source_unavailable"] = None
+            updated["policy_revision"] = int(value["policy_revision"]) + 1
+            _write_json(self.lifecycle_root / f"{_safe_key(key)}.json", updated, strict_sync=True)
+            cleared_scopes: list[str] = []
+            if source_scope is not None:
+                cleared_scopes.append(source_scope)
+            language = identity.get("language")
+            if source_policy == "managed_online" and isinstance(language, str) and language:
+                normalized = language.strip().lower()
+                global_digest = hashlib.sha256(f"{normalized}\0unconfigured".encode()).hexdigest()
+                cleared_scopes.append(f"{normalized}:{global_digest}")
+            for cleared_scope in cleared_scopes:
+                marker = hashlib.sha256(cleared_scope.encode("ascii")).hexdigest()
+                try:
+                    (self.state_root / f"source-unavailable-{marker}.json").unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as error:
+                    raise CacheError("cache_lifecycle_write_failed") from error
+            if cleared_scopes:
+                _sync_directory(self.state_root, strict=True)
+            return _validated_lifecycle(updated)
+
+    def invalidate_automatic_rebuildability(
+        self,
+        key: str,
+        *,
+        identity: Mapping[str, Any],
+        digest: str,
+    ) -> None:
+        """Revoke only a system proof after its material is observed invalid."""
+
+        with self.entry_lock(key):
+            value = self.lifecycle(key)
+            proof = value.get("rebuild_proof")
+            if (
+                value["identity"] != dict(identity)
+                or value["digest"] != digest
+                or not isinstance(proof, dict)
+                or proof.get("automatic") is not True
+                or proof.get("identity") != dict(identity)
+                or proof.get("digest") != digest
+            ):
+                return
+            updated = dict(value)
+            updated["rebuildability"] = "unknown"
+            updated["rebuild_proof"] = None
+            updated["policy_revision"] = int(value["policy_revision"]) + 1
+            _write_json(self.lifecycle_root / f"{_safe_key(key)}.json", updated, strict_sync=True)
+
+    def record_source_unavailable(
+        self,
+        key: str,
+        *,
+        identity: Mapping[str, Any],
+        digest: str,
+        error_code: str,
+        source_scope: str | None = None,
+        now: float | None = None,
+    ) -> None:
+        stable_codes = {
+            "dependency_source_unavailable",
+            "builtin_content_unavailable",
+            "builtin_dependency_missing",
+        }
+        if error_code not in stable_codes:
+            return
+        if source_scope is not None and (not source_scope or len(source_scope) > 128):
+            raise CacheError("cache_policy_invalid")
+        timestamp = time.time() if now is None else now
+        with self.entry_lock(key):
+            value = self.lifecycle(key)
+            if value["identity"] != dict(identity) or value["digest"] != digest:
+                return
+            updated = dict(value)
+            updated["source_unavailable"] = {
+                "identity": dict(identity),
+                "digest": digest,
+                "error_code": error_code,
+                "observed_at": timestamp,
+                "source_scope": source_scope,
+            }
+            updated["policy_revision"] = int(value["policy_revision"]) + 1
+            _write_json(self.lifecycle_root / f"{_safe_key(key)}.json", updated, strict_sync=True)
+        if source_scope is not None:
+            self.record_source_scope_unavailable(
+                source_scope=source_scope, error_code=error_code, now=timestamp
+            )
+
+    def record_source_scope_unavailable(
+        self,
+        *,
+        source_scope: str,
+        error_code: str,
+        now: float | None = None,
+    ) -> None:
+        stable_codes = {
+            "dependency_source_unavailable",
+            "builtin_content_unavailable",
+            "builtin_dependency_missing",
+        }
+        if error_code not in stable_codes or not source_scope or len(source_scope) > 128:
+            raise CacheError("cache_policy_invalid")
+        timestamp = time.time() if now is None else now
+        if not math.isfinite(timestamp):
+            raise CacheError("cache_policy_invalid")
+        marker = hashlib.sha256(source_scope.encode("ascii")).hexdigest()
+        _write_json(
+            self.state_root / f"source-unavailable-{marker}.json",
+            {
+                "schema": SCHEMA_VERSION,
+                "source_scope": source_scope,
+                "error_code": error_code,
+                "observed_at": timestamp,
+            },
+            strict_sync=True,
+        )
+
+    def reclamation_reason(
+        self,
+        key: str,
+        *,
+        identity: Mapping[str, Any],
+        digest: str,
+        offline_protection: bool,
+        offline_mode: bool,
+        now: float | None = None,
+    ) -> str | None:
+        timestamp = time.time() if now is None else now
+        value = self.lifecycle(key)
+        if value["identity"] != dict(identity) or value["digest"] != digest:
+            return "cache_identity_conflict"
+        if value["pinned"]:
+            return "cache_pinned"
+        proof = value["rebuild_proof"]
+        if value["rebuildability"] != "confirmed" or not isinstance(proof, dict):
+            return "cache_rebuild_unknown"
+        if proof["identity"] != dict(identity) or proof["digest"] != digest:
+            return "cache_rebuild_unknown"
+        if float(proof["valid_until"]) <= timestamp:
+            return "cache_rebuild_unknown"
+        unavailable = value["source_unavailable"]
+        if (
+            isinstance(unavailable, dict)
+            and unavailable["identity"] == dict(identity)
+            and unavailable["digest"] == digest
+        ):
+            return "cache_rebuild_unavailable"
+        source_scope = proof.get("source_scope")
+        scopes: list[str] = []
+        if isinstance(source_scope, str):
+            scopes.append(source_scope)
+        language = identity.get("language")
+        if isinstance(language, str) and language:
+            normalized = language.strip().lower()
+            global_digest = hashlib.sha256(f"{normalized}\0unconfigured".encode()).hexdigest()
+            scopes.append(f"{normalized}:{global_digest}")
+        for candidate_scope in scopes:
+            marker = hashlib.sha256(candidate_scope.encode("ascii")).hexdigest()
+            source_failure = _read_json(
+                self.state_root / f"source-unavailable-{marker}.json",
+                _SOURCE_FAILURE_FIELDS,
+            )
+            if (
+                source_failure is not None
+                and source_failure["source_scope"] == candidate_scope
+                and isinstance(source_failure.get("observed_at"), (int, float))
+                and math.isfinite(float(source_failure["observed_at"]))
+                and timestamp - float(source_failure["observed_at"]) <= 86_400
+            ):
+                return "cache_rebuild_unavailable"
+        if offline_protection and offline_mode and proof["source_policy"] != "verified_offline":
+            return "cache_rebuild_unavailable"
+        return None
 
     def replace_verified(
         self,
@@ -662,6 +1035,9 @@ class CacheLifecycleStore:
                 "pinned": False,
                 "rebuildability": "unknown",
                 "policy_revision": int(existing["policy_revision"]) + 1,
+                "pin_audit": None,
+                "rebuild_proof": None,
+                "source_unavailable": None,
             },
             strict_sync=True,
         )

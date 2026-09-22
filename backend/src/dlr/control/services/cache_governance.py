@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, event, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -30,12 +31,17 @@ from dlr.control.services.worker_protocol import token_matches
 ACTIVE_EXECUTIONS = frozenset({"queued", "running", "retry_wait"})
 ACTIVE_ATTEMPTS = frozenset({"claimed", "running"})
 MAX_REFERENCE_RECORDS = 1_024
+MAX_CACHE_REFERENCE_BATCH_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
 class CacheReferenceFacts:
     protected: bool
     reasons: tuple[str, ...]
+
+
+class CacheReferenceDeadlineExceeded(Exception):
+    """The read-only cache-reference batch exhausted its total SQL budget."""
 
 
 def _ensure_guard(
@@ -272,6 +278,120 @@ def reference_facts(
         reasons.add("adapter_cleanup_incomplete")
     ordered = tuple(sorted(reasons))
     return CacheReferenceFacts(bool(ordered), ordered)
+
+
+def cache_key_reference_facts(
+    session: Session,
+    *,
+    worker_id: int,
+    items: list[tuple[int, int]],
+) -> tuple[float, bool, list[dict[str, Any]]]:
+    """Resolve bounded cache-key references without creating guard state."""
+
+    deadline = time.monotonic() + MAX_CACHE_REFERENCE_BATCH_SECONDS
+    connection = session.connection()
+
+    def apply_remaining_statement_timeout(
+        _connection: Any,
+        cursor: Any,
+        _statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CacheReferenceDeadlineExceeded
+        timeout_ms = max(1, int(remaining * 1_000))
+        cursor.execute(
+            "SELECT set_config('statement_timeout', %s, true)",
+            (f"{timeout_ms}ms",),
+        )
+
+    event.listen(connection, "before_cursor_execute", apply_remaining_statement_timeout)
+    try:
+        worker = session.get(Worker, worker_id)
+        if worker is None:
+            raise domain_error(404, "worker_not_found", "Worker not found")
+        if worker.isolation_capabilities.get("cache_governance_v1") is not True:
+            raise domain_error(
+                409, "cache_governance_unsupported", "Worker cache governance is unavailable"
+            )
+        sampled_at = database_now(session).timestamp()
+        complete = True
+        results: list[dict[str, Any]] = []
+        for adapter_id, version_id in items:
+            if time.monotonic() >= deadline:
+                raise CacheReferenceDeadlineExceeded
+            version = session.get(AdapterVersion, version_id)
+            adapter = session.get(Adapter, adapter_id)
+            guard = session.get(WorkerCacheGuard, (worker_id, version_id))
+            active_operation = session.scalar(
+                select(WorkerCacheOperation.operation_id)
+                .where(
+                    WorkerCacheOperation.worker_id == worker_id,
+                    WorkerCacheOperation.version_id == version_id,
+                    WorkerCacheOperation.phase == "acquired",
+                )
+                .limit(1)
+            )
+            if (
+                version is None
+                or adapter is None
+                or version.adapter_id != adapter_id
+                or (guard is not None and guard.adapter_id != adapter_id)
+            ):
+                complete = False
+                results.append(
+                    {
+                        "adapter_id": adapter_id,
+                        "version_id": version_id,
+                        "status": "unknown",
+                        "reasons": ["cache_identity_unknown"],
+                    }
+                )
+                continue
+            if (guard is not None and guard.phase != "idle") or active_operation is not None:
+                results.append(
+                    {
+                        "adapter_id": adapter_id,
+                        "version_id": version_id,
+                        "status": "protected",
+                        "reasons": ["cache_operation_in_progress"],
+                    }
+                )
+                continue
+            facts = reference_facts(
+                session,
+                worker_id=worker_id,
+                adapter_id=adapter_id,
+                version_id=version_id,
+            )
+            reasons = list(facts.reasons)
+            if "reference_query_truncated" in reasons or len(reasons) > 16:
+                complete = False
+                results.append(
+                    {
+                        "adapter_id": adapter_id,
+                        "version_id": version_id,
+                        "status": "unknown",
+                        "reasons": reasons[:16],
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "adapter_id": adapter_id,
+                        "version_id": version_id,
+                        "status": "protected" if facts.protected else "clear",
+                        "reasons": reasons,
+                    }
+                )
+        if time.monotonic() >= deadline:
+            raise CacheReferenceDeadlineExceeded
+        return sampled_at, complete, results
+    finally:
+        event.remove(connection, "before_cursor_execute", apply_remaining_statement_timeout)
 
 
 def _replacement_reference_facts(

@@ -105,6 +105,15 @@ def prepare_version_java(
             raise venv.DependencyPreparationError("version cache is unavailable", "") from error
         classes = directory / "classes"
         if build is None and (classes / "Adapter.class").is_file():
+            if builtin_materials is not None:
+                venv.reconcile_builtin_rebuildability(
+                    runtime_root,
+                    adapter_id=adapter_id,
+                    version_id=version_id,
+                    identity=identity,
+                    builtin_materials=builtin_materials,
+                    external_dependencies_present=bool(dependencies),
+                )
             if dependency_log is not None:
                 for group, artifact, version in dependencies:
                     dependency_log(f"{group}:{artifact}:{version} 已安装，检查通过")
@@ -275,6 +284,12 @@ def prepare_version_java(
                 dependency_context,
             )
         except venv.DependencyPreparationError as error:
+            venv.record_dependency_source_failure(
+                runtime_root,
+                language="java",
+                source_url=repository_url,
+                error=error,
+            )
             build.abort()
             if builtin_materials is not None and any(
                 marker in error.install_log.lower()
@@ -294,7 +309,16 @@ def prepare_version_java(
             if settings_path is not None:
                 settings_path.unlink(missing_ok=True)
         try:
-            return build.finish(identity)
+            return build.finish(
+                identity,
+                automatic_offline_proof=(
+                    builtin_materials is not None
+                    and venv.builtin_rebuildability_verified(
+                        builtin_materials,
+                        external_dependencies_present=bool(dependencies),
+                    )
+                ),
+            )
         except CacheError as error:
             build.abort()
             raise venv.DependencyPreparationError("version cache promotion failed", "") from error

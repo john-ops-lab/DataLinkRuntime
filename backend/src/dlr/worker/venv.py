@@ -43,6 +43,7 @@ from dlr.worker import cache, i18n
 from dlr.worker.cache import CacheReservation, VerifiedVersionCache
 from dlr.worker.cache_deletion import CacheDeletionManager
 from dlr.worker.cache_lifecycle import CacheLifecycleStore
+from dlr.worker.cache_policy import create_version_cache, managed_source_scope
 from dlr.worker.cache_replacement import current as current_replacement
 
 logger = logging.getLogger("dlr.worker.venv")
@@ -426,6 +427,109 @@ class DependencyPreparationError(Exception):
         self.no_source = no_source
 
 
+def record_dependency_source_failure(
+    runtime_root: Path,
+    *,
+    language: str,
+    source_url: str | None,
+    error: DependencyPreparationError,
+) -> None:
+    """Persist only a stable, non-sensitive relation for a proven source failure."""
+
+    if not error.no_source and error.hint_code not in {"source", "network", "dns", "tls", "auth"}:
+        return
+    lifecycle = CacheLifecycleStore.for_runtime(runtime_root)
+    try:
+        lifecycle.record_source_scope_unavailable(
+            source_scope=managed_source_scope(language, source_url),
+            error_code="dependency_source_unavailable",
+        )
+    except cache.CacheError as policy_error:
+        logger.warning("dependency source failure receipt was not recorded (%s)", policy_error.code)
+
+
+def confirm_builtin_rebuildability(
+    runtime_root: Path,
+    *,
+    adapter_id: int,
+    version_id: int,
+    identity: Mapping[str, object],
+) -> None:
+    """Confirm a hit only when the caller has already verified built-in materials."""
+
+    lifecycle = CacheLifecycleStore.for_runtime(runtime_root)
+    key = f"{adapter_id}-{version_id}"
+    try:
+        facts = lifecycle.lifecycle(key)
+        now = time.time()
+        lifecycle.confirm_rebuildability(
+            key,
+            identity=identity,
+            digest=str(facts["digest"]),
+            source_policy="verified_offline",
+            evidence_note="verified built-in package materials",
+            actor="platform",
+            valid_until=now + 86_400,
+            now=now,
+            automatic=True,
+        )
+    except cache.CacheError as error:
+        logger.warning("automatic cache rebuild proof was not recorded (%s)", error.code)
+
+
+def reconcile_builtin_rebuildability(
+    runtime_root: Path,
+    *,
+    adapter_id: int,
+    version_id: int,
+    identity: Mapping[str, object],
+    builtin_materials: Any,
+    external_dependencies_present: bool,
+) -> bool:
+    """Refresh a valid system proof or revoke only its obsolete automatic proof."""
+
+    verified = builtin_rebuildability_verified(
+        builtin_materials,
+        external_dependencies_present=external_dependencies_present,
+    )
+    if verified:
+        confirm_builtin_rebuildability(
+            runtime_root,
+            adapter_id=adapter_id,
+            version_id=version_id,
+            identity=identity,
+        )
+        return True
+    lifecycle = CacheLifecycleStore.for_runtime(runtime_root)
+    key = f"{adapter_id}-{version_id}"
+    try:
+        facts = lifecycle.lifecycle(key)
+        lifecycle.invalidate_automatic_rebuildability(
+            key,
+            identity=identity,
+            digest=str(facts["digest"]),
+        )
+    except cache.CacheError as error:
+        logger.warning("automatic cache rebuild proof was not invalidated (%s)", error.code)
+    return False
+
+
+def builtin_rebuildability_verified(
+    builtin_materials: Any,
+    *,
+    external_dependencies_present: bool,
+) -> bool:
+    """Accept only complete material that remains available after the Attempt."""
+
+    files = builtin_materials.snapshot.get("files")
+    if files == []:
+        return not external_dependencies_present
+    return bool(
+        builtin_materials.lifecycle == "managed_persistent"
+        and builtin_materials.local_materials_verified()
+    )
+
+
 def _lock_for(runtime_root: Path, adapter_id: int, version_id: int) -> Any:
     """Return the shared process/thread-safe cache key lock."""
     from dlr.worker.cache_lifecycle import CacheLifecycleStore, cache_key
@@ -550,7 +654,34 @@ class _VersionBuild:
         except OSError as error:
             raise cache.CacheError("cache_staging_cleanup_failed") from error
 
-    def finish(self, identity: Mapping[str, object]) -> Path:
+    def _confirm_automatic_offline(self, identity: Mapping[str, object]) -> None:
+        key = f"{identity['adapter_id']}-{identity['version_id']}"
+        lifecycle = CacheLifecycleStore(self.cache.root)
+        try:
+            facts = lifecycle.lifecycle(key)
+            now = time.time()
+            lifecycle.confirm_rebuildability(
+                key,
+                identity=identity,
+                digest=str(facts["digest"]),
+                source_policy="verified_offline",
+                evidence_note="verified built-in package materials",
+                actor="platform",
+                valid_until=now + 86_400,
+                now=now,
+                automatic=True,
+            )
+        except cache.CacheError as error:
+            # A failed policy receipt safely leaves the entry unknown; it must
+            # not turn a successfully verified runtime into an execution miss.
+            logger.warning("automatic cache rebuild proof was not recorded (%s)", error.code)
+
+    def finish(
+        self,
+        identity: Mapping[str, object],
+        *,
+        automatic_offline_proof: bool = False,
+    ) -> Path:
         primary_error: BaseException | None = None
         try:
             if self.old_identity is not None and self.old_digest is not None:
@@ -638,20 +769,26 @@ class _VersionBuild:
                 )
                 if not verified:
                     raise cache.CacheError("cache_replacement_incomplete")
+                if automatic_offline_proof:
+                    self._confirm_automatic_offline(identity)
                 return self.target
             if self.staging_root is None:
-                return self.cache.promote(
+                target = self.cache.promote(
                     self.staging,
                     self.target,
                     identity=identity,
                     reservation=self.reservation,
                 )
-            return self.cache.promote_from_tmpfs(
-                self.staging,
-                self.target,
-                identity=identity,
-                reservation=self.reservation,
-            )
+            else:
+                target = self.cache.promote_from_tmpfs(
+                    self.staging,
+                    self.target,
+                    identity=identity,
+                    reservation=self.reservation,
+                )
+            if automatic_offline_proof:
+                self._confirm_automatic_offline(identity)
+            return target
         except BaseException as error:
             primary_error = error
             raise
@@ -705,7 +842,7 @@ def _begin_version_build(
     reservation_bytes: int | None = None,
     force_replacement: bool = False,
 ) -> tuple[VerifiedVersionCache, Path, _VersionBuild | None]:
-    version_cache = VerifiedVersionCache(runtime_root / "version-cache")
+    version_cache = create_version_cache(runtime_root)
     target = version_dir(runtime_root, adapter_id, version_id)
     if not force_replacement and version_cache.verify(target, identity):
         return version_cache, target, None
@@ -1090,6 +1227,15 @@ def prepare_version_venv(
         if build is None:
             python_path = venv_python(directory)
             if python_path.is_file():
+                if builtin_materials is not None:
+                    reconcile_builtin_rebuildability(
+                        runtime_root,
+                        adapter_id=adapter_id,
+                        version_id=version_id,
+                        identity=identity,
+                        builtin_materials=builtin_materials,
+                        external_dependencies_present=bool(dependencies),
+                    )
                 if dependency_log is not None:
                     for dependency in dependencies:
                         dependency_log(f"{dependency} 已安装，检查通过")
@@ -1220,9 +1366,15 @@ def prepare_version_venv(
                 if dependency_log is not None:
                     for dependency in dependencies:
                         dependency_log(f"{dependency} 安装成功")
-        except DependencyPreparationError:
+        except DependencyPreparationError as error:
             # Leave no half-built staging entry behind; next attempt rebuilds
             # cleanly without publishing an unverified runtime.
+            record_dependency_source_failure(
+                runtime_root,
+                language="python",
+                source_url=index_url,
+                error=error,
+            )
             build.abort()
             raise
         if builtin_materials is not None:
@@ -1232,7 +1384,16 @@ def prepare_version_venv(
             if uv_lock.is_file() and not uv_lock.is_symlink():
                 uv_lock.chmod(0o600)
         try:
-            final_directory = build.finish(identity)
+            final_directory = build.finish(
+                identity,
+                automatic_offline_proof=(
+                    builtin_materials is not None
+                    and builtin_rebuildability_verified(
+                        builtin_materials,
+                        external_dependencies_present=bool(dependencies),
+                    )
+                ),
+            )
         except cache.CacheError as error:
             build.abort()
             raise DependencyPreparationError("version cache promotion failed", "") from error

@@ -89,6 +89,7 @@ class CacheScanBudget:
     nodes_remaining: int
     hash_bytes_remaining: int
     deadline: float
+    max_depth: int = 64
 
     def consume_node(self) -> None:
         if self.nodes_remaining <= 0 or time.monotonic() >= self.deadline:
@@ -255,7 +256,7 @@ def _tree_facts_bounded(root: Path, *, budget: CacheScanBudget) -> tuple[str, in
     stack: list[tuple[Path, int]] = [(root, 0)]
     while stack:
         directory, depth = stack.pop()
-        if depth >= 64 or time.monotonic() >= budget.deadline:
+        if depth >= budget.max_depth or time.monotonic() >= budget.deadline:
             raise CacheError("cache_scan_budget_exhausted")
         try:
             with os.scandir(directory) as iterator:
@@ -511,7 +512,7 @@ class VerifiedVersionCache:
             raise CacheError("cache_path_invalid")
         return candidate
 
-    def _locked(self) -> Any:
+    def _locked(self, *, blocking: bool = True) -> Any:
         class Lock:
             def __init__(self, owner: VerifiedVersionCache) -> None:
                 self.owner = owner
@@ -519,7 +520,12 @@ class VerifiedVersionCache:
 
             def __enter__(self) -> Lock:
                 self.handle = open(self.owner._lock_path, "a+", encoding="ascii")
-                fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+                flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+                try:
+                    fcntl.flock(self.handle.fileno(), flags)
+                except BlockingIOError as error:
+                    self.handle.close()
+                    raise CacheError("cache_lock_busy") from error
                 return self
 
             def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
@@ -529,11 +535,27 @@ class VerifiedVersionCache:
         return Lock(self)
 
     @contextmanager
-    def accounting_lock(self) -> Iterator[None]:
+    def accounting_lock(self, *, blocking: bool = True) -> Iterator[None]:
         """Serialize physical-byte snapshots with cache-tree publication moves."""
 
-        with _thread_lock, self._locked():
-            yield
+        acquired = _thread_lock.acquire(blocking=blocking)
+        if not acquired:
+            raise CacheError("cache_lock_busy")
+        try:
+            with self._locked(blocking=blocking):
+                yield
+        finally:
+            _thread_lock.release()
+
+    def reservation_snapshot(self, *, blocking: bool = False) -> dict[str, Any]:
+        """Read reservation facts without traversing cache content."""
+
+        with self.accounting_lock(blocking=blocking):
+            state = self._state()
+            return {
+                "reserved_bytes": sum(int(item["amount"]) for item in state.values()),
+                "active_reservation_tokens": frozenset(state),
+            }
 
     def _state(self) -> dict[str, dict[str, int | float]]:
         value = _read_json(self._state_path, {"reservations": {}})
@@ -611,6 +633,49 @@ class VerifiedVersionCache:
     def _committed_bytes(self, *, active_reservation_tokens: set[str] | None = None) -> int:
         with self.accounting_lock():
             return self._committed_bytes_locked(active_reservation_tokens=active_reservation_tokens)
+
+    def accounting_snapshot(self) -> dict[str, Any]:
+        """Return bounded reservation facts plus physical version-cache occupancy."""
+
+        with _thread_lock, self._locked():
+            state = self._state()
+            committed = self._committed_bytes_locked(active_reservation_tokens=set(state))
+            return {
+                "committed_bytes": committed,
+                "reserved_bytes": sum(int(item["amount"]) for item in state.values()),
+                "active_reservation_tokens": frozenset(state),
+            }
+
+    def inspect_entry_bounded(
+        self, path: Path, *, budget: CacheScanBudget
+    ) -> dict[str, Any] | None:
+        """Verify one ready entry and return identity plus physical accounting facts."""
+
+        try:
+            entry = self._direct_entry(path, staging=False, allow_missing=False)
+            manifest = _read_json(entry / _MANIFEST_NAME, {})
+            identity = manifest.get("identity")
+            digest = manifest.get("digest")
+            if not isinstance(identity, dict) or not isinstance(digest, str):
+                return None
+            actual_digest, total, files, physical = _tree_facts_bounded(entry, budget=budget)
+            if (
+                manifest.get("digest") != actual_digest
+                or manifest.get("bytes") != total
+                or manifest.get("files") != files
+            ):
+                return None
+            return {
+                "identity": identity,
+                "digest": digest,
+                "bytes": total,
+                "physical_bytes": physical,
+                "files": files,
+            }
+        except CacheError as error:
+            if error.code == "cache_scan_budget_exhausted":
+                raise
+            return None
 
     def reserve(self, amount: int, *, ttl_seconds: int = 900) -> CacheReservation:
         if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:

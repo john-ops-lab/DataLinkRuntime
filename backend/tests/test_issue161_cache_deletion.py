@@ -110,6 +110,30 @@ class FakeGuardClient:
         next_after = page[-1]["version_id"] if len(active) > limit else None
         return [dict(item) for item in page], next_after
 
+    def resolve_cache_key_references(
+        self,
+        worker_id: int,
+        items: list[tuple[int, int]],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        _ = timeout_seconds
+        return {
+            "kind": "cache_keys_v1",
+            "worker_id": worker_id,
+            "sampled_at": time.time(),
+            "complete": True,
+            "items": [
+                {
+                    "adapter_id": adapter_id,
+                    "version_id": version_id,
+                    "status": "clear",
+                    "reasons": [],
+                }
+                for adapter_id, version_id in items
+            ],
+        }
+
 
 def _ready(
     tmp_path: Path,
@@ -134,11 +158,16 @@ def _ready(
         reservation=reservation,
     )
     manifest = json.loads((entry / ".dlr-cache-manifest.json").read_text(encoding="ascii"))
-    lifecycle_path = lifecycle.lifecycle_root / "11-13.json"
-    facts = json.loads(lifecycle_path.read_text(encoding="ascii"))
-    facts["rebuildability"] = "confirmed"
-    lifecycle_path.write_text(json.dumps(facts), encoding="ascii")
-    lifecycle_path.chmod(0o600)
+    facts = lifecycle.lifecycle("11-13")
+    lifecycle.confirm_rebuildability(
+        "11-13",
+        identity=identity,
+        digest=manifest["digest"],
+        source_policy="verified_offline",
+        evidence_note="test material",
+        actor="test",
+        valid_until=time.time() + 86_400,
+    )
     eligibility = DeletionEligibility(
         adapter_id=11,
         version_id=13,
@@ -464,7 +493,7 @@ def test_new_pin_after_acquire_prevents_recorded_operation_from_renaming(
     record = json.loads(
         (lifecycle.deletion_root / f"{result.operation_id}.json").read_text(encoding="ascii")
     )
-    assert record["last_error"] == "cache_not_eligible"
+    assert record["last_error"] == "cache_pinned"
     assert cache.entry_path("11-13").exists()
     assert client.operations[result.operation_id]["phase"] == "acquired"
 
@@ -669,11 +698,16 @@ def test_recovery_round_shares_delete_budget_across_records(tmp_path: Path) -> N
     )
     manager.begin(eligibility, max_nodes=1, max_bytes=8192)
     _add_ready(cache, 11, 14)
-    sidecar_path = lifecycle.lifecycle_root / "11-14.json"
-    facts = json.loads(sidecar_path.read_text(encoding="ascii"))
-    facts["rebuildability"] = "confirmed"
-    sidecar_path.write_text(json.dumps(facts), encoding="ascii")
-    sidecar_path.chmod(0o600)
+    facts = lifecycle.lifecycle("11-14")
+    lifecycle.confirm_rebuildability(
+        "11-14",
+        identity=facts["identity"],
+        digest=facts["digest"],
+        source_policy="verified_offline",
+        evidence_note="test material",
+        actor="test",
+        valid_until=time.time() + 86_400,
+    )
     manager.begin(
         DeletionEligibility(
             adapter_id=11,
@@ -765,3 +799,38 @@ def test_successful_unlink_spends_budget_before_directory_fsync(
     assert not payload.exists()
     assert budget.removed_nodes == 1
     assert budget.removed_bytes == len(b"spent")
+
+
+def test_rebuild_proof_expiry_after_guard_prevents_recorded_rename(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache, lifecycle, eligibility = _ready(tmp_path)
+    client = FakeGuardClient()
+    now = [time.time()]
+    manager = CacheDeletionManager(
+        cache,
+        lifecycle,
+        client,
+        worker_id=7,
+        journal_protected=lambda _key: False,
+        retry_seconds=0,
+        clock=lambda: now[0],
+    )
+    original_replace = deletion_module.os.replace
+
+    def fail_entry_rename(source: object, destination: object) -> None:
+        if Path(source) == cache.entry_path("11-13"):
+            raise OSError("pause before rename")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(deletion_module.os, "replace", fail_entry_rename)
+    result = manager.begin(eligibility, max_bytes=8192)
+    now[0] += 86_401
+    monkeypatch.setattr(deletion_module.os, "replace", original_replace)
+
+    manager.recover_round(max_items=1, max_pages=0, max_bytes=8192)
+    record = json.loads(
+        (lifecycle.deletion_root / f"{result.operation_id}.json").read_text(encoding="ascii")
+    )
+    assert record["last_error"] == "cache_rebuild_unknown"
+    assert cache.entry_path("11-13").exists()

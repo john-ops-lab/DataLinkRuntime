@@ -15,10 +15,10 @@
 
 ## 3. Checkpoint B — Policy and classified governance
 
-- [ ] 3.1 实现 design 默认值/范围与统一 cache factory，默认关闭周期/容量回收；测试五语言使用同一有效预算、非法配置失败、显式禁用和近期保留边界。
-- [ ] 3.2 实现 pin、identity/digest 绑定的可重建确认及默认离线保护；验证未知/固定/材料变化/源不可用保留与内置材料可确认路径，确认操作记录非敏感审计。
-- [ ] 3.3 实现有界周期扫描、稳定游标、容量高低水位和 reserve 失败至多一轮后重试一次；验证单 entry 的 nodes/hash/depth/时限预算、多版本淘汰顺序、无候选/预算不足明确拒绝，以及 round→key/key→round 交错均不等待造成互锁。
-- [ ] 3.4 分类统计版本、共享下载、失败 staging、trash 与未知目录；共享仅报告不计可回收，staging 需归属/失活 reservation/无 use-journal；测试共享其他 Adapter 不受影响、未知目录不删及账目核对。
+- [x] 3.1 实现 design 默认值/范围与统一 cache factory，默认关闭周期/容量回收；测试五语言使用同一有效预算、非法配置失败、显式禁用和近期保留边界。
+- [x] 3.2 实现 pin、identity/digest 绑定的可重建确认及默认离线保护；验证未知/固定/材料变化/源不可用保留与内置材料可确认路径，确认操作记录非敏感审计。
+- [x] 3.3 实现有界周期扫描、稳定游标、容量高低水位和 reserve 失败至多一轮后重试一次；验证单 entry 的 nodes/hash/depth/时限预算、多版本淘汰顺序、无候选/预算不足明确拒绝，以及 round→key/key→round 交错均不等待造成互锁。
+- [x] 3.4 分类统计版本、共享下载、失败 staging、trash 与未知目录；共享仅报告不计可回收，staging 需归属/失活 reservation/无 use-journal；测试共享其他 Adapter 不受影响、未知目录不删及账目核对。
 
 ## 4. Checkpoint B — Worker communication and administrator interface
 

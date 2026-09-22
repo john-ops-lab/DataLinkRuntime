@@ -105,6 +105,14 @@ class GuardClient(Protocol):
         timeout_seconds: float | None = None,
     ) -> tuple[list[dict[str, Any]], int | None]: ...
 
+    def resolve_cache_key_references(
+        self,
+        worker_id: int,
+        items: list[tuple[int, int]],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]: ...
+
 
 @dataclass(frozen=True)
 class DeletionEligibility:
@@ -429,6 +437,8 @@ class CacheDeletionManager:
         replacement_owner: tuple[int, int, int, int] | None = None,
         replacement_journal_roots: tuple[Path, Path] | None = None,
         replacement_resolve: Callable[[int, int | None], str | None] | None = None,
+        offline_protection: bool = True,
+        offline_mode: bool = False,
         retry_seconds: float = 60.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -442,6 +452,8 @@ class CacheDeletionManager:
         self.replacement_owner = replacement_owner
         self.replacement_journal_roots = replacement_journal_roots
         self.replacement_resolve = replacement_resolve
+        self.offline_protection = offline_protection
+        self.offline_mode = offline_mode
 
     def make_round_budget(
         self,
@@ -451,6 +463,7 @@ class CacheDeletionManager:
         max_scan_nodes: int,
         max_hash_bytes: int,
         deadline: float,
+        max_scan_depth: int = 64,
     ) -> _RoundBudget:
         return _RoundBudget(
             deletion=_DeleteBudget(
@@ -460,6 +473,7 @@ class CacheDeletionManager:
                 nodes_remaining=max_scan_nodes,
                 hash_bytes_remaining=max_hash_bytes,
                 deadline=deadline,
+                max_depth=max_scan_depth,
             ),
         )
 
@@ -467,6 +481,71 @@ class CacheDeletionManager:
         self, path: Path, *, budget: _RoundBudget
     ) -> tuple[dict[str, Any], str] | None:
         return self.cache.observed_identity_bounded(path, budget=budget.scan)
+
+    def cleanup_inactive_staging(
+        self,
+        path: Path,
+        *,
+        key: str,
+        reservation_token: str,
+        older_than: float,
+        budget: _RoundBudget,
+        max_records: int,
+    ) -> tuple[bool, int]:
+        """Remove only an expired, unowned staging child under policy budgets."""
+
+        with self.lifecycle.entry_lock(key, blocking=False):
+            if reservation_token in self.cache.reservation_snapshot()["active_reservation_tokens"]:
+                raise CacheError("cache_staging_active")
+            info = path.lstat()
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or stat.S_ISLNK(info.st_mode)
+                or info.st_mtime > older_than
+            ):
+                raise CacheError("cache_staging_active")
+            self._local_safe(key)
+            records = _local_record_page(
+                self.lifecycle.deletion_root,
+                after=None,
+                limit=max_records + 1,
+                deadline=budget.deletion.deadline,
+            )
+            if len(records) > max_records:
+                raise CacheError("cache_cleanup_unknown")
+            for record_path in records:
+                record = _read_record(record_path)
+                if record is None:
+                    continue
+                if record.get("new_staging_name") == path.name:
+                    raise CacheError("cache_staging_active")
+            before = budget.deletion.removed_bytes
+            with self.cache.accounting_lock(blocking=False):
+                complete = _delete_some(path, budget.deletion)
+            return complete, budget.deletion.removed_bytes - before
+
+    def preview_local_safe(self, key: str, *, max_records: int, budget: CacheScanBudget) -> None:
+        """Bounded, read-only local protection check for policy reporting."""
+
+        with self.lifecycle.entry_lock(key, blocking=False):
+            self._local_safe(key)
+            records = _local_record_page(
+                self.lifecycle.deletion_root,
+                after=None,
+                limit=max_records + 1,
+                deadline=budget.deadline,
+            )
+            if len(records) > max_records:
+                raise CacheError("cache_cleanup_unknown")
+            for record_path in records:
+                budget.consume_node()
+                record = _read_record(record_path)
+                if (
+                    record is not None
+                    and (f"{record.get('adapter_id')}-{record.get('version_id')}" == key)
+                    and record.get("phase") not in _TERMINAL_PHASES
+                ):
+                    raise CacheError("cache_operation_in_progress")
 
     def _local_safe(self, key: str) -> None:
         records = self.lifecycle.use_records_for_key(key)
@@ -570,6 +649,7 @@ class CacheDeletionManager:
         max_bytes: int = 256 * 1024 * 1024,
         max_scan_nodes: int = 100_000,
         max_hash_bytes: int = 256 * 1024 * 1024,
+        max_scan_depth: int = 64,
         max_seconds: float = 10.0,
         round_budget: _RoundBudget | None = None,
     ) -> DeletionResult:
@@ -582,18 +662,27 @@ class CacheDeletionManager:
             max_scan_nodes=max_scan_nodes,
             max_hash_bytes=max_hash_bytes,
             deadline=deadline,
+            max_scan_depth=max_scan_depth,
         )
         with self.lifecycle.entry_lock(key, blocking=False):
             owner = self.lifecycle.owner(self.worker_id)
             facts = self.lifecycle.lifecycle(key)
+            policy_reason = self.lifecycle.reclamation_reason(
+                key,
+                identity=eligibility.identity,
+                digest=eligibility.digest,
+                offline_protection=self.offline_protection,
+                offline_mode=self.offline_mode,
+                now=self.clock(),
+            )
             if (
                 facts["identity"] != dict(eligibility.identity)
                 or facts["digest"] != eligibility.digest
                 or facts["pinned"] is not False
-                or facts["rebuildability"] != "confirmed"
+                or policy_reason is not None
                 or float(facts["last_used_at"]) > eligibility.last_used_before
             ):
-                raise CacheError("cache_not_eligible")
+                raise CacheError(policy_reason or "cache_not_eligible")
             entry = self.cache.entry_path(key)
             verified, original_bytes = self.cache.verify_for_deletion_bounded(
                 entry,
@@ -968,14 +1057,22 @@ class CacheDeletionManager:
                 if source_exists:
                     _assert_root_identity(source, record)
                     lifecycle = self.lifecycle.lifecycle(key)
+                    policy_reason = self.lifecycle.reclamation_reason(
+                        key,
+                        identity=record["identity"],
+                        digest=str(record["digest"]),
+                        offline_protection=self.offline_protection,
+                        offline_mode=self.offline_mode,
+                        now=self.clock(),
+                    )
                     if (
                         lifecycle["identity"] != record["identity"]
                         or lifecycle["digest"] != record["digest"]
                         or lifecycle["pinned"] is not False
-                        or lifecycle["rebuildability"] != "confirmed"
+                        or policy_reason is not None
                         or float(lifecycle["last_used_at"]) > float(record["last_used_before"])
                     ):
-                        raise CacheError("cache_not_eligible")
+                        raise CacheError(policy_reason or "cache_not_eligible")
                     verified, _bytes = self.cache.verify_for_deletion_bounded(
                         source,
                         record["identity"],
@@ -989,7 +1086,28 @@ class CacheDeletionManager:
                         raise CacheError("cache_identity_unverified")
                     self._local_safe(key)
                     self._guard(record, timeout_seconds=max(0.001, deadline - time.monotonic()))
-                    with self.cache.accounting_lock():
+                    with self.cache.accounting_lock(blocking=False):
+                        # Waiting for Control or the accounting ledger can cross a
+                        # proof expiry or a newly committed local protection.  This
+                        # is the final authorization point before the first rename.
+                        latest = self.lifecycle.lifecycle(key)
+                        latest_reason = self.lifecycle.reclamation_reason(
+                            key,
+                            identity=record["identity"],
+                            digest=str(record["digest"]),
+                            offline_protection=self.offline_protection,
+                            offline_mode=self.offline_mode,
+                            now=self.clock(),
+                        )
+                        if (
+                            latest["identity"] != record["identity"]
+                            or latest["digest"] != record["digest"]
+                            or latest["pinned"] is not False
+                            or latest_reason is not None
+                            or float(latest["last_used_at"]) > float(record["last_used_before"])
+                        ):
+                            raise CacheError(latest_reason or "cache_not_eligible")
+                        self._local_safe(key)
                         os.replace(source, trash)
                         _sync_directory(self.cache.entries, strict=True)
                 else:
@@ -1228,6 +1346,7 @@ class CacheDeletionManager:
         max_bytes: int = 256 * 1024 * 1024,
         max_scan_nodes: int = 100_000,
         max_hash_bytes: int = 256 * 1024 * 1024,
+        max_scan_depth: int = 64,
         max_seconds: float = 10.0,
     ) -> int:
         deadline = time.monotonic() + max_seconds
@@ -1239,6 +1358,7 @@ class CacheDeletionManager:
                 nodes_remaining=max_scan_nodes,
                 hash_bytes_remaining=max_hash_bytes,
                 deadline=deadline,
+                max_depth=max_scan_depth,
             ),
         )
         processed = 0

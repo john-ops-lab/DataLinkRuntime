@@ -26,9 +26,15 @@ from dlr.common.config import settings
 from dlr.common.platform_logging import configure_platform_logging
 from dlr.worker import cgroup_namespace, executor, sandbox
 from dlr.worker import workspace as workspace_manager
-from dlr.worker.cache import CacheError, VerifiedVersionCache
+from dlr.worker.cache import CacheError
 from dlr.worker.cache_deletion import CacheDeletionManager, DeletionEligibility
+from dlr.worker.cache_governance import CachePolicyManager
 from dlr.worker.cache_lifecycle import CacheLifecycleStore, JournalProtection
+from dlr.worker.cache_policy import (
+    CachePolicy,
+    create_version_cache,
+    register_pressure_handler,
+)
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
 
@@ -104,6 +110,7 @@ class WorkerConfig:
         self.protocol_version = PROTOCOL_VERSION
         self.heartbeat_seconds = float(os.environ.get("DLR_WORKER_HEARTBEAT_SECONDS", "10"))
         self.runtime_root = Path(os.environ.get("DLR_RUNTIME_ROOT", "/var/lib/dlr/runtime"))
+        self.cache_policy = CachePolicy.from_environment()
         self.workspace_cleanup_journal_root = Path(
             os.environ.get(
                 "DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT",
@@ -273,6 +280,8 @@ class Agent:
         self._sandbox_recovery_blocked = False
         self._cache_journal_protection: JournalProtection | None = None
         self._cache_deletion_manager: CacheDeletionManager | None = None
+        self._cache_policy_manager: CachePolicyManager | None = None
+        self._next_cache_policy_scan = 0.0
         self._active_cleanup_task: dict[str, Any] | None = None
         self._cleanup_entries: Any | None = None
         self._cleanup_retry_path: Path | None = None
@@ -303,13 +312,28 @@ class Agent:
         self._recover_cleanup_journals(worker_id)
         self._refresh_cache_journal_protection(worker_id, lifecycle)
         if owner_bound:
+            policy = getattr(self._config, "cache_policy", None) or CachePolicy.from_environment()
+            version_cache = create_version_cache(self._config.runtime_root, policy=policy)
             self._cache_deletion_manager = CacheDeletionManager(
-                VerifiedVersionCache(self._config.runtime_root / "version-cache"),
+                version_cache,
                 lifecycle,
                 self._client,
                 worker_id=worker_id,
                 journal_protected=lambda key: self._journal_protected(worker_id, lifecycle, key),
+                offline_protection=policy.offline_protection,
+                offline_mode=policy.offline_mode,
             )
+            self._cache_policy_manager = CachePolicyManager(
+                self._config.runtime_root,
+                version_cache,
+                lifecycle,
+                self._cache_deletion_manager,
+                policy,
+            )
+            register_pressure_handler(
+                version_cache.root, self._cache_policy_manager.pressure_cleanup
+            )
+            self._next_cache_policy_scan = time.monotonic()
             self._recover_cache_deletions()
         ready_file.write_text(str(os.getpid()), encoding="utf-8")
         logger.info("worker '%s' registered with id %s", self._config.name, worker_id)
@@ -334,6 +358,8 @@ class Agent:
         finally:
             self.request_stop()
             cleanup_thread.join(timeout=min(self._config.workspace_cleanup_interval_seconds, 5))
+            if self._cache_policy_manager is not None:
+                register_pressure_handler(self._cache_policy_manager.cache.root, None)
             ready_file.unlink(missing_ok=True)
             self._graceful_offline(worker_id)
             logger.info("worker agent stopped")
@@ -444,7 +470,17 @@ class Agent:
         if self._cache_deletion_manager is None:
             return
         try:
-            self._cache_deletion_manager.recover_round()
+            policy = getattr(self._config, "cache_policy", None) or CachePolicy.from_environment()
+            self._cache_deletion_manager.recover_round(
+                max_items=policy.max_delete_entries_per_round,
+                page_size=policy.max_delete_entries_per_round,
+                max_nodes=policy.max_scan_nodes_per_round,
+                max_bytes=policy.max_delete_bytes_per_round,
+                max_scan_nodes=policy.max_scan_nodes_per_round,
+                max_hash_bytes=policy.max_scan_hash_bytes_per_round,
+                max_scan_depth=policy.max_scan_depth,
+                max_seconds=policy.max_round_seconds,
+            )
         except (CacheError, ControlUnavailableError):
             logger.debug("cache deletion recovery deferred")
         except ClientError as error:
@@ -563,6 +599,22 @@ class Agent:
             try:
                 self._recover_cleanup_journals(worker_id, startup=False)
                 self._recover_cache_deletions()
+                policy_manager = self._cache_policy_manager
+                if (
+                    policy_manager is not None
+                    and policy_manager.policy.gc_enabled
+                    and time.monotonic() >= self._next_cache_policy_scan
+                ):
+                    policy_manager.run_round(mode="periodic")
+                    self._next_cache_policy_scan = (
+                        time.monotonic() + policy_manager.policy.scan_interval_seconds
+                    )
+                if (
+                    policy_manager is not None
+                    and policy_manager.policy.pressure_gc_enabled
+                    and policy_manager.pressure_due()
+                ):
+                    policy_manager.pressure_cleanup(0)
                 task = self._active_cleanup_task or self._client.claim_cleanup(worker_id)
                 if task is not None:
                     self._active_cleanup_task = task
@@ -572,6 +624,8 @@ class Agent:
                 logger.debug("adapter cleanup deferred: control unavailable")
             except ClientError as error:
                 logger.warning("adapter cleanup rejected: status=%s", error.status)
+            except CacheError as error:
+                logger.warning("cache governance round retained state: %s", error.code)
             self._stop.wait(delay)
 
     def _execute_cleanup_task(self, worker_id: int, task: dict[str, Any]) -> bool:
@@ -590,12 +644,14 @@ class Agent:
             return True
         try:
             owner = manager.lifecycle.owner(worker_id)
-            deadline = time.monotonic() + 5.0
+            policy = getattr(self._config, "cache_policy", None) or CachePolicy.from_environment()
+            deadline = time.monotonic() + policy.max_round_seconds
             round_budget = manager.make_round_budget(
-                max_nodes=100_000,
-                max_bytes=256 * 1024 * 1024,
-                max_scan_nodes=100_000,
-                max_hash_bytes=256 * 1024 * 1024,
+                max_nodes=policy.max_scan_nodes_per_round,
+                max_bytes=policy.max_delete_bytes_per_round,
+                max_scan_nodes=policy.max_scan_nodes_per_round,
+                max_hash_bytes=policy.max_scan_hash_bytes_per_round,
+                max_scan_depth=policy.max_scan_depth,
                 deadline=deadline,
             )
             inspected = 0
@@ -604,7 +660,7 @@ class Agent:
                 self._cleanup_retry_path = None
                 self._cleanup_retained = False
             exhausted = False
-            while inspected < 100 and time.monotonic() < deadline:
+            while inspected < policy.max_scan_entries_per_round and time.monotonic() < deadline:
                 retry_path = self._cleanup_retry_path
                 retrying_entry = retry_path is not None
                 if retry_path is not None:

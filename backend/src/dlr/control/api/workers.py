@@ -6,6 +6,7 @@ from typing import Annotated, Any, BinaryIO
 
 from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from dlr.control import db
@@ -27,6 +28,9 @@ from dlr.control.schemas.worker import (
     CacheGuardPage,
     CacheGuardResponse,
     CacheGuardResult,
+    CacheKeyReferenceBatch,
+    CacheKeyReferenceBatchResponse,
+    CacheKeyReferenceResult,
     CacheReferenceResolution,
     CacheReferenceResolve,
     CleanupResult,
@@ -184,11 +188,33 @@ def list_cache_guards(
 
 @router.post(
     "/api/workers/{worker_id}/cache/references/resolve",
-    response_model=CacheReferenceResolution,
+    response_model=CacheReferenceResolution | CacheKeyReferenceBatchResponse,
 )
 def resolve_cache_reference(
-    worker_id: int, payload: CacheReferenceResolve, session: DbSession
-) -> CacheReferenceResolution:
+    worker_id: int,
+    payload: CacheReferenceResolve | CacheKeyReferenceBatch,
+    session: DbSession,
+) -> CacheReferenceResolution | CacheKeyReferenceBatchResponse:
+    if isinstance(payload, CacheKeyReferenceBatch):
+        try:
+            sampled_at, complete, items = cache_governance.cache_key_reference_facts(
+                session,
+                worker_id=worker_id,
+                items=[(item.adapter_id, item.version_id) for item in payload.items],
+            )
+        except (DBAPIError, cache_governance.CacheReferenceDeadlineExceeded) as error:
+            session.rollback()
+            raise domain_error(
+                503,
+                "cache_reference_unavailable",
+                "Cache reference facts are temporarily unavailable",
+            ) from error
+        return CacheKeyReferenceBatchResponse(
+            worker_id=worker_id,
+            sampled_at=sampled_at,
+            complete=complete,
+            items=[CacheKeyReferenceResult.model_validate(item) for item in items],
+        )
     adapter_id, version_id = cache_governance.resolve_reference(
         session,
         worker_id=worker_id,

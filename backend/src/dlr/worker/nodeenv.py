@@ -116,6 +116,15 @@ def prepare_version_node(
         except CacheError as error:
             raise venv.DependencyPreparationError("version cache is unavailable", "") from error
         if build is None and (directory / "adapter.mjs").is_file():
+            if builtin_materials is not None:
+                venv.reconcile_builtin_rebuildability(
+                    runtime_root,
+                    adapter_id=adapter_id,
+                    version_id=version_id,
+                    identity=identity,
+                    builtin_materials=builtin_materials,
+                    external_dependencies_present=bool(dependencies),
+                )
             if dependency_log is not None:
                 for name, version in dependencies.items():
                     dependency_log(f"{name}@{version} 已安装，检查通过")
@@ -276,7 +285,13 @@ def prepare_version_node(
                     if dependency_log is not None:
                         for name, version in dependencies.items():
                             dependency_log(f"{name}@{version} 安装成功")
-                except venv.DependencyPreparationError:
+                except venv.DependencyPreparationError as error:
+                    venv.record_dependency_source_failure(
+                        runtime_root,
+                        language=language,
+                        source_url=registry_url,
+                        error=error,
+                    )
                     build.abort()
                     raise
                 finally:
@@ -324,7 +339,16 @@ def prepare_version_node(
                 build.abort()
                 raise
         try:
-            return build.finish(identity)
+            return build.finish(
+                identity,
+                automatic_offline_proof=(
+                    builtin_materials is not None
+                    and venv.builtin_rebuildability_verified(
+                        builtin_materials,
+                        external_dependencies_present=bool(dependencies),
+                    )
+                ),
+            )
         except CacheError as error:
             build.abort()
             raise venv.DependencyPreparationError("version cache promotion failed", "") from error

@@ -17,6 +17,7 @@ from dlr.worker.agent import Agent
 from dlr.worker.cache import CacheError, VerifiedVersionCache
 from dlr.worker.cache_deletion import CacheDeletionManager
 from dlr.worker.cache_lifecycle import CacheLifecycleStore
+from dlr.worker.cache_policy import CachePolicy
 from dlr.worker.cache_replacement import ReplacementAuthority, activate
 
 
@@ -432,7 +433,11 @@ def test_cleanup_scan_budget_continues_same_claim_before_retained_result(tmp_pat
             return "clear"
 
     client = Client()
-    config = SimpleNamespace(runtime_root=tmp_path, workspace_cleanup_interval_seconds=0.01)
+    config = SimpleNamespace(
+        runtime_root=tmp_path,
+        workspace_cleanup_interval_seconds=0.01,
+        cache_policy=CachePolicy(max_scan_entries_per_round=100),
+    )
     agent = Agent(config, client)  # type: ignore[arg-type]
     agent._cache_deletion_manager = Manager()  # type: ignore[assignment]
     task = {"cleanup_id": 3, "adapter_id": 11, "claim_attempt": 2}
