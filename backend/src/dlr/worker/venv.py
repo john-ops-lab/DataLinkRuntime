@@ -427,6 +427,23 @@ class DependencyPreparationError(Exception):
         self.no_source = no_source
 
 
+_CAPACITY_CACHE_ERROR_CODES = frozenset(
+    {"cache_no_safe_candidates", "cache_capacity_insufficient"}
+)
+
+
+def dependency_cache_error(error: cache.CacheError) -> DependencyPreparationError:
+    """Preserve only the stable capacity outcome of a cache reservation failure."""
+    error_code = (
+        error.code
+        if error.code in _CAPACITY_CACHE_ERROR_CODES
+        else "dependency_preparation_failed"
+    )
+    return DependencyPreparationError(
+        "version cache is unavailable", "", error_code=error_code
+    )
+
+
 def record_dependency_source_failure(
     runtime_root: Path,
     *,
@@ -1223,7 +1240,7 @@ def prepare_version_venv(
                 dependency_context=dependency_context,
             )
         except cache.CacheError as error:
-            raise DependencyPreparationError("version cache is unavailable", "") from error
+            raise dependency_cache_error(error) from error
         if build is None:
             python_path = venv_python(directory)
             if python_path.is_file():
@@ -1253,7 +1270,7 @@ def prepare_version_venv(
                     force_replacement=True,
                 )
             except cache.CacheError as error:
-                raise DependencyPreparationError("version cache is unavailable", "") from error
+                raise dependency_cache_error(error) from error
         if build is None:  # pragma: no cover - removal above makes this unreachable
             raise DependencyPreparationError("version cache is unavailable", "")
         if dependency_context is not None:

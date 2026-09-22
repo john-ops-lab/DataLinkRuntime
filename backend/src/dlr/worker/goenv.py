@@ -97,7 +97,7 @@ def prepare_version_go(
                 reservation_bytes=BUILD_RESERVATION_BYTES,
             )
         except CacheError as error:
-            raise venv.DependencyPreparationError("version cache is unavailable", "") from error
+            raise venv.dependency_cache_error(error) from error
         if build is None and (directory / "adapter").is_file():
             if builtin_materials is not None:
                 venv.reconcile_builtin_rebuildability(
@@ -123,7 +123,7 @@ def prepare_version_go(
                     force_replacement=True,
                 )
             except CacheError as error:
-                raise venv.DependencyPreparationError("version cache is unavailable", "") from error
+                raise venv.dependency_cache_error(error) from error
         assert build is not None
         if dependency_context is not None:
             dependency_context = dependency_context.with_reservation(

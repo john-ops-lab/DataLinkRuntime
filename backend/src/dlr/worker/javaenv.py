@@ -102,7 +102,7 @@ def prepare_version_java(
                 dependency_context=dependency_context,
             )
         except CacheError as error:
-            raise venv.DependencyPreparationError("version cache is unavailable", "") from error
+            raise venv.dependency_cache_error(error) from error
         classes = directory / "classes"
         if build is None and (classes / "Adapter.class").is_file():
             if builtin_materials is not None:
@@ -129,7 +129,7 @@ def prepare_version_java(
                     force_replacement=True,
                 )
             except CacheError as error:
-                raise venv.DependencyPreparationError("version cache is unavailable", "") from error
+                raise venv.dependency_cache_error(error) from error
             classes = directory / "classes"
         assert build is not None
         if dependency_context is not None:
