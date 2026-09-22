@@ -19,8 +19,8 @@ import stat
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
-from contextlib import suppress
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,6 +80,25 @@ class CacheReservation:
 
 
 _thread_lock = threading.RLock()
+
+
+@dataclass
+class CacheScanBudget:
+    """Shared bounded verification budget for one governance round."""
+
+    nodes_remaining: int
+    hash_bytes_remaining: int
+    deadline: float
+
+    def consume_node(self) -> None:
+        if self.nodes_remaining <= 0 or time.monotonic() >= self.deadline:
+            raise CacheError("cache_scan_budget_exhausted")
+        self.nodes_remaining -= 1
+
+    def consume_hash_bytes(self, amount: int) -> None:
+        if amount > self.hash_bytes_remaining or time.monotonic() >= self.deadline:
+            raise CacheError("cache_scan_budget_exhausted")
+        self.hash_bytes_remaining -= amount
 
 
 def _safe_key(value: str) -> str:
@@ -228,6 +247,75 @@ def _tree_facts(root: Path) -> tuple[str, int, int]:
         except OSError as error:
             raise CacheError("cache_verify_failed") from error
     return digest.hexdigest(), total, files
+
+
+def _tree_facts_bounded(root: Path, *, budget: CacheScanBudget) -> tuple[str, int, int, int]:
+    """Compute the immutable digest within a finite governance scan budget."""
+    entries: list[Path] = []
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        directory, depth = stack.pop()
+        if depth >= 64 or time.monotonic() >= budget.deadline:
+            raise CacheError("cache_scan_budget_exhausted")
+        try:
+            with os.scandir(directory) as iterator:
+                for item in iterator:
+                    budget.consume_node()
+                    path = Path(item.path)
+                    info = item.stat(follow_symlinks=False)
+                    entries.append(path)
+                    if stat.S_ISDIR(info.st_mode):
+                        stack.append((path, depth + 1))
+        except CacheError:
+            raise
+        except OSError as error:
+            raise CacheError("cache_verify_failed") from error
+    digest = hashlib.sha256()
+    total = 0
+    files = 0
+    hashed = 0
+    physical_bytes = 0
+    for entry in sorted(entries, key=lambda path: path.as_posix()):
+        if time.monotonic() >= budget.deadline:
+            raise CacheError("cache_scan_budget_exhausted")
+        relative = entry.relative_to(root).as_posix().encode("utf-8")
+        try:
+            info = entry.lstat()
+            if entry.name in {_MANIFEST_NAME, _READY_NAME}:
+                if stat.S_ISREG(info.st_mode):
+                    physical_bytes += info.st_size
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                digest.update(b"L")
+                digest.update(len(relative).to_bytes(4, "big"))
+                digest.update(relative)
+                digest.update(os.readlink(entry).encode("utf-8"))
+                files += 1
+                continue
+            if info.st_mode & 0o002:
+                raise CacheError("cache_permissions_invalid")
+            digest.update(b"D" if stat.S_ISDIR(info.st_mode) else b"F")
+            digest.update(len(relative).to_bytes(4, "big"))
+            digest.update(relative)
+            if not stat.S_ISREG(info.st_mode):
+                if not stat.S_ISDIR(info.st_mode):
+                    raise CacheError("cache_entry_invalid")
+                continue
+            files += 1
+            total += info.st_size
+            physical_bytes += info.st_size
+            budget.consume_hash_bytes(info.st_size)
+            with entry.open("rb") as stream:
+                while chunk := stream.read(64 * 1024):
+                    if time.monotonic() >= budget.deadline:
+                        raise CacheError("cache_scan_budget_exhausted")
+                    hashed += len(chunk)
+                    digest.update(chunk)
+        except CacheError:
+            raise
+        except OSError as error:
+            raise CacheError("cache_verify_failed") from error
+    return digest.hexdigest(), total, files, physical_bytes
 
 
 def _make_read_only(root: Path, *, public: bool = False) -> None:
@@ -440,6 +528,13 @@ class VerifiedVersionCache:
 
         return Lock(self)
 
+    @contextmanager
+    def accounting_lock(self) -> Iterator[None]:
+        """Serialize physical-byte snapshots with cache-tree publication moves."""
+
+        with _thread_lock, self._locked():
+            yield
+
     def _state(self) -> dict[str, dict[str, int | float]]:
         value = _read_json(self._state_path, {"reservations": {}})
         if set(value) != _STATE_FIELDS:
@@ -473,26 +568,49 @@ class VerifiedVersionCache:
                 valid[token] = {"amount": amount, "expires": expires}
         return valid
 
-    def _committed_bytes(self) -> int:
+    def _committed_bytes_locked(self, *, active_reservation_tokens: set[str] | None = None) -> int:
         total = 0
-        try:
-            for entry in self.entries.iterdir():
-                entry_info = entry.lstat()
-                if entry.name.startswith("."):
-                    continue
-                if not stat.S_ISDIR(entry_info.st_mode):
+        active_tokens = active_reservation_tokens or set()
+
+        def add_tree(root: Path) -> None:
+            nonlocal total
+            root_info = root.lstat()
+            for path in root.rglob("*"):
+                info = path.lstat()
+                if stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+                elif not stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
                     raise CacheError("cache_accounting_failed")
-                for path in entry.rglob("*"):
-                    info = path.lstat()
-                    if stat.S_ISREG(info.st_mode):
-                        total += info.st_size
-                    elif not stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+            final_info = root.lstat()
+            if (root_info.st_dev, root_info.st_ino) != (final_info.st_dev, final_info.st_ino):
+                raise FileNotFoundError(root)
+
+        for attempt in range(2):
+            total = 0
+            try:
+                for entry in self.entries.iterdir():
+                    entry_info = entry.lstat()
+                    if entry.name.startswith(".") and any(
+                        entry.name.endswith(f".staging-{token}") for token in active_tokens
+                    ):
+                        continue
+                    if not stat.S_ISDIR(entry_info.st_mode):
                         raise CacheError("cache_accounting_failed")
-        except CacheError:
-            raise
-        except OSError as error:
-            raise CacheError("cache_accounting_failed") from error
-        return total
+                    add_tree(entry)
+                return total
+            except CacheError:
+                raise
+            except FileNotFoundError as error:
+                if attempt == 0:
+                    continue
+                raise CacheError("cache_accounting_failed") from error
+            except OSError as error:
+                raise CacheError("cache_accounting_failed") from error
+        raise CacheError("cache_accounting_failed")
+
+    def _committed_bytes(self, *, active_reservation_tokens: set[str] | None = None) -> int:
+        with self.accounting_lock():
+            return self._committed_bytes_locked(active_reservation_tokens=active_reservation_tokens)
 
     def reserve(self, amount: int, *, ttl_seconds: int = 900) -> CacheReservation:
         if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
@@ -504,7 +622,9 @@ class VerifiedVersionCache:
             reserved = sum(int(item["amount"]) for item in state.values())
             disk_free = shutil.disk_usage(self.root).free
             available = min(
-                self.max_bytes - self._committed_bytes() - reserved,
+                self.max_bytes
+                - self._committed_bytes_locked(active_reservation_tokens=set(state))
+                - reserved,
                 disk_free - self.low_watermark_bytes,
             )
             if amount > available:
@@ -587,6 +707,72 @@ class VerifiedVersionCache:
         except (CacheError, OSError, UnicodeError, json.JSONDecodeError, ValueError):
             return False
 
+    def verify_for_deletion(self, path: Path, identity: Mapping[str, Any], digest: str) -> bool:
+        """Recheck immutable content and its previously observed digest under the key lock."""
+        if not self.verify(path, identity):
+            return False
+        try:
+            manifest = _read_json(Path(path) / _MANIFEST_NAME, {})
+        except CacheError:
+            return False
+        return manifest.get("digest") == digest
+
+    def verify_for_deletion_bounded(
+        self,
+        path: Path,
+        identity: Mapping[str, Any],
+        digest: str,
+        *,
+        max_nodes: int,
+        max_hash_bytes: int,
+        deadline: float,
+        budget: CacheScanBudget | None = None,
+    ) -> tuple[bool, int]:
+        """Verify one candidate without an unbounded recursive scan."""
+        try:
+            entry = self._direct_entry(path, staging=False, allow_missing=False)
+            ready = entry / _READY_NAME
+            manifest_path = entry / _MANIFEST_NAME
+            ready_info = ready.lstat()
+            manifest_info = manifest_path.lstat()
+            if (
+                not stat.S_ISREG(ready_info.st_mode)
+                or ready_info.st_mode & 0o222
+                or not stat.S_ISREG(manifest_info.st_mode)
+                or manifest_info.st_mode & 0o222
+                or manifest_info.st_size > 1024 * 1024
+            ):
+                return False, 0
+            manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+            if (
+                not isinstance(manifest, dict)
+                or set(manifest) != _MANIFEST_FIELDS
+                or manifest["identity"] != dict(identity)
+                or manifest["digest"] != digest
+            ):
+                return False, 0
+            actual_digest, total, files, physical_bytes = _tree_facts_bounded(
+                entry,
+                budget=budget
+                or CacheScanBudget(
+                    nodes_remaining=max_nodes,
+                    hash_bytes_remaining=max_hash_bytes,
+                    deadline=deadline,
+                ),
+            )
+            return (
+                actual_digest == digest
+                and manifest["bytes"] == total
+                and manifest["files"] == files,
+                physical_bytes,
+            )
+        except CacheError as error:
+            if error.code == "cache_scan_budget_exhausted":
+                raise
+            return False, 0
+        except (OSError, UnicodeError, ValueError, RecursionError):
+            return False, 0
+
     def promote(
         self,
         staging: Path,
@@ -617,8 +803,9 @@ class VerifiedVersionCache:
                     self.remove_staging(staging_path)
                     return target_path
                 raise CacheError("cache_target_conflict")
-            os.replace(staging_path, target_path)
-            _fsync_directory(entries)
+            with self.accounting_lock():
+                os.replace(staging_path, target_path)
+                _fsync_directory(entries)
             self._observe_lifecycle(
                 target_path,
                 identity=identity,
@@ -700,8 +887,9 @@ class VerifiedVersionCache:
             )
             _write_ready(staging_path / _READY_NAME)
             _make_read_only(staging_path, public=True)
-            os.replace(staging_path, target_path)
-            _fsync_directory(self.entries.resolve(strict=True))
+            with self.accounting_lock():
+                os.replace(staging_path, target_path)
+                _fsync_directory(self.entries.resolve(strict=True))
             staging_path = None
             self._observe_lifecycle(
                 target_path,

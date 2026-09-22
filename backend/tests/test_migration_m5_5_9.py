@@ -21,7 +21,7 @@ def test_fresh_schema_has_active_only_name_uniqueness(test_engine: Engine) -> No
             )
         )
 
-    assert revision == "0041_issue161_cache_guards"
+    assert revision == "0042_issue161_cache_operations"
     assert index_definition is not None
     assert "UNIQUE" in index_definition
     assert "archived_at IS NULL" in index_definition

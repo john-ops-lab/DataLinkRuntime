@@ -26,6 +26,8 @@ from dlr.common.platform_logging import configure_platform_logging
 from dlr.worker import cgroup_namespace, executor, sandbox
 from dlr.worker import venv as venv_manager
 from dlr.worker import workspace as workspace_manager
+from dlr.worker.cache import CacheError, VerifiedVersionCache
+from dlr.worker.cache_deletion import CacheDeletionManager
 from dlr.worker.cache_lifecycle import CacheLifecycleStore, JournalProtection
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
@@ -270,6 +272,7 @@ class Agent:
         self._startup_cleanup_journals: frozenset[str] = frozenset()
         self._sandbox_recovery_blocked = False
         self._cache_journal_protection: JournalProtection | None = None
+        self._cache_deletion_manager: CacheDeletionManager | None = None
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -286,15 +289,24 @@ class Agent:
         # Cache ownership persists with the volume. A legacy non-empty root
         # needs explicit deployment confirmation before governance can bind
         # it; normal execution remains available while it is retained.
-        from dlr.worker.cache import CacheError
-
         lifecycle = CacheLifecycleStore.for_runtime(self._config.runtime_root)
+        owner_bound = False
         try:
             lifecycle.bind_owner(worker_id)
+            owner_bound = True
         except CacheError as error:
             logger.warning("cache governance disabled: %s", error.code)
         self._recover_cleanup_journals(worker_id)
         self._refresh_cache_journal_protection(worker_id, lifecycle)
+        if owner_bound:
+            self._cache_deletion_manager = CacheDeletionManager(
+                VerifiedVersionCache(self._config.runtime_root / "version-cache"),
+                lifecycle,
+                self._client,
+                worker_id=worker_id,
+                journal_protected=lambda key: self._journal_protected(worker_id, lifecycle, key),
+            )
+            self._recover_cache_deletions()
         ready_file.write_text(str(os.getpid()), encoding="utf-8")
         logger.info("worker '%s' registered with id %s", self._config.name, worker_id)
 
@@ -419,6 +431,21 @@ class Agent:
             resolve=resolve,
         )
 
+    def _journal_protected(self, worker_id: int, lifecycle: CacheLifecycleStore, key: str) -> bool:
+        self._refresh_cache_journal_protection(worker_id, lifecycle)
+        protection = self._cache_journal_protection
+        return protection is None or protection.block_all or key in protection.protected_keys
+
+    def _recover_cache_deletions(self) -> None:
+        if self._cache_deletion_manager is None:
+            return
+        try:
+            self._cache_deletion_manager.recover_round()
+        except (CacheError, ControlUnavailableError):
+            logger.debug("cache deletion recovery deferred")
+        except ClientError as error:
+            logger.warning("cache deletion recovery rejected: status=%s", error.status)
+
     def _recover_cleanup_journals(self, worker_id: int, *, startup: bool = True) -> None:
         """Recover owned Workspace journals without deleting unknown paths."""
         if not startup and (self._sandbox_recovery_blocked or not self._startup_cleanup_journals):
@@ -531,6 +558,7 @@ class Agent:
         while not self._stop.is_set():
             try:
                 self._recover_cleanup_journals(worker_id, startup=False)
+                self._recover_cache_deletions()
                 task = self._client.claim_cleanup(worker_id)
                 if task is not None:
                     self._execute_cleanup_task(worker_id, task)

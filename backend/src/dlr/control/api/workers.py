@@ -23,6 +23,7 @@ from dlr.control.schemas.reliable_runtime import (
 )
 from dlr.control.schemas.worker import (
     CacheGuardAcquire,
+    CacheGuardOperationResponse,
     CacheGuardPage,
     CacheGuardResponse,
     CacheGuardResult,
@@ -96,11 +97,14 @@ def offline(worker_id: int, session: DbSession) -> Response:
     return Response(status_code=204)
 
 
-@router.post("/api/workers/{worker_id}/cache/guards/acquire", response_model=CacheGuardResponse)
+@router.post(
+    "/api/workers/{worker_id}/cache/guards/acquire",
+    response_model=CacheGuardOperationResponse,
+)
 def acquire_cache_guard(
     worker_id: int, payload: CacheGuardAcquire, session: DbSession
-) -> CacheGuardResponse:
-    return CacheGuardResponse.model_validate(
+) -> CacheGuardOperationResponse:
+    return CacheGuardOperationResponse.model_validate(
         cache_governance.acquire_guard(
             session,
             worker_id=worker_id,
@@ -113,33 +117,33 @@ def acquire_cache_guard(
 
 @router.get(
     "/api/workers/{worker_id}/cache/guards/{operation_id}/check",
-    response_model=CacheGuardResponse,
+    response_model=CacheGuardOperationResponse,
 )
 def check_cache_guard(
     worker_id: int, operation_id: uuid.UUID, session: DbSession
-) -> CacheGuardResponse:
-    return CacheGuardResponse.model_validate(
+) -> CacheGuardOperationResponse:
+    return CacheGuardOperationResponse.model_validate(
         cache_governance.check_guard(session, worker_id=worker_id, operation_id=operation_id)
     )
 
 
 @router.post(
     "/api/workers/{worker_id}/cache/guards/{operation_id}/result",
-    response_model=CacheGuardResponse,
+    response_model=CacheGuardOperationResponse,
 )
 def finish_cache_guard(
     worker_id: int,
     operation_id: uuid.UUID,
     payload: CacheGuardResult,
     session: DbSession,
-) -> CacheGuardResponse:
-    _ = payload.outcome
-    return CacheGuardResponse.model_validate(
+) -> CacheGuardOperationResponse:
+    return CacheGuardOperationResponse.model_validate(
         cache_governance.finish_guard(
             session,
             worker_id=worker_id,
             operation_id=operation_id,
             generation=payload.generation,
+            outcome=payload.outcome,
         )
     )
 

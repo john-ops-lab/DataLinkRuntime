@@ -44,3 +44,38 @@ class WorkerCacheGuard(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class WorkerCacheOperation(Base):
+    """Durable receipt for one exact guard generation."""
+
+    __tablename__ = "worker_cache_operations"
+    __table_args__ = (
+        CheckConstraint("worker_id > 0", name="ck_worker_cache_operations_worker_positive"),
+        CheckConstraint("version_id > 0", name="ck_worker_cache_operations_version_positive"),
+        CheckConstraint("adapter_id > 0", name="ck_worker_cache_operations_adapter_positive"),
+        CheckConstraint("generation > 0", name="ck_worker_cache_operations_generation_positive"),
+        CheckConstraint(
+            "phase IN ('acquired', 'completed', 'aborted')",
+            name="ck_worker_cache_operations_phase",
+        ),
+        Index(
+            "uq_worker_cache_operations_generation",
+            "worker_id",
+            "version_id",
+            "generation",
+            unique=True,
+        ),
+        Index("ix_worker_cache_operations_active", "worker_id", "phase"),
+    )
+
+    operation_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    worker_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    version_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    adapter_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    phase: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -157,7 +157,52 @@ def test_guard_first_blocks_future_execution_without_partial_admission(
         headers=WORKER_HEADERS,
     )
     assert finished.status_code == 200
-    assert finished.json()["phase"] == "idle"
+    assert finished.json()["phase"] == "aborted"
+    repeated = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/{operation_id}/result",
+        json={"generation": 1, "outcome": "aborted"},
+        headers=WORKER_HEADERS,
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["phase"] == "aborted"
+    next_operation_id = uuid.uuid4()
+    next_acquired = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/acquire",
+        json={
+            "adapter_id": adapter["id"],
+            "version_id": version_id,
+            "operation_id": str(next_operation_id),
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert next_acquired.status_code == 200
+    assert next_acquired.json()["generation"] == 2
+    replay_old = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/{operation_id}/result",
+        json={"generation": 1, "outcome": "aborted"},
+        headers=WORKER_HEADERS,
+    )
+    assert replay_old.status_code == 200
+    current = api_client.get(
+        f"/api/workers/{worker['id']}/cache/guards/{next_operation_id}/check",
+        headers=WORKER_HEADERS,
+    )
+    assert current.status_code == 200
+    assert current.json()["phase"] == "acquired"
+    conflicting_old = api_client.post(
+        f"/api/workers/{worker['id']}/cache/guards/{operation_id}/result",
+        json={"generation": 1, "outcome": "completed"},
+        headers=WORKER_HEADERS,
+    )
+    assert conflicting_old.status_code == 409
+    for _ in range(2):
+        completed = api_client.post(
+            f"/api/workers/{worker['id']}/cache/guards/{next_operation_id}/result",
+            json={"generation": 2, "outcome": "completed"},
+            headers=WORKER_HEADERS,
+        )
+        assert completed.status_code == 200
+        assert completed.json()["phase"] == "completed"
 
 
 def test_schedule_guard_failure_keeps_due_cursor_and_creates_nothing(
@@ -618,7 +663,9 @@ def test_cache_guard_worker_routes_require_worker_token(
     assert response.status_code == 401
 
 
-def test_worker_client_follows_cache_guard_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_client_returns_one_bounded_cache_guard_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     client = ControlClient("https://control.invalid", "token")
     paths: list[str] = []
 
@@ -626,13 +673,11 @@ def test_worker_client_follows_cache_guard_pages(monkeypatch: pytest.MonkeyPatch
         assert method == "GET"
         assert payload is None
         paths.append(path)
-        if len(paths) == 1:
-            return b'{"items":[{"version_id":7}],"next_after_version_id":7}'
         return b'{"items":[{"version_id":9}],"next_after_version_id":null}'
 
     monkeypatch.setattr(client, "_expect", fake_expect)
-    assert client.list_cache_guards(3) == [{"version_id": 7}, {"version_id": 9}]
-    assert paths == [
-        "/api/workers/3/cache/guards?limit=100",
-        "/api/workers/3/cache/guards?limit=100&after_version_id=7",
-    ]
+    assert client.list_cache_guard_page(3, after_version_id=7, limit=2) == (
+        [{"version_id": 9}],
+        None,
+    )
+    assert paths == ["/api/workers/3/cache/guards?limit=2&after_version_id=7"]

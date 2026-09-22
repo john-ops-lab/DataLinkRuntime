@@ -147,6 +147,20 @@ def test_failed_read_only_staging_can_be_removed_without_broad_cleanup(tmp_path:
     assert list(cache.entries.iterdir()) == []
 
 
+def test_active_staging_uses_reservation_but_inactive_staging_is_physically_charged(
+    tmp_path: Path,
+) -> None:
+    cache = VerifiedVersionCache(tmp_path / "cache", max_bytes=16 * 1024, low_watermark_bytes=0)
+    reservation = cache.reserve(1024)
+    staging = cache.staging_path("pending", reservation.token)
+    staging.mkdir()
+    (staging / "partial.bin").write_bytes(b"partial")
+
+    assert cache._committed_bytes(active_reservation_tokens={reservation.token}) == 0
+    reservation.release()
+    assert cache._committed_bytes(active_reservation_tokens=set()) == len(b"partial")
+
+
 def test_invalid_cache_budget_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(CacheError) as error:
         VerifiedVersionCache(tmp_path / "cache", max_bytes=1, low_watermark_bytes=1)

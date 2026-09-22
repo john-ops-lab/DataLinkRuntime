@@ -139,6 +139,7 @@ class ControlClient:
         adapter_id: int,
         version_id: int,
         operation_id: uuid.UUID,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         raw = self._expect(
             "POST",
@@ -148,16 +149,24 @@ class ControlClient:
                 "version_id": version_id,
                 "operation_id": str(operation_id),
             },
+            timeout=timeout_seconds,
         )
         body = json.loads(raw)
         if not isinstance(body, dict):
             raise ClientError(502, "invalid cache guard response")
         return cast(dict[str, Any], body)
 
-    def check_cache_guard(self, worker_id: int, operation_id: uuid.UUID) -> dict[str, Any]:
+    def check_cache_guard(
+        self,
+        worker_id: int,
+        operation_id: uuid.UUID,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         raw = self._expect(
             "GET",
             f"/api/workers/{worker_id}/cache/guards/{operation_id}/check",
+            timeout=timeout_seconds,
         )
         body = json.loads(raw)
         if not isinstance(body, dict):
@@ -171,52 +180,61 @@ class ControlClient:
         *,
         generation: int,
         outcome: str,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         raw = self._expect(
             "POST",
             f"/api/workers/{worker_id}/cache/guards/{operation_id}/result",
             {"generation": generation, "outcome": outcome},
+            timeout=timeout_seconds,
         )
         body = json.loads(raw)
         if not isinstance(body, dict):
             raise ClientError(502, "invalid cache guard response")
         return cast(dict[str, Any], body)
 
-    def list_cache_guards(self, worker_id: int) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
-        after_version_id: int | None = None
-        while True:
-            suffix = (
-                "?limit=100"
-                if after_version_id is None
-                else f"?limit=100&after_version_id={after_version_id}"
+    def list_cache_guard_page(
+        self,
+        worker_id: int,
+        *,
+        after_version_id: int | None = None,
+        limit: int = 100,
+        timeout_seconds: float | None = None,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise ValueError("cache guard page limit must be between 1 and 100")
+        if after_version_id is not None and (
+            not isinstance(after_version_id, int)
+            or isinstance(after_version_id, bool)
+            or after_version_id <= 0
+        ):
+            raise ValueError("cache guard cursor must be positive")
+        suffix = f"?limit={limit}"
+        if after_version_id is not None:
+            suffix += f"&after_version_id={after_version_id}"
+        raw = self._expect(
+            "GET",
+            f"/api/workers/{worker_id}/cache/guards{suffix}",
+            timeout=timeout_seconds,
+        )
+        body = json.loads(raw)
+        page = body.get("items") if isinstance(body, dict) else None
+        next_after = body.get("next_after_version_id") if isinstance(body, dict) else None
+        if (
+            not isinstance(page, list)
+            or any(not isinstance(item, dict) for item in page)
+            or (
+                next_after is not None
+                and (
+                    not isinstance(next_after, int)
+                    or isinstance(next_after, bool)
+                    or next_after <= 0
+                    or (after_version_id is not None and next_after <= after_version_id)
+                )
             )
-            raw = self._expect("GET", f"/api/workers/{worker_id}/cache/guards{suffix}")
-            body = json.loads(raw)
-            page = body.get("items") if isinstance(body, dict) else None
-            next_after = body.get("next_after_version_id") if isinstance(body, dict) else None
-            if (
-                not isinstance(page, list)
-                or any(not isinstance(item, dict) for item in page)
-                or (
-                    next_after is not None
-                    and (
-                        not isinstance(next_after, int)
-                        or isinstance(next_after, bool)
-                        or next_after <= 0
-                    )
-                )
-                or (
-                    next_after is not None
-                    and after_version_id is not None
-                    and next_after <= after_version_id
-                )
-            ):
-                raise ClientError(502, "invalid cache guard response")
-            items.extend(cast(list[dict[str, Any]], page))
-            if next_after is None:
-                return items
-            after_version_id = next_after
+        ):
+            raise ClientError(502, "invalid cache guard response")
+        return cast(list[dict[str, Any]], page), next_after
 
     def download_input_artifact(
         self,

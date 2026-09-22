@@ -107,20 +107,23 @@ def _safe_key(value: str) -> str:
     return value
 
 
-def _sync_directory(path: Path) -> None:
+def _sync_directory(path: Path, *, strict: bool = False) -> None:
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    except OSError:
+    except OSError as error:
+        if strict:
+            raise CacheError("cache_lifecycle_sync_failed") from error
         return
     try:
         os.fsync(descriptor)
-    except OSError:
-        pass
+    except OSError as error:
+        if strict:
+            raise CacheError("cache_lifecycle_sync_failed") from error
     finally:
         os.close(descriptor)
 
 
-def _write_json(path: Path, value: Mapping[str, Any]) -> None:
+def _write_json(path: Path, value: Mapping[str, Any], *, strict_sync: bool = False) -> None:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         descriptor = os.open(
@@ -134,7 +137,7 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        _sync_directory(path.parent)
+        _sync_directory(path.parent, strict=strict_sync)
     except (OSError, TypeError, ValueError) as error:
         with suppress(OSError):
             temporary.unlink()
@@ -397,15 +400,17 @@ def current_thread_owns_all_uses(store: CacheLifecycleStore, records: list[dict[
 class CacheEntryLock(AbstractContextManager["CacheEntryLock"]):
     """One process-safe, thread-reentrant exclusive lock for a cache key."""
 
-    def __init__(self, lock_path: Path) -> None:
+    def __init__(self, lock_path: Path, *, blocking: bool = True) -> None:
         self._path = lock_path
         identity = str(lock_path)
         with _locks_guard:
             self._state = _locks.setdefault(identity, _LockState(threading.RLock()))
         self._entered = False
+        self._blocking = blocking
 
     def __enter__(self) -> CacheEntryLock:
-        self._state.mutex.acquire()
+        if not self._state.mutex.acquire(blocking=self._blocking):
+            raise CacheError("cache_lock_busy")
         try:
             pid = os.getpid()
             if self._state.pid != pid:
@@ -415,10 +420,14 @@ class CacheEntryLock(AbstractContextManager["CacheEntryLock"]):
             if self._state.depth == 0:
                 handle = _open_lock(self._path)
                 try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    flags = fcntl.LOCK_EX
+                    if not self._blocking:
+                        flags |= fcntl.LOCK_NB
+                    fcntl.flock(handle.fileno(), flags)
                 except OSError as error:
                     handle.close()
-                    raise CacheError("cache_lock_unavailable") from error
+                    code = "cache_lock_busy" if not self._blocking else "cache_lock_unavailable"
+                    raise CacheError(code) from error
                 self._state.handle = handle
             self._state.depth += 1
             self._entered = True
@@ -464,14 +473,34 @@ class CacheLifecycleStore:
         self.lifecycle_root = _private_directory(self.state_root / "items")
         self.use_root = _private_directory(self.state_root / "uses")
         self.lock_root = _private_directory(self.state_root / "locks")
+        self.deletion_root = _private_directory(self.state_root / "deletions")
         self.owner_path = self.state_root / "owner.json"
 
     @classmethod
     def for_runtime(cls, runtime_root: Path) -> CacheLifecycleStore:
         return cls(Path(runtime_root) / "version-cache")
 
-    def entry_lock(self, key: str) -> CacheEntryLock:
-        return CacheEntryLock(self.lock_root / f"{_safe_key(key)}.lock")
+    def entry_lock(self, key: str, *, blocking: bool = True) -> CacheEntryLock:
+        return CacheEntryLock(self.lock_root / f"{_safe_key(key)}.lock", blocking=blocking)
+
+    def owner(self, worker_id: int) -> dict[str, Any]:
+        value = _read_json(self.owner_path, _OWNER_FIELDS)
+        if value is None or value.get("worker_id") != worker_id:
+            raise CacheError("cache_owner_unconfirmed")
+        store_id = value.get("store_id")
+        if not isinstance(store_id, str) or not store_id:
+            raise CacheError("cache_owner_invalid")
+        return value
+
+    def lifecycle(self, key: str) -> dict[str, Any]:
+        path = self.lifecycle_root / f"{_safe_key(key)}.json"
+        value = _read_json(path, _LIFECYCLE_FIELDS)
+        if value is None:
+            raise CacheError("cache_lifecycle_unknown")
+        validated = _validated_lifecycle(value)
+        if validated["key"] != key:
+            raise CacheError("cache_lifecycle_invalid")
+        return validated
 
     def bind_owner(self, worker_id: int, *, allow_legacy_nonempty: bool = False) -> str:
         """Bind a fresh/confirmed root without silently taking another owner's data."""

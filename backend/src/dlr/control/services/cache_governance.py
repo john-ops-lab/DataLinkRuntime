@@ -19,6 +19,7 @@ from dlr.control.models import (
     ExecutionInfrastructureIncident,
     Worker,
     WorkerCacheGuard,
+    WorkerCacheOperation,
     WorkerCleanupRequest,
 )
 from dlr.control.services.adapter import domain_error
@@ -274,7 +275,7 @@ def acquire_guard(
     adapter_id: int,
     version_id: int,
     operation_id: uuid.UUID,
-) -> WorkerCacheGuard:
+) -> WorkerCacheOperation:
     worker = session.get(Worker, worker_id)
     if worker is None:
         raise domain_error(404, "worker_not_found", "Worker not found")
@@ -283,6 +284,15 @@ def acquire_guard(
             409, "cache_governance_unsupported", "Worker cache governance is unavailable"
         )
     adapter = session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
+    previous_operation = session.get(WorkerCacheOperation, operation_id)
+    if previous_operation is not None and (
+        previous_operation.worker_id != worker_id
+        or previous_operation.adapter_id != adapter_id
+        or previous_operation.version_id != version_id
+    ):
+        raise domain_error(
+            409, "cache_guard_identity_conflict", "Cache guard identity is inconsistent"
+        )
     existing = session.get(WorkerCacheGuard, (worker_id, version_id))
     if adapter is not None:
         version = session.scalar(
@@ -297,10 +307,25 @@ def acquire_guard(
     guard = _ensure_guard(
         session, worker_id=worker_id, adapter_id=adapter_id, version_id=version_id
     )
-    if guard.operation_id == operation_id and guard.phase == "acquired":
+    previous_operation = session.get(WorkerCacheOperation, operation_id, populate_existing=True)
+    if previous_operation is not None:
+        if previous_operation.phase != "acquired":
+            raise domain_error(
+                409,
+                "cache_guard_operation_finished",
+                "Cache guard operation is already finished",
+            )
+        if (
+            guard.operation_id != operation_id
+            or guard.phase != "acquired"
+            or guard.generation != previous_operation.generation
+        ):
+            raise domain_error(
+                409, "cache_guard_identity_conflict", "Cache guard identity is inconsistent"
+            )
         session.commit()
-        session.refresh(guard)
-        return guard
+        session.refresh(previous_operation)
+        return previous_operation
     if guard.phase != "idle":
         raise domain_error(
             409,
@@ -321,21 +346,32 @@ def acquire_guard(
     guard.generation += 1
     guard.operation_id = operation_id
     guard.phase = "acquired"
+    operation = WorkerCacheOperation(
+        operation_id=operation_id,
+        worker_id=worker_id,
+        adapter_id=adapter_id,
+        version_id=version_id,
+        generation=guard.generation,
+        phase="acquired",
+    )
+    session.add(operation)
     session.commit()
-    session.refresh(guard)
-    return guard
+    session.refresh(operation)
+    return operation
 
 
-def check_guard(session: Session, *, worker_id: int, operation_id: uuid.UUID) -> WorkerCacheGuard:
-    guard = session.scalar(
-        select(WorkerCacheGuard).where(
-            WorkerCacheGuard.worker_id == worker_id,
-            WorkerCacheGuard.operation_id == operation_id,
+def check_guard(
+    session: Session, *, worker_id: int, operation_id: uuid.UUID
+) -> WorkerCacheOperation:
+    operation = session.scalar(
+        select(WorkerCacheOperation).where(
+            WorkerCacheOperation.worker_id == worker_id,
+            WorkerCacheOperation.operation_id == operation_id,
         )
     )
-    if guard is None:
+    if operation is None:
         raise domain_error(404, "cache_guard_not_found", "Cache guard is unavailable")
-    return guard
+    return operation
 
 
 def finish_guard(
@@ -344,25 +380,48 @@ def finish_guard(
     worker_id: int,
     operation_id: uuid.UUID,
     generation: int,
-) -> WorkerCacheGuard:
-    guard = session.scalar(
-        select(WorkerCacheGuard)
+    outcome: str,
+) -> WorkerCacheOperation:
+    operation = session.scalar(
+        select(WorkerCacheOperation)
         .where(
-            WorkerCacheGuard.worker_id == worker_id,
-            WorkerCacheGuard.operation_id == operation_id,
+            WorkerCacheOperation.worker_id == worker_id,
+            WorkerCacheOperation.operation_id == operation_id,
         )
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    if guard is None:
+    if operation is None:
         raise domain_error(404, "cache_guard_not_found", "Cache guard is unavailable")
-    if guard.generation != generation or guard.phase != "acquired":
+    if operation.generation != generation:
+        raise domain_error(409, "cache_guard_stale", "Cache guard generation is stale")
+    if operation.phase != "acquired":
+        if operation.phase != outcome:
+            raise domain_error(409, "cache_guard_stale", "Cache guard result is inconsistent")
+        return operation
+    guard = session.scalar(
+        select(WorkerCacheGuard)
+        .where(
+            WorkerCacheGuard.worker_id == worker_id,
+            WorkerCacheGuard.version_id == operation.version_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        guard is None
+        or guard.generation != generation
+        or guard.operation_id != operation_id
+        or guard.phase != "acquired"
+    ):
         raise domain_error(409, "cache_guard_stale", "Cache guard generation is stale")
     guard.operation_id = None
     guard.phase = "idle"
+    operation.phase = outcome
+    operation.finished_at = database_now(session)
     session.commit()
-    session.refresh(guard)
-    return guard
+    session.refresh(operation)
+    return operation
 
 
 def list_active_guards(

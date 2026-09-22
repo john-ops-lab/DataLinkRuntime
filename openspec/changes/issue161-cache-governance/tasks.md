@@ -9,7 +9,7 @@
 - [x] 2.1 增量迁移稳定 worker/version guard 与最小操作事实，冻结锁序、generation 和无自动到期语义；验证 fresh Alembic、已有库升级、未完成门禁拒绝降级及已删除 Adapter 锚点。
 - [x] 2.2 在统一新 Execution、Replay、retry/recovery、Incident 恢复和 claim 路径接入 guard，枚举所有引用创建/复活入口；用独立 PostgreSQL 两事务竞争验证“引用先行保留/删除先行暂缓”和 Admission/Schedule 事务回滚。
 - [x] 2.3 实现权威引用查询，包含 Worker 快照/实际 Attempt、queued/retry/running、open Incident、可恢复材料与 deferred cleanup；用迁节点/停用/删除、dead_letter 仍有责任和纯历史不永久保护测试验证。
-- [ ] 2.4 实现安全删除原语、原子 trash、幂等完成/撤销回执、有界续作与 3 次失败停止；故障注入覆盖 Control acquire 已 commit 但无本地记录、rename 前后、部分删除、回执丢失、陈旧 operation、Worker 重启及实际占用不重复扣减。
+- [x] 2.4 实现安全删除原语、原子 trash、幂等完成/撤销回执、有界续作与 3 次失败停止；故障注入覆盖 Control acquire 已 commit 但无本地记录、rename 前后、部分删除、回执丢失、陈旧 operation、Worker 重启及实际占用不重复扣减。
 - [ ] 2.5 收口 stale/Adapter/pre-cache 旧清理与损坏缓存修复，部分保留不得假报整体成功；实现当前 cleanup 精确哨兵例外、claim_attempt 回报 fencing、已删除旧对象验证身份引导与预算续作，未知 pre-cache 保留；按 design 冻结的当前 running Attempt/slot、同 key 使用保护与 replacement guard 保留同身份修复和合法身份更新。测试多个同版本/exact builtin snapshot 的未领取 queued 或干净 retry_wait 不互卡、无 Attempt 的初始 cleanup pending 不误阻止、后续 claim 选源变化继续 prepare；不同 builtin snapshot、其他 claimed payload、历史 deferred cleanup/use/journal/open Incident 必须保留旧实例。验证新 ready 发布前准备失败/所有权丢失/切换中断的恢复，不新增源/凭据全局锁或解析指纹 API，普通 GC 仍拒绝排队引用。
 - [ ] 2.6 完成 A 独立安全 Review 与针对性 Ruff/Mypy/pytest，保留 Review 对应提交 SHA；在专用数据环境用基线准备缓存后升级同版本验证真实 cache hit、无重装、业务成功。提交 A 后才进入 B，不创建阶段 PR。
 

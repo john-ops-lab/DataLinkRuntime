@@ -241,6 +241,17 @@ class CacheGuardResponse(BaseModel):
     phase: Literal["idle", "acquired"]
 
 
+class CacheGuardOperationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    worker_id: int
+    adapter_id: int
+    version_id: int
+    generation: int
+    operation_id: uuid.UUID
+    phase: Literal["acquired", "completed", "aborted"]
+
+
 class CacheGuardPage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
