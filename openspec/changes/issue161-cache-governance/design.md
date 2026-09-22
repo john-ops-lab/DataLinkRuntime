@@ -68,6 +68,18 @@
 
 **A2 replacement 条件已冻结；实现通过针对性测试和独立 Review 后才能完成 A。** 最小回归包括：多个同版本、相同 builtin snapshot 的 queued/retry_wait 不互相阻止合法重建；后续 claim 选源变化仍按原合同准备；不同 builtin snapshot、其他 claimed payload、历史 deferred cleanup、旧 journal/open Incident 均保护旧实例；准备失败/所有权丢失/切换中断不丢旧实例、不重放旧授权。保持 tasks 1.1–1.3 的本地基础接口不变。
 
+### 4.1 Legacy cleanup identity, claiming and aggregate completion
+
+旧 Adapter cleanup 复用 `WorkerCleanupRequest`，不得被它自己的未完成哨兵永久阻塞。治理 Worker 的 claim 回显已有递增 `attempts` 为 `claim_attempt`；acquire 可带 `cleanup_context={cleanup_id,claim_attempt}`。Control 按 guard → cleanup 锁序核实同 Worker/Adapter、当前 running 领取且 Adapter 已永久删除后，仅从引用查询排除这一条 cleanup；其他 cleanup、Execution、Attempt、Incident、hold 和全部本地 use/journal 保护不变。普通 GC 没有此例外。结果回报绑定当前 claim_attempt；旧领取不能完成新领取，同一成功领取重复回报幂等。旧 Worker 保留原协议，新能力 Worker 必须提供领取序号。
+
+首次升级可能没有 guard，且 Adapter/Version 已硬删除。Worker 在同项锁下验证 root owner、实际位置、完整旧 manifest/content 及无冲突 sidecar 后，可在 acquire 提供 `observed_identity={store_id,language,source_sha256,digest}`。Control 核实现存 Version 的真实 Adapter 关系；两者均不存在且无 guard 时可建立 idle/generation=0 稳定锚点，再依原规则复核引用。不得复活业务行或将业务行缺失当成无引用。已有 guard 的 adapter 不可改；身份/store/digest 与 cleanup_context 绑定本次 operation 并在幂等请求核对，不成为禁止合法 replacement 的永久 guard 身份。该声明属于现有可信 Worker 管理域，不是远程文件验证。所有重建、pin、近期保留及离线条件照常生效。
+
+仅 `.ready` 的 pre-cache 不具备受支持的实际对象身份绑定，本轮 retained；不得借目录名、其他路径同 key sidecar 或重新 hash 自行认领。entries 为空但旧 pre-cache 非空也不构成全新空 root。无法解析已删除 Execution 的旧 journal 继续 block_all。
+
+旧 stale/Adapter helper 返回有界结构化聚合结果；只有完整续游标扫描结束、所有目标确实删除或已确认不存在、无 retained/failed/trash/未确认 guard 回执，才可成功。未知目标归属不能算扫描完成；共享缓存与已证明其他 Adapter 对象不属于目标。预算耗尽保持本次 running 并续作，不耗费失败重试次数；真实保留/失败沿初始最多三次领取机制停止，不能用最后一次 rmtree 收尾。控制器在持 cleanup 锁时仅以不加行锁 EXISTS 检查活动子操作，禁止 cleanup → guard 反向锁序。
+
+重注册后的 claim_attempt 可以递增，但已取得的 operation 保留原 generation、identity 和原领取 provenance。恢复先沿原 operation/check/list 推进；新领取仅负责最终聚合回报，不借旧领取首次授权新对象，不清 guard 或改变旧 operation 绑定。
+
 ### 5. Rebuildability and cache classes
 
 | 类别 | 身份与保护 | 本轮支持 |
@@ -120,6 +132,16 @@
 - 每 Worker 最多一个活动管理操作，其余返回 `409 cache_operation_in_progress`；周期、手动、压力共用 Worker 轮次锁。单操作最多 200 个显式 key，结果/原因字段有长度及条数限制；分页审计最多 100 条/页，终态操作默认保留 90 天且每 Worker 最多 1000 条，未完成操作/guard 永不按审计保留期删除。
 - Worker 管理页的缓存区域展示采样时间、总量/版本/共享/staging/trash、预估可回收量、保留原因、实际策略；支持预览、清理、pin、明确可重建确认、查看与重试失败操作。预览提示“执行前会重新检查”，按钮只给管理员，后端使用现有管理员鉴权；普通账号不可越权，Worker 请求必须匹配操作归属。
 - 审计记录管理员或 system、Worker、key、reason code、候选/已释放字节、结果、operation/generation 与时间。不会保存 Token、源凭据、用户代码、文件内容、宿主路径。静态 error code 用双语映射；UI build 不代替 Chrome 真实验收。
+
+### 7.1 Explicit retry of failed Adapter cleanup
+
+B 的 `retry` 接受与普通 operation 重试目标互斥的 `cleanup_id`，复用原请求；查询入口有界显示未完成 cleanup 的 ID、Adapter、status、attempts、稳定原因和 retry operation ID（最多 100 条/页及继续游标），即使尚无 guard 也可发现。管理员 protect 不自动重排失败 cleanup。
+
+管理员事务按 `Worker → 管理 operation → WorkerCleanupRequest` 加锁，权威复核 failed、同 Worker/Adapter 且 Adapter 已删除；创建本组管理 operation，并将原 Request 置 pending、关联可空 `retry_operation_id`。attempts 不重置，旧失败原因进入审计。相同幂等 key/相同请求只返回原 operation，异参冲突；每 Worker 单活动管理操作仍生效。执行只走原 cleanups/claim/result，不再发布另一条 cache command。普通 GC 仍保护该未完成请求。
+
+下一次 claim 单调加一（例如 failed/3 → pending/3 → running/4），回显 retry_operation_id。一次人工 retry 只获得一次额外逻辑尝试，真实保留/失败直接回 failed；预算续作和崩溃恢复保持同一 retry operation，不刷新失败额度。若旧删除 operation 停在失败 trash，先按同 cleanup_id 恢复原 operation/generation；管理员操作提供显式有限重试及审计，不解除任何保护。下一次真实失败后需新的管理员 retry。未知 pre-cache 仍不可强删。
+
+关联任务 claim/result 先无锁读关联，再按 `Worker → 管理 operation → cleanup` 锁后复核领取和关联；成功/失败同时更新管理 operation 与 Request。重注册保持 Worker → cleanup；guard acquire 保持 guard → cleanup 且不回取 Worker/管理 operation 锁。聚合只无锁查询子 guard，避免反向锁环。未完成 Request 当前关联的 retry operation 不得被审计 retention 删除；换关联后的旧终态审计及已完成 Request 按常规保留策略处理。
 
 ### 8. Serial delivery and evidence
 

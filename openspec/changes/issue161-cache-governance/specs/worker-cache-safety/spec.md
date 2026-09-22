@@ -116,6 +116,18 @@
 - **WHEN** 旧 Adapter 清理任务包含仍被引用的缓存
 - **THEN** 返回保留或部分结果，不能吞掉每项失败后标记整个任务 completed
 
+#### Scenario: 当前 Adapter cleanup 不被自身哨兵阻塞
+- **WHEN** 治理 Worker 用当前 running cleanup 的正确 claim_attempt 请求清理已永久删除 Adapter 的已验证缓存
+- **THEN** 仅排除当前 cleanup 行的哨兵；其他引用、清理、use/journal 和全部策略仍保护，旧领取不能首次授权或完成新领取
+
+#### Scenario: 升级前业务对象已删除且没有 guard
+- **WHEN** Worker 在已确认 root 和项锁下完整验证旧 ready 的实际 identity/digest，而原 Adapter/Version 均已不存在
+- **THEN** 可用绑定 operation 的 observed_identity 建立稳定锚点，再检查所有保护；不猜身份、不复活业务行、不将仅有 .ready 的 pre-cache 认领为可删除
+
+#### Scenario: Adapter cleanup 预算续作与整体完成
+- **WHEN** 扫描/删除预算耗尽、存在 retained/failed、未完成 trash 或 guard 回执
+- **THEN** 预算续作保持本次 running；只有完整扫描且所有目标与回执收敛才成功，真实保留/失败按有限尝试停止，不兜底递归删除
+
 #### Scenario: 已领取任务发现损坏环境
 - **WHEN** 当前有效 Attempt 独占使用锁，发现同身份环境内容损坏或解释器不可用
 - **THEN** 可在有效 Attempt/slot 与持久 guard 下受控修复，其他本地读者与恢复责任仍受保护；未知或错误归属拒绝删除

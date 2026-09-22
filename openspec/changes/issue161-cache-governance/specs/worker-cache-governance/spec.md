@@ -84,6 +84,14 @@ Worker SHALL 通过现有鉴权边界上报有界占用、预估可回收量、�
 - **WHEN** 相同幂等请求重发或手动操作与自动轮次同时到达
 - **THEN** 相同请求返回同一操作，竞争操作被串行或明确暂缓，不重复删除和计费
 
+#### Scenario: 失败 Adapter cleanup 的显式重试
+- **WHEN** 管理员以 cleanup_id 重试 failed 请求
+- **THEN** 同事务建立管理 operation 并将原请求重排，attempts 不重置；只通过原 cleanup 通道执行一次额外逻辑尝试，失败直接停止，重复幂等请求不再重排，protect 本身不触发删除
+
+#### Scenario: 重试关联在恢复及审计中保留
+- **WHEN** 人工重试中 Worker 重启或审计执行 retention
+- **THEN** 原 guard operation/generation 和 retry 关联保持，旧 claim 回报不能完成新领取；未完成请求关联的管理审计不可删除，未建 guard 的失败请求仍可分页查看
+
 #### Scenario: 执行准备与清理锁交错
 - **WHEN** 一个执行已持版本锁请求容量回收，而周期任务已持回收轮次锁
 - **THEN** 通过非阻塞竞争明确跳过或暂缓，不互相等待导致死锁

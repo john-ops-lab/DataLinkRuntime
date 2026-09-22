@@ -10,7 +10,7 @@
 - [x] 2.2 在统一新 Execution、Replay、retry/recovery、Incident 恢复和 claim 路径接入 guard，枚举所有引用创建/复活入口；用独立 PostgreSQL 两事务竞争验证“引用先行保留/删除先行暂缓”和 Admission/Schedule 事务回滚。
 - [x] 2.3 实现权威引用查询，包含 Worker 快照/实际 Attempt、queued/retry/running、open Incident、可恢复材料与 deferred cleanup；用迁节点/停用/删除、dead_letter 仍有责任和纯历史不永久保护测试验证。
 - [ ] 2.4 实现安全删除原语、原子 trash、幂等完成/撤销回执、有界续作与 3 次失败停止；故障注入覆盖 Control acquire 已 commit 但无本地记录、rename 前后、部分删除、回执丢失、陈旧 operation、Worker 重启及实际占用不重复扣减。
-- [ ] 2.5 收口 stale/Adapter/pre-cache 旧清理与损坏缓存修复，部分保留不得假报整体成功；按 design 冻结的当前 running Attempt/slot、同 key 使用保护与 replacement guard 保留同身份修复和合法身份更新。测试多个同版本/exact builtin snapshot 的未领取 queued 或干净 retry_wait 不互卡、无 Attempt 的初始 cleanup pending 不误阻止、后续 claim 选源变化继续 prepare；不同 builtin snapshot、其他 claimed payload、历史 deferred cleanup/use/journal/open Incident 必须保留旧实例。验证新 ready 发布前准备失败/所有权丢失/切换中断的恢复，不新增源/凭据全局锁或解析指纹 API，普通 GC 仍拒绝排队引用。
+- [ ] 2.5 收口 stale/Adapter/pre-cache 旧清理与损坏缓存修复，部分保留不得假报整体成功；实现当前 cleanup 精确哨兵例外、claim_attempt 回报 fencing、已删除旧对象验证身份引导与预算续作，未知 pre-cache 保留；按 design 冻结的当前 running Attempt/slot、同 key 使用保护与 replacement guard 保留同身份修复和合法身份更新。测试多个同版本/exact builtin snapshot 的未领取 queued 或干净 retry_wait 不互卡、无 Attempt 的初始 cleanup pending 不误阻止、后续 claim 选源变化继续 prepare；不同 builtin snapshot、其他 claimed payload、历史 deferred cleanup/use/journal/open Incident 必须保留旧实例。验证新 ready 发布前准备失败/所有权丢失/切换中断的恢复，不新增源/凭据全局锁或解析指纹 API，普通 GC 仍拒绝排队引用。
 - [ ] 2.6 完成 A 独立安全 Review 与针对性 Ruff/Mypy/pytest，保留 Review 对应提交 SHA；在专用数据环境用基线准备缓存后升级同版本验证真实 cache hit、无重装、业务成功。提交 A 后才进入 B，不创建阶段 PR。
 
 ## 3. Checkpoint B — Policy and classified governance
@@ -23,7 +23,7 @@
 ## 4. Checkpoint B — Worker communication and administrator interface
 
 - [ ] 4.1 接入治理 capability、Worker snapshot/command/guard APIs 与客户端轮询，旧 Worker 不领新命令；测试鉴权、归属、幂等、过期/不完整快照及重复/断联重试。
-- [ ] 4.2 实现管理员查询、preview/clean/protect/retry、单 Worker 活动操作限制、分页审计与有界 retention；测试非管理员拒绝、预览后新引用、重复请求和未完成操作不被审计清理。
+- [ ] 4.2 实现管理员查询、preview/clean/protect/retry、单 Worker 活动操作限制、分页审计与有界 retention；支持 cleanup_id 复用失败 Adapter 清理请求、单次额外逻辑尝试、单调 attempts、原通道执行和关联审计；测试非管理员拒绝、预览后新引用、重复/并发请求、三次失败后 retry 到第 4/5 次、旧领取回报拒绝和未完成关联操作不被审计清理。
 - [ ] 4.3 读取项目 Ant Design skill 和 5.29.3 snapshot 后实现 Worker 缓存管理 UI 及中英文文案；通过 Web lint/typecheck/Vitest/build，并用本地 Chrome 验证占用、保护原因、预览、实际结果、pin、失败重试和离线/不支持状态。
 - [ ] 4.4 更新中英文部署/运维文档，说明默认关闭、阈值、重建确认、共享不支持、失败恢复与安全回滚；运行相关双语/链接文档测试，确认不写入私有部署参数。
 
