@@ -10,6 +10,11 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from dlr.control import db
+from dlr.control.schemas.cache_admin import (
+    CacheCommandClaim,
+    CacheCommandResult,
+    CacheSnapshotUpload,
+)
 from dlr.control.schemas.execution import (
     ExecutionResponse,
     WorkspaceCleanupReceipt,
@@ -40,7 +45,7 @@ from dlr.control.schemas.worker import (
 )
 from dlr.control.security import require_business_principal, require_worker_token
 from dlr.control.services import attempt as attempt_service
-from dlr.control.services import cache_governance, worker_availability
+from dlr.control.services import cache_admin, cache_governance, worker_availability
 from dlr.control.services import worker as worker_service
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.worker_protocol import (
@@ -98,6 +103,37 @@ def heartbeat(
 def offline(worker_id: int, session: DbSession) -> Response:
     """Best-effort graceful offline on normal shutdown."""
     worker_service.mark_offline(session, worker_id)
+    return Response(status_code=204)
+
+
+@router.post(
+    "/api/workers/{worker_id}/cache/commands/claim",
+    response_model=CacheCommandClaim,
+)
+def claim_cache_command(worker_id: int, session: DbSession) -> Response | CacheCommandClaim:
+    payload = cache_admin.claim_command(session, worker_id)
+    return Response(status_code=204) if payload is None else payload
+
+
+@router.post(
+    "/api/workers/{worker_id}/cache/commands/{operation_id}/result",
+    status_code=204,
+)
+def report_cache_command(
+    worker_id: int,
+    operation_id: uuid.UUID,
+    payload: CacheCommandResult,
+    session: DbSession,
+) -> Response:
+    cache_admin.apply_command_result(session, worker_id, operation_id, payload)
+    return Response(status_code=204)
+
+
+@router.post("/api/workers/{worker_id}/cache/snapshot", status_code=204)
+def report_cache_snapshot(
+    worker_id: int, payload: CacheSnapshotUpload, session: DbSession
+) -> Response:
+    cache_admin.upload_snapshot(session, worker_id, payload)
     return Response(status_code=204)
 
 

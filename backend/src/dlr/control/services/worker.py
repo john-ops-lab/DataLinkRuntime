@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import BinaryIO, cast
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
@@ -22,6 +22,7 @@ from dlr.control.models import (
     ManagedInputArtifact,
     ManagedInputArtifactStatus,
     Worker,
+    WorkerCacheManagementOperation,
     WorkerCacheOperation,
     WorkerCleanupRequest,
 )
@@ -341,6 +342,18 @@ def register_worker(session: Session, data: WorkerRegister) -> Worker:
         worker.isolation_preflight_at = func.now()
         worker.rabbitmq_execution_v3 = preflight_ready
         session.execute(
+            update(WorkerCacheManagementOperation)
+            .where(
+                WorkerCacheManagementOperation.worker_id == worker.id,
+                WorkerCacheManagementOperation.status == "running",
+                or_(
+                    WorkerCacheManagementOperation.target_kind.is_(None),
+                    WorkerCacheManagementOperation.target_kind != "cleanup",
+                ),
+            )
+            .values(status="pending")
+        )
+        session.execute(
             update(WorkerCleanupRequest)
             .where(
                 WorkerCleanupRequest.worker_id == worker.id,
@@ -486,18 +499,39 @@ def build_task_payload(
 
 def claim_cleanup(session: Session, worker_id: int) -> CleanupTaskPayload | None:
     """Claim only adapter-private cleanup work, never an Execution."""
-    get_worker(session, worker_id)
-    cleanup = session.scalar(
-        select(WorkerCleanupRequest)
+    worker = session.scalar(select(Worker).where(Worker.id == worker_id).with_for_update())
+    if worker is None:
+        raise domain_error(404, "worker_not_found", "Worker not found")
+    candidate = session.execute(
+        select(WorkerCleanupRequest.id, WorkerCleanupRequest.retry_operation_id)
         .where(
             WorkerCleanupRequest.worker_id == worker_id,
             WorkerCleanupRequest.status == "pending",
         )
         .order_by(WorkerCleanupRequest.created_at.asc(), WorkerCleanupRequest.id.asc())
-        .with_for_update(skip_locked=True)
         .limit(1)
+    ).one_or_none()
+    if candidate is None:
+        session.rollback()
+        return None
+    retry_id = candidate.retry_operation_id
+    retry = None
+    if retry_id is not None:
+        retry = session.scalar(
+            select(WorkerCacheManagementOperation)
+            .where(WorkerCacheManagementOperation.operation_id == retry_id)
+            .with_for_update()
+        )
+        if retry is None or retry.worker_id != worker_id or retry.status != "running":
+            raise domain_error(
+                409, "cleanup_retry_operation_invalid", "Cleanup retry operation is invalid"
+            )
+    cleanup = session.scalar(
+        select(WorkerCleanupRequest)
+        .where(WorkerCleanupRequest.id == candidate.id)
+        .with_for_update(skip_locked=True)
     )
-    if cleanup is None:
+    if cleanup is None or cleanup.status != "pending" or cleanup.retry_operation_id != retry_id:
         session.rollback()
         return None
     cleanup.status = "running"
@@ -508,6 +542,7 @@ def claim_cleanup(session: Session, worker_id: int) -> CleanupTaskPayload | None
         cleanup_id=cleanup.id,
         adapter_id=cleanup.adapter_id,
         claim_attempt=cleanup.attempts,
+        retry_operation_id=cleanup.retry_operation_id,
     )
 
 
@@ -520,7 +555,19 @@ def apply_cleanup_result(
     Control Node never performs a fallback deletion because doing so would
     violate the Worker ownership and offline safety boundary.
     """
-    worker = get_worker(session, worker_id)
+    worker = session.scalar(select(Worker).where(Worker.id == worker_id).with_for_update())
+    if worker is None:
+        raise domain_error(404, "worker_not_found", "Worker not found")
+    retry_id = session.scalar(
+        select(WorkerCleanupRequest.retry_operation_id).where(WorkerCleanupRequest.id == cleanup_id)
+    )
+    retry = None
+    if retry_id is not None:
+        retry = session.scalar(
+            select(WorkerCacheManagementOperation)
+            .where(WorkerCacheManagementOperation.operation_id == retry_id)
+            .with_for_update()
+        )
     cleanup = session.scalar(
         select(WorkerCleanupRequest).where(WorkerCleanupRequest.id == cleanup_id).with_for_update()
     )
@@ -531,6 +578,12 @@ def apply_cleanup_result(
             409,
             "cleanup_not_owned",
             "Worker cleanup request is assigned to another Worker",
+        )
+    if retry_id is not None and (
+        retry is None or retry.worker_id != worker_id or cleanup.retry_operation_id != retry_id
+    ):
+        raise domain_error(
+            409, "cleanup_retry_operation_invalid", "Cleanup retry operation is invalid"
         )
     governance = worker.isolation_capabilities.get("cache_governance_v1") is True
     if governance and report.claim_attempt is None:
@@ -563,7 +616,20 @@ def apply_cleanup_result(
         cleanup.completed_at = func.now()
     else:
         cleanup.error_code = report.error_code or "cleanup_failed"
-        cleanup.status = "pending" if cleanup.attempts < 3 else "failed"
+        cleanup.status = (
+            "failed"
+            if cleanup.retry_operation_id is not None
+            else ("pending" if cleanup.attempts < 3 else "failed")
+        )
+    if retry is not None:
+        retry.status = "completed" if report.success else "failed"
+        retry.result = {
+            "cleanup_id": cleanup.id,
+            "attempts": cleanup.attempts,
+            "success": report.success,
+        }
+        retry.error_code = None if report.success else cleanup.error_code
+        retry.finished_at = func.now()
     session.commit()
     session.refresh(cleanup)
     return cleanup

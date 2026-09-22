@@ -208,6 +208,7 @@ class CleanupTaskPayload(BaseModel):
     cleanup_id: int
     adapter_id: int
     claim_attempt: int = Field(gt=0)
+    retry_operation_id: uuid.UUID | None = None
 
 
 class CleanupResult(BaseModel):

@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -46,6 +47,9 @@ _RECORD_FIELDS = frozenset(
         "next_retry_at",
         "last_error",
         "resume_phase",
+        "retry_management_operation_id",
+        "retry_management_history",
+        "management_operation_id",
         "cleanup_context",
         "observed_identity",
         "operation_kind",
@@ -61,6 +65,16 @@ _RECORD_FIELDS = frozenset(
     }
 )
 _TERMINAL_PHASES = frozenset({"completed", "aborted"})
+_RESUMABLE_PHASES = frozenset(
+    {
+        "recorded",
+        "trashed",
+        "empty_trash",
+        "receipt_pending",
+        "replacement_prepared",
+        "replacement_old_trashed",
+    }
+)
 _LOCAL_MAX_BYTES = 1024 * 1024
 
 
@@ -195,7 +209,23 @@ def _read_record(path: Path) -> dict[str, Any] | None:
     value = _read_bounded_json(path, max_bytes=_LOCAL_MAX_BYTES)
     if value is None:
         return None
-    if set(value) != _RECORD_FIELDS or value.get("schema") != SCHEMA_VERSION:
+    fields = set(value)
+    legacy_optional = {
+        "retry_management_operation_id",
+        "retry_management_history",
+        "management_operation_id",
+    }
+    if fields == _RECORD_FIELDS - legacy_optional:
+        value["retry_management_operation_id"] = None
+        value["retry_management_history"] = []
+        value["management_operation_id"] = None
+    elif fields.issubset(_RECORD_FIELDS) and _RECORD_FIELDS - fields <= legacy_optional:
+        value.setdefault("retry_management_operation_id", None)
+        value.setdefault("retry_management_history", [])
+        value.setdefault("management_operation_id", None)
+    elif fields != _RECORD_FIELDS:
+        raise CacheError("cache_deletion_record_invalid")
+    if value.get("schema") != SCHEMA_VERSION:
         raise CacheError("cache_deletion_record_invalid")
     try:
         operation_id = uuid.UUID(str(value["operation_id"]))
@@ -204,6 +234,12 @@ def _read_record(path: Path) -> dict[str, Any] | None:
         updated_at = float(value["updated_at"])
         next_retry_at = float(value["next_retry_at"])
         last_used_before = float(value["last_used_before"])
+        if value["retry_management_operation_id"] is not None:
+            uuid.UUID(str(value["retry_management_operation_id"]))
+        if value["management_operation_id"] is not None:
+            uuid.UUID(str(value["management_operation_id"]))
+        for retry_operation_id in value["retry_management_history"]:
+            uuid.UUID(str(retry_operation_id))
     except (CacheError, KeyError, OverflowError, TypeError, ValueError) as error:
         raise CacheError("cache_deletion_record_invalid") from error
     if (
@@ -263,6 +299,18 @@ def _read_record(path: Path) -> dict[str, Any] | None:
                 }
             )
         )
+        or (
+            value["retry_management_operation_id"] is not None
+            and not isinstance(value["retry_management_operation_id"], str)
+        )
+        or (
+            value["management_operation_id"] is not None
+            and not isinstance(value["management_operation_id"], str)
+        )
+        or not isinstance(value["retry_management_history"], list)
+        or len(value["retry_management_history"]) > 200
+        or len(value["retry_management_history"]) != len(set(value["retry_management_history"]))
+        or any(not isinstance(item, str) for item in value["retry_management_history"])
         or (value["cleanup_context"] is not None and not isinstance(value["cleanup_context"], dict))
         or (
             value["observed_identity"] is not None
@@ -645,6 +693,7 @@ class CacheDeletionManager:
         eligibility: DeletionEligibility,
         *,
         operation_id: uuid.UUID | None = None,
+        management_operation_id: uuid.UUID | None = None,
         max_nodes: int = 100_000,
         max_bytes: int = 256 * 1024 * 1024,
         max_scan_nodes: int = 100_000,
@@ -743,6 +792,11 @@ class CacheDeletionManager:
                 "next_retry_at": 0.0,
                 "last_error": None,
                 "resume_phase": None,
+                "retry_management_operation_id": None,
+                "retry_management_history": [],
+                "management_operation_id": (
+                    str(management_operation_id) if management_operation_id is not None else None
+                ),
                 "cleanup_context": (
                     dict(eligibility.cleanup_context)
                     if eligibility.cleanup_context is not None
@@ -866,6 +920,9 @@ class CacheDeletionManager:
                 "next_retry_at": 0.0,
                 "last_error": None,
                 "resume_phase": None,
+                "retry_management_operation_id": None,
+                "retry_management_history": [],
+                "management_operation_id": None,
                 "cleanup_context": None,
                 "observed_identity": None,
                 "operation_kind": "replacement",
@@ -1399,6 +1456,11 @@ class CacheDeletionManager:
             if record is None:
                 continue
             if record["phase"] in _TERMINAL_PHASES:
+                if (
+                    record.get("management_operation_id") is not None
+                    or record.get("retry_management_operation_id") is not None
+                ):
+                    continue
                 path.unlink()
                 _sync_directory(self.lifecycle.deletion_root, strict=True)
                 continue
@@ -1501,3 +1563,300 @@ class CacheDeletionManager:
         except OSError as error:
             raise CacheError("cache_deletion_record_unavailable") from error
         return "pending" if pending else "clear"
+
+    def retry_failed_operation(
+        self, operation_id: uuid.UUID, *, management_operation_id: uuid.UUID
+    ) -> str:
+        """Grant one durable administrator retry to an existing failed record."""
+
+        grant_path = self.lifecycle.state_root / f"management-retry-{management_operation_id}.json"
+        existing = _read_bounded_json(grant_path, max_bytes=4096)
+        if existing is not None and existing.get("guard_operation_id") != str(operation_id):
+            grant_path = self.lifecycle.state_root / (
+                f"management-retry-{management_operation_id}-{operation_id}.json"
+            )
+            existing = _read_bounded_json(grant_path, max_bytes=4096)
+        if existing is not None and (
+            existing.get("schema") != SCHEMA_VERSION
+            or existing.get("management_operation_id") != str(management_operation_id)
+            or existing.get("guard_operation_id") != str(operation_id)
+            or set(existing)
+            not in (
+                {"schema", "management_operation_id", "guard_operation_id"},
+                {
+                    "schema",
+                    "management_operation_id",
+                    "guard_operation_id",
+                    "activated",
+                },
+                {
+                    "schema",
+                    "management_operation_id",
+                    "guard_operation_id",
+                    "activated",
+                    "previous_retry_operation_id",
+                },
+            )
+            or ("activated" in existing and type(existing.get("activated")) is not bool)
+            or (
+                existing.get("previous_retry_operation_id") is not None
+                and not isinstance(existing.get("previous_retry_operation_id"), str)
+            )
+        ):
+            raise CacheError("cache_retry_conflict")
+        path = _record_path(self.lifecycle, operation_id)
+        record = _read_record(path)
+        if record is None:
+            raise CacheError("cache_retry_unknown")
+        with self.lifecycle.entry_lock(str(record["key"]), blocking=False):
+            record = _read_record(path)
+            if record is None:
+                raise CacheError("cache_retry_unknown")
+            requested = str(management_operation_id)
+            retry_id = record.get("retry_management_operation_id")
+            history = list(record.get("retry_management_history", []))
+            if record["phase"] in _TERMINAL_PHASES:
+                if requested == retry_id or requested in history:
+                    return "already_granted"
+                return "already_completed"
+            if requested == retry_id:
+                if existing is not None and existing.get("activated") is not True:
+                    _write_json(
+                        grant_path,
+                        {
+                            "schema": SCHEMA_VERSION,
+                            "management_operation_id": requested,
+                            "guard_operation_id": str(operation_id),
+                            "activated": True,
+                            "previous_retry_operation_id": (history[-1] if history else None),
+                        },
+                        strict_sync=True,
+                    )
+                return "already_granted"
+            if requested in history:
+                return "already_granted"
+            if record["phase"] != "failed":
+                raise CacheError("cache_retry_not_failed")
+            resume = record.get("resume_phase")
+            if not isinstance(resume, str) or resume not in _RESUMABLE_PHASES:
+                raise CacheError("cache_retry_unknown")
+            if len(history) >= 200:
+                raise CacheError("cache_retry_conflict")
+            if existing is None:
+                _write_json(
+                    grant_path,
+                    {
+                        "schema": SCHEMA_VERSION,
+                        "management_operation_id": requested,
+                        "guard_operation_id": str(operation_id),
+                        "activated": False,
+                        "previous_retry_operation_id": retry_id,
+                    },
+                    strict_sync=True,
+                )
+            else:
+                previous = existing.get("previous_retry_operation_id")
+                if "previous_retry_operation_id" in existing:
+                    if previous != retry_id:
+                        raise CacheError("cache_retry_conflict")
+                elif retry_id is not None:
+                    raise CacheError("cache_retry_conflict")
+            if retry_id is not None:
+                history.append(str(retry_id))
+            record["retry_management_history"] = history
+            record["retry_management_operation_id"] = requested
+            record["phase"] = resume
+            record["next_retry_at"] = 0.0
+            record["updated_at"] = self.clock()
+            _write_record(path, record)
+            _write_json(
+                grant_path,
+                {
+                    "schema": SCHEMA_VERSION,
+                    "management_operation_id": requested,
+                    "guard_operation_id": str(operation_id),
+                    "activated": True,
+                    "previous_retry_operation_id": retry_id,
+                },
+                strict_sync=True,
+            )
+        return "granted"
+
+    def retry_failed_cleanup(
+        self, cleanup_id: int, *, management_operation_id: uuid.UUID, max_records: int = 1024
+    ) -> list[dict[str, object]]:
+        return self._retry_failed_matching(
+            management_operation_id=management_operation_id,
+            max_records=max_records,
+            predicate=lambda record: (
+                isinstance(record.get("cleanup_context"), dict)
+                and record["cleanup_context"].get("cleanup_id") == cleanup_id
+            ),
+        )
+
+    def retry_failed_keys(
+        self,
+        keys: frozenset[str],
+        *,
+        management_operation_id: uuid.UUID,
+        max_records: int = 1024,
+    ) -> list[dict[str, object]]:
+        return self._retry_failed_matching(
+            management_operation_id=management_operation_id,
+            max_records=max_records,
+            predicate=lambda record: (
+                record.get("operation_kind") == "gc" and record.get("key") in keys
+            ),
+        )
+
+    def _retry_failed_matching(
+        self,
+        *,
+        management_operation_id: uuid.UUID,
+        max_records: int,
+        predicate: Callable[[Mapping[str, Any]], bool],
+    ) -> list[dict[str, object]]:
+        matched: list[dict[str, object]] = []
+        inspected = 0
+        try:
+            with os.scandir(self.lifecycle.deletion_root) as entries:
+                for item in entries:
+                    if not item.name.endswith(".json"):
+                        continue
+                    inspected += 1
+                    if inspected > max_records:
+                        raise CacheError("cache_scan_budget_exhausted")
+                    record = _read_record(Path(item.path))
+                    if record is None or not predicate(record):
+                        continue
+                    if record["phase"] != "failed" and record.get(
+                        "retry_management_operation_id"
+                    ) != str(management_operation_id):
+                        continue
+                    operation_id = uuid.UUID(str(record["operation_id"]))
+                    self.retry_failed_operation(
+                        operation_id, management_operation_id=management_operation_id
+                    )
+                    matched.append(self.operation_fact(operation_id))
+        except OSError as error:
+            raise CacheError("cache_deletion_record_unavailable") from error
+        if not matched:
+            raise CacheError("cache_retry_unknown")
+        return matched
+
+    def failed_items(self, *, max_items: int = 100) -> list[dict[str, object]]:
+        """Return bounded non-sensitive failed-record facts for administrator retry."""
+        items, _cursor, _complete = self.failed_items_page(after=None, max_items=max_items)
+        return items
+
+    def failed_items_page(
+        self, *, after: str | None, max_items: int = 100
+    ) -> tuple[list[dict[str, object]], str | None, bool]:
+        paths = _local_record_page(
+            self.lifecycle.deletion_root,
+            after=after,
+            limit=max_items + 1,
+            deadline=time.monotonic() + 1.0,
+        )
+        page = paths[:max_items]
+        items: list[dict[str, object]] = []
+        for path in page:
+            record = _read_record(path)
+            if record is None or record["phase"] != "failed":
+                continue
+            items.extend(self._failed_record_public(record))
+        cursor = page[-1].stem if len(paths) > max_items and page else None
+        return items, cursor, len(paths) <= max_items
+
+    @staticmethod
+    def _failed_record_public(record: Mapping[str, Any]) -> list[dict[str, object]]:
+        return [
+            {
+                "guard_operation_id": str(record["operation_id"]),
+                "generation": int(record["generation"]),
+                "adapter_id": int(record["adapter_id"]),
+                "version_id": int(record["version_id"]),
+                "operation_kind": str(record["operation_kind"]),
+                "local_phase": "failed",
+                "resume_phase": str(record["resume_phase"]),
+                "failure_count": int(record["attempts"]),
+                "error_code": str(record["last_error"] or "cache_delete_failed"),
+                "sampled_at": datetime.fromtimestamp(
+                    float(record["updated_at"]), tz=UTC
+                ).isoformat(),
+            }
+        ]
+
+    def operation_phase(self, operation_id: uuid.UUID) -> str:
+        record = _read_record(_record_path(self.lifecycle, operation_id))
+        if record is None:
+            return "unknown"
+        return str(record["phase"])
+
+    def operation_fact(self, operation_id: uuid.UUID) -> dict[str, object]:
+        record = _read_record(_record_path(self.lifecycle, operation_id))
+        if record is None:
+            raise CacheError("cache_retry_unknown")
+        return {
+            "guard_operation_id": str(operation_id),
+            "generation": int(record["generation"]),
+            "adapter_id": int(record["adapter_id"]),
+            "version_id": int(record["version_id"]),
+            "phase": str(record["phase"]),
+        }
+
+    def operation_result_fact(self, operation_id: uuid.UUID) -> dict[str, object]:
+        fact = self.operation_fact(operation_id)
+        record = _read_record(_record_path(self.lifecycle, operation_id))
+        if record is None:
+            raise CacheError("cache_retry_unknown")
+        fact["original_bytes"] = int(record["original_bytes"])
+        return fact
+
+    def release_management_records(
+        self,
+        management_operation_id: uuid.UUID,
+        *,
+        operation_ids: list[uuid.UUID] | None = None,
+        max_records: int = 200,
+    ) -> None:
+        """Release terminal child records after the durable management receipt exists."""
+
+        inspected = 0
+        try:
+            if operation_ids is None:
+                with os.scandir(self.lifecycle.deletion_root) as entries:
+                    paths = [Path(item.path) for item in entries if item.name.endswith(".json")]
+            else:
+                if len(operation_ids) > max_records:
+                    raise CacheError("cache_scan_budget_exhausted")
+                paths = [_record_path(self.lifecycle, item) for item in operation_ids]
+            for path in paths:
+                if not path.exists():
+                    continue
+                inspected += 1
+                if inspected > max_records:
+                    raise CacheError("cache_scan_budget_exhausted")
+                record = _read_record(path)
+                requested = str(management_operation_id)
+                if record is None or requested not in {
+                    record.get("management_operation_id"),
+                    record.get("retry_management_operation_id"),
+                }:
+                    continue
+                if record["phase"] not in _TERMINAL_PHASES:
+                    continue
+                record["management_operation_id"] = None
+                retry_id = record.get("retry_management_operation_id")
+                if retry_id is not None:
+                    history = list(record.get("retry_management_history", []))
+                    if retry_id not in history:
+                        if len(history) >= 200:
+                            raise CacheError("cache_retry_conflict")
+                        history.append(retry_id)
+                    record["retry_management_history"] = history
+                    record["retry_management_operation_id"] = None
+                record["updated_at"] = self.clock()
+                _write_record(path, record)
+        except OSError as error:
+            raise CacheError("cache_deletion_record_unavailable") from error

@@ -1,5 +1,6 @@
 """Durable Worker-side cleanup requests for permanently deleted Adapters."""
 
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
@@ -10,6 +11,7 @@ from sqlalchemy import (
     Identity,
     Integer,
     String,
+    Uuid,
     func,
     text,
 )
@@ -60,3 +62,9 @@ class WorkerCleanupRequest(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retry_operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("worker_cache_management_operations.operation_id", ondelete="RESTRICT"),
+        nullable=True,
+        unique=True,
+    )

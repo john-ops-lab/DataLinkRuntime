@@ -242,6 +242,27 @@ def test_active_staging_is_reported_without_double_capacity_charge(tmp_path: Pat
     assert report.committed_bytes + report.reserved_bytes == (
         authoritative["committed_bytes"] + authoritative["reserved_bytes"]
     )
+    assert report.observations == (
+        {
+            "cache_key": "11-13",
+            "kind": "staging",
+            "adapter_id": 11,
+            "version_id": 13,
+            "identity": None,
+            "digest": None,
+            "bytes": 1000,
+            "pinned": False,
+            "rebuildability": "unknown",
+            "reasons": ["cache_staging_active"],
+        },
+    )
+    manager.cursor_path.write_text(
+        json.dumps({"schema": 1, "after_name": "99-99"}), encoding="ascii"
+    )
+    selected = manager.scan(mode="manual", target_keys=frozenset({"11-13"}))
+    assert selected.complete is True
+    assert selected.observations[0]["kind"] == "staging"
+    assert json.loads(manager.cursor_path.read_text(encoding="ascii"))["after_name"] == "99-99"
 
 
 def test_pin_expiry_material_drift_offline_and_same_source_failure(tmp_path: Path) -> None:

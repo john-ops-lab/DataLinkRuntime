@@ -278,6 +278,104 @@ def test_three_failures_stop_without_renaming_entry(tmp_path: Path) -> None:
     assert cache.entry_path("11-13").exists()
     assert client.operations[result.operation_id]["phase"] == "acquired"
 
+    retry_id = uuid.uuid4()
+    client.fail_checks = False
+    assert (
+        manager.retry_failed_operation(result.operation_id, management_operation_id=retry_id)
+        == "granted"
+    )
+    assert manager.recover_round(max_items=1, max_pages=0) == 1
+    assert client.operations[result.operation_id]["phase"] == "completed"
+    assert (
+        manager.retry_failed_operation(result.operation_id, management_operation_id=retry_id)
+        == "already_granted"
+    )
+
+
+def test_retry_grant_recovers_interruption_before_resume_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache, lifecycle, eligibility = _ready(tmp_path)
+    client = FakeGuardClient()
+    client.fail_checks = True
+    manager = CacheDeletionManager(
+        cache,
+        lifecycle,
+        client,
+        worker_id=7,
+        journal_protected=lambda _key: False,
+        retry_seconds=0,
+    )
+    result = manager.begin(eligibility, max_bytes=8192)
+    manager.recover_round(max_items=1, max_pages=0)
+    manager.recover_round(max_items=1, max_pages=0)
+    assert manager.operation_phase(result.operation_id) == "failed"
+
+    management_id = uuid.uuid4()
+    original_write = deletion_module._write_record
+
+    def interrupt(path: Path, record: dict[str, Any]) -> None:
+        if record["phase"] == "recorded":
+            raise CacheError("cache_lifecycle_sync_failed")
+        original_write(path, record)
+
+    client.fail_checks = False
+    monkeypatch.setattr(deletion_module, "_write_record", interrupt)
+    with pytest.raises(CacheError) as interrupted:
+        manager.retry_failed_operation(result.operation_id, management_operation_id=management_id)
+    assert interrupted.value.code == "cache_lifecycle_sync_failed"
+    monkeypatch.setattr(deletion_module, "_write_record", original_write)
+
+    assert manager.retry_failed_operation(
+        result.operation_id, management_operation_id=management_id
+    ) in {"granted", "already_granted"}
+    manager.recover_round(max_items=1, max_pages=0)
+    assert manager.operation_phase(result.operation_id) == "completed"
+    assert (
+        manager.retry_failed_operation(result.operation_id, management_operation_id=uuid.uuid4())
+        == "already_completed"
+    )
+
+
+def test_new_retry_supersedes_consumed_retry_without_late_grant_reactivation(
+    tmp_path: Path,
+) -> None:
+    cache, lifecycle, eligibility = _ready(tmp_path)
+    client = FakeGuardClient()
+    client.fail_checks = True
+    manager = CacheDeletionManager(
+        cache,
+        lifecycle,
+        client,
+        worker_id=7,
+        journal_protected=lambda _key: False,
+        retry_seconds=0,
+    )
+    result = manager.begin(eligibility, max_bytes=8192)
+    manager.recover_round(max_items=1, max_pages=0)
+    manager.recover_round(max_items=1, max_pages=0)
+    first = uuid.uuid4()
+    assert (
+        manager.retry_failed_operation(result.operation_id, management_operation_id=first)
+        == "granted"
+    )
+    manager.recover_round(max_items=1, max_pages=0)
+    assert manager.operation_phase(result.operation_id) == "failed"
+
+    second = uuid.uuid4()
+    client.fail_checks = False
+    assert (
+        manager.retry_failed_operation(result.operation_id, management_operation_id=second)
+        == "granted"
+    )
+    assert (
+        manager.retry_failed_operation(result.operation_id, management_operation_id=first)
+        == "already_granted"
+    )
+    assert manager.operation_phase(result.operation_id) == "recorded"
+    manager.recover_round(max_items=1, max_pages=0)
+    assert manager.operation_phase(result.operation_id) == "completed"
+
 
 def test_use_or_journal_protection_refuses_before_guard(tmp_path: Path) -> None:
     cache, lifecycle, eligibility = _ready(tmp_path)
@@ -750,6 +848,88 @@ def test_failed_receipt_retains_exact_resume_phase(
     record = json.loads(record_path.read_text(encoding="ascii"))
     assert record["phase"] == "failed"
     assert record["resume_phase"] == "receipt_pending"
+
+
+def test_completed_management_child_release_is_durable_and_reclaimable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache, lifecycle, eligibility = _ready(tmp_path)
+    manager = CacheDeletionManager(
+        cache,
+        lifecycle,
+        FakeGuardClient(),
+        worker_id=7,
+        journal_protected=lambda _key: False,
+        retry_seconds=0,
+    )
+    parent_id = uuid.uuid4()
+    result = manager.begin(
+        eligibility,
+        max_bytes=8192,
+        management_operation_id=parent_id,
+    )
+    record_path = lifecycle.deletion_root / f"{result.operation_id}.json"
+    record = json.loads(record_path.read_text(encoding="ascii"))
+    assert record["phase"] == "completed"
+    assert record["management_operation_id"] == str(parent_id)
+
+    real_write = deletion_module._write_record
+    interrupted = False
+
+    def interrupt_release(path: Path, value: dict[str, Any]) -> None:
+        nonlocal interrupted
+        if path == record_path and value.get("management_operation_id") is None:
+            interrupted = True
+            raise CacheError("cache_lifecycle_sync_failed")
+        real_write(path, value)
+
+    monkeypatch.setattr(deletion_module, "_write_record", interrupt_release)
+    with pytest.raises(CacheError):
+        manager.release_management_records(parent_id, operation_ids=[result.operation_id])
+    assert interrupted
+    assert json.loads(record_path.read_text(encoding="ascii"))["management_operation_id"] == str(
+        parent_id
+    )
+
+    monkeypatch.setattr(deletion_module, "_write_record", real_write)
+    manager.release_management_records(parent_id, operation_ids=[result.operation_id])
+    assert json.loads(record_path.read_text(encoding="ascii"))["management_operation_id"] is None
+    for _ in range(3):
+        manager.recover_round(max_items=20, max_pages=0)
+    assert not record_path.exists()
+
+
+def test_root_management_release_consumes_earlier_retry_marker(tmp_path: Path) -> None:
+    cache, lifecycle, eligibility = _ready(tmp_path)
+    manager = CacheDeletionManager(
+        cache,
+        lifecycle,
+        FakeGuardClient(),
+        worker_id=7,
+        journal_protected=lambda _key: False,
+        retry_seconds=0,
+    )
+    root_id = uuid.uuid4()
+    earlier_retry_id = uuid.uuid4()
+    result = manager.begin(
+        eligibility,
+        max_bytes=8192,
+        management_operation_id=root_id,
+    )
+    record_path = lifecycle.deletion_root / f"{result.operation_id}.json"
+    record = json.loads(record_path.read_text(encoding="ascii"))
+    record["retry_management_operation_id"] = str(earlier_retry_id)
+    deletion_module._write_record(record_path, record)
+
+    manager.release_management_records(root_id, operation_ids=[result.operation_id])
+
+    released = json.loads(record_path.read_text(encoding="ascii"))
+    assert released["management_operation_id"] is None
+    assert released["retry_management_operation_id"] is None
+    assert released["retry_management_history"] == [str(earlier_retry_id)]
+    for _ in range(3):
+        manager.recover_round(max_items=20, max_pages=0)
+    assert not record_path.exists()
 
 
 def test_orphan_scan_budget_deferral_advances_persisted_cursor(tmp_path: Path) -> None:

@@ -117,6 +117,52 @@ class ControlClient:
     def mark_offline(self, worker_id: int) -> None:
         self._expect("POST", f"/api/workers/{worker_id}/offline", expected=204)
 
+    def claim_cache_command(self, worker_id: int) -> dict[str, Any] | None:
+        status, raw = self._request("POST", f"/api/workers/{worker_id}/cache/commands/claim")
+        if status >= 500:
+            raise ControlUnavailableError(f"control answered {status}")
+        if status == 204:
+            return None
+        if status != 200:
+            raise ClientError(status, raw.decode(errors="replace"))
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ClientError(502, "cache command response is not an object")
+        return value
+
+    def report_cache_command(
+        self,
+        worker_id: int,
+        operation_id: str,
+        *,
+        claim_epoch: int,
+        request_hash: str,
+        status: str,
+        result: Mapping[str, Any],
+        error_code: str | None = None,
+    ) -> None:
+        self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cache/commands/{operation_id}/result",
+            {
+                "claim_epoch": claim_epoch,
+                "request_hash": request_hash,
+                "status": status,
+                "result": dict(result),
+                **({"error_code": error_code} if error_code is not None else {}),
+            },
+            expected=204,
+        )
+
+    def report_cache_snapshot(self, worker_id: int, snapshot: Mapping[str, Any]) -> None:
+        self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cache/snapshot",
+            dict(snapshot),
+            expected=204,
+            timeout=min(self._timeout_seconds, 10.0),
+        )
+
     def resolve_cache_reference(
         self, worker_id: int, execution_id: int, attempt_id: int | None
     ) -> str:

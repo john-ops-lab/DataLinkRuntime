@@ -44,6 +44,7 @@ _LIFECYCLE_FIELDS = frozenset(
     }
 )
 _LIFECYCLE_POLICY_FIELDS = frozenset({"pin_audit", "rebuild_proof", "source_unavailable"})
+_LIFECYCLE_MANAGEMENT_FIELDS = frozenset({"management_applied"})
 _SOURCE_FAILURE_FIELDS = frozenset({"schema", "source_scope", "error_code", "observed_at"})
 _USE_FIELDS = frozenset(
     {"schema", "key", "worker_id", "execution_id", "attempt_id", "fencing_token", "started_at"}
@@ -237,6 +238,25 @@ def _validated_lifecycle(value: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(value)
     for field in _LIFECYCLE_POLICY_FIELDS:
         normalized.setdefault(field, None)
+    normalized.setdefault("management_applied", None)
+    management = normalized["management_applied"]
+    if management is not None:
+        try:
+            uuid.UUID(str(management["operation_id"]))
+            applied_at = float(management["applied_at"])
+        except (KeyError, OverflowError, TypeError, ValueError) as error:
+            raise CacheError("cache_lifecycle_invalid") from error
+        request_hash = management.get("request_hash")
+        if (
+            not isinstance(management, dict)
+            or set(management) != {"operation_id", "request_hash", "applied_at"}
+            or not isinstance(request_hash, str)
+            or len(request_hash) != 64
+            or any(character not in "0123456789abcdef" for character in request_hash)
+            or not math.isfinite(applied_at)
+            or applied_at <= 0
+        ):
+            raise CacheError("cache_lifecycle_invalid")
     pin_audit = normalized["pin_audit"]
     if pin_audit is not None:
         if (
@@ -354,6 +374,7 @@ def _read_lifecycle(path: Path) -> dict[str, Any] | None:
     if value.get("schema") != SCHEMA_VERSION or frozenset(fields) not in {
         _LIFECYCLE_FIELDS,
         _LIFECYCLE_FIELDS | _LIFECYCLE_POLICY_FIELDS,
+        _LIFECYCLE_FIELDS | _LIFECYCLE_POLICY_FIELDS | _LIFECYCLE_MANAGEMENT_FIELDS,
     }:
         raise CacheError("cache_lifecycle_invalid")
     return _validated_lifecycle(value)
@@ -695,7 +716,7 @@ class CacheLifecycleStore:
             "policy_revision": policy_revision,
         }
         if existing is not None:
-            for field in _LIFECYCLE_POLICY_FIELDS:
+            for field in _LIFECYCLE_POLICY_FIELDS | _LIFECYCLE_MANAGEMENT_FIELDS:
                 updated[field] = existing[field]
         _write_json(path, updated)
 
@@ -842,6 +863,86 @@ class CacheLifecycleStore:
             if cleared_scopes:
                 _sync_directory(self.state_root, strict=True)
             return _validated_lifecycle(updated)
+
+    def apply_admin_protection(
+        self,
+        key: str,
+        *,
+        operation_id: uuid.UUID,
+        request_hash: str,
+        identity: Mapping[str, Any],
+        digest: str,
+        actor: str,
+        pinned: bool | None = None,
+        source_policy: str | None = None,
+        evidence_note: str | None = None,
+        valid_until: float | None = None,
+        now: float | None = None,
+    ) -> bool:
+        """Apply one administrator action and its replay marker atomically.
+
+        The caller owns the non-blocking key lock.  ``False`` means this exact
+        operation was already applied, so later source-failure facts must stay.
+        """
+
+        timestamp = time.time() if now is None else now
+        if (
+            not isinstance(request_hash, str)
+            or len(request_hash) != 64
+            or any(character not in "0123456789abcdef" for character in request_hash)
+            or not actor
+            or len(actor) > 128
+            or not math.isfinite(timestamp)
+        ):
+            raise CacheError("cache_policy_invalid")
+        value = self.lifecycle(key)
+        if value["identity"] != dict(identity) or value["digest"] != digest:
+            raise CacheError("cache_identity_conflict")
+        marker = value.get("management_applied")
+        expected_marker = {
+            "operation_id": str(operation_id),
+            "request_hash": request_hash,
+        }
+        if isinstance(marker, dict) and all(
+            marker.get(name) == item for name, item in expected_marker.items()
+        ):
+            return False
+        updated = dict(value)
+        if pinned is not None:
+            updated["pinned"] = pinned
+            updated["pin_audit"] = {
+                "actor": actor,
+                "reason": "administrator_cache_protection",
+                "changed_at": timestamp,
+            }
+        if source_policy is not None:
+            if (
+                source_policy not in {"verified_offline", "managed_online"}
+                or not evidence_note
+                or len(evidence_note) > 256
+                or valid_until is None
+                or not math.isfinite(valid_until)
+                or valid_until <= timestamp
+                or valid_until - timestamp > 86_400
+            ):
+                raise CacheError("cache_rebuild_proof_invalid")
+            updated["rebuildability"] = "confirmed"
+            updated["rebuild_proof"] = {
+                "identity": dict(identity),
+                "digest": digest,
+                "source_policy": source_policy,
+                "evidence_note": evidence_note,
+                "actor": actor,
+                "confirmed_at": timestamp,
+                "valid_until": valid_until,
+                "automatic": False,
+                "source_scope": None,
+            }
+            updated["source_unavailable"] = None
+        updated["management_applied"] = {**expected_marker, "applied_at": timestamp}
+        updated["policy_revision"] = int(value["policy_revision"]) + 1
+        _write_json(self.lifecycle_root / f"{_safe_key(key)}.json", updated, strict_sync=True)
+        return True
 
     def invalidate_automatic_rebuildability(
         self,

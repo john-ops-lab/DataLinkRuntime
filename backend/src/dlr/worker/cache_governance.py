@@ -7,6 +7,7 @@ import re
 import shutil
 import stat
 import time
+import uuid
 from bisect import insort
 from collections import Counter
 from dataclasses import dataclass, field
@@ -71,6 +72,7 @@ class CacheScanResult:
     retained_reasons: dict[str, int]
     committed_bytes: int
     reserved_bytes: int
+    observations: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,7 @@ class CacheRoundResult:
     freed_bytes: int
     cursor: str | None
     retained_reasons: dict[str, int]
+    child_operations: tuple[dict[str, object], ...] = ()
 
 
 def _bounded_tree_size(path: Path, *, budget: CacheScanBudget) -> int:
@@ -221,14 +224,20 @@ class CachePolicyManager:
                 clear.discard(key)
         return clear, reasons
 
-    def _page(self, *, after: str | None, budget: CacheScanBudget) -> tuple[list[Path], bool]:
+    def _page(
+        self, *, after: str | None, budget: CacheScanBudget, limit: int | None = None
+    ) -> tuple[list[Path], bool]:
         names: list[str] = []
-        limit = self.policy.max_scan_entries_per_round
+        effective_limit = (
+            self.policy.max_scan_entries_per_round
+            if limit is None
+            else min(limit, self.policy.max_scan_entries_per_round, 200)
+        )
         try:
             with os.scandir(self.cache.entries) as iterator:
                 for item in iterator:
                     if self.monotonic() >= budget.deadline:
-                        page_names = names[:limit]
+                        page_names = names[:effective_limit]
                         return [self.cache.entries / name for name in page_names], False
                     if after is not None and item.name <= after:
                         continue
@@ -237,18 +246,46 @@ class CachePolicyManager:
                     except CacheError as error:
                         if error.code != "cache_scan_budget_exhausted":
                             raise
-                        page_names = names[:limit]
+                        page_names = names[:effective_limit]
                         return [self.cache.entries / name for name in page_names], False
                     insort(names, item.name)
-                    if len(names) > limit + 1:
+                    if len(names) > effective_limit + 1:
                         names.pop()
         except OSError as error:
             raise CacheError("cache_scan_failed") from error
         if not names and after is not None:
-            return self._page(after=None, budget=budget)
-        page_names = names[:limit]
-        complete = len(names) <= limit
+            return self._page(after=None, budget=budget, limit=effective_limit)
+        page_names = names[:effective_limit]
+        complete = len(names) <= effective_limit
         return [self.cache.entries / name for name in page_names], complete
+
+    def _selected_paths(
+        self, target_keys: frozenset[str], *, budget: CacheScanBudget
+    ) -> list[Path]:
+        """Resolve an explicit bounded key set without inheriting the periodic cursor."""
+
+        paths: list[Path] = []
+        for key in sorted(target_keys):
+            ready = self.cache.entries / key
+            try:
+                ready.lstat()
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                raise CacheError("cache_scan_failed") from error
+            else:
+                paths.append(ready)
+        try:
+            with os.scandir(self.cache.entries) as iterator:
+                for item in iterator:
+                    budget.consume_node()
+                    match = _STAGING_KEY.fullmatch(item.name)
+                    if match is not None and match.group("key") in target_keys:
+                        paths.append(self.cache.entries / item.name)
+        except OSError as error:
+            raise CacheError("cache_scan_failed") from error
+        paths.sort(key=lambda path: path.name)
+        return paths
 
     def scan(
         self,
@@ -256,11 +293,16 @@ class CachePolicyManager:
         mode: Literal["periodic", "pressure", "manual"],
         budget: _RoundBudget | None = None,
         target_keys: frozenset[str] | None = None,
+        page_limit: int | None = None,
     ) -> CacheScanResult:
         budget = budget or self._budget()
-        after = self._cursor()
+        after = None if target_keys is not None else self._cursor()
         try:
-            paths, page_complete = self._page(after=after, budget=budget.scan)
+            if target_keys is None:
+                paths, page_complete = self._page(after=after, budget=budget.scan, limit=page_limit)
+            else:
+                paths = self._selected_paths(target_keys, budget=budget.scan)
+                page_complete = True
         except CacheError as error:
             if error.code != "cache_scan_budget_exhausted":
                 raise
@@ -275,6 +317,7 @@ class CachePolicyManager:
         }
         retained: Counter[str] = Counter()
         candidates: list[_Candidate] = []
+        observations: dict[str, dict[str, Any]] = {}
         inactive_staging: list[tuple[Path, str, str]] = []
         staging_sizes: dict[Path, int] = {}
         reservation_covered_staging_bytes = 0
@@ -329,6 +372,19 @@ class CachePolicyManager:
                         retained["cache_lifecycle_unknown"] += 1
                         continue
                     digest = str(inspected["digest"])
+                    observation = {
+                        "cache_key": key,
+                        "kind": "version",
+                        "adapter_id": int(ready_match.group("adapter")),
+                        "version_id": int(ready_match.group("version")),
+                        "identity": identity,
+                        "digest": digest,
+                        "bytes": int(inspected["physical_bytes"]),
+                        "pinned": bool(facts["pinned"]),
+                        "rebuildability": str(facts["rebuildability"]),
+                        "reasons": [],
+                    }
+                    observations[key] = observation
                     reason = self.lifecycle.reclamation_reason(
                         key,
                         identity=identity,
@@ -340,6 +396,7 @@ class CachePolicyManager:
                     if reason is None and now - float(facts["last_used_at"]) < idle_threshold:
                         reason = "cache_recently_used"
                     if reason is not None:
+                        observation["reasons"] = [reason]
                         category.reasons[reason] += 1
                         retained[reason] += 1
                         continue
@@ -350,6 +407,7 @@ class CachePolicyManager:
                             budget=budget.scan,
                         )
                     except CacheError as error:
+                        observation["reasons"] = [error.code]
                         category.reasons[error.code] += 1
                         retained[error.code] += 1
                         continue
@@ -377,14 +435,14 @@ class CachePolicyManager:
                     size = _bounded_tree_size(path, budget=budget.scan)
                     category.bytes += size
                     token = staging_match.group("token")
+                    staging_reason: str | None = None
                     if not reservation_complete:
-                        category.reasons["cache_accounting_busy"] += 1
-                        retained["cache_accounting_busy"] += 1
+                        staging_reason = "cache_accounting_busy"
                     elif token in active_tokens:
-                        category.reasons["cache_staging_active"] += 1
+                        staging_reason = "cache_staging_active"
                         reservation_covered_staging_bytes += size
                     elif now - path.lstat().st_mtime < self.policy.staging_ttl_seconds:
-                        category.reasons["cache_staging_recent"] += 1
+                        staging_reason = "cache_staging_recent"
                     else:
                         try:
                             self.deletion.preview_local_safe(
@@ -393,11 +451,28 @@ class CachePolicyManager:
                                 budget=budget.scan,
                             )
                         except CacheError as error:
-                            category.reasons[error.code] += 1
-                            retained[error.code] += 1
+                            staging_reason = error.code
                         else:
                             inactive_staging.append((path, key, token))
                             staging_sizes[path] = size
+                    if staging_reason is not None:
+                        category.reasons[staging_reason] += 1
+                        retained[staging_reason] += 1
+                    observations.setdefault(
+                        key,
+                        {
+                            "cache_key": key,
+                            "kind": "staging",
+                            "adapter_id": int(key.split("-", 1)[0]),
+                            "version_id": int(key.split("-", 1)[1]),
+                            "identity": None,
+                            "digest": None,
+                            "bytes": size,
+                            "pinned": False,
+                            "rebuildability": "unknown",
+                            "reasons": [staging_reason] if staging_reason is not None else [],
+                        },
+                    )
                     cursor = path.name
                     continue
                 if path.name.startswith(".dlr-trash-"):
@@ -425,7 +500,7 @@ class CachePolicyManager:
                 category.reasons["cache_ownership_unknown"] += 1
                 retained["cache_ownership_unknown"] += 1
                 cursor = path.name
-        if page_complete and paths and cursor == paths[-1].name:
+        if target_keys is not None or (page_complete and paths and cursor == paths[-1].name):
             cursor = None
         for shared in self.shared_roots:
             if not shared.exists():
@@ -451,6 +526,7 @@ class CachePolicyManager:
                 categories["versions"].reclaimable_bytes += candidate.physical_bytes
             else:
                 reason = control_reasons.get(candidate.key, "cache_reference_unknown")
+                observations[candidate.key]["reasons"] = [reason]
                 categories["versions"].reasons[reason] += 1
                 retained[reason] += 1
         filtered_staging: list[tuple[Path, str, str]] = []
@@ -460,13 +536,15 @@ class CachePolicyManager:
                 categories["staging"].reclaimable_bytes += staging_sizes[staging]
             else:
                 reason = control_reasons.get(key, "cache_reference_unknown")
+                observations[key]["reasons"] = [reason]
                 categories["staging"].reasons[reason] += 1
                 retained[reason] += 1
-        _write_json(
-            self.cursor_path,
-            {"schema": SCHEMA_VERSION, "after_name": cursor},
-            strict_sync=True,
-        )
+        if target_keys is None:
+            _write_json(
+                self.cursor_path,
+                {"schema": SCHEMA_VERSION, "after_name": cursor},
+                strict_sync=True,
+            )
         filtered_candidates.sort(
             key=lambda item: (item.last_used_at, -item.physical_bytes, item.key)
         )
@@ -482,6 +560,7 @@ class CachePolicyManager:
             )
             - reservation_covered_staging_bytes,
             reserved_bytes=reserved_bytes,
+            observations=tuple(observations.values()),
         )
 
     def snapshot(
@@ -504,12 +583,57 @@ class CachePolicyManager:
             "policy": self.policy.public_values(),
         }
 
+    def management_snapshot(self, *, max_items: int = 200) -> dict[str, Any]:
+        """Return one scan page; totals and keys share the same bounded observation."""
+
+        report = self.scan(mode="manual", page_limit=max_items)
+        failed_cursor_path = self.lifecycle.state_root / "management-failed-guard-cursor.json"
+        failed_cursor_value = _read_bounded_json(failed_cursor_path, max_bytes=1024)
+        failed_after = None
+        if failed_cursor_value is not None:
+            if (
+                set(failed_cursor_value) != {"schema", "after_operation_id"}
+                or failed_cursor_value.get("schema") != SCHEMA_VERSION
+                or (
+                    failed_cursor_value.get("after_operation_id") is not None
+                    and not isinstance(failed_cursor_value.get("after_operation_id"), str)
+                )
+            ):
+                raise CacheError("cache_lifecycle_invalid")
+            failed_after = failed_cursor_value["after_operation_id"]
+        failed_items, failed_next, failed_page_complete = self.deletion.failed_items_page(
+            after=failed_after, max_items=100
+        )
+        _write_json(
+            failed_cursor_path,
+            {"schema": SCHEMA_VERSION, "after_operation_id": failed_next},
+            strict_sync=True,
+        )
+        return {
+            "schema": SCHEMA_VERSION,
+            "sampled_at": self.clock(),
+            "complete": report.complete,
+            "cursor": report.cursor,
+            "accounting": {
+                "committed_bytes": report.committed_bytes,
+                "reserved_bytes": report.reserved_bytes,
+            },
+            "categories": report.categories,
+            "retained_reasons": report.retained_reasons,
+            "policy": self.policy.public_values(),
+            "items": list(report.observations[:max_items]),
+            "failed_guard_items": failed_items,
+            "failed_guard_cursor": failed_next,
+            "failed_guard_complete": failed_page_complete and failed_after is None,
+        }
+
     def run_round(
         self,
         *,
         mode: Literal["periodic", "pressure", "manual"],
         required_bytes: int = 0,
         target_keys: frozenset[str] | None = None,
+        operation_namespace: uuid.UUID | None = None,
     ) -> CacheRoundResult:
         if mode == "periodic" and not self.policy.gc_enabled:
             return CacheRoundResult("disabled", 0, 0, 0, 0, self._cursor(), {})
@@ -527,7 +651,8 @@ class CachePolicyManager:
             report = self.scan(mode=mode, budget=budget, target_keys=target_keys)
             deleted = 0
             freed = 0
-            status = "complete"
+            status = "complete" if report.complete else "budget_exhausted"
+            child_operations: list[dict[str, object]] = []
             low_target = self.policy.max_bytes * self.policy.low_watermark_percent // 100
             try:
                 disk_free = shutil.disk_usage(self.cache.root).free
@@ -601,6 +726,12 @@ class CachePolicyManager:
                             digest=candidate.digest,
                             last_used_before=candidate.last_used_at,
                         ),
+                        operation_id=(
+                            uuid.uuid5(operation_namespace, candidate.key)
+                            if operation_namespace is not None
+                            else None
+                        ),
+                        management_operation_id=operation_namespace,
                         max_seconds=max(0.001, budget.deletion.deadline - self.monotonic()),
                         round_budget=budget,
                     )
@@ -617,6 +748,7 @@ class CachePolicyManager:
                 if result.status == "completed":
                     deleted += 1
                     freed += result.freed_bytes
+                child_operations.append(self.deletion.operation_fact(result.operation_id))
                 if pressure_satisfied():
                     break
             if not report.candidates and status == "complete":
@@ -629,6 +761,7 @@ class CachePolicyManager:
                 freed_bytes=freed,
                 cursor=report.cursor,
                 retained_reasons=report.retained_reasons,
+                child_operations=tuple(child_operations),
             )
         finally:
             round_lock.__exit__(None, None, None)
