@@ -17,7 +17,7 @@
 
 - [x] 3.1 实现 design 默认值/范围与统一 cache factory，默认关闭周期/容量回收；测试五语言使用同一有效预算、非法配置失败、显式禁用和近期保留边界。
 - [x] 3.2 实现 pin、identity/digest 绑定的可重建确认及默认离线保护；验证未知/固定/材料变化/源不可用保留与内置材料可确认路径，确认操作记录非敏感审计。
-- [ ] 3.3 实现有界周期扫描、稳定游标、容量高低水位和 reserve 失败至多一轮后重试一次；验证单 entry 的 nodes/hash/depth/时限预算、多版本淘汰顺序、无候选/预算不足明确拒绝，以及 round→key/key→round 交错均不等待造成互锁。
+- [x] 3.3 实现有界周期扫描、稳定游标、容量高低水位和 reserve 失败至多一轮后重试一次；验证单 entry 的 nodes/hash/depth/时限预算、多版本淘汰顺序、无候选/预算不足明确拒绝，以及 round→key/key→round 交错均不等待造成互锁。
 - [x] 3.4 分类统计版本、共享下载、失败 staging、trash 与未知目录；共享仅报告不计可回收，staging 需归属/失活 reservation/无 use-journal；测试共享其他 Adapter 不受影响、未知目录不删及账目核对。
 
 ## 4. Checkpoint B — Worker communication and administrator interface
@@ -25,7 +25,7 @@
 - [x] 4.1 接入治理 capability、Worker snapshot/command/guard APIs 与客户端轮询，旧 Worker 不领新命令；测试鉴权、归属、幂等、过期/不完整快照及重复/断联重试。
 - [x] 4.2 实现管理员查询、preview/clean/protect/retry、单 Worker 活动操作限制、分页审计与有界 retention；支持 cleanup_id 复用失败 Adapter 清理请求、单次额外逻辑尝试、单调 attempts、原通道执行和关联审计；测试非管理员拒绝、预览后新引用、重复/并发请求、三次失败后 retry 到第 4/5 次、旧领取回报拒绝和未完成关联操作不被审计清理。
 - [ ] 4.3 读取项目 Ant Design skill 和 5.29.3 snapshot 后实现 Worker 缓存管理 UI 及中英文文案；通过 Web lint/typecheck/Vitest/build，并用本地 Chrome 验证占用、保护原因、预览、实际结果、pin、失败重试和离线/不支持状态。
-- [ ] 4.4 更新中英文部署/运维文档，说明默认关闭、阈值、重建确认、共享不支持、失败恢复与安全回滚；运行相关双语/链接文档测试，确认不写入私有部署参数。
+- [x] 4.4 更新中英文部署/运维文档，说明默认关闭、阈值、重建确认、共享不支持、失败恢复与安全回滚；运行相关双语/链接文档测试，确认不写入私有部署参数。
 
 ## 5. Final Group Gates and Delivery
 

@@ -667,8 +667,10 @@ class CachePolicyManager:
                     self.policy.max_bytes - used_after,
                     disk_free + freed - self.policy.disk_reserve_bytes,
                 )
-                return used_after <= low_target or (
-                    required_bytes > 0 and capacity_after >= required_bytes
+                if required_bytes > 0:
+                    return capacity_after >= required_bytes
+                return (
+                    used_after <= low_target and disk_free + freed >= self.policy.disk_reserve_bytes
                 )
 
             for staging, key, token in report.inactive_staging:

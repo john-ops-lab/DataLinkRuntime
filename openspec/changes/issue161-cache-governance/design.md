@@ -105,7 +105,7 @@
 | `IDLE_TTL_SECONDS` | `2592000`（30 天） | 60–31536000，周期候选闲置下限 |
 | `MIN_IDLE_SECONDS` | `86400`（1 天） | 0–IDLE_TTL，容量/手動均保留近期版本，测试环境可显式为 0 |
 | `MAX_BYTES` | `4294967296`（4 GiB） | 复用现有总预算语义，正整数 |
-| `HIGH_WATERMARK_PERCENT` / `LOW_WATERMARK_PERCENT` | `85` / `70` | `0 < low < high < 100`，容量回收到 low 或满足此次 reservation 所需即停 |
+| `HIGH_WATERMARK_PERCENT` / `LOW_WATERMARK_PERCENT` | `85` / `70` | `0 < low < high < 100`；安装预留触发时，以满足此次 reservation 所需空间为停止条件；后台压力回收须同时达到 low 且恢复磁盘安全余量后停止 |
 | `DISK_RESERVE_BYTES` | `134217728`（128 MiB） | 复用现有磁盘低余量，非负且小于 MAX_BYTES |
 | `MAX_DELETE_BYTES_PER_ROUND` | `268435456`（256 MiB） | 正整数 ≤MAX_BYTES；不开始超过剩余额度的整项，明确 `cache_budget_exhausted` |
 | `MAX_DELETE_ENTRIES_PER_ROUND` | `20` | 1–1000 |

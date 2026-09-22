@@ -65,7 +65,7 @@ The Worker cache area reports actual occupancy by class:
 - **In-progress trash:** belongs to an existing durable operation, remains part of actual occupancy, and resumes under its original operation and generation.
 - **Unknown directories or legacy layouts:** report `cache_ownership_unknown` and remain in place. Names are not used to guess ownership.
 
-Periodic reclamation selects only safe entries older than `IDLE_TTL_SECONDS`. Pressure and manual cleanup also enforce `MIN_IDLE_SECONDS`. Selection is oldest last-use first; equal timestamps prefer larger entries, then stable key order. Pressure reclamation stops after reaching the low watermark or freeing the current installation reservation requirement.
+Periodic reclamation selects only safe entries older than `IDLE_TTL_SECONDS`. Pressure and manual cleanup also enforce `MIN_IDLE_SECONDS`. Selection is oldest last-use first; equal timestamps prefer larger entries, then stable key order. Reclamation triggered by an insufficient installation reservation stops when that reservation can be satisfied. Background pressure reclamation stops when occupancy reaches the low watermark and the disk safety reserve has been restored. Existing round budgets and protection checks still apply.
 
 Each failed install reservation may run at most one bounded pressure round and then retry the reservation once. No candidate, insufficient recovered capacity, and an entry larger than the remaining round budget produce stable reasons; they never trigger an unbounded loop or forced deletion. Periodic, pressure, and manual work share one per-Worker round lock. Version-key locks are acquired without waiting, preventing a running prepare and a governance round from deadlocking each other.
 
@@ -83,6 +83,8 @@ Administrator operations follow these rules:
 - Audit queries are limited to 100 rows per page. Terminal audit defaults to 90 days and at most 1,000 rows per Worker. An unfinished operation or guard, or audit still referenced by cleanup, is never removed by retention.
 
 A failed Adapter cleanup is retried through its original `cleanup_id`, not a second cleanup channel. For example, an operator retry of `failed/3` first returns it to `pending/3`; the next real claim becomes `running/4`. If that attempt fails, a new operator retry is required before a fifth real claim. Each operator retry grants one logical attempt. Budget continuation and Worker restart remain within that attempt, old claim results cannot complete a newer claim, and the attempts counter is never reset.
+
+After a managed cleanup fails, its original failed audit remains available. A later explicit retry has its own operation record and includes completed children from the original cleanup without counting freed bytes twice. A new retry is rejected once the target has been recovered; repeating the same idempotent request still returns its original operation.
 
 ## Disconnection, failure, and recovery
 

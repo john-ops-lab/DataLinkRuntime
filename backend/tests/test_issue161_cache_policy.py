@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,9 @@ from dlr.worker.cache_policy import (
 
 
 class _UnusedClient:
+    def __init__(self) -> None:
+        self.operations: dict[uuid.UUID, dict[str, Any]] = {}
+
     def resolve_cache_key_references(
         self,
         worker_id: int,
@@ -43,6 +47,51 @@ class _UnusedClient:
                 for adapter_id, version_id in items
             ],
         }
+
+    def acquire_cache_guard(
+        self,
+        worker_id: int,
+        *,
+        adapter_id: int,
+        version_id: int,
+        operation_id: uuid.UUID,
+        **_kwargs: object,
+    ) -> dict[str, Any]:
+        operation = {
+            "worker_id": worker_id,
+            "adapter_id": adapter_id,
+            "version_id": version_id,
+            "operation_id": str(operation_id),
+            "generation": 1,
+            "phase": "acquired",
+        }
+        self.operations[operation_id] = operation
+        return dict(operation)
+
+    def check_cache_guard(
+        self,
+        worker_id: int,
+        operation_id: uuid.UUID,
+        **_kwargs: object,
+    ) -> dict[str, Any]:
+        operation = self.operations[operation_id]
+        assert operation["worker_id"] == worker_id
+        return dict(operation)
+
+    def finish_cache_guard(
+        self,
+        worker_id: int,
+        operation_id: uuid.UUID,
+        *,
+        generation: int,
+        outcome: str,
+        **_kwargs: object,
+    ) -> dict[str, Any]:
+        operation = self.operations[operation_id]
+        assert operation["worker_id"] == worker_id
+        assert operation["generation"] == generation
+        operation["phase"] = outcome
+        return dict(operation)
 
 
 def _ready(
@@ -497,6 +546,89 @@ def test_pressure_reservation_runs_one_cleanup_and_one_retry(tmp_path: Path) -> 
         second.release()
     finally:
         register_pressure_handler(cache.root, None)
+
+
+def test_pressure_reservation_reclaims_below_low_watermark_until_request_fits(
+    tmp_path: Path,
+) -> None:
+    policy = replace(
+        CachePolicy(),
+        max_bytes=8192,
+        disk_reserve_bytes=0,
+        min_idle_seconds=0,
+        pressure_gc_enabled=True,
+    )
+    assert policy.low_watermark_percent == 70
+    assert policy.high_watermark_percent == 85
+    cache, lifecycle, manager = _manager(tmp_path, policy)
+    identity, digest = _ready(cache, lifecycle, payload=b"x" * 2048)
+    now = time.time()
+    lifecycle.confirm_rebuildability(
+        "11-13",
+        identity=identity,
+        digest=digest,
+        source_policy="verified_offline",
+        evidence_note="local materials",
+        actor="admin",
+        now=now,
+        valid_until=now + 300,
+    )
+    before = cache.accounting_snapshot()
+    requested = 7000
+    low_target = policy.max_bytes * policy.low_watermark_percent // 100
+    assert before["committed_bytes"] < low_target
+    assert policy.max_bytes - before["committed_bytes"] < requested
+
+    register_pressure_handler(cache.root, manager.pressure_cleanup)
+    try:
+        reservation = cache.reserve(requested)
+        assert not cache.entry_path("11-13").exists()
+        assert reservation.amount == requested
+        reservation.release()
+    finally:
+        register_pressure_handler(cache.root, None)
+
+
+def test_background_pressure_reclaims_below_low_watermark_until_disk_reserve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    policy = replace(
+        CachePolicy(),
+        max_bytes=8192,
+        disk_reserve_bytes=4000,
+        min_idle_seconds=0,
+        pressure_gc_enabled=True,
+    )
+    assert policy.low_watermark_percent == 70
+    assert policy.high_watermark_percent == 85
+    cache, lifecycle, manager = _manager(tmp_path, policy)
+    identity, digest = _ready(cache, lifecycle, payload=b"x" * 2048)
+    now = time.time()
+    lifecycle.confirm_rebuildability(
+        "11-13",
+        identity=identity,
+        digest=digest,
+        source_policy="verified_offline",
+        evidence_note="local materials",
+        actor="admin",
+        now=now,
+        valid_until=now + 300,
+    )
+    before = cache.accounting_snapshot()
+    low_target = policy.max_bytes * policy.low_watermark_percent // 100
+    assert before["committed_bytes"] < low_target
+    disk_free = 3000
+    assert disk_free < policy.disk_reserve_bytes
+    monkeypatch.setattr(
+        "dlr.worker.cache_governance.shutil.disk_usage",
+        lambda _path: type("DiskUsage", (), {"free": disk_free})(),
+    )
+
+    result = manager.run_round(mode="pressure")
+
+    assert result.deleted == 1
+    assert result.freed_bytes >= policy.disk_reserve_bytes - disk_free
+    assert not cache.entry_path("11-13").exists()
 
 
 def test_standard_compose_passes_policy_environment() -> None:

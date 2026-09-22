@@ -427,21 +427,15 @@ class DependencyPreparationError(Exception):
         self.no_source = no_source
 
 
-_CAPACITY_CACHE_ERROR_CODES = frozenset(
-    {"cache_no_safe_candidates", "cache_capacity_insufficient"}
-)
+_CAPACITY_CACHE_ERROR_CODES = frozenset({"cache_no_safe_candidates", "cache_capacity_insufficient"})
 
 
 def dependency_cache_error(error: cache.CacheError) -> DependencyPreparationError:
     """Preserve only the stable capacity outcome of a cache reservation failure."""
     error_code = (
-        error.code
-        if error.code in _CAPACITY_CACHE_ERROR_CODES
-        else "dependency_preparation_failed"
+        error.code if error.code in _CAPACITY_CACHE_ERROR_CODES else "dependency_preparation_failed"
     )
-    return DependencyPreparationError(
-        "version cache is unavailable", "", error_code=error_code
-    )
+    return DependencyPreparationError("version cache is unavailable", "", error_code=error_code)
 
 
 def record_dependency_source_failure(

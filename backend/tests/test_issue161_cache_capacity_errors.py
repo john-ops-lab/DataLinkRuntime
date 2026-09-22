@@ -27,13 +27,9 @@ def _typescript_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _preparer(
-    language: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Prepare:
+def _preparer(language: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Prepare:
     if language == "python":
-        return lambda root: venv.prepare_version_venv(
-            root, 41, 51, "", timeout_seconds=5
-        )
+        return lambda root: venv.prepare_version_venv(root, 41, 51, "", timeout_seconds=5)
     if language in {"javascript", "typescript"}:
         if language == "typescript":
             _typescript_tools(tmp_path, monkeypatch)
@@ -73,9 +69,7 @@ def _preparer(
     raise AssertionError(language)
 
 
-@pytest.mark.parametrize(
-    "language", ["python", "javascript", "typescript", "java", "go"]
-)
+@pytest.mark.parametrize("language", ["python", "javascript", "typescript", "java", "go"])
 @pytest.mark.parametrize(
     ("entry", "error_code", "expected"),
     [
@@ -118,7 +112,5 @@ def test_language_build_entries_preserve_only_stable_capacity_codes(
 
 
 def test_executor_result_contract_reads_dependency_error_code() -> None:
-    source = (
-        Path(venv.__file__).with_name("executor.py").read_text(encoding="utf-8")
-    )
+    source = Path(venv.__file__).with_name("executor.py").read_text(encoding="utf-8")
     assert '"error_code": preparation.error_code' in source
