@@ -339,7 +339,7 @@ export default function WorkerCachePanel({ worker, open, onClose }: WorkerCacheP
         (item) => item.operation_id !== operation.operation_id,
       )]);
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status > 0 && caught.status < 500) {
+      if (caught instanceof ApiError && 0 < caught.status && caught.status < 500) {
         pendingSubmissions.current.delete(fingerprint);
       }
       setError(stableError(caught));
