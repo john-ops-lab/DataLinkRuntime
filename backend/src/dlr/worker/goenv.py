@@ -69,7 +69,7 @@ def prepare_version_go(
         ):
             raise venv.DependencyPreparationError("invalid Go module proxy URL", "")
     info = Path(compiler).resolve().stat()
-    with venv._lock_for(adapter_id, version_id):
+    with venv._lock_for(runtime_root, adapter_id, version_id):
         identity = venv._cache_identity(
             adapter_id,
             version_id,

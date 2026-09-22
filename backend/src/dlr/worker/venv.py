@@ -77,8 +77,6 @@ class DependencyExecutionContext:
 _ORIGINAL_SUBPROCESS_RUN = subprocess.run
 _DEPENDENCY_READ_CHUNK = 64 * 1024
 
-_build_locks: dict[tuple[int, int], threading.Lock] = {}
-_build_locks_guard = threading.Lock()
 CACHE_RESERVATION_BYTES = 256 * 1024 * 1024
 _CACHE_RESERVATION_BYTES = CACHE_RESERVATION_BYTES
 
@@ -424,13 +422,13 @@ class DependencyPreparationError(Exception):
         self.no_source = no_source
 
 
-def _lock_for(adapter_id: int, version_id: int) -> threading.Lock:
-    with _build_locks_guard:
-        lock = _build_locks.get((adapter_id, version_id))
-        if lock is None:
-            lock = threading.Lock()
-            _build_locks[(adapter_id, version_id)] = lock
-        return lock
+def _lock_for(runtime_root: Path, adapter_id: int, version_id: int) -> Any:
+    """Return the shared process/thread-safe cache key lock."""
+    from dlr.worker.cache_lifecycle import CacheLifecycleStore, cache_key
+
+    return CacheLifecycleStore.for_runtime(runtime_root).entry_lock(
+        cache_key(adapter_id, version_id)
+    )
 
 
 def version_dir(runtime_root: Path, adapter_id: int, version_id: int) -> Path:
@@ -926,7 +924,7 @@ def prepare_version_venv(
     directory = version_dir(runtime_root, adapter_id, version_id)
     python_path = venv_python(directory)
     dependencies = dependency_specs(requirements)
-    with _lock_for(adapter_id, version_id):
+    with _lock_for(runtime_root, adapter_id, version_id):
         if builtin_materials is not None:
             from dlr.worker.builtin_packages import validate_python_requirements
 

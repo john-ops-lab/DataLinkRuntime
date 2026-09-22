@@ -1,6 +1,6 @@
 ## 1. Checkpoint A — Identity and local protection
 
-- [ ] 1.1 建立独立、版本化生命周期 sidecar、持久 root owner 与有界惰性初始化，保持旧 manifest 格式/identity/digest；验证旧 ready 直接命中、元数据缺失/中断/不可写不损坏内容、注册 ID 变化保留原 owner，以及真实篡改仍失败。
+- [x] 1.1 建立独立、版本化生命周期 sidecar、持久 root owner 与有界惰性初始化，保持旧 manifest 格式/identity/digest；验证旧 ready 直接命中、元数据缺失/中断/不可写不损坏内容、注册 ID 变化保留原 owner，以及真实篡改仍失败。
 - [ ] 1.2 增加跨进程项锁和持久 cache-use 记录，覆盖五语言依赖准备/加载/运行至 Sandbox 清空，包括 dependency_check 早退、取消、异常和 ownership lost；通过真实多进程锁、deferred cleanup、use 写入失败拒绝而生命周期写入失败只禁回收测试验证。
 - [ ] 1.3 关联旧 Attempt/Workspace/Sandbox journal 与 Control Execution/Attempt 版本；未知映射保守阻断；用旧 journal fixture、Control 断联和重启场景验证。
 

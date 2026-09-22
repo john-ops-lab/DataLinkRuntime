@@ -16,6 +16,8 @@ import pika
 
 from dlr.control.schemas.reliable_runtime import V3TaskPayload
 from dlr.worker import executor, sandbox, workspace
+from dlr.worker.cache import CacheError
+from dlr.worker.cache_lifecycle import CacheLifecycleStore, CacheUse, cache_key
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
 
 logger = logging.getLogger("dlr.worker.consumer")
@@ -803,27 +805,74 @@ class V3Consumer:
                     destination=destination,
                 )
 
+            cache_use: CacheUse | None = None
+            result: dict[str, Any] | None = None
             try:
-                result = self._runner(
-                    payload.model_dump(mode="json"),
-                    self._runtime_settings,
-                    progress_callback=progress,
-                    input_downloader=download,
-                    **(
-                        {"builtin_downloader": download_builtin}
-                        if payload.builtin_package_snapshot is not None
-                        else {}
-                    ),
-                )
-            except Exception:
-                result = {
-                    "status": "failed",
-                    "error_code": "worker_internal_error",
-                    "error_class": "platform_transient",
-                    "error": "Worker execution failed",
-                }
+                try:
+                    cache_use = CacheLifecycleStore.for_runtime(
+                        self._config.runtime_root
+                    ).begin_use(
+                        cache_key(payload.adapter_id, payload.version_id),
+                        worker_id=self._config.worker_id,
+                        execution_id=payload.execution_id,
+                        attempt_id=payload.attempt_id,
+                        fencing_token=payload.fencing_token,
+                    )
+                    cache_use.__enter__()
+                except CacheError:
+                    cache_use = None
+                    result = {
+                        "status": "failed",
+                        "error_code": "cache_use_write_failed",
+                        "error_class": "platform_transient",
+                        "error": "Worker execution failed",
+                        # No dependency, Workspace or Sandbox side effect has
+                        # started. The terminal Result durably records that
+                        # fact before the Attempt journal follows its normal
+                        # removal path.
+                        "workspace_cleanup_status": "completed",
+                    }
+                else:
+                    try:
+                        result = self._runner(
+                            payload.model_dump(mode="json"),
+                            self._runtime_settings,
+                            progress_callback=progress,
+                            input_downloader=download,
+                            **(
+                                {"builtin_downloader": download_builtin}
+                                if payload.builtin_package_snapshot is not None
+                                else {}
+                            ),
+                        )
+                    except Exception:
+                        result = {
+                            "status": "failed",
+                            "error_code": "worker_internal_error",
+                            "error_class": "platform_transient",
+                            "error": "Worker execution failed",
+                        }
             finally:
                 renew_stop.set()
+                if cache_use is not None:
+                    cleanup_summary = result.get("cleanup_summary") if result is not None else None
+                    sandbox_summary = (
+                        cleanup_summary.get("sandbox")
+                        if isinstance(cleanup_summary, Mapping)
+                        else None
+                    )
+                    cleanup_completed = bool(
+                        isinstance(sandbox_summary, Mapping)
+                        and sandbox_summary.get("status") == "completed"
+                    )
+                    try:
+                        cache_use.release(cleanup_completed=cleanup_completed)
+                    except CacheError:
+                        logger.warning(
+                            "cache use record could not be cleared for attempt %s",
+                            payload.attempt_id,
+                        )
+            assert result is not None
             if ownership_lost.is_set():
                 return
             if cancel_requested.is_set() and result.get("status") != "cancelled":

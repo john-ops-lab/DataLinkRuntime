@@ -375,6 +375,26 @@ class VerifiedVersionCache:
     def entry_path(self, key: str) -> Path:
         return self.entries / _safe_key(key)
 
+    def _observe_lifecycle(
+        self,
+        entry: Path,
+        *,
+        identity: Mapping[str, Any],
+        digest: str,
+        bytes_used: int,
+    ) -> None:
+        try:
+            from dlr.worker.cache_lifecycle import CacheLifecycleStore
+
+            CacheLifecycleStore(self.root).observe_verified(
+                entry.name,
+                identity=identity,
+                digest=digest,
+                bytes_used=bytes_used,
+            )
+        except CacheError:
+            logger.warning("cache lifecycle sidecar unavailable for verified entry")
+
     def staging_path(self, key: str, token: str | None = None) -> Path:
         safe = _safe_key(key)
         suffix = token or uuid.uuid4().hex
@@ -548,11 +568,22 @@ class VerifiedVersionCache:
             if manifest["identity"] != dict(identity):
                 return False
             digest, total, files = _tree_facts(entry)
-            return bool(
+            verified = bool(
                 manifest["digest"] == digest
                 and manifest["bytes"] == total
                 and manifest["files"] == files
             )
+            if verified:
+                # Lifecycle metadata is intentionally best effort here.  A
+                # verified legacy entry remains usable when its new sidecar
+                # cannot be initialized, but governance must then retain it.
+                self._observe_lifecycle(
+                    entry,
+                    identity=identity,
+                    digest=digest,
+                    bytes_used=total,
+                )
+            return verified
         except (CacheError, OSError, UnicodeError, json.JSONDecodeError, ValueError):
             return False
 
@@ -588,6 +619,12 @@ class VerifiedVersionCache:
                 raise CacheError("cache_target_conflict")
             os.replace(staging_path, target_path)
             _fsync_directory(entries)
+            self._observe_lifecycle(
+                target_path,
+                identity=identity,
+                digest=digest,
+                bytes_used=total,
+            )
             return target_path
         except OSError as error:
             raise CacheError("cache_promote_failed") from error
@@ -666,6 +703,12 @@ class VerifiedVersionCache:
             os.replace(staging_path, target_path)
             _fsync_directory(self.entries.resolve(strict=True))
             staging_path = None
+            self._observe_lifecycle(
+                target_path,
+                identity=identity,
+                digest=digest,
+                bytes_used=total,
+            )
             return target_path
         except OSError as error:
             primary_error = CacheError("cache_promote_failed")
@@ -717,12 +760,22 @@ class VerifiedVersionCache:
         """Remove one exact verified entry before a version rebuild."""
         try:
             candidate = self._direct_entry(entry, staging=False, allow_missing=True)
-            if not candidate.exists():
-                return
-            if not candidate.is_dir():
-                raise CacheError("cache_entry_invalid")
-            _make_writable_for_removal(candidate)
-            shutil.rmtree(candidate)
+            from dlr.worker.cache_lifecycle import (
+                CacheLifecycleStore,
+                current_thread_owns_all_uses,
+            )
+
+            lifecycle = CacheLifecycleStore(self.root)
+            with lifecycle.entry_lock(candidate.name):
+                use_records = lifecycle.use_records_for_key(candidate.name)
+                if use_records and not current_thread_owns_all_uses(lifecycle, use_records):
+                    raise CacheError("cache_entry_in_use")
+                if not candidate.exists():
+                    return
+                if not candidate.is_dir():
+                    raise CacheError("cache_entry_invalid")
+                _make_writable_for_removal(candidate)
+                shutil.rmtree(candidate)
         except CacheError:
             raise
         except OSError as error:

@@ -3,7 +3,6 @@
 import html
 import shutil
 import tempfile
-import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,14 +13,6 @@ from urllib import parse as url_parse
 from dlr.runtime.java_runtime import SOURCE as RUNTIME_SOURCE
 from dlr.worker import venv
 from dlr.worker.cache import CacheError
-
-_locks: dict[tuple[int, int], threading.Lock] = {}
-_locks_guard = threading.Lock()
-
-
-def _lock_for(adapter_id: int, version_id: int) -> threading.Lock:
-    with _locks_guard:
-        return _locks.setdefault((adapter_id, version_id), threading.Lock())
 
 
 def parse_requirements(requirements: str) -> list[tuple[str, str, str]]:
@@ -94,7 +85,7 @@ def prepare_version_java(
     directory = venv.version_dir(runtime_root, adapter_id, version_id)
     classes = directory / "classes"
     dependencies = parse_requirements(requirements)
-    with _lock_for(adapter_id, version_id):
+    with venv._lock_for(runtime_root, adapter_id, version_id):
         identity = venv._cache_identity(
             adapter_id,
             version_id,

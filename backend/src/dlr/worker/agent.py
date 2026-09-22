@@ -281,6 +281,16 @@ class Agent:
         worker_id = self._register()
         if worker_id is None:  # stop requested before registration succeeded
             return
+        # Cache ownership persists with the volume. A legacy non-empty root
+        # needs explicit deployment confirmation before governance can bind
+        # it; normal execution remains available while it is retained.
+        from dlr.worker.cache import CacheError
+        from dlr.worker.cache_lifecycle import CacheLifecycleStore
+
+        try:
+            CacheLifecycleStore.for_runtime(self._config.runtime_root).bind_owner(worker_id)
+        except CacheError as error:
+            logger.warning("cache governance disabled: %s", error.code)
         self._recover_cleanup_journals(worker_id)
         ready_file.write_text(str(os.getpid()), encoding="utf-8")
         logger.info("worker '%s' registered with id %s", self._config.name, worker_id)
