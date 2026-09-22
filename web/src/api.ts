@@ -6,6 +6,10 @@ import type {
   BuiltinCheck,
   BuiltinPackageLibrary,
   BuiltinPackageCapacity,
+  CacheAdminView,
+  CacheOperation,
+  CacheOperationCreate,
+  CacheOperationPage,
   Adapter,
   PortablePackage,
   AdapterInputConfig,
@@ -542,6 +546,38 @@ export const api = {
   },
 
   listWorkers: (): Promise<Worker[]> => request("/api/workers"),
+
+  getWorkerCache: (
+    workerId: number,
+    options: { failed_cursor?: number; failed_limit?: number } = {},
+  ): Promise<CacheAdminView> => {
+    const params = new URLSearchParams();
+    if (options.failed_cursor !== undefined) params.set("failed_cursor", String(options.failed_cursor));
+    params.set("failed_limit", String(options.failed_limit ?? 50));
+    return request(`/api/workers/${workerId}/cache?${params.toString()}`);
+  },
+
+  createWorkerCacheOperation: (
+    workerId: number,
+    payload: CacheOperationCreate,
+  ): Promise<CacheOperation> =>
+    request(`/api/workers/${workerId}/cache/operations`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  listWorkerCacheOperations: (
+    workerId: number,
+    options: { cursor?: string; limit?: number } = {},
+  ): Promise<CacheOperationPage> => {
+    const params = new URLSearchParams();
+    params.set("limit", String(options.limit ?? 20));
+    if (options.cursor !== undefined) params.set("cursor", options.cursor);
+    return request(`/api/workers/${workerId}/cache/operations?${params.toString()}`);
+  },
+
+  getWorkerCacheOperation: (workerId: number, operationId: string): Promise<CacheOperation> =>
+    request(`/api/workers/${workerId}/cache/operations/${operationId}`),
 
   // --- M3.2: Secret Store credentials and bindings ---------------------------
 

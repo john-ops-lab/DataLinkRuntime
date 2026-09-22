@@ -2329,6 +2329,7 @@ const SystemSettingsDrawer = forwardRef<PageLeaveGuardHandle, SystemSettingsDraw
                 workersError={props.workersError ?? null}
                 refreshing={props.systemStatusRefreshing ?? false}
                 onRefresh={props.onRefreshSystemStatus ?? (() => Promise.resolve())}
+                canManageCache={canManageManagedInput}
               />
             )}
             {activeCategory === "credentials" && (

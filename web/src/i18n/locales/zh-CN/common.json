@@ -288,7 +288,8 @@
     "executionInterfaceCompatible": "执行接口兼容",
     "executionInterfaceIncompatible": "执行接口不兼容",
     "dispatchReady": "消息执行可用",
-    "dispatchUnavailable": "消息执行不可用"
+    "dispatchUnavailable": "消息执行不可用",
+    "cacheManagement": "缓存管理"
   },
   "empty": {
     "noAdapter": "请选择一个适配器进行管理。",

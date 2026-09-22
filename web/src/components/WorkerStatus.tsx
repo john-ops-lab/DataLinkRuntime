@@ -1,6 +1,7 @@
 /** Worker execution-readiness details for the administrator System Status page. */
 
-import { Empty, List, Spin, Tag, Typography } from "antd";
+import { Button, Empty, List, Spin, Tag, Typography } from "antd";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -9,6 +10,7 @@ import {
   type RequiredIsolationCapability,
 } from "../system-status";
 import type { Worker } from "../types";
+import WorkerCachePanel from "./WorkerCachePanel";
 
 function formatTime(value: string, locale: "zh-CN" | "en"): string {
   const date = new Date(value);
@@ -26,10 +28,12 @@ interface WorkerStatusProps {
   workers: Worker[];
   loading: boolean;
   error: string | null;
+  canManageCache?: boolean;
 }
 
-export default function WorkerStatus({ workers, loading, error }: WorkerStatusProps) {
+export default function WorkerStatus({ workers, loading, error, canManageCache = false }: WorkerStatusProps) {
   const { i18n, t } = useTranslation("common");
+  const [cacheWorker, setCacheWorker] = useState<Worker | null>(null);
   const locale = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
   const readyCount = workers.filter(isWorkerExecutionReady).length;
 
@@ -56,7 +60,15 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
             renderItem={(worker) => {
               const executionReady = isWorkerExecutionReady(worker);
               return (
-                <List.Item key={worker.id} data-testid="worker-item">
+                <List.Item
+                  key={worker.id}
+                  data-testid="worker-item"
+                  actions={canManageCache ? [
+                    <Button key="cache" size="small" onClick={() => setCacheWorker(worker)}>
+                      {t("worker.cacheManagement")}
+                    </Button>,
+                  ] : undefined}
+                >
                   <List.Item.Meta
                     title={(
                       <span className="worker-title-line">
@@ -116,6 +128,13 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
         <p className="worker-hint">
           {t("worker.hint")}
         </p>
+      )}
+      {cacheWorker !== null && (
+        <WorkerCachePanel
+          worker={cacheWorker}
+          open
+          onClose={() => setCacheWorker(null)}
+        />
       )}
     </div>
   );
