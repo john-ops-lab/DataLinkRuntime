@@ -1,9 +1,10 @@
 """Worker-internal endpoints of the Control Node (Worker Token protected)."""
 
+import uuid
 from collections.abc import Iterator
 from typing import Annotated, Any, BinaryIO
 
-from fastapi import APIRouter, Body, Depends, Header, Request, Response
+from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -21,6 +22,12 @@ from dlr.control.schemas.reliable_runtime import (
     ClaimDecision,
 )
 from dlr.control.schemas.worker import (
+    CacheGuardAcquire,
+    CacheGuardPage,
+    CacheGuardResponse,
+    CacheGuardResult,
+    CacheReferenceResolution,
+    CacheReferenceResolve,
     CleanupResult,
     WorkerHeartbeat,
     WorkerRegister,
@@ -28,8 +35,8 @@ from dlr.control.schemas.worker import (
 )
 from dlr.control.security import require_business_principal, require_worker_token
 from dlr.control.services import attempt as attempt_service
+from dlr.control.services import cache_governance, worker_availability
 from dlr.control.services import worker as worker_service
-from dlr.control.services import worker_availability
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.worker_protocol import (
     CLAIM_TOKEN_HEADER,
@@ -87,6 +94,91 @@ def offline(worker_id: int, session: DbSession) -> Response:
     """Best-effort graceful offline on normal shutdown."""
     worker_service.mark_offline(session, worker_id)
     return Response(status_code=204)
+
+
+@router.post("/api/workers/{worker_id}/cache/guards/acquire", response_model=CacheGuardResponse)
+def acquire_cache_guard(
+    worker_id: int, payload: CacheGuardAcquire, session: DbSession
+) -> CacheGuardResponse:
+    return CacheGuardResponse.model_validate(
+        cache_governance.acquire_guard(
+            session,
+            worker_id=worker_id,
+            adapter_id=payload.adapter_id,
+            version_id=payload.version_id,
+            operation_id=payload.operation_id,
+        )
+    )
+
+
+@router.get(
+    "/api/workers/{worker_id}/cache/guards/{operation_id}/check",
+    response_model=CacheGuardResponse,
+)
+def check_cache_guard(
+    worker_id: int, operation_id: uuid.UUID, session: DbSession
+) -> CacheGuardResponse:
+    return CacheGuardResponse.model_validate(
+        cache_governance.check_guard(session, worker_id=worker_id, operation_id=operation_id)
+    )
+
+
+@router.post(
+    "/api/workers/{worker_id}/cache/guards/{operation_id}/result",
+    response_model=CacheGuardResponse,
+)
+def finish_cache_guard(
+    worker_id: int,
+    operation_id: uuid.UUID,
+    payload: CacheGuardResult,
+    session: DbSession,
+) -> CacheGuardResponse:
+    _ = payload.outcome
+    return CacheGuardResponse.model_validate(
+        cache_governance.finish_guard(
+            session,
+            worker_id=worker_id,
+            operation_id=operation_id,
+            generation=payload.generation,
+        )
+    )
+
+
+@router.get("/api/workers/{worker_id}/cache/guards", response_model=CacheGuardPage)
+def list_cache_guards(
+    worker_id: int,
+    session: DbSession,
+    after_version_id: Annotated[int | None, Query(ge=1)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+) -> CacheGuardPage:
+    guards, next_after = cache_governance.list_active_guards(
+        session,
+        worker_id=worker_id,
+        after_version_id=after_version_id,
+        limit=limit,
+    )
+    return CacheGuardPage(
+        items=[CacheGuardResponse.model_validate(item) for item in guards],
+        next_after_version_id=next_after,
+    )
+
+
+@router.post(
+    "/api/workers/{worker_id}/cache/references/resolve",
+    response_model=CacheReferenceResolution,
+)
+def resolve_cache_reference(
+    worker_id: int, payload: CacheReferenceResolve, session: DbSession
+) -> CacheReferenceResolution:
+    adapter_id, version_id = cache_governance.resolve_reference(
+        session,
+        worker_id=worker_id,
+        execution_id=payload.execution_id,
+        attempt_id=payload.attempt_id,
+    )
+    return CacheReferenceResolution(
+        key=f"{adapter_id}-{version_id}", adapter_id=adapter_id, version_id=version_id
+    )
 
 
 @router.get(

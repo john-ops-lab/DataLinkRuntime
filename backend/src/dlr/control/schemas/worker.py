@@ -1,5 +1,6 @@
 """Pydantic schemas for the worker-internal API."""
 
+import uuid
 from datetime import datetime
 from typing import Any, Literal
 
@@ -212,3 +213,51 @@ class CleanupResult(BaseModel):
     """Secret-free completion report for an adapter cleanup task."""
 
     success: bool
+
+
+class CacheGuardAcquire(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    adapter_id: StrictInt = Field(gt=0)
+    version_id: StrictInt = Field(gt=0)
+    operation_id: uuid.UUID
+
+
+class CacheGuardResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    generation: StrictInt = Field(gt=0)
+    outcome: Literal["completed", "aborted"]
+
+
+class CacheGuardResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    worker_id: int
+    adapter_id: int
+    version_id: int
+    generation: int
+    operation_id: uuid.UUID | None
+    phase: Literal["idle", "acquired"]
+
+
+class CacheGuardPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[CacheGuardResponse]
+    next_after_version_id: int | None = None
+
+
+class CacheReferenceResolve(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_id: StrictInt = Field(gt=0)
+    attempt_id: StrictInt | None = Field(default=None, gt=0)
+
+
+class CacheReferenceResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=3, max_length=80)
+    adapter_id: int
+    version_id: int

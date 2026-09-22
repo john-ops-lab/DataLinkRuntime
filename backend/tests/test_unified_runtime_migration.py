@@ -12,7 +12,7 @@ from sqlalchemy.engine import Engine, make_url
 
 from dlr.common.config import settings
 
-HEAD_REVISION = "0040_issue152_dispositions"
+HEAD_REVISION = "0041_issue161_cache_guards"
 
 
 def _upgrade(database: str, revision: str) -> None:

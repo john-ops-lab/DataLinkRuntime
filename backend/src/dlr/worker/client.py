@@ -7,8 +7,9 @@ Control Node; it never listens on any port.
 import json
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 
 class ControlUnavailableError(Exception):
@@ -115,6 +116,107 @@ class ControlClient:
 
     def mark_offline(self, worker_id: int) -> None:
         self._expect("POST", f"/api/workers/{worker_id}/offline", expected=204)
+
+    def resolve_cache_reference(
+        self, worker_id: int, execution_id: int, attempt_id: int | None
+    ) -> str:
+        raw = self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cache/references/resolve",
+            {"execution_id": execution_id, "attempt_id": attempt_id},
+            timeout=min(self._timeout_seconds, 5.0),
+        )
+        body = json.loads(raw)
+        key = body.get("key") if isinstance(body, dict) else None
+        if not isinstance(key, str) or not key:
+            raise ClientError(502, "invalid cache reference response")
+        return key
+
+    def acquire_cache_guard(
+        self,
+        worker_id: int,
+        *,
+        adapter_id: int,
+        version_id: int,
+        operation_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        raw = self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cache/guards/acquire",
+            {
+                "adapter_id": adapter_id,
+                "version_id": version_id,
+                "operation_id": str(operation_id),
+            },
+        )
+        body = json.loads(raw)
+        if not isinstance(body, dict):
+            raise ClientError(502, "invalid cache guard response")
+        return cast(dict[str, Any], body)
+
+    def check_cache_guard(self, worker_id: int, operation_id: uuid.UUID) -> dict[str, Any]:
+        raw = self._expect(
+            "GET",
+            f"/api/workers/{worker_id}/cache/guards/{operation_id}/check",
+        )
+        body = json.loads(raw)
+        if not isinstance(body, dict):
+            raise ClientError(502, "invalid cache guard response")
+        return cast(dict[str, Any], body)
+
+    def finish_cache_guard(
+        self,
+        worker_id: int,
+        operation_id: uuid.UUID,
+        *,
+        generation: int,
+        outcome: str,
+    ) -> dict[str, Any]:
+        raw = self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cache/guards/{operation_id}/result",
+            {"generation": generation, "outcome": outcome},
+        )
+        body = json.loads(raw)
+        if not isinstance(body, dict):
+            raise ClientError(502, "invalid cache guard response")
+        return cast(dict[str, Any], body)
+
+    def list_cache_guards(self, worker_id: int) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        after_version_id: int | None = None
+        while True:
+            suffix = (
+                "?limit=100"
+                if after_version_id is None
+                else f"?limit=100&after_version_id={after_version_id}"
+            )
+            raw = self._expect("GET", f"/api/workers/{worker_id}/cache/guards{suffix}")
+            body = json.loads(raw)
+            page = body.get("items") if isinstance(body, dict) else None
+            next_after = body.get("next_after_version_id") if isinstance(body, dict) else None
+            if (
+                not isinstance(page, list)
+                or any(not isinstance(item, dict) for item in page)
+                or (
+                    next_after is not None
+                    and (
+                        not isinstance(next_after, int)
+                        or isinstance(next_after, bool)
+                        or next_after <= 0
+                    )
+                )
+                or (
+                    next_after is not None
+                    and after_version_id is not None
+                    and next_after <= after_version_id
+                )
+            ):
+                raise ClientError(502, "invalid cache guard response")
+            items.extend(cast(list[dict[str, Any]], page))
+            if next_after is None:
+                return items
+            after_version_id = next_after
 
     def download_input_artifact(
         self,

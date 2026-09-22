@@ -378,6 +378,58 @@ def test_old_and_unknown_journals_are_conservatively_protected(tmp_path: Path) -
     assert "sandbox_journal_unknown" in protection.reasons
 
 
+def test_control_resolver_outage_blocks_then_restart_remaps_old_journal(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    attempt_root = runtime_root / "attempt-journal"
+    cleanup_root = runtime_root / "cleanup-journal"
+    sandbox_root = cleanup_root / "sandbox-recovery"
+    for root in (attempt_root, cleanup_root, sandbox_root):
+        root.mkdir(parents=True, exist_ok=True)
+    journal = attempt_root / "attempt-23.attempt.json"
+    journal.write_text(
+        json.dumps(
+            {
+                "execution_id": 19,
+                "attempt_id": 23,
+                "attempt_no": 1,
+                "fencing_token": 3,
+                "lease_expires_at": "2026-09-22T00:00:00Z",
+                "protocol_version": 3,
+                "workspace_path": str(runtime_root / "workspaces" / "19"),
+                "claim_token": "claim",
+                "cleanup_token": "cleanup",
+            }
+        ),
+        encoding="ascii",
+    )
+    journal.chmod(0o600)
+    store = CacheLifecycleStore.for_runtime(runtime_root)
+
+    def unavailable(_execution_id: int, _attempt_id: int | None) -> str | None:
+        raise ConnectionError("control unavailable")
+
+    disconnected = store.scan_journal_protections(
+        attempt_journal_root=attempt_root,
+        cleanup_journal_root=cleanup_root,
+        sandbox_recovery_root=sandbox_root,
+        resolve=unavailable,
+    )
+    assert disconnected.block_all is True
+    assert disconnected.protected_keys == frozenset()
+    assert "attempt_journal_unmapped" in disconnected.reasons
+
+    restarted = store.scan_journal_protections(
+        attempt_journal_root=attempt_root,
+        cleanup_journal_root=cleanup_root,
+        sandbox_recovery_root=sandbox_root,
+        resolve=lambda execution_id, attempt_id: (
+            "11-11" if (execution_id, attempt_id) == (19, 23) else None
+        ),
+    )
+    assert restarted.block_all is False
+    assert restarted.protected_keys == frozenset({"11-11"})
+
+
 def test_hidden_and_directory_journals_are_unknown(tmp_path: Path) -> None:
     attempt_root = tmp_path / "attempts"
     cleanup_root = tmp_path / "cleanups"

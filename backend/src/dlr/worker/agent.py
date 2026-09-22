@@ -26,6 +26,7 @@ from dlr.common.platform_logging import configure_platform_logging
 from dlr.worker import cgroup_namespace, executor, sandbox
 from dlr.worker import venv as venv_manager
 from dlr.worker import workspace as workspace_manager
+from dlr.worker.cache_lifecycle import CacheLifecycleStore, JournalProtection
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
 
@@ -268,6 +269,7 @@ class Agent:
         self._consumer: V3Consumer | None = None
         self._startup_cleanup_journals: frozenset[str] = frozenset()
         self._sandbox_recovery_blocked = False
+        self._cache_journal_protection: JournalProtection | None = None
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -285,13 +287,14 @@ class Agent:
         # needs explicit deployment confirmation before governance can bind
         # it; normal execution remains available while it is retained.
         from dlr.worker.cache import CacheError
-        from dlr.worker.cache_lifecycle import CacheLifecycleStore
 
+        lifecycle = CacheLifecycleStore.for_runtime(self._config.runtime_root)
         try:
-            CacheLifecycleStore.for_runtime(self._config.runtime_root).bind_owner(worker_id)
+            lifecycle.bind_owner(worker_id)
         except CacheError as error:
             logger.warning("cache governance disabled: %s", error.code)
         self._recover_cleanup_journals(worker_id)
+        self._refresh_cache_journal_protection(worker_id, lifecycle)
         ready_file.write_text(str(os.getpid()), encoding="utf-8")
         logger.info("worker '%s' registered with id %s", self._config.name, worker_id)
 
@@ -321,6 +324,9 @@ class Agent:
 
     def _register(self) -> int | None:
         self._config.run_preflight()
+        # This additive capability describes the cache protocol implementation,
+        # independently of whether sandbox isolation was available at startup.
+        self._config.isolation_capabilities["cache_governance_v1"] = True
         backoff = 1.0
         while not self._stop.is_set():
             try:
@@ -388,6 +394,30 @@ class Agent:
             logger.debug("offline notification failed")
 
     # --- startup recovery and adapter cleanup ----------------------------------
+
+    def _refresh_cache_journal_protection(
+        self, worker_id: int, lifecycle: CacheLifecycleStore
+    ) -> None:
+        resolver_unavailable = False
+
+        def resolve(execution_id: int, attempt_id: int | None) -> str | None:
+            nonlocal resolver_unavailable
+            if resolver_unavailable:
+                raise ControlUnavailableError("cache reference resolver unavailable")
+            try:
+                return self._client.resolve_cache_reference(worker_id, execution_id, attempt_id)
+            except ControlUnavailableError:
+                resolver_unavailable = True
+                raise
+
+        self._cache_journal_protection = lifecycle.scan_journal_protections(
+            attempt_journal_root=self._config.attempt_journal_root,
+            cleanup_journal_root=self._config.workspace_cleanup_journal_root,
+            sandbox_recovery_root=(
+                self._config.workspace_cleanup_journal_root / "sandbox-recovery"
+            ),
+            resolve=resolve,
+        )
 
     def _recover_cleanup_journals(self, worker_id: int, *, startup: bool = True) -> None:
         """Recover owned Workspace journals without deleting unknown paths."""
