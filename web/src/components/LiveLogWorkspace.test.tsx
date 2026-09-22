@@ -111,6 +111,32 @@ it("shows a queued Execution as waiting for its fixed Worker rather than failed"
   expect(screen.getByTestId("live-queued-notice").textContent).toContain("暂时离线不会被视为失败");
 });
 
+it.each([
+  [
+    "legal JSON null",
+    { output: null, output_size: 4, attempt_count: 1 },
+    "output-content",
+    "null",
+  ],
+  [
+    "never-started empty output",
+    { status: "cancelled", output: null, output_size: null, attempt_count: 0, started_at: null },
+    "output-empty",
+    "无 Output",
+  ],
+  [
+    "incomplete historical output",
+    { output: null, output_size: null, attempt_count: 1 },
+    "output-unknown",
+    "输出信息不足，无法确认",
+  ],
+] as const)("uses the shared output classification for %s in the live tab", async (_, overrides, testId, text) => {
+  renderWorkspace({ execution: makeExecution(overrides) });
+
+  fireEvent.click(screen.getByRole("tab", { name: "输出" }));
+  expect((await screen.findByTestId(testId)).textContent).toContain(text);
+});
+
 it("scopes the shared toolbar contrast contract to history and live LogView controls", async () => {
   render(
     <>

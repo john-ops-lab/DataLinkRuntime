@@ -2,7 +2,17 @@
 
 连续 PR 使用私有配置选定的同一环境，保留数据库、材料卷、管理员 Token 和 Master Key。控制器源码在 `tools/local-preview/`；安装目录由 `DLR_PREVIEW_HOME` 指定。仓库不记录个人部署地址、端口、路径或运行资产。
 
+## 明确选择测试验收基线时
+
+当用户明确本机仅用于功能验收、不要求模拟生产原地升级时，可在同一固定 Compose project 和双入口使用独立命名的验收卷及日志。原卷、旧日志、Token、Master Key 与历史证据保留；新应用不得挂入旧存储，不重放旧排队责任。候选的 CI、独立审查、真实 Worker 运行、双入口认证和页面验收仍需完成。
+
+该路径由私有验收编排显式管理，启动前检查完整渲染配置，启动后核实际镜像、挂载、端口和隔离。不得使用 `down --volumes` 或 prune。旧自动控制器必须保持暂停，驻留 watcher 不加载；普通 `select`、`once`、`resume`、`recover` 不识别验收 override，不能用于管理这条路径。旧 `state/current/receipt` 是历史部署记录，不能当作当前状态；私有 `test-acceptance` receipt 才记录本轮实际 SHA、镜像、schema、存储和验证结果。后继验收更新继续使用同一编排和验收卷，恢复自动管理须先核对其真实配置。
+
+此选择不放宽以下旧升级/恢复入口自身的检查，也不把未执行的旧恢复请求标记成功。它只改变当前功能验收的交付方式。
+
 ## 登记验收目标
+
+以下命令用于原自动控制器路径，不用于上述私有测试验收基线。
 
 在用户要求提交 PR 并提供本地验收环境时，登记该 PR；控制器等其当前 HEAD 的 CI 成功后自动更新。不要因为另一个 PR 更新得更晚而抢占当前目标，也不要为普通后继 PR 再开一套端口。
 
@@ -79,6 +89,46 @@ python3 "$DLR_PREVIEW_HOME/preview.py" resume
 
 此模式的私有 IDs 文件须增加非空 `terminal_executions`。每项绑定一个原 Execution、Incident、disposition UUID、终态与代次、输出摘要、两个错误码和 Attempt 数量。预期必须来自已单独封存并复核的验收快照，不能直接把 fresh 行回填成自我批准计划。queued 与 terminal 身份不得重叠；terminal 可以同时进入 `cleanup_execution_ids`，仍为 pending/deferred cleanup 的 terminal 必须显式进入。规划在同一个只读事务内读取完整 17 列审计表及真实 `id` 主键，并与原十三张责任表一起验证。全审计表必须精确等于显式 disposition 集；验证器还核对 actor、请求摘要、Incident/Outbox 关系、终态、无 replay、资源释放和 Adapter/global Admission 总量，并在后续各阶段保持完整十四表投影。已 published 的取消 Outbox 原行保持不变，`last_error_code` 可以继续为 null；规范取消码属于 Execution 与 disposition 审计事实。
 
+### 第二组一次性 v4 保全更新
+
+`audited-group2-same-schema-v1` 只用于已批准的第二组精确候选。它不扩大普通模式、manifest v2 或第一组 v3 的适用范围，也不能用于新的提交。最终提交完成独立审查和精确 CI 后，integration owner 制作 `group2-reviewed-scope-v1` 私有记录；记录绑定完整 64 路径 raw diff、54 个冻结产品 blob、六个运行时 controller 文件、迁移图、四项 CI、镜像、批准副本、审查报告和第一组保全参考。
+
+review scope JSON 旁必须有同名 `.evidence` 目录。例如 `review-scope.json` 对应 `review-scope.evidence/`；目录内只有以下固定文件，文件名中的摘要是文件本身的 SHA-256：
+
+```text
+approval/REQUEST-ready.md
+approval/USER-APPROVAL.json
+approval/product-scope.json
+approval/review-bindings.json
+reviews/<REPORT_SHA256>
+ci/<EVIDENCE_SHA256>
+preservation/<REVIEW_REPORT_SHA256>
+```
+
+CI 原件必须是 GitHub REST 的完整 `{run,jobs}` 聚合：`run` 保留 Actions run 原对象，`jobs` 保留带 `total_count` 的完整 jobs 响应。控制器核对 run 的 ID、attempt、HEAD、workflow path、event 和成功终态，将原始 jobs 按 `(name,id)` 规范排序后，要求四个 scope job 与原件中的唯一成功 job 完全一致；每个 job 自带的 run ID、attempt 和 HEAD 也必须与 run 相同。独立代码审查报告只能包含一条 `group2-independent-review-v1` machine record，固定字段为 `schema/status/reviewed_commit/source_kind/coverage/blocking_findings`；每个 coverage 项逐 byte 核 Git mode、blob OID 和 SHA-256，重复路径或同报告中的相反结论都会拒绝。保全报告同样只能包含一条 `group2-preservation-review-v1` 记录，并精确绑定 snapshot digest 与 lineage。所有 evidence 目录必须为私有目录，文件必须为私有、单链接 regular file。
+
+先由旧 trusted controller 对精确最终提交完成 stage，并保持原 busy 现场；暂停后才冻结含镜像身份的 scope。随后从该提交的干净工作区调用官方安装器入口。专用入口不接受 `--start`，只在官方安装器真实取得 operation→config 双锁后放行复制，并在安装后保持 paused：
+
+```sh
+DLR_PREVIEW_HOME=<PRIVATE_CONTROLLER_ROOT> \
+  python3 tools/local-preview/preview.py install-group2 \
+  --review-scope <PRIVATE_REVIEW_SCOPE_JSON>
+
+python3 "$DLR_PREVIEW_HOME/preview.py" plan-carry-forward \
+  --mode audited-group2-same-schema-v1 \
+  --review-scope <PRIVATE_REVIEW_SCOPE_JSON> \
+  --to-sha <EXACT_FINAL_SHA> \
+  --ids-file <PRIVATE_GROUP2_IDS_JSON> \
+  --output <PRIVATE_MANIFEST_V4_JSON>
+python3 "$DLR_PREVIEW_HOME/preview.py" select <PR_NUMBER> \
+  --carry-forward <PRIVATE_MANIFEST_V4_JSON>
+python3 "$DLR_PREVIEW_HOME/preview.py" resume
+```
+
+v4 在停 Control 后重新读取完整责任、审计、业务资产、session、文件和日志前缀；再停 Worker/Web/account-web，验证真实 idle kernel，完成 custom-format 备份和同 schema Alembic no-op。从 plan 的原始日志前缀开始，每个停写、备份、迁移、启动、入口检查、probe 和后置健康阶段都连续验证同一文件身份与前缀；阶段转换从上一 append 的完整 end hash 派生下一 baseline，允许正常追加但拒绝截断、替换和旧前缀改写。每个日志端点同时绑定实际时钟证据：Linux 使用同次采样的 `CLOCK_REALTIME_COARSE` 下界和精确观察上界；只有预先列明的新直接普通日志文件才可在该界内改变根目录 mtime，无新增文件时目录与嵌套目录仍须精确不变。该规则处理 Linux 文件时间粒度，不放宽 startup 的精确窗口，也不接受固定容差。入口检查产生的拒绝日志先单独闭合，然后才取得 probe baseline，因此不计入正式 probe；probe 的 partial 只能继续生成 final，控制器再把这两个连续片段合成为唯一完整窗口，不能从同一旧 baseline 分叉。候选同时启动 `control worker web account-web`，account-web 必须使用候选 Web 镜像和原 loopback 绑定。控制器只运行一次官方 RabbitMQ→Worker probe，等待其 cleanup 自然完成，并以本轮日志窗口证明唯一 Adapter/Execution/Attempt/Worker/cleanup 归属。动态启动文件变化、probe 后数据库与文件保全、双入口边界和后置健康全部通过后，才依次写 receipt、current SHA 和 ready，并一次性消费 manifest。receipt 的十个阶段摘要由 VM 原件重算，同时保存完整原始 evidence 对象的摘要；宿主从各阶段 DB、文件、日志、startup/probe proof、cleanup、账号和入口结果重新组成原件，调用同一比较器重算成功后再核这个摘要，并精确绑定 manifest、account profile、startup 后与最终健康检查中的同一 Worker 生命周期、probe、post-preservation、current SHA、ready transaction 与宿主 safe state。中途失败保留 transaction、attention、备份和现场，不恢复旧应用、不重跑 probe、不覆盖已消费 manifest。
+
+同 SHA 离线恢复只接受最后成功 state、ready transaction、私有 receipt 和已消费 v4 manifest 全部一致的提交。任何 Compose 启动或 recreate 前先持久写入宿主 attention 和 VM `recovering` transaction，并为本轮生成唯一 recovery ID；数据库或 Broker 启动、schema 检查及其后任一门禁失败都不能留下旧 ready。部署 Ready 前会把最终 DB/文件保全基线、后置健康日志端点和选择集保存为 receipt 原始证据绑定的不可变恢复根；第一次恢复的 fresh before 必须与该根严格一致，后续恢复只能使用宿主 safe state 与 ready transaction 共同绑定、且完整重算通过的前一次 completion.after 作为 predecessor，fresh before 必须与 predecessor 严格一致。恢复不会重新 capture 日志来建立自证基线，而是从部署末端或前一次已验证末端继续 append，再隔离本轮 startup 窗口。宿主与 VM 都沿 completion 的 predecessor 逐节点重放到原 receipt 根，拒绝缺失、循环、错误 ID/摘要、失败结果或被替换的祖先。每轮只以新 container、StartedAt、唯一 startup preflight、连续日志窗口和动态文件比较证明本轮允许的两个 mtime 推进；未知业务新增、旧行/审计/资产/session/文件变化、分叉、回退、循环或损坏 predecessor 都 fail closed，不会把 fresh capture 自批为新根。随后恢复其余三个应用并复核账号绑定、真实 account CSRF GET 与完整双入口边界。恢复的最终 health、cgroup 和五服务镜像检查全部成功后，才写入绑定 recovery ID、manifest、predecessor 和本轮原始证据摘要的 append-only completion，最后把同一 ID/摘要写入 ready transaction 和宿主 safe state；其中任何一步中断都保持 `recovering`。宿主成功路径与 `acknowledge` 都重新读取本轮 completion、全部祖先和原始证据并复算，不能借用旧部署证据清除 attention。恢复不重新检查 GitHub/CI，不执行迁移、正式 probe、业务清理或第二次消费。receipt/profile/恢复基线缺失、account-web 漂移或保全摘要不一致均进入 attention；`acknowledge` 不能绕过这些检查。`status` 只显示安全摘要，不显示账号端口、日志、session、mount 或私有对象 ID。
+
 验证器在 REPEATABLE READ READ ONLY 事务中按固定 allowlist 读取 Execution、Attempt、Slot、Incident、Outbox、Adapter/Global Admission、Input Lease/Hold、Credential Snapshot、idempotency、schedule outcome 和 Worker cleanup request。它保存旧列、主键、逐行哈希和计数，不把原数据库值写到公开回执。只有清单内 queued＋open Incident、未释放 Admission、当前代 Outbox、无 active Attempt/Slot，且没有其他 queued/running/retry_wait 或 Worker cleanup 责任时才通过。
 
 cleanup 只从事实派生，不写数据库：
@@ -92,6 +142,63 @@ journal 缺失、未知文件或 symlink、未选择的 workspace、未知 cgrou
 切换时先复核 manifest，再停 Control 并重读数据库；通过后才停 Worker/Web，确认应用容器已停止、keeper 身份未变且委派树只剩 `agent`。停写后、备份后、迁移后新服务启动前，旧数据库列投影、责任分类、journal/runtime/材料树和 kernel 证据必须一致。迁移允许增加本版本的新列/表，但比较仍使用 manifest 记录的全部旧列。原 `assets.py`、备份可列出、镜像、CI/历史、Sandbox、真实 RabbitMQ→Worker 执行和 workspace cleanup 门禁继续执行。
 
 carry-forward 切换停下 Control 后若出现 Claim、证据变化或任何未知读取失败，控制器保持应用停止和 attention，要求人工核对并重新计划；它不会用一次旧健康结果自动恢复写入。进入 `migrating` 后同样不自动 downgrade、restore 或启动旧 schema 应用。失败现场、原卷和备份保留供诊断。成功 receipt 只记录 manifest ID/摘要/计数，不公开私有选择；它证明旧责任被原样带到新版本，不证明原 Incident 已恢复、终结或 cleanup 已完成。后续验收必须关联原 Execution ID、generation、Attempt、输出与资源释放，新建任务成功不能替代。
+
+### 第二组 starting 事故的受限软件恢复
+
+本入口只处理本组已绑定的首次启动后、正式 probe 前失败；它不是普通 `recover`，也不把失败部署补记成成功。**代码、测试与 CI 通过不等于事故操作获批**。实际传输工具、恢复旧软件和提交控制面对账前，必须取得绑定具体请求摘要、工具 SHA 与实际用户原文的专项批准；原第二组通用交付批准不能替代。
+
+从独立审查且精确 CI 通过的干净仓库运行官方入口：
+
+```sh
+DLR_PREVIEW_HOME=<PRIVATE_CONTROLLER_ROOT> \
+  python3 tools/local-preview/preview.py reconcile-group2-starting \
+  --incident-request <PRIVATE_INCIDENT_REQUEST_JSON> \
+  --incident-approval <PRIVATE_INCIDENT_APPROVAL_JSON>
+```
+
+闭合请求绑定失败 manifest 与首次 startup 原件、最后成功 receipt/consumed/镜像、完整源码范围、审查/CI、原卷与账号绑定；同名 `.evidence` 目录只接受固定清单中的私有单链接普通文件。批准动作必须精确覆盖事故工具暂存、旧软件恢复和控制面对账。没有任意命令、目标 SHA、force、resume 或 retry 选项；同事故 ID 已存在即拒绝重放。
+
+正式安装器对 attention 的拒绝保持不变。事故入口取得宿主 operation→config 锁及 VM deploy 锁，先核实际批准/源码/CI、host/VM authority、正式安装字节、镜像/卷/PG 身份，再把同提交的 deploy/carry 工具暂存到私有事故目录并验证摘要。工具就位后完成完整 fresh 数据、文件、日志和启动核验，全部通过前不改 transaction phase 或停服务；失败只留下 prepared 目录，原告警与运行状态不变。正式宿主/VM 控制器、installation 和旧成功记录不替换；不能临时移走 attention 或让读取返回伪造状态以通过安装器。
+
+宿主六个控制器文件与 VM 四个实际安装文件分别绑定，不要求 VM 存在宿主专用文件。每个阶段保存完整原始 kernel、容器、卷和采集窗口，连同 DB/files/log 纳入 receipt 摘要并由宿主重算；不能以 idle 布尔值替代进程证据。
+
+恢复先停 Control 并复核，随后停 Worker、Web 和 account-web，验证原 DB、完整责任/审计、全部业务资产与 session、文件、连续日志及真实 idle kernel/namespace/FD。旧 PostgreSQL 镜像必须实际存在，版本、完整 RootFS 和数据卷符合绑定；仅重建软件容器，不恢复备份、不执行迁移、不写旧业务行。每次停机及 PostgreSQL 恢复后的完整比较必须先于下一次 phase 或服务变更，失败立即停留。之后启动旧成功版本的 Control、Worker、Web。RabbitMQ 与全部卷保持，account-web 保留当前容器、镜像和绑定并停止，不要求把它伪报为健康。
+
+第二次 startup 使用独立精确窗口、唯一 Worker/nonce、连续日志及既有两处允许的目录 mtime 证明；其余旧内容、权限和 DB 不变，Token 入口只做只读健康检查，不运行正式业务 probe。完整事故原件与独立 receipt 先在 VM 持久化，再由宿主读回重算和保存。只有成功后才提交指向旧成功 SHA 的事故恢复 transaction，其 backup/carry 引用也必须来自此前成功事务；原 current SHA、宿主 state、旧成功 probe/receipt/consumed 保持原字节。失败 manifest 原样归档并记录 abandoned，绝不 consumed；配置 CAS 清除旧 carry 引用并保持 paused，attention 最后清除。
+
+任何读取、保全或持久化失败都停在真实阶段，不自动重试、回退数据库或清理原件。receipt 后、清 attention 前中断也不自动续作：先只读对账，再审查具体剩余动作。恢复成功只证明旧软件已恢复和现场被保留，不证明新候选部署成功，也不证明账号入口可用。
+
+恢复后的新保全报告保留现有 snapshot/reference shape，仅为本事故使用 `group2_starting_reconcile_v1` 来源及唯一 `group2-reconcile-chain-v1` 记录。验证器从原参考重算两个 startup 与完整保全链，唯一导出原 selection/DB、恢复后 files 及追加 request/receipt/chain 摘要的 lineage；fresh 值不能自行批准。独立 reviewer 签署后，才重新执行 trusted stage、新 scope、官方 install、fresh manifest 与正常 v4 部署；最终四应用、双入口及正式 probe 的原门禁全部保留。
+
+### 第二组部分恢复后的受限事后收尾
+
+本组存在一种已独立说明并经用户接受的历史证据例外：旧软件已经运行，但应用健康等待失败使原事故程序提前退出，部分停机进程扫描、阶段日志端点和精确启动窗口未持久化。当前健康或事后只读检查不能补回这些历史原件，也不能令原完整事故链成立。
+
+受限收尾使用单独的请求、结果和保全来源，明确记录保存原件、按精确执行路径推得的事实、不可恢复的缺口，以及当前完整原件。替代的 startup 时间窗来自实际外层命令记录，不能冒称原 compose 窗口。缺口条款、工具 SHA、独立审查、CI 和固定动作须取得新的精确批准，旧失败操作的批准不能重放。
+
+该入口只读核对当前全部数据、文件、日志、镜像、PG/schema、卷、Worker/keeper 与账号停止策略，不停止或启动服务，不迁移、还原数据库或运行业务探针。既有两处启动 mtime 规则和全部当前保全要求保持。原件与新受限结果先持久化、双端重算后才允许固定控制面对账；旧 state/current/成功原件不改，原失败记录不改，失败 manifest 只 abandoned，配置保持 paused，attention 最后清除。中断不自动续作。
+
+新的保全来源须由独立 reviewer 从原根、保存原件及受限结果重算并签署，不能改标普通 snapshot 或向旧完整链补造扫描。之后仍走正常 v4 重新规划部署、四应用及双入口验收；受限收尾不证明最终候选已部署。
+
+入口为 `finalize-group2-partial --finalize-request <REQUEST> --finalize-approval <APPROVAL>`，只接受本事故的新 `finalize_id` 和六件闭合证据。新的 `group2-partial-finalize-chain-v1` 必须经完整重算，保全报告使用 `group2_partial_finalize_v1` 来源；不能与旧事故链混用。同一事故已存在收尾记录时拒绝重放或另建一次。
+
+### 受限收尾后的单次 VM 重启承接
+
+受限收尾已经闭合后，如果绑定的 VM 发生重启，只能使用一次性的 `recover-group2-post-finalize-reboot` 入口恢复原旧软件。这个入口不重做 D11/D12，不安装候选，不执行迁移、还原、业务探针或普通 recover，也不修改正式 `state.json`、`current-sha`、`transaction.json`、`config.json`、`attention.json`、父收尾原件、旧 receipt 或 consumed 记录。
+
+```sh
+python3 tools/local-preview/preview.py recover-group2-post-finalize-reboot \
+  --reboot-request <PRIVATE_REBOOT_REQUEST_JSON> \
+  --reboot-approval <PRIVATE_REBOOT_APPROVAL_JSON>
+```
+
+请求同名 `.evidence` 目录只接受五份固定私有输入：`parent-finalize.json`、`stopped-platform.json`、`prior-success.json`、`source-review.json` 和 `scope-approval.json`。执行批准必须是同目录的 `USER-APPROVAL.json`，并由 `USER-APPROVAL.txt` 绑定请求摘要、工具 SHA、当前 boot 和固定动作。仅允许实施、审查和 CI 的 scope 批准不能代替这份执行批准。
+
+控制器先在宿主 operation→config 锁内重新核对干净提交、完整 source diff、独立 review、真实 CI 原件、六个 controller 字节、父收尾链、旧成功控制面字节和当前 boot。随后按事故、收尾和 boot 派生唯一目录并排他占位，只暂存同提交的 `deploy.sh` 与 `carry_forward.py`。任何已有目录、失败尝试或换请求 ID 的重入都拒绝；本入口没有 force、retry 或 resume。
+
+VM 分阶段保存 stopped、keeper-ready、database-ready、applications-started 和 verified 原件，并把 keeper 与五次容器启动各自先落盘的 intent/result 原始字节绑定进最终 receipt。它先按原参数建立唯一 keeper，仅启动原 PostgreSQL/RabbitMQ 容器并完成完整数据库、文件、日志、队列和不可消费责任门禁；全部通过后才单次启动原 Control/Worker/Web 容器。`account-web` 始终保持停止。启动只使用原容器 ID，不执行 `compose up`、recreate 或 restart；同 ID、镜像、静态 profile、零 RestartCount、新 StartedAt、唯一 preflight nonce、当前 boot 的 kernel/cgroup/namespace 以及只允许两处 mtime 推进都必须成立。
+
+VM 先落盘 result、receipt、chain 和 preservation snapshot；宿主读取全部原字节，用相同纯校验器重新计算，再写入 host readback。任一动作、健康等待、采集或落盘失败都保留实际 phase 和已取得 raw，不自动重试、回滚或补造证据。成功只建立 `group2_post_finalize_reboot_v1` 的独立保全来源；后继仍需独立 reviewer、新 exact scope、官方 install/plan/once 及完整部署验收。代码、测试、审查或 CI 通过都不构成生产启动批准。
 
 ## 安装或更新控制器
 

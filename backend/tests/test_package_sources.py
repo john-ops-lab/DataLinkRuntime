@@ -169,22 +169,25 @@ def test_package_source_reachability_probe(api_client: TestClient) -> None:
     dead = create_source(
         api_client,
         name="dead-mirror",
-        # Malformed URL: the probe must report a transport error even when a
-        # system proxy would happily answer for "dead" hosts.
-        index_url="not a url",
+        index_url=f"http://127.0.0.1:{port}/unreachable/",
     )
+    server_closed = False
     try:
         reachable = api_client.post(f"/api/package-sources/{source['id']}/test")
         assert reachable.status_code == 200
         assert reachable.json()["ok"] is True
         assert reachable.json()["status_code"] == 200
 
+        server.shutdown()
+        server.server_close()
+        server_closed = True
         unreachable = api_client.post(f"/api/package-sources/{dead['id']}/test")
         assert unreachable.json()["ok"] is False
         assert unreachable.json()["error"]
     finally:
-        server.shutdown()
-        server.server_close()
+        if not server_closed:
+            server.shutdown()
+            server.server_close()
 
 
 # --- claim payload index URL resolution --------------------------------------------

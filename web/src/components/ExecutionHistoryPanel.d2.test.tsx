@@ -1,8 +1,11 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, ApiError } from "../api";
 import { applyUiLocale } from "../i18n";
+import { openExecutionEvents } from "../sse";
+import type { ExecutionEventsHandlers } from "../sse";
 import type {
   Execution,
   ExecutionSummary,
@@ -11,6 +14,10 @@ import type {
   ReliableExecutionIncident,
 } from "../types";
 import ExecutionHistoryPanel from "./ExecutionHistoryPanel";
+
+vi.mock("../sse", () => ({
+  openExecutionEvents: vi.fn(() => ({ close: vi.fn() })),
+}));
 
 function summary(overrides: Partial<ExecutionSummary> = {}): ExecutionSummary {
   return {
@@ -145,6 +152,12 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function firstHistoryHandlers(): ExecutionEventsHandlers {
+  const call = vi.mocked(openExecutionEvents).mock.calls[0];
+  expect(call).toBeDefined();
+  return call?.[1] as ExecutionEventsHandlers;
+}
+
 function mockTwoExecutionEpochs() {
   vi.spyOn(api, "listExecutions").mockResolvedValue({
     items: [summary(), summary({ id: 72 })],
@@ -165,17 +178,19 @@ function mockTwoExecutionEpochs() {
   ));
 }
 
-function renderHistory(detail: Execution, row = summary()) {
+function renderHistory(detail: Execution, row = summary(), canCancel = false) {
   const list = vi.spyOn(api, "listExecutions").mockResolvedValue({
     items: [row],
     next_before_id: null,
   });
   vi.spyOn(api, "getExecution").mockResolvedValue(detail);
-  render(<ExecutionHistoryPanel adapterId={41} />);
+  render(<ExecutionHistoryPanel adapterId={41} canCancel={canCancel} />);
   return list;
 }
 
 beforeEach(() => {
+  vi.mocked(openExecutionEvents).mockClear();
+  vi.mocked(openExecutionEvents).mockReturnValue({ close: vi.fn() });
   vi.spyOn(api, "getReliableExecutionDetail").mockImplementation(async (executionId) => ({
     execution_id: executionId,
     dispatch_backend: "rabbitmq",
@@ -192,7 +207,412 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
+describe("Issue #155A queued execution cancellation", () => {
+  it("captures the selected ID and synchronously deduplicates a true double click", async () => {
+    const pending = deferred<Execution>();
+    const cancel = vi.spyOn(api, "cancelExecution").mockReturnValue(pending.promise);
+    const list = vi.spyOn(api, "listExecutions").mockResolvedValue({
+      items: [
+        summary({ id: 71, status: "running" }),
+        summary({ id: 72, status: "queued" }),
+      ],
+      next_before_id: null,
+    });
+    vi.spyOn(api, "getExecution").mockImplementation(async (id) => execution({
+      id,
+      status: id === 71 ? "running" : "queued",
+    }));
+    render(<ExecutionHistoryPanel adapterId={41} canCancel />);
+    const rows = await screen.findAllByTestId("history-row");
+    const queuedRow = rows[1];
+    if (queuedRow === undefined) {
+      throw new Error("Queued Execution B row not found");
+    }
+    fireEvent.click(queuedRow);
+    const button = await screen.findByTestId("execution-cancel-queued");
+
+    act(() => {
+      button.click();
+      button.click();
+    });
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledWith(72);
+    expect(button.className).toContain("ant-btn-loading");
+    await act(async () => {
+      pending.resolve(execution({ status: "cancelled", id: 72 }));
+      await pending.promise;
+    });
+    await waitFor(() => expect(screen.queryByTestId("execution-cancel-queued")).toBeNull());
+    expect(screen.getByTestId("execution-run-id").textContent).toContain("72");
+    expect(document.body.textContent).toContain("已取消");
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  });
+
+  it.each(["success", "403", "409", "network"])(
+    "drops a late B %s while C has its own pending cancellation",
+    async (outcome) => {
+      const first = deferred<Execution>();
+      const second = deferred<Execution>();
+      vi.spyOn(api, "listExecutions").mockResolvedValue({
+        items: [summary({ id: 71, status: "queued" }), summary({ id: 72, status: "queued" })],
+        next_before_id: null,
+      });
+      const getExecution = vi.spyOn(api, "getExecution").mockImplementation(async (id) => execution({
+        id,
+        status: "queued",
+      }));
+      vi.spyOn(api, "cancelExecution")
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise);
+      const view = render(
+        <ExecutionHistoryPanel adapterId={41} autoOpenExecutionId={71} canCancel />,
+      );
+      fireEvent.click(await screen.findByTestId("execution-cancel-queued"));
+
+      view.rerender(
+        <ExecutionHistoryPanel adapterId={41} autoOpenExecutionId={72} canCancel />,
+      );
+      await waitFor(() => expect(screen.getByTestId("execution-run-id").textContent).toContain("72"));
+      fireEvent.click(await screen.findByTestId("execution-cancel-queued"));
+      await waitFor(() => expect(api.cancelExecution).toHaveBeenCalledTimes(2));
+
+      await act(async () => {
+        if (outcome === "success") {
+          first.resolve(execution({ id: 71, status: "cancelled" }));
+          await first.promise;
+        } else if (outcome === "403") {
+          first.reject(new ApiError(403, "adapter_read_only", "old permission failure"));
+          await first.promise.catch(() => undefined);
+        } else if (outcome === "409") {
+          first.reject(new ApiError(409, "incident_execution_active", "old claim conflict"));
+          await first.promise.catch(() => undefined);
+        } else {
+          first.reject(new Error("old network failure"));
+          await first.promise.catch(() => undefined);
+        }
+      });
+
+      expect(screen.getByTestId("execution-run-id").textContent).toContain("72");
+      expect(screen.getByTestId("execution-cancel-queued").className).toContain("ant-btn-loading");
+      expect(screen.queryByTestId("execution-cancel-error")).toBeNull();
+      expect(getExecution).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        second.resolve(execution({ id: 72, status: "cancelled" }));
+        await second.promise;
+      });
+    },
+  );
+
+  it("drops a late response after the detail drawer closes", async () => {
+    const pending = deferred<Execution>();
+    vi.spyOn(api, "cancelExecution").mockReturnValue(pending.promise);
+    renderHistory(execution({ status: "queued" }), summary({ status: "queued" }), true);
+    fireEvent.click(await screen.findByTestId("history-row"));
+    fireEvent.click(await screen.findByTestId("execution-cancel-queued"));
+    const close = document.querySelector(".ant-drawer-close");
+    if (!(close instanceof HTMLButtonElement)) {
+      throw new Error("Execution detail close button not found");
+    }
+    fireEvent.click(close);
+
+    await act(async () => {
+      pending.resolve(execution({ status: "cancelled" }));
+      await pending.promise;
+    });
+
+    expect(screen.queryByTestId("execution-run-id")).toBeNull();
+    expect(screen.queryByTestId("execution-cancel-error")).toBeNull();
+  });
+
+  it.each(["success", "error follow-up"] as const)(
+    "does not restart watcher or list work after unmount on %s",
+    async (path) => {
+      const pendingCancel = deferred<Execution>();
+      const pendingFollowUp = deferred<Execution>();
+      const list = vi.spyOn(api, "listExecutions").mockResolvedValue({
+        items: [summary({ status: "queued" })],
+        next_before_id: null,
+      });
+      const getExecution = vi.spyOn(api, "getExecution");
+      if (path === "success") {
+        getExecution.mockResolvedValue(execution({ status: "queued" }));
+        vi.spyOn(api, "cancelExecution").mockReturnValue(pendingCancel.promise);
+      } else {
+        getExecution
+          .mockResolvedValueOnce(execution({ status: "queued" }))
+          .mockReturnValueOnce(pendingFollowUp.promise);
+        vi.spyOn(api, "cancelExecution").mockRejectedValue(
+          new ApiError(409, "incident_execution_active", "claim conflict"),
+        );
+      }
+      const panel = <ExecutionHistoryPanel adapterId={41} autoOpenExecutionId={71} canCancel />;
+      const view = render(path === "success" ? <StrictMode>{panel}</StrictMode> : panel);
+      fireEvent.click(await screen.findByTestId("execution-cancel-queued"));
+      if (path === "error follow-up") {
+        await waitFor(() => expect(getExecution).toHaveBeenCalledTimes(2));
+      }
+      const streamCallsBeforeUnmount = vi.mocked(openExecutionEvents).mock.calls.length;
+      const listCallsBeforeUnmount = list.mock.calls.length;
+      view.unmount();
+
+      await act(async () => {
+        if (path === "success") {
+          pendingCancel.resolve(execution({ status: "running", cancel_requested: true }));
+          await pendingCancel.promise;
+        } else {
+          pendingFollowUp.resolve(execution({ status: "running", cancel_requested: true }));
+          await pendingFollowUp.promise;
+        }
+      });
+
+      expect(openExecutionEvents).toHaveBeenCalledTimes(streamCallsBeforeUnmount);
+      expect(list).toHaveBeenCalledTimes(listCallsBeforeUnmount);
+    },
+  );
+
+  it.each(["success", "error follow-up"] as const)(
+    "keeps live progress that arrives before a late cancellation %s snapshot",
+    async (path) => {
+      const pendingOperation = deferred<Execution>();
+      vi.spyOn(api, "listExecutions").mockResolvedValue({
+        items: [summary({ status: "queued" })],
+        next_before_id: null,
+      });
+      const queued = execution({
+        status: "queued",
+        attempt_count: 0,
+        started_at: null,
+        stdout: "",
+        stderr: "",
+      });
+      const running = execution({
+        status: "running",
+        attempt_count: 1,
+        cancel_requested: true,
+        stdout: "",
+        stderr: "",
+      });
+      const getExecution = vi.spyOn(api, "getExecution").mockResolvedValueOnce(queued);
+      if (path === "success") {
+        vi.spyOn(api, "cancelExecution").mockReturnValue(pendingOperation.promise);
+      } else {
+        getExecution.mockReturnValueOnce(pendingOperation.promise);
+        vi.spyOn(api, "cancelExecution").mockRejectedValue(
+          new ApiError(409, "incident_execution_active", "claim conflict"),
+        );
+      }
+      render(<ExecutionHistoryPanel adapterId={41} autoOpenExecutionId={71} canCancel />);
+      fireEvent.click(await screen.findByTestId("execution-cancel-queued"));
+      if (path === "error follow-up") {
+        await waitFor(() => expect(getExecution).toHaveBeenCalledTimes(2));
+      }
+
+      const handlers = firstHistoryHandlers();
+      act(() => {
+        handlers.onExecution?.({
+          ...running,
+          cancel_requested: false,
+          stdout: "accepted line\n",
+          stderr: "accepted error\n",
+        });
+        handlers.onLog?.({ stream: "stdout", chunk: "new delta\n" });
+      });
+      await act(async () => {
+        pendingOperation.resolve(running);
+        await pendingOperation.promise;
+      });
+
+      fireEvent.click(screen.getByRole("tab", { name: "执行日志" }));
+      const detailLog = screen.getByTestId("detail-log").textContent ?? "";
+      expect(detailLog).toContain("accepted line\n");
+      expect(detailLog).toContain("accepted error\n");
+      expect(screen.getByTestId("execution-cancel-pending")).toBeTruthy();
+      expect(openExecutionEvents).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["success", "error follow-up"] as const)(
+    "keeps a newer terminal watcher result when an older %s result arrives",
+    async (path) => {
+      const pendingOperation = deferred<Execution>();
+      const terminal = execution({
+        status: "succeeded",
+        stdout: "new final log",
+        output: { result: "new final output" },
+      });
+      vi.spyOn(api, "listExecutions").mockResolvedValue({
+        items: [summary({ status: "queued" })],
+        next_before_id: null,
+      });
+      const getExecution = vi.spyOn(api, "getExecution")
+        .mockResolvedValueOnce(execution({ status: "queued" }));
+      if (path === "success") {
+        getExecution.mockResolvedValueOnce(terminal);
+        vi.spyOn(api, "cancelExecution").mockReturnValue(pendingOperation.promise);
+      } else {
+        getExecution
+          .mockReturnValueOnce(pendingOperation.promise)
+          .mockResolvedValueOnce(terminal);
+        vi.spyOn(api, "cancelExecution").mockRejectedValue(
+          new ApiError(409, "incident_execution_active", "claim conflict"),
+        );
+      }
+      render(<ExecutionHistoryPanel adapterId={41} autoOpenExecutionId={71} canCancel />);
+      fireEvent.click(await screen.findByTestId("execution-cancel-queued"));
+      if (path === "error follow-up") {
+        await waitFor(() => expect(getExecution).toHaveBeenCalledTimes(2));
+      }
+      const handlers = firstHistoryHandlers();
+      await act(async () => {
+        handlers.onExecution?.(terminal);
+      });
+      await waitFor(() => expect(getExecution).toHaveBeenCalledTimes(path === "success" ? 2 : 3));
+      expect(within(screen.getByRole("dialog")).getByText("成功", { exact: true })).toBeTruthy();
+
+      await act(async () => {
+        pendingOperation.resolve(execution({
+          status: "running",
+          cancel_requested: true,
+          stdout: "old partial log",
+          output: null,
+        }));
+        await pendingOperation.promise;
+      });
+
+      expect(within(screen.getByRole("dialog")).getByText("成功", { exact: true })).toBeTruthy();
+      expect(screen.queryByTestId("execution-cancel-pending")).toBeNull();
+      expect(openExecutionEvents).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    [403, "adapter_read_only", "permission revoked"],
+    [409, "incident_execution_active", "claim conflict"],
+    [0, "network_error", "network failed"],
+  ] as const)("shows current cancellation error %s and re-reads the fixed target", async (status, code, message) => {
+    vi.spyOn(api, "listExecutions").mockResolvedValue({
+      items: [summary({ id: 71, status: "queued" })],
+      next_before_id: null,
+    });
+    const getExecution = vi.spyOn(api, "getExecution")
+      .mockResolvedValueOnce(execution({ status: "queued" }))
+      .mockResolvedValueOnce(execution({ status: "running", cancel_requested: true }));
+    vi.spyOn(api, "cancelExecution").mockRejectedValue(new ApiError(status, code, message));
+    render(<ExecutionHistoryPanel adapterId={41} canCancel />);
+    fireEvent.click(await screen.findByTestId("history-row"));
+    fireEvent.click(await screen.findByTestId("execution-cancel-queued"));
+
+    expect((await screen.findByTestId("execution-cancel-error")).textContent).toContain(code);
+    expect(await screen.findByTestId("execution-cancel-pending")).toBeTruthy();
+    expect(getExecution).toHaveBeenNthCalledWith(2, 71);
+    expect(screen.queryByTestId("execution-cancel-queued")).toBeNull();
+  });
+
+  it("preserves the cancellation error when the authoritative follow-up read also fails", async () => {
+    vi.spyOn(api, "listExecutions").mockResolvedValue({
+      items: [summary({ id: 71, status: "queued" })],
+      next_before_id: null,
+    });
+    vi.spyOn(api, "getExecution")
+      .mockResolvedValueOnce(execution({ status: "queued" }))
+      .mockRejectedValueOnce(new Error("refresh must not replace the operation error"));
+    vi.spyOn(api, "cancelExecution").mockRejectedValue(
+      new ApiError(409, "incident_execution_active", "原始取消冲突"),
+    );
+    render(<ExecutionHistoryPanel adapterId={41} canCancel />);
+    fireEvent.click(await screen.findByTestId("history-row"));
+    fireEvent.click(await screen.findByTestId("execution-cancel-queued"));
+
+    const error = await screen.findByTestId("execution-cancel-error");
+    expect(error.textContent).toContain("原始取消冲突");
+    expect(error.textContent).not.toContain("refresh must not replace");
+  });
+
+  it.each([
+    ["Claim race", execution({ status: "running", cancel_requested: true }), "execution-cancel-pending"],
+    ["terminal race", execution({ status: "succeeded", cancel_requested: false }), null],
+  ] as const)("keeps the server-authoritative status for %s", async (_, response, pendingTestId) => {
+    vi.spyOn(api, "cancelExecution").mockResolvedValue(response);
+    renderHistory(execution({ status: "queued" }), summary({ status: "queued" }), true);
+    fireEvent.click(await screen.findByTestId("history-row"));
+    fireEvent.click(await screen.findByTestId("execution-cancel-queued"));
+
+    await waitFor(() => expect(screen.queryByTestId("execution-cancel-queued")).toBeNull());
+    if (pendingTestId === null) {
+      expect(screen.queryByTestId("execution-cancel-pending")).toBeNull();
+      expect(document.body.textContent).toContain("成功");
+    } else {
+      expect(await screen.findByTestId(pendingTestId)).toBeTruthy();
+      expect(document.body.textContent).toContain("运行中");
+      expect(document.body.textContent).not.toContain("已取消");
+    }
+  });
+
+  it("defaults to no cancel capability and follows permission changes in both locales", async () => {
+    vi.spyOn(api, "listExecutions").mockResolvedValue({
+      items: [summary({ status: "queued" })],
+      next_before_id: null,
+    });
+    vi.spyOn(api, "getExecution").mockResolvedValue(execution({ status: "queued" }));
+    const view = render(<ExecutionHistoryPanel adapterId={41} />);
+    fireEvent.click(await screen.findByTestId("history-row"));
+    expect(screen.queryByTestId("execution-cancel-queued")).toBeNull();
+
+    view.rerender(<ExecutionHistoryPanel adapterId={41} canCancel />);
+    expect((await screen.findByTestId("execution-cancel-queued")).textContent).toContain("取消此排队执行");
+    await act(async () => {
+      await applyUiLocale("en");
+    });
+    expect(screen.getByTestId("execution-cancel-queued").textContent).toContain(
+      "Cancel this queued execution",
+    );
+    view.rerender(<ExecutionHistoryPanel adapterId={41} canCancel={false} />);
+    expect(screen.queryByTestId("execution-cancel-queued")).toBeNull();
+  });
+});
+
 describe("Issue #127 D2 execution history", () => {
+  it.each([
+    [
+      "legal JSON null",
+      execution({ output: null, output_size: 4, attempt_count: 1 }),
+      summary(),
+      "output-content",
+      "null",
+    ],
+    [
+      "never-started empty output",
+      execution({
+        status: "cancelled",
+        output: null,
+        output_size: null,
+        attempt_count: 0,
+        started_at: null,
+      }),
+      summary({ status: "cancelled", started_at: null }),
+      "output-empty",
+      "无 Output",
+    ],
+    [
+      "incomplete historical output",
+      execution({ output: null, output_size: null, attempt_count: 1 }),
+      summary(),
+      "output-unknown",
+      "输出信息不足，无法确认",
+    ],
+  ] as const)("uses the shared output classification for %s", async (_, detail, row, testId, text) => {
+    renderHistory(detail, row);
+    fireEvent.click(await screen.findByTestId("history-row"));
+    const drawer = document.querySelector(".ant-drawer-content");
+    if (!(drawer instanceof HTMLElement)) {
+      throw new Error("Execution detail drawer not found");
+    }
+
+    fireEvent.click(await within(drawer).findByRole("tab", { name: "输出" }));
+    expect((await within(drawer).findByTestId(testId)).textContent).toContain(text);
+  });
+
   it("renders RabbitMQ Attempt facts, infrastructure Incidents, and Replay", async () => {
     const rabbitExecution = execution({
       dispatch_backend: "rabbitmq",

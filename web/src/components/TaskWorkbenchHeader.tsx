@@ -22,6 +22,7 @@ interface TaskWorkbenchHeaderProps {
   dirty: boolean;
   busy: boolean;
   contentReady: boolean;
+  runtimeSynchronizing?: boolean;
   onSave: () => void;
   onOpenSettings: () => void;
   onRunOnce: () => void;
@@ -46,6 +47,8 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
     ? t("task.reasons.readOnly")
     : archived
     ? t("task.reasons.deleted")
+    : props.runtimeSynchronizing
+      ? t("task.reasons.processing")
     : runtimeLocked
       ? scheduleMode && props.runtimeState.scheduleEnabled
         ? t("task.reasons.scheduleEnabledSave")

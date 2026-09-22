@@ -257,6 +257,34 @@ def create_app() -> FastAPI:
                     }
                 },
             )
+        matched_route = request.scope.get("route")
+        matched_route_path = getattr(matched_route, "path", None)
+        is_package_source_write = (
+            request.method == "POST" and request.url.path == "/api/package-sources"
+        ) or (
+            request.method == "PATCH"
+            and matched_route_path == "/api/package-sources/{package_source_id}"
+        )
+        if is_package_source_write:
+            field = next(
+                (
+                    location[-1]
+                    for error in exc.errors()
+                    if (location := error.get("loc"))
+                    and location[-1] in {"name", "kind", "index_url", "is_default", "credential_id"}
+                ),
+                "request",
+            )
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "package_source_request_invalid",
+                        "message": "Package source request is invalid",
+                        "params": {"field": field, "reason": "request_validation"},
+                    }
+                },
+            )
         if request.url.path.startswith("/api/auth/account/") or request.url.path.startswith(
             "/api/users"
         ):

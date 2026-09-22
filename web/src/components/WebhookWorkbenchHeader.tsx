@@ -30,7 +30,7 @@ export default function WebhookWorkbenchHeader(props: Props) {
   const { t } = useTranslation(["runtime", "common"]);
   const archived = !!props.adapter.archived_at;
   const readOnly = props.readOnly === true;
-  const locked = props.adapter.runtime_locked === true || props.runtimeState.enabled;
+  const locked = props.adapter.runtime_locked === true || props.runtimeState.runtimeLocked;
   const saveReason = readOnly
     ? t("webhook.reasons.readOnly")
     : archived

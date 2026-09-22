@@ -262,6 +262,7 @@
     "kind": "Package source type",
     "repositoryUrl": "Index URL",
     "urlPlaceholder": "Enter index URL",
+    "urlInvalid": "Enter a valid package source URL. Your input has been kept for correction.",
     "credential": "Package source Credential",
     "credentialPlaceholder": "Optional credential",
     "defaultCheckbox": "Set as default for this type",

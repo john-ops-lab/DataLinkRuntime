@@ -278,6 +278,9 @@
     "connectionLostDescription": "The authoritative polling limit was reached without a terminal state. Refresh or open this execution again later.",
     "queuedAt": "Queued at",
     "waitingForWorker": "Queued, waiting for the target Worker",
+    "cancelQueued": "Cancel this queued execution",
+    "cancelPending": "Cancellation was requested and is still converging",
+    "cancelFailed": "Execution cancellation failed",
     "retryAt": "Next attempt: {{time}}",
     "retryCountdown": "Retrying in about {{seconds}} seconds",
     "attempts": "Attempts: {{current}}/{{max}}",
@@ -396,6 +399,7 @@
     "truncated": "Output exceeded the platform retention limit; the complete content was not saved",
     "truncatedDescription": "Actual size: {{size}} bytes; the content below is a preview, not complete JSON",
     "unknownSize": "Unknown",
+    "unknown": "Output information is incomplete and cannot be confirmed.",
     "empty": "No Output",
     "contentLabel": "Execution output"
   },

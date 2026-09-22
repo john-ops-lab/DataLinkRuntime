@@ -32,6 +32,10 @@ from dlr.control.services.adapter import domain_error
 
 # Control-side reachability probes must stay fast and bounded.
 REACHABILITY_TIMEOUT_SECONDS = 5.0
+_PACKAGE_SOURCE_KINDS = {"pypi", "npm", "maven", "goproxy"}
+_REG_NAME_ASCII = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~!$&'()*+,;="
+)
 
 # The domestic defaults remain the API's canonical single-value summary. The
 # full domestic + official set is shared with migrations through the module
@@ -173,6 +177,94 @@ def _validate_credential_kind(kind: str, credential: Credential) -> None:
         )
 
 
+def _invalid_index_url(reason: str) -> None:
+    raise domain_error(
+        422,
+        "package_source_url_invalid",
+        "Package source index URL is invalid",
+        {"field": "index_url", "reason": reason},
+    )
+
+
+def _has_valid_host_syntax(parts: url_parse.SplitResult) -> bool:
+    """Check only authority host grammar while retaining existing URL semantics."""
+    if "\\" in parts.netloc:
+        return False
+    authority = parts.netloc.rsplit("@", 1)[-1]
+    bracketed = authority.startswith("[")
+    if bracketed:
+        closing_bracket = authority.find("]")
+        if closing_bracket < 0:
+            return False
+        host = authority[1:closing_bracket]
+    else:
+        host = authority.rsplit(":", 1)[0] if ":" in authority else authority
+
+    index = 0
+    while index < len(host):
+        character = host[index]
+        if character == "%":
+            if index + 2 >= len(host) or not all(
+                digit in "0123456789abcdefABCDEF" for digit in host[index + 1 : index + 3]
+            ):
+                return False
+            index += 3
+            continue
+        if (
+            ord(character) < 128
+            and character not in _REG_NAME_ASCII
+            and (not bracketed or character != ":")
+        ):
+            return False
+        index += 1
+    return True
+
+
+def _validate_source_configuration(
+    kind: str,
+    index_url: str,
+    credential_id: int | None,
+) -> None:
+    """Validate one complete source configuration without network access."""
+    if kind not in _PACKAGE_SOURCE_KINDS:
+        raise domain_error(
+            422,
+            "package_source_kind_invalid",
+            "Package source kind is invalid",
+        )
+    if index_url.startswith("dlr-builtin:"):
+        if index_url != f"dlr-builtin://{kind}" or credential_id is not None:
+            raise domain_error(
+                422,
+                "builtin_source_invalid",
+                "Builtin sources do not accept custom URLs or credentials",
+            )
+        return
+    # urlsplit intentionally strips some leading C0 characters and removes
+    # tab/CR/LF. Inspect the original value first so parsing cannot normalize
+    # an invalid source into an accepted one.
+    has_invalid_character = any(
+        character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
+        for character in index_url
+    )
+    if has_invalid_character:
+        _invalid_index_url("whitespace_or_control")
+    if kind == "goproxy" and any(separator in index_url for separator in (",", "|")):
+        _invalid_index_url("multiple_sources")
+    try:
+        parts = url_parse.urlsplit(index_url)
+        hostname = parts.hostname
+        _ = parts.port
+    except ValueError:
+        _invalid_index_url("invalid_authority")
+    if parts.scheme not in {"http", "https"}:
+        _invalid_index_url("scheme")
+    if not hostname:
+        _invalid_index_url("host")
+    if not _has_valid_host_syntax(parts):
+        _invalid_index_url("host_syntax")
+
+
 def _clear_other_defaults(session: Session, kind: str, keep_id: int | None = None) -> None:
     """Keep at most one default source of a kind: the candidate wins."""
     statement = update(PackageSource).where(
@@ -210,6 +302,7 @@ def package_source_response(session: Session, source: PackageSource) -> PackageS
 
 
 def create_package_source(session: Session, data: PackageSourceCreate) -> PackageSource:
+    _validate_source_configuration(data.kind, data.index_url, data.credential_id)
     existing = session.scalar(select(PackageSource).where(PackageSource.name == data.name))
     if existing is not None:
         raise domain_error(
@@ -217,14 +310,6 @@ def create_package_source(session: Session, data: PackageSourceCreate) -> Packag
             "package_source_name_conflict",
             "Package source name already exists",
             {"name": data.name},
-        )
-    if data.index_url.startswith("dlr-builtin:") and (
-        data.index_url != f"dlr-builtin://{data.kind}" or data.credential_id is not None
-    ):
-        raise domain_error(
-            422,
-            "builtin_source_invalid",
-            "Builtin sources do not accept custom URLs or credentials",
         )
     if data.credential_id is not None:
         _validate_credential_kind(data.kind, _get_credential(session, data.credential_id))
@@ -271,6 +356,14 @@ def update_package_source(
             )
     elif data.index_url is not None and data.index_url.startswith("dlr-builtin:"):
         raise domain_error(422, "builtin_source_invalid", "Select an existing builtin source")
+    next_kind = data.kind if data.kind is not None else source.kind
+    next_index_url = data.index_url if data.index_url is not None else source.index_url
+    next_credential_id = (
+        data.credential_id if "credential_id" in data.model_fields_set else source.credential_id
+    )
+    _validate_source_configuration(next_kind, next_index_url, next_credential_id)
+    if next_credential_id is not None:
+        _validate_credential_kind(next_kind, _get_credential(session, next_credential_id))
     if data.name is not None and data.name != source.name:
         conflict = session.scalar(
             select(PackageSource).where(
@@ -291,12 +384,6 @@ def update_package_source(
     if data.index_url is not None:
         source.index_url = data.index_url
         source.preset_id = None
-    next_kind = data.kind if data.kind is not None else source.kind
-    next_credential_id = (
-        data.credential_id if "credential_id" in data.model_fields_set else source.credential_id
-    )
-    if next_credential_id is not None:
-        _validate_credential_kind(next_kind, _get_credential(session, next_credential_id))
     if data.kind is not None:
         source.kind = data.kind
         source.preset_id = None

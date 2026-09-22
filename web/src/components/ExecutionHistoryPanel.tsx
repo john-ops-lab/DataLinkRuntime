@@ -161,6 +161,8 @@ export default function ExecutionHistoryPanel(props: {
   /** App has consumed the one-shot auto-open request. */
   onAutoOpenHandled?: () => void;
   recordKind?: "execution" | "call";
+  /** Adapter edit capability; the backend still authorizes every cancellation. */
+  canCancel?: boolean;
 }) {
   const { i18n, t } = useTranslation(["runtime", "common"]);
   const locale = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
@@ -181,14 +183,36 @@ export default function ExecutionHistoryPanel(props: {
   const [confirmingDisposition, setConfirmingDisposition] = useState<string | null>(null);
   const [dispositionError, setDispositionError] = useState<string | null>(null);
   const [dispositionResults, setDispositionResults] = useState<Record<number, IncidentDispositionResponse>>({});
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const [cancelPendingExecutionIds, setCancelPendingExecutionIds] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
   const dispositionIntentsRef = useRef(new Map<string, IncidentDispositionIntent>());
+  // State updates are asynchronous, so the ref is the synchronous duplicate-request guard.
+  const cancelPendingExecutionIdsRef = useRef(new Set<number>());
   const requestedExecutionIdRef = useRef<number | null>(null);
   // Only the newest detail request may commit UI state: rapid clicks (A slow,
   // B fast) must never let a stale A response overwrite the B detail.
   const detailRequestRef = useRef(0);
+  const componentGenerationRef = useRef(0);
+  const componentMountedRef = useRef(false);
   // 详情抽屉的日志与收敛行为与测试运行面板共享同一 hook。
   const watcher = useExecutionWatcher(setLoadError);
   const detail = watcher.execution;
+
+  useEffect(() => {
+    const generation = ++componentGenerationRef.current;
+    componentMountedRef.current = true;
+    return () => {
+      if (componentGenerationRef.current !== generation) {
+        return;
+      }
+      componentMountedRef.current = false;
+      componentGenerationRef.current += 1;
+      detailRequestRef.current += 1;
+      requestedExecutionIdRef.current = null;
+    };
+  }, []);
 
   const loadPage = useCallback(
     async (beforeId: number | null) => {
@@ -257,6 +281,7 @@ export default function ExecutionHistoryPanel(props: {
     setDispositionError(null);
     setDispositionResults({});
     setConfirmingDisposition(null);
+    setCancelError(null);
     dispositionIntentsRef.current.clear();
     try {
       const loaded = await api.getExecution(executionId);
@@ -312,6 +337,85 @@ export default function ExecutionHistoryPanel(props: {
     }
     setReliableDetail(refreshed);
     return true;
+  }
+
+  function isCurrentComponentGeneration(generation: number): boolean {
+    return componentMountedRef.current && generation === componentGenerationRef.current;
+  }
+
+  async function refreshFirstPageAfterCancellation(generation: number): Promise<void> {
+    try {
+      const page = await api.listExecutions(props.adapterId, {
+        limit: PAGE_SIZE,
+        ...(props.trigger !== undefined ? { trigger: props.trigger } : {}),
+      });
+      if (!isCurrentComponentGeneration(generation)) {
+        return;
+      }
+      setItems(page.items);
+      setNextBeforeId(page.next_before_id);
+    } catch {
+      // The cancellation response remains authoritative. A best-effort list
+      // refresh must not replace the current detail or its operation error.
+    }
+  }
+
+  async function cancelQueuedExecution(executionId: number): Promise<void> {
+    const intent = {
+      executionId,
+      requestId: detailRequestRef.current,
+      componentGeneration: componentGenerationRef.current,
+      operationEpoch: watcher.beginOperation(executionId),
+    };
+    if (
+      !isCurrentDetailEpoch(intent.executionId, intent.requestId)
+      || cancelPendingExecutionIdsRef.current.has(intent.executionId)
+    ) {
+      return;
+    }
+    cancelPendingExecutionIdsRef.current.add(intent.executionId);
+    setCancelPendingExecutionIds((current) => new Set(current).add(intent.executionId));
+    setCancelError(null);
+    try {
+      const cancelled = await api.cancelExecution(intent.executionId);
+      if (
+        isCurrentComponentGeneration(intent.componentGeneration)
+        && isCurrentDetailEpoch(intent.executionId, intent.requestId)
+      ) {
+        // The server may return cancelled, a terminal state, or running with
+        // cancel_requested after a Claim race. Never invent a local state.
+        watcher.reconcileOperationResult(cancelled, intent.operationEpoch);
+      }
+    } catch (error) {
+      if (
+        isCurrentComponentGeneration(intent.componentGeneration)
+        && isCurrentDetailEpoch(intent.executionId, intent.requestId)
+      ) {
+        setCancelError(errorMessage(error));
+        try {
+          const refreshed = await api.getExecution(intent.executionId);
+          if (
+            isCurrentComponentGeneration(intent.componentGeneration)
+            && isCurrentDetailEpoch(intent.executionId, intent.requestId)
+          ) {
+            watcher.reconcileOperationResult(refreshed, intent.operationEpoch);
+          }
+        } catch {
+          // Preserve the cancellation error; a failed follow-up read must not
+          // hide the operation that the user needs to understand.
+        }
+      }
+    } finally {
+      cancelPendingExecutionIdsRef.current.delete(intent.executionId);
+      if (isCurrentComponentGeneration(intent.componentGeneration)) {
+        setCancelPendingExecutionIds((current) => {
+          const next = new Set(current);
+          next.delete(intent.executionId);
+          return next;
+        });
+        void refreshFirstPageAfterCancellation(intent.componentGeneration);
+      }
+    }
   }
 
   async function disposeIncident(
@@ -555,6 +659,7 @@ export default function ExecutionHistoryPanel(props: {
           setReplayResult(null);
           setDispositionLoading(null);
           setConfirmingDisposition(null);
+          setCancelError(null);
           dispositionIntentsRef.current.clear();
         }}
       >
@@ -576,6 +681,35 @@ export default function ExecutionHistoryPanel(props: {
                 data-testid="execution-queued-notice"
                 message={t("history.waitingForWorker")}
               />
+            )}
+            {visibleDetail.cancel_requested === true && !isTerminal(visibleDetail.status) && (
+              <Alert
+                type="info"
+                showIcon
+                data-testid="execution-cancel-pending"
+                message={t("history.cancelPending")}
+              />
+            )}
+            {cancelError !== null && (
+              <Alert
+                type="error"
+                showIcon
+                closable
+                data-testid="execution-cancel-error"
+                message={t("history.cancelFailed")}
+                description={cancelError}
+                onClose={() => setCancelError(null)}
+              />
+            )}
+            {visibleDetail.status === "queued" && props.canCancel === true && (
+              <Button
+                danger
+                loading={cancelPendingExecutionIds.has(visibleDetail.id)}
+                data-testid="execution-cancel-queued"
+                onClick={() => void cancelQueuedExecution(visibleDetail.id)}
+              >
+                {t("history.cancelQueued")}
+              </Button>
             )}
             {visibleDetail.status === "retry_wait" && visibleDetail.next_attempt_at !== null && visibleDetail.next_attempt_at !== undefined && (
               <Alert

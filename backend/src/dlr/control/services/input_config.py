@@ -9,6 +9,7 @@ from typing import Any, cast
 from sqlalchemy import JSON, delete, func, null, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from dlr.common.config import settings
 from dlr.control.input_errors import InputConfigErrorCode, ManagedInputErrorCode
@@ -669,6 +670,11 @@ def _apply_input_config_update_locked(
         # A Python None must be persisted as JSON null, not SQL NULL; the
         # latter means "no JSON field" and is reserved for non-JSON sources.
         config.json_value = JSON.NULL if data.json_value is None else data.json_value
+        # JSON number/bool pairs compare equal in Python (0 == False and
+        # 1 == True).  A valid save always advances the revision, so force the
+        # JSONB column into the UPDATE instead of letting ORM equality erase
+        # the requested JSON type transition.
+        flag_modified(config, "json_value")
     else:
         config.json_value = null()
     if data.source_type == "managed_files":
@@ -683,6 +689,8 @@ def _apply_input_config_update_locked(
     # Scheduler never reads this value; both writes are in this transaction.
     if schedule is not None:
         schedule.input = _legacy_schedule_value(config)
+        if data.source_type == "json":
+            flag_modified(schedule, "input")
     session.flush()
 
 

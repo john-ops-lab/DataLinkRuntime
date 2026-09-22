@@ -10,6 +10,7 @@ import { Alert, Button, Card, Form, Input, InputNumber, Progress, Radio, Select,
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api } from "../api";
+import type { RefreshReason, RuntimeMutation, RuntimeTriggerSnapshot } from "../hooks/useRuntimeAuthority";
 import { uploadManagedInputArtifact } from "../managed-input-client";
 import { isTerminal } from "../status";
 import type {
@@ -57,7 +58,12 @@ interface TaskRunSettingsPanelProps {
   execution: Execution | null;
   /** M5.5.9：编辑页存在未保存修改时禁止启动运行。 */
   dirty: boolean;
-  onAdapterChange: (adapter: Adapter) => void;
+  runtimeSchedule?: Extract<RuntimeTriggerSnapshot, { adapterType: "task" }> | null;
+  runtimeSynchronizing?: boolean;
+  requestRuntimeRefresh?: (reason?: RefreshReason) => Promise<void>;
+  beginRuntimeMutation?: () => RuntimeMutation | null;
+  /** @deprecated Isolated callers should migrate to beginRuntimeMutation. */
+  onAdapterChange?: (adapter: Adapter) => void;
   onExecutionStarted: (execution: Execution) => void;
   onRuntimeStateChange: (state: TaskRuntimeState) => void;
   onError: (message: string | null) => void;
@@ -236,14 +242,27 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   const locale = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
   const adapterId = props.adapter.id;
   const readOnly = props.readOnly === true;
-  const onAdapterChange = props.onAdapterChange;
   const onError = props.onError;
   const onRuntimeStateChange = props.onRuntimeStateChange;
+  const beginRuntimeMutation = props.beginRuntimeMutation ?? (() => ({
+    acceptAdapter: (adapter: Adapter) => {
+      props.onAdapterChange?.(adapter);
+      return true;
+    },
+    acceptSchedule: () => true,
+    acceptWebhook: () => false,
+    finish: () => undefined,
+  }));
   const [workerOverride, setWorkerOverride] = useState<number | null | undefined>(undefined);
   const [runModeOverride, setRunModeOverride] = useState<TaskRunMode | undefined>(undefined);
   // M5.5.11: 表单内超时值（秒）；null = 跟随 Adapter 保存值。
   const [timeoutOverride, setTimeoutOverride] = useState<number | null>(null);
   const [timeoutCustomMode, setTimeoutCustomMode] = useState(false);
+  const [runtimeBaseline, setRuntimeBaseline] = useState(() => ({
+    workerId: props.adapter.runtime_worker_id ?? null,
+    runMode: props.adapter.run_mode,
+    timeoutSeconds: props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS,
+  }));
   const [schedule, setSchedule] = useState<AdapterSchedule | null>(null);
   const [cron, setCron] = useState("*/5 * * * *");
   const [timezone, setTimezone] = useState("Asia/Shanghai");
@@ -292,18 +311,45 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
 
   // 保存流程（PATCH + PUT）完成后递增，使保存前发出的 Schedule GET 响应
   // 成为陈旧信号，不能覆盖刚保存成功的表单值。
-  const scheduleLoadEpoch = useRef(0);
   const inputLoadEpoch = useRef(0);
-  const runMode = runModeOverride ?? props.adapter.run_mode;
-
-  const refreshAdapter = useCallback(async () => {
+  const inputEditEpoch = useRef(0);
+  const runtimeEditEpoch = useRef(0);
+  const scheduleEditEpoch = useRef(0);
+  const legacyScheduleEpoch = useRef(0);
+  const requestRuntimeRefresh = props.requestRuntimeRefresh ?? (async () => {
     const refreshed = await api.getAdapter(adapterId);
-    onAdapterChange(refreshed);
-    setWorkerOverride(undefined);
-    setRunModeOverride(undefined);
-    setTimeoutOverride(null);
-    setTimeoutCustomMode(false);
-  }, [adapterId, onAdapterChange]);
+    props.onAdapterChange?.(refreshed);
+  });
+  useEffect(() => {
+    const workerClean = workerOverride === undefined || workerOverride === runtimeBaseline.workerId;
+    const runModeClean = runModeOverride === undefined || runModeOverride === runtimeBaseline.runMode;
+    const timeoutClean = !timeoutCustomMode
+      && (timeoutOverride === null || timeoutOverride === runtimeBaseline.timeoutSeconds);
+    setRuntimeBaseline({
+      workerId: workerClean
+        ? (props.adapter.runtime_worker_id ?? null)
+        : runtimeBaseline.workerId,
+      runMode: runModeClean ? props.adapter.run_mode : runtimeBaseline.runMode,
+      timeoutSeconds: timeoutClean
+        ? (props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS)
+        : runtimeBaseline.timeoutSeconds,
+    });
+    if (workerClean && workerOverride !== undefined) setWorkerOverride(undefined);
+    if (runModeClean && runModeOverride !== undefined) setRunModeOverride(undefined);
+    if (timeoutClean && timeoutOverride !== null) setTimeoutOverride(null);
+  }, [
+    props.adapter.run_mode,
+    props.adapter.runtime_worker_id,
+    props.adapter.timeout_seconds,
+    runModeOverride,
+    runtimeBaseline.runMode,
+    runtimeBaseline.timeoutSeconds,
+    runtimeBaseline.workerId,
+    timeoutCustomMode,
+    timeoutOverride,
+    workerOverride,
+  ]);
+  const runMode = runModeOverride ?? runtimeBaseline.runMode;
 
   const loadInputConfig = useCallback(async () => {
     const epoch = inputLoadEpoch.current + 1;
@@ -385,46 +431,34 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     void loadManagedInput();
   }, [loadManagedInput]);
 
-  const loadSchedule = useCallback(async () => {
-    setLoadingSchedule(true);
-    try {
-      const loaded = await api.getSchedule(adapterId);
-      setSchedule(loaded);
-      setCron(loaded.cron);
-      setTimezone(loaded.timezone);
-      setMisfirePolicy(loaded.misfire_policy ?? DEFAULT_SCHEDULE_MISFIRE_POLICY);
-      setMaxCatchupCount(loaded.max_catchup_count ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
-      setMaxCatchupAgeSeconds(loaded.max_catchup_age_seconds ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
-      setScheduleLoadFailed(false);
-      setScheduleTouched(false);
-      setSchedulePolicyTouched(false);
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404 && error.code === "schedule_not_configured") {
-        setSchedule(null);
-        setMisfirePolicy(DEFAULT_SCHEDULE_MISFIRE_POLICY);
-        setMaxCatchupCount(DEFAULT_SCHEDULE_CATCHUP_COUNT);
-        setMaxCatchupAgeSeconds(DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
-        setScheduleLoadFailed(false);
-        setScheduleTouched(false);
-        setSchedulePolicyTouched(false);
-      } else {
-        // 加载失败时表单仍是默认值：标记后统一保存会跳过 Schedule PUT。
-        setScheduleLoadFailed(true);
-        onError(errorMessage(error));
-      }
-    } finally {
-      setLoadingSchedule(false);
-    }
-  }, [adapterId, onError]);
-
   useEffect(() => {
-    if (runMode !== "schedule") {
+    const snapshot = props.runtimeSchedule;
+    if (snapshot == null || snapshot.adapterId !== adapterId) {
       return;
     }
-    let cancelled = false;
-    const epoch = scheduleLoadEpoch.current;
-    api.getSchedule(adapterId).then((loaded) => {
-      if (cancelled || scheduleLoadEpoch.current !== epoch) return;
+    setLoadingSchedule(!snapshot.loaded);
+    if (!snapshot.loaded) return;
+    if (snapshot.value === undefined) {
+      setScheduleLoadFailed(true);
+      return;
+    }
+    setSchedule(snapshot.value);
+    setScheduleLoadFailed(false);
+    if (scheduleTouched || schedulePolicyTouched) return;
+    const loaded = snapshot.value;
+    setCron(loaded?.cron ?? "*/5 * * * *");
+    setTimezone(loaded?.timezone ?? "Asia/Shanghai");
+    setMisfirePolicy(loaded?.misfire_policy ?? DEFAULT_SCHEDULE_MISFIRE_POLICY);
+    setMaxCatchupCount(loaded?.max_catchup_count ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
+    setMaxCatchupAgeSeconds(loaded?.max_catchup_age_seconds ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
+  }, [adapterId, props.runtimeSchedule, schedulePolicyTouched, scheduleTouched]);
+
+  useEffect(() => {
+    if (props.runtimeSchedule !== undefined || runMode !== "schedule") return;
+    const epoch = ++legacyScheduleEpoch.current;
+    setLoadingSchedule(true);
+    void api.getSchedule(adapterId).then((loaded) => {
+      if (legacyScheduleEpoch.current !== epoch) return;
       setSchedule(loaded);
       setCron(loaded.cron);
       setTimezone(loaded.timezone);
@@ -432,29 +466,29 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       setMaxCatchupCount(loaded.max_catchup_count ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
       setMaxCatchupAgeSeconds(loaded.max_catchup_age_seconds ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
       setScheduleLoadFailed(false);
-      setScheduleTouched(false);
-      setSchedulePolicyTouched(false);
-    }).catch((error) => {
-      // 404 = Schedule 尚未配置：保持空状态即可。保存流程里 PATCH 先于 PUT，
-      // 迟到的 404 响应是陈旧信号，必须忽略，不能覆盖刚保存成功的 Schedule。
-      if (!cancelled && !(error instanceof ApiError && error.status === 404)) {
+    }).catch((error: unknown) => {
+      if (legacyScheduleEpoch.current !== epoch) return;
+      if (error instanceof ApiError && error.status === 404 && error.code === "schedule_not_configured") {
+        setSchedule(null);
+        setScheduleLoadFailed(false);
+      } else {
         setScheduleLoadFailed(true);
         onError(errorMessage(error));
       }
     }).finally(() => {
-      if (!cancelled) setLoadingSchedule(false);
+      if (legacyScheduleEpoch.current === epoch) setLoadingSchedule(false);
     });
     return () => {
-      cancelled = true;
+      legacyScheduleEpoch.current += 1;
     };
-  }, [adapterId, onError, runMode]);
+  }, [adapterId, onError, props.runtimeSchedule, runMode]);
 
   const workerId =
-    workerOverride === undefined ? (props.adapter.runtime_worker_id ?? null) : workerOverride;
+    workerOverride === undefined ? runtimeBaseline.workerId : workerOverride;
 
   // M5.5.11: 表单显示值 = 表单覆盖 ?? Adapter 权威值 ?? 默认 300 秒。
   const effectiveTimeoutSeconds =
-    timeoutOverride ?? props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS;
+    timeoutOverride ?? runtimeBaseline.timeoutSeconds;
   const effectiveCustom =
     timeoutCustomMode || presetMinutesFor(effectiveTimeoutSeconds) === undefined;
 
@@ -552,6 +586,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
           ));
         },
       });
+      inputEditEpoch.current += 1;
       const previous = replacementId === null ? undefined : stagedOrDraftArtifact(replacementId);
       setManagedFilesDraft((current) => mergeManagedFileDrafts(
         current.filter((artifact) => artifact.id !== replacementId),
@@ -597,6 +632,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       onError(null);
       try {
         await api.deleteInputArtifact(adapterId, artifact.id);
+        inputEditEpoch.current += 1;
         setManagedFilesDraft((current) => current.filter((item) => item.id !== artifact.id));
         setStagedArtifacts((current) => current.filter((item) => item.id !== artifact.id));
       } catch (error) {
@@ -608,6 +644,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     }
     // READY/current files are removed from the draft only. The server marks
     // them PENDING_DELETE during the next revisioned save.
+    inputEditEpoch.current += 1;
     setManagedFilesDraft((current) => current.filter((item) => item.id !== artifact.id));
   }
 
@@ -620,7 +657,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       inputSourceDraft === "remote_files" ||
       managedFilesSaveBlocked ||
       props.adapter.runtime_locked === true ||
-      schedule?.enabled === true
+      props.runtimeSynchronizing === true
     ) {
       return;
     }
@@ -667,20 +704,30 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       return;
     }
 
+    const submittedEditEpoch = inputEditEpoch.current;
+    const mutation = beginRuntimeMutation();
+    if (mutation === null) return;
     setSavingInput(true);
     setInputValidationError(null);
     onError(null);
     try {
       const saved = await api.putInputConfig(adapterId, payload);
       setInputConfig(saved);
-      setInputSourceDraft(saved.source_type);
-      setInputJsonDraft(saved.source_type === "json" ? formatJson(saved.json_value) : "null");
-      setRetentionDraft(saved.retention);
-      const remainingStaged = stagedArtifacts.filter(
-        (artifact) => !saved.artifacts.some((item) => item.id === artifact.id),
-      );
-      setManagedFilesDraft(mergeManagedFileDrafts(saved.artifacts, remainingStaged));
-      setStagedArtifacts(remainingStaged);
+      const savedIds = new Set(saved.artifacts.map((artifact) => artifact.id));
+      setStagedArtifacts((current) => current.filter((artifact) => !savedIds.has(artifact.id)));
+      if (inputEditEpoch.current === submittedEditEpoch) {
+        setInputSourceDraft(saved.source_type);
+        setInputJsonDraft(saved.source_type === "json" ? formatJson(saved.json_value) : "null");
+        setRetentionDraft(saved.retention);
+        setManagedFilesDraft((current) => mergeManagedFileDrafts(
+          saved.artifacts,
+          current.filter((artifact) => artifact.status === "STAGED" && !savedIds.has(artifact.id)),
+        ));
+      } else {
+        setManagedFilesDraft((current) => current.map((artifact) =>
+          saved.artifacts.find((item) => item.id === artifact.id) ?? artifact,
+        ));
+      }
       setInputValidationError(null);
     } catch (error) {
       // Keep both the last valid server resource and the user's draft intact.
@@ -691,15 +738,16 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       if (error instanceof ApiError && error.code === "adapter_runtime_locked") {
         // Re-read the Adapter lock without replacing the user's Input Object
         // draft. The server remains authoritative for the next save attempt.
-        void refreshAdapter().catch(() => undefined);
+        void requestRuntimeRefresh("conflict");
       }
     } finally {
+      mutation.finish();
       setSavingInput(false);
     }
   }
 
   async function saveRunConfig() {
-    if (readOnly || savingRuntime || props.adapter.runtime_locked) {
+    if (readOnly || savingRuntime || props.adapter.runtime_locked || props.runtimeSynchronizing === true) {
       return;
     }
     if (workerId === null) {
@@ -710,6 +758,10 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     if (timeoutSeconds === null) {
       return;
     }
+    const submittedRuntimeEpoch = runtimeEditEpoch.current;
+    const submittedScheduleEpoch = scheduleEditEpoch.current;
+    const mutation = beginRuntimeMutation();
+    if (mutation === null) return;
     setSavingRuntime(true);
     onError(null);
     try {
@@ -718,11 +770,18 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         run_mode: runMode,
         timeout_seconds: timeoutSeconds,
       });
-      onAdapterChange(refreshed);
-      setWorkerOverride(undefined);
-      setRunModeOverride(undefined);
-      setTimeoutOverride(null);
-      setTimeoutCustomMode(false);
+      if (!mutation.acceptAdapter(refreshed)) return;
+      setRuntimeBaseline({
+        workerId: refreshed.runtime_worker_id ?? null,
+        runMode: refreshed.run_mode,
+        timeoutSeconds: refreshed.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS,
+      });
+      if (runtimeEditEpoch.current === submittedRuntimeEpoch) {
+        setWorkerOverride(undefined);
+        setRunModeOverride(undefined);
+        setTimeoutOverride(null);
+        setTimeoutCustomMode(false);
+      }
       if (refreshed.run_mode === "schedule") {
         // 只在两种情况下整体 PUT Schedule：用户实际修改过定时字段，或确认
         // 从未配置过（GET 已返回 404）。加载中/加载失败时表单仍是默认值，
@@ -744,23 +803,28 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 }
               : {}),
           });
-          // 保存成功后的值立即落回表单，并作废任何在途的 Schedule GET。
-          scheduleLoadEpoch.current += 1;
+          if (!mutation.acceptSchedule(saved)) return;
           setSchedule(saved);
-          setCron(saved.cron);
-          setTimezone(saved.timezone);
-          setMisfirePolicy(saved.misfire_policy ?? DEFAULT_SCHEDULE_MISFIRE_POLICY);
-          setMaxCatchupCount(saved.max_catchup_count ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
-          setMaxCatchupAgeSeconds(saved.max_catchup_age_seconds ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
-          setScheduleTouched(false);
-          setSchedulePolicyTouched(false);
+          if (scheduleEditEpoch.current === submittedScheduleEpoch) {
+            setCron(saved.cron);
+            setTimezone(saved.timezone);
+            setMisfirePolicy(saved.misfire_policy ?? DEFAULT_SCHEDULE_MISFIRE_POLICY);
+            setMaxCatchupCount(saved.max_catchup_count ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
+            setMaxCatchupAgeSeconds(saved.max_catchup_age_seconds ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
+            setScheduleTouched(false);
+            setSchedulePolicyTouched(false);
+          }
         } else if (scheduleUnknown) {
           onError(t("task.settings.savedScheduleNotLoaded"));
         }
       }
     } catch (error) {
       onError(errorMessage(error));
+      if (error instanceof ApiError && error.code === "adapter_runtime_locked") {
+        void requestRuntimeRefresh("conflict");
+      }
     } finally {
+      mutation.finish();
       setSavingRuntime(false);
     }
   }
@@ -777,35 +841,51 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       onError(scheduleEnableBlockedReason);
       return;
     }
+    const submittedScheduleEpoch = scheduleEditEpoch.current;
+    const mutation = beginRuntimeMutation();
+    if (mutation === null) return;
     setSavingSchedule(true);
     onError(null);
     try {
       // InputConfig is the only input editor. Schedule PUT keeps the legacy
       // mirror server-owned by omitting its old input field entirely.
+      const savedConfig = !enabled && schedule !== null ? schedule : null;
       const saved = await api.putSchedule(adapterId, {
         enabled,
-        cron,
-        timezone,
-        ...(schedulePolicyTouched
+        cron: savedConfig?.cron ?? cron,
+        timezone: savedConfig?.timezone ?? timezone,
+        ...(!enabled && savedConfig !== null
+          ? {
+              misfire_policy: savedConfig.misfire_policy,
+              max_catchup_count: savedConfig.max_catchup_count,
+              max_catchup_age_seconds: savedConfig.max_catchup_age_seconds,
+            }
+          : schedulePolicyTouched
           ? {
               misfire_policy: misfirePolicy,
               max_catchup_count: maxCatchupCount,
               max_catchup_age_seconds: maxCatchupAgeSeconds,
             }
-          : {}),
+            : {}),
       });
+      if (!mutation.acceptSchedule(saved)) return;
       setSchedule(saved);
-      setCron(saved.cron);
-      setTimezone(saved.timezone);
-      setMisfirePolicy(saved.misfire_policy ?? DEFAULT_SCHEDULE_MISFIRE_POLICY);
-      setMaxCatchupCount(saved.max_catchup_count ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
-      setMaxCatchupAgeSeconds(saved.max_catchup_age_seconds ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
-      setScheduleTouched(false);
-      setSchedulePolicyTouched(false);
-      await refreshAdapter();
+      if (enabled && scheduleEditEpoch.current === submittedScheduleEpoch) {
+        setCron(saved.cron);
+        setTimezone(saved.timezone);
+        setMisfirePolicy(saved.misfire_policy ?? DEFAULT_SCHEDULE_MISFIRE_POLICY);
+        setMaxCatchupCount(saved.max_catchup_count ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
+        setMaxCatchupAgeSeconds(saved.max_catchup_age_seconds ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
+        setScheduleTouched(false);
+        setSchedulePolicyTouched(false);
+      }
     } catch (error) {
       onError(errorMessage(error));
+      if (error instanceof ApiError && error.code === "adapter_runtime_locked") {
+        void requestRuntimeRefresh("conflict");
+      }
     } finally {
+      mutation.finish();
       setSavingSchedule(false);
     }
   }
@@ -822,7 +902,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       // input override, including for schedule-mode run-now.
       const execution = await api.createExecution(adapterId);
       props.onExecutionStarted(execution);
-      await refreshAdapter();
+      void requestRuntimeRefresh("mutation");
     } catch (error) {
       onError(errorMessage(error));
     } finally {
@@ -850,7 +930,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       const execution = await api.cancelExecution(executionId);
       props.onExecutionStarted(execution);
       if (isTerminal(execution.status)) {
-        await refreshAdapter();
+        void requestRuntimeRefresh("mutation");
       }
     } catch (error) {
       onError(errorMessage(error));
@@ -863,15 +943,15 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   const activeExecution =
     props.adapter.running_execution_id != null ||
     (execution !== null && !isTerminal(execution.status));
-  const runtimeLocked = props.adapter.runtime_locked === true;
+  const runtimeLocked = props.adapter.runtime_locked === true || props.runtimeSynchronizing === true;
   const scheduleEnabled = schedule?.enabled === true;
-  const scheduleFieldsLocked = scheduleEnabled || runtimeLocked;
+  const scheduleFieldsLocked = runtimeLocked;
   const scheduleConfigMissing =
     runMode === "schedule" && schedule === null && !loadingSchedule && !scheduleLoadFailed;
   const runtimeConfigDirty =
-    runMode !== props.adapter.run_mode ||
-    workerId !== (props.adapter.runtime_worker_id ?? null) ||
-    effectiveTimeoutSeconds !== (props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS) ||
+    runMode !== runtimeBaseline.runMode ||
+    workerId !== runtimeBaseline.workerId ||
+    effectiveTimeoutSeconds !== runtimeBaseline.timeoutSeconds ||
     scheduleTouched ||
     schedulePolicyTouched;
 
@@ -982,7 +1062,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   })();
 
   const inputEditingLocked =
-    readOnly || runtimeLocked || scheduleEnabled || savingInput || loadingInput || inputLoadFailed || inputConfig === null;
+    readOnly || runtimeLocked || savingInput || loadingInput || inputLoadFailed || inputConfig === null;
   const sourceCards: {
     sourceType: InputSourceType;
     title: string;
@@ -1034,6 +1114,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     if (disabledReason !== null) {
       return;
     }
+    inputEditEpoch.current += 1;
     setInputSourceDraft(sourceType);
     if (sourceType === "managed_files") {
       setManagedFilesDraft((current) => mergeManagedFileDrafts(current, stagedArtifacts));
@@ -1107,7 +1188,10 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               placeholder={t("task.settings.workerPlaceholder")}
               loading={props.workersLoading}
               disabled={readOnly || runtimeLocked || savingRuntime || props.workersLoading}
-              onChange={(value: number) => setWorkerOverride(value)}
+              onChange={(value: number) => {
+                runtimeEditEpoch.current += 1;
+                setWorkerOverride(value);
+              }}
               options={compatibleWorkers.map((worker) => ({
                 value: worker.id,
                 label: t("worker.option", {
@@ -1129,10 +1213,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               disabled={readOnly || runtimeLocked || savingRuntime}
               onChange={(event) => {
                 const nextRunMode = event.target.value as TaskRunMode;
+                runtimeEditEpoch.current += 1;
                 setRunModeOverride(nextRunMode);
-                // 初始 manual 模式尚未读取 Schedule；切换时先进入加载态，
-                // 防止 effect 发起 GET 前保存默认值覆盖已有的停用配置。
-                setLoadingSchedule(nextRunMode === "schedule");
               }}
             >
               <Radio value="manual">{t("task.settings.manual")}</Radio>
@@ -1148,8 +1230,10 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               onChange={(event) => {
                 const value = event.target.value as number | "custom";
                 if (value === "custom") {
+                  runtimeEditEpoch.current += 1;
                   setTimeoutCustomMode(true);
                 } else {
+                  runtimeEditEpoch.current += 1;
                   setTimeoutOverride(value * 60);
                   setTimeoutCustomMode(false);
                 }
@@ -1171,7 +1255,10 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 value={effectiveTimeoutSeconds}
                 suffix={t("task.settings.seconds")}
                 disabled={readOnly || runtimeLocked || savingRuntime}
-                onChange={(value) => setTimeoutOverride(value ?? null)}
+                onChange={(value) => {
+                  runtimeEditEpoch.current += 1;
+                  setTimeoutOverride(value ?? null);
+                }}
               />
             )}
             <Typography.Text type="secondary" className="settings-field-hint">
@@ -1197,11 +1284,11 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             <Space direction="vertical" size="middle" className="schedule-form">
               <label className="settings-field">
                 <span className="settings-field-label">{t("task.settings.cron")}</span>
-                <Input data-testid="task-schedule-cron" value={cron} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { setCron(event.target.value); setScheduleTouched(true); }} />
+                <Input data-testid="task-schedule-cron" value={cron} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { scheduleEditEpoch.current += 1; setCron(event.target.value); setScheduleTouched(true); }} />
               </label>
               <label className="settings-field">
                 <span className="settings-field-label">{t("task.settings.timezone")}</span>
-                <Input data-testid="task-schedule-timezone" value={timezone} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { setTimezone(event.target.value); setScheduleTouched(true); }} />
+                <Input data-testid="task-schedule-timezone" value={timezone} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { scheduleEditEpoch.current += 1; setTimezone(event.target.value); setScheduleTouched(true); }} />
               </label>
               <label className="settings-field">
                 <span className="settings-field-label">{t("task.settings.misfirePolicy")}</span>
@@ -1210,6 +1297,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                   value={misfirePolicy}
                   disabled={readOnly || scheduleFieldsLocked}
                   onChange={(value: ScheduleMisfirePolicy) => {
+                    scheduleEditEpoch.current += 1;
                     setMisfirePolicy(value);
                     setScheduleTouched(true);
                     setSchedulePolicyTouched(true);
@@ -1253,6 +1341,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                     value={maxCatchupCount}
                     disabled={readOnly || scheduleFieldsLocked}
                     onChange={(value) => {
+                      scheduleEditEpoch.current += 1;
                       setMaxCatchupCount(value ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
                       setScheduleTouched(true);
                       setSchedulePolicyTouched(true);
@@ -1269,6 +1358,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                     value={maxCatchupAgeSeconds}
                     disabled={readOnly || scheduleFieldsLocked}
                     onChange={(value) => {
+                      scheduleEditEpoch.current += 1;
                       setMaxCatchupAgeSeconds(value ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
                       setScheduleTouched(true);
                       setSchedulePolicyTouched(true);
@@ -1284,7 +1374,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 <Space>
                   <Tag color={scheduleEnabled ? "green" : "default"}>{scheduleEnabled ? t("task.settings.scheduleRunning") : t("task.settings.disabled")}</Tag>
                   <span data-testid="task-schedule-next-run">{t("task.settings.nextRun", { time: formatTime(schedule?.next_run_at ?? null, locale) })}</span>
-                  <Button size="small" onClick={() => void loadSchedule()}>{t("actions.refresh", { ns: "common" })}</Button>
+                  <Button size="small" onClick={() => void requestRuntimeRefresh("explicit")}>{t("actions.refresh", { ns: "common" })}</Button>
                 </Space>
               </div>
               <div className="settings-field" data-testid="task-schedule-outcomes">
@@ -1383,6 +1473,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 disabled={inputEditingLocked}
                 placeholder={t("task.input.jsonPlaceholder")}
                 onChange={(event) => {
+                  inputEditEpoch.current += 1;
                   setInputJsonDraft(event.target.value);
                   setInputValidationError(null);
                 }}
@@ -1635,6 +1726,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                       },
                     ]}
                     onChange={(value: InputRetention["mode"]) => {
+                      inputEditEpoch.current += 1;
                       setRetentionDraft(value === "custom"
                         ? {
                             mode: "custom",
@@ -1655,7 +1747,10 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                       value={retentionDraft.seconds ?? undefined}
                       suffix={t("task.input.seconds")}
                       disabled={inputEditingLocked || !managedFilesEnabled}
-                      onChange={(value) => setRetentionDraft({ mode: "custom", seconds: value ?? null })}
+                      onChange={(value) => {
+                        inputEditEpoch.current += 1;
+                        setRetentionDraft({ mode: "custom", seconds: value ?? null });
+                      }}
                     />
                   )}
                 </Space>

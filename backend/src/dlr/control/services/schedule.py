@@ -79,6 +79,64 @@ logger = logging.getLogger("dlr.control.schedule")
 CRON_FIELD_COUNT = 5
 
 
+def _json_values_equal(left: object, right: object) -> bool:
+    """Compare JSON values without collapsing booleans into numbers.
+
+    JSON object member order is insignificant, and all Python int/float values
+    belong to the same JSON number type. Booleans need an explicit branch
+    because ``bool`` subclasses ``int`` in Python. The explicit worklist keeps
+    valid deeply nested input independent from Python's recursion limit.
+    """
+    pending: list[tuple[object, object]] = [(left, right)]
+    while pending:
+        current_left, current_right = pending.pop()
+        if isinstance(current_left, bool) or isinstance(current_right, bool):
+            if not (
+                isinstance(current_left, bool)
+                and isinstance(current_right, bool)
+                and current_left is current_right
+            ):
+                return False
+            continue
+        if current_left is None or current_right is None:
+            if not (current_left is None and current_right is None):
+                return False
+            continue
+        if isinstance(current_left, (int, float)) and isinstance(current_right, (int, float)):
+            if current_left != current_right:
+                return False
+            continue
+        if isinstance(current_left, str) or isinstance(current_right, str):
+            if not (
+                isinstance(current_left, str)
+                and isinstance(current_right, str)
+                and current_left == current_right
+            ):
+                return False
+            continue
+        if isinstance(current_left, list) or isinstance(current_right, list):
+            if not (
+                isinstance(current_left, list)
+                and isinstance(current_right, list)
+                and len(current_left) == len(current_right)
+            ):
+                return False
+            pending.extend(zip(current_left, current_right, strict=True))
+            continue
+        if isinstance(current_left, dict) or isinstance(current_right, dict):
+            if not (
+                isinstance(current_left, dict)
+                and isinstance(current_right, dict)
+                and current_left.keys() == current_right.keys()
+            ):
+                return False
+            pending.extend((current_left[key], current_right[key]) for key in current_left)
+            continue
+        if type(current_left) is not type(current_right) or current_left != current_right:
+            return False
+    return True
+
+
 class ScheduleTickResult(enum.Enum):
     """Outcome of processing one due Schedule row inside its transaction."""
 
@@ -492,7 +550,7 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
         )
     legacy_input_present = "input" in data.model_fields_set
     legacy_input_changed = legacy_input_present and (
-        config.source_type != "json" or config.json_value != data.input
+        config.source_type != "json" or not _json_values_equal(config.json_value, data.input)
     )
     effective_misfire_policy: str
     if schedule is None:

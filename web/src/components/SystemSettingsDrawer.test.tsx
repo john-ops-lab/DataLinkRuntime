@@ -6,7 +6,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import { applySystemLocale } from "../i18n";
 import type {
   Credential,
@@ -325,6 +325,84 @@ it("切换依赖源类型时清除不兼容的凭据选择", async () => {
     is_default: false,
     credential_id: null,
   });
+});
+
+it.each([
+  ["zh-CN" as const, "请输入有效的依赖源地址；当前输入已保留，可直接修正。"],
+  ["en" as const, "Enter a valid package source URL. Your input has been kept for correction."],
+])("依赖源地址错误在字段显示并保留原始输入：%s", async (locale, expectedError) => {
+  await applySystemLocale(locale);
+  try {
+    vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+    vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+    vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+    const created = packageSource({
+      name: "preserved-source",
+      index_url: "https://packages.example.invalid/simple/",
+    });
+    const create = vi
+      .spyOn(api, "createPackageSource")
+      .mockRejectedValueOnce(
+        new ApiError(
+          422,
+          "package_source_url_invalid",
+          "Package source index URL is invalid",
+          { field: "index_url", reason: "whitespace_or_control" },
+        ),
+      )
+      .mockResolvedValueOnce(created);
+
+    render(
+      <SystemSettingsDrawer
+        open
+        category="package-sources"
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByTestId("package-sources-panel");
+    fireEvent.click(screen.getByTestId("new-package-source"));
+    fireEvent.change(screen.getByTestId("package-source-name"), {
+      target: { value: "preserved-source" },
+    });
+    const urlInput = screen.getByTestId("package-source-url") as HTMLInputElement;
+    const invalidUrl = " https://packages.example.invalid/simple/?token=keep#section";
+    fireEvent.change(urlInput, { target: { value: invalidUrl } });
+    fireEvent.click(screen.getByTestId("submit-package-source"));
+
+    const fieldError = await screen.findByText(expectedError);
+    expect(urlInput.value).toBe(invalidUrl);
+    expect(create).toHaveBeenNthCalledWith(1, {
+      name: "preserved-source",
+      kind: "pypi",
+      index_url: invalidUrl,
+      is_default: false,
+      credential_id: null,
+    });
+    const describedBy = urlInput.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(
+      describedBy
+        ?.split(" ")
+        .map((id) => document.getElementById(id))
+        .some((element) => element?.contains(fieldError)),
+    ).toBe(true);
+
+    fireEvent.change(urlInput, {
+      target: { value: "https://packages.example.invalid/simple/" },
+    });
+    await waitFor(() => expect(screen.queryByText(expectedError)).toBeNull());
+    fireEvent.click(screen.getByTestId("submit-package-source"));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    expect(create).toHaveBeenNthCalledWith(2, {
+      name: "preserved-source",
+      kind: "pypi",
+      index_url: "https://packages.example.invalid/simple/",
+      is_default: false,
+      credential_id: null,
+    });
+  } finally {
+    await applySystemLocale("zh-CN");
+  }
 });
 
 it("订阅在组件卸载后自动取消，不会影响其他面板", async () => {

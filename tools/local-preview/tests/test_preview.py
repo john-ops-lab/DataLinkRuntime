@@ -1,8 +1,16 @@
 import sys
+import base64
 import tempfile
 import unittest
 import json
 import os
+import hashlib
+import copy
+import http.server
+import shutil
+import socketserver
+import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -208,6 +216,889 @@ class ControllerTests(unittest.TestCase):
         )
         self.assertIsNone(preview.read("attention.json"))
 
+    def test_reconcile_cli_is_unique_and_rejects_general_options(self):
+        request = Path(self.temp.name) / "request.json"
+        approval = Path(self.temp.name) / "approval.json"
+        request.write_text("{}")
+        approval.write_text("{}")
+        base = [
+            "preview.py",
+            "reconcile-group2-starting",
+            "--incident-request",
+            str(request),
+            "--incident-approval",
+            str(approval),
+        ]
+        with (
+            patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+            patch.object(sys, "argv", base),
+            patch.object(
+                preview,
+                "reconcile_group2_starting",
+                return_value={"incident_id": "1" * 32, "receipt_digest": "2" * 64},
+            ) as reconcile,
+            patch("builtins.print"),
+        ):
+            preview.main()
+        reconcile.assert_called_once_with(request, approval)
+        for extra in (["7"], ["--to-sha", B], ["--mode", carry_forward.GROUP2_MODE]):
+            with (
+                self.subTest(extra=extra),
+                patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+                patch.object(sys, "argv", [*base, *extra]),
+                patch.object(preview, "reconcile_group2_starting") as reconcile,
+                self.assertRaises(SystemExit),
+            ):
+                preview.main()
+            reconcile.assert_not_called()
+
+    def test_partial_finalize_cli_is_unique_and_rejects_general_options(self):
+        request = Path(self.temp.name) / "finalize-request.json"
+        approval = Path(self.temp.name) / "USER-APPROVAL.json"
+        request.write_text("{}")
+        approval.write_text("{}")
+        base = [
+            "preview.py", "finalize-group2-partial",
+            "--finalize-request", str(request),
+            "--finalize-approval", str(approval),
+        ]
+        with (
+            patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+            patch.object(sys, "argv", base),
+            patch.object(
+                preview, "finalize_group2_partial",
+                return_value={"incident_id": "1" * 32, "finalize_id": "2" * 32},
+            ) as finalize,
+            patch("builtins.print"),
+        ):
+            preview.main()
+        finalize.assert_called_once_with(request, approval)
+        for extra in (["7"], ["--to-sha", B], ["--incident-request", request]):
+            with (
+                self.subTest(extra=extra),
+                patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+                patch.object(sys, "argv", [*base, *map(str, extra)]),
+                patch.object(preview, "finalize_group2_partial") as finalize,
+                self.assertRaises(SystemExit),
+            ):
+                preview.main()
+            finalize.assert_not_called()
+
+    def test_post_finalize_reboot_cli_is_unique_and_rejects_general_options(self):
+        request = Path(self.temp.name) / "reboot-request.json"
+        approval = Path(self.temp.name) / "USER-APPROVAL.json"
+        request.write_text("{}")
+        approval.write_text("{}")
+        base = [
+            "preview.py", "recover-group2-post-finalize-reboot",
+            "--reboot-request", str(request),
+            "--reboot-approval", str(approval),
+        ]
+        with (
+            patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+            patch.object(sys, "argv", base),
+            patch.object(
+                preview, "recover_group2_post_finalize_reboot",
+                return_value={"incident_id": "1" * 32, "boot_id": "2" * 36},
+            ) as recover,
+            patch("builtins.print"),
+        ):
+            preview.main()
+        recover.assert_called_once_with(request, approval)
+        for extra in (["7"], ["--to-sha", B], ["--finalize-request", request]):
+            with (
+                self.subTest(extra=extra),
+                patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+                patch.object(sys, "argv", [*base, *map(str, extra)]),
+                patch.object(preview, "recover_group2_post_finalize_reboot") as recover,
+                self.assertRaises(SystemExit),
+            ):
+                preview.main()
+            recover.assert_not_called()
+
+    def test_partial_finalize_review_recomputes_git_content_hash(self):
+        source = Path(self.temp.name) / "tools" / "local-preview"
+        source.mkdir(parents=True)
+        content = b"reviewed content\n"
+        coverage = {
+            "path": "tools/local-preview/carry_forward.py",
+            "mode": "100644",
+            "blob_oid": "a" * 40,
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+        record = {
+            "schema": "group2-independent-review-v1",
+            "coverage": [coverage],
+        }
+        raw = b"```json\n" + json.dumps(record).encode() + b"\n```\n"
+        validated = {
+            "artifacts": {
+                "source-review.json": {
+                    "tool_review": {
+                        "content_b64": base64.b64encode(raw).decode()
+                    }
+                }
+            }
+        }
+
+        def checked(arguments, **_kwargs):
+            if "ls-tree" in arguments:
+                return (
+                    f"100644 blob {'a' * 40}\t"
+                    "tools/local-preview/carry_forward.py\n"
+                )
+            return content
+
+        with patch.object(preview.subprocess, "check_output", side_effect=checked):
+            preview._validate_partial_review_source(source, "d" * 40, validated)
+        changed = copy.deepcopy(validated)
+        changed_record = copy.deepcopy(record)
+        changed_record["coverage"][0]["sha256"] = "0" * 64
+        changed_raw = (
+            b"```json\n" + json.dumps(changed_record).encode() + b"\n```\n"
+        )
+        changed["artifacts"]["source-review.json"]["tool_review"][
+            "content_b64"
+        ] = base64.b64encode(changed_raw).decode()
+        with (
+            patch.object(preview.subprocess, "check_output", side_effect=checked),
+            self.assertRaisesRegex(ValueError, "independent review changed"),
+        ):
+            preview._validate_partial_review_source(source, "d" * 40, changed)
+
+    def test_partial_finalize_scope_binds_sha_and_all_controller_files(self):
+        files = {name: str(index) * 64 for index, name in enumerate(
+            sorted(carry_forward.GROUP2_CONTROLLER_FILES), 1
+        )}
+        snapshot = {"lineage": []}
+        scope = {
+            "final_source": {"to_sha": "d" * 40},
+            "controller_files": {"files": files},
+            "preservation_reference": {"snapshot": snapshot},
+        }
+        chain = {"request": {"tool": {
+            "sha": "d" * 40, "controller_files": copy.deepcopy(files)
+        }}}
+        self.assertTrue(
+            preview._partial_finalize_scope_binding(chain, scope, snapshot)
+        )
+        changed = copy.deepcopy(chain)
+        changed["request"]["tool"]["controller_files"]["preview.py"] = "0" * 64
+        self.assertFalse(
+            preview._partial_finalize_scope_binding(changed, scope, snapshot)
+        )
+
+    def test_post_finalize_reboot_scope_binds_new_tool_and_successor_window(self):
+        files = {name: str(index) * 64 for index, name in enumerate(
+            sorted(carry_forward.GROUP2_CONTROLLER_FILES), 1
+        )}
+        snapshot = {"selection": {}, "db": {}, "files": {}, "lineage": []}
+        scope = {
+            "final_source": {"to_sha": "d" * 40},
+            "controller_files": {"files": files},
+            "preservation_reference": {"snapshot": snapshot},
+        }
+        chain = {
+            "request": {
+                "tool": {
+                    "sha": "d" * 40,
+                    "controller_files": copy.deepcopy(files),
+                },
+                "window": {"successor_deadline_ns": 123},
+            },
+            "source_artifacts": {"parent-finalize.json": {
+                "content_b64": "parent tool remains nested and independent"
+            }},
+        }
+        self.assertTrue(
+            preview._post_finalize_reboot_scope_binding(chain, scope, snapshot, 123)
+        )
+        changed = copy.deepcopy(chain)
+        changed["request"]["tool"]["sha"] = "e" * 40
+        self.assertFalse(
+            preview._post_finalize_reboot_scope_binding(changed, scope, snapshot, 123)
+        )
+        self.assertFalse(
+            preview._post_finalize_reboot_scope_binding(chain, scope, snapshot, 124)
+        )
+
+    def test_post_finalize_reboot_authority_rechecks_bytes_and_metadata(self):
+        host_names = set(carry_forward.GROUP2_CONTROLLER_FILES) | {"config.json"}
+        host_descriptors = {}
+        for name in host_names:
+            path = Path(self.temp.name) / name
+            path.write_bytes((name + "\n").encode())
+            path.chmod(0o600)
+            host_descriptors[name] = preview._post_finalize_reboot_file_evidence(path)
+        vm_names = set(carry_forward.GROUP2_POST_FINALIZE_REBOOT_VM_INSTALLED) | {
+            "current-sha"
+        }
+        vm_raw = {name: ("vm-" + name + "\n").encode() for name in vm_names}
+        vm_descriptors = {
+            name: {
+                "exists": True, "kind": "regular",
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "mode": 0o600, "uid": 1000, "gid": 1000, "symlink": False,
+            }
+            for name, raw in vm_raw.items()
+        }
+
+        def command(*arguments, check=True):
+            name = Path(arguments[-1]).name
+            if arguments[:2] in (("test", "-e"), ("test", "-f")):
+                return SimpleNamespace(returncode=0, stdout="")
+            if arguments[:2] == ("test", "-L"):
+                return SimpleNamespace(returncode=1, stdout="")
+            if arguments[:3] == ("stat", "-c", "%a %u %g"):
+                return SimpleNamespace(returncode=0, stdout="600 1000 1000\n")
+            if arguments[0] == "sha256sum":
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=hashlib.sha256(vm_raw[name]).hexdigest() + "  file\n",
+                )
+            raise AssertionError(arguments)
+
+        prior = {
+            "host_files": {"config.json": host_descriptors["config.json"]},
+            "vm_files": {"current-sha": vm_descriptors["current-sha"]},
+            "installed": {
+                "host": {
+                    name: host_descriptors[name]
+                    for name in carry_forward.GROUP2_CONTROLLER_FILES
+                },
+                "vm": {
+                    name: vm_descriptors[name]
+                    for name in carry_forward.GROUP2_POST_FINALIZE_REBOOT_VM_INSTALLED
+                },
+            },
+        }
+        with (
+            patch.object(preview, "vm_path", side_effect=lambda value: "/vm/" + value),
+            patch.object(preview, "vm_command", side_effect=command),
+        ):
+            actual = preview._post_finalize_reboot_authority(
+                prior, {"host": ["config.json"], "vm": ["current-sha"]}
+            )
+            self.assertEqual(actual["host_files"], prior["host_files"])
+            changed = copy.deepcopy(prior)
+            changed["host_files"]["config.json"]["mode"] = 0o644
+            with self.assertRaisesRegex(ValueError, "host authority changed"):
+                preview._post_finalize_reboot_authority(
+                    changed, {"host": ["config.json"], "vm": ["current-sha"]}
+                )
+
+    def test_partial_finalize_deploy_entry_returns_before_normal_actions(self):
+        root = Path(self.temp.name) / "vm-root"
+        incident_id = "1" * 32
+        finalize_id = "2" * 32
+        tool = root / "incidents" / incident_id / "finalize" / finalize_id / "tool"
+        tool.mkdir(parents=True)
+        deploy = tool / "deploy.sh"
+        deploy.write_bytes(
+            (Path(preview.__file__).parent / "deploy.sh").read_bytes()
+        )
+        deploy.chmod(0o755)
+        helper = tool / "carry_forward.py"
+        helper.write_text(
+            "import json, pathlib, sys\n"
+            "root=pathlib.Path(sys.argv[sys.argv.index('--root')+1])\n"
+            "(root/'finalize-args.json').write_text(json.dumps(sys.argv[1:]))\n"
+        )
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        (fake_bin / "flock").write_text("#!/bin/sh\nexit 0\n")
+        (fake_bin / "flock").chmod(0o755)
+        result = subprocess.run(
+            [str(deploy), "finalize-group2-partial", str(root), incident_id,
+             finalize_id],
+            env={**os.environ, "PATH": str(fake_bin) + ":" + os.environ["PATH"]},
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads((root / "finalize-args.json").read_text()),
+            ["finalize-partial-vm", "--root", str(root), "--incident-id",
+             incident_id, "--finalize-id", finalize_id],
+        )
+        self.assertFalse((root / "backups").exists())
+        self.assertFalse((root / "transaction.json").exists())
+
+    def test_post_finalize_reboot_deploy_entry_is_closed_and_executes_vm_mode(self):
+        root = (Path(self.temp.name) / "vm-root").resolve()
+        incident_id = "1" * 32
+        finalize_id = "2" * 32
+        boot_id = "12345678-1234-1234-1234-123456789abc"
+        base = root / "incidents" / incident_id / "finalize" / finalize_id / "reboot" / boot_id
+        tool = base / "tool"
+        tool.mkdir(parents=True)
+        deploy = tool / "deploy.sh"
+        deploy.write_bytes((Path(preview.__file__).parent / "deploy.sh").read_bytes())
+        deploy.chmod(0o755)
+        helper = tool / "carry_forward.py"
+        helper.write_text(
+            "import json, pathlib, sys\n"
+            "root=pathlib.Path(sys.argv[sys.argv.index('--root')+1])\n"
+            "(root/'reboot-args.json').write_text(json.dumps(sys.argv[1:]))\n"
+        )
+        (base / "request.json").write_text(json.dumps({"tool": {"controller_files": {
+            "deploy.sh": hashlib.sha256(deploy.read_bytes()).hexdigest(),
+            "carry_forward.py": hashlib.sha256(helper.read_bytes()).hexdigest(),
+        }}}))
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        (fake_bin / "flock").write_text("#!/bin/sh\nexit 0\n")
+        (fake_bin / "flock").chmod(0o755)
+        arguments = [
+            str(deploy), "recover-group2-post-finalize-reboot", str(root),
+            incident_id, finalize_id, boot_id,
+        ]
+        result = subprocess.run(
+            arguments,
+            env={**os.environ, "PATH": str(fake_bin) + ":" + os.environ["PATH"]},
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads((root / "reboot-args.json").read_text()),
+            ["post-finalize-reboot-vm", "--root", str(root), "--incident-id",
+             incident_id, "--finalize-id", finalize_id, "--boot-id", boot_id],
+        )
+        extra = subprocess.run(
+            [*arguments, "unexpected"], capture_output=True, text=True,
+            timeout=10, check=False,
+        )
+        self.assertEqual(extra.returncode, 2)
+        self.assertFalse((root / "backups").exists())
+        self.assertFalse((root / "transaction.json").exists())
+
+    def test_post_finalize_reboot_host_round_trip_is_append_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve() / "host"
+            vm_root = Path(temporary).resolve() / "vm"
+            inputs = Path(temporary).resolve() / "inputs"
+            source = Path(temporary).resolve() / "source" / "tools" / "local-preview"
+            for directory in (root, vm_root, inputs, source):
+                directory.mkdir(parents=True, mode=0o700)
+            incident_id = "1" * 32
+            finalize_id = "2" * 32
+            boot_id = "12345678-1234-1234-1234-123456789abc"
+            prefix = f"incidents/{incident_id}/finalize/{finalize_id}/reboot/{boot_id}"
+            for base_root in (root, vm_root):
+                (base_root / Path(prefix).parent.parent).mkdir(
+                    parents=True, mode=0o700
+                )
+            controller = {}
+            for name in carry_forward.GROUP2_CONTROLLER_FILES:
+                raw = ("source-" + name).encode()
+                (source / name).write_bytes(raw)
+                controller[name] = hashlib.sha256(raw).hexdigest()
+            before = {name: (name + " frozen\n").encode() for name in (
+                "state.json", "config.json", "transaction.json", "current-sha"
+            )}
+            for name in ("state.json", "config.json"):
+                (root / name).write_bytes(before[name])
+            for name in ("transaction.json", "current-sha"):
+                (vm_root / name).write_bytes(before[name])
+            now = preview.time.time_ns()
+            request = {
+                "incident_id": incident_id,
+                "finalize_id": finalize_id,
+                "boot_id": boot_id,
+                "request_digest": "a" * 64,
+                "tool": {
+                    "sha": "d" * 40, "tree": "e" * 40,
+                    "controller_files": controller,
+                    "source_scope_digest": "1" * 64,
+                    "review_report_sha256": "2" * 64,
+                    "ci_evidence_sha256": "3" * 64,
+                },
+                "window": {
+                    "not_before_ns": now - 1_000_000_000,
+                    "deadline_ns": now + 30_000_000_000,
+                    "successor_deadline_ns": now + 60_000_000_000,
+                },
+                "prior": {},
+            }
+            approval = {"schema": "group2-post-finalize-reboot-approval-v1"}
+            request_path = inputs / "reboot.json"
+            approval_path = inputs / "USER-APPROVAL.json"
+            record_path = inputs / "USER-APPROVAL.txt"
+            request_path.write_text(json.dumps(request))
+            approval_path.write_text(json.dumps(approval))
+            record_path.write_text("approved")
+            evidence_dir = inputs / "reboot.evidence"
+            evidence_dir.mkdir(mode=0o700)
+            for name in carry_forward.GROUP2_POST_FINALIZE_REBOOT_FILES:
+                value = (
+                    {"source": {"source_scope": {}}, "ci": {}}
+                    if name == "source-review.json" else {}
+                )
+                path = evidence_dir / name
+                path.write_text(json.dumps(value))
+                path.chmod(0o600)
+            for path in (request_path, approval_path, record_path):
+                path.chmod(0o600)
+            validated = {
+                "request": request, "approval": approval,
+                "authority_paths": {"host": [], "vm": []},
+            }
+            evidence = {"verified": {"files": {}}}
+            receipt = {
+                "receipt_digest": "9" * 64,
+                "stage_digests": {
+                    name: str(index) * 64
+                    for index, name in enumerate(
+                        carry_forward.GROUP2_POST_FINALIZE_REBOOT_PHASES[:-1], 1
+                    )
+                },
+            }
+            result = {
+                "schema": "group2-post-finalize-reboot-result-v1",
+                "evidence": evidence, "receipt": receipt,
+            }
+            chain = {
+                "request": request, "approval": approval, "result": result,
+            }
+            snapshot = {"selection": {}, "db": {}, "files": {}, "lineage": []}
+            commands = []
+            fault = {"name": None}
+            real_write_private_bytes = preview.write_private_bytes
+
+            def mapped(value):
+                return vm_root / Path(value).relative_to("/vm")
+
+            def vm_write(relative, raw):
+                path = vm_root / relative
+                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                path.write_bytes(raw)
+
+            def command(*arguments, check=True):
+                commands.append(tuple(arguments))
+                if arguments == ("cat", "/proc/sys/kernel/random/boot_id"):
+                    return SimpleNamespace(returncode=0, stdout=boot_id + "\n")
+                if arguments[:3] == ("test", "!", "-e"):
+                    return SimpleNamespace(returncode=int(mapped(arguments[3]).exists()), stdout="")
+                if arguments[:2] == ("test", "-L"):
+                    return SimpleNamespace(returncode=1, stdout="")
+                if arguments[:2] == ("test", "-f"):
+                    path = mapped(arguments[2])
+                    return SimpleNamespace(returncode=0 if path.is_file() else 1, stdout="")
+                if arguments[0] in {"install", "mkdir"}:
+                    target = mapped(arguments[-1])
+                    target.mkdir(parents=True, exist_ok=arguments[0] == "install", mode=0o700)
+                    return SimpleNamespace(returncode=0, stdout="")
+                if arguments[0] == "sha256sum":
+                    raw = mapped(arguments[1]).read_bytes()
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=hashlib.sha256(raw).hexdigest() + "  f\n",
+                    )
+                if arguments[0] == "cat":
+                    path = mapped(arguments[1])
+                    return SimpleNamespace(returncode=0, stdout=path.read_text())
+                raise AssertionError(arguments)
+
+            class Process:
+                def __init__(self, arguments, **_kwargs):
+                    commands.append(tuple(arguments))
+                    directory = vm_root / prefix
+                    if fault["name"] == "vm_exit":
+                        (directory / "phase.json").write_text(json.dumps({
+                            "schema": "group2-post-finalize-reboot-phase-v1",
+                            "incident_id": incident_id,
+                            "finalize_id": finalize_id,
+                            "boot_id": boot_id,
+                            "phase": "failed",
+                            "completed_stages": ["stopped"],
+                            "pending_action": "failure.json",
+                            "evidence_digests": {"stopped": "1" * 64},
+                        }))
+                        (directory / "failure.json").write_text(
+                            json.dumps({"code": "injected_vm_failure"})
+                        )
+                        return
+                    result_raw = (
+                        "{invalid result"
+                        if fault["name"] == "readback_parse"
+                        else json.dumps(result)
+                    )
+                    (directory / "result.json").write_text(result_raw)
+                    receipt_raw = (
+                        {**receipt, "receipt_digest": "8" * 64}
+                        if fault["name"] == "receipt_mismatch"
+                        else receipt
+                    )
+                    (directory / "receipt.json").write_text(json.dumps(receipt_raw))
+                    (directory / "chain.json").write_text(json.dumps(chain))
+                    (directory / "preservation-snapshot.json").write_text(json.dumps(snapshot))
+
+                def poll(self):
+                    return 2 if fault["name"] == "vm_exit" else None
+
+                def wait(self, timeout=None):
+                    directory = vm_root / prefix
+                    (directory / "phase.json").write_text(json.dumps({
+                        "schema": "group2-post-finalize-reboot-phase-v1",
+                        "incident_id": incident_id, "finalize_id": finalize_id,
+                        "boot_id": boot_id, "phase": "host_verified",
+                        "completed_stages": list(carry_forward.GROUP2_POST_FINALIZE_REBOOT_PHASES),
+                        "pending_action": None,
+                        "evidence_digests": receipt["stage_digests"],
+                    }))
+                    return 0
+
+            def validate_result(*_arguments):
+                if fault["name"] == "result_validation":
+                    raise carry_forward.CarryForwardError("injected_result_failure")
+                return receipt
+
+            def host_write(path, raw):
+                if (
+                    fault["name"] == "final_host_write"
+                    and path == root / prefix / "preservation-snapshot.json"
+                ):
+                    raise OSError("injected final host write failure")
+                return real_write_private_bytes(path, raw)
+
+            with (
+                patch.object(preview, "ROOT", root),
+                patch.object(
+                    preview, "settings",
+                    return_value={"vm_root": "/vm", "profile": "test"},
+                ),
+                patch.object(preview, "vm_path", side_effect=lambda value: "/vm/" + value),
+                patch.object(preview, "vm_private_write", side_effect=vm_write),
+                patch.object(preview, "vm_command", side_effect=command),
+                patch.object(preview, "write_private_bytes", side_effect=host_write),
+                patch.object(
+                    preview, "operation_lock",
+                    return_value=preview.contextlib.nullcontext(),
+                ),
+                patch.object(
+                    preview, "config_lock",
+                    return_value=preview.contextlib.nullcontext(),
+                ),
+                patch.object(
+                    preview, "_incident_tool_files",
+                    return_value=(source, "d" * 40, controller),
+                ),
+                patch.object(preview, "_validate_incident_worktree_source"),
+                patch.object(preview, "_validate_partial_review_source"),
+                patch.object(
+                    preview, "_post_finalize_reboot_authority",
+                    return_value={"frozen": True},
+                ),
+                patch.object(preview.subprocess, "check_output", return_value="e" * 40 + "\n"),
+                patch.object(preview.subprocess, "Popen", Process),
+                patch.object(
+                    carry_forward,
+                    "validate_group2_post_finalize_reboot_request",
+                    return_value=validated,
+                ),
+                patch.object(carry_forward, "_validate_group2_partial_tool"),
+                patch.object(
+                    carry_forward,
+                    "validate_group2_post_finalize_reboot_result",
+                    side_effect=validate_result,
+                ),
+                patch.object(
+                    carry_forward,
+                    "validate_group2_post_finalize_reboot_preservation",
+                    return_value=snapshot,
+                ),
+            ):
+                for fault_name, message, raw_names in (
+                    (
+                        "vm_exit",
+                        "VM orchestration failed",
+                        {"phase.raw", "failure.raw"},
+                    ),
+                    (
+                        "readback_parse",
+                        "VM result is invalid",
+                        {
+                            "phase.raw", "result.raw", "receipt.raw", "chain.raw",
+                            "preservation-snapshot.raw",
+                        },
+                    ),
+                    (
+                        "receipt_mismatch",
+                        "VM receipt changed",
+                        {
+                            "phase.raw", "result.raw", "receipt.raw", "chain.raw",
+                            "preservation-snapshot.raw",
+                        },
+                    ),
+                    (
+                        "result_validation",
+                        "injected_result_failure",
+                        {
+                            "phase.raw", "result.raw", "receipt.raw", "chain.raw",
+                            "preservation-snapshot.raw",
+                        },
+                    ),
+                    (
+                        "final_host_write",
+                        "final host write failure",
+                        {
+                            "phase.raw", "result.raw", "receipt.raw", "chain.raw",
+                            "preservation-snapshot.raw",
+                        },
+                    ),
+                ):
+                    fault["name"] = fault_name
+                    with self.assertRaisesRegex(Exception, message):
+                        preview.recover_group2_post_finalize_reboot(
+                            request_path, approval_path
+                        )
+                    failed_host = root / prefix
+                    failure = json.loads(
+                        (failed_host / "host-failure.json").read_text()
+                    )
+                    failure_raw = (failed_host / "host-failure.json").read_bytes()
+                    self.assertEqual(failure["status"], "failed")
+                    self.assertEqual(
+                        set(failure["vm_raw_digests"]), raw_names
+                    )
+                    self.assertEqual(
+                        json.loads((failed_host / "phase.json").read_text())[
+                            "phase"
+                        ],
+                        "failed",
+                    )
+                    if fault_name == "readback_parse":
+                        self.assertEqual(
+                            (failed_host / "vm-readback/result.raw").read_bytes(),
+                            b"{invalid result",
+                        )
+                    with self.assertRaisesRegex(ValueError, "already used"):
+                        preview.recover_group2_post_finalize_reboot(
+                            request_path, approval_path
+                        )
+                    self.assertEqual(
+                        (failed_host / "host-failure.json").read_bytes(),
+                        failure_raw,
+                    )
+                    shutil.rmtree(root / Path(prefix).parent)
+                    shutil.rmtree(vm_root / Path(prefix).parent)
+                fault["name"] = None
+                output = preview.recover_group2_post_finalize_reboot(
+                    request_path, approval_path
+                )
+                with self.assertRaisesRegex(ValueError, "already used"):
+                    preview.recover_group2_post_finalize_reboot(
+                        request_path, approval_path
+                    )
+            self.assertEqual(output["receipt_digest"], receipt["receipt_digest"])
+            host_result = root / prefix
+            self.assertFalse((host_result / "host-failure.json").exists())
+            self.assertEqual(
+                {path.name for path in (host_result / "vm-readback").iterdir()},
+                {
+                    "result.raw", "receipt.raw", "chain.raw",
+                    "preservation-snapshot.raw", "phase.raw",
+                },
+            )
+            self.assertTrue((host_result / "host-readback.json").is_file())
+            self.assertEqual(
+                json.loads((host_result / "phase.json").read_text())["phase"],
+                "host_verified",
+            )
+            self.assertEqual((root / "state.json").read_bytes(), before["state.json"])
+            self.assertEqual((root / "config.json").read_bytes(), before["config.json"])
+            self.assertEqual(
+                (vm_root / "transaction.json").read_bytes(),
+                before["transaction.json"],
+            )
+            self.assertEqual((vm_root / "current-sha").read_bytes(), before["current-sha"])
+            flattened = " ".join(" ".join(item) for item in commands)
+            for forbidden in (" compose ", " up ", " restart ", "pg_restore", "alembic"):
+                self.assertNotIn(forbidden, " " + flattened + " ")
+
+    def test_partial_finalize_host_orchestration_commits_only_after_vm_cas(self):
+        def run_case(valid_transaction):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "host"
+                vm_root = Path(temporary) / "vm"
+                request_dir = Path(temporary) / "request"
+                for directory in (root, vm_root, request_dir):
+                    directory.mkdir(mode=0o700)
+                incident_id = carry_forward.GROUP2_PARTIAL_INCIDENT_ID
+                finalize_id = "f" * 32
+                controller = {}
+                for name in carry_forward.GROUP2_CONTROLLER_FILES:
+                    raw = (name + "\n").encode()
+                    (root / name).write_bytes(raw)
+                    controller[name] = hashlib.sha256(raw).hexdigest()
+                vm_installed = {}
+                for name in ("deploy.sh", "carry_forward.py", "verify.py", "assets.py"):
+                    raw = ("vm-" + name + "\n").encode()
+                    (vm_root / name).write_bytes(raw)
+                    vm_installed[name] = hashlib.sha256(raw).hexdigest()
+                state = {"backup": "/old/backup", "carry_forward": {"manifest_id": "a" * 32}}
+                attention = {"phase": "restoring-apps"}
+                config = {
+                    "enabled": False, "repo": "owner/repo", "pr": 161,
+                    "carry_forward": {"manifest_id": "a" * 32},
+                }
+                for name, value in (("config.json", config), ("state.json", state),
+                                    ("attention.json", attention)):
+                    (root / name).write_text(json.dumps(value))
+                manifest_raw = b"failed manifest bytes\n"
+                active = root / "carry-forward" / "manifests" / ("a" * 32 + ".json")
+                active.parent.mkdir(parents=True)
+                active.write_bytes(manifest_raw)
+                request = {
+                    "incident_id": incident_id, "finalize_id": finalize_id,
+                    "request_digest": "b" * 64,
+                    "tool": {"sha": "d" * 40, "controller_files": controller},
+                }
+                approval = {"status": "USER_APPROVED"}
+                request_path = request_dir / "finalize.json"
+                approval_path = request_dir / "USER-APPROVAL.json"
+                record_path = request_dir / "USER-APPROVAL.txt"
+                request_path.write_text(json.dumps(request))
+                approval_path.write_text(json.dumps(approval))
+                record_path.write_text("{}")
+                evidence_dir = request_dir / "finalize.evidence"
+                evidence_dir.mkdir(mode=0o700)
+                for name in carry_forward.GROUP2_PARTIAL_FINALIZE_FILES:
+                    path = evidence_dir / name
+                    path.write_text("{}")
+                    path.chmod(0o600)
+                for path in (request_path, approval_path, record_path):
+                    path.chmod(0o600)
+                old_request = {
+                    "repo": "owner/repo", "pr": 161,
+                    "failed": {
+                        "manifest_id": "a" * 32,
+                        "manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
+                    },
+                }
+                reference = {"snapshot": {"lineage": []}}
+                validated = {
+                    "request": request, "approval": approval, "user_record": {},
+                    "artifacts": {"source-review.json": {"source_scope": {}}},
+                    "context": {
+                        "validated_original": {
+                            "request": old_request,
+                            "artifacts": {
+                                "authority.json": {"snapshot": {
+                                    "carry_reference": config["carry_forward"],
+                                    "state": state, "attention": attention,
+                                    "installed_files": controller,
+                                }},
+                                "prior-success.json": {"host": {}, "vm": {}},
+                            },
+                        },
+                        "originals": {"manifest": {
+                            "review_scope": {"preservation_reference": reference}
+                        }},
+                    },
+                }
+                receipt = {"receipt_digest": "9" * 64}
+                evidence = {"authority": {"vm_installed": vm_installed}}
+                result = {
+                    "schema": "group2-partial-finalize-result-v1",
+                    "evidence": evidence, "receipt": receipt,
+                }
+                commands = []
+                committed_value = {}
+
+                def mapped(value):
+                    relative = Path(value).relative_to("/vm")
+                    return vm_root / relative
+
+                def vm_write(relative, data):
+                    path = vm_root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    path.write_bytes(data)
+
+                def vm_command(*arguments, check=True):
+                    commands.append(tuple(arguments))
+                    if arguments[:3] == ("test", "!", "-d"):
+                        return SimpleNamespace(returncode=int(mapped(arguments[3]).exists()), stdout="")
+                    if arguments[:2] == ("test", "-f"):
+                        return SimpleNamespace(returncode=0 if mapped(arguments[2]).is_file() else 1, stdout="")
+                    if arguments[0] == "cat":
+                        path = mapped(arguments[1])
+                        return SimpleNamespace(returncode=0 if path.is_file() else 1,
+                                               stdout=path.read_text() if path.is_file() else "")
+                    if arguments[0] == "sha256sum":
+                        raw = mapped(arguments[1]).read_bytes()
+                        return SimpleNamespace(returncode=0,
+                                               stdout=hashlib.sha256(raw).hexdigest() + "  file\n")
+                    raise AssertionError(arguments)
+
+                class Process:
+                    def __init__(self, arguments, **_kwargs):
+                        commands.append(tuple(arguments))
+                        prefix = vm_root / "incidents" / incident_id / "finalize" / finalize_id
+                        (prefix / "result.json").write_text(json.dumps(result))
+                        (prefix / "receipt.json").write_text(json.dumps(receipt))
+
+                    def poll(self):
+                        return None
+
+                    def wait(self, timeout=None):
+                        transaction = {
+                            "phase": "ready", "sha": carry_forward.GROUP2_FROM_SHA,
+                            "operation": "incident_partial_finalize",
+                            "reconciled_by": {
+                                "incident_id": incident_id, "finalize_id": finalize_id,
+                                "receipt_digest": receipt["receipt_digest"],
+                            },
+                            "backup": state["backup"],
+                            "carry_forward": state["carry_forward"],
+                        }
+                        if not valid_transaction:
+                            transaction["sha"] = "0" * 40
+                        committed_value.clear()
+                        committed_value.update(transaction)
+                        (vm_root / "transaction.json").write_text(json.dumps(transaction))
+                        return 0
+
+                (vm_root / "current-sha").write_text(carry_forward.GROUP2_FROM_SHA + "\n")
+                source = Path(temporary) / "source" / "tools" / "local-preview"
+                source.mkdir(parents=True)
+                for name in ("deploy.sh", "carry_forward.py"):
+                    (source / name).write_text(name)
+                with (
+                    patch.object(preview, "ROOT", root),
+                    patch.object(preview, "settings", return_value={"vm_root": "/vm", "profile": "test"}),
+                    patch.object(preview, "vm_path", side_effect=lambda suffix: "/vm/" + suffix),
+                    patch.object(preview, "vm_private_write", side_effect=vm_write),
+                    patch.object(preview, "vm_command", side_effect=vm_command),
+                    patch.object(preview, "transaction", side_effect=lambda: copy.deepcopy(committed_value)),
+                    patch.object(preview.subprocess, "Popen", Process),
+                    patch.object(preview, "operation_lock", return_value=preview.contextlib.nullcontext()),
+                    patch.object(preview, "config_lock", return_value=preview.contextlib.nullcontext()),
+                    patch.object(preview, "_incident_tool_files", return_value=(source, "d" * 40, controller)),
+                    patch.object(preview, "_validate_incident_worktree_source"),
+                    patch.object(preview, "_validate_partial_review_source"),
+                    patch.object(carry_forward, "validate_group2_partial_finalize_request", return_value=validated),
+                    patch.object(carry_forward, "validate_group2_partial_finalize_result", return_value=receipt),
+                    patch.object(carry_forward, "_validate_group2_partial_finalize_preservation", return_value={"lineage": []}),
+                ):
+                    if valid_transaction:
+                        output = preview.finalize_group2_partial(request_path, approval_path)
+                        self.assertEqual(output["receipt_digest"], receipt["receipt_digest"])
+                        self.assertFalse(active.exists())
+                        self.assertFalse((root / "attention.json").exists())
+                        self.assertNotIn("carry_forward", json.loads((root / "config.json").read_text()))
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "transaction is invalid"):
+                            preview.finalize_group2_partial(request_path, approval_path)
+                        self.assertTrue(active.exists())
+                        self.assertTrue((root / "attention.json").exists())
+                        self.assertIn("carry_forward", json.loads((root / "config.json").read_text()))
+                flattened = " ".join(" ".join(command) for command in commands)
+                for forbidden in (" stop ", " up ", " restart ", "pg_restore", "alembic"):
+                    self.assertNotIn(forbidden, " " + flattened + " ")
+
+        run_case(True)
+        run_case(False)
+
     def test_explicit_manifest_is_transferred_and_bound_to_deploy_only(self):
         manifest_path = Path(self.temp.name) / "manifest.json"
         manifest_path.write_text("{}")
@@ -298,6 +1189,141 @@ class ControllerTests(unittest.TestCase):
             self.assertIn("Unfinished", preview.tick())
         self.mocks["phase"].assert_not_called()
         self.assertIsNotNone(preview.read("attention.json"))
+
+    def test_group2_failed_recovery_cannot_be_washed_to_ready(self):
+        previous = {
+            **self.previous,
+            "mode": carry_forward.GROUP2_MODE,
+            "carry_forward": {"manifest_id": "1" * 32},
+        }
+        preview.write("state.json", previous)
+        self.mocks["healthy"].return_value = False
+        self.mocks["phase"].side_effect = RuntimeError("post recovery gate failed")
+        manifest = {"manifest_id": "1" * 32}
+        with (
+            patch.object(preview, "vm_running", return_value=False),
+            patch.object(preview, "validate_group2_recovery", return_value=manifest),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "post recovery gate failed"):
+                preview.tick()
+            marker = preview.read("attention.json")
+            self.assertEqual(marker["phase"], "recovering")
+            self.assertRegex(marker["recovery_id"], r"^[0-9a-f]{32}$")
+            recovery_target = self.mocks["phase"].call_args.args[0]
+            self.assertEqual(
+                recovery_target["recovery_id"], marker["recovery_id"]
+            )
+            self.mocks["healthy"].return_value = True
+            self.assertIn("Needs attention", preview.tick())
+        self.assertEqual(preview.read("state.json"), previous)
+
+    def test_group2_recovery_binds_current_completion_before_clearing_attention(self):
+        previous = {
+            **self.previous,
+            "mode": carry_forward.GROUP2_MODE,
+            "carry_forward": {"manifest_id": "1" * 32},
+        }
+        preview.write("state.json", previous)
+        self.mocks["healthy"].return_value = False
+        recovery_id = "7" * 32
+        recovery_digest = "8" * 64
+        self.mocks["transaction"].side_effect = [
+            {"phase": "ready", "sha": A},
+            {
+                "phase": "ready",
+                "sha": A,
+                "recovery_id": recovery_id,
+                "recovery_evidence_digest": recovery_digest,
+            },
+        ]
+        manifest = {"manifest_id": "1" * 32}
+        with (
+            patch.object(preview, "vm_running", return_value=False),
+            patch.object(
+                preview.uuid,
+                "uuid4",
+                return_value=SimpleNamespace(hex=recovery_id),
+            ),
+            patch.object(
+                preview,
+                "validate_group2_recovery",
+                side_effect=[manifest, manifest],
+            ) as validate,
+        ):
+            self.assertIn("Recovered", preview.tick())
+        self.assertEqual(
+            self.mocks["phase"].call_args.args,
+            ({**previous, "recovery_id": recovery_id}, "recover"),
+        )
+        self.assertEqual(validate.call_args_list[-1].args, (previous, recovery_id))
+        self.assertIsNone(preview.read("attention.json"))
+        self.assertEqual(
+            preview.read("state.json"),
+            {
+                **previous,
+                "last_recovery": {
+                    "recovery_id": recovery_id,
+                    "evidence_digest": recovery_digest,
+                },
+            },
+        )
+
+    def test_acknowledge_requires_this_recovery_completion(self):
+        previous = {
+            **self.previous,
+            "mode": carry_forward.GROUP2_MODE,
+            "carry_forward": {"manifest_id": "1" * 32},
+        }
+        preview.write("state.json", previous)
+        recovery_id = "7" * 32
+        recovery_digest = "8" * 64
+        attention = {
+            "phase": "recovering",
+            "sha": A,
+            "manifest_id": "1" * 32,
+            "recovery_id": recovery_id,
+            "recovery_evidence_digest": recovery_digest,
+        }
+        preview.write("attention.json", attention)
+        self.mocks["transaction"].return_value = {
+            "phase": "ready",
+            "sha": A,
+            "recovery_id": recovery_id,
+            "recovery_evidence_digest": recovery_digest,
+        }
+        argv = ["preview.py", "acknowledge"]
+        with (
+            patch.object(sys, "argv", argv),
+            patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+            patch.object(
+                preview,
+                "validate_group2_recovery",
+                side_effect=RuntimeError("current recovery completion missing"),
+            ) as validate,
+            self.assertRaisesRegex(RuntimeError, "current recovery completion missing"),
+        ):
+            preview.main()
+        validate.assert_called_once_with(previous, recovery_id)
+        self.assertEqual(preview.read("attention.json"), attention)
+
+        manifest = {"manifest_id": "1" * 32}
+        with (
+            patch.object(sys, "argv", argv),
+            patch.dict(os.environ, {"DLR_PREVIEW_HOME": self.temp.name}),
+            patch.object(
+                preview, "validate_group2_recovery", return_value=manifest
+            ) as validate,
+        ):
+            preview.main()
+        validate.assert_called_once_with(previous, recovery_id)
+        self.assertIsNone(preview.read("attention.json"))
+        self.assertEqual(
+            preview.read("state.json")["last_recovery"],
+            {
+                "recovery_id": recovery_id,
+                "evidence_digest": recovery_digest,
+            },
+        )
 
     def test_paused(self):
         preview.write("config.json", dict(self.config, enabled=False))
@@ -424,7 +1450,8 @@ class RemotePhaseTests(unittest.TestCase):
             self.assertTrue(preview.phase({"sha": B}, "deploy", "1" * 32))
         remote = command.call_args_list[0].args
         self.assertEqual(
-            remote[-4:], ("", "1" * 32, "nonce", "/example/preview/phase-exit")
+            remote[-5:],
+            ("", "1" * 32, "", "nonce", "/example/preview/phase-exit"),
         )
 
 
@@ -574,6 +1601,1745 @@ class EligibilityTests(unittest.TestCase):
                 ],
             ):
                 self.assertEqual(preview.eligible(config)[0] is not None, success)
+
+    def test_group2_ci_binding_is_explicit_and_legacy_shape_is_unchanged(self):
+        config = {"repo": "owner/repo", "pr": 2}
+        pr = {
+            "state": "open",
+            "draft": False,
+            "head": {"sha": B, "repo": {"full_name": "owner/repo"}},
+        }
+        run = {
+            "id": 9,
+            "head_sha": B,
+            "path": ".github/workflows/ci.yml",
+            "status": "completed",
+            "conclusion": "success",
+            "run_attempt": 2,
+        }
+        jobs = [
+            {"id": index, "name": name, "conclusion": "success"}
+            for index, name in enumerate(
+                ("backend", "web", "compose-smoke", "local-preview"), 1
+            )
+        ]
+        responses = [pr, {"workflow_runs": [run]}, {"jobs": jobs}]
+        with patch.object(preview, "api", side_effect=responses):
+            legacy, _ = preview.eligible(config)
+        self.assertEqual(set(legacy), {"sha", "run_id", "run_attempt", "pr"})
+        responses = [pr, {"workflow_runs": [run]}, {"jobs": jobs}]
+        with patch.object(preview, "api", side_effect=responses):
+            group2, _ = preview.eligible(config, preview.GROUP2_REQUIRED_JOBS)
+        self.assertEqual(group2["required_jobs"], sorted(preview.GROUP2_REQUIRED_JOBS))
+        self.assertEqual(group2["ci_binding"]["head_sha"], B)
+        self.assertEqual(
+            [item["name"] for item in group2["ci_binding"]["jobs"]],
+            sorted(preview.GROUP2_REQUIRED_JOBS),
+        )
+        jobs[-1]["conclusion"] = "failure"
+        responses = [pr, {"workflow_runs": [run]}, {"jobs": jobs}]
+        with patch.object(preview, "api", side_effect=responses):
+            self.assertIsNone(
+                preview.eligible(config, preview.GROUP2_REQUIRED_JOBS)[0]
+            )
+
+
+class Group2ControllerGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.root.chmod(0o700)
+        patcher = patch.object(preview, "ROOT", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(setattr, preview, "_group2_install_context", None)
+
+    def test_recovery_host_replays_every_ancestor_from_receipt_root(self):
+        sha = "b" * 40
+        manifest = {
+            "to_sha": sha,
+            "manifest_id": "1" * 32,
+            "manifest_digest": "2" * 64,
+        }
+        deployment = {
+            "db": {"root": "db"},
+            "files": {"root": "files"},
+            "post_preservation": {"code": "group2_post_probe_ok"},
+            "logs_after": {"root": "logs"},
+        }
+        first_id, second_id = "3" * 32, "4" * 32
+
+        def raw(identity, predecessor, number):
+            baseline = {
+                "deployment": copy.deepcopy(deployment),
+                "predecessor": copy.deepcopy(predecessor),
+                "fresh": {
+                    "db": copy.deepcopy(predecessor["db"]),
+                    "files": copy.deepcopy(predecessor["files"]),
+                },
+            }
+            evidence = {
+                "request": {"node": number},
+                "proof": {"node": number},
+                "before_db": baseline["fresh"]["db"],
+                "after_db": {"node": number, "db": True},
+                "before_files": baseline["fresh"]["files"],
+                "after_files": {"node": number, "files": True},
+                "account_check": {"node": number},
+                "entry_probe": {"node": number},
+                "logs_before": {"node": number, "before": True},
+                "logs_after": {"node": number, "after": True},
+                "preservation": {"node": number},
+            }
+            evidence_digest = carry_forward.digest(
+                {"baseline": baseline, "evidence": evidence}
+            )
+            result = {"node": number, "validated": True}
+            completion = {
+                "schema": "group2-recovery-completion-v1",
+                "recovery_id": identity,
+                "sha": sha,
+                "manifest_id": manifest["manifest_id"],
+                "manifest_digest": manifest["manifest_digest"],
+                "evidence_digest": evidence_digest,
+                "predecessor": {
+                    key: predecessor[key]
+                    for key in ("kind", "recovery_id", "evidence_digest")
+                },
+                "result": result,
+            }
+            return baseline, evidence, completion, result
+
+        root_predecessor = {
+            "kind": "deployment",
+            "recovery_id": None,
+            "evidence_digest": None,
+            "db": deployment["db"],
+            "files": deployment["files"],
+            "logs_after": deployment["logs_after"],
+        }
+        first = raw(first_id, root_predecessor, 1)
+        second_predecessor = {
+            "kind": "recovery",
+            "recovery_id": first_id,
+            "evidence_digest": first[2]["evidence_digest"],
+            "db": first[1]["after_db"],
+            "files": first[1]["after_files"],
+            "logs_after": first[1]["logs_after"],
+        }
+        second = raw(second_id, second_predecessor, 2)
+        objects = {}
+        for identity, node in ((first_id, first), (second_id, second)):
+            baseline, evidence, completion, _ = node
+            base = f"carry-forward/recovery-{sha}-{identity}"
+            objects[f"{base}/baseline.json"] = baseline
+            objects[f"{base}/startup-request.json"] = evidence["request"]
+            objects[f"{base}/startup.json"] = {"startup_proof": evidence["proof"]}
+            for name in ("before-db", "after-db", "before-files", "after-files"):
+                objects[f"{base}/{name}.json"] = evidence[name.replace("-", "_")]
+            objects[f"{base}/account.json"] = {
+                "account_check": evidence["account_check"]
+            }
+            objects[f"{base}/entry.json"] = {"entry_probe": evidence["entry_probe"]}
+            objects[f"{base}/log-before.json"] = {
+                "log_evidence": evidence["logs_before"]
+            }
+            objects[f"{base}/log-after.json"] = {
+                "log_evidence": evidence["logs_after"]
+            }
+            objects[f"{base}/preservation.json"] = evidence["preservation"]
+            objects[f"{base}/completion.json"] = completion
+
+        def read_vm(*args):
+            key = str(args[-1]).lstrip("/")
+            if key not in objects:
+                raise RuntimeError("missing recovery evidence")
+            return SimpleNamespace(returncode=0, stdout=json.dumps(objects[key]))
+
+        validate = lambda _manifest, _baseline, evidence, _deployment: {
+            "node": evidence["after_db"]["node"],
+            "validated": True,
+        }
+        with (
+            patch.object(preview, "vm_command", side_effect=read_vm),
+            patch.object(preview, "vm_path", side_effect=lambda value: value),
+            patch.object(
+                carry_forward,
+                "validate_group2_recovery_evidence",
+                side_effect=validate,
+            ),
+        ):
+            node = preview.validate_group2_recovery_evidence(
+                manifest, second_id, deployment
+            )
+            self.assertEqual(node["evidence_digest"], second[2]["evidence_digest"])
+
+        foreign = copy.deepcopy(objects)
+        foreign[
+            f"carry-forward/recovery-{sha}-{first_id}/baseline.json"
+        ]["deployment"]["db"] = {"foreign": True}
+        objects.clear()
+        objects.update(foreign)
+        with (
+            patch.object(preview, "vm_command", side_effect=read_vm),
+            patch.object(preview, "vm_path", side_effect=lambda value: value),
+            self.assertRaisesRegex(RuntimeError, "deployment root changed"),
+        ):
+            preview.validate_group2_recovery_evidence(
+                manifest, second_id, deployment
+            )
+
+        objects.clear()
+        for identity, node in ((first_id, first), (second_id, second)):
+            baseline, evidence, completion, _ = node
+            base = f"carry-forward/recovery-{sha}-{identity}"
+            objects[f"{base}/baseline.json"] = baseline
+            objects[f"{base}/startup-request.json"] = evidence["request"]
+            objects[f"{base}/startup.json"] = {"startup_proof": evidence["proof"]}
+            for name in ("before-db", "after-db", "before-files", "after-files"):
+                objects[f"{base}/{name}.json"] = evidence[name.replace("-", "_")]
+            objects[f"{base}/account.json"] = {"account_check": evidence["account_check"]}
+            objects[f"{base}/entry.json"] = {"entry_probe": evidence["entry_probe"]}
+            objects[f"{base}/log-before.json"] = {"log_evidence": evidence["logs_before"]}
+            objects[f"{base}/log-after.json"] = {"log_evidence": evidence["logs_after"]}
+            objects[f"{base}/preservation.json"] = evidence["preservation"]
+            objects[f"{base}/completion.json"] = completion
+        del objects[f"carry-forward/recovery-{sha}-{first_id}/completion.json"]
+        with (
+            patch.object(preview, "vm_command", side_effect=read_vm),
+            patch.object(preview, "vm_path", side_effect=lambda value: value),
+            self.assertRaisesRegex(RuntimeError, "missing recovery evidence"),
+        ):
+            preview.validate_group2_recovery_evidence(manifest, second_id, deployment)
+
+    def test_install_guard_runs_only_under_nested_real_locks_and_flag_recovers(self):
+        context = {"operation_held": False}
+        preview._group2_install_context = context
+        with patch.object(preview, "validate_group2_install_locked") as guard:
+            with preview.config_lock():
+                self.assertFalse(context["operation_held"])
+            guard.assert_not_called()
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                with preview.operation_lock():
+                    self.assertTrue(context["operation_held"])
+                    with preview.config_lock():
+                        guard.assert_called_once_with(context)
+                        raise RuntimeError("stop")
+            self.assertFalse(context["operation_held"])
+
+    def test_consumption_is_no_overwrite_and_fsyncs_real_files(self):
+        active = self.root / "carry-forward" / "manifests"
+        active.mkdir(parents=True, mode=0o700)
+        source = active / ("1" * 32 + ".json")
+        source.write_text("first\n")
+        source.chmod(0o600)
+        preview.consume_manifest(source)
+        consumed = self.root / "carry-forward" / "consumed" / source.name
+        self.assertEqual(consumed.read_text(), "first\n")
+        self.assertFalse(source.exists())
+        source.write_text("second\n")
+        source.chmod(0o600)
+        with self.assertRaisesRegex(RuntimeError, "already consumed"):
+            preview.consume_manifest(source)
+        self.assertEqual(consumed.read_text(), "first\n")
+
+    def test_receipt_requires_every_post_preservation_stage(self):
+        manifest = {
+            "manifest_id": "1" * 32,
+            "manifest_digest": "2" * 64,
+            "candidate_image_ids": {"image": "sha256:" + "3" * 64},
+            "ci_binding": {"head_sha": B},
+            "review_scope_digest": "4" * 64,
+            "account_entry": {"profile": "safe-private"},
+        }
+        target = {"sha": B, "schema": "0040_issue152_dispositions"}
+        stage_names = (
+                    "preflight",
+                    "control_stopped",
+                    "stopped",
+                    "backup",
+                    "same_schema",
+                    "started",
+                    "probe",
+                    "natural_cleanup",
+                    "post_preservation",
+                    "post_health",
+                )
+        account = {"profile": "safe-private"}
+        receipt = {
+            "mode": carry_forward.GROUP2_MODE,
+            "sha": B,
+            "schema": target["schema"],
+            "images": manifest["candidate_image_ids"],
+            "probe": {
+                "status": "succeeded",
+                "workspace_cleanup_status": "completed",
+                "execution_id": 7,
+            },
+            "backup": "/private/backup",
+            "carry_forward": {
+                "manifest_id": manifest["manifest_id"],
+                "manifest_digest": manifest["manifest_digest"],
+            },
+            "ci_binding": manifest["ci_binding"],
+            "review_scope_digest": manifest["review_scope_digest"],
+            "stages": {},
+            "post_preservation_digest": "",
+            "account_entry_digest": "6" * 64,
+            "account_entry": account,
+            "account_ready": True,
+        }
+        stage_evidence = {name: {"stage": name} for name in stage_names}
+        stage_evidence["probe"] = receipt["probe"]
+        evidence = {
+            "stages": stage_evidence,
+            "stage_inputs": {},
+            "startup": {},
+            "probe": {},
+            "post_health": {},
+        }
+        receipt["evidence_digest"] = carry_forward.digest(evidence)
+        receipt["stages"] = {
+            name: carry_forward.digest(stage_evidence[name]) for name in stage_names
+        }
+        receipt["post_preservation_digest"] = receipt["stages"][
+            "post_preservation"
+        ]
+        with (
+            patch.object(
+                carry_forward,
+                "validate_group2_account_entry",
+                return_value={"profile_digest": "6" * 64},
+            ),
+            patch.object(
+                carry_forward,
+                "validate_group2_receipt_evidence",
+                return_value={"validated": True},
+            ),
+        ):
+            safe = preview.validate_group2_receipt(receipt, target, manifest, evidence)
+        self.assertNotIn("account_entry", safe)
+        self.assertNotIn("backup", safe)
+        self.assertTrue(safe["carry_forward"]["account_ready"])
+        receipt["stages"].pop("natural_cleanup")
+        with (
+            patch.object(
+                carry_forward,
+                "validate_group2_account_entry",
+                return_value={"profile_digest": "6" * 64},
+            ),
+            self.assertRaisesRegex(RuntimeError, "preservation stage"),
+        ):
+            preview.validate_group2_receipt(receipt, target, manifest, evidence)
+        receipt["stages"]["natural_cleanup"] = carry_forward.digest(
+            stage_evidence["natural_cleanup"]
+        )
+        changed_evidence = copy.deepcopy(evidence)
+        changed_evidence["stages"]["post_health"]["stage"] = "unbound"
+        with (
+            patch.object(
+                carry_forward,
+                "validate_group2_account_entry",
+                return_value={"profile_digest": "6" * 64},
+            ),
+            self.assertRaisesRegex(RuntimeError, "receipt evidence digest"),
+        ):
+            preview.validate_group2_receipt(
+                receipt, target, manifest, changed_evidence
+            )
+
+    def test_real_log_collector_keeps_entry_outside_unique_probe_chain(self):
+        log_root = self.root / "logs" / "control"
+        log_root.mkdir(parents=True)
+        control_log = log_root / "control.log"
+        control_log.write_text("boot\n")
+        profile = {
+            "profile_digest": "9" * 64,
+            "log_files": [str(control_log)],
+            "log_roots": [
+                {"path": str(log_root), "allowed_new_files": ["control.log"]}
+            ],
+        }
+        entry_lines = (
+            'x 127.0.0.1:9001 - "POST /api/auth/account/logout HTTP/1.1" 403\n'
+            'x 127.0.0.1:9002 - "POST /api/auth/account/logout HTTP/1.1" 403\n'
+        )
+        probe_lines = [
+            'x 127.0.0.1:1001 - "POST /api/adapters HTTP/1.1" 201',
+            'x 127.0.0.1:1002 - "POST /api/adapters/77/versions HTTP/1.1" 201',
+            'x 127.0.0.1:1003 - "PATCH /api/adapters/77 HTTP/1.1" 200',
+            'x 127.0.0.1:1004 - "POST /api/adapters/77/executions HTTP/1.1" 202',
+            'x 127.0.0.1:1005 - "GET /api/executions/78 HTTP/1.1" 200',
+            'x 172.18.0.6:1006 - "POST /api/workers/88/v3/claim HTTP/1.1" 200',
+            'x 172.18.0.6:1007 - "POST /api/workers/88/attempts/99/start HTTP/1.1" 200',
+            'x 172.18.0.6:1008 - "POST /api/workers/88/attempts/99/result HTTP/1.1" 200',
+            'x 172.18.0.6:1009 - "POST /api/workers/executions/78/workspace-cleanup HTTP/1.1" 200',
+            'x 127.0.0.1:1010 - "GET /api/executions/78 HTTP/1.1" 200',
+            'x 127.0.0.1:1011 - "DELETE /api/adapters/77 HTTP/1.1" 204',
+        ]
+        cleanup_lines = [
+            'x 172.18.0.6:1012 - "POST /api/workers/88/cleanups/claim HTTP/1.1" 200',
+            'x 172.18.0.6:1013 - "POST /api/workers/88/cleanups/66/result HTTP/1.1" 204',
+        ]
+        with patch.object(
+            carry_forward, "validate_group2_account_entry", return_value=profile
+        ):
+            initial = carry_forward.capture_log_prefix(profile)
+        with control_log.open("a") as stream:
+            stream.write(entry_lines)
+        entry_after = carry_forward.read_log_append(initial)
+        probe_before = carry_forward.read_log_append(entry_after)
+        with control_log.open("a") as stream:
+            stream.write("\n".join(probe_lines) + "\n")
+        partial = carry_forward.read_log_append(probe_before)
+        request = {
+            "mode": carry_forward.GROUP2_MODE,
+            "operation": "probe-proof",
+            "logs_before": probe_before,
+            "logs_after": partial,
+            "probe_result": {
+                "execution_id": 78,
+                "status": "succeeded",
+                "workspace_cleanup_status": "completed",
+            },
+            "before_db": {
+                "protected_rows": {
+                    "adapter_ids": [1],
+                    "execution_ids": [2],
+                    "attempt_ids": [3],
+                }
+            },
+            "cleanup": None,
+        }
+        provenance = carry_forward.derive_group2_probe_provenance(request)
+        self.assertEqual(provenance["attempt_id"], 99)
+        observed_partial = control_log.read_bytes()
+        control_log.write_bytes(
+            observed_partial.replace(b"/api/adapters", b"/api/adapterz", 1)
+        )
+        with self.assertRaisesRegex(
+            carry_forward.CarryForwardError, "log_prefix_changed"
+        ):
+            carry_forward.read_log_append(partial)
+        control_log.write_bytes(observed_partial)
+        with control_log.open("a") as stream:
+            stream.write("\n".join(cleanup_lines) + "\n")
+        final = carry_forward.read_log_append(partial)
+        complete = carry_forward.combine_group2_log_window(
+            probe_before, partial, final
+        )
+        cleanup_row = {"id": 66, "adapter_id": 77, "worker_id": 88}
+        request.update(
+            logs_after=complete,
+            cleanup={
+                "row": cleanup_row,
+                "row_sha256": carry_forward.digest(cleanup_row),
+            },
+        )
+        final_provenance = carry_forward.derive_group2_probe_provenance(request)
+        self.assertEqual(final_provenance["cleanup"], request["cleanup"])
+        appended = next(
+            item
+            for item in complete["files"]
+            if item["path"] == str(control_log)
+        )["appended_text"]
+        self.assertNotIn("account/logout", appended)
+
+    def test_review_artifacts_are_exact_private_regular_files(self):
+        scope_path = self.root / "review-scope.json"
+        scope_path.write_text("{}")
+        scope_path.chmod(0o600)
+        directory = self.root / "review-scope.evidence"
+        request = b"approved request\n"
+        product_anchor = {
+            "base_sha": A,
+            "head_sha": B,
+            "base_tree": "1" * 40,
+            "head_tree": "2" * 40,
+            "raw_diff_sha256": "3" * 64,
+            "files": ["backend/example.py"],
+        }
+        user_approval = {
+            "status": "USER_APPROVED",
+            "user_reply": "批准",
+            "request_sha256": hashlib.sha256(request).hexdigest(),
+            "product_candidate_sha": B,
+        }
+        historical_name = "group2-product-integration-recheck.md"
+        historical_commit = "03b8fb196d5fa4da0df344e8e077e4a655e6a58c"
+        historical_report = b"independent historical review\n"
+        historical_digest = hashlib.sha256(historical_report).hexdigest()
+        review_bindings = {
+            "reviews_sha256": {historical_name: historical_digest},
+            "integration_review_bound_commit": historical_commit,
+            "ci_test_review_bound_commit": "4" * 40,
+            "harness_review_bound_commit": "5" * 40,
+        }
+        blob_oid = "a" * 40
+        job_names = ("backend", "compose-smoke", "local-preview", "web")
+        scope_jobs = [
+            {"id": index, "name": name, "conclusion": "success"}
+            for index, name in enumerate(job_names, 1)
+        ]
+        scope_ci = {
+            "head_sha": B,
+            "run_id": 9,
+            "run_attempt": 1,
+            "workflow_path": ".github/workflows/ci.yml",
+            "event": "pull_request",
+            "jobs": scope_jobs,
+        }
+        ci_value = {
+            "run": {
+                "id": 9, "head_sha": B, "run_attempt": 1,
+                "path": ".github/workflows/ci.yml", "event": "pull_request",
+                "status": "completed", "conclusion": "success",
+            },
+            "jobs": {
+                "total_count": 4,
+                "jobs": [
+                    {
+                        **job,
+                        "status": "completed",
+                        "run_id": 9,
+                        "run_attempt": 1,
+                        "head_sha": B,
+                        "steps": [],
+                    }
+                    for job in reversed(scope_jobs)
+                ],
+            },
+        }
+        lineage = [{"name": "p1", "sha256": "b" * 64}]
+        preservation_value = {
+            "schema": "group2-preservation-review-v1",
+            "status": "APPROVED",
+            "source_kind": "private_snapshot",
+            "snapshot_digest": "c" * 64,
+            "lineage": lineage,
+        }
+        reviewed_bytes = b"reviewed final bytes\n"
+        machine_review = {
+            "schema": "group2-independent-review-v1",
+            "status": "APPROVED",
+            "reviewed_commit": B,
+            "source_kind": "git_commit",
+            "coverage": [{
+                "path": "backend/example.py", "mode": "100644",
+                "blob_oid": blob_oid,
+                "sha256": hashlib.sha256(reviewed_bytes).hexdigest(),
+            }],
+            "blocking_findings": [],
+        }
+        contents = {
+            "approval/REQUEST-ready.md": request,
+            "approval/USER-APPROVAL.json": json.dumps(user_approval).encode(),
+            "approval/product-scope.json": json.dumps(product_anchor).encode(),
+            "approval/review-bindings.json": json.dumps(review_bindings).encode(),
+            "ci/ci": json.dumps(ci_value).encode(),
+            "preservation/preservation": ("```json\n" + json.dumps(preservation_value) + "\n```\n").encode(),
+            "reviews/review": historical_report,
+            "reviews/current": ("```json\n" + json.dumps(machine_review) + "\n```\n").encode(),
+        }
+        digests = {}
+        for name, data in contents.items():
+            path = directory / name
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path.parent.chmod(0o700)
+            path.write_bytes(data)
+            path.chmod(0o600)
+            digests[name] = hashlib.sha256(data).hexdigest()
+        directory.chmod(0o700)
+        scope = {
+            "approval": {
+                "request_sha256": digests["approval/REQUEST-ready.md"],
+                "user_approval_sha256": digests["approval/USER-APPROVAL.json"],
+                "product_scope_sha256": digests["approval/product-scope.json"],
+                "review_bindings_sha256": digests[
+                    "approval/review-bindings.json"
+                ],
+            },
+            "ci": {**scope_ci, "evidence_sha256": digests["ci/ci"]},
+            "product_anchor": product_anchor,
+            "final_source": {"to_sha": B},
+            "preservation_reference": {
+                "review_report_sha256": digests["preservation/preservation"],
+                "snapshot_digest": "c" * 64,
+                "snapshot": {"lineage": lineage},
+            },
+            "reviews": [
+                {
+                    "name": historical_name,
+                    "report_sha256": digests["reviews/review"],
+                    "reviewed_commit": historical_commit,
+                    "coverage": [{"path": "backend/example.py", "blob_oid": blob_oid}],
+                },
+                {
+                    "name": "group2-v4-controller-final-review.md",
+                    "report_sha256": digests["reviews/current"],
+                    "reviewed_commit": B,
+                    "coverage": [{"path": "backend/example.py", "blob_oid": blob_oid}],
+                },
+            ],
+        }
+        (directory / "ci/ci").rename(directory / "ci" / digests["ci/ci"])
+        (directory / "preservation/preservation").rename(
+            directory / "preservation" / digests["preservation/preservation"]
+        )
+        (directory / "reviews/review").rename(
+            directory / "reviews" / digests["reviews/review"]
+        )
+        (directory / "reviews/current").rename(
+            directory / "reviews" / digests["reviews/current"]
+        )
+        approval_hashes = {
+            key: scope["approval"][key]
+            for key in preview.GROUP2_APPROVAL_HASHES
+        }
+        with (
+            patch.object(preview, "GROUP2_APPROVAL_HASHES", approval_hashes),
+            patch.object(
+                preview,
+                "GROUP2_HISTORICAL_REVIEWS",
+                {historical_name: historical_digest},
+            ),
+            patch.object(
+                preview,
+                "git",
+                return_value=f"100644 blob {blob_oid}\tbackend/example.py",
+            ),
+            patch.object(preview, "git_bytes", return_value=reviewed_bytes),
+        ):
+            self.assertEqual(
+                preview.validate_group2_artifacts(scope, scope_path), directory
+            )
+        original_preservation_digest = scope["preservation_reference"][
+            "review_report_sha256"
+        ]
+        original_preservation_path = (
+            directory / "preservation" / original_preservation_digest
+        )
+        original_preservation_raw = original_preservation_path.read_bytes()
+        original_preservation_path.unlink()
+        reboot_controller_files = {"preview.py": "f" * 64}
+        successor_deadline_ns = 1_000_000
+        scope["controller_files"] = {"files": reboot_controller_files}
+        reboot_chain = {
+            "schema": "group2-post-finalize-reboot-chain-v1",
+            "request": {
+                "tool": {
+                    "sha": B,
+                    "controller_files": reboot_controller_files,
+                },
+                "window": {"successor_deadline_ns": successor_deadline_ns},
+            },
+            "source_artifacts": {
+                "parent-finalize.json": {
+                    "content_b64": base64.b64encode(json.dumps({
+                        "schema": "group2-partial-finalize-chain-v1"
+                    }).encode()).decode()
+                }
+            },
+        }
+        reboot_review = {
+            **preservation_value,
+            "source_kind": "group2_post_finalize_reboot_v1",
+        }
+        reboot_report = (
+            "```json\n" + json.dumps(reboot_review) + "\n```\n"
+            "```json\n" + json.dumps(reboot_chain) + "\n```\n"
+        ).encode()
+        reboot_digest = hashlib.sha256(reboot_report).hexdigest()
+        reboot_path = directory / "preservation" / reboot_digest
+        reboot_path.write_bytes(reboot_report)
+        reboot_path.chmod(0o600)
+        scope["preservation_reference"]["review_report_sha256"] = reboot_digest
+        with (
+            patch.object(preview, "GROUP2_APPROVAL_HASHES", approval_hashes),
+            patch.object(
+                preview, "GROUP2_HISTORICAL_REVIEWS",
+                {historical_name: historical_digest},
+            ),
+            patch.object(
+                preview, "git",
+                return_value=f"100644 blob {blob_oid}\tbackend/example.py",
+            ),
+            patch.object(preview, "git_bytes", return_value=reviewed_bytes),
+            patch.object(
+                carry_forward,
+                "validate_group2_post_finalize_reboot_preservation",
+                return_value=scope["preservation_reference"]["snapshot"],
+            ),
+            patch.object(preview.time, "time_ns", return_value=successor_deadline_ns),
+        ):
+            self.assertEqual(
+                preview.validate_group2_artifacts(scope, scope_path), directory
+            )
+            with (
+                patch.object(
+                    preview.time,
+                    "time_ns",
+                    return_value=successor_deadline_ns + 1,
+                ),
+                self.assertRaisesRegex(ValueError, "successor window expired"),
+            ):
+                preview.validate_group2_artifacts(scope, scope_path)
+        reboot_path.unlink()
+        ambiguous = reboot_report + (
+            "```json\n"
+            + json.dumps({"schema": "group2-partial-finalize-chain-v1"})
+            + "\n```\n"
+        ).encode()
+        ambiguous_digest = hashlib.sha256(ambiguous).hexdigest()
+        ambiguous_path = directory / "preservation" / ambiguous_digest
+        ambiguous_path.write_bytes(ambiguous)
+        ambiguous_path.chmod(0o600)
+        scope["preservation_reference"]["review_report_sha256"] = ambiguous_digest
+        with (
+            patch.object(preview, "GROUP2_APPROVAL_HASHES", approval_hashes),
+            patch.object(
+                preview, "GROUP2_HISTORICAL_REVIEWS",
+                {historical_name: historical_digest},
+            ),
+            patch.object(
+                preview, "git",
+                return_value=f"100644 blob {blob_oid}\tbackend/example.py",
+            ),
+            patch.object(preview, "git_bytes", return_value=reviewed_bytes),
+            self.assertRaisesRegex(ValueError, "missing or ambiguous"),
+        ):
+            preview.validate_group2_artifacts(scope, scope_path)
+        ambiguous_path.unlink()
+        original_preservation_path.write_bytes(original_preservation_raw)
+        original_preservation_path.chmod(0o600)
+        scope.pop("controller_files")
+        scope["preservation_reference"][
+            "review_report_sha256"
+        ] = original_preservation_digest
+        self.assertTrue(original_preservation_path.is_file())
+        original_ci_digest = scope["ci"]["evidence_sha256"]
+        original_ci_path = directory / "ci" / original_ci_digest
+        original_ci = original_ci_path.read_bytes()
+
+        def rejected_ci_record(value, message):
+            changed = json.dumps(value).encode()
+            changed_digest = hashlib.sha256(changed).hexdigest()
+            original_ci_path.unlink()
+            changed_path = directory / "ci" / changed_digest
+            changed_path.write_bytes(changed)
+            changed_path.chmod(0o600)
+            scope["ci"]["evidence_sha256"] = changed_digest
+            try:
+                with (
+                    patch.object(preview, "GROUP2_APPROVAL_HASHES", approval_hashes),
+                    patch.object(preview, "GROUP2_HISTORICAL_REVIEWS", {historical_name: historical_digest}),
+                    patch.object(preview, "git", return_value=f"100644 blob {blob_oid}\tbackend/example.py"),
+                    patch.object(preview, "git_bytes", return_value=reviewed_bytes),
+                    self.assertRaisesRegex(ValueError, message),
+                ):
+                    preview.validate_group2_artifacts(scope, scope_path)
+            finally:
+                changed_path.unlink()
+                original_ci_path.write_bytes(original_ci)
+                original_ci_path.chmod(0o600)
+                scope["ci"]["evidence_sha256"] = original_ci_digest
+
+        mixed_ci = copy.deepcopy(ci_value)
+        mixed_ci["jobs"]["jobs"][0]["run_attempt"] = 2
+        rejected_ci_record(mixed_ci, "CI evidence contradicts")
+        duplicate_ci = copy.deepcopy(ci_value)
+        duplicate_ci["jobs"]["jobs"][1]["id"] = duplicate_ci["jobs"]["jobs"][0]["id"]
+        rejected_ci_record(duplicate_ci, "jobs evidence")
+        missing_ci = copy.deepcopy(ci_value)
+        missing_ci["jobs"]["jobs"].pop()
+        missing_ci["jobs"]["total_count"] = 3
+        rejected_ci_record(missing_ci, "CI evidence contradicts")
+        failed_ci = copy.deepcopy(ci_value)
+        failed_ci["jobs"]["jobs"][0]["conclusion"] = "failure"
+        rejected_ci_record(failed_ci, "CI evidence contradicts")
+        current_review = scope["reviews"][1]
+        current_path = directory / "reviews" / current_review["report_sha256"]
+        original_review = current_path.read_bytes()
+
+        def rejected_machine_report(value, message):
+            old_digest = current_review["report_sha256"]
+            old_path = directory / "reviews" / old_digest
+            changed = ("```json\n" + json.dumps(value) + "\n```\n").encode()
+            new_digest = hashlib.sha256(changed).hexdigest()
+            old_path.unlink()
+            (directory / "reviews" / new_digest).write_bytes(changed)
+            (directory / "reviews" / new_digest).chmod(0o600)
+            current_review["report_sha256"] = new_digest
+            try:
+                with (
+                    patch.object(preview, "GROUP2_APPROVAL_HASHES", approval_hashes),
+                    patch.object(preview, "GROUP2_HISTORICAL_REVIEWS", {historical_name: historical_digest}),
+                    patch.object(preview, "git", return_value=f"100644 blob {blob_oid}\tbackend/example.py"),
+                    patch.object(preview, "git_bytes", return_value=reviewed_bytes),
+                    self.assertRaisesRegex(ValueError, message),
+                ):
+                    preview.validate_group2_artifacts(scope, scope_path)
+            finally:
+                (directory / "reviews" / new_digest).unlink()
+                (directory / "reviews" / old_digest).write_bytes(original_review)
+                (directory / "reviews" / old_digest).chmod(0o600)
+                current_review["report_sha256"] = old_digest
+
+        duplicate_conclusion = (
+            "```json\n" + json.dumps(machine_review) + "\n```\n"
+            "```json\n" + json.dumps({**machine_review, "status": "CHANGES_REQUIRED"}) + "\n```\n"
+        ).encode()
+        duplicate_digest = hashlib.sha256(duplicate_conclusion).hexdigest()
+        current_path.unlink()
+        duplicate_path = directory / "reviews" / duplicate_digest
+        duplicate_path.write_bytes(duplicate_conclusion)
+        duplicate_path.chmod(0o600)
+        current_review["report_sha256"] = duplicate_digest
+        with (
+            patch.object(preview, "GROUP2_APPROVAL_HASHES", approval_hashes),
+            patch.object(preview, "GROUP2_HISTORICAL_REVIEWS", {historical_name: historical_digest}),
+            patch.object(preview, "git", return_value=f"100644 blob {blob_oid}\tbackend/example.py"),
+            patch.object(preview, "git_bytes", return_value=reviewed_bytes),
+            self.assertRaisesRegex(ValueError, "machine approved"),
+        ):
+            preview.validate_group2_artifacts(scope, scope_path)
+        duplicate_path.unlink()
+        current_path.write_bytes(original_review)
+        current_path.chmod(0o600)
+        current_review["report_sha256"] = hashlib.sha256(original_review).hexdigest()
+        duplicate_coverage = copy.deepcopy(machine_review)
+        duplicate_coverage["coverage"].append(copy.deepcopy(duplicate_coverage["coverage"][0]))
+        rejected_machine_report(duplicate_coverage, "coverage changed")
+        preservation = scope["preservation_reference"]
+        preservation_path = directory / "preservation" / preservation["review_report_sha256"]
+        original_preservation = preservation_path.read_bytes()
+        contradictory_preservation = (
+            original_preservation
+            + ("```json\n" + json.dumps({**preservation_value, "status": "CHANGES_REQUIRED"}) + "\n```\n").encode()
+        )
+        changed_preservation_digest = hashlib.sha256(contradictory_preservation).hexdigest()
+        preservation_path.unlink()
+        changed_preservation_path = directory / "preservation" / changed_preservation_digest
+        changed_preservation_path.write_bytes(contradictory_preservation)
+        changed_preservation_path.chmod(0o600)
+        preservation["review_report_sha256"] = changed_preservation_digest
+        with (
+            patch.object(preview, "GROUP2_APPROVAL_HASHES", approval_hashes),
+            patch.object(preview, "GROUP2_HISTORICAL_REVIEWS", {historical_name: historical_digest}),
+            patch.object(preview, "git", return_value=f"100644 blob {blob_oid}\tbackend/example.py"),
+            patch.object(preview, "git_bytes", return_value=reviewed_bytes),
+            self.assertRaisesRegex(ValueError, "preservation review"),
+        ):
+            preview.validate_group2_artifacts(scope, scope_path)
+        changed_preservation_path.unlink()
+        preservation_path.write_bytes(original_preservation)
+        preservation_path.chmod(0o600)
+        preservation["review_report_sha256"] = hashlib.sha256(original_preservation).hexdigest()
+        approval_file = directory / "approval/USER-APPROVAL.json"
+        original_approval = approval_file.read_bytes()
+        contradictory = {**user_approval, "product_candidate_sha": A}
+        approval_file.write_text(json.dumps(contradictory))
+        contradictory_digest = hashlib.sha256(approval_file.read_bytes()).hexdigest()
+        scope["approval"]["user_approval_sha256"] = contradictory_digest
+        contradictory_hashes = {**approval_hashes, "user_approval_sha256": contradictory_digest}
+        with (
+            patch.object(preview, "GROUP2_APPROVAL_HASHES", contradictory_hashes),
+            patch.object(preview, "GROUP2_HISTORICAL_REVIEWS", {historical_name: historical_digest}),
+                patch.object(preview, "git", return_value=f"100644 blob {blob_oid}\tbackend/example.py"),
+                patch.object(preview, "git_bytes", return_value=reviewed_bytes),
+                self.assertRaisesRegex(ValueError, "contradicts"),
+        ):
+            preview.validate_group2_artifacts(scope, scope_path)
+        approval_file.write_bytes(original_approval)
+        scope["approval"]["user_approval_sha256"] = approval_hashes[
+            "user_approval_sha256"
+        ]
+        request = directory / "approval/REQUEST-ready.md"
+        request.chmod(0o644)
+        with self.assertRaisesRegex(ValueError, "private regular"):
+            with (
+                patch.object(preview, "GROUP2_APPROVAL_HASHES", approval_hashes),
+                patch.object(preview, "GROUP2_HISTORICAL_REVIEWS", {historical_name: historical_digest}),
+                patch.object(preview, "git", return_value=f"100644 blob {blob_oid}\tbackend/example.py"),
+                patch.object(preview, "git_bytes", return_value=reviewed_bytes),
+            ):
+                preview.validate_group2_artifacts(scope, scope_path)
+        request.chmod(0o600)
+        request.write_text("tampered")
+        with self.assertRaisesRegex(ValueError, "digest changed"):
+            with (
+                patch.object(preview, "GROUP2_APPROVAL_HASHES", approval_hashes),
+                patch.object(preview, "GROUP2_HISTORICAL_REVIEWS", {historical_name: historical_digest}),
+                patch.object(preview, "git", return_value=f"100644 blob {blob_oid}\tbackend/example.py"),
+                patch.object(preview, "git_bytes", return_value=reviewed_bytes),
+            ):
+                preview.validate_group2_artifacts(scope, scope_path)
+
+    def test_real_install_explicitly_secures_carry_check_parent(self):
+        root = self.root / "real-install"
+        carry_check = root / "carry-forward" / "check" / ("a" * 32)
+        preflight = carry_check / "preflight"
+        install = shutil.which("install")
+        self.assertIsNotNone(install)
+
+        subprocess.run(
+            [install, "-d", "-m", "700", str(preflight)],
+            check=True,
+            umask=0o022,
+        )
+        self.assertNotEqual(carry_check.stat().st_mode & 0o777, 0o700)
+        with self.assertRaisesRegex(
+            carry_forward.CarryForwardError, "private_parent_invalid"
+        ):
+            carry_forward.write_private(carry_check / "ids.json", {})
+
+        subprocess.run(
+            [install, "-d", "-m", "700", str(carry_check), str(preflight)],
+            check=True,
+        )
+        self.assertEqual(carry_check.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(preflight.stat().st_mode & 0o777, 0o700)
+        carry_forward.write_private(carry_check / "ids.json", {})
+        self.assertEqual((carry_check / "ids.json").stat().st_mode & 0o777, 0o600)
+
+    def test_deploy_executes_full_group2_flow_and_commit_failure_stays_unready(self):
+        def fixture(name, fail_commit=False):
+            root = self.root / name
+            root.mkdir(mode=0o700)
+            shutil.copy2(Path(preview.__file__).with_name("deploy.sh"), root / "deploy.sh")
+            (root / "prepare-sandbox-host.sh").write_text("#!/bin/sh\nexit 0\n")
+            (root / "prepare-sandbox-host.sh").chmod(0o755)
+            (root / "verify.py").write_text("# synthetic official probe\n")
+            (root / "assets.py").write_text("# synthetic assets\n")
+            (root / "deployment.json").write_text(json.dumps({
+                "project": "example", "web_port": 18080,
+                "sandbox_unit": "example.service", "sandbox_cpu_quota": "100%",
+                "sandbox_memory_max": "1G",
+            }))
+            (root / "preview.env").write_text("DLR_ADMIN_TOKEN=synthetic\n")
+            old_sha, sha, manifest_id = A, B, "a" * 32
+            old_images = {
+                f"example-{service}:{old_sha}": "sha256:" + str(index) * 64
+                for index, service in enumerate(("postgres", "control", "worker", "web"), 1)
+            }
+            images = {
+                f"example-{service}:{sha}": "sha256:" + str(index + 4) * 64
+                for index, service in enumerate(("postgres", "control", "worker", "web"), 1)
+            }
+            for release_sha, release_images in ((old_sha, old_images), (sha, images)):
+                release = root / "releases" / release_sha
+                release.mkdir(parents=True)
+                (release / ".downloaded").touch()
+                (release / "docker-compose.yml").write_text("services: {}\n")
+                (release / "compose.preview.json").write_text("{}\n")
+                (release / "images.json").write_text(json.dumps(release_images))
+            (root / "current-sha").write_text(old_sha + "\n")
+            profile = {
+                "profile_digest": "9" * 64,
+                "old_containers": {"worker": {"container_id": "w" * 40}},
+            }
+            baseline_log = {
+                "profile_digest": profile["profile_digest"], "files": [], "roots": [],
+                "observed_at_ns": 1,
+            }
+            baseline_log["evidence_digest"] = carry_forward.digest(baseline_log)
+            controller = {
+                filename: hashlib.sha256((root / filename).read_bytes()).hexdigest()
+                for filename in ("deploy.sh", "verify.py", "assets.py")
+            }
+            baseline_db = {
+                key: {} for key in (
+                    "projection", "responsibilities", "protected_rows",
+                    "asset_projection", "schema_shape", "schema_inventory",
+                )
+            }
+            baseline_files = {"fixture": "preserved"}
+            containers = []
+            for service in ("postgres", "rabbitmq", "control", "worker"):
+                containers.append({
+                    "service": service, "container_id": (service[0] * 40),
+                    "image_id": old_images.get(
+                        f"example-{service}:{old_sha}", "sha256:" + "8" * 64
+                    ),
+                    "labels": {"com.docker.compose.project": "example",
+                               "com.docker.compose.service": service},
+                    **({"runtime_config": {}} if service == "worker" else {}),
+                })
+            containers.sort(key=lambda item: item["service"])
+            manifest = {
+                "format_version": carry_forward.GROUP2_FORMAT_VERSION,
+                "mode": carry_forward.GROUP2_MODE, "from_sha": old_sha, "to_sha": sha,
+                "to_schema": "0040_issue152_dispositions", "manifest_id": manifest_id,
+                "manifest_digest": "b" * 64, "review_scope_digest": "c" * 64,
+                "candidate_image_ids": images, "old_image_ids": old_images,
+                "storage_identity": [], "old_containers": containers,
+                "selection": {}, "account_entry": profile, "log_evidence": baseline_log,
+                "file_evidence": baseline_files,
+                "old_runtime_projection": {}, "responsibilities": {},
+                "protected_rows": {}, "asset_projection": {}, "schema_shape": {},
+                "ci_binding": {"head_sha": sha},
+                "review_scope": {"controller_files": {"files": controller}},
+            }
+            manifest_dir = root / "carry-forward" / "manifests"
+            manifest_dir.mkdir(parents=True, mode=0o700)
+            (manifest_dir / f"{manifest_id}.json").write_text(json.dumps(manifest))
+            state = {
+                "db": baseline_db, "files": baseline_files, "images": images,
+                "old_images": old_images, "old_sha": old_sha, "sha": sha,
+            }
+            (root / "fixture.json").write_text(json.dumps(state))
+            (root / "carry_forward.py").write_text(
+                """#!/usr/bin/env python3
+import hashlib,json,os,pathlib,sys,time
+GROUP2_FORMAT_VERSION=4; GROUP2_MODE='audited-group2-same-schema-v1'
+def digest(v): return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+def read_private(p): return json.load(open(p))
+def write_private(p,v):
+ p=pathlib.Path(p); info=p.parent.stat()
+ if info.st_uid!=os.geteuid() or info.st_mode & 0o077: raise SystemExit('private_parent_invalid')
+ p.write_text(json.dumps(v)); p.chmod(0o600)
+def validate_manifest(v): return v
+def validate_group2_manifest_extensions(v): return None
+def validate_storage_identity(v): return v
+def _worker_runtime_config(v): return {}
+def compare_projection(a,b):
+ assert a==b
+def compare_group2_startup_files(a,b,p): return {'code':'startup-ok'}
+def compare_group2_post_probe(*a): return {'code':'post-ok'}
+def combine_group2_log_window(before,partial,final):
+ assert partial['baseline_evidence_digest']==before['evidence_digest']
+ assert final['baseline_evidence_digest']==partial['evidence_digest']
+ value={**final,'baseline_evidence_digest':before['evidence_digest']}
+ value['evidence_digest']=digest({k:v for k,v in value.items() if k!='evidence_digest'})
+ return value
+def validate_group2_receipt_evidence(manifest,evidence):
+ assert set(evidence)=={'stages','stage_inputs','startup','probe','post_health'}
+ previous=manifest['log_evidence']
+ for name in ('preflight','control_stopped','stopped','after_backup','after_migration'):
+  current=evidence['stage_inputs'][name]['logs_after']
+  assert current['baseline_evidence_digest']==previous['evidence_digest']
+  previous=current
+ assert evidence['startup']['request']['logs_before']==previous
+ assert evidence['probe']['logs_complete']==combine_group2_log_window(
+  evidence['probe']['logs_before'],evidence['probe']['logs_partial'],evidence['probe']['logs_final'])
+ return {'log_chain_digest':digest(evidence)}
+def runtime(req):
+ op=req['operation']; profile=req.get('profile',{'profile_digest':'9'*64})
+ if op=='account-capture': return {'account_entry':json.load(open(__file__.replace('carry_forward.py','carry-forward/manifests/'+'a'*32+'.json')))['account_entry']}
+ if op=='account-check':
+  csrf={'status':200,'body_status':'ok','csrf_cookie':True,'csrf_cookie_path':True,'csrf_cookie_samesite_lax':True,'csrf_cookie_httponly':False,'redirect':False}
+  worker={'container_id':'f'*40,'image_id':'sha256:'+'7'*64,'status':'running','health':'healthy','started_at':'2026-09-20T00:00:00Z','restart_count':0,'command':[None,['run']],'labels':{},'port_bindings':{},'mounts':[],'networks':['example_default']}
+  return {'account_check':{'profile_digest':profile['profile_digest'],'containers':{'worker':worker},'account_csrf':csrf}}
+ if op=='log-capture':
+  value={'profile_digest':profile['profile_digest'],'files':[],'roots':[],'observed_at_ns':time.time_ns()}; value['evidence_digest']=digest(value); return {'log_evidence':value}
+ if op=='log-append':
+  base=req['baseline']; value={'profile_digest':base['profile_digest'],'files':[],'roots':base['roots'],'observed_after_ns':time.time_ns(),'baseline_evidence_digest':base['evidence_digest']}; value['evidence_digest']=digest(value); return {'log_evidence':value}
+ if op=='startup-proof': return {'startup_proof':{'code':'startup-ok'}}
+ if op=='entry-probe': return {'entry_probe':{'code':'entry-ok'}}
+ if op=='probe-proof': return {'probe_proof':{'probe_result':req['probe_result'],'code':'probe-ok'}}
+ if op=='probe-cleanup': return {'cleanup':{'status':'completed','residue':False}}
+ raise SystemExit(2)
+if __name__=='__main__':
+ a=sys.argv[1:]
+ if a[0]=='group2-runtime':
+  req=json.load(open(a[a.index('--request')+1])); write_private(a[a.index('--output')+1],runtime(req))
+ elif a[0]=='check-kernel': write_private(a[a.index('--output')+1],{'code':'kernel-ok'})
+ else: raise SystemExit(2)
+"""
+            )
+            manifest_path = manifest_dir / f"{manifest_id}.json"
+            persisted_manifest = json.loads(manifest_path.read_text())
+            persisted_manifest["review_scope"]["controller_files"]["files"][
+                "carry_forward.py"
+            ] = hashlib.sha256((root / "carry_forward.py").read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps(persisted_manifest))
+            fake = root / "bin"
+            fake.mkdir()
+            (fake / "curl").write_text("#!/bin/sh\nexit 0\n")
+            (fake / "curl").chmod(0o755)
+            (fake / "flock").write_text("#!/bin/sh\nexit 0\n")
+            (fake / "flock").chmod(0o755)
+            (fake / "mv").write_text(
+                "#!/bin/sh\n"
+                + (
+                    "last=\nfor argument do last=$argument; done\n"
+                    "case \"$last\" in */current-sha) exit 97;; esac\n"
+                    if fail_commit
+                    else ""
+                )
+                + "exec /bin/mv \"$@\"\n"
+            )
+            (fake / "mv").chmod(0o755)
+            if fail_commit:
+                dash = subprocess.run(
+                    ["/bin/dash", str(fake / "mv"), "source", "/tmp/current-sha"],
+                    check=False,
+                )
+                self.assertEqual(dash.returncode, 97)
+            (fake / "docker").write_text(
+                """#!/usr/bin/env python3
+import json,pathlib,sys
+root=pathlib.Path(__file__).parent.parent; state=json.load(open(root/'fixture.json')); a=sys.argv[1:]
+with (root/'events').open('a') as out: out.write(' '.join(a)+'\\n')
+def service(name): return next((s for s in ('rabbitmq','postgres','control','worker','account-web','web') if name==f'example-{s}-1'),'worker')
+if a[0]=='image' and a[1]=='inspect':
+ key=a[2]; values={**state['images'],**state['old_images']}
+ if key.startswith('sha256:'): print(json.dumps({'User':'0','Env':[]})) if '{{json .Config}}' in a[-1] else print(key)
+ else: print(values[key])
+elif a[0]=='volume': print(a[2] if '{{.Name}}' in a[-1] else 'example')
+elif a[0]=='ps': pass
+elif a[0]=='exec':
+ if 'pg_dump' in a: print('synthetic-dump')
+ elif 'pg_restore' in a: print('synthetic-list')
+ else: print('0040_issue152_dispositions')
+elif a[0]=='inspect':
+ s=service(a[1]); old=state['old_images']; current=state['images'] if state.get('started') else old
+ tag_service='web' if s=='account-web' else s
+ image=current.get(f"example-{tag_service}:{state['sha'] if state.get('started') else state['old_sha']}",'sha256:'+'8'*64)
+ if '--format' not in a: print(json.dumps([{'Config':{'Env':['DATABASE_URL=postgresql://synthetic']},'NetworkSettings':{'Networks':{'example_default':{}}}}]))
+ else:
+  fmt=a[-1]
+  if 'Config.User' in fmt: print('0:0')
+  elif 'eq .Destination' in fmt and '/runtime' in fmt: print('volume runtime')
+  elif 'eq .Destination' in fmt and '/journal' in fmt: print('volume journal')
+  elif 'ne .Destination' in fmt: print('/var/lib/dlr/artifacts' if '.Destination' in fmt and '{{.Name}}' not in fmt else 'volume artifacts')
+  elif 'eq .Destination' in fmt: print('volume builtin')
+  elif '{{json .Mounts}}' in fmt: print('[]')
+  elif '{{json .Config}}' in fmt: print('{}')
+  elif '.State.Running' in fmt: print('false')
+  elif '.State' in fmt: print('running')
+  elif '.Id' in fmt: print((s[0] or 'x')*40)
+  elif '.Image' in fmt: print(image)
+  elif 'compose.project' in fmt: print('example')
+  elif 'compose.service' in fmt: print(s)
+  elif 'CgroupnsMode' in fmt: print('private:false')
+  else: print('')
+elif a[0]=='run':
+ source=None
+ for i,v in enumerate(a):
+  if v=='--mount':
+   fields=dict(x.split('=',1) for x in a[i+1].split(',') if '=' in x)
+   if fields.get('target')=='/evidence': source=pathlib.Path(fields['source'])
+ if 'capture-state' in a:
+  (source/pathlib.Path(a[a.index('--db-output')+1]).name).write_text(json.dumps(state['db']))
+  (source/pathlib.Path(a[a.index('--files-output')+1]).name).write_text(json.dumps(state['files']))
+ elif 'group2-runtime' in a:
+  req=source/pathlib.Path(a[a.index('--request')+1]).name; output=source/pathlib.Path(a[a.index('--output')+1]).name
+  request=json.load(open(req)); output.write_text(json.dumps({'cleanup':{'status':'completed','residue':False}}))
+ print('{}')
+elif a[0]=='compose':
+ if 'config' in a: print(json.dumps({'services':{s:{'image':f"example-{s}:{state['sha']}",'environment':{},'volumes':[]} for s in ('postgres','rabbitmq','control','worker')},'volumes':{}}))
+ elif 'up' in a and '-f' in a and 'docker-compose.yml' in a:
+  state['started']=True; (root/'fixture.json').write_text(json.dumps(state)); print('ok')
+ elif 'ps' in a and '-q' in a: print('example-'+a[-1]+'-1')
+ elif 'exec' in a and 'control' in a: print(json.dumps({'status':'succeeded','workspace_cleanup_status':'completed','execution_id':7}))
+ elif 'run' in a and 'assets.py' in a: print('{}')
+ else: print('ok')
+else: print('ok')
+"""
+            )
+            (fake / "docker").chmod(0o755)
+            env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}"}
+            result = subprocess.run(
+                [str(root / "deploy.sh"), sha, "deploy", "0040_issue152_dispositions", manifest_id],
+                cwd=root, env=env, text=True, capture_output=True, check=False,
+            )
+            return root, result
+
+        root, result = fixture("deploy-happy")
+        self.assertEqual(
+            result.returncode,
+            0,
+            result.stderr + result.stdout + (root / "events").read_text(),
+        )
+        carry_check = root / "carry-forward" / "check" / ("a" * 32)
+        self.assertEqual(carry_check.stat().st_mode & 0o777, 0o700)
+        self.assertEqual((carry_check / "preflight").stat().st_mode & 0o777, 0o700)
+        transaction = json.loads((root / "transaction.json").read_text())
+        self.assertEqual(transaction["phase"], "ready")
+        receipt = json.loads((root / "releases" / B / "receipt.json").read_text())
+        self.assertEqual(set(receipt["stages"]), {
+            "preflight", "control_stopped", "stopped", "backup", "same_schema",
+            "started", "probe", "natural_cleanup", "post_preservation", "post_health",
+        })
+        events = (root / "events").read_text().splitlines()
+        self.assertEqual(sum("compose" in event and "exec -T control python -" in event for event in events), 1)
+        self.assertLess(next(i for i,e in enumerate(events) if "stop control" in e),
+                        next(i for i,e in enumerate(events) if "pg_dump" in e))
+        self.assertLess(next(i for i,e in enumerate(events) if "alembic upgrade head" in e),
+                        next(i for i,e in enumerate(events) if "exec -T control python -" in e))
+        failed_root, failed = fixture("deploy-failed-commit", fail_commit=True)
+        self.assertEqual(failed.returncode, 97, failed.stderr)
+        self.assertEqual((failed_root / "current-sha").read_text().strip(), A)
+        self.assertEqual(json.loads((failed_root / "transaction.json").read_text())["phase"], "committing")
+
+    def test_recover_executes_four_app_flow_and_never_runs_official_probe(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def reply(self, status, code=None, cookie=False):
+                self.send_response(status)
+                if cookie:
+                    self.send_header(
+                        "Set-Cookie", "dlr_account_csrf=value; Path=/; SameSite=Lax"
+                    )
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                body = {"status": "ok"} if code is None else {"detail": {"code": code}}
+                self.wfile.write(json.dumps(body).encode())
+
+            def do_GET(self):
+                account = self.server.account
+                if account and self.path == "/api/auth/account/csrf":
+                    self.reply(200, cookie=True)
+                elif not account and self.path == "/api/auth/account/csrf":
+                    self.reply(401, "account_entry_required")
+                elif account and self.path == "/api/auth/admin/verify":
+                    self.reply(401, "token_entry_required")
+                elif not account and self.path == "/api/auth/admin/verify":
+                    authorization = self.headers.get("Authorization")
+                    if authorization == "Bearer test-token":
+                        self.reply(200)
+                    else:
+                        self.reply(401, "unauthorized")
+                elif account and self.path == "/api/auth/account/me":
+                    self.reply(401, "account_session_required")
+                else:
+                    self.reply(404, "missing")
+
+            def do_POST(self):
+                if self.server.account and self.path == "/api/auth/account/logout":
+                    self.reply(403, "account_csrf_invalid")
+                else:
+                    self.reply(404, "missing")
+
+        servers = []
+        for account in (True, False):
+            server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+            server.account = account
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            servers.append(server)
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+        account_port, token_port = (server.server_address[1] for server in servers)
+
+        root = self.root / "vm"
+        root.mkdir(mode=0o700)
+        shutil.copy2(Path(preview.__file__).with_name("deploy.sh"), root / "deploy.sh")
+        shutil.copy2(Path(carry_forward.__file__), root / "carry_real.py")
+        (root / "carry_forward.py").write_text(
+            """#!/usr/bin/env python3
+import importlib.util, pathlib
+import os
+_spec=importlib.util.spec_from_file_location('carry_real',pathlib.Path(__file__).with_name('carry_real.py'))
+_real=importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_real)
+for _name in dir(_real):
+    if not _name.startswith('_'): globals()[_name]=getattr(_real,_name)
+_inspect_container = _real._inspect_container
+_validate_capture_digests = _real._validate_capture_digests
+def _validate_group2_recovery_lineage(deployment,predecessor,fresh):
+    assert predecessor['db']==fresh['db']
+    assert predecessor['files']==fresh['files']
+    if predecessor['kind']=='deployment':
+        assert predecessor['logs_after']==deployment['logs_after']
+def validate_manifest(value): return value
+def validate_group2_manifest_extensions(value): return None
+def compare_group2_startup_files(before, after, proof):
+    _real._validate_startup_proof(proof)
+    return {'code':'group2_startup_files_ok','allowed_deltas':[]}
+def validate_group2_recovery_evidence(manifest, baseline, evidence, expected_deployment):
+    assert baseline['deployment']==expected_deployment
+    assert evidence['before_db']==baseline['fresh']['db']
+    assert evidence['before_files']==baseline['fresh']['files']
+    assert evidence['after_db']==baseline['fresh']['db']
+    proof=_real._startup_proof(evidence['request'])
+    assert proof==evidence['proof']
+    preservation=compare_group2_startup_files(
+        evidence['before_files'],evidence['after_files'],proof)
+    assert preservation==evidence['preservation']
+    _real.validate_group2_account_check(
+        manifest['account_entry'],evidence['account_check'])
+    _real.validate_group2_entry_probe(
+        manifest['account_entry'],evidence['entry_probe'])
+    _real._validate_log_link(
+        evidence['logs_before'],evidence['logs_after'],
+        manifest['account_entry']['profile_digest'])
+    _real._validate_log_link(
+        baseline['predecessor']['logs_after'],evidence['logs_before'],
+        manifest['account_entry']['profile_digest'])
+    result={'startup_result':preservation,'preservation':preservation,
+            'account_ready':True,'entry_ready':True,
+            'log_chain_digest':digest({
+                'before':evidence['logs_before']['evidence_digest'],
+                'after':evidence['logs_after']['evidence_digest']})}
+    if os.environ.get('FAIL_READY_WRITE')=='1':
+        pathlib.Path(__file__).parent.chmod(0o500)
+    return result
+if __name__ == '__main__': _real.main()
+"""
+        )
+        (root / "prepare-sandbox-host.sh").write_text("#!/bin/sh\nexit 0\n")
+        (root / "prepare-sandbox-host.sh").chmod(0o755)
+        (root / "deployment.json").write_text(
+            json.dumps(
+                {
+                    "project": "example",
+                    "web_port": token_port,
+                    "sandbox_unit": "example.service",
+                    "sandbox_cpu_quota": "100%",
+                    "sandbox_memory_max": "1G",
+                }
+            )
+        )
+        (root / "preview.env").write_text(
+            f"DLR_ADMIN_TOKEN=test-token\nDLR_WEB_HOST_PORT={token_port}\n"
+            f"DLR_ACCOUNT_WEB_HOST_PORT={account_port}\n"
+        )
+        for path in (root / "deployment.json", root / "preview.env"):
+            path.chmod(0o600)
+        sha = B
+        release = root / "releases" / sha
+        release.mkdir(parents=True)
+        (release / ".downloaded").touch()
+        (release / "docker-compose.yml").write_text("services: {}\n")
+        (release / "schema").write_text("0040_issue152_dispositions\n")
+        images = {
+            f"example-{service}:{sha}": "sha256:" + str(index) * 64
+            for index, service in enumerate(("postgres", "control", "worker", "web"), 1)
+        }
+        (release / "images.json").write_text(json.dumps(images))
+        log_roots = {}
+        log_files = []
+        for service in ("control", "worker", "web", "account-web"):
+            service_root = self.root / "logs" / service
+            service_root.mkdir(parents=True)
+            names = (
+                ("access.log", "error.log")
+                if service in {"web", "account-web"}
+                else (f"{service}.log",)
+            )
+            for name in names:
+                path = service_root / name
+                path.write_text("")
+                log_files.append(str(path))
+            log_roots[service] = {
+                "path": str(service_root),
+                "allowed_new_files": sorted(names),
+            }
+        worker_log = self.root / "logs" / "worker" / "worker.log"
+
+        binding = {
+            "80/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(account_port)}]
+        }
+        token_binding = {
+            "80/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(token_port)}]
+        }
+        def fact(service, image):
+            mounts = []
+            if service in log_roots:
+                mounts = [{
+                    "type": "bind",
+                    "source": log_roots[service]["path"],
+                    "destination": f"/var/lib/dlr/platform-logs/{service}",
+                    "rw": True,
+                }]
+            return {
+                "container_id": (service[0] if service else "a") * 64,
+                "image_id": image,
+                "status": "running",
+                "health": "healthy",
+                "started_at": "2026-09-20T00:00:00Z",
+                "restart_count": 0,
+                "command": [None, ["run"]],
+                "labels": {
+                    "com.docker.compose.project": "example",
+                    "com.docker.compose.service": service,
+                },
+                "port_bindings": (
+                    binding
+                    if service == "account-web"
+                    else token_binding
+                    if service == "web"
+                    else {}
+                ),
+                "mounts": mounts,
+                "networks": ["example_default"],
+            }
+        actual = {
+            service: fact(
+                service,
+                images[f"example-{'web' if service == 'account-web' else service}:{sha}"],
+            )
+            for service in ("control", "worker", "web", "account-web")
+        }
+        actual["postgres"] = fact("postgres", images[f"example-postgres:{sha}"])
+        old = copy.deepcopy(
+            {key: actual[key] for key in ("control", "worker", "web", "account-web")}
+        )
+        old["account-web"]["image_id"] = "sha256:" + "9" * 64
+        candidate_profiles = {}
+        for service in ("control", "worker", "web", "account-web"):
+            ports = []
+            if service == "web":
+                ports = [{"host_ip": "127.0.0.1", "published": str(token_port), "target": 80, "protocol": "tcp"}]
+            elif service == "account-web":
+                ports = [{"host_ip": "127.0.0.1", "published": str(account_port), "target": 80, "protocol": "tcp"}]
+            candidate_profiles[service] = {
+                "image": f"example-{'web' if service == 'account-web' else service}:{sha}",
+                "command": ["run"],
+                "effective_command": [None, ["run"]],
+                "networks": ["example_default"],
+                "mounts": actual[service]["mounts"],
+                "ports": ports,
+            }
+        profile = {
+            "project": "example",
+            "from_sha": A,
+            "to_sha": sha,
+            "old_containers": old,
+            "old_profiles": copy.deepcopy(candidate_profiles),
+            "candidate_profiles": candidate_profiles,
+            "candidate_web_image_id": images[f"example-web:{sha}"],
+            "candidate_image_ids_by_service": {
+                service: images[f"example-{'web' if service == 'account-web' else service}:{sha}"]
+                for service in ("control", "worker", "web", "account-web")
+            },
+            "ports": {
+                "account": {
+                    "host_ip": "127.0.0.1",
+                    "published": str(account_port),
+                    "target": 80,
+                    "protocol": "tcp",
+                },
+                "token": [
+                    {
+                        "host_ip": "127.0.0.1",
+                        "published": str(token_port),
+                        "target": 80,
+                        "protocol": "tcp",
+                    }
+                ],
+            },
+            "log_files": sorted(log_files),
+            "log_roots": sorted(log_roots.values(), key=lambda item: item["path"]),
+        }
+        profile["profile_digest"] = carry_forward.digest(profile)
+        http_result = carry_forward._http_result(
+            f"http://127.0.0.1:{account_port}/api/auth/account/csrf"
+        )
+        self.assertEqual(http_result["status"], 200)
+        self.assertEqual(http_result["body_status"], "ok")
+        self.assertTrue(http_result["csrf_cookie"])
+        self.assertTrue(http_result["csrf_cookie_path"])
+        self.assertTrue(http_result["csrf_cookie_samesite_lax"])
+        self.assertFalse(http_result["csrf_cookie_httponly"])
+        manifest = {
+            "from_sha": A,
+            "to_sha": sha,
+            "manifest_id": "a" * 32,
+            "manifest_digest": "b" * 64,
+            "review_scope_digest": "c" * 64,
+            "account_entry": profile,
+        }
+        manifest_dir = root / "carry-forward" / "manifests"
+        manifest_dir.mkdir(parents=True, mode=0o700)
+        (root / "carry-forward").chmod(0o700)
+        manifest_path = manifest_dir / (manifest["manifest_id"] + ".json")
+        manifest_path.write_text(
+            json.dumps(manifest)
+        )
+        manifest_path.chmod(0o600)
+        baseline_db = {
+            key: {} for key in (
+                "projection",
+                "responsibilities",
+                "protected_rows",
+                "asset_projection",
+                "schema_shape",
+                "schema_inventory",
+            )
+        }
+        baseline_files = {"synthetic": "preserved"}
+        post_preservation = {"code": "group2_post_probe_ok"}
+        post_bundle = {
+            "result": post_preservation,
+            "db": baseline_db,
+            "files": baseline_files,
+        }
+        baseline = release / "recovery-baseline"
+        baseline.mkdir()
+        (baseline / "ids.json").write_text("{}")
+        (baseline / "db.json").write_text(json.dumps(baseline_db))
+        (baseline / "files.json").write_text(json.dumps(baseline_files))
+        (baseline / "post-preservation.json").write_text(
+            json.dumps(post_preservation)
+        )
+        deployment_logs = carry_forward.capture_log_prefix(profile)
+        (baseline / "logs-after.json").write_text(
+            json.dumps({"log_evidence": deployment_logs})
+        )
+        check_group2 = (
+            root
+            / "carry-forward"
+            / "check"
+            / manifest["manifest_id"]
+            / "group2"
+        )
+        check_group2.mkdir(parents=True)
+        (check_group2 / "account-after.json").write_text(
+            json.dumps({"account_check": {}})
+        )
+        (check_group2 / "entry-after.json").write_text(
+            json.dumps({"entry_probe": {}})
+        )
+        (check_group2 / "log-after-health.json").write_text(
+            json.dumps({"log_evidence": deployment_logs})
+        )
+        post_health = {
+            "account_check": {},
+            "entry_probe": {},
+            "logs_after": deployment_logs,
+        }
+        bundle_digest = carry_forward.digest(post_bundle)
+        (release / "receipt.json").write_text(
+            json.dumps(
+                {
+                    "mode": carry_forward.GROUP2_MODE,
+                    "account_entry": profile,
+                    "carry_forward": {
+                        "manifest_id": manifest["manifest_id"],
+                        "manifest_digest": manifest["manifest_digest"],
+                    },
+                    "review_scope_digest": manifest["review_scope_digest"],
+                    "post_preservation_digest": bundle_digest,
+                    "stages": {
+                        "post_preservation": bundle_digest,
+                        "post_health": carry_forward.digest(post_health),
+                    },
+                }
+            )
+        )
+        (root / "transaction.json").write_text(
+            json.dumps({"phase": "ready", "sha": sha})
+        )
+        (root / "current-sha").write_text(sha + "\n")
+
+        fake = self.root / "bin"
+        fake.mkdir()
+        facts = fake / "facts.json"
+        facts.write_text(
+            json.dumps(
+                {
+                    "containers": actual,
+                    "images": images,
+                    "baseline_db": baseline_db,
+                    "baseline_files": baseline_files,
+                    "worker_log": str(worker_log),
+                }
+            )
+        )
+        docker = fake / "docker"
+        docker.write_text(
+            """#!/usr/bin/env python3
+import datetime, json, os, pathlib, sys
+facts_path=pathlib.Path(__file__).parent/'facts.json'
+data=json.loads(facts_path.read_text())
+a=sys.argv[1:]
+if a[0]=='exec':
+ print('invalid-schema' if os.environ.get('FAIL_SCHEMA')=='1' else '0040_issue152_dispositions')
+elif a[0]=='inspect':
+ name=a[1]
+ service=next((s for s in ('account-web','postgres','control','worker','web') if name==f'example-{s}-1'),'worker')
+ item=data['containers'][service]
+ if '--format' not in a:
+  raw={'Id':item['container_id'],'Image':item['image_id'],'RestartCount':0,
+       'State':{'Status':'running','Health':{'Status':'healthy'},'StartedAt':item['started_at']},
+       'Config':{'Entrypoint':None,'Cmd':['run'],'Labels':item['labels'],
+                 'Env':['DATABASE_URL=postgresql://synthetic']},
+       'HostConfig':{'PortBindings':item['port_bindings']},
+       'Mounts':[{'Type':m['type'],'Source':m['source'],'Destination':m['destination'],'RW':m['rw']}
+                 for m in item['mounts']],
+       'NetworkSettings':{'Networks':{'example_default':{}}}}
+  print(json.dumps([raw]))
+ elif 'CgroupnsMode' in a[-1]:
+  print('wrong:true' if os.environ.get('FAIL_CGROUP')=='1' else 'private:false')
+ elif 'Config.User' in a[-1]: print('1000:1000')
+ elif '.Mounts' in a[-1]:
+  if 'ne .Destination' in a[-1]:
+   print('volume example_artifacts' if '{{.Name}}' in a[-1] else '/var/lib/dlr/artifacts')
+  elif '/var/lib/dlr/runtime' in a[-1]: print('volume example_runtime')
+  elif '/var/lib/dlr/journal' in a[-1]: print('volume example_journal')
+  else: print('volume example_builtin')
+ else:
+  if os.environ.get('FAIL_IMAGE')=='1' and service=='web': print('sha256:'+'0'*64)
+  else: print(item['image_id'])
+elif a[:2]==['image','inspect']:
+ print(data['images'][a[2]])
+elif a[:2]==['volume','inspect']:
+ if '{{.Name}}' in a[-1]: print(a[2])
+ else: print('example')
+elif a[0]=='run':
+ source=None
+ for index,value in enumerate(a):
+  if value=='--mount':
+   mount=dict(part.split('=',1) for part in a[index+1].split(',') if '=' in part)
+   if mount.get('target')=='/evidence': source=pathlib.Path(mount['source'])
+ if 'capture-state' in a:
+  db=pathlib.Path(a[a.index('--db-output')+1]).name
+  files=pathlib.Path(a[a.index('--files-output')+1]).name
+  (source/db).write_text(json.dumps(data['baseline_db']))
+  (source/files).write_text(json.dumps(data['baseline_files']))
+ print('{}')
+elif a[0]=='compose':
+ if os.environ.get('FAIL_POSTGRES')=='1' and 'postgres' in a and 'rabbitmq' in a:
+  raise SystemExit(89)
+ if '--force-recreate' in a:
+  old_id=data['containers']['worker']['container_id']
+  data['containers']['worker']['container_id']=('e' if old_id.startswith('f') else 'f')*64
+  data['containers']['worker']['started_at']=datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
+  nonce='1234567890abcdef'
+  capability_names=('adapter_control_plane_hidden','adapter_mount_blocked','bounded_output','cgroup_kill',
+   'cgroup_namespace_private','cgroup_v2','cpu_hard_limit','memory_hard_limit','mount_namespace',
+   'no_new_privileges','nofile_hard_limit','pid_namespace','pids_hard_limit','preflight_passed',
+   'sandbox_cleanup','swap_hard_limit','tmpfs_hard_limit')
+  cgroup='dlr-preflight-'+nonce
+  receipt={'cgroup_name':cgroup,'status':'passed','workspace_residue':False,
+   'cleanup':{'status':'completed','residue':False,'error_code':None,'cgroup_name':cgroup},
+   'capabilities':{name:True for name in capability_names},'adapter_control_pipe_fds':[],
+   'adapter_hidden_cgroup_paths':{'/run/dlr-cgroup':{'read_blocked':True,'write_blocked':True},
+                                  '/sys/fs/cgroup':{'read_blocked':True,'write_blocked':True}},
+   'agent_outside_attempt':True,'helper_outside_attempt':True,'probe_in_attempt':True,
+   'child_empty_after_kill':True,'process_exited_after_kill':True,
+   'worker_cgroup_management':{'child_limit_write_read':True,'parent_controllers_read':True},
+   'namespace_identity':{'boot_id':'boot','parent_device':1,'parent_inode':2,'root_device':1,'root_inode':3}}
+  with open(data['worker_log'],'a') as out:
+   out.write('sandbox preflight receipt: '+json.dumps(receipt)+'\\n')
+   out.write('sandbox preflight passed; rabbitmq execution gate=True\\n')
+  facts_path.write_text(json.dumps(data))
+ if 'ps' in a and '-q' in a: print('example-worker-1')
+ else: print('ok')
+else: print('ok')
+"""
+        )
+        docker.chmod(0o755)
+        (fake / "flock").write_text("#!/bin/sh\nexit 0\n")
+        (fake / "flock").chmod(0o755)
+        (fake / "curl").write_text(
+            "#!/bin/sh\n"
+            "[ \"${FAIL_HEALTH:-}\" = 1 ] && exit 88\n"
+            "exit 0\n"
+        )
+        (fake / "curl").chmod(0o755)
+        result = subprocess.run(
+            [str(root / "deploy.sh"), sha, "recover", "", "", "d" * 32],
+            env={**os.environ, "PATH": str(fake) + ":" + os.environ["PATH"]},
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        recoveries = list((root / "carry-forward").glob(f"recovery-{sha}-*"))
+        self.assertEqual(len(recoveries), 1)
+        self.assertTrue((recoveries[0] / "entry.json").is_file())
+        self.assertTrue((recoveries[0] / "preservation.json").is_file())
+        self.assertFalse((release / "probe.json").exists())
+        log_after_success = worker_log.read_bytes()
+        (baseline / "db.json").write_text(json.dumps({"tampered": True}))
+        rejected = subprocess.run(
+            [str(root / "deploy.sh"), sha, "recover", "", "", "e" * 32],
+            env={**os.environ, "PATH": str(fake) + ":" + os.environ["PATH"]},
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertEqual(worker_log.read_bytes(), log_after_success)
+        self.assertFalse((release / "probe.json").exists())
+
+        (baseline / "db.json").write_text(json.dumps(baseline_db))
+        first_completion = json.loads((recoveries[0] / "completion.json").read_text())
+        (root / "transaction.json").write_text(
+            json.dumps(
+                {
+                    "phase": "ready",
+                    "sha": sha,
+                    "recovery_id": "d" * 32,
+                    "recovery_evidence_digest": first_completion[
+                        "evidence_digest"
+                    ],
+                }
+            )
+        )
+        repeated = subprocess.run(
+            [str(root / "deploy.sh"), sha, "recover", "", "", "5" * 32],
+            env={**os.environ, "PATH": str(fake) + ":" + os.environ["PATH"]},
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        repeated_recovery = (
+            root / "carry-forward" / f"recovery-{sha}-{'5' * 32}"
+        )
+        self.assertEqual(
+            json.loads((repeated_recovery / "baseline.json").read_text())[
+                "predecessor"
+            ]["recovery_id"],
+            "d" * 32,
+        )
+        ready_transaction = json.loads((root / "transaction.json").read_text())
+
+        def rejected_after_recreate(flag, marker, expected=None):
+            (root / "transaction.json").write_text(json.dumps(ready_transaction))
+            failed = subprocess.run(
+                [
+                    str(root / "deploy.sh"),
+                    sha,
+                    "recover",
+                    "",
+                    "",
+                    marker * 32,
+                ],
+                env={
+                    **os.environ,
+                    "PATH": str(fake) + ":" + os.environ["PATH"],
+                    flag: "1",
+                },
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if flag == "FAIL_READY_WRITE":
+                root.chmod(0o700)
+            if expected is None:
+                self.assertNotEqual(failed.returncode, 0)
+            else:
+                self.assertEqual(failed.returncode, expected, failed.stderr)
+            transaction = json.loads((root / "transaction.json").read_text())
+            self.assertEqual(transaction["phase"], "recovering")
+            self.assertEqual(transaction["recovery_id"], marker * 32)
+            recovery = root / "carry-forward" / f"recovery-{sha}-{marker * 32}"
+            if flag in {"FAIL_POSTGRES", "FAIL_SCHEMA"}:
+                self.assertFalse(recovery.exists())
+            elif flag == "FAIL_READY_WRITE":
+                self.assertTrue((recovery / "completion.json").is_file())
+            else:
+                self.assertFalse((recovery / "completion.json").exists())
+
+        rejected_after_recreate("FAIL_POSTGRES", "6", 89)
+        rejected_after_recreate("FAIL_SCHEMA", "7")
+        rejected_after_recreate("FAIL_HEALTH", "1", 88)
+        rejected_after_recreate("FAIL_CGROUP", "2")
+        rejected_after_recreate("FAIL_IMAGE", "3")
+        rejected_after_recreate("FAIL_READY_WRITE", "4")
+        self.assertFalse((release / "probe.json").exists())
 
 
 if __name__ == "__main__":

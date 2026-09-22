@@ -262,6 +262,7 @@
     "kind": "依赖源类型",
     "repositoryUrl": "索引 URL",
     "urlPlaceholder": "输入索引 URL",
+    "urlInvalid": "请输入有效的依赖源地址；当前输入已保留，可直接修正。",
     "credential": "依赖源凭据",
     "credentialPlaceholder": "可选凭据",
     "defaultCheckbox": "设为此类型的默认源",

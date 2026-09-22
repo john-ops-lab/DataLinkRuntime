@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
@@ -41,9 +42,11 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
   };
 }
 
-function WatcherHarness(props: { initial: Execution; next?: Execution }) {
+function WatcherHarness(props: { initial: Execution; next?: Execution; candidate?: Execution }) {
   const watcher = useExecutionWatcher(() => undefined);
+  const operationEpoch = useRef<ReturnType<typeof watcher.beginOperation>>(null);
   const nextExecution = props.next;
+  const operationCandidate = props.candidate;
   return (
     <>
       <button type="button" data-testid="watch" onClick={() => watcher.watch(props.initial)}>
@@ -53,6 +56,29 @@ function WatcherHarness(props: { initial: Execution; next?: Execution }) {
         <button type="button" data-testid="watch-next" onClick={() => watcher.watch(nextExecution)}>
           Watch next
         </button>
+      )}
+      {operationCandidate !== undefined && (
+        <>
+          <button
+            type="button"
+            data-testid="begin-operation"
+            onClick={() => {
+              operationEpoch.current = watcher.beginOperation(props.initial.id);
+            }}
+          >
+            Begin operation
+          </button>
+          <button
+            type="button"
+            data-testid="reconcile"
+            onClick={() => watcher.reconcileOperationResult(
+              operationCandidate,
+              operationEpoch.current,
+            )}
+          >
+            Reconcile operation
+          </button>
+        </>
       )}
       <output data-testid="execution-status">{watcher.execution?.status ?? ""}</output>
       <output data-testid="server-line-count">{watcher.serverLogLineCount}</output>
@@ -244,5 +270,164 @@ describe("useExecutionWatcher live-log boundaries", () => {
 
     expect(screen.getByTestId("live-log").textContent).toBe(snapshot);
     expect(screen.getByTestId("live-log-server-truncated")).toBeTruthy();
+  });
+
+  it("keeps a synchronously observed terminal result when an older operation response arrives", async () => {
+    const initial = makeExecution({ status: "queued", started_at: null });
+    const terminal = makeExecution({
+      status: "succeeded",
+      stdout: "final\n",
+      ended_at: "2026-08-15T00:00:02Z",
+    });
+    const stale = makeExecution({ status: "running", stdout: "old\n" });
+    getExecution.mockResolvedValue(terminal);
+    render(<WatcherHarness initial={initial} candidate={stale} />);
+    fireEvent.click(screen.getByTestId("watch"));
+    const handlers = latestHandlers();
+
+    act(() => {
+      handlers.onExecution?.(terminal);
+      fireEvent.click(screen.getByTestId("reconcile"));
+    });
+
+    await waitFor(() => expect(getExecution).toHaveBeenCalledWith(initial.id));
+    expect(screen.getByTestId("execution-status").textContent).toBe("succeeded");
+    expect(screen.getByTestId("live-log").textContent).toBe("final\n");
+    expect(openExecutionEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps same-attempt status, log deltas and line count observed during an operation", () => {
+    const initial = makeExecution({
+      status: "queued",
+      attempt_count: 0,
+      started_at: null,
+    });
+    const running = makeExecution({
+      status: "running",
+      attempt_count: 1,
+      stdout: "",
+      stderr: "",
+      cancel_requested: true,
+    });
+    render(<WatcherHarness initial={initial} candidate={running} />);
+    fireEvent.click(screen.getByTestId("watch"));
+    fireEvent.click(screen.getByTestId("begin-operation"));
+    const handlers = latestHandlers();
+
+    act(() => {
+      handlers.onExecution?.({
+        ...running,
+        cancel_requested: false,
+        stdout: "accepted line\n",
+        stderr: "accepted error\n",
+      });
+      handlers.onLog?.({ stream: "stdout", chunk: "new delta\n" });
+    });
+    fireEvent.click(screen.getByTestId("reconcile"));
+
+    expect(screen.getByTestId("execution-status").textContent).toBe("running");
+    expect(screen.getByTestId("live-log").textContent).toBe(
+      "accepted line\nnew delta\naccepted error\n",
+    );
+    expect(screen.getByTestId("server-line-count").textContent).toBe("3");
+    expect(openExecutionEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not revive a prefix or clear truncation after a newer log snapshot", () => {
+    const initial = makeExecution({ attempt_count: 1, stdout: "before\n" });
+    const stale = makeExecution({
+      attempt_count: 1,
+      stdout: "old-prefix\nbefore\n",
+      stdout_truncated: false,
+      cancel_requested: true,
+    });
+    const snapshot = "...[truncated 64 bytes]...\ntail\n";
+    render(<WatcherHarness initial={initial} candidate={stale} />);
+    fireEvent.click(screen.getByTestId("watch"));
+    fireEvent.click(screen.getByTestId("begin-operation"));
+
+    act(() => {
+      latestHandlers().onLogSnapshot?.({ stream: "stdout", content: snapshot, truncated: true });
+    });
+    fireEvent.click(screen.getByTestId("reconcile"));
+
+    expect(screen.getByTestId("live-log").textContent).toBe(snapshot);
+    expect(screen.getByTestId("live-log-server-truncated")).toBeTruthy();
+    expect(screen.getByTestId("server-line-count").textContent).toBe("2");
+    expect(openExecutionEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an older attempt operation result without disturbing the current stream", () => {
+    const current = makeExecution({
+      dispatch_generation: 3,
+      attempt_count: 2,
+      started_at: "2026-08-15T00:00:03Z",
+      stdout: "current attempt\n",
+    });
+    const older = makeExecution({
+      dispatch_generation: 2,
+      attempt_count: 1,
+      started_at: "2026-08-15T00:00:01Z",
+      status: "cancelled",
+      stdout: "old attempt\n",
+    });
+    render(<WatcherHarness initial={current} candidate={older} />);
+    fireEvent.click(screen.getByTestId("watch"));
+    fireEvent.click(screen.getByTestId("begin-operation"));
+    fireEvent.click(screen.getByTestId("reconcile"));
+
+    expect(screen.getByTestId("execution-status").textContent).toBe("running");
+    expect(screen.getByTestId("live-log").textContent).toBe("current attempt\n");
+    expect(openExecutionEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts an explicitly newer attempt without combining the previous attempt logs", () => {
+    const initial = makeExecution({
+      dispatch_generation: 2,
+      attempt_count: 1,
+      stdout: "old attempt\n",
+    });
+    const newer = makeExecution({
+      dispatch_generation: 3,
+      attempt_count: 2,
+      started_at: "2026-08-15T00:00:03Z",
+      stdout: "new attempt\n",
+      cancel_requested: true,
+    });
+    render(<WatcherHarness initial={initial} candidate={newer} />);
+    fireEvent.click(screen.getByTestId("watch"));
+    fireEvent.click(screen.getByTestId("begin-operation"));
+    act(() => {
+      latestHandlers().onLog?.({ stream: "stdout", chunk: "late old delta\n" });
+    });
+    fireEvent.click(screen.getByTestId("reconcile"));
+
+    expect(screen.getByTestId("execution-status").textContent).toBe("running");
+    expect(screen.getByTestId("live-log").textContent).toBe("new attempt\n");
+    expect(openExecutionEvents).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows an operation response first and still converges on a later terminal event", async () => {
+    const initial = makeExecution({ status: "queued", started_at: null });
+    const running = makeExecution({ status: "running", cancel_requested: true });
+    const terminal = makeExecution({
+      status: "succeeded",
+      stdout: "final\n",
+      ended_at: "2026-08-15T00:00:02Z",
+    });
+    getExecution.mockResolvedValue(terminal);
+    render(<WatcherHarness initial={initial} candidate={running} />);
+    fireEvent.click(screen.getByTestId("watch"));
+    fireEvent.click(screen.getByTestId("reconcile"));
+    expect(openExecutionEvents).toHaveBeenCalledTimes(2);
+
+    const handlers = latestHandlers();
+    act(() => {
+      handlers.onExecution?.(terminal);
+    });
+
+    await waitFor(() => expect(screen.getByTestId("execution-status").textContent).toBe("succeeded"));
+    expect(screen.getByTestId("live-log").textContent).toBe("final\n");
+    expect(openExecutionEvents).toHaveBeenCalledTimes(2);
   });
 });

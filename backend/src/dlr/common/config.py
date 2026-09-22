@@ -437,13 +437,13 @@ class Settings(BaseSettings):
         default=1_024, ge=64, le=1_048_576, validation_alias="DLR_SANDBOX_NOFILE"
     )
 
-    # Issue #127 B0: physical ArtifactStore placement and lifecycle loops are
-    # deployment concerns.  The managed-files flag remains disabled until the
-    # later storage/Worker waves pass their release gates.
+    # Managed files are available by default now that the storage and Worker
+    # release gates are complete. Deployments can still close the feature
+    # explicitly without changing their persisted ArtifactStore data.
     artifact_store_root: str = Field(
         default="/var/lib/dlr/artifacts", validation_alias="DLR_ARTIFACT_STORE_ROOT"
     )
-    managed_files_enabled: bool = Field(default=False, validation_alias="DLR_MANAGED_FILES_ENABLED")
+    managed_files_enabled: bool = Field(default=True, validation_alias="DLR_MANAGED_FILES_ENABLED")
     artifact_gc_interval_seconds: float = Field(
         default=300.0,
         gt=0,

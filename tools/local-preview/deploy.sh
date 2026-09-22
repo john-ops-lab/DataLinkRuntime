@@ -2,14 +2,84 @@
 # Trusted controller, executed only in the dedicated Colima VM.
 set -euo pipefail
 umask 077
-sha=${1:?commit required}
-action=${2:?stage, plan, deploy, recover or adopt required}
-schema=${3:-}
-carry_id=${4:-}
+if [ "${1:-}" = recover-group2-post-finalize-reboot ]; then
+  [ "$#" -eq 5 ] || exit 2
+  root=${2:?fixed root required}
+  incident_id=${3:?incident id required}
+  finalize_id=${4:?finalize id required}
+  boot_id=${5:?boot id required}
+  [[ "$root" =~ ^/[a-zA-Z0-9_./-]+$ ]] && [[ "$root" != */ ]] && [[ "$root" != *".."* ]] || exit 2
+  [[ "$incident_id" =~ ^[0-9a-f]{32}$ ]] || exit 2
+  [[ "$finalize_id" =~ ^[0-9a-f]{32}$ ]] || exit 2
+  [[ "$boot_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || exit 2
+  [ ! -L "$0" ] || exit 2
+  tool_root=$(cd -P "$(dirname "$0")" && pwd)
+  [ "$tool_root" = "$root/incidents/$incident_id/finalize/$finalize_id/reboot/$boot_id/tool" ] || exit 2
+  [ -f "$tool_root/deploy.sh" ] && [ ! -L "$tool_root/deploy.sh" ] || exit 2
+  [ -f "$tool_root/carry_forward.py" ] && [ ! -L "$tool_root/carry_forward.py" ] || exit 2
+  python3 - "$root/incidents/$incident_id/finalize/$finalize_id/reboot/$boot_id/request.json" \
+    "$tool_root/deploy.sh" "$tool_root/carry_forward.py" <<'PYREBOOTTOOL' || exit 2
+import hashlib, json, pathlib, sys
+request_path, deploy_path, carry_path = map(pathlib.Path, sys.argv[1:])
+request = json.loads(request_path.read_bytes())
+expected = request['tool']['controller_files']
+for name, path in (('deploy.sh', deploy_path), ('carry_forward.py', carry_path)):
+    assert path.is_file() and not path.is_symlink()
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == expected[name]
+PYREBOOTTOOL
+  exec 9>"$root/deploy.lock"
+  flock -n 9 || exit 1
+  exec python3 "$tool_root/carry_forward.py" post-finalize-reboot-vm \
+    --root "$root" --incident-id "$incident_id" --finalize-id "$finalize_id" \
+    --boot-id "$boot_id"
+elif [ "${1:-}" = finalize-group2-partial ]; then
+  root=${2:?fixed root required}
+  incident_id=${3:?incident id required}
+  finalize_id=${4:?finalize id required}
+  [[ "$root" =~ ^/[a-zA-Z0-9_./-]+$ ]] && [[ "$root" != */ ]] && [[ "$root" != *".."* ]] || exit 2
+  [[ "$incident_id" =~ ^[0-9a-f]{32}$ ]] || exit 2
+  [[ "$finalize_id" =~ ^[0-9a-f]{32}$ ]] || exit 2
+  tool_root=$(cd "$(dirname "$0")" && pwd)
+  [ "$tool_root" = "$root/incidents/$incident_id/finalize/$finalize_id/tool" ] || exit 2
+  exec 9>"$root/deploy.lock"
+  flock -n 9 || exit 1
+  exec python3 "$tool_root/carry_forward.py" finalize-partial-vm \
+    --root "$root" --incident-id "$incident_id" --finalize-id "$finalize_id"
+elif [ "${1:-}" = reconcile-group2-starting ]; then
+  root=${2:?fixed root required}
+  incident_id=${3:?incident id required}
+  [[ "$root" =~ ^/[a-zA-Z0-9_./-]+$ ]] && [[ "$root" != */ ]] && [[ "$root" != *".."* ]] || exit 2
+  [[ "$incident_id" =~ ^[0-9a-f]{32}$ ]] || exit 2
+  tool_root=$(cd "$(dirname "$0")" && pwd)
+  [ "$tool_root" = "$root/incidents/$incident_id/tool" ] || exit 2
+  request="$root/incidents/$incident_id/request.json"
+  sha=$(python3 - "$request" <<'PYINCIDENTSHA'
+import json, sys
+value=json.load(open(sys.argv[1])); print(value['prior']['sha'])
+PYINCIDENTSHA
+  )
+  action=reconcile-group2-starting
+  schema=0040_issue152_dispositions
+  carry_id=
+  recovery_id=
+  exec 9>"$root/deploy.lock"
+  flock -n 9 || exit 1
+  exec python3 "$tool_root/carry_forward.py" reconcile-vm \
+    --root "$root" --incident-id "$incident_id"
+else
+  sha=${1:?commit required}
+  action=${2:?stage, plan, deploy, recover or adopt required}
+  schema=${3:-}
+  carry_id=${4:-}
+  recovery_id=${5:-}
+fi
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 2
 [[ "$action" =~ ^(stage|plan|deploy|recover|adopt)$ ]] || exit 2
 if [ -n "$carry_id" ]; then [[ "$carry_id" =~ ^[0-9a-f]{32}$ ]] || exit 2; fi
 [ "$action" = plan ] || [ -z "$carry_id" ] || [ "$action" = deploy ] || exit 2
+if [ -n "$recovery_id" ]; then
+  [ "$action" = recover ] && [[ "$recovery_id" =~ ^[0-9a-f]{32}$ ]] || exit 2
+fi
 root=$(cd "$(dirname "$0")" && pwd)
 deployment_settings=$(python3 - "$root/deployment.json" <<'PYSETTINGS'
 import json, shlex, sys
@@ -19,6 +89,7 @@ for key in ('project', 'web_port', 'sandbox_unit', 'sandbox_cpu_quota', 'sandbox
 PYSETTINGS
 )
 eval "$deployment_settings"
+carry_helper="$root/carry_forward.py"
 sandbox_description="DataLinkRuntime Sandbox $sandbox_unit CPU=$sandbox_cpu_quota Memory=$sandbox_memory_max"
 release=$root/releases/$sha
 exec 9>"$root/deploy.lock"
@@ -43,9 +114,10 @@ PY
 compose() { docker compose --project-name "$project" --env-file "$root/preview.env" -f docker-compose.yml -f compose.preview.json "$@"; }
 sql() { docker exec "$project-postgres-1" psql -U dlr -d dlr -Atc "$1"; }
 record() {
-  python3 - "$root/transaction.json" "$1" "$sha" "${backup:-}" "${carry_manifest:-}" <<'PY'
+  python3 - "$root/transaction.json" "$1" "$sha" "${backup:-}" \
+    "${carry_manifest:-}" "${recovery_id:-}" "${recovery_completion_digest:-}" <<'PY'
 import json, os, sys, time
-path, phase, sha, backup, manifest_path = sys.argv[1:]
+path, phase, sha, backup, manifest_path, recovery_id, recovery_digest = sys.argv[1:]
 value = {'phase': phase, 'sha': sha, 'backup': backup, 'at': time.time()}
 if manifest_path:
     with open(manifest_path) as source: manifest = json.load(source)
@@ -55,6 +127,10 @@ if manifest_path:
         'from_sha': manifest['from_sha'],
         'to_sha': manifest['to_sha'],
     }
+if recovery_id:
+    value['recovery_id'] = recovery_id
+if recovery_digest:
+    value['recovery_evidence_digest'] = recovery_digest
 with open(path + '.tmp', 'w') as out:
     json.dump(value, out)
     out.flush(); os.fsync(out.fileno())
@@ -110,7 +186,7 @@ print(networks[0])
 PY
 )
   local -a mounts=(
-    --mount "type=bind,source=$root/carry_forward.py,target=/opt/dlr/carry_forward.py,readonly"
+    --mount "type=bind,source=$carry_helper,target=/opt/dlr/carry_forward.py,readonly"
     --mount "type=bind,source=$evidence,target=/evidence"
   )
   if [ -n "${carry_manifest:-}" ]; then
@@ -130,7 +206,7 @@ PY
 carry_files() {
   local evidence=$1; shift
   local -a mounts=(
-    --mount "type=bind,source=$root/carry_forward.py,target=/opt/dlr/carry_forward.py,readonly"
+    --mount "type=bind,source=$carry_helper,target=/opt/dlr/carry_forward.py,readonly"
     --mount "type=bind,source=$evidence,target=/evidence"
     --mount "type=volume,source=$runtime_volume,target=/var/lib/dlr/runtime,readonly,volume-nocopy"
     --mount "type=volume,source=$journal_volume,target=/var/lib/dlr/journal,readonly,volume-nocopy"
@@ -183,7 +259,7 @@ print(networks[0])
 PY
   )
   local -a mounts=(
-    --mount "type=bind,source=$root/carry_forward.py,target=/opt/dlr/carry_forward.py,readonly"
+    --mount "type=bind,source=$carry_helper,target=/opt/dlr/carry_forward.py,readonly"
     --mount "type=bind,source=$evidence,target=/evidence"
     --mount "type=volume,source=$runtime_volume,target=/var/lib/dlr/runtime,readonly,volume-nocopy"
     --mount "type=volume,source=$journal_volume,target=/var/lib/dlr/journal,readonly,volume-nocopy"
@@ -207,6 +283,22 @@ PY
   rm -f "$env_file"
   trap - RETURN EXIT
   return "$rc"
+}
+group2_runtime_host() {
+  local request=$1 output=$2
+  python3 "$carry_helper" group2-runtime \
+    --request "$request" --output "$output" >/dev/null
+}
+group2_log_checkpoint() {
+  local baseline=$1 output=$2 request="${2%.json}-request.json"
+  python3 - "$request" "$baseline" <<'PY'
+import json, os, sys
+baseline=json.load(open(sys.argv[2])); baseline=baseline.get('log_evidence',baseline)
+value={'mode':'audited-group2-same-schema-v1','operation':'log-append','baseline':baseline}
+with open(sys.argv[1]+'.tmp','w') as out: json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+  group2_runtime_host "$request" "$output"
 }
 images() {
   python3 - "$release/images.json" "${1:-verify}" "$sha" "$project" <<'PY'
@@ -275,6 +367,46 @@ PY
 )
   mode_args=()
   if [ -n "$carry_mode" ]; then mode_args=(--mode "$carry_mode"); fi
+  if [ "$carry_mode" = audited-group2-same-schema-v1 ]; then
+    python3 - "$carry_work/account-request.json" "$project" \
+      "$(cat "$root/current-sha")" "$sha" "$root" <<'PY'
+import json, os, sys
+path, project, old_sha, new_sha, root = sys.argv[1:]
+value = {
+    'mode':'audited-group2-same-schema-v1', 'operation':'account-capture',
+    'project':project, 'from_sha':old_sha, 'to_sha':new_sha,
+    'old_release':f'{root}/releases/{old_sha}',
+    'candidate_release':f'{root}/releases/{new_sha}',
+    'env_file':f'{root}/preview.env',
+    'old_image_ids':json.load(open(f'{root}/releases/{old_sha}/images.json')),
+    'candidate_image_ids':json.load(open(f'{root}/releases/{new_sha}/images.json')),
+}
+with open(path + '.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(path + '.tmp',path)
+PY
+    group2_runtime_host "$carry_work/account-request.json" "$carry_work/account.json"
+    python3 - "$carry_work/log-request.json" "$carry_work/account.json" <<'PY'
+import json, os, sys
+account=json.load(open(sys.argv[2]))
+value={'mode':'audited-group2-same-schema-v1','operation':'log-capture',
+       'profile':account['account_entry']}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+    group2_runtime_host "$carry_work/log-request.json" "$carry_work/log.json"
+    python3 - "$carry_work/context.json" "$carry_work/account.json" \
+      "$carry_work/log.json" <<'PY'
+import json, os, sys
+path=sys.argv[1]; value=json.load(open(path))
+value['account_entry']=json.load(open(sys.argv[2]))['account_entry']
+value['log_evidence']=json.load(open(sys.argv[3]))['log_evidence']
+with open(path+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(path+'.tmp',path)
+PY
+  fi
   carry_state "$carry_work" --ids /evidence/ids.json "${mode_args[@]}" \
     --db-output /evidence/db.json --files-output /evidence/files.json
   python3 "$root/carry_forward.py" check-kernel --unit "$sandbox_unit" \
@@ -301,14 +433,238 @@ import json, sys
 with open(sys.argv[1]) as source: t = json.load(source)
 assert t['phase'] == 'ready' and t['sha'] == sys.argv[2], 'Unfinished deployment'
 PY
+  test "$(cat "$root/current-sha")" = "$sha"
+  is_group2=$(python3 - "$release/receipt.json" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1]))
+print('true' if value.get('mode') == 'audited-group2-same-schema-v1' else 'false')
+PY
+  )
+  if [ "$is_group2" = true ]; then
+    [ -n "$recovery_id" ] || exit 2
+    read -r previous_recovery_id previous_recovery_digest < <(
+      python3 - "$root/transaction.json" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1])); identity=value.get('recovery_id'); digest=value.get('recovery_evidence_digest')
+if identity is None and digest is None: print('- -')
+elif isinstance(identity,str) and isinstance(digest,str): print(identity,digest)
+else: raise SystemExit('Invalid previous recovery binding')
+PY
+    )
+    record recovering
+  fi
   compose up -d --no-build --wait --wait-timeout 180 postgres rabbitmq
   test "$(sql 'SELECT version_num FROM alembic_version')" = "$(cat "$release/schema")"
-  compose up -d --no-build --wait --wait-timeout 180 control worker web
+  if [ "$is_group2" = true ]; then
+    recovery=$(python3 - "$root/carry-forward" "$sha" "$recovery_id" <<'PY'
+import pathlib, sys
+path=pathlib.Path(sys.argv[1])/f'recovery-{sys.argv[2]}-{sys.argv[3]}'
+path.mkdir(mode=0o700,parents=True,exist_ok=False)
+print(path)
+PY
+    )
+    carry_manifest=$(python3 - "$root" "$release/receipt.json" "$sha" \
+      "$root/carry_forward.py" <<'PY'
+import importlib.util, json, pathlib, sys
+root=pathlib.Path(sys.argv[1]); receipt=json.load(open(sys.argv[2])); sha=sys.argv[3]
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[4])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+reference=receipt['carry_forward']; manifest_path=root/'carry-forward'/'manifests'/(reference['manifest_id']+'.json')
+manifest=m.validate_manifest(m.read_private(manifest_path)); m.validate_group2_manifest_extensions(manifest)
+assert manifest['to_sha']==sha
+assert manifest['manifest_digest']==reference['manifest_digest']
+assert manifest['review_scope_digest']==receipt['review_scope_digest']
+print(manifest_path)
+PY
+    )
+    runtime_volume=$(named_volume worker /var/lib/dlr/runtime)
+    journal_volume=$(named_volume worker /var/lib/dlr/journal)
+    builtin_volume=$(named_volume control /var/lib/dlr/builtin-packages)
+    artifact_volume=$(other_named_volume control /var/lib/dlr/builtin-packages)
+    artifact_target=$(other_named_destination control /var/lib/dlr/builtin-packages)
+    worker_user=$(docker inspect "$project-worker-1" --format '{{.Config.User}}')
+    worker_uid=${worker_user%%:*}; worker_uid=${worker_uid:-0}
+    [[ "$worker_uid" =~ ^[0-9]+$ ]]
+    install -m 600 "$release/recovery-baseline/ids.json" "$recovery/ids.json"
+    carry_state "$recovery" --ids /evidence/ids.json \
+      --mode audited-group2-same-schema-v1 \
+      --db-output /evidence/before-db.json --files-output /evidence/before-files.json
+    python3 - "$root/carry_forward.py" "$release/receipt.json" \
+      "$release/recovery-baseline" "$recovery/before-db.json" \
+      "$recovery/before-files.json" "$carry_manifest" "$root/carry-forward" \
+      "$previous_recovery_id" "$previous_recovery_digest" "$recovery/baseline.json" <<'PY'
+import importlib.util, json, pathlib, re, sys
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+receipt=json.load(open(sys.argv[2])); baseline=pathlib.Path(sys.argv[3])
+db=json.load(open(baseline/'db.json')); files=json.load(open(baseline/'files.json'))
+logs=json.load(open(baseline/'logs-after.json'))['log_evidence']
+actual_db=json.load(open(sys.argv[4])); actual_files=json.load(open(sys.argv[5]))
+value={'result':json.load(open(baseline/'post-preservation.json')),'db':db,'files':files}
+assert m.digest(value)==receipt['post_preservation_digest']==receipt['stages']['post_preservation']
+manifest=m.validate_manifest(m.read_private(pathlib.Path(sys.argv[6]))); root=pathlib.Path(sys.argv[7])
+group2=root/'check'/manifest['manifest_id']/'group2'
+post_health={'account_check':json.load(open(group2/'account-after.json'))['account_check'],
+             'entry_probe':json.load(open(group2/'entry-after.json'))['entry_probe'],
+             'logs_after':json.load(open(group2/'log-after-health.json'))['log_evidence']}
+assert m.digest(post_health)==receipt['stages']['post_health']
+assert logs==post_health['logs_after']
+previous_id,previous_digest=sys.argv[8:10]
+deployment={'db':db,'files':files,'post_preservation':value['result'],'logs_after':logs}
+visiting=set()
+def validate_prior(identity, expected_digest):
+    assert isinstance(identity,str) and re.fullmatch(r'[0-9a-f]{32}',identity)
+    assert isinstance(expected_digest,str) and re.fullmatch(r'[0-9a-f]{64}',expected_digest)
+    assert identity not in visiting
+    visiting.add(identity)
+    try:
+        prior=root/f'recovery-{manifest["to_sha"]}-{identity}'
+        def read(name): return json.load(open(prior/name))
+        prior_baseline=read('baseline.json'); completion=read('completion.json')
+        assert prior_baseline['deployment']==deployment
+        reference=prior_baseline['predecessor']
+        if reference['kind']=='deployment':
+            expected={'kind':'deployment','recovery_id':None,'evidence_digest':None,
+                      'db':db,'files':files,'logs_after':logs}
+        elif reference.get('kind')=='recovery':
+            parent=validate_prior(reference['recovery_id'],reference['evidence_digest'])
+            expected={'kind':'recovery','recovery_id':parent['recovery_id'],
+                      'evidence_digest':parent['evidence_digest'],'db':parent['after_db'],
+                      'files':parent['after_files'],'logs_after':parent['logs_after']}
+        else:
+            raise AssertionError('Invalid recovery predecessor kind')
+        assert reference==expected
+        evidence={'request':read('startup-request.json'),'proof':read('startup.json')['startup_proof'],
+          'before_db':read('before-db.json'),'after_db':read('after-db.json'),
+          'before_files':read('before-files.json'),'after_files':read('after-files.json'),
+          'account_check':read('account.json')['account_check'],'entry_probe':read('entry.json')['entry_probe'],
+          'logs_before':read('log-before.json')['log_evidence'],'logs_after':read('log-after.json')['log_evidence'],
+          'preservation':read('preservation.json')}
+        result=m.validate_group2_recovery_evidence(manifest,prior_baseline,evidence,deployment)
+        evidence_digest=m.digest({'baseline':prior_baseline,'evidence':evidence})
+        expected_completion={'schema':'group2-recovery-completion-v1','recovery_id':identity,
+          'sha':manifest['to_sha'],'manifest_id':manifest['manifest_id'],
+          'manifest_digest':manifest['manifest_digest'],'evidence_digest':evidence_digest,
+          'predecessor':{key:expected[key] for key in ('kind','recovery_id','evidence_digest')},
+          'result':result}
+        assert completion==expected_completion and evidence_digest==expected_digest
+        return {'recovery_id':identity,'evidence_digest':evidence_digest,
+                'after_db':evidence['after_db'],'after_files':evidence['after_files'],
+                'logs_after':evidence['logs_after']}
+    finally:
+        visiting.remove(identity)
+if previous_id=='-':
+    assert previous_digest=='-'
+    predecessor={'kind':'deployment','recovery_id':None,'evidence_digest':None,
+                 'db':db,'files':files,'logs_after':logs}
+else:
+    prior=validate_prior(previous_id,previous_digest)
+    predecessor={'kind':'recovery','recovery_id':prior['recovery_id'],
+                 'evidence_digest':prior['evidence_digest'],'db':prior['after_db'],
+                 'files':prior['after_files'],'logs_after':prior['logs_after']}
+current={'deployment':deployment,'predecessor':predecessor,
+         'fresh':{'db':actual_db,'files':actual_files}}
+m._validate_group2_recovery_lineage(deployment,predecessor,current['fresh'])
+m.write_private(pathlib.Path(sys.argv[10]),current)
+PY
+    python3 - "$recovery/before-worker.json" "$root/carry_forward.py" "$project" <<'PY'
+import importlib.util, pathlib, sys
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[2]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.write_private(pathlib.Path(sys.argv[1]),m._inspect_container(sys.argv[3],'worker'))
+PY
+    python3 - "$recovery/log-before-request.json" "$recovery/baseline.json" <<'PY'
+import json, os, sys
+baseline=json.load(open(sys.argv[2])); value={'mode':'audited-group2-same-schema-v1','operation':'log-append','baseline':baseline['predecessor']['logs_after']}
+with open(sys.argv[1]+'.tmp','w') as out: json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+    group2_runtime_host "$recovery/log-before-request.json" "$recovery/log-before.json"
+    python3 - "$recovery/start-window.json" <<'PY'
+import json, os, sys, time
+with open(sys.argv[1]+'.tmp','w') as out: json.dump({'window_start_ns':time.time_ns()},out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+    compose up -d --no-build --no-deps --force-recreate --wait --wait-timeout 180 worker
+    compose up -d --no-build --wait --wait-timeout 180 control web account-web
+    python3 - "$recovery/start-window.json" <<'PY'
+import json, os, sys, time
+path=sys.argv[1]; value=json.load(open(path)); value['window_end_ns']=time.time_ns()
+with open(path+'.tmp','w') as out: json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(path+'.tmp',path)
+PY
+    python3 - "$recovery/account-request.json" "$release/receipt.json" "$project" "$sha" "$release/images.json" <<'PY'
+import json, os, sys
+receipt=json.load(open(sys.argv[2]))
+value={'mode':'audited-group2-same-schema-v1','operation':'account-check',
+       'profile':receipt['account_entry'],'project':sys.argv[3],
+       'to_sha':sys.argv[4],'candidate_image_ids':json.load(open(sys.argv[5]))}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+    group2_runtime_host "$recovery/account-request.json" "$recovery/account.json"
+    python3 - "$recovery/log-after-request.json" "$recovery/log-before.json" <<'PY'
+import json, os, sys
+value={'mode':'audited-group2-same-schema-v1','operation':'log-append','baseline':json.load(open(sys.argv[2]))['log_evidence']}
+with open(sys.argv[1]+'.tmp','w') as out: json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+    group2_runtime_host "$recovery/log-after-request.json" "$recovery/log-after.json"
+    python3 - "$recovery/startup-request.json" "$release/receipt.json" \
+      "$recovery/log-before.json" "$recovery/log-after.json" \
+      "$recovery/before-worker.json" "$recovery/account.json" \
+      "$recovery/start-window.json" <<'PY'
+import json, os, sys
+receipt=json.load(open(sys.argv[2])); checked=json.load(open(sys.argv[6])); window=json.load(open(sys.argv[7]))
+value={'mode':'audited-group2-same-schema-v1','operation':'startup-proof','profile':receipt['account_entry'],
+       'logs_before':json.load(open(sys.argv[3]))['log_evidence'],'logs_after':json.load(open(sys.argv[4]))['log_evidence'],
+       'container_before':json.load(open(sys.argv[5])),'container_after':checked['account_check']['containers']['worker'],**window}
+with open(sys.argv[1]+'.tmp','w') as out: json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+    group2_runtime_host "$recovery/startup-request.json" "$recovery/startup.json"
+    carry_state "$recovery" --ids /evidence/ids.json \
+      --mode audited-group2-same-schema-v1 \
+      --db-output /evidence/after-db.json --files-output /evidence/after-files.json
+    python3 - "$root/carry_forward.py" "$recovery/before-db.json" \
+      "$recovery/after-db.json" "$recovery/before-files.json" \
+      "$recovery/after-files.json" "$recovery/startup.json" \
+      "$recovery/preservation.json" <<'PY'
+import importlib.util, json, pathlib, sys
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+before=json.load(open(sys.argv[2])); after=json.load(open(sys.argv[3])); files_before=json.load(open(sys.argv[4])); files_after=json.load(open(sys.argv[5]))
+for key in ('projection','responsibilities','protected_rows','asset_projection','schema_shape','schema_inventory'):
+    if before[key]!=after[key]: raise m.CarryForwardError('group2_recovery_db_changed')
+result=m.compare_group2_startup_files(files_before,files_after,json.load(open(sys.argv[6]))['startup_proof'])
+m.write_private(pathlib.Path(sys.argv[7]),result)
+PY
+    python3 - "$recovery/entry-request.json" "$release/receipt.json" "$root/preview.env" <<'PY'
+import json, os, sys
+receipt=json.load(open(sys.argv[2]))
+value={'mode':'audited-group2-same-schema-v1','operation':'entry-probe',
+       'profile':receipt['account_entry'],'env_file':sys.argv[3]}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+    group2_runtime_host "$recovery/entry-request.json" "$recovery/entry.json"
+  else
+    compose up -d --no-build --wait --wait-timeout 180 control worker web
+  fi
 else
   carry_manifest=
+  is_group2=false
   if [ -n "$carry_id" ]; then
     carry_manifest="$root/carry-forward/manifests/$carry_id.json"
     test -f "$carry_manifest"
+    is_group2=$(python3 - "$root/carry_forward.py" "$carry_manifest" <<'PY'
+import importlib.util, json, sys
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1])
+module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+value=module.validate_manifest(json.load(open(sys.argv[2])))
+print('true' if value.get('format_version') == module.GROUP2_FORMAT_VERSION
+      and value.get('mode') == module.GROUP2_MODE else 'false')
+PY
+    )
     runtime_volume=$(named_volume worker /var/lib/dlr/runtime)
     journal_volume=$(named_volume worker /var/lib/dlr/journal)
     builtin_volume=$(named_volume control /var/lib/dlr/builtin-packages)
@@ -324,11 +680,16 @@ else
     python3 - "$root/carry_forward.py" "$carry_manifest" "$root/current-sha" \
       "$release/images.json" "$root/releases/$(cat "$root/current-sha")/images.json" \
       "$schema" "$project" "$root" <<'PY'
-import importlib.util, json, pathlib, subprocess, sys
+import hashlib, importlib.util, json, pathlib, subprocess, sys
 script, manifest_path, current_path, candidate_images_path, old_images_path, schema, project, controller_root = sys.argv[1:]
 spec = importlib.util.spec_from_file_location('carry_forward', script)
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 manifest = module.validate_manifest(json.loads(pathlib.Path(manifest_path).read_text()))
+actual_controller={name:hashlib.sha256((pathlib.Path(controller_root)/name).read_bytes()).hexdigest()
+                   for name in ('deploy.sh','verify.py','assets.py','carry_forward.py')}
+if manifest.get('mode') == module.GROUP2_MODE:
+    assert {name:manifest['review_scope']['controller_files']['files'][name]
+            for name in actual_controller} == actual_controller
 assert pathlib.Path(current_path).read_text().strip() == manifest['from_sha']
 assert manifest['to_sha'] == pathlib.Path(candidate_images_path).parent.name
 assert manifest['to_schema'] == schema
@@ -431,7 +792,42 @@ module.validate_storage_identity(candidate)
 assert candidate == manifest['storage_identity']
 PY
     carry_check="$root/carry-forward/check/$carry_id"
-    install -d -m 700 "$carry_check/preflight"
+    install -d -m 700 "$carry_check" "$carry_check/preflight"
+    python3 - "$root/carry_forward.py" "$carry_manifest" "$carry_check/ids.json" <<'PY'
+import importlib.util, pathlib, sys
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+manifest=m.validate_manifest(m.read_private(pathlib.Path(sys.argv[2])))
+m.write_private(pathlib.Path(sys.argv[3]),manifest['selection'])
+PY
+    if [ "$is_group2" = true ]; then
+      python3 - "$carry_check/preflight/account-request.json" "$project" \
+        "$(cat "$root/current-sha")" "$sha" "$root" <<'PY'
+import json, os, sys
+path, project, old_sha, new_sha, root=sys.argv[1:]
+value={'mode':'audited-group2-same-schema-v1','operation':'account-capture',
+ 'project':project,'from_sha':old_sha,'to_sha':new_sha,
+ 'old_release':f'{root}/releases/{old_sha}','candidate_release':f'{root}/releases/{new_sha}',
+ 'env_file':f'{root}/preview.env','old_image_ids':json.load(open(f'{root}/releases/{old_sha}/images.json')),
+ 'candidate_image_ids':json.load(open(f'{root}/releases/{new_sha}/images.json'))}
+with open(path+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(path+'.tmp',path)
+PY
+      group2_runtime_host "$carry_check/preflight/account-request.json" "$carry_check/preflight/account.json"
+      python3 - "$root/carry_forward.py" "$carry_manifest" "$carry_check/log-baseline.json" <<'PY'
+import importlib.util, pathlib, sys
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+manifest=m.validate_manifest(m.read_private(pathlib.Path(sys.argv[2])))
+m.write_private(pathlib.Path(sys.argv[3]),manifest['log_evidence'])
+PY
+      group2_log_checkpoint "$carry_check/log-baseline.json" "$carry_check/preflight/log.json"
+      group2_log_previous="$carry_check/preflight/log.json"
+      python3 - "$carry_manifest" "$carry_check/preflight/account.json" <<'PY'
+import json, sys
+manifest=json.load(open(sys.argv[1]))
+assert json.load(open(sys.argv[2]))['account_entry'] == manifest['account_entry']
+PY
+    fi
     carry_state "$carry_check/preflight" --baseline /evidence/manifest.json \
       --schema-phase before \
       --db-output /evidence/db.json --files-output /evidence/files.json
@@ -464,6 +860,11 @@ PY
       2> "$carry_check/control-stopped/stderr.jsonl"; then
       exit 1
     fi
+    if [ "$is_group2" = true ]; then
+      group2_log_checkpoint "$group2_log_previous" \
+        "$carry_check/control-stopped/log.json"
+      group2_log_previous="$carry_check/control-stopped/log.json"
+    fi
   elif [ "$(sql "$busy_query")" != 0 ]; then
     restore_old_apps
     exit 75
@@ -490,6 +891,11 @@ PY
       2> "$carry_check/stopped/db-stderr.jsonl"; then
       exit 1
     fi
+    if [ "$is_group2" = true ]; then
+      group2_log_checkpoint "$group2_log_previous" \
+        "$carry_check/stopped/log.json"
+      group2_log_previous="$carry_check/stopped/log.json"
+    fi
     python3 "$root/carry_forward.py" check-kernel \
       --unit "$sandbox_unit" --expected-description "$sandbox_description" \
       --require-idle --baseline "$carry_manifest" \
@@ -507,6 +913,11 @@ PY
     carry_state "$carry_check/after-backup" --baseline /evidence/manifest.json \
       --schema-phase before \
       --db-output /evidence/db.json --files-output /evidence/files.json
+    if [ "$is_group2" = true ]; then
+      group2_log_checkpoint "$group2_log_previous" \
+        "$carry_check/after-backup/log.json"
+      group2_log_previous="$carry_check/after-backup/log.json"
+    fi
     python3 "$root/carry_forward.py" check-kernel \
       --unit "$sandbox_unit" --expected-description "$sandbox_description" \
       --require-idle --baseline "$carry_manifest" \
@@ -522,12 +933,33 @@ PY
     carry_state "$carry_check/after-migration" --baseline /evidence/manifest.json \
       --schema-phase after \
       --db-output /evidence/db.json --files-output /evidence/files.json
+    if [ "$is_group2" = true ]; then
+      group2_log_checkpoint "$group2_log_previous" \
+        "$carry_check/after-migration/log.json"
+      group2_log_previous="$carry_check/after-migration/log.json"
+    fi
     python3 "$root/carry_forward.py" check-kernel \
       --unit "$sandbox_unit" --expected-description "$sandbox_description" \
       --require-idle --baseline "$carry_manifest" \
       --output "$carry_check/after-migration/kernel.json"
   fi
-  compose up -d --no-build --wait --wait-timeout 180 control worker web
+  if [ "$is_group2" = true ]; then
+    record starting
+    group2="$carry_check/group2"
+    install -d -m 700 "$group2"
+    install -m 600 "$group2_log_previous" "$group2/log-before-start.json"
+    python3 - "$group2/start-window.json" <<'PY'
+import json, os, sys, time
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump({'window_start_ns':time.time_ns()},out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+  fi
+  if [ "$is_group2" = true ]; then
+    compose up -d --no-build --wait --wait-timeout 180 control worker web account-web
+  else
+    compose up -d --no-build --wait --wait-timeout 180 control worker web
+  fi
 fi
 curl --fail --silent "http://127.0.0.1:$web_port/api/health"
 worker_id=$(compose ps -q worker)
@@ -537,6 +969,307 @@ compose exec -T worker python -c 'import os; assert os.path.exists("/tmp/dlr-wor
 for service in postgres control worker web; do
   test "$(docker inspect "$project-$service-1" --format '{{.Image}}')" = "$(docker image inspect "$project-$service:$sha" --format '{{.Id}}')"
 done
+if [ "${is_group2:-false}" = true ]; then
+  test "$(docker inspect "$project-account-web-1" --format '{{.Image}}')" = "$(docker image inspect "$project-web:$sha" --format '{{.Id}}')"
+fi
+if [ "$action" = recover ] && [ "${is_group2:-false}" = true ]; then
+  python3 - "$root/carry_forward.py" "$carry_manifest" \
+    "$release/recovery-baseline" "$recovery" "$recovery_id" "$sha" <<'PY'
+import importlib.util, json, pathlib, sys
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+manifest=m.validate_manifest(m.read_private(pathlib.Path(sys.argv[2])))
+baseline_path=pathlib.Path(sys.argv[3]); evidence_path=pathlib.Path(sys.argv[4])
+def read(path): return json.load(open(path))
+baseline=read(evidence_path/'baseline.json')
+account=read(evidence_path/'account.json'); entry=read(evidence_path/'entry.json')
+evidence={
+ 'request':read(evidence_path/'startup-request.json'),
+ 'proof':read(evidence_path/'startup.json')['startup_proof'],
+ 'before_db':read(evidence_path/'before-db.json'),
+ 'after_db':read(evidence_path/'after-db.json'),
+ 'before_files':read(evidence_path/'before-files.json'),
+ 'after_files':read(evidence_path/'after-files.json'),
+ 'account_check':account['account_check'],'entry_probe':entry['entry_probe'],
+ 'logs_before':read(evidence_path/'log-before.json')['log_evidence'],
+ 'logs_after':read(evidence_path/'log-after.json')['log_evidence'],
+ 'preservation':read(evidence_path/'preservation.json'),
+}
+result=m.validate_group2_recovery_evidence(
+    manifest,baseline,evidence,baseline['deployment']
+)
+evidence_digest=m.digest({'baseline':baseline,'evidence':evidence})
+completion={'schema':'group2-recovery-completion-v1','recovery_id':sys.argv[5],
+ 'sha':sys.argv[6],'manifest_id':manifest['manifest_id'],
+ 'manifest_digest':manifest['manifest_digest'],'evidence_digest':evidence_digest,
+ 'predecessor':{'kind':baseline['predecessor']['kind'],
+                'recovery_id':baseline['predecessor']['recovery_id'],
+                'evidence_digest':baseline['predecessor']['evidence_digest']},
+ 'result':result}
+m.write_private(evidence_path/'completion.json',completion)
+print(evidence_digest)
+PY
+  recovery_completion_digest=$(python3 - "$recovery/completion.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))['evidence_digest'])
+PY
+  )
+  record ready
+fi
+if [ "$action" = deploy ] && [ "${is_group2:-false}" = true ]; then
+  python3 - "$group2/start-window.json" <<'PY'
+import json, os, sys, time
+path=sys.argv[1]; value=json.load(open(path)); value['window_end_ns']=time.time_ns()
+with open(path+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(path+'.tmp',path)
+PY
+  python3 - "$group2/account-check-request.json" "$carry_manifest" "$project" "$sha" "$release/images.json" <<'PY'
+import json, os, sys
+manifest=json.load(open(sys.argv[2]))
+value={'mode':'audited-group2-same-schema-v1','operation':'account-check',
+       'profile':manifest['account_entry'],'project':sys.argv[3],
+       'to_sha':sys.argv[4],'candidate_image_ids':json.load(open(sys.argv[5]))}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+  group2_runtime_host "$group2/account-check-request.json" "$group2/account-check.json"
+  python3 - "$group2/log-after-start-request.json" "$group2/log-before-start.json" <<'PY'
+import json, os, sys
+value={'mode':'audited-group2-same-schema-v1','operation':'log-append',
+       'baseline':json.load(open(sys.argv[2]))['log_evidence']}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+  group2_runtime_host "$group2/log-after-start-request.json" "$group2/log-after-start.json"
+  python3 - "$group2/startup-request.json" "$carry_manifest" \
+    "$group2/log-before-start.json" "$group2/log-after-start.json" \
+    "$group2/account-check.json" "$group2/start-window.json" <<'PY'
+import json, os, sys
+manifest=json.load(open(sys.argv[2])); window=json.load(open(sys.argv[6]))
+old=manifest['account_entry']['old_containers']
+if isinstance(old,list): old={item['service']:item for item in old}
+checked=json.load(open(sys.argv[5]))
+value={'mode':'audited-group2-same-schema-v1','operation':'startup-proof',
+       'profile':manifest['account_entry'],
+       'logs_before':json.load(open(sys.argv[3]))['log_evidence'],
+       'logs_after':json.load(open(sys.argv[4]))['log_evidence'],
+       'container_before':old['worker'],
+       'container_after':checked['account_check']['containers']['worker'], **window}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+  group2_runtime_host "$group2/startup-request.json" "$group2/startup.json"
+  install -d -m 700 "$group2/started"
+  install -m 600 "$carry_check/ids.json" "$group2/started/ids.json"
+  carry_state "$group2/started" --ids /evidence/ids.json \
+    --mode audited-group2-same-schema-v1 \
+    --db-output /evidence/db.json --files-output /evidence/files.json
+  python3 - "$root/carry_forward.py" "$carry_manifest" \
+    "$group2/started/db.json" "$group2/started/files.json" \
+    "$group2/startup.json" "$group2/started-check.json" <<'PY'
+import importlib.util, json, pathlib, sys
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+manifest=json.load(open(sys.argv[2])); after=json.load(open(sys.argv[3])); files=json.load(open(sys.argv[4])); proof=json.load(open(sys.argv[5]))['startup_proof']
+m.compare_projection(manifest['old_runtime_projection'],after['projection'])
+for key in ('responsibilities','protected_rows','asset_projection','schema_shape'):
+    if manifest[key] != after[key]: raise m.CarryForwardError('group2_started_db_changed')
+result=m.compare_group2_startup_files(manifest['file_evidence'],files,proof)
+m.write_private(pathlib.Path(sys.argv[6]),result)
+PY
+  python3 - "$group2/entry-request.json" "$carry_manifest" "$root/preview.env" <<'PY'
+import json, os, sys
+manifest=json.load(open(sys.argv[2]))
+value={'mode':'audited-group2-same-schema-v1','operation':'entry-probe',
+       'profile':manifest['account_entry'],'env_file':sys.argv[3]}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+  group2_runtime_host "$group2/entry-request.json" "$group2/entry-before.json"
+  group2_log_checkpoint "$group2/log-after-start.json" \
+    "$group2/log-before-probe.json"
+  record verifying
+  compose exec -T control python - < "$root/verify.py" > "$group2/probe.pending.json"
+  python3 - "$group2/probe.pending.json" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1]))
+assert set(value)=={'status','workspace_cleanup_status','execution_id'}
+assert value['status']=='succeeded' and value['workspace_cleanup_status']=='completed'
+assert type(value['execution_id']) is int and value['execution_id'] > 0
+PY
+  python3 - "$group2/log-partial-request.json" "$group2/log-before-probe.json" <<'PY'
+import json, os, sys
+value={'mode':'audited-group2-same-schema-v1','operation':'log-append',
+       'baseline':json.load(open(sys.argv[2]))['log_evidence']}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+  group2_runtime_host "$group2/log-partial-request.json" "$group2/log-partial.json"
+  python3 - "$group2/probe-partial-request.json" "$group2/log-before-probe.json" \
+    "$group2/log-partial.json" "$group2/probe.pending.json" "$group2/started/db.json" <<'PY'
+import json, os, sys
+value={'mode':'audited-group2-same-schema-v1','operation':'probe-proof',
+       'logs_before':json.load(open(sys.argv[2]))['log_evidence'],
+       'logs_after':json.load(open(sys.argv[3]))['log_evidence'],
+       'probe_result':json.load(open(sys.argv[4])),
+       'before_db':json.load(open(sys.argv[5])),'cleanup':None}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+  group2_runtime_host "$group2/probe-partial-request.json" "$group2/probe-partial.json"
+  python3 - "$group2/cleanup-request.json" "$group2/probe-partial.json" "$group2/started/db.json" <<'PY'
+import json, os, sys
+value={'mode':'audited-group2-same-schema-v1','operation':'probe-cleanup',
+       'provenance':json.load(open(sys.argv[2]))['probe_proof'],
+       'before_db':json.load(open(sys.argv[3])),'timeout_seconds':120}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+  carry_control "$group2" group2-runtime \
+    --request /evidence/cleanup-request.json --output /evidence/cleanup.json >/dev/null
+  python3 - "$group2/log-final-request.json" "$group2/log-partial.json" <<'PY'
+import json, os, sys
+value={'mode':'audited-group2-same-schema-v1','operation':'log-append',
+       'baseline':json.load(open(sys.argv[2]))['log_evidence']}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+  group2_runtime_host "$group2/log-final-request.json" "$group2/log-final.json"
+  python3 - "$root/carry_forward.py" "$group2/log-before-probe.json" \
+    "$group2/log-partial.json" "$group2/log-final.json" \
+    "$group2/log-complete.json" <<'PY'
+import importlib.util, json, pathlib, sys
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+values=[json.load(open(path))['log_evidence'] for path in sys.argv[2:5]]
+m.write_private(pathlib.Path(sys.argv[5]),
+                {'log_evidence':m.combine_group2_log_window(*values)})
+PY
+  python3 - "$group2/probe-final-request.json" "$group2/log-before-probe.json" \
+    "$group2/log-complete.json" "$group2/probe.pending.json" \
+    "$group2/started/db.json" "$group2/cleanup.json" <<'PY'
+import json, os, sys
+value={'mode':'audited-group2-same-schema-v1','operation':'probe-proof',
+       'logs_before':json.load(open(sys.argv[2]))['log_evidence'],
+       'logs_after':json.load(open(sys.argv[3]))['log_evidence'],
+       'probe_result':json.load(open(sys.argv[4])),
+       'before_db':json.load(open(sys.argv[5])),
+       'cleanup':json.load(open(sys.argv[6]))['cleanup']}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+  group2_runtime_host "$group2/probe-final-request.json" "$group2/probe-final.json"
+  install -d -m 700 "$group2/final"
+  install -m 600 "$carry_check/ids.json" "$group2/final/ids.json"
+  carry_state "$group2/final" --ids /evidence/ids.json \
+    --mode audited-group2-same-schema-v1 \
+    --db-output /evidence/db.json --files-output /evidence/files.json
+  python3 - "$root/carry_forward.py" "$carry_manifest" "$group2/started/db.json" \
+    "$group2/final/db.json" "$group2/started/files.json" "$group2/final/files.json" \
+    "$group2/probe-final.json" "$group2/post-preservation.json" <<'PY'
+import importlib.util, json, pathlib, sys
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+objects=[json.load(open(path)) for path in sys.argv[2:8]]
+result=m.compare_group2_post_probe(objects[0],objects[1],objects[2],objects[3],objects[4],objects[5]['probe_proof'])
+m.write_private(pathlib.Path(sys.argv[8]),result)
+PY
+  install -m 600 "$group2/log-final.json" "$group2/log-before-health.json"
+  group2_runtime_host "$group2/account-check-request.json" "$group2/account-after.json"
+  group2_runtime_host "$group2/entry-request.json" "$group2/entry-after.json"
+  python3 - "$group2/log-after-health-request.json" "$group2/log-before-health.json" <<'PY'
+import json, os, sys
+value={'mode':'audited-group2-same-schema-v1','operation':'log-append',
+       'baseline':json.load(open(sys.argv[2]))['log_evidence']}
+with open(sys.argv[1]+'.tmp','w') as out:
+    json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(sys.argv[1]+'.tmp',sys.argv[1])
+PY
+  group2_runtime_host "$group2/log-after-health-request.json" "$group2/log-after-health.json"
+  record committing
+  printf '%s\n' "$schema" > "$release/schema"
+  mv "$group2/probe.pending.json" "$release/probe.json"
+  install -d -m 700 "$release/recovery-baseline"
+  install -m 600 "$carry_check/ids.json" "$release/recovery-baseline/ids.json"
+  install -m 600 "$group2/final/db.json" "$release/recovery-baseline/db.json"
+  install -m 600 "$group2/final/files.json" "$release/recovery-baseline/files.json"
+  install -m 600 "$group2/post-preservation.json" "$release/recovery-baseline/post-preservation.json"
+  install -m 600 "$group2/log-after-health.json" "$release/recovery-baseline/logs-after.json"
+  python3 - "$release" "$backup" "$carry_manifest" "$group2" \
+    "$root/carry_forward.py" <<'PY'
+import hashlib, importlib.util, json, os, pathlib, sys
+release=pathlib.Path(sys.argv[1]); evidence=pathlib.Path(sys.argv[4]); manifest=json.load(open(sys.argv[3]))
+spec=importlib.util.spec_from_file_location('carry_forward',sys.argv[5])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+def digest(value):
+    return hashlib.sha256(json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+def read(name): return json.load(open(evidence/name))
+post_bundle={'result':read('post-preservation.json'),'db':read('final/db.json'),'files':read('final/files.json')}
+raw_stages={
+ 'preflight':json.load(open(evidence.parent/'preflight/db.json')),
+ 'control_stopped':json.load(open(evidence.parent/'control-stopped/db.json')),
+ 'stopped':json.load(open(evidence.parent/'stopped/db.json')),
+ 'backup':{'db':json.load(open(evidence.parent/'after-backup/db.json')),
+           'dump_sha256':hashlib.sha256((pathlib.Path(sys.argv[2])/'database.dump').read_bytes()).hexdigest(),
+           'list_sha256':hashlib.sha256((pathlib.Path(sys.argv[2])/'database.list').read_bytes()).hexdigest()},
+ 'same_schema':json.load(open(evidence.parent/'after-migration/db.json')),
+ 'started':read('started-check.json'),
+ 'probe':read('probe-final.json')['probe_proof']['probe_result'],
+ 'natural_cleanup':read('cleanup.json')['cleanup'],
+ 'post_preservation':post_bundle,
+ 'post_health':{'account_check':read('account-after.json')['account_check'],
+                'entry_probe':read('entry-after.json')['entry_probe'],
+                'logs_after':read('log-after-health.json')['log_evidence']},
+}
+stage_paths={'preflight':'preflight','control_stopped':'control-stopped',
+ 'stopped':'stopped','after_backup':'after-backup','after_migration':'after-migration'}
+stage_inputs={name:{'db':json.load(open(evidence.parent/path/'db.json')),
+                    'files':json.load(open(evidence.parent/path/'files.json')),
+                    'logs_after':json.load(open(evidence.parent/path/'log.json'))['log_evidence']}
+              for name,path in stage_paths.items()}
+startup={'request':read('startup-request.json'),'proof':read('startup.json')['startup_proof'],
+ 'before_files':manifest['file_evidence'],'after_files':read('started/files.json'),
+ 'after_db':read('started/db.json'),'result':read('started-check.json')}
+probe={'proof':read('probe-final.json')['probe_proof'],'before_db':read('started/db.json'),
+ 'after_db':read('final/db.json'),'before_files':read('started/files.json'),
+ 'after_files':read('final/files.json'),'logs_before':read('log-before-probe.json')['log_evidence'],
+ 'logs_partial':read('log-partial.json')['log_evidence'],'logs_final':read('log-final.json')['log_evidence'],
+ 'logs_complete':read('log-complete.json')['log_evidence'],'probe_result':raw_stages['probe'],
+ 'cleanup':raw_stages['natural_cleanup'],'result':read('post-preservation.json')}
+post_health={'account_check':raw_stages['post_health']['account_check'],
+ 'entry_probe':raw_stages['post_health']['entry_probe'],
+ 'logs_before':read('log-before-health.json')['log_evidence'],
+ 'logs_after':raw_stages['post_health']['logs_after']}
+receipt_evidence={'stages':raw_stages,'stage_inputs':stage_inputs,'startup':startup,
+                  'probe':probe,'post_health':post_health}
+m.validate_group2_receipt_evidence(manifest,receipt_evidence)
+stages={name:digest(value) for name,value in raw_stages.items()}
+account=manifest['account_entry']; post=read('post-preservation.json')
+value={'mode':manifest['mode'],'sha':manifest['to_sha'],'schema':(release/'schema').read_text().strip(),
+ 'images':json.load(open(release/'images.json')),'probe':json.load(open(release/'probe.json')),
+ 'backup':sys.argv[2], 'carry_forward':{'manifest_id':manifest['manifest_id'],'manifest_digest':manifest['manifest_digest']},
+ 'ci_binding':manifest['ci_binding'],'review_scope_digest':manifest['review_scope_digest'],
+ 'stages':stages,'post_preservation_digest':digest(post_bundle),
+ 'evidence_digest':digest(receipt_evidence),
+ 'account_entry_digest':account['profile_digest'],'account_entry':account,'account_ready':True}
+temporary=release/'receipt.json.tmp'
+with temporary.open('w') as out: json.dump(value,out); out.flush(); os.fsync(out.fileno())
+os.replace(temporary,release/'receipt.json')
+PY
+  printf '%s\n' "$sha" > "$root/current-sha.tmp"
+  mv "$root/current-sha.tmp" "$root/current-sha"
+  record ready
+  compose ps
+  exit 0
+fi
 if [ "$action" = deploy ]; then
   record verifying
   compose exec -T control python - < "$root/verify.py" > "$release/probe.json"

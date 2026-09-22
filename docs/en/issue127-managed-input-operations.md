@@ -33,6 +33,20 @@ Control renews an active upload writer periodically in the background; no
 browser-callable renew API is exposed. Low-watermark and quota conflicts return
 `409`; clients retain the draft and never display storage paths.
 
+### Upload proxy and net-file policy
+
+The database `max_file_bytes` policy limits net file bytes. Control remains
+responsible for enforcing that policy, quotas, the low-watermark guard, and
+failure cleanup. The token and account entries set a fixed total-request limit
+of `2147745792` bytes only on the exact upload route: the largest supported net
+file, `2147483648` bytes (2 GiB), plus the multipart reader's `262144`-byte
+(256 KiB) overhead budget. Changing the database policy within the supported
+application range does not require an Nginx reload. A future change to the
+application maximum or multipart budget must update both proxy configurations,
+this runbook, and the contract test together. This limit does not widen any
+other API route. A proxy `413` identifies the fixed total envelope; Control's
+structured response remains authoritative for the policy boundary and `L+1`.
+
 ## Single Control and LocalFileArtifactStore
 
 Only the Control process owns and writes `LocalFileArtifactStore`. In Compose,
@@ -73,6 +87,24 @@ and deletion jobs are additive migrations.
 Alembic `0026` through `0029` `downgrade()` functions are test-only cleanup
 paths. Production rollback must not invoke them because they discard input
 authority or immutable Execution snapshots.
+
+### Default enablement and upgrades
+
+Managed Input is enabled by default for new deployments and upgrades where
+`DLR_MANAGED_FILES_ENABLED` is unset. Settings, the Compose fallback, and
+`.env.example` all use `true`. An upgrade does not rewrite an existing `.env`
+file or external environment, so a deployment that explicitly sets `false`
+remains closed. Before enabling, confirm that ArtifactStore uses persistent
+storage and that the current Worker protocol and cleanup path are ready. Then
+recreate the affected services, read capability, and run a real file Execution
+that verifies filename, size, hash, and content. `ready=true` proves only that
+the configuration entry is ready; it is not a substitute for a real Worker read.
+
+To move from an explicit closure to enabled, set
+`DLR_MANAGED_FILES_ENABLED=true` and recreate Control, Worker, and both Web
+entries. To remain closed, keep an explicit `false`; do not rely on the old
+implicit default. Closing the feature does not delete Artifacts, database rows,
+or history, and `none`/`json` inputs retain their existing contract.
 
 ## Non-destructive rollback drill
 

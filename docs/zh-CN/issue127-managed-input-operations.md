@@ -29,6 +29,16 @@ Adapter 输入使用下列边界：
 上传 writer 由 Control 在后台周期续租，不提供浏览器可调用的 renew API。低水位与
 配额冲突返回 `409`，客户端保留草稿且不得显示存储路径。
 
+### 上传代理与净文件策略
+
+数据库策略 `max_file_bytes` 限制文件净大小，Control 继续负责校验该策略、配额、
+低水位和失败清理。Token 与账号入口只对精确上传路径设置固定总请求上限
+`2147745792` 字节：应用支持的最大净文件 `2147483648` 字节（2 GiB）加 multipart
+解析器预留的 `262144` 字节（256 KiB）。在应用支持范围内调整数据库策略无需重载
+Nginx；若将来修改应用最大值或 multipart 预留，必须同步两套代理配置、本文和合同测试。
+该上限不放宽其他 API 路由。代理返回 `413` 只表示请求超过固定总信封，策略边界及
+`L+1` 的拒绝仍以 Control 的结构化响应为准。
+
 ## 单 Control 与 LocalFileArtifactStore
 
 `LocalFileArtifactStore` 只由 Control 进程持有并写入。Compose 中唯一的
@@ -62,6 +72,19 @@ docker compose ps
 新的 AdapterInputConfig。Managed Input 的新表、Blob 和 deletion job 都是加法迁移。
 Alembic `0026`～`0029` 的 `downgrade()` 仅供隔离测试清理，生产回滚禁止调用，
 因为它会丢弃输入权威事实或 Execution 快照。
+
+### 默认开启与升级
+
+新部署或未设置 `DLR_MANAGED_FILES_ENABLED` 的升级部署默认启用 Managed Input；
+Settings、Compose fallback 与 `.env.example` 均采用 `true`。升级不会改写已有 `.env`
+或外部环境变量，因此原来显式设置为 `false` 的部署继续保持关闭。启用前应确认
+ArtifactStore 使用持久卷、当前 Worker 协议和清理链路已就绪；随后重新创建受影响服务，
+读取 capability，并用真实文件执行核对文件名、大小、哈希和内容。`ready=true` 只证明
+配置入口就绪，不能替代真实 Worker 读取。
+
+若要从显式关闭切换为开启，设置 `DLR_MANAGED_FILES_ENABLED=true` 后重新创建
+Control、Worker 与两个 Web 入口。若要保持关闭，继续明确设置 `false`；不要依赖旧版本的
+隐式默认值。关闭不会删除 Artifact、数据库行或历史，`none`/`json` 输入继续遵守原合同。
 
 ## 非破坏回滚演练
 

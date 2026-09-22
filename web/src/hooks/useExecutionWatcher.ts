@@ -26,8 +26,21 @@ export interface ExecutionWatcher {
   fallbackExhausted: boolean;
   /** Start (or restart) watching one Execution; resets the live buffers. */
   watch: (initial: Execution) => void;
+  /** Capture the current live-progress boundary before starting an operation. */
+  beginOperation: (executionId: number) => ExecutionOperationEpoch | null;
+  /** Apply an operation response without letting it replace a newer terminal result. */
+  reconcileOperationResult: (
+    candidate: Execution,
+    operation?: ExecutionOperationEpoch | null,
+  ) => boolean;
   /** Invalidate all in-flight events/polls and close the stream. */
   stop: () => void;
+}
+
+export interface ExecutionOperationEpoch {
+  readonly executionId: number;
+  readonly generation: number;
+  readonly progress: number;
 }
 
 function errorMessage(error: unknown): string {
@@ -38,8 +51,35 @@ function retainLiveLines(content: string): string {
   return tailLogLines(content, LIVE_LOG_MAX_LINES);
 }
 
+function compareAttempt(candidate: Execution, current: Execution): -1 | 0 | 1 {
+  for (const field of ["dispatch_generation", "attempt_count"] as const) {
+    const candidateValue = candidate[field];
+    const currentValue = current[field];
+    if (
+      typeof candidateValue === "number"
+      && typeof currentValue === "number"
+      && candidateValue !== currentValue
+    ) {
+      return candidateValue < currentValue ? -1 : 1;
+    }
+  }
+  if (candidate.started_at !== current.started_at) {
+    if (candidate.started_at === null) {
+      return -1;
+    }
+    if (current.started_at === null) {
+      return 1;
+    }
+    return candidate.started_at < current.started_at ? -1 : 1;
+  }
+  return 0;
+}
+
 export function useExecutionWatcher(onError: (message: string) => void): ExecutionWatcher {
   const [execution, setExecution] = useState<Execution | null>(null);
+  // React state is asynchronous. Operation responses and SSE events use this
+  // ref to reconcile against the newest accepted result in the same tick.
+  const executionRef = useRef<Execution | null>(null);
   const [liveStdout, setLiveStdout] = useState("");
   const [liveStderr, setLiveStderr] = useState("");
   const [serverLogLineCount, setServerLogLineCount] = useState(0);
@@ -52,6 +92,11 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
   // (SSE events, terminal detail GET, fallback polls) may commit UI state, so
   // a slow response from an older Execution can never overwrite the newest.
   const generationRef = useRef(0);
+  // Counts accepted status, delta, snapshot and fallback progress inside the
+  // current watch generation. Operation responses capture this boundary so a
+  // slower HTTP snapshot cannot reset progress observed while it was in flight.
+  const progressEpochRef = useRef(0);
+  const mountedRef = useRef(false);
   // Callers usually pass a state setter or inline closure: keep the newest
   // callback without resubscribing the stream (assignment in an effect, not
   // during render, so the lint rule stays satisfied).
@@ -75,12 +120,22 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
   }, []);
 
   // Close the stream and pending fallback polls on unmount (adapter switch).
-  useEffect(() => stop, [stop]);
+  // StrictMode replays this setup/cleanup pair, so each setup restores the
+  // live marker and each cleanup invalidates the current generation.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      stop();
+    };
+  }, [stop]);
 
   function applyDetail(generation: number, detail: Execution) {
     if (generation !== generationRef.current) {
       return; // a newer watch owns the view now
     }
+    progressEpochRef.current += 1;
+    executionRef.current = detail;
     setExecution(detail);
     setLiveStdout(retainLiveLines(detail.stdout));
     setLiveStderr(retainLiveLines(detail.stderr));
@@ -155,9 +210,14 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
   }
 
   function watch(initial: Execution) {
+    if (!mountedRef.current) {
+      return;
+    }
     generationRef.current += 1; // invalidate the previous watch's async work
     const generation = generationRef.current;
+    progressEpochRef.current = 0;
     setFallbackExhausted(false);
+    executionRef.current = initial;
     setExecution(initial);
     setLiveStdout(retainLiveLines(initial.stdout));
     setLiveStderr(retainLiveLines(initial.stderr));
@@ -176,9 +236,11 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
         if (generation !== generationRef.current) {
           return; // a newer watch owns the view now
         }
+        progressEpochRef.current += 1;
         // Every execution event carries the stored streams at poll time; the
         // log events between polls are deltas on top of it, so replacing the
         // buffers here keeps the live view consistent without duplicates.
+        executionRef.current = next;
         setExecution(next);
         // Status events carry the authoritative stored streams. Ignore an
         // older, shorter snapshot that could arrive after a newer log delta;
@@ -219,6 +281,7 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
         if (generation !== generationRef.current) {
           return;
         }
+        progressEpochRef.current += 1;
         if (event.stream === "stdout") {
           appendSavedStream("stdout", event.chunk);
           setLiveStdout((current) => retainLiveLines(current + event.chunk));
@@ -231,6 +294,7 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
         if (generation !== generationRef.current) {
           return;
         }
+        progressEpochRef.current += 1;
         if (event.stream === "stdout") {
           replaceSavedStream("stdout", event.content);
           setLiveStdout(retainLiveLines(event.content));
@@ -240,13 +304,14 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
         }
         // Truncation just happened server-side: reflect it immediately
         // instead of waiting for the next execution event or terminal.
-        setExecution((current) =>
-          current === null
-            ? current
-            : event.stream === "stdout"
-              ? { ...current, stdout_truncated: event.truncated }
-              : { ...current, stderr_truncated: event.truncated },
-        );
+        const current = executionRef.current;
+        if (current !== null) {
+          const next = event.stream === "stdout"
+            ? { ...current, stdout_truncated: event.truncated }
+            : { ...current, stderr_truncated: event.truncated };
+          executionRef.current = next;
+          setExecution(next);
+        }
       },
       onUnexpectedClose() {
         if (generation !== generationRef.current) {
@@ -264,6 +329,67 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
     });
   }
 
+  function beginOperation(executionId: number): ExecutionOperationEpoch | null {
+    const current = executionRef.current;
+    if (!mountedRef.current || current === null || current.id !== executionId) {
+      return null;
+    }
+    return {
+      executionId,
+      generation: generationRef.current,
+      progress: progressEpochRef.current,
+    };
+  }
+
+  function reconcileOperationResult(
+    candidate: Execution,
+    operation?: ExecutionOperationEpoch | null,
+  ): boolean {
+    const current = executionRef.current;
+    if (
+      !mountedRef.current
+      || current === null
+      || current.id !== candidate.id
+      || isTerminal(current.status)
+    ) {
+      return false;
+    }
+    if (
+      operation !== undefined
+      && operation !== null
+      && (
+        operation.executionId !== candidate.id
+        || operation.generation !== generationRef.current
+      )
+    ) {
+      return false;
+    }
+    const attemptOrder = compareAttempt(candidate, current);
+    if (attemptOrder < 0) {
+      return false;
+    }
+    if (attemptOrder > 0 || isTerminal(candidate.status)) {
+      watch(candidate);
+      return true;
+    }
+    const newerProgressObserved = operation !== undefined && operation !== null
+      ? progressEpochRef.current > operation.progress
+      : progressEpochRef.current > 0;
+    if (newerProgressObserved) {
+      // Keep all fields and stream boundaries from the newer live observation.
+      // Cancellation is monotonic, so a true operation flag is the only fact
+      // safe to merge from the older same-attempt snapshot.
+      const reconciled = candidate.cancel_requested === true && current.cancel_requested !== true
+        ? { ...current, cancel_requested: true }
+        : current;
+      executionRef.current = reconciled;
+      setExecution(reconciled);
+      return true;
+    }
+    watch(candidate);
+    return true;
+  }
+
   return {
     execution,
     liveStdout,
@@ -271,6 +397,8 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
     serverLogLineCount,
     fallbackExhausted,
     watch,
+    beginOperation,
+    reconcileOperationResult,
     stop,
   };
 }

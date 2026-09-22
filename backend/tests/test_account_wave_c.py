@@ -229,6 +229,13 @@ def test_read_edit_owner_matrix_covers_nested_ids_and_credentials(
 
     assert grant(owner_client, adapter_id, reader_id, "read").status_code == 200
     assert grant(owner_client, adapter_id, editor_id, "edit").status_code == 200
+    queued = account_write(
+        owner_client,
+        "POST",
+        f"/api/adapters/{adapter_id}/executions",
+        json={},
+    )
+    assert queued.status_code == 202, queued.text
 
     reader_path = account_path(f"/api/adapters/{adapter_id}")
     assert reader_client.get(reader_path).status_code == 200
@@ -268,6 +275,23 @@ def test_read_edit_owner_matrix_covers_nested_ids_and_credentials(
         )
         assert response.status_code == 403, (method, path, response.text)
         assert response.json()["detail"]["code"] == "adapter_read_only"
+
+    reader_cancel = account_write(
+        reader_client,
+        "POST",
+        f"/api/executions/{queued.json()['id']}/cancel",
+    )
+    assert reader_cancel.status_code == 403, reader_cancel.text
+    assert reader_cancel.json()["detail"]["code"] == "adapter_read_only"
+    assert api_client.get(f"/api/executions/{queued.json()['id']}").json()["status"] == "queued"
+
+    editor_cancel = account_write(
+        editor_client,
+        "POST",
+        f"/api/executions/{queued.json()['id']}/cancel",
+    )
+    assert editor_cancel.status_code == 200, editor_cancel.text
+    assert editor_cancel.json()["status"] == "cancelled"
 
     binding_forbidden = account_write(
         reader_client,

@@ -278,6 +278,9 @@
     "connectionLostDescription": "已按权威结果轮询至上限仍未等到终态，请刷新或稍后重新查看该执行。",
     "queuedAt": "入队时间",
     "waitingForWorker": "已排队，等待目标 Worker",
+    "cancelQueued": "取消此排队执行",
+    "cancelPending": "取消请求已提交，正在等待执行收敛",
+    "cancelFailed": "取消执行失败",
     "retryAt": "下一次尝试：{{time}}",
     "retryCountdown": "约 {{seconds}} 秒后重试",
     "attempts": "尝试次数：{{current}}/{{max}}",
@@ -396,6 +399,7 @@
     "truncated": "输出超过平台保存上限，未保存完整内容",
     "truncatedDescription": "实际大小：{{size}} 字节；以下为内容预览（非完整 JSON）",
     "unknownSize": "未知",
+    "unknown": "输出信息不足，无法确认",
     "empty": "无 Output",
     "contentLabel": "执行输出"
   },
