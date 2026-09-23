@@ -663,6 +663,9 @@ def test_instance_lock_races_and_io_errors_fail_closed(
     observed_file = lock.lstat()
     original_open = os.open
     original_read = os.read
+    # Keep the observed inode allocated while simulating replacement. Linux may
+    # otherwise immediately reuse it, hiding the intended before-open race.
+    observed_descriptor = original_open(lock, os.O_RDONLY)
     replaced = False
     old_root = tmp_path / "old-attempt-journal"
 
@@ -703,14 +706,17 @@ def test_instance_lock_races_and_io_errors_fail_closed(
     monkeypatch.setattr(cache_lifecycle.os, "open", raced_open)
     monkeypatch.setattr(cache_lifecycle.os, "read", raced_read)
 
-    assert (
-        cache_lifecycle._is_journal_instance_lock(
-            root,
-            observed_root=observed_root,
-            observed_file=observed_file,
+    try:
+        assert (
+            cache_lifecycle._is_journal_instance_lock(
+                root,
+                observed_root=observed_root,
+                observed_file=observed_file,
+            )
+            is False
         )
-        is False
-    )
+    finally:
+        os.close(observed_descriptor)
 
 
 def test_instance_locks_still_consume_the_journal_scan_budget(tmp_path: Path) -> None:
