@@ -70,6 +70,7 @@ _SANDBOX_JOURNAL_FIELDS = frozenset({"cgroup_name", "execution_id", "mount_name"
 _SANDBOX_NAMESPACE_FIELDS = frozenset({"namespace_identity", "cgroup_device", "cgroup_inode"})
 _STATE_MAX_BYTES = 1024 * 1024
 _JOURNAL_MAX_BYTES = 64 * 1024
+_INSTANCE_LOCK_NAME = ".dlr-instance.lock"
 
 
 def cache_key(adapter_id: int, version_id: int) -> str:
@@ -194,6 +195,90 @@ def _read_bounded_json(path: Path, *, max_bytes: int) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         raise CacheError("cache_lifecycle_invalid")
     return value
+
+
+def _is_journal_instance_lock(
+    root: Path,
+    *,
+    observed_root: os.stat_result,
+    observed_file: os.stat_result,
+) -> bool:
+    """Recognize only the empty private lock created by ``lock_roots``."""
+
+    def valid_root(info: os.stat_result) -> bool:
+        return (
+            stat.S_ISDIR(info.st_mode)
+            and info.st_uid == os.geteuid()
+            and stat.S_IMODE(info.st_mode) == 0o700
+        )
+
+    def valid_file(info: os.stat_result) -> bool:
+        return (
+            stat.S_ISREG(info.st_mode)
+            and not stat.S_ISLNK(info.st_mode)
+            and info.st_uid == os.geteuid()
+            and stat.S_IMODE(info.st_mode) == 0o600
+            and info.st_nlink == 1
+            and info.st_size == 0
+        )
+
+    root_descriptor = -1
+    file_descriptor = -1
+    try:
+        if not valid_root(observed_root) or not valid_file(observed_file):
+            return False
+        root_descriptor = os.open(
+            root,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened_root = os.fstat(root_descriptor)
+        if not valid_root(opened_root) or (opened_root.st_dev, opened_root.st_ino) != (
+            observed_root.st_dev,
+            observed_root.st_ino,
+        ):
+            return False
+        file_descriptor = os.open(
+            _INSTANCE_LOCK_NAME,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=root_descriptor,
+        )
+        opened_file = os.fstat(file_descriptor)
+        if (
+            not valid_file(opened_file)
+            or (opened_file.st_dev, opened_file.st_ino)
+            != (observed_file.st_dev, observed_file.st_ino)
+            or os.read(file_descriptor, 1) != b""
+        ):
+            return False
+        final_file = os.stat(
+            _INSTANCE_LOCK_NAME,
+            dir_fd=root_descriptor,
+            follow_symlinks=False,
+        )
+        final_root = root.lstat()
+        return (
+            valid_file(final_file)
+            and (final_file.st_dev, final_file.st_ino)
+            == (observed_file.st_dev, observed_file.st_ino)
+            and valid_root(final_root)
+            and (final_root.st_dev, final_root.st_ino)
+            == (observed_root.st_dev, observed_root.st_ino)
+        )
+    except (NotImplementedError, OSError):
+        return False
+    finally:
+        if file_descriptor >= 0:
+            with suppress(OSError):
+                os.close(file_descriptor)
+        if root_descriptor >= 0:
+            with suppress(OSError):
+                os.close(root_descriptor)
 
 
 def _read_json(path: Path, fields: frozenset[str]) -> dict[str, Any] | None:
@@ -1174,7 +1259,7 @@ class CacheLifecycleStore:
         """Map old exact journals conservatively without changing their schemas."""
         protected: set[str] = set()
         reasons: list[str] = []
-        candidates: list[tuple[Path, str]] = []
+        candidates: list[tuple[Path, str, Path, os.stat_result, os.stat_result]] = []
         inspected = 0
         sandbox_root = sandbox_recovery_root or cleanup_journal_root / "sandbox-recovery"
         roots = (
@@ -1192,19 +1277,32 @@ class CacheLifecycleStore:
                     inspected += 1
                     if inspected > max_records:
                         return JournalProtection(frozenset(), True, ("journal_scan_truncated",))
-                    info = path.lstat()
+                    try:
+                        info = path.lstat()
+                    except OSError:
+                        reasons.append(f"{kind}_journal_unknown")
+                        continue
                     if stat.S_ISDIR(info.st_mode):
                         if kind == "cleanup" and path == sandbox_root:
                             continue
                         reasons.append(f"{kind}_journal_unknown")
                         continue
-                    candidates.append((path, kind))
+                    candidates.append((path, kind, root, root_info, info))
             except FileNotFoundError:
                 continue
             except OSError:
                 reasons.append(f"{kind}_journal_unreadable")
-        for path, kind in candidates:
+        for path, kind, root, root_info, observed_info in candidates:
             try:
+                if path.name == _INSTANCE_LOCK_NAME:
+                    if kind in {"attempt", "cleanup"} and _is_journal_instance_lock(
+                        root,
+                        observed_root=root_info,
+                        observed_file=observed_info,
+                    ):
+                        continue
+                    reasons.append(f"{kind}_journal_unknown")
+                    continue
                 info = path.lstat()
                 if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
                     raise ValueError

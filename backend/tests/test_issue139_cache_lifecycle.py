@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import stat
 import threading
 import time
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from dlr.worker import workspace
+from dlr.worker import cache_lifecycle, cgroup_namespace, sandbox, workspace
 from dlr.worker.cache import CacheError, VerifiedVersionCache
 from dlr.worker.cache_lifecycle import CacheLifecycleStore, cache_key
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
@@ -367,12 +368,13 @@ def test_old_and_unknown_journals_are_conservatively_protected(tmp_path: Path) -
         item.chmod(0o600)
 
     mapping = {(7, 8): "1-2", (9, 10): "3-4"}
-    protection = CacheLifecycleStore.for_runtime(runtime_root).scan_journal_protections(
-        attempt_journal_root=attempt_root,
-        cleanup_journal_root=cleanup_root,
-        sandbox_recovery_root=sandbox_root,
-        resolve=lambda execution_id, attempt_id: mapping.get((execution_id, attempt_id)),
-    )
+    with cgroup_namespace.lock_roots(runtime_root, [cleanup_root, attempt_root]):
+        protection = CacheLifecycleStore.for_runtime(runtime_root).scan_journal_protections(
+            attempt_journal_root=attempt_root,
+            cleanup_journal_root=cleanup_root,
+            sandbox_recovery_root=sandbox_root,
+            resolve=lambda execution_id, attempt_id: mapping.get((execution_id, attempt_id)),
+        )
     assert protection.protected_keys == frozenset({"1-2", "3-4"})
     assert protection.block_all is True
     assert "sandbox_journal_unknown" in protection.reasons
@@ -446,6 +448,290 @@ def test_hidden_and_directory_journals_are_unknown(tmp_path: Path) -> None:
     )
     assert protection.block_all is True
     assert "attempt_journal_unknown" in protection.reasons
+
+
+def test_real_instance_locks_are_metadata_and_remain_held(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    attempt_root = runtime_root / "attempt-journal"
+    cleanup_root = runtime_root / "cleanup-journal"
+    sandbox_root = cleanup_root / "sandbox-recovery"
+    sandbox_root.mkdir(parents=True)
+    attempt_root.mkdir()
+
+    with cgroup_namespace.lock_roots(runtime_root, [cleanup_root, attempt_root]):
+        before = {
+            root: (root / ".dlr-instance.lock").stat() for root in (attempt_root, cleanup_root)
+        }
+        protection = CacheLifecycleStore.for_runtime(runtime_root).scan_journal_protections(
+            attempt_journal_root=attempt_root,
+            cleanup_journal_root=cleanup_root,
+            sandbox_recovery_root=sandbox_root,
+            resolve=lambda _execution_id, _attempt_id: pytest.fail(
+                "instance-lock metadata must not reach the journal resolver"
+            ),
+        )
+        with (
+            pytest.raises(sandbox.SandboxError) as raised,
+            cgroup_namespace.lock_roots(tmp_path / "other-runtime", [attempt_root]),
+        ):
+            pytest.fail("a second owner must not acquire the recognized lock")
+        assert raised.value.code == "sandbox_instance_root_in_use"
+        after = {
+            root: (root / ".dlr-instance.lock").stat() for root in (attempt_root, cleanup_root)
+        }
+
+    assert protection.protected_keys == frozenset()
+    assert protection.block_all is False
+    assert protection.reasons == ()
+    for root in before:
+        assert (after[root].st_ino, after[root].st_mode, after[root].st_size) == (
+            before[root].st_ino,
+            before[root].st_mode,
+            0,
+        )
+
+
+def test_real_instance_locks_preserve_excluded_attempt_and_other_journals(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    attempt_root = runtime_root / "attempt-journal"
+    cleanup_root = runtime_root / "cleanup-journal"
+    sandbox_root = cleanup_root / "sandbox-recovery"
+    sandbox_root.mkdir(parents=True)
+    attempt_root.mkdir()
+    attempt = attempt_root / "attempt-8.attempt.json"
+    attempt.write_text(
+        json.dumps(
+            {
+                "execution_id": 7,
+                "attempt_id": 8,
+                "attempt_no": 1,
+                "fencing_token": 2,
+                "lease_expires_at": "2026-09-22T00:00:00Z",
+                "protocol_version": 3,
+                "workspace_path": str(runtime_root / "workspaces" / "7"),
+                "claim_token": "claim",
+                "cleanup_token": "cleanup",
+            }
+        ),
+        encoding="ascii",
+    )
+    cleanup = cleanup_root / "execution-9-attempt-10.cleanup.json"
+    cleanup.write_text(
+        json.dumps(
+            {
+                "execution_id": 9,
+                "attempt_id": 10,
+                "protocol_version": 3,
+                "workspace_path": str(runtime_root / "workspaces" / "9"),
+                "cleanup_token": "cleanup",
+            }
+        ),
+        encoding="ascii",
+    )
+    attempt.chmod(0o600)
+    cleanup.chmod(0o600)
+
+    with cgroup_namespace.lock_roots(runtime_root, [cleanup_root, attempt_root]):
+        protection = CacheLifecycleStore.for_runtime(runtime_root).scan_journal_protections(
+            attempt_journal_root=attempt_root,
+            cleanup_journal_root=cleanup_root,
+            sandbox_recovery_root=sandbox_root,
+            resolve=lambda execution_id, attempt_id: (
+                "3-4" if (execution_id, attempt_id) == (9, 10) else None
+            ),
+            excluded_attempt=(7, 8, 2),
+        )
+
+    assert protection.protected_keys == frozenset({"3-4"})
+    assert protection.block_all is False
+    assert protection.reasons == ()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "sandbox",
+        "similar-name",
+        "nonempty",
+        "wrong-mode",
+        "hardlink",
+        "symlink",
+        "dangling-symlink",
+        "directory",
+        "fifo",
+    ],
+)
+def test_untrusted_instance_lock_shapes_remain_unknown(tmp_path: Path, case: str) -> None:
+    runtime_root = tmp_path / "runtime"
+    attempt_root = runtime_root / "attempt-journal"
+    cleanup_root = runtime_root / "cleanup-journal"
+    sandbox_root = cleanup_root / "sandbox-recovery"
+    sandbox_root.mkdir(parents=True)
+    attempt_root.mkdir()
+    attempt_root.chmod(0o700)
+    cleanup_root.chmod(0o700)
+    sandbox_root.chmod(0o700)
+    root = sandbox_root if case == "sandbox" else attempt_root
+    name = ".dlr-instance.lock.tmp" if case == "similar-name" else ".dlr-instance.lock"
+    lock = root / name
+    if case in {"symlink", "dangling-symlink"}:
+        target = tmp_path / "target"
+        if case == "symlink":
+            target.write_bytes(b"keep")
+            target.chmod(0o600)
+        lock.symlink_to(target)
+    elif case == "directory":
+        lock.mkdir(mode=0o700)
+    elif case == "fifo":
+        os.mkfifo(lock, 0o600)
+    else:
+        lock.write_bytes(b"x" if case == "nonempty" else b"")
+        lock.chmod(0o640 if case == "wrong-mode" else 0o600)
+        if case == "hardlink":
+            os.link(lock, tmp_path / "second-link")
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+
+    protection = CacheLifecycleStore.for_runtime(runtime_root).scan_journal_protections(
+        attempt_journal_root=attempt_root,
+        cleanup_journal_root=cleanup_root,
+        sandbox_recovery_root=sandbox_root,
+        resolve=lambda _execution_id, _attempt_id: pytest.fail(
+            "an untrusted lock-shaped entry must not reach the journal resolver"
+        ),
+    )
+
+    assert protection.block_all is True
+    expected_kind = "sandbox" if case == "sandbox" else "attempt"
+    assert f"{expected_kind}_journal_unknown" in protection.reasons
+    if case == "symlink":
+        assert (tmp_path / "target").read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize("unsafe", ["root-mode", "wrong-owner"])
+def test_instance_lock_requires_private_owned_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe: str
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    attempt_root = runtime_root / "attempt-journal"
+    cleanup_root = runtime_root / "cleanup-journal"
+    sandbox_root = cleanup_root / "sandbox-recovery"
+    sandbox_root.mkdir(parents=True, mode=0o700)
+    attempt_root.mkdir(mode=0o700)
+    lock = attempt_root / ".dlr-instance.lock"
+    lock.write_bytes(b"")
+    lock.chmod(0o600)
+    store = CacheLifecycleStore.for_runtime(runtime_root)
+    if unsafe == "root-mode":
+        attempt_root.chmod(0o711)
+    else:
+        monkeypatch.setattr(cache_lifecycle.os, "geteuid", lambda: os.getuid() + 1)
+
+    protection = store.scan_journal_protections(
+        attempt_journal_root=attempt_root,
+        cleanup_journal_root=cleanup_root,
+        sandbox_recovery_root=sandbox_root,
+        resolve=lambda _execution_id, _attempt_id: pytest.fail(
+            "an instance lock in an unsafe root must not reach the resolver"
+        ),
+    )
+
+    assert protection.block_all is True
+    assert "attempt_journal_unknown" in protection.reasons
+
+
+@pytest.mark.parametrize(
+    "race",
+    [
+        "before-open",
+        "before-open-disappear",
+        "after-fstat",
+        "after-fstat-nonempty",
+        "root-replaced",
+        "open-error",
+        "read-error",
+    ],
+)
+def test_instance_lock_races_and_io_errors_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, race: str
+) -> None:
+    root = tmp_path / "attempt-journal"
+    root.mkdir(mode=0o700)
+    lock = root / ".dlr-instance.lock"
+    lock.write_bytes(b"")
+    lock.chmod(0o600)
+    observed_root = root.lstat()
+    observed_file = lock.lstat()
+    original_open = os.open
+    original_read = os.read
+    replaced = False
+    old_root = tmp_path / "old-attempt-journal"
+
+    def replace_lock() -> None:
+        nonlocal replaced
+        if replaced:
+            return
+        replaced = True
+        lock.unlink()
+        lock.write_bytes(b"")
+        lock.chmod(0o600)
+
+    def raced_open(path: object, *args: object, **kwargs: object) -> int:
+        if path == root and race == "root-replaced":
+            descriptor = original_open(path, *args, **kwargs)  # type: ignore[arg-type]
+            root.rename(old_root)
+            root.mkdir(mode=0o700)
+            return descriptor
+        if path == ".dlr-instance.lock":
+            if race == "open-error":
+                raise OSError("synthetic open failure")
+            if race == "before-open":
+                replace_lock()
+            elif race == "before-open-disappear":
+                lock.unlink()
+        return original_open(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    def raced_read(descriptor: int, size: int) -> bytes:
+        if race == "read-error":
+            raise OSError("synthetic read failure")
+        if race == "after-fstat-nonempty":
+            lock.write_bytes(b"x")
+        result = original_read(descriptor, size)
+        if race == "after-fstat":
+            replace_lock()
+        return result
+
+    monkeypatch.setattr(cache_lifecycle.os, "open", raced_open)
+    monkeypatch.setattr(cache_lifecycle.os, "read", raced_read)
+
+    assert (
+        cache_lifecycle._is_journal_instance_lock(
+            root,
+            observed_root=observed_root,
+            observed_file=observed_file,
+        )
+        is False
+    )
+
+
+def test_instance_locks_still_consume_the_journal_scan_budget(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    attempt_root = runtime_root / "attempt-journal"
+    cleanup_root = runtime_root / "cleanup-journal"
+    sandbox_root = cleanup_root / "sandbox-recovery"
+    sandbox_root.mkdir(parents=True)
+    attempt_root.mkdir()
+
+    with cgroup_namespace.lock_roots(runtime_root, [cleanup_root, attempt_root]):
+        protection = CacheLifecycleStore.for_runtime(runtime_root).scan_journal_protections(
+            attempt_journal_root=attempt_root,
+            cleanup_journal_root=cleanup_root,
+            sandbox_recovery_root=sandbox_root,
+            resolve=lambda _execution_id, _attempt_id: None,
+            max_records=1,
+        )
+
+    assert protection.block_all is True
+    assert protection.reasons == ("journal_scan_truncated",)
 
 
 def test_oversized_or_wrong_protocol_journal_never_reaches_resolver(tmp_path: Path) -> None:
