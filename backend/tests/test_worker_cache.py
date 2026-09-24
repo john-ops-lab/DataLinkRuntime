@@ -147,6 +147,20 @@ def test_failed_read_only_staging_can_be_removed_without_broad_cleanup(tmp_path:
     assert list(cache.entries.iterdir()) == []
 
 
+def test_active_staging_uses_reservation_but_inactive_staging_is_physically_charged(
+    tmp_path: Path,
+) -> None:
+    cache = VerifiedVersionCache(tmp_path / "cache", max_bytes=16 * 1024, low_watermark_bytes=0)
+    reservation = cache.reserve(1024)
+    staging = cache.staging_path("pending", reservation.token)
+    staging.mkdir()
+    (staging / "partial.bin").write_bytes(b"partial")
+
+    assert cache._committed_bytes(active_reservation_tokens={reservation.token}) == 0
+    reservation.release()
+    assert cache._committed_bytes(active_reservation_tokens=set()) == len(b"partial")
+
+
 def test_invalid_cache_budget_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(CacheError) as error:
         VerifiedVersionCache(tmp_path / "cache", max_bytes=1, low_watermark_bytes=1)
@@ -197,7 +211,7 @@ def test_promoted_entry_verifies_normal_runtime_symlinks_without_following(
     assert (entry / "runtime-link").readlink() == Path("runtime.bin")
 
 
-def test_verified_venv_with_dangling_python_symlink_is_rebuilt(
+def test_verified_venv_with_dangling_python_symlink_requires_attempt_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -238,17 +252,18 @@ def test_verified_venv_with_dangling_python_symlink_is_rebuilt(
     monkeypatch.setattr(venv, "_CACHE_RESERVATION_BYTES", 4096)
     monkeypatch.setattr(venv, "_run_logged_in_context", fake_run)
 
-    python_path = venv.prepare_version_venv(
-        runtime_root,
-        7,
-        9,
-        "",
-        timeout_seconds=5,
-    )
-
+    with pytest.raises(venv.DependencyPreparationError):
+        venv.prepare_version_venv(
+            runtime_root,
+            7,
+            9,
+            "",
+            timeout_seconds=5,
+        )
     assert commands and commands[0][:2] == ["uv", "venv"]
-    assert python_path.is_file()
-    assert python_path.read_bytes() == b"rebuilt"
+    assert version_cache.entry_path("7-9") == broken
+    assert version_cache.verify(broken, identity)
+    assert not venv.venv_python(broken).exists()
 
 
 def test_tmpfs_build_rejects_over_budget_before_persistent_promotion(tmp_path: Path) -> None:

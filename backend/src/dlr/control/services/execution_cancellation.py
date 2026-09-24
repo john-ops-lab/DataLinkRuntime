@@ -124,7 +124,9 @@ def lock_execution_tail(session: Session, execution: Execution) -> ExecutionLock
     return ExecutionLockTail(attempts, slot, incidents, outbox_rows)
 
 
-def lock_execution_in_admission_order(session: Session, execution_id: int) -> Execution | None:
+def lock_execution_in_admission_order(
+    session: Session, execution_id: int, *, guard_reactivation: bool = False
+) -> Execution | None:
     """Lock RabbitMQ cancellation scope before its Execution row.
 
     The initial lookup is deliberately non-locking: the immutable Adapter
@@ -134,16 +136,48 @@ def lock_execution_in_admission_order(session: Session, execution_id: int) -> Ex
     stop/delete, preventing an Execution-first / counter-first cycle.
     """
     identity = session.execute(
-        select(Execution.adapter_id, Execution.dispatch_backend).where(Execution.id == execution_id)
+        select(
+            Execution.adapter_id,
+            Execution.dispatch_backend,
+            Execution.version_id,
+            Execution.target_worker_id_snapshot,
+            Execution.target_worker_id,
+            Execution.worker_id,
+        ).where(Execution.id == execution_id)
     ).one_or_none()
     if identity is None:
         return None
-    adapter_id, dispatch_backend = identity
+    (
+        adapter_id,
+        dispatch_backend,
+        version_id,
+        target_worker_id_snapshot,
+        target_worker_id,
+        actual_worker_id,
+    ) = identity
     if dispatch_backend == "rabbitmq":
         from dlr.control.services import admission
 
         if admission.lock_admission_scope(session, int(adapter_id)) is None:
             return None
+    if guard_reactivation:
+        worker_id = target_worker_id_snapshot or target_worker_id or actual_worker_id
+        if worker_id is None:
+            from dlr.control.services.adapter import domain_error
+
+            raise domain_error(
+                409,
+                "cache_reference_identity_invalid",
+                "Execution cache responsibility is unavailable",
+            )
+        from dlr.control.services import cache_governance
+
+        cache_governance.ensure_reference_allowed(
+            session,
+            worker_id=int(worker_id),
+            adapter_id=int(adapter_id),
+            version_id=int(version_id),
+        )
     return lock_execution(session, execution_id)
 
 

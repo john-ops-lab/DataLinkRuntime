@@ -482,6 +482,7 @@ The smoke test uses an isolated local environment and a fake AI provider; it doe
 - [Issue #130 Linux Sandbox deployment](docs/en/issue130-sandbox-deployment.md)
 - [Specs index and precedence](docs/specs/README.md)
 - [Platform logs & deployment](docs/deployment/platform-logs.md)
+- [Worker cache governance operations](docs/en/issue139-cache-governance.md)
 - [GitHub Issues](https://github.com/john-ops-lab/DataLinkRuntime/issues)
 
 Historical Specs preserve product and architecture decisions. If older documents conflict with the current implementation, follow the precedence rules in `docs/specs/README.md`.

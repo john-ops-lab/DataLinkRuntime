@@ -1,9 +1,10 @@
 """Pydantic schemas for the worker-internal API."""
 
+import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 MAX_WORKER_NAME_LENGTH = 128
 SUPPORTED_CAPABILITIES = frozenset({"python", "javascript", "java", "typescript", "go"})
@@ -206,9 +207,168 @@ class CleanupTaskPayload(BaseModel):
     kind: Literal["adapter_cleanup"] = "adapter_cleanup"
     cleanup_id: int
     adapter_id: int
+    claim_attempt: int = Field(gt=0)
+    retry_operation_id: uuid.UUID | None = None
 
 
 class CleanupResult(BaseModel):
     """Secret-free completion report for an adapter cleanup task."""
 
     success: bool
+    claim_attempt: int | None = Field(default=None, gt=0)
+    error_code: Literal["cache_cleanup_retained", "cache_cleanup_failed"] | None = None
+
+
+class CacheCleanupContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cleanup_id: StrictInt = Field(gt=0)
+    claim_attempt: StrictInt = Field(gt=0)
+
+
+class CacheObservedIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    store_id: str = Field(min_length=1, max_length=128)
+    language: Literal["python", "javascript", "java", "typescript", "go"]
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CacheReplacementContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_id: StrictInt = Field(gt=0)
+    attempt_id: StrictInt = Field(gt=0)
+    fencing_token: StrictInt = Field(gt=0)
+    claim_token: str = Field(min_length=1, max_length=512)
+    old_identity: CacheObservedIdentity
+    target_language: Literal["python", "javascript", "java", "typescript", "go"]
+    target_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CacheGuardAcquire(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    adapter_id: StrictInt = Field(gt=0)
+    version_id: StrictInt = Field(gt=0)
+    operation_id: uuid.UUID
+    cleanup_context: CacheCleanupContext | None = None
+    observed_identity: CacheObservedIdentity | None = None
+    replacement_context: CacheReplacementContext | None = None
+
+
+class CacheGuardResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    generation: StrictInt = Field(gt=0)
+    outcome: Literal["completed", "aborted"]
+
+
+class CacheGuardResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    worker_id: int
+    adapter_id: int
+    version_id: int
+    generation: int
+    operation_id: uuid.UUID | None
+    phase: Literal["idle", "acquired"]
+
+
+class CacheGuardOperationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    worker_id: int
+    adapter_id: int
+    version_id: int
+    generation: int
+    operation_id: uuid.UUID
+    phase: Literal["acquired", "completed", "aborted"]
+    operation_kind: Literal["gc", "cleanup", "replacement"] = "gc"
+    cleanup_id: int | None = None
+    cleanup_claim_attempt: int | None = None
+    observed_identity: dict[str, Any] | None = None
+    replacement_context: dict[str, Any] | None = None
+
+
+class CacheGuardPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[CacheGuardResponse]
+    next_after_version_id: int | None = None
+
+
+class CacheReferenceResolve(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_id: StrictInt = Field(gt=0)
+    attempt_id: StrictInt | None = Field(default=None, gt=0)
+
+
+class CacheReferenceResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=3, max_length=80)
+    adapter_id: int
+    version_id: int
+
+
+class CacheKeyReferenceItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    adapter_id: StrictInt = Field(gt=0)
+    version_id: StrictInt = Field(gt=0)
+
+
+class CacheKeyReferenceBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["cache_keys_v1"]
+    items: list[CacheKeyReferenceItem] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def reject_duplicate_keys(self) -> "CacheKeyReferenceBatch":
+        keys = {(item.adapter_id, item.version_id) for item in self.items}
+        if len(keys) != len(self.items):
+            raise ValueError("cache keys must be unique")
+        return self
+
+
+CacheReferenceReason = Literal[
+    "cache_identity_unknown",
+    "cache_operation_in_progress",
+    "reference_query_truncated",
+    "reference_identity_conflict",
+    "execution_queued",
+    "execution_running",
+    "execution_retry_wait",
+    "attempt_history_unknown",
+    "attempt_identity_unknown",
+    "attempt_active",
+    "attempt_cleanup_unknown",
+    "attempt_cleanup_incomplete",
+    "workspace_cleanup_incomplete",
+    "incident_open",
+    "recovery_material_active",
+    "adapter_cleanup_incomplete",
+]
+
+
+class CacheKeyReferenceResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    adapter_id: int
+    version_id: int
+    status: Literal["clear", "protected", "unknown"]
+    reasons: list[CacheReferenceReason] = Field(max_length=16)
+
+
+class CacheKeyReferenceBatchResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["cache_keys_v1"] = "cache_keys_v1"
+    worker_id: int
+    sampled_at: float
+    complete: bool
+    items: list[CacheKeyReferenceResult]

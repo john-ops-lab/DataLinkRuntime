@@ -163,6 +163,14 @@ def _create_pending_execution_locked(
     )
     if version_id is None:  # pragma: no cover - every caller validates readiness
         raise RuntimeError("cannot create an Execution without a saved Adapter version")
+    from dlr.control.services import cache_governance
+
+    cache_governance.ensure_reference_allowed(
+        session,
+        worker_id=target_worker_id,
+        adapter_id=adapter.id,
+        version_id=version_id,
+    )
     created_at = database_now(session)
     if dispatch_backend != "rabbitmq":
         raise ValueError("unsupported execution backend")

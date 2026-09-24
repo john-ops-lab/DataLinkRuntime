@@ -475,6 +475,7 @@ Smoke Test 使用隔离的本地环境和 fake AI Provider，不会访问公网 
 - [Issue #130 Linux Sandbox 部署](docs/zh-CN/issue130-sandbox-deployment.md)
 - [Specs 索引与冲突优先级](docs/specs/README.md)
 - [平台日志与部署](docs/deployment/platform-logs.md)
+- [Worker 缓存治理运维说明](docs/zh-CN/issue139-cache-governance.md)
 - [GitHub Issues](https://github.com/john-ops-lab/DataLinkRuntime/issues)
 
 历史 Specs 用于保留产品与架构演进记录；如果历史文档与当前实现冲突，请遵循

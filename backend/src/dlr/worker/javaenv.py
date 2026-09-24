@@ -3,7 +3,6 @@
 import html
 import shutil
 import tempfile
-import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,14 +13,6 @@ from urllib import parse as url_parse
 from dlr.runtime.java_runtime import SOURCE as RUNTIME_SOURCE
 from dlr.worker import venv
 from dlr.worker.cache import CacheError
-
-_locks: dict[tuple[int, int], threading.Lock] = {}
-_locks_guard = threading.Lock()
-
-
-def _lock_for(adapter_id: int, version_id: int) -> threading.Lock:
-    with _locks_guard:
-        return _locks.setdefault((adapter_id, version_id), threading.Lock())
 
 
 def parse_requirements(requirements: str) -> list[tuple[str, str, str]]:
@@ -94,7 +85,7 @@ def prepare_version_java(
     directory = venv.version_dir(runtime_root, adapter_id, version_id)
     classes = directory / "classes"
     dependencies = parse_requirements(requirements)
-    with _lock_for(adapter_id, version_id):
+    with venv._lock_for(runtime_root, adapter_id, version_id):
         identity = venv._cache_identity(
             adapter_id,
             version_id,
@@ -111,13 +102,35 @@ def prepare_version_java(
                 dependency_context=dependency_context,
             )
         except CacheError as error:
-            raise venv.DependencyPreparationError("version cache is unavailable", "") from error
+            raise venv.dependency_cache_error(error) from error
         classes = directory / "classes"
-        if build is None and (classes / "Adapter.class").exists():
+        if build is None and (classes / "Adapter.class").is_file():
+            if builtin_materials is not None:
+                venv.reconcile_builtin_rebuildability(
+                    runtime_root,
+                    adapter_id=adapter_id,
+                    version_id=version_id,
+                    identity=identity,
+                    builtin_materials=builtin_materials,
+                    external_dependencies_present=bool(dependencies),
+                )
             if dependency_log is not None:
                 for group, artifact, version in dependencies:
                     dependency_log(f"{group}:{artifact}:{version} 已安装，检查通过")
             return directory
+        if build is None:
+            try:
+                _version_cache, directory, build = venv._begin_version_build(
+                    runtime_root,
+                    adapter_id,
+                    version_id,
+                    identity=identity,
+                    dependency_context=dependency_context,
+                    force_replacement=True,
+                )
+            except CacheError as error:
+                raise venv.dependency_cache_error(error) from error
+            classes = directory / "classes"
         assert build is not None
         if dependency_context is not None:
             dependency_context = dependency_context.with_reservation(
@@ -271,6 +284,12 @@ def prepare_version_java(
                 dependency_context,
             )
         except venv.DependencyPreparationError as error:
+            venv.record_dependency_source_failure(
+                runtime_root,
+                language="java",
+                source_url=repository_url,
+                error=error,
+            )
             build.abort()
             if builtin_materials is not None and any(
                 marker in error.install_log.lower()
@@ -290,7 +309,16 @@ def prepare_version_java(
             if settings_path is not None:
                 settings_path.unlink(missing_ok=True)
         try:
-            return build.finish(identity)
+            return build.finish(
+                identity,
+                automatic_offline_proof=(
+                    builtin_materials is not None
+                    and venv.builtin_rebuildability_verified(
+                        builtin_materials,
+                        external_dependencies_present=bool(dependencies),
+                    )
+                ),
+            )
         except CacheError as error:
             build.abort()
             raise venv.DependencyPreparationError("version cache promotion failed", "") from error

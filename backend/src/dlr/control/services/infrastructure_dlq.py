@@ -197,7 +197,16 @@ def reconcile_message(
     execution: Execution | None = None
     adapter: Adapter | None = None
     if raw_execution_id is not None:
-        execution = lock_execution_in_admission_order(session, raw_execution_id)
+        candidate_status = session.scalar(
+            select(Execution.status).where(Execution.id == raw_execution_id)
+        )
+        execution = lock_execution_in_admission_order(
+            session,
+            raw_execution_id,
+            guard_reactivation=(
+                message is not None and not delivery_limit and candidate_status == "queued"
+            ),
+        )
         if execution is not None:
             adapter = session.get(Adapter, execution.adapter_id)
     incident = _incident(

@@ -288,7 +288,8 @@
     "executionInterfaceCompatible": "Execution interface compatible",
     "executionInterfaceIncompatible": "Execution interface incompatible",
     "dispatchReady": "Message execution available",
-    "dispatchUnavailable": "Message execution unavailable"
+    "dispatchUnavailable": "Message execution unavailable",
+    "cacheManagement": "Manage cache"
   },
   "empty": {
     "noAdapter": "Select an Adapter to manage.",

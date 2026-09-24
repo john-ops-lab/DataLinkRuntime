@@ -1,13 +1,20 @@
 """Worker-internal endpoints of the Control Node (Worker Token protected)."""
 
+import uuid
 from collections.abc import Iterator
 from typing import Annotated, Any, BinaryIO
 
-from fastapi import APIRouter, Body, Depends, Header, Request, Response
+from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from dlr.control import db
+from dlr.control.schemas.cache_admin import (
+    CacheCommandClaim,
+    CacheCommandResult,
+    CacheSnapshotUpload,
+)
 from dlr.control.schemas.execution import (
     ExecutionResponse,
     WorkspaceCleanupReceipt,
@@ -21,6 +28,16 @@ from dlr.control.schemas.reliable_runtime import (
     ClaimDecision,
 )
 from dlr.control.schemas.worker import (
+    CacheGuardAcquire,
+    CacheGuardOperationResponse,
+    CacheGuardPage,
+    CacheGuardResponse,
+    CacheGuardResult,
+    CacheKeyReferenceBatch,
+    CacheKeyReferenceBatchResponse,
+    CacheKeyReferenceResult,
+    CacheReferenceResolution,
+    CacheReferenceResolve,
     CleanupResult,
     WorkerHeartbeat,
     WorkerRegister,
@@ -28,8 +45,8 @@ from dlr.control.schemas.worker import (
 )
 from dlr.control.security import require_business_principal, require_worker_token
 from dlr.control.services import attempt as attempt_service
+from dlr.control.services import cache_admin, cache_governance, worker_availability
 from dlr.control.services import worker as worker_service
-from dlr.control.services import worker_availability
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.worker_protocol import (
     CLAIM_TOKEN_HEADER,
@@ -87,6 +104,162 @@ def offline(worker_id: int, session: DbSession) -> Response:
     """Best-effort graceful offline on normal shutdown."""
     worker_service.mark_offline(session, worker_id)
     return Response(status_code=204)
+
+
+@router.post(
+    "/api/workers/{worker_id}/cache/commands/claim",
+    response_model=CacheCommandClaim,
+)
+def claim_cache_command(worker_id: int, session: DbSession) -> Response | CacheCommandClaim:
+    payload = cache_admin.claim_command(session, worker_id)
+    return Response(status_code=204) if payload is None else payload
+
+
+@router.post(
+    "/api/workers/{worker_id}/cache/commands/{operation_id}/result",
+    status_code=204,
+)
+def report_cache_command(
+    worker_id: int,
+    operation_id: uuid.UUID,
+    payload: CacheCommandResult,
+    session: DbSession,
+) -> Response:
+    cache_admin.apply_command_result(session, worker_id, operation_id, payload)
+    return Response(status_code=204)
+
+
+@router.post("/api/workers/{worker_id}/cache/snapshot", status_code=204)
+def report_cache_snapshot(
+    worker_id: int, payload: CacheSnapshotUpload, session: DbSession
+) -> Response:
+    cache_admin.upload_snapshot(session, worker_id, payload)
+    return Response(status_code=204)
+
+
+@router.post(
+    "/api/workers/{worker_id}/cache/guards/acquire",
+    response_model=CacheGuardOperationResponse,
+)
+def acquire_cache_guard(
+    worker_id: int, payload: CacheGuardAcquire, session: DbSession
+) -> CacheGuardOperationResponse:
+    return CacheGuardOperationResponse.model_validate(
+        cache_governance.acquire_guard(
+            session,
+            worker_id=worker_id,
+            adapter_id=payload.adapter_id,
+            version_id=payload.version_id,
+            operation_id=payload.operation_id,
+            cleanup_context=(
+                payload.cleanup_context.model_dump()
+                if payload.cleanup_context is not None
+                else None
+            ),
+            observed_identity=(
+                payload.observed_identity.model_dump()
+                if payload.observed_identity is not None
+                else None
+            ),
+            replacement_context=(
+                payload.replacement_context.model_dump()
+                if payload.replacement_context is not None
+                else None
+            ),
+        )
+    )
+
+
+@router.get(
+    "/api/workers/{worker_id}/cache/guards/{operation_id}/check",
+    response_model=CacheGuardOperationResponse,
+)
+def check_cache_guard(
+    worker_id: int, operation_id: uuid.UUID, session: DbSession
+) -> CacheGuardOperationResponse:
+    return CacheGuardOperationResponse.model_validate(
+        cache_governance.check_guard(session, worker_id=worker_id, operation_id=operation_id)
+    )
+
+
+@router.post(
+    "/api/workers/{worker_id}/cache/guards/{operation_id}/result",
+    response_model=CacheGuardOperationResponse,
+)
+def finish_cache_guard(
+    worker_id: int,
+    operation_id: uuid.UUID,
+    payload: CacheGuardResult,
+    session: DbSession,
+) -> CacheGuardOperationResponse:
+    return CacheGuardOperationResponse.model_validate(
+        cache_governance.finish_guard(
+            session,
+            worker_id=worker_id,
+            operation_id=operation_id,
+            generation=payload.generation,
+            outcome=payload.outcome,
+        )
+    )
+
+
+@router.get("/api/workers/{worker_id}/cache/guards", response_model=CacheGuardPage)
+def list_cache_guards(
+    worker_id: int,
+    session: DbSession,
+    after_version_id: Annotated[int | None, Query(ge=1)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+) -> CacheGuardPage:
+    guards, next_after = cache_governance.list_active_guards(
+        session,
+        worker_id=worker_id,
+        after_version_id=after_version_id,
+        limit=limit,
+    )
+    return CacheGuardPage(
+        items=[CacheGuardResponse.model_validate(item) for item in guards],
+        next_after_version_id=next_after,
+    )
+
+
+@router.post(
+    "/api/workers/{worker_id}/cache/references/resolve",
+    response_model=CacheReferenceResolution | CacheKeyReferenceBatchResponse,
+)
+def resolve_cache_reference(
+    worker_id: int,
+    payload: CacheReferenceResolve | CacheKeyReferenceBatch,
+    session: DbSession,
+) -> CacheReferenceResolution | CacheKeyReferenceBatchResponse:
+    if isinstance(payload, CacheKeyReferenceBatch):
+        try:
+            sampled_at, complete, items = cache_governance.cache_key_reference_facts(
+                session,
+                worker_id=worker_id,
+                items=[(item.adapter_id, item.version_id) for item in payload.items],
+            )
+        except (DBAPIError, cache_governance.CacheReferenceDeadlineExceeded) as error:
+            session.rollback()
+            raise domain_error(
+                503,
+                "cache_reference_unavailable",
+                "Cache reference facts are temporarily unavailable",
+            ) from error
+        return CacheKeyReferenceBatchResponse(
+            worker_id=worker_id,
+            sampled_at=sampled_at,
+            complete=complete,
+            items=[CacheKeyReferenceResult.model_validate(item) for item in items],
+        )
+    adapter_id, version_id = cache_governance.resolve_reference(
+        session,
+        worker_id=worker_id,
+        execution_id=payload.execution_id,
+        attempt_id=payload.attempt_id,
+    )
+    return CacheReferenceResolution(
+        key=f"{adapter_id}-{version_id}", adapter_id=adapter_id, version_id=version_id
+    )
 
 
 @router.get(

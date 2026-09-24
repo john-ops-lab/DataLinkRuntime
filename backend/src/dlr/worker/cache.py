@@ -19,8 +19,8 @@ import stat
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
-from contextlib import suppress
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,6 +80,26 @@ class CacheReservation:
 
 
 _thread_lock = threading.RLock()
+
+
+@dataclass
+class CacheScanBudget:
+    """Shared bounded verification budget for one governance round."""
+
+    nodes_remaining: int
+    hash_bytes_remaining: int
+    deadline: float
+    max_depth: int = 64
+
+    def consume_node(self) -> None:
+        if self.nodes_remaining <= 0 or time.monotonic() >= self.deadline:
+            raise CacheError("cache_scan_budget_exhausted")
+        self.nodes_remaining -= 1
+
+    def consume_hash_bytes(self, amount: int) -> None:
+        if amount > self.hash_bytes_remaining or time.monotonic() >= self.deadline:
+            raise CacheError("cache_scan_budget_exhausted")
+        self.hash_bytes_remaining -= amount
 
 
 def _safe_key(value: str) -> str:
@@ -230,6 +250,75 @@ def _tree_facts(root: Path) -> tuple[str, int, int]:
     return digest.hexdigest(), total, files
 
 
+def _tree_facts_bounded(root: Path, *, budget: CacheScanBudget) -> tuple[str, int, int, int]:
+    """Compute the immutable digest within a finite governance scan budget."""
+    entries: list[Path] = []
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        directory, depth = stack.pop()
+        if depth >= budget.max_depth or time.monotonic() >= budget.deadline:
+            raise CacheError("cache_scan_budget_exhausted")
+        try:
+            with os.scandir(directory) as iterator:
+                for item in iterator:
+                    budget.consume_node()
+                    path = Path(item.path)
+                    info = item.stat(follow_symlinks=False)
+                    entries.append(path)
+                    if stat.S_ISDIR(info.st_mode):
+                        stack.append((path, depth + 1))
+        except CacheError:
+            raise
+        except OSError as error:
+            raise CacheError("cache_verify_failed") from error
+    digest = hashlib.sha256()
+    total = 0
+    files = 0
+    hashed = 0
+    physical_bytes = 0
+    for entry in sorted(entries, key=lambda path: path.as_posix()):
+        if time.monotonic() >= budget.deadline:
+            raise CacheError("cache_scan_budget_exhausted")
+        relative = entry.relative_to(root).as_posix().encode("utf-8")
+        try:
+            info = entry.lstat()
+            if entry.name in {_MANIFEST_NAME, _READY_NAME}:
+                if stat.S_ISREG(info.st_mode):
+                    physical_bytes += info.st_size
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                digest.update(b"L")
+                digest.update(len(relative).to_bytes(4, "big"))
+                digest.update(relative)
+                digest.update(os.readlink(entry).encode("utf-8"))
+                files += 1
+                continue
+            if info.st_mode & 0o002:
+                raise CacheError("cache_permissions_invalid")
+            digest.update(b"D" if stat.S_ISDIR(info.st_mode) else b"F")
+            digest.update(len(relative).to_bytes(4, "big"))
+            digest.update(relative)
+            if not stat.S_ISREG(info.st_mode):
+                if not stat.S_ISDIR(info.st_mode):
+                    raise CacheError("cache_entry_invalid")
+                continue
+            files += 1
+            total += info.st_size
+            physical_bytes += info.st_size
+            budget.consume_hash_bytes(info.st_size)
+            with entry.open("rb") as stream:
+                while chunk := stream.read(64 * 1024):
+                    if time.monotonic() >= budget.deadline:
+                        raise CacheError("cache_scan_budget_exhausted")
+                    hashed += len(chunk)
+                    digest.update(chunk)
+        except CacheError:
+            raise
+        except OSError as error:
+            raise CacheError("cache_verify_failed") from error
+    return digest.hexdigest(), total, files, physical_bytes
+
+
 def _make_read_only(root: Path, *, public: bool = False) -> None:
     """Remove write bits without following symlinks.
 
@@ -375,6 +464,26 @@ class VerifiedVersionCache:
     def entry_path(self, key: str) -> Path:
         return self.entries / _safe_key(key)
 
+    def _observe_lifecycle(
+        self,
+        entry: Path,
+        *,
+        identity: Mapping[str, Any],
+        digest: str,
+        bytes_used: int,
+    ) -> None:
+        try:
+            from dlr.worker.cache_lifecycle import CacheLifecycleStore
+
+            CacheLifecycleStore(self.root).observe_verified(
+                entry.name,
+                identity=identity,
+                digest=digest,
+                bytes_used=bytes_used,
+            )
+        except CacheError:
+            logger.warning("cache lifecycle sidecar unavailable for verified entry")
+
     def staging_path(self, key: str, token: str | None = None) -> Path:
         safe = _safe_key(key)
         suffix = token or uuid.uuid4().hex
@@ -403,7 +512,7 @@ class VerifiedVersionCache:
             raise CacheError("cache_path_invalid")
         return candidate
 
-    def _locked(self) -> Any:
+    def _locked(self, *, blocking: bool = True) -> Any:
         class Lock:
             def __init__(self, owner: VerifiedVersionCache) -> None:
                 self.owner = owner
@@ -411,7 +520,12 @@ class VerifiedVersionCache:
 
             def __enter__(self) -> Lock:
                 self.handle = open(self.owner._lock_path, "a+", encoding="ascii")
-                fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+                flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+                try:
+                    fcntl.flock(self.handle.fileno(), flags)
+                except BlockingIOError as error:
+                    self.handle.close()
+                    raise CacheError("cache_lock_busy") from error
                 return self
 
             def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
@@ -419,6 +533,29 @@ class VerifiedVersionCache:
                 self.handle.close()
 
         return Lock(self)
+
+    @contextmanager
+    def accounting_lock(self, *, blocking: bool = True) -> Iterator[None]:
+        """Serialize physical-byte snapshots with cache-tree publication moves."""
+
+        acquired = _thread_lock.acquire(blocking=blocking)
+        if not acquired:
+            raise CacheError("cache_lock_busy")
+        try:
+            with self._locked(blocking=blocking):
+                yield
+        finally:
+            _thread_lock.release()
+
+    def reservation_snapshot(self, *, blocking: bool = False) -> dict[str, Any]:
+        """Read reservation facts without traversing cache content."""
+
+        with self.accounting_lock(blocking=blocking):
+            state = self._state()
+            return {
+                "reserved_bytes": sum(int(item["amount"]) for item in state.values()),
+                "active_reservation_tokens": frozenset(state),
+            }
 
     def _state(self) -> dict[str, dict[str, int | float]]:
         value = _read_json(self._state_path, {"reservations": {}})
@@ -453,26 +590,92 @@ class VerifiedVersionCache:
                 valid[token] = {"amount": amount, "expires": expires}
         return valid
 
-    def _committed_bytes(self) -> int:
+    def _committed_bytes_locked(self, *, active_reservation_tokens: set[str] | None = None) -> int:
         total = 0
-        try:
-            for entry in self.entries.iterdir():
-                entry_info = entry.lstat()
-                if entry.name.startswith("."):
-                    continue
-                if not stat.S_ISDIR(entry_info.st_mode):
+        active_tokens = active_reservation_tokens or set()
+
+        def add_tree(root: Path) -> None:
+            nonlocal total
+            root_info = root.lstat()
+            for path in root.rglob("*"):
+                info = path.lstat()
+                if stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+                elif not stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
                     raise CacheError("cache_accounting_failed")
-                for path in entry.rglob("*"):
-                    info = path.lstat()
-                    if stat.S_ISREG(info.st_mode):
-                        total += info.st_size
-                    elif not stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+            final_info = root.lstat()
+            if (root_info.st_dev, root_info.st_ino) != (final_info.st_dev, final_info.st_ino):
+                raise FileNotFoundError(root)
+
+        for attempt in range(2):
+            total = 0
+            try:
+                for entry in self.entries.iterdir():
+                    entry_info = entry.lstat()
+                    if entry.name.startswith(".") and any(
+                        entry.name.endswith(f".staging-{token}") for token in active_tokens
+                    ):
+                        continue
+                    if not stat.S_ISDIR(entry_info.st_mode):
                         raise CacheError("cache_accounting_failed")
-        except CacheError:
-            raise
-        except OSError as error:
-            raise CacheError("cache_accounting_failed") from error
-        return total
+                    add_tree(entry)
+                return total
+            except CacheError:
+                raise
+            except FileNotFoundError as error:
+                if attempt == 0:
+                    continue
+                raise CacheError("cache_accounting_failed") from error
+            except OSError as error:
+                raise CacheError("cache_accounting_failed") from error
+        raise CacheError("cache_accounting_failed")
+
+    def _committed_bytes(self, *, active_reservation_tokens: set[str] | None = None) -> int:
+        with self.accounting_lock():
+            return self._committed_bytes_locked(active_reservation_tokens=active_reservation_tokens)
+
+    def accounting_snapshot(self) -> dict[str, Any]:
+        """Return bounded reservation facts plus physical version-cache occupancy."""
+
+        with _thread_lock, self._locked():
+            state = self._state()
+            committed = self._committed_bytes_locked(active_reservation_tokens=set(state))
+            return {
+                "committed_bytes": committed,
+                "reserved_bytes": sum(int(item["amount"]) for item in state.values()),
+                "active_reservation_tokens": frozenset(state),
+            }
+
+    def inspect_entry_bounded(
+        self, path: Path, *, budget: CacheScanBudget
+    ) -> dict[str, Any] | None:
+        """Verify one ready entry and return identity plus physical accounting facts."""
+
+        try:
+            entry = self._direct_entry(path, staging=False, allow_missing=False)
+            manifest = _read_json(entry / _MANIFEST_NAME, {})
+            identity = manifest.get("identity")
+            digest = manifest.get("digest")
+            if not isinstance(identity, dict) or not isinstance(digest, str):
+                return None
+            actual_digest, total, files, physical = _tree_facts_bounded(entry, budget=budget)
+            if (
+                manifest.get("digest") != actual_digest
+                or manifest.get("bytes") != total
+                or manifest.get("files") != files
+            ):
+                return None
+            return {
+                "identity": identity,
+                "digest": digest,
+                "bytes": total,
+                "physical_bytes": physical,
+                "files": files,
+            }
+        except CacheError as error:
+            if error.code == "cache_scan_budget_exhausted":
+                raise
+            return None
 
     def reserve(self, amount: int, *, ttl_seconds: int = 900) -> CacheReservation:
         if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
@@ -484,7 +687,9 @@ class VerifiedVersionCache:
             reserved = sum(int(item["amount"]) for item in state.values())
             disk_free = shutil.disk_usage(self.root).free
             available = min(
-                self.max_bytes - self._committed_bytes() - reserved,
+                self.max_bytes
+                - self._committed_bytes_locked(active_reservation_tokens=set(state))
+                - reserved,
                 disk_free - self.low_watermark_bytes,
             )
             if amount > available:
@@ -548,13 +753,169 @@ class VerifiedVersionCache:
             if manifest["identity"] != dict(identity):
                 return False
             digest, total, files = _tree_facts(entry)
-            return bool(
+            verified = bool(
                 manifest["digest"] == digest
                 and manifest["bytes"] == total
                 and manifest["files"] == files
             )
+            if verified:
+                # Lifecycle metadata is intentionally best effort here.  A
+                # verified legacy entry remains usable when its new sidecar
+                # cannot be initialized, but governance must then retain it.
+                self._observe_lifecycle(
+                    entry,
+                    identity=identity,
+                    digest=digest,
+                    bytes_used=total,
+                )
+            return verified
         except (CacheError, OSError, UnicodeError, json.JSONDecodeError, ValueError):
             return False
+
+    def verify_for_deletion(self, path: Path, identity: Mapping[str, Any], digest: str) -> bool:
+        """Recheck immutable content and its previously observed digest under the key lock."""
+        if not self.verify(path, identity):
+            return False
+        try:
+            manifest = _read_json(Path(path) / _MANIFEST_NAME, {})
+        except CacheError:
+            return False
+        return manifest.get("digest") == digest
+
+    def observed_identity(self, path: Path) -> tuple[dict[str, Any], str] | None:
+        """Return manifest-bound identity only after full content verification."""
+
+        try:
+            entry = self._direct_entry(path, staging=False, allow_missing=False)
+            manifest = _read_json(entry / _MANIFEST_NAME, {})
+            identity = manifest.get("identity")
+            digest = manifest.get("digest")
+            if (
+                not isinstance(identity, dict)
+                or not isinstance(digest, str)
+                or not self.verify(entry, identity)
+            ):
+                return None
+            return identity, digest
+        except CacheError:
+            return None
+
+    def observed_identity_bounded(
+        self, path: Path, *, budget: CacheScanBudget
+    ) -> tuple[dict[str, Any], str] | None:
+        """Return a verified manifest identity while charging a shared governance budget."""
+
+        try:
+            entry = self._direct_entry(path, staging=False, allow_missing=False)
+            manifest = _read_json(entry / _MANIFEST_NAME, {})
+            identity = manifest.get("identity")
+            digest = manifest.get("digest")
+            if not isinstance(identity, dict) or not isinstance(digest, str):
+                return None
+            actual_digest, total, files, _physical = _tree_facts_bounded(entry, budget=budget)
+            if (
+                manifest.get("digest") != actual_digest
+                or manifest.get("bytes") != total
+                or manifest.get("files") != files
+            ):
+                return None
+            return identity, digest
+        except CacheError as error:
+            if error.code == "cache_scan_budget_exhausted":
+                raise
+            return None
+
+    def manifest_identity(self, path: Path) -> tuple[dict[str, Any], str] | None:
+        """Return a strictly parsed manifest identity without trusting damaged content."""
+
+        try:
+            entry = self._direct_entry(path, staging=False, allow_missing=False)
+            manifest_path = entry / _MANIFEST_NAME
+            info = manifest_path.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or stat.S_ISLNK(info.st_mode)
+                or info.st_size > 1024 * 1024
+            ):
+                return None
+            manifest = _read_json(manifest_path, {})
+            identity = manifest.get("identity")
+            digest = manifest.get("digest")
+            bytes_used = manifest.get("bytes")
+            files = manifest.get("files")
+            if (
+                set(manifest) != _MANIFEST_FIELDS
+                or not isinstance(identity, dict)
+                or not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+                or not isinstance(bytes_used, int)
+                or isinstance(bytes_used, bool)
+                or bytes_used < 0
+                or not isinstance(files, int)
+                or isinstance(files, bool)
+                or files < 0
+            ):
+                return None
+            return identity, digest
+        except (CacheError, OSError, UnicodeError, ValueError, RecursionError):
+            return None
+
+    def verify_for_deletion_bounded(
+        self,
+        path: Path,
+        identity: Mapping[str, Any],
+        digest: str,
+        *,
+        max_nodes: int,
+        max_hash_bytes: int,
+        deadline: float,
+        budget: CacheScanBudget | None = None,
+    ) -> tuple[bool, int]:
+        """Verify one candidate without an unbounded recursive scan."""
+        try:
+            entry = self._direct_entry(path, staging=False, allow_missing=False)
+            ready = entry / _READY_NAME
+            manifest_path = entry / _MANIFEST_NAME
+            ready_info = ready.lstat()
+            manifest_info = manifest_path.lstat()
+            if (
+                not stat.S_ISREG(ready_info.st_mode)
+                or ready_info.st_mode & 0o222
+                or not stat.S_ISREG(manifest_info.st_mode)
+                or manifest_info.st_mode & 0o222
+                or manifest_info.st_size > 1024 * 1024
+            ):
+                return False, 0
+            manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+            if (
+                not isinstance(manifest, dict)
+                or set(manifest) != _MANIFEST_FIELDS
+                or manifest["identity"] != dict(identity)
+                or manifest["digest"] != digest
+            ):
+                return False, 0
+            actual_digest, total, files, physical_bytes = _tree_facts_bounded(
+                entry,
+                budget=budget
+                or CacheScanBudget(
+                    nodes_remaining=max_nodes,
+                    hash_bytes_remaining=max_hash_bytes,
+                    deadline=deadline,
+                ),
+            )
+            return (
+                actual_digest == digest
+                and manifest["bytes"] == total
+                and manifest["files"] == files,
+                physical_bytes,
+            )
+        except CacheError as error:
+            if error.code == "cache_scan_budget_exhausted":
+                raise
+            return False, 0
+        except (OSError, UnicodeError, ValueError, RecursionError):
+            return False, 0
 
     def promote(
         self,
@@ -586,13 +947,160 @@ class VerifiedVersionCache:
                     self.remove_staging(staging_path)
                     return target_path
                 raise CacheError("cache_target_conflict")
-            os.replace(staging_path, target_path)
-            _fsync_directory(entries)
+            with self.accounting_lock():
+                os.replace(staging_path, target_path)
+                _fsync_directory(entries)
+            self._observe_lifecycle(
+                target_path,
+                identity=identity,
+                digest=digest,
+                bytes_used=total,
+            )
             return target_path
         except OSError as error:
             raise CacheError("cache_promote_failed") from error
         finally:
             reservation.release()
+
+    def prepare_replacement_staging(
+        self,
+        source: Path,
+        target: Path,
+        *,
+        identity: Mapping[str, Any],
+        reservation: CacheReservation,
+        source_is_tmpfs: bool,
+    ) -> tuple[Path, str, int]:
+        """Create a verified persistent ready staging tree without publishing it."""
+
+        self._assert_active(reservation)
+        target_path = self._direct_entry(target, staging=False, allow_missing=True)
+        if not target_path.exists():
+            raise CacheError("cache_replacement_source_missing")
+        if source_is_tmpfs:
+            source_path = Path(source).resolve(strict=True)
+            staging = self.staging_path(target_path.name, reservation.token)
+            staging.mkdir(mode=0o700)
+            try:
+                _copy_tree_bounded(
+                    source_path,
+                    staging,
+                    limit=reservation.amount,
+                    available_bytes=lambda: (
+                        shutil.disk_usage(self.root).free - self.low_watermark_bytes
+                    ),
+                )
+            except BaseException:
+                with suppress(CacheError):
+                    self.remove_staging(staging)
+                raise
+        else:
+            staging = self._direct_entry(source, staging=True, allow_missing=False)
+        digest, total, files = _tree_facts(staging)
+        if total > reservation.amount:
+            raise CacheError("cache_reservation_insufficient")
+        _write_json(
+            staging / _MANIFEST_NAME,
+            {"bytes": total, "digest": digest, "files": files, "identity": dict(identity)},
+        )
+        _write_ready(staging / _READY_NAME)
+        _make_read_only(staging, public=True)
+        checked_digest, checked_total, checked_files = _tree_facts(staging)
+        if (checked_digest, checked_total, checked_files) != (digest, total, files):
+            raise CacheError("cache_identity_unverified")
+        return staging, digest, total
+
+    def publish_replacement_staging(
+        self,
+        staging: Path,
+        target: Path,
+        *,
+        identity: Mapping[str, Any],
+        digest: str,
+        bytes_used: int,
+        observe_lifecycle: bool = True,
+    ) -> Path:
+        """Publish an already verified staging tree after the old root moved to trash."""
+
+        staging_path = self._direct_entry(staging, staging=True, allow_missing=False)
+        target_path = self._direct_entry(target, staging=False, allow_missing=True)
+        if target_path.exists():
+            raise CacheError("cache_target_conflict")
+        with self.accounting_lock():
+            os.replace(staging_path, target_path)
+            _fsync_directory(self.entries.resolve(strict=True))
+        if observe_lifecycle:
+            self._observe_lifecycle(
+                target_path,
+                identity=identity,
+                digest=digest,
+                bytes_used=bytes_used,
+            )
+        return target_path
+
+    def verify_replacement_staging(
+        self,
+        staging: Path,
+        identity: Mapping[str, Any],
+        digest: str,
+        *,
+        budget: CacheScanBudget | None = None,
+    ) -> tuple[bool, int]:
+        """Recheck a sealed hidden staging tree during replacement recovery."""
+
+        try:
+            staging_path = self._direct_entry(staging, staging=True, allow_missing=False)
+            manifest = _read_json(staging_path / _MANIFEST_NAME, {})
+            if budget is None:
+                actual_digest, total, files = _tree_facts(staging_path)
+            else:
+                actual_digest, total, files, _physical = _tree_facts_bounded(
+                    staging_path, budget=budget
+                )
+            return (
+                manifest.get("identity") == dict(identity)
+                and manifest.get("digest") == digest
+                and manifest.get("bytes") == total
+                and manifest.get("files") == files
+                and actual_digest == digest,
+                total,
+            )
+        except CacheError as error:
+            if error.code == "cache_scan_budget_exhausted":
+                raise
+            return False, 0
+
+    def verify_replacement_target(
+        self,
+        target: Path,
+        identity: Mapping[str, Any],
+        digest: str,
+        *,
+        budget: CacheScanBudget | None = None,
+    ) -> tuple[bool, int]:
+        """Recheck a replacement target without mutating its old sidecar."""
+
+        try:
+            target_path = self._direct_entry(target, staging=False, allow_missing=False)
+            manifest = _read_json(target_path / _MANIFEST_NAME, {})
+            if budget is None:
+                actual_digest, total, files = _tree_facts(target_path)
+            else:
+                actual_digest, total, files, _physical = _tree_facts_bounded(
+                    target_path, budget=budget
+                )
+            return (
+                manifest.get("identity") == dict(identity)
+                and manifest.get("digest") == digest
+                and manifest.get("bytes") == total
+                and manifest.get("files") == files
+                and actual_digest == digest,
+                total,
+            )
+        except CacheError as error:
+            if error.code == "cache_scan_budget_exhausted":
+                raise
+            return False, 0
 
     def promote_from_tmpfs(
         self,
@@ -663,9 +1171,16 @@ class VerifiedVersionCache:
             )
             _write_ready(staging_path / _READY_NAME)
             _make_read_only(staging_path, public=True)
-            os.replace(staging_path, target_path)
-            _fsync_directory(self.entries.resolve(strict=True))
+            with self.accounting_lock():
+                os.replace(staging_path, target_path)
+                _fsync_directory(self.entries.resolve(strict=True))
             staging_path = None
+            self._observe_lifecycle(
+                target_path,
+                identity=identity,
+                digest=digest,
+                bytes_used=total,
+            )
             return target_path
         except OSError as error:
             primary_error = CacheError("cache_promote_failed")
@@ -714,16 +1229,13 @@ class VerifiedVersionCache:
             raise CacheError("cache_staging_cleanup_failed") from error
 
     def remove_entry(self, entry: Path) -> None:
-        """Remove one exact verified entry before a version rebuild."""
-        try:
-            candidate = self._direct_entry(entry, staging=False, allow_missing=True)
-            if not candidate.exists():
-                return
-            if not candidate.is_dir():
-                raise CacheError("cache_entry_invalid")
-            _make_writable_for_removal(candidate)
-            shutil.rmtree(candidate)
-        except CacheError:
-            raise
-        except OSError as error:
-            raise CacheError("cache_entry_cleanup_failed") from error
+        """Reject the pre-governance destructive entry point."""
+
+        candidate = self._direct_entry(entry, staging=False, allow_missing=True)
+        from dlr.worker.cache_lifecycle import CacheLifecycleStore
+
+        lifecycle = CacheLifecycleStore(self.root)
+        with lifecycle.entry_lock(candidate.name):
+            if lifecycle.use_records_for_key(candidate.name):
+                raise CacheError("cache_entry_in_use")
+            raise CacheError("cache_governance_required")

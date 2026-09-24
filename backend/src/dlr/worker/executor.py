@@ -1267,6 +1267,7 @@ def run(
             (dependency_context.tmpdir if dependency_context is not None else layout.temp)
             / "builtin-materials",
             builtin_downloader or unavailable_download,
+            lifecycle="ephemeral",
         )
         index_url = None
 

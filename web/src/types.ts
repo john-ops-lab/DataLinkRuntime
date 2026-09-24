@@ -599,6 +599,151 @@ export interface Worker {
   rabbitmq_execution_v3?: boolean;
 }
 
+export type CacheAdminStatus =
+  | "unsupported"
+  | "offline"
+  | "missing"
+  | "stale"
+  | "owner_unconfirmed"
+  | "incomplete"
+  | "complete";
+
+export type CacheOperationKind = "preview" | "clean" | "protect" | "retry";
+export type CacheOperationStatus = "pending" | "running" | "completed" | "failed";
+
+export interface CacheKeySelection {
+  adapter_id: number;
+  version_id: number;
+}
+
+export interface CacheSnapshotIdentity extends CacheKeySelection {
+  language: AdapterLanguage;
+  source_sha256: string;
+}
+
+export interface CacheProtectSelection extends CacheKeySelection {
+  identity: CacheSnapshotIdentity;
+  digest: string;
+  pinned?: boolean;
+  source_policy?: "verified_offline" | "managed_online";
+  evidence_note?: string;
+  valid_until?: string;
+}
+
+export interface CacheSnapshotItem extends CacheKeySelection {
+  cache_key: string;
+  kind: "version" | "staging";
+  identity: CacheSnapshotIdentity | null;
+  digest: string | null;
+  bytes: number;
+  pinned: boolean;
+  rebuildability: "unknown" | "confirmed";
+  reasons: string[];
+}
+
+export interface CacheCategorySummary {
+  entries: number;
+  bytes: number;
+  reclaimable_bytes: number;
+  reasons: Record<string, number>;
+}
+
+export interface CacheSnapshotSummary {
+  accounting: { committed_bytes: number; reserved_bytes: number };
+  categories: Record<"versions" | "shared" | "staging" | "trash" | "unknown", CacheCategorySummary>;
+  retained_reasons: Record<string, number>;
+  policy: {
+    gc_enabled: boolean;
+    pressure_gc_enabled: boolean;
+    scan_interval_seconds: number;
+    idle_ttl_seconds: number;
+    min_idle_seconds: number;
+    max_bytes: number;
+    high_watermark_percent: number;
+    low_watermark_percent: number;
+    disk_reserve_bytes: number;
+    max_delete_bytes_per_round: number;
+    max_delete_entries_per_round: number;
+    max_scan_entries_per_round: number;
+    max_scan_nodes_per_round: number;
+    max_scan_hash_bytes_per_round: number;
+    max_scan_depth: number;
+    max_round_seconds: number;
+    staging_ttl_seconds: number;
+    offline_protection: boolean;
+    offline_mode: boolean;
+    shared_cache_mode: "report_only";
+  };
+}
+
+export interface FailedCacheGuardItem extends CacheKeySelection {
+  guard_operation_id: string;
+  generation: number;
+  operation_kind: "gc" | "cleanup" | "replacement";
+  local_phase: "failed";
+  resume_phase: string;
+  failure_count: number;
+  error_code: string;
+  sampled_at: string;
+}
+
+export interface FailedCacheCleanupItem {
+  cleanup_id: number;
+  adapter_id: number;
+  attempts: number;
+  error_code: string | null;
+}
+
+export interface CacheAdminView {
+  worker_id: number;
+  status: CacheAdminStatus;
+  sampled_at: string | null;
+  received_at: string | null;
+  sample_id: string | null;
+  sequence: number | null;
+  complete: boolean;
+  cursor: string | null;
+  summary: CacheSnapshotSummary | null;
+  items: CacheSnapshotItem[];
+  failed_guard_items: FailedCacheGuardItem[];
+  failed_guard_cursor: string | null;
+  failed_guard_complete: boolean;
+  failed_cleanup_items: FailedCacheCleanupItem[];
+  failed_cleanup_next_cursor: number | null;
+}
+
+export interface CacheOperation {
+  operation_id: string;
+  worker_id: number;
+  kind: CacheOperationKind;
+  status: CacheOperationStatus;
+  claim_epoch: number;
+  target_kind: string | null;
+  target_operation_id: string | null;
+  target_cleanup_id: number | null;
+  result: Record<string, unknown> | null;
+  error_code: string | null;
+  created_at: string;
+  claimed_at: string | null;
+  finished_at: string | null;
+}
+
+export interface CacheOperationPage {
+  items: CacheOperation[];
+  next_cursor: string | null;
+}
+
+export type CacheOperationCreate =
+  | { kind: "preview" | "clean"; idempotency_key: string; keys: CacheKeySelection[] }
+  | { kind: "protect"; idempotency_key: string; protect: CacheProtectSelection[] }
+  | {
+      kind: "retry";
+      idempotency_key: string;
+      management_operation_id?: string;
+      guard_operation_id?: string;
+      cleanup_id?: number;
+    };
+
 // --- M3.2/M3.3: Secret Store credentials and dependency sources -----------
 
 export type CredentialType = "password" | "token" | "access_key" | "secret";

@@ -87,12 +87,16 @@ def test_agent_enters_consumer_only_after_local_isolation_passes(
 ) -> None:
     monkeypatch.setenv(agent.READY_FILE_ENV, str(tmp_path / "ready"))
     config = agent.WorkerConfig()
+    config.runtime_root = tmp_path / "runtime"
+    config.workspace_cleanup_journal_root = config.runtime_root / "cleanup-journal"
+    config.attempt_journal_root = config.runtime_root / "attempt-journal"
     config.isolation_capabilities = dict.fromkeys(agent.ISOLATION_CAPABILITY_KEYS, preflight_passed)
     worker = agent.Agent(config, ControlClient("https://control.example", "unit-test-token"))
     worker._registration_info = {"rabbitmq_execution_v3": True}
     calls: list[str] = []
     monkeypatch.setattr(worker, "_register", lambda: 7)
     monkeypatch.setattr(worker, "_recover_cleanup_journals", lambda _id: None)
+    monkeypatch.setattr(worker, "_recover_cache_deletions", lambda: calls.append("cache-recovery"))
     monkeypatch.setattr(worker, "_heartbeat_loop", lambda _id: None)
     monkeypatch.setattr(worker, "_cleanup_loop", lambda _id: None)
     monkeypatch.setattr(worker, "_run_consumer", lambda _id: calls.append("consumer"))
@@ -100,5 +104,8 @@ def test_agent_enters_consumer_only_after_local_isolation_passes(
     if not preflight_passed:
         worker.request_stop()
     worker.run()
-    assert calls == (["consumer"] if preflight_passed else [])
+    expected_calls = ["cache-recovery"]
+    if preflight_passed:
+        expected_calls.append("consumer")
+    assert calls == expected_calls
     assert not (tmp_path / "ready").exists()

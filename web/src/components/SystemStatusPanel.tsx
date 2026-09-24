@@ -32,6 +32,7 @@ interface SystemStatusPanelProps {
   workersError: string | null;
   refreshing: boolean;
   onRefresh: () => Promise<void>;
+  canManageCache?: boolean;
 }
 
 function formatTime(value: string, locale: "zh-CN" | "en"): string {
@@ -282,6 +283,7 @@ export default function SystemStatusPanel(props: SystemStatusPanelProps) {
             workers={props.workers}
             loading={props.workersLoading}
             error={props.workersError}
+            canManageCache={props.canManageCache}
           />
         </Card>
       </div>

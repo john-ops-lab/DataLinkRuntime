@@ -60,7 +60,7 @@ from dlr.control.schemas.reliable_runtime import (
     ResourceProfile,
     V3TaskPayload,
 )
-from dlr.control.services import admission, outbox
+from dlr.control.services import admission, cache_governance, outbox
 from dlr.control.services import execution as execution_service
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.dispatch import deserialize_dispatch_message
@@ -403,9 +403,12 @@ def claim_dispatch(
         )
 
     identity = session.execute(
-        select(Execution.adapter_id, Execution.dispatch_backend).where(
-            Execution.id == message.execution_id
-        )
+        select(
+            Execution.adapter_id,
+            Execution.dispatch_backend,
+            Execution.version_id,
+            Execution.target_worker_id_snapshot,
+        ).where(Execution.id == message.execution_id)
     ).one_or_none()
     if identity is None:
         return _reject_dispatch(
@@ -415,7 +418,7 @@ def claim_dispatch(
             execution_id=message.execution_id,
             dispatch_generation=message.dispatch_generation,
         )
-    adapter_id, dispatch_backend = identity
+    adapter_id, dispatch_backend, version_id, target_worker_id_snapshot = identity
     if dispatch_backend == "rabbitmq":
         admission_scope = admission.lock_admission_scope(session, int(adapter_id))
         adapter = session.get(Adapter, int(adapter_id)) if admission_scope is not None else None
@@ -429,6 +432,18 @@ def claim_dispatch(
             execution_id=message.execution_id,
             dispatch_generation=message.dispatch_generation,
         )
+    try:
+        cache_governance.ensure_reference_allowed(
+            session,
+            worker_id=int(target_worker_id_snapshot or worker_id),
+            adapter_id=int(adapter_id),
+            version_id=int(version_id),
+        )
+    except HTTPException as error:
+        if _http_error_code(error) != "cache_reclamation_in_progress":
+            raise
+        session.rollback()
+        return _decision("PAUSE_CONSUMER", "cache_reclamation_in_progress", retry_after_seconds=1)
     execution = session.get(
         Execution, message.execution_id, with_for_update=True, populate_existing=True
     )
@@ -1225,7 +1240,13 @@ def retry_dispatcher_once(
     effective_now = _utc(now or database_now(session))
     candidates = list(
         session.execute(
-            select(Execution.id, Execution.adapter_id)
+            select(
+                Execution.id,
+                Execution.adapter_id,
+                Execution.version_id,
+                Execution.target_worker_id_snapshot,
+                Execution.target_worker_id,
+            )
             .where(
                 Execution.dispatch_backend == "rabbitmq",
                 Execution.status == "retry_wait",
@@ -1236,11 +1257,23 @@ def retry_dispatcher_once(
         )
     )
     dispatched = 0
-    for execution_id, adapter_id in candidates:
+    for execution_id, adapter_id, version_id, target_snapshot, target_worker in candidates:
         adapter = session.scalar(
             select(Adapter).where(Adapter.id == adapter_id).with_for_update(skip_locked=True)
         )
         if adapter is None:
+            session.rollback()
+            continue
+        try:
+            cache_governance.ensure_reference_allowed(
+                session,
+                worker_id=int(target_snapshot or target_worker),
+                adapter_id=int(adapter_id),
+                version_id=int(version_id),
+            )
+        except HTTPException as error:
+            if _http_error_code(error) != "cache_reclamation_in_progress":
+                raise
             session.rollback()
             continue
         execution = session.scalar(
@@ -1418,13 +1451,31 @@ def _replay_availability(session: Session, execution: Execution) -> tuple[bool, 
 def replay_execution(session: Session, execution_id: int) -> ReplayResponse:
     """Create a new accepted RabbitMQ Execution from a dead-letter snapshot."""
     identity = session.execute(
-        select(Execution.adapter_id).where(Execution.id == execution_id)
+        select(
+            Execution.adapter_id,
+            Execution.version_id,
+            Execution.dependency_check,
+            Execution.target_worker_id_snapshot,
+        ).where(Execution.id == execution_id)
     ).one_or_none()
     if identity is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
-    adapter_id = int(identity[0])
+    adapter_id, version_id, dependency_check, target_snapshot = identity
+    adapter_id = int(adapter_id)
     if admission.lock_admission_scope(session, adapter_id) is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
+    adapter = session.get(Adapter, adapter_id)
+    if adapter is None:
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
+    replay_worker_id = target_snapshot if dependency_check else adapter.runtime_worker_id
+    if replay_worker_id is None:
+        raise domain_error(409, "worker_unavailable", "No Worker is assigned")
+    cache_governance.ensure_reference_allowed(
+        session,
+        worker_id=int(replay_worker_id),
+        adapter_id=adapter_id,
+        version_id=int(version_id),
+    )
     old = session.get(Execution, execution_id, with_for_update=True)
     if old is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
@@ -1438,9 +1489,6 @@ def replay_execution(session: Session, execution_id: int) -> ReplayResponse:
             else "execution_replay_invalid"
         )
         raise domain_error(409, code, "Execution cannot be replayed")
-    adapter = session.get(Adapter, adapter_id)
-    if adapter is None:
-        raise domain_error(404, "adapter_not_found", "Adapter not found")
     version = session.scalar(
         select(AdapterVersion).where(
             AdapterVersion.id == old.version_id,

@@ -5,7 +5,6 @@ import hashlib
 import json
 import shutil
 import tempfile
-import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,14 +15,6 @@ from urllib import parse as url_parse
 from dlr.runtime.typescript_runtime import DECLARATIONS
 from dlr.worker import venv
 from dlr.worker.cache import CacheError
-
-_locks: dict[tuple[int, int], threading.Lock] = {}
-_locks_guard = threading.Lock()
-
-
-def _lock_for(adapter_id: int, version_id: int) -> threading.Lock:
-    with _locks_guard:
-        return _locks.setdefault((adapter_id, version_id), threading.Lock())
 
 
 def parse_requirements(requirements: str) -> dict[str, str]:
@@ -105,7 +96,7 @@ def prepare_version_node(
             raise venv.DependencyPreparationError(
                 str(error), "", error_code="builtin_external_reference"
             ) from error
-    with _lock_for(adapter_id, version_id):
+    with venv._lock_for(runtime_root, adapter_id, version_id):
         identity = venv._cache_identity(
             adapter_id,
             version_id,
@@ -123,12 +114,33 @@ def prepare_version_node(
                 dependency_context=dependency_context,
             )
         except CacheError as error:
-            raise venv.DependencyPreparationError("version cache is unavailable", "") from error
-        if build is None and (directory / "adapter.mjs").exists():
+            raise venv.dependency_cache_error(error) from error
+        if build is None and (directory / "adapter.mjs").is_file():
+            if builtin_materials is not None:
+                venv.reconcile_builtin_rebuildability(
+                    runtime_root,
+                    adapter_id=adapter_id,
+                    version_id=version_id,
+                    identity=identity,
+                    builtin_materials=builtin_materials,
+                    external_dependencies_present=bool(dependencies),
+                )
             if dependency_log is not None:
                 for name, version in dependencies.items():
                     dependency_log(f"{name}@{version} 已安装，检查通过")
             return directory
+        if build is None:
+            try:
+                _version_cache, directory, build = venv._begin_version_build(
+                    runtime_root,
+                    adapter_id,
+                    version_id,
+                    identity=identity,
+                    dependency_context=dependency_context,
+                    force_replacement=True,
+                )
+            except CacheError as error:
+                raise venv.dependency_cache_error(error) from error
         assert build is not None
         if dependency_context is not None:
             dependency_context = dependency_context.with_reservation(
@@ -273,7 +285,13 @@ def prepare_version_node(
                     if dependency_log is not None:
                         for name, version in dependencies.items():
                             dependency_log(f"{name}@{version} 安装成功")
-                except venv.DependencyPreparationError:
+                except venv.DependencyPreparationError as error:
+                    venv.record_dependency_source_failure(
+                        runtime_root,
+                        language=language,
+                        source_url=registry_url,
+                        error=error,
+                    )
                     build.abort()
                     raise
                 finally:
@@ -321,7 +339,16 @@ def prepare_version_node(
                 build.abort()
                 raise
         try:
-            return build.finish(identity)
+            return build.finish(
+                identity,
+                automatic_offline_proof=(
+                    builtin_materials is not None
+                    and venv.builtin_rebuildability_verified(
+                        builtin_materials,
+                        external_dependencies_present=bool(dependencies),
+                    )
+                ),
+            )
         except CacheError as error:
             build.abort()
             raise venv.DependencyPreparationError("version cache promotion failed", "") from error

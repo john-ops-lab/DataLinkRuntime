@@ -7,8 +7,9 @@ Control Node; it never listens on any port.
 import json
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 
 class ControlUnavailableError(Exception):
@@ -116,6 +117,213 @@ class ControlClient:
     def mark_offline(self, worker_id: int) -> None:
         self._expect("POST", f"/api/workers/{worker_id}/offline", expected=204)
 
+    def claim_cache_command(self, worker_id: int) -> dict[str, Any] | None:
+        status, raw = self._request("POST", f"/api/workers/{worker_id}/cache/commands/claim")
+        if status >= 500:
+            raise ControlUnavailableError(f"control answered {status}")
+        if status == 204:
+            return None
+        if status != 200:
+            raise ClientError(status, raw.decode(errors="replace"))
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ClientError(502, "cache command response is not an object")
+        return value
+
+    def report_cache_command(
+        self,
+        worker_id: int,
+        operation_id: str,
+        *,
+        claim_epoch: int,
+        request_hash: str,
+        status: str,
+        result: Mapping[str, Any],
+        error_code: str | None = None,
+    ) -> None:
+        self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cache/commands/{operation_id}/result",
+            {
+                "claim_epoch": claim_epoch,
+                "request_hash": request_hash,
+                "status": status,
+                "result": dict(result),
+                **({"error_code": error_code} if error_code is not None else {}),
+            },
+            expected=204,
+        )
+
+    def report_cache_snapshot(self, worker_id: int, snapshot: Mapping[str, Any]) -> None:
+        self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cache/snapshot",
+            dict(snapshot),
+            expected=204,
+            timeout=min(self._timeout_seconds, 10.0),
+        )
+
+    def resolve_cache_reference(
+        self, worker_id: int, execution_id: int, attempt_id: int | None
+    ) -> str:
+        raw = self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cache/references/resolve",
+            {"execution_id": execution_id, "attempt_id": attempt_id},
+            timeout=min(self._timeout_seconds, 5.0),
+        )
+        body = json.loads(raw)
+        key = body.get("key") if isinstance(body, dict) else None
+        if not isinstance(key, str) or not key:
+            raise ClientError(502, "invalid cache reference response")
+        return key
+
+    def resolve_cache_key_references(
+        self,
+        worker_id: int,
+        items: list[tuple[int, int]],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        raw = self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cache/references/resolve",
+            {
+                "kind": "cache_keys_v1",
+                "items": [
+                    {"adapter_id": adapter_id, "version_id": version_id}
+                    for adapter_id, version_id in items
+                ],
+            },
+            timeout=max(0.001, min(self._timeout_seconds, timeout_seconds)),
+        )
+        body = json.loads(raw)
+        if not isinstance(body, dict) or body.get("kind") != "cache_keys_v1":
+            raise ClientError(502, "invalid cache reference response")
+        return cast(dict[str, Any], body)
+
+    def acquire_cache_guard(
+        self,
+        worker_id: int,
+        *,
+        adapter_id: int,
+        version_id: int,
+        operation_id: uuid.UUID,
+        cleanup_context: Mapping[str, Any] | None = None,
+        observed_identity: Mapping[str, Any] | None = None,
+        replacement_context: Mapping[str, Any] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        raw = self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cache/guards/acquire",
+            {
+                "adapter_id": adapter_id,
+                "version_id": version_id,
+                "operation_id": str(operation_id),
+                **(
+                    {"cleanup_context": dict(cleanup_context)}
+                    if cleanup_context is not None
+                    else {}
+                ),
+                **(
+                    {"observed_identity": dict(observed_identity)}
+                    if observed_identity is not None
+                    else {}
+                ),
+                **(
+                    {"replacement_context": dict(replacement_context)}
+                    if replacement_context is not None
+                    else {}
+                ),
+            },
+            timeout=timeout_seconds,
+        )
+        body = json.loads(raw)
+        if not isinstance(body, dict):
+            raise ClientError(502, "invalid cache guard response")
+        return cast(dict[str, Any], body)
+
+    def check_cache_guard(
+        self,
+        worker_id: int,
+        operation_id: uuid.UUID,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        raw = self._expect(
+            "GET",
+            f"/api/workers/{worker_id}/cache/guards/{operation_id}/check",
+            timeout=timeout_seconds,
+        )
+        body = json.loads(raw)
+        if not isinstance(body, dict):
+            raise ClientError(502, "invalid cache guard response")
+        return cast(dict[str, Any], body)
+
+    def finish_cache_guard(
+        self,
+        worker_id: int,
+        operation_id: uuid.UUID,
+        *,
+        generation: int,
+        outcome: str,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        raw = self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cache/guards/{operation_id}/result",
+            {"generation": generation, "outcome": outcome},
+            timeout=timeout_seconds,
+        )
+        body = json.loads(raw)
+        if not isinstance(body, dict):
+            raise ClientError(502, "invalid cache guard response")
+        return cast(dict[str, Any], body)
+
+    def list_cache_guard_page(
+        self,
+        worker_id: int,
+        *,
+        after_version_id: int | None = None,
+        limit: int = 100,
+        timeout_seconds: float | None = None,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise ValueError("cache guard page limit must be between 1 and 100")
+        if after_version_id is not None and (
+            not isinstance(after_version_id, int)
+            or isinstance(after_version_id, bool)
+            or after_version_id <= 0
+        ):
+            raise ValueError("cache guard cursor must be positive")
+        suffix = f"?limit={limit}"
+        if after_version_id is not None:
+            suffix += f"&after_version_id={after_version_id}"
+        raw = self._expect(
+            "GET",
+            f"/api/workers/{worker_id}/cache/guards{suffix}",
+            timeout=timeout_seconds,
+        )
+        body = json.loads(raw)
+        page = body.get("items") if isinstance(body, dict) else None
+        next_after = body.get("next_after_version_id") if isinstance(body, dict) else None
+        if (
+            not isinstance(page, list)
+            or any(not isinstance(item, dict) for item in page)
+            or (
+                next_after is not None
+                and (
+                    not isinstance(next_after, int)
+                    or isinstance(next_after, bool)
+                    or next_after <= 0
+                    or (after_version_id is not None and next_after <= after_version_id)
+                )
+            )
+        ):
+            raise ClientError(502, "invalid cache guard response")
+        return cast(list[dict[str, Any]], page), next_after
+
     def download_input_artifact(
         self,
         worker_id: int,
@@ -218,12 +426,24 @@ class ControlClient:
         body: dict[str, Any] = json.loads(raw) if raw else {}
         return body
 
-    def report_cleanup(self, worker_id: int, cleanup_id: int, *, success: bool) -> None:
+    def report_cleanup(
+        self,
+        worker_id: int,
+        cleanup_id: int,
+        *,
+        success: bool,
+        claim_attempt: int | None = None,
+        error_code: str | None = None,
+    ) -> None:
         """Report only a cleanup outcome; filesystem details stay local."""
         self._expect(
             "POST",
             f"/api/workers/{worker_id}/cleanups/{cleanup_id}/result",
-            {"success": success},
+            {
+                "success": success,
+                **({"claim_attempt": claim_attempt} if claim_attempt is not None else {}),
+                **({"error_code": error_code} if error_code is not None else {}),
+            },
             expected=204,
         )
 

@@ -98,21 +98,20 @@ def test_venv_ready_environment_is_reused(tmp_path: object) -> None:
     assert ready.stat().st_mtime_ns == mtime, "a ready venv must not be rebuilt"
 
 
-def test_venv_incomplete_directory_is_rebuilt(tmp_path: object) -> None:
+def test_unknown_pre_cache_directory_is_retained(tmp_path: object) -> None:
     directory = venv_manager.version_dir(tmp_path, 1, 3)  # type: ignore[arg-type]
     directory.mkdir(parents=True)
     (directory / "leftover.txt").write_text("partial build", encoding="utf-8")
 
-    python_path = venv_manager.prepare_version_venv(
-        tmp_path,
-        1,
-        3,
-        "",
-        timeout_seconds=120,  # type: ignore[arg-type]
-    )
-    assert python_path.exists()
-    assert (directory / ".ready").exists()
-    assert not (directory / "leftover.txt").exists()
+    with pytest.raises(venv_manager.DependencyPreparationError):
+        venv_manager.prepare_version_venv(
+            tmp_path,
+            1,
+            3,
+            "",
+            timeout_seconds=120,  # type: ignore[arg-type]
+        )
+    assert (directory / "leftover.txt").read_text(encoding="utf-8") == "partial build"
 
 
 def test_venv_dependency_failure_raises(tmp_path: object) -> None:
@@ -349,6 +348,30 @@ def test_executor_dependency_logs_use_live_channel_before_user_script(
     delivered = "".join(progress)
     assert "[依赖检查] requests==2.32.3 未安装，开始安装" in delivered
     assert "user-script-started" in delivered
+
+
+def test_executor_marks_builtin_materials_ephemeral_without_dependency_context(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: list[str] = []
+
+    def fake_prepare(
+        _runtime_root: Path,
+        _adapter_id: int,
+        _version_id: int,
+        _requirements: str,
+        **kwargs: object,
+    ) -> Path:
+        materials = kwargs["builtin_materials"]
+        observed.append(materials.lifecycle)  # type: ignore[attr-defined]
+        return Path(sys.executable)
+
+    monkeypatch.setattr(venv_manager, "prepare_version_venv", fake_prepare)
+    payload = make_payload(code=ECHO_CODE)
+    payload["builtin_package_snapshot"] = {"kind": "python", "files": []}
+    result = run_with_test_sandbox(payload, runtime_settings(tmp_path))
+    assert result["status"] == "succeeded"
+    assert observed == ["ephemeral"]
 
 
 def test_executor_dependency_failure_skips_user_script_and_reports_dependency(

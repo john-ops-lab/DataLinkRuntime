@@ -7,6 +7,14 @@ from dlr.control.models.builtin_package import (
     BuiltinPackageSettings,
     BuiltinPackageUpload,
 )
+from dlr.control.models.cache_governance import (
+    WorkerCacheGuard,
+    WorkerCacheManagementChild,
+    WorkerCacheManagementOperation,
+    WorkerCacheOperation,
+    WorkerCacheSnapshot,
+    WorkerCacheSnapshotItem,
+)
 from dlr.control.models.execution import Execution, ExecutionInputArtifactLease, Worker
 from dlr.control.models.input_config import (
     AdapterInputConfig,
@@ -100,6 +108,12 @@ __all__ = [
     "SystemSetting",
     "Worker",
     "WorkerCleanupRequest",
+    "WorkerCacheGuard",
+    "WorkerCacheOperation",
+    "WorkerCacheManagementOperation",
+    "WorkerCacheManagementChild",
+    "WorkerCacheSnapshot",
+    "WorkerCacheSnapshotItem",
     "AdapterExecutionAdmission",
     "AdapterExecutionSlot",
     "ExecutionCredentialBindingSnapshot",

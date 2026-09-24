@@ -6,6 +6,7 @@ import json
 import platform
 import re
 import shutil
+import stat
 import sys
 import threading
 from collections.abc import Callable, Iterator, Mapping
@@ -13,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Literal
 from urllib.parse import unquote
 
 from dlr.common.builtin_packages import PackageValidationError, safe_path, validate_npm_dependencies
@@ -45,6 +46,7 @@ class BuiltinMaterials:
     directory: Path
     downloader: Downloader
     _downloaded: bool = False
+    lifecycle: Literal["unknown", "ephemeral", "managed_persistent"] = "unknown"
 
     @property
     def identity(self) -> str:
@@ -113,6 +115,54 @@ class BuiltinMaterials:
                 "builtin materials unavailable", "", error_code="builtin_content_unavailable"
             ) from error
         return self.directory
+
+    def local_materials_verified(self) -> bool:
+        """Verify the complete immutable snapshot without fetching content."""
+
+        files = self.snapshot.get("files")
+        if not isinstance(files, list):
+            return False
+        seen: set[str] = set()
+        try:
+            root = self.directory.lstat()
+            if not stat.S_ISDIR(root.st_mode) or stat.S_ISLNK(root.st_mode):
+                return False
+            for item in files:
+                if not isinstance(item, dict):
+                    return False
+                repository_path = item.get("repository_path")
+                if not isinstance(repository_path, str):
+                    return False
+                relative = safe_path(repository_path)
+                size = item.get("size_bytes")
+                digest = item.get("sha256")
+                if (
+                    relative in seen
+                    or not isinstance(size, int)
+                    or isinstance(size, bool)
+                    or size <= 0
+                    or not isinstance(digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                ):
+                    return False
+                seen.add(relative)
+                path = self.directory / relative
+                info = path.lstat()
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or stat.S_ISLNK(info.st_mode)
+                    or info.st_size != size
+                ):
+                    return False
+                hasher = hashlib.sha256()
+                with path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(64 * 1024), b""):
+                        hasher.update(chunk)
+                if hasher.hexdigest() != digest:
+                    return False
+        except (OSError, PackageValidationError, KeyError, TypeError, ValueError):
+            return False
+        return True
 
     @contextmanager
     def npm_registry(self) -> Iterator[str]:

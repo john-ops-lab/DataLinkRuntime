@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
@@ -40,6 +41,10 @@ from urllib import parse as url_parse
 
 from dlr.worker import cache, i18n
 from dlr.worker.cache import CacheReservation, VerifiedVersionCache
+from dlr.worker.cache_deletion import CacheDeletionManager
+from dlr.worker.cache_lifecycle import CacheLifecycleStore
+from dlr.worker.cache_policy import create_version_cache, managed_source_scope
+from dlr.worker.cache_replacement import current as current_replacement
 
 logger = logging.getLogger("dlr.worker.venv")
 
@@ -77,8 +82,6 @@ class DependencyExecutionContext:
 _ORIGINAL_SUBPROCESS_RUN = subprocess.run
 _DEPENDENCY_READ_CHUNK = 64 * 1024
 
-_build_locks: dict[tuple[int, int], threading.Lock] = {}
-_build_locks_guard = threading.Lock()
 CACHE_RESERVATION_BYTES = 256 * 1024 * 1024
 _CACHE_RESERVATION_BYTES = CACHE_RESERVATION_BYTES
 
@@ -424,13 +427,127 @@ class DependencyPreparationError(Exception):
         self.no_source = no_source
 
 
-def _lock_for(adapter_id: int, version_id: int) -> threading.Lock:
-    with _build_locks_guard:
-        lock = _build_locks.get((adapter_id, version_id))
-        if lock is None:
-            lock = threading.Lock()
-            _build_locks[(adapter_id, version_id)] = lock
-        return lock
+_CAPACITY_CACHE_ERROR_CODES = frozenset({"cache_no_safe_candidates", "cache_capacity_insufficient"})
+
+
+def dependency_cache_error(error: cache.CacheError) -> DependencyPreparationError:
+    """Preserve only the stable capacity outcome of a cache reservation failure."""
+    error_code = (
+        error.code if error.code in _CAPACITY_CACHE_ERROR_CODES else "dependency_preparation_failed"
+    )
+    return DependencyPreparationError("version cache is unavailable", "", error_code=error_code)
+
+
+def record_dependency_source_failure(
+    runtime_root: Path,
+    *,
+    language: str,
+    source_url: str | None,
+    error: DependencyPreparationError,
+) -> None:
+    """Persist only a stable, non-sensitive relation for a proven source failure."""
+
+    if not error.no_source and error.hint_code not in {"source", "network", "dns", "tls", "auth"}:
+        return
+    lifecycle = CacheLifecycleStore.for_runtime(runtime_root)
+    try:
+        lifecycle.record_source_scope_unavailable(
+            source_scope=managed_source_scope(language, source_url),
+            error_code="dependency_source_unavailable",
+        )
+    except cache.CacheError as policy_error:
+        logger.warning("dependency source failure receipt was not recorded (%s)", policy_error.code)
+
+
+def confirm_builtin_rebuildability(
+    runtime_root: Path,
+    *,
+    adapter_id: int,
+    version_id: int,
+    identity: Mapping[str, object],
+) -> None:
+    """Confirm a hit only when the caller has already verified built-in materials."""
+
+    lifecycle = CacheLifecycleStore.for_runtime(runtime_root)
+    key = f"{adapter_id}-{version_id}"
+    try:
+        facts = lifecycle.lifecycle(key)
+        now = time.time()
+        lifecycle.confirm_rebuildability(
+            key,
+            identity=identity,
+            digest=str(facts["digest"]),
+            source_policy="verified_offline",
+            evidence_note="verified built-in package materials",
+            actor="platform",
+            valid_until=now + 86_400,
+            now=now,
+            automatic=True,
+        )
+    except cache.CacheError as error:
+        logger.warning("automatic cache rebuild proof was not recorded (%s)", error.code)
+
+
+def reconcile_builtin_rebuildability(
+    runtime_root: Path,
+    *,
+    adapter_id: int,
+    version_id: int,
+    identity: Mapping[str, object],
+    builtin_materials: Any,
+    external_dependencies_present: bool,
+) -> bool:
+    """Refresh a valid system proof or revoke only its obsolete automatic proof."""
+
+    verified = builtin_rebuildability_verified(
+        builtin_materials,
+        external_dependencies_present=external_dependencies_present,
+    )
+    if verified:
+        confirm_builtin_rebuildability(
+            runtime_root,
+            adapter_id=adapter_id,
+            version_id=version_id,
+            identity=identity,
+        )
+        return True
+    lifecycle = CacheLifecycleStore.for_runtime(runtime_root)
+    key = f"{adapter_id}-{version_id}"
+    try:
+        facts = lifecycle.lifecycle(key)
+        lifecycle.invalidate_automatic_rebuildability(
+            key,
+            identity=identity,
+            digest=str(facts["digest"]),
+        )
+    except cache.CacheError as error:
+        logger.warning("automatic cache rebuild proof was not invalidated (%s)", error.code)
+    return False
+
+
+def builtin_rebuildability_verified(
+    builtin_materials: Any,
+    *,
+    external_dependencies_present: bool,
+) -> bool:
+    """Accept only complete material that remains available after the Attempt."""
+
+    files = builtin_materials.snapshot.get("files")
+    if files == []:
+        return not external_dependencies_present
+    return bool(
+        builtin_materials.lifecycle == "managed_persistent"
+        and builtin_materials.local_materials_verified()
+    )
+
+
+def _lock_for(runtime_root: Path, adapter_id: int, version_id: int) -> Any:
+    """Return the shared process/thread-safe cache key lock."""
+    from dlr.worker.cache_lifecycle import CacheLifecycleStore, cache_key
+
+    return CacheLifecycleStore.for_runtime(runtime_root).entry_lock(
+        cache_key(adapter_id, version_id)
+    )
 
 
 def version_dir(runtime_root: Path, adapter_id: int, version_id: int) -> Path:
@@ -458,11 +575,14 @@ class _VersionBuild:
     target: Path
     reservation: CacheReservation
     staging_root: Path | None = None
+    old_identity: Mapping[str, Any] | None = None
+    old_digest: str | None = None
     _staging_cleanup_done: bool = field(default=False, init=False, repr=False)
     _lease_stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _lease_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _lease_lost: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _lease_error_code: str | None = field(default=None, init=False, repr=False)
+    _persistent_staging_transferred: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         interval = max(0.05, min(self.reservation.ttl_seconds / 3, 30.0))
@@ -509,6 +629,13 @@ class _VersionBuild:
         if self._staging_cleanup_done:
             return
         if self.staging_root is None:
+            try:
+                self.staging.lstat()
+            except FileNotFoundError:
+                self._staging_cleanup_done = True
+                return
+            except OSError as error:
+                raise cache.CacheError("cache_staging_cleanup_failed") from error
             self.cache.remove_staging(self.staging)
             self._staging_cleanup_done = True
             return
@@ -538,29 +665,149 @@ class _VersionBuild:
         except OSError as error:
             raise cache.CacheError("cache_staging_cleanup_failed") from error
 
-    def finish(self, identity: Mapping[str, object]) -> Path:
+    def _confirm_automatic_offline(self, identity: Mapping[str, object]) -> None:
+        key = f"{identity['adapter_id']}-{identity['version_id']}"
+        lifecycle = CacheLifecycleStore(self.cache.root)
+        try:
+            facts = lifecycle.lifecycle(key)
+            now = time.time()
+            lifecycle.confirm_rebuildability(
+                key,
+                identity=identity,
+                digest=str(facts["digest"]),
+                source_policy="verified_offline",
+                evidence_note="verified built-in package materials",
+                actor="platform",
+                valid_until=now + 86_400,
+                now=now,
+                automatic=True,
+            )
+        except cache.CacheError as error:
+            # A failed policy receipt safely leaves the entry unknown; it must
+            # not turn a successfully verified runtime into an execution miss.
+            logger.warning("automatic cache rebuild proof was not recorded (%s)", error.code)
+
+    def finish(
+        self,
+        identity: Mapping[str, object],
+        *,
+        automatic_offline_proof: bool = False,
+    ) -> Path:
         primary_error: BaseException | None = None
         try:
+            if self.old_identity is not None and self.old_digest is not None:
+                authority = current_replacement()
+                if authority is None:
+                    raise cache.CacheError("cache_replacement_unauthorized")
+                prepared, new_digest, new_bytes = self.cache.prepare_replacement_staging(
+                    self.staging,
+                    self.target,
+                    identity=identity,
+                    reservation=self.reservation,
+                    source_is_tmpfs=self.staging_root is not None,
+                )
+                payload = authority.payload
+                lifecycle = CacheLifecycleStore(self.cache.root)
+
+                def resolve(execution_id: int, attempt_id: int | None) -> str | None:
+                    return cast(
+                        str | None,
+                        authority.client.resolve_cache_reference(
+                            authority.worker_id, execution_id, attempt_id
+                        ),
+                    )
+
+                manager = CacheDeletionManager(
+                    self.cache,
+                    lifecycle,
+                    authority.client,
+                    worker_id=authority.worker_id,
+                    journal_protected=lambda _key: True,
+                    replacement_owner=(
+                        authority.worker_id,
+                        int(payload["execution_id"]),
+                        int(payload["attempt_id"]),
+                        int(payload["fencing_token"]),
+                    ),
+                    replacement_journal_roots=(
+                        authority.attempt_journal_root,
+                        authority.cleanup_journal_root,
+                    ),
+                    replacement_resolve=resolve,
+                )
+                owner = lifecycle.owner(authority.worker_id)
+                old_observed = {
+                    "store_id": owner["store_id"],
+                    "language": self.old_identity["language"],
+                    "source_sha256": self.old_identity["source_sha256"],
+                    "digest": self.old_digest,
+                }
+                replacement_context = {
+                    "execution_id": int(payload["execution_id"]),
+                    "attempt_id": int(payload["attempt_id"]),
+                    "fencing_token": int(payload["fencing_token"]),
+                    "claim_token": str(payload["claim_token"]),
+                    "old_identity": old_observed,
+                    "target_language": identity["language"],
+                    "target_source_sha256": identity["source_sha256"],
+                }
+                operation_id = uuid.uuid4()
+                operation_record = lifecycle.deletion_root / f"{operation_id}.json"
+                try:
+                    manager.begin_replacement(
+                        adapter_id=int(cast(Any, identity["adapter_id"])),
+                        version_id=int(cast(Any, identity["version_id"])),
+                        old_identity=self.old_identity,
+                        old_digest=self.old_digest,
+                        new_identity=identity,
+                        new_digest=new_digest,
+                        new_bytes=new_bytes,
+                        prepared_staging=prepared,
+                        replacement_context=replacement_context,
+                        operation_id=operation_id,
+                    )
+                except BaseException:
+                    if operation_record.exists():
+                        self._persistent_staging_transferred = True
+                    else:
+                        with suppress(cache.CacheError):
+                            self.cache.remove_staging(prepared)
+                    raise
+                if operation_record.exists():
+                    self._persistent_staging_transferred = True
+                verified, _bytes = self.cache.verify_replacement_target(
+                    self.target, identity, new_digest
+                )
+                if not verified:
+                    raise cache.CacheError("cache_replacement_incomplete")
+                if automatic_offline_proof:
+                    self._confirm_automatic_offline(identity)
+                return self.target
             if self.staging_root is None:
-                return self.cache.promote(
+                target = self.cache.promote(
                     self.staging,
                     self.target,
                     identity=identity,
                     reservation=self.reservation,
                 )
-            return self.cache.promote_from_tmpfs(
-                self.staging,
-                self.target,
-                identity=identity,
-                reservation=self.reservation,
-            )
+            else:
+                target = self.cache.promote_from_tmpfs(
+                    self.staging,
+                    self.target,
+                    identity=identity,
+                    reservation=self.reservation,
+                )
+            if automatic_offline_proof:
+                self._confirm_automatic_offline(identity)
+            return target
         except BaseException as error:
             primary_error = error
             raise
         finally:
             self._stop_lease()
             try:
-                self._remove_tmpfs_staging()
+                if not (self._persistent_staging_transferred and self.staging_root is None):
+                    self._remove_tmpfs_staging()
             except cache.CacheError as error:
                 if primary_error is None:
                     raise
@@ -568,11 +815,22 @@ class _VersionBuild:
                     "version cache staging cleanup failed after primary build error (%s)",
                     error.code,
                 )
+            if self.old_identity is not None:
+                try:
+                    self.reservation.release()
+                except cache.CacheError as error:
+                    if primary_error is None:
+                        raise
+                    logger.warning(
+                        "version cache replacement reservation release failed (%s)",
+                        error.code,
+                    )
 
     def abort(self) -> None:
         self._stop_lease()
         try:
-            self._remove_tmpfs_staging()
+            if not (self._persistent_staging_transferred and self.staging_root is None):
+                self._remove_tmpfs_staging()
         except cache.CacheError as error:
             logger.warning("version cache staging cleanup failed during abort (%s)", error.code)
         finally:
@@ -593,13 +851,41 @@ def _begin_version_build(
     identity: Mapping[str, object],
     dependency_context: DependencyExecutionContext | None = None,
     reservation_bytes: int | None = None,
+    force_replacement: bool = False,
 ) -> tuple[VerifiedVersionCache, Path, _VersionBuild | None]:
-    version_cache = VerifiedVersionCache(runtime_root / "version-cache")
+    version_cache = create_version_cache(runtime_root)
     target = version_dir(runtime_root, adapter_id, version_id)
-    if version_cache.verify(target, identity):
+    if not force_replacement and version_cache.verify(target, identity):
         return version_cache, target, None
+    old_identity: Mapping[str, Any] | None = None
+    old_digest: str | None = None
     if target.exists():
-        version_cache.remove_entry(target)
+        observed = version_cache.observed_identity(target)
+        manifest = version_cache.manifest_identity(target)
+        lifecycle = CacheLifecycleStore(version_cache.root)
+        try:
+            sidecar = lifecycle.lifecycle(f"{adapter_id}-{version_id}")
+        except cache.CacheError:
+            sidecar = None
+        if manifest is not None:
+            old_identity, old_digest = manifest
+            if sidecar is not None and (
+                sidecar["identity"] != old_identity or sidecar["digest"] != old_digest
+            ):
+                raise cache.CacheError("cache_identity_unverified")
+        elif observed is not None:  # pragma: no cover - observed implies a valid manifest
+            old_identity, old_digest = observed
+        elif sidecar is not None:
+            old_identity = cast(Mapping[str, Any], sidecar["identity"])
+            old_digest = str(sidecar["digest"])
+        if (
+            old_identity is None
+            or old_digest is None
+            or old_identity.get("adapter_id") != adapter_id
+            or old_identity.get("version_id") != version_id
+            or old_identity.get("language") != identity.get("language")
+        ):
+            raise cache.CacheError("cache_identity_unverified")
     reservation = version_cache.reserve(
         _CACHE_RESERVATION_BYTES if reservation_bytes is None else reservation_bytes
     )
@@ -630,6 +916,8 @@ def _begin_version_build(
             target,
             reservation,
             staging_root,
+            old_identity,
+            old_digest,
         ),
     )
 
@@ -926,7 +1214,7 @@ def prepare_version_venv(
     directory = version_dir(runtime_root, adapter_id, version_id)
     python_path = venv_python(directory)
     dependencies = dependency_specs(requirements)
-    with _lock_for(adapter_id, version_id):
+    with _lock_for(runtime_root, adapter_id, version_id):
         if builtin_materials is not None:
             from dlr.worker.builtin_packages import validate_python_requirements
 
@@ -946,28 +1234,37 @@ def prepare_version_venv(
                 dependency_context=dependency_context,
             )
         except cache.CacheError as error:
-            raise DependencyPreparationError("version cache is unavailable", "") from error
+            raise dependency_cache_error(error) from error
         if build is None:
             python_path = venv_python(directory)
             if python_path.is_file():
+                if builtin_materials is not None:
+                    reconcile_builtin_rebuildability(
+                        runtime_root,
+                        adapter_id=adapter_id,
+                        version_id=version_id,
+                        identity=identity,
+                        builtin_materials=builtin_materials,
+                        external_dependencies_present=bool(dependencies),
+                    )
                 if dependency_log is not None:
                     for dependency in dependencies:
                         dependency_log(f"{dependency} 已安装，检查通过")
                 return python_path
             # A manifest can still match when a cached venv contains a
-            # dangling interpreter symlink.  Remove that unusable entry and
-            # reserve a fresh build instead of escaping through an assertion.
+            # dangling interpreter symlink. Build beside it, then use the
+            # Attempt-bound replacement guard for the switch.
             try:
-                _version_cache.remove_entry(directory)
                 _version_cache, directory, build = _begin_version_build(
                     runtime_root,
                     adapter_id,
                     version_id,
                     identity=identity,
                     dependency_context=dependency_context,
+                    force_replacement=True,
                 )
             except cache.CacheError as error:
-                raise DependencyPreparationError("version cache is unavailable", "") from error
+                raise dependency_cache_error(error) from error
         if build is None:  # pragma: no cover - removal above makes this unreachable
             raise DependencyPreparationError("version cache is unavailable", "")
         if dependency_context is not None:
@@ -1080,9 +1377,15 @@ def prepare_version_venv(
                 if dependency_log is not None:
                     for dependency in dependencies:
                         dependency_log(f"{dependency} 安装成功")
-        except DependencyPreparationError:
+        except DependencyPreparationError as error:
             # Leave no half-built staging entry behind; next attempt rebuilds
             # cleanly without publishing an unverified runtime.
+            record_dependency_source_failure(
+                runtime_root,
+                language="python",
+                source_url=index_url,
+                error=error,
+            )
             build.abort()
             raise
         if builtin_materials is not None:
@@ -1092,7 +1395,16 @@ def prepare_version_venv(
             if uv_lock.is_file() and not uv_lock.is_symlink():
                 uv_lock.chmod(0o600)
         try:
-            final_directory = build.finish(identity)
+            final_directory = build.finish(
+                identity,
+                automatic_offline_proof=(
+                    builtin_materials is not None
+                    and builtin_rebuildability_verified(
+                        builtin_materials,
+                        external_dependencies_present=bool(dependencies),
+                    )
+                ),
+            )
         except cache.CacheError as error:
             build.abort()
             raise DependencyPreparationError("version cache promotion failed", "") from error
@@ -1100,58 +1412,71 @@ def prepare_version_venv(
         return venv_python(final_directory)
 
 
-def cleanup_stale_venvs(runtime_root: Path, adapter_id: int, keep_version_ids: set[int]) -> None:
-    """Best-effort removal of venvs for versions that are no longer needed.
-
-    Failures only land in the Worker log; cleanup never affects Execution
-    outcome. Kept versions are rebuilt lazily if executed again later.
-    """
+def cleanup_stale_venvs(
+    runtime_root: Path,
+    adapter_id: int,
+    keep_version_ids: set[int],
+    *,
+    max_entries: int = 100,
+) -> dict[str, int]:
+    """Report legacy stale candidates; deletion requires the governance manager."""
     base = runtime_root / "version-cache" / "entries"
+    retained = 0
     if base.exists():
-        for child in base.iterdir():
-            if not child.is_dir() or child.name.startswith("."):
-                continue
-            prefix, separator, raw_version = child.name.partition("-")
-            if not separator or prefix != str(adapter_id):
-                continue
-            try:
-                version_id = int(raw_version)
-            except ValueError:
-                continue
-            if version_id in keep_version_ids:
-                continue
-            try:
-                cache.VerifiedVersionCache(runtime_root / "version-cache").remove_entry(child)
-            except cache.CacheError:
-                logger.warning("could not clean stale venv for adapter %s", adapter_id)
-            else:
-                logger.info("cleaned stale venv for adapter %s version %s", adapter_id, version_id)
+        with os.scandir(base) as entries:
+            for inspected, item in enumerate(entries, start=1):
+                if inspected > max_entries:
+                    retained += 1
+                    break
+                child = Path(item.path)
+                if child.name.startswith("."):
+                    retained += 1
+                    continue
+                prefix, separator, raw_version = child.name.partition("-")
+                if not separator:
+                    retained += 1
+                    continue
+                if prefix != str(adapter_id):
+                    continue
+                try:
+                    version_id = int(raw_version)
+                except ValueError:
+                    retained += 1
+                    continue
+                if version_id in keep_version_ids:
+                    continue
+                retained += 1
+                logger.info(
+                    "retained stale venv pending cache governance for adapter %s version %s",
+                    adapter_id,
+                    version_id,
+                )
+    return {"deleted": 0, "retained": retained, "failed": 0}
 
 
-def cleanup_adapter_environment(runtime_root: Path, adapter_id: int) -> None:
-    """Remove only one Adapter's private runtime tree.
-
-    The shared ``uv``/npm/Maven caches live outside this path and are never
-    removed by permanent Adapter deletion.
-    """
+def cleanup_adapter_environment(
+    runtime_root: Path, adapter_id: int, *, max_entries: int = 100
+) -> dict[str, int]:
+    """Retain legacy candidates until an authenticated cleanup task governs them."""
     base = runtime_root / "version-cache" / "entries"
     prefix = f"{adapter_id}-"
+    retained = 0
     if base.is_dir():
-        for child in base.iterdir():
-            if child.name.startswith(prefix):
-                try:
-                    cache.VerifiedVersionCache(runtime_root / "version-cache").remove_entry(child)
-                except cache.CacheError:
-                    logger.warning("could not clean runtime environment for adapter %s", adapter_id)
-    # Remove the pre-cache layout left by older Workers as well; this is the
-    # exact Adapter subtree, never the shared package cache.
+        with os.scandir(base) as entries:
+            for inspected, item in enumerate(entries, start=1):
+                if inspected > max_entries:
+                    retained += 1
+                    break
+                if (
+                    item.name.startswith(prefix)
+                    or item.name.startswith(".")
+                    or "-" not in item.name
+                ):
+                    retained += 1
     base = runtime_root / "adapters" / str(adapter_id)
-    if base.is_symlink() or base.is_file():
-        base.unlink(missing_ok=True)
-        return
-    if base.is_dir():
-        shutil.rmtree(base)
-        logger.info("cleaned runtime environment for deleted adapter %s", adapter_id)
+    if base.exists() or base.is_symlink():
+        retained += 1
+    return {"deleted": 0, "retained": retained, "failed": 0}
 
 
 def _helper_main(argv: list[str]) -> int:

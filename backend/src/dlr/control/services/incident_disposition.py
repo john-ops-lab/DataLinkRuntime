@@ -523,7 +523,9 @@ def _dispose_incident_transaction(
             proof = preflight_recovery_materials(session, preflight_execution)
     finally:
         session.rollback()
-    execution = lock_execution_in_admission_order(session, execution_id)
+    execution = lock_execution_in_admission_order(
+        session, execution_id, guard_reactivation=action == "recover"
+    )
     if execution is None:
         session.rollback()
         raise domain_error(404, "execution_not_found", "Execution not found")

@@ -21,6 +21,7 @@ from dlr.control.api import (
     ai,
     auth,
     builtin_packages,
+    cache_admin,
     credentials,
     events,
     executions,
@@ -328,5 +329,6 @@ def create_app() -> FastAPI:
     app.include_router(executions.router)
     app.include_router(workers.router)
     app.include_router(workers.admin_router)
+    app.include_router(cache_admin.router)
     app.include_router(events.router)
     return app

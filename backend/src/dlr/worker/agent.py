@@ -8,6 +8,7 @@ When the Control Node is unavailable the agent keeps registering /
 heartbeating with capped backoff instead of crashing.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -16,7 +17,10 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
+import uuid
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from math import isfinite
 from pathlib import Path
 from typing import Any
@@ -24,8 +28,22 @@ from typing import Any
 from dlr.common.config import settings
 from dlr.common.platform_logging import configure_platform_logging
 from dlr.worker import cgroup_namespace, executor, sandbox
-from dlr.worker import venv as venv_manager
 from dlr.worker import workspace as workspace_manager
+from dlr.worker.cache import CacheError
+from dlr.worker.cache_deletion import CacheDeletionManager, DeletionEligibility
+from dlr.worker.cache_governance import CachePolicyManager
+from dlr.worker.cache_lifecycle import (
+    SCHEMA_VERSION,
+    CacheLifecycleStore,
+    JournalProtection,
+    _read_bounded_json,
+    _write_json,
+)
+from dlr.worker.cache_policy import (
+    CachePolicy,
+    create_version_cache,
+    register_pressure_handler,
+)
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
 
@@ -101,6 +119,7 @@ class WorkerConfig:
         self.protocol_version = PROTOCOL_VERSION
         self.heartbeat_seconds = float(os.environ.get("DLR_WORKER_HEARTBEAT_SECONDS", "10"))
         self.runtime_root = Path(os.environ.get("DLR_RUNTIME_ROOT", "/var/lib/dlr/runtime"))
+        self.cache_policy = CachePolicy.from_environment()
         self.workspace_cleanup_journal_root = Path(
             os.environ.get(
                 "DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT",
@@ -268,6 +287,16 @@ class Agent:
         self._consumer: V3Consumer | None = None
         self._startup_cleanup_journals: frozenset[str] = frozenset()
         self._sandbox_recovery_blocked = False
+        self._cache_journal_protection: JournalProtection | None = None
+        self._cache_deletion_manager: CacheDeletionManager | None = None
+        self._cache_policy_manager: CachePolicyManager | None = None
+        self._cache_lifecycle: CacheLifecycleStore | None = None
+        self._next_cache_policy_scan = 0.0
+        self._active_cleanup_task: dict[str, Any] | None = None
+        self._active_cache_command: dict[str, Any] | None = None
+        self._cleanup_entries: Any | None = None
+        self._cleanup_retry_path: Path | None = None
+        self._cleanup_retained = False
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -281,7 +310,43 @@ class Agent:
         worker_id = self._register()
         if worker_id is None:  # stop requested before registration succeeded
             return
+        # Cache ownership persists with the volume. A legacy non-empty root
+        # needs explicit deployment confirmation before governance can bind
+        # it; normal execution remains available while it is retained.
+        lifecycle = CacheLifecycleStore.for_runtime(self._config.runtime_root)
+        self._cache_lifecycle = lifecycle
+        owner_bound = False
+        try:
+            lifecycle.bind_owner(worker_id)
+            owner_bound = True
+        except CacheError as error:
+            logger.warning("cache governance disabled: %s", error.code)
         self._recover_cleanup_journals(worker_id)
+        self._refresh_cache_journal_protection(worker_id, lifecycle)
+        if owner_bound:
+            policy = getattr(self._config, "cache_policy", None) or CachePolicy.from_environment()
+            version_cache = create_version_cache(self._config.runtime_root, policy=policy)
+            self._cache_deletion_manager = CacheDeletionManager(
+                version_cache,
+                lifecycle,
+                self._client,
+                worker_id=worker_id,
+                journal_protected=lambda key: self._journal_protected(worker_id, lifecycle, key),
+                offline_protection=policy.offline_protection,
+                offline_mode=policy.offline_mode,
+            )
+            self._cache_policy_manager = CachePolicyManager(
+                self._config.runtime_root,
+                version_cache,
+                lifecycle,
+                self._cache_deletion_manager,
+                policy,
+            )
+            register_pressure_handler(
+                version_cache.root, self._cache_policy_manager.pressure_cleanup
+            )
+            self._next_cache_policy_scan = time.monotonic()
+            self._recover_cache_deletions()
         ready_file.write_text(str(os.getpid()), encoding="utf-8")
         logger.info("worker '%s' registered with id %s", self._config.name, worker_id)
 
@@ -305,12 +370,17 @@ class Agent:
         finally:
             self.request_stop()
             cleanup_thread.join(timeout=min(self._config.workspace_cleanup_interval_seconds, 5))
+            if self._cache_policy_manager is not None:
+                register_pressure_handler(self._cache_policy_manager.cache.root, None)
             ready_file.unlink(missing_ok=True)
             self._graceful_offline(worker_id)
             logger.info("worker agent stopped")
 
     def _register(self) -> int | None:
         self._config.run_preflight()
+        # This additive capability describes the cache protocol implementation,
+        # independently of whether sandbox isolation was available at startup.
+        self._config.isolation_capabilities["cache_governance_v1"] = True
         backoff = 1.0
         while not self._stop.is_set():
             try:
@@ -378,6 +448,55 @@ class Agent:
             logger.debug("offline notification failed")
 
     # --- startup recovery and adapter cleanup ----------------------------------
+
+    def _refresh_cache_journal_protection(
+        self, worker_id: int, lifecycle: CacheLifecycleStore
+    ) -> None:
+        resolver_unavailable = False
+
+        def resolve(execution_id: int, attempt_id: int | None) -> str | None:
+            nonlocal resolver_unavailable
+            if resolver_unavailable:
+                raise ControlUnavailableError("cache reference resolver unavailable")
+            try:
+                return self._client.resolve_cache_reference(worker_id, execution_id, attempt_id)
+            except ControlUnavailableError:
+                resolver_unavailable = True
+                raise
+
+        self._cache_journal_protection = lifecycle.scan_journal_protections(
+            attempt_journal_root=self._config.attempt_journal_root,
+            cleanup_journal_root=self._config.workspace_cleanup_journal_root,
+            sandbox_recovery_root=(
+                self._config.workspace_cleanup_journal_root / "sandbox-recovery"
+            ),
+            resolve=resolve,
+        )
+
+    def _journal_protected(self, worker_id: int, lifecycle: CacheLifecycleStore, key: str) -> bool:
+        self._refresh_cache_journal_protection(worker_id, lifecycle)
+        protection = self._cache_journal_protection
+        return protection is None or protection.block_all or key in protection.protected_keys
+
+    def _recover_cache_deletions(self) -> None:
+        if self._cache_deletion_manager is None:
+            return
+        try:
+            policy = getattr(self._config, "cache_policy", None) or CachePolicy.from_environment()
+            self._cache_deletion_manager.recover_round(
+                max_items=policy.max_delete_entries_per_round,
+                page_size=policy.max_delete_entries_per_round,
+                max_nodes=policy.max_scan_nodes_per_round,
+                max_bytes=policy.max_delete_bytes_per_round,
+                max_scan_nodes=policy.max_scan_nodes_per_round,
+                max_hash_bytes=policy.max_scan_hash_bytes_per_round,
+                max_scan_depth=policy.max_scan_depth,
+                max_seconds=policy.max_round_seconds,
+            )
+        except (CacheError, ControlUnavailableError):
+            logger.debug("cache deletion recovery deferred")
+        except ClientError as error:
+            logger.warning("cache deletion recovery rejected: status=%s", error.status)
 
     def _recover_cleanup_journals(self, worker_id: int, *, startup: bool = True) -> None:
         """Recover owned Workspace journals without deleting unknown paths."""
@@ -490,36 +609,760 @@ class Agent:
         delay = max(1.0, self._config.workspace_cleanup_interval_seconds)
         while not self._stop.is_set():
             try:
+                self._report_cache_snapshot(worker_id)
+                command = self._active_cache_command or self._client.claim_cache_command(worker_id)
+                if command is not None:
+                    self._active_cache_command = command
+                    if self._execute_cache_command(worker_id, command):
+                        self._active_cache_command = None
                 self._recover_cleanup_journals(worker_id, startup=False)
-                task = self._client.claim_cleanup(worker_id)
+                self._recover_cache_deletions()
+                policy_manager = self._cache_policy_manager
+                if (
+                    policy_manager is not None
+                    and policy_manager.policy.gc_enabled
+                    and time.monotonic() >= self._next_cache_policy_scan
+                ):
+                    policy_manager.run_round(mode="periodic")
+                    self._next_cache_policy_scan = (
+                        time.monotonic() + policy_manager.policy.scan_interval_seconds
+                    )
+                if (
+                    policy_manager is not None
+                    and policy_manager.policy.pressure_gc_enabled
+                    and policy_manager.pressure_due()
+                ):
+                    policy_manager.pressure_cleanup(0)
+                task = self._active_cleanup_task or self._client.claim_cleanup(worker_id)
                 if task is not None:
-                    self._execute_cleanup_task(worker_id, task)
+                    self._active_cleanup_task = task
+                    if self._execute_cleanup_task(worker_id, task):
+                        self._active_cleanup_task = None
             except ControlUnavailableError:
                 logger.debug("adapter cleanup deferred: control unavailable")
             except ClientError as error:
                 logger.warning("adapter cleanup rejected: status=%s", error.status)
+            except CacheError as error:
+                logger.warning("cache governance round retained state: %s", error.code)
             self._stop.wait(delay)
 
-    def _execute_cleanup_task(self, worker_id: int, task: dict[str, Any]) -> None:
+    def _snapshot_summary(self) -> dict[str, Any]:
+        policy = getattr(self._config, "cache_policy", None) or CachePolicy.from_environment()
+        empty = {
+            "entries": 0,
+            "bytes": 0,
+            "reclaimable_bytes": 0,
+            "reasons": {},
+        }
+        return {
+            "accounting": {"committed_bytes": 0, "reserved_bytes": 0},
+            "categories": {
+                name: dict(empty) for name in ("versions", "shared", "staging", "trash", "unknown")
+            },
+            "retained_reasons": {"cache_owner_unconfirmed": 1},
+            "policy": policy.public_values(),
+        }
+
+    def _next_snapshot_sequence(self) -> int:
+        lifecycle = self._cache_lifecycle
+        if lifecycle is None:
+            raise CacheError("cache_owner_unconfirmed")
+        path = lifecycle.state_root / "management-snapshot-sequence.json"
+        value = _read_bounded_json(path, max_bytes=1024)
+        sequence = 1
+        if value is not None:
+            if set(value) != {"schema", "sequence"} or value.get("schema") != SCHEMA_VERSION:
+                raise CacheError("cache_lifecycle_invalid")
+            previous = value.get("sequence")
+            if not isinstance(previous, int) or isinstance(previous, bool) or previous < 1:
+                raise CacheError("cache_lifecycle_invalid")
+            sequence = previous + 1
+        _write_json(path, {"schema": SCHEMA_VERSION, "sequence": sequence}, strict_sync=True)
+        return sequence
+
+    def _report_cache_snapshot(self, worker_id: int) -> None:
+        lifecycle = self._cache_lifecycle
+        if lifecycle is None:
+            return
+        manager = self._cache_policy_manager
+        report = (
+            manager.management_snapshot()
+            if manager is not None
+            else {
+                "sampled_at": time.time(),
+                "complete": False,
+                "cursor": None,
+                "items": [],
+                "failed_guard_items": [],
+                "failed_guard_cursor": None,
+                "failed_guard_complete": True,
+                **self._snapshot_summary(),
+            }
+        )
+        sampled = datetime.fromtimestamp(float(report["sampled_at"]), tz=UTC)
+        self._client.report_cache_snapshot(
+            worker_id,
+            {
+                "sample_id": str(uuid.uuid4()),
+                "sequence": self._next_snapshot_sequence(),
+                "sampled_at": sampled.isoformat(),
+                "state": (
+                    "owner_unconfirmed"
+                    if manager is None
+                    else ("complete" if report["complete"] else "incomplete")
+                ),
+                "complete": bool(report["complete"]) if manager is not None else False,
+                "cursor": report.get("cursor"),
+                "summary": {
+                    "accounting": report["accounting"],
+                    "categories": report["categories"],
+                    "retained_reasons": report["retained_reasons"],
+                    "policy": report["policy"],
+                },
+                "items": report["items"],
+                "failed_guard_items": report["failed_guard_items"],
+                "failed_guard_cursor": report["failed_guard_cursor"],
+                "failed_guard_complete": report["failed_guard_complete"],
+            },
+        )
+
+    def _command_receipt_path(self, operation_id: uuid.UUID) -> Path:
+        lifecycle = self._cache_lifecycle
+        if lifecycle is None:
+            raise CacheError("cache_owner_unconfirmed")
+        root = lifecycle.state_root / "management-operations"
+        root.mkdir(mode=0o700, exist_ok=True)
+        return root / f"{operation_id}.json"
+
+    def _run_cache_command(
+        self,
+        operation_id: uuid.UUID,
+        kind: str,
+        payload: Mapping[str, Any],
+        actor: str,
+        request_hash: str | None = None,
+    ) -> dict[str, Any]:
+        manager = self._cache_policy_manager
+        lifecycle = self._cache_lifecycle
+        if manager is None or lifecycle is None:
+            raise CacheError("cache_owner_unconfirmed")
+        if kind == "preview":
+            preview_keys = frozenset(
+                f"{item['adapter_id']}-{item['version_id']}" for item in payload["keys"]
+            )
+            report = manager.scan(mode="manual", target_keys=preview_keys)
+            if not report.complete:
+                return {"deferred": True}
+            return {
+                "complete": report.complete,
+                "cursor": report.cursor,
+                "items": list(report.observations),
+            }
+        if kind == "clean":
+            clean_keys = frozenset(
+                f"{item['adapter_id']}-{item['version_id']}" for item in payload["keys"]
+            )
+            existing_ids = [
+                uuid.uuid5(operation_id, key)
+                for key in clean_keys
+                if manager.deletion.operation_phase(uuid.uuid5(operation_id, key)) != "unknown"
+            ]
+            existing_facts = {
+                item: manager.deletion.operation_result_fact(item) for item in existing_ids
+            }
+            existing_keys = {
+                f"{fact['adapter_id']}-{fact['version_id']}" for fact in existing_facts.values()
+            }
+            if any(
+                fact["phase"] not in {"completed", "aborted"} for fact in existing_facts.values()
+            ):
+                self._recover_cache_deletions()
+            remaining_keys = clean_keys - existing_keys
+            result = (
+                manager.run_round(
+                    mode="manual",
+                    target_keys=remaining_keys,
+                    operation_namespace=operation_id,
+                )
+                if remaining_keys
+                else None
+            )
+            recovered = [
+                (
+                    existing_facts[item]
+                    if manager.deletion.operation_phase(item) == "unknown"
+                    else manager.deletion.operation_result_fact(item)
+                )
+                for item in existing_ids
+            ]
+            recovered_children = [
+                {key: value for key, value in child.items() if key != "original_bytes"}
+                for child in recovered
+            ]
+            child_operations = recovered_children + (
+                list(result.child_operations) if result is not None else []
+            )
+            deleted = sum(child["phase"] == "completed" for child in recovered) + (
+                result.deleted if result is not None else 0
+            )
+            freed_bytes = sum(
+                int(str(child["original_bytes"]))
+                for child in recovered
+                if child["phase"] == "completed"
+            ) + (result.freed_bytes if result is not None else 0)
+            status = "complete" if result is None else result.status
+            if result is not None and (
+                result.status == "busy"
+                or (result.status == "budget_exhausted" and not result.child_operations)
+            ):
+                return {"deferred": True}
+            return {
+                "status": status,
+                "scanned": 0 if result is None else result.scanned,
+                "candidates": len(recovered) + (0 if result is None else result.candidates),
+                "deleted": deleted,
+                "freed_bytes": freed_bytes,
+                "cursor": None if result is None else result.cursor,
+                "retained_reasons": {} if result is None else result.retained_reasons,
+                "child_operations": child_operations,
+            }
+        if kind == "protect":
+            changed = 0
+            deadline = time.monotonic() + manager.policy.max_round_seconds
+            if request_hash is None:
+                request_hash = hashlib.sha256(
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+            with lifecycle.entry_lock("governance-round", blocking=False):
+                for item in payload["protect"]:
+                    if time.monotonic() >= deadline:
+                        return {"deferred": True}
+                    key = f"{item['adapter_id']}-{item['version_id']}"
+                    identity = item["identity"]
+                    valid_until = None
+                    if "source_policy" in item:
+                        valid_until = datetime.fromisoformat(
+                            str(item["valid_until"]).replace("Z", "+00:00")
+                        ).timestamp()
+                    with lifecycle.entry_lock(key, blocking=False):
+                        lifecycle.apply_admin_protection(
+                            key,
+                            operation_id=operation_id,
+                            request_hash=request_hash,
+                            identity=identity,
+                            digest=str(item["digest"]),
+                            actor=actor,
+                            pinned=bool(item["pinned"]) if "pinned" in item else None,
+                            source_policy=(
+                                str(item["source_policy"]) if "source_policy" in item else None
+                            ),
+                            evidence_note=(
+                                str(item["evidence_note"]) if "evidence_note" in item else None
+                            ),
+                            valid_until=valid_until,
+                        )
+                    changed += 1
+            return {"changed": changed}
+        if kind == "retry":
+            if payload.get("guard_operation_id") is not None:
+                target = uuid.UUID(str(payload["guard_operation_id"]))
+                grant = manager.deletion.retry_failed_operation(
+                    target, management_operation_id=operation_id
+                )
+                self._recover_cache_deletions()
+                phase = manager.deletion.operation_phase(target)
+                if phase == "failed":
+                    raise CacheError("cache_operation_failed")
+                if phase not in {"completed", "aborted"}:
+                    return {"deferred": True}
+                return {"retry_status": grant, "guard_phase": phase}
+            retry = payload.get("retry_command")
+            if isinstance(retry, dict) and isinstance(retry.get("payload"), dict):
+                if retry.get("kind") == "clean":
+                    clean_payload = retry["payload"]
+                    keys = frozenset(
+                        f"{item['adapter_id']}-{item['version_id']}"
+                        for item in clean_payload.get("keys", [])
+                    )
+                    children = payload.get("retry_children")
+                    if isinstance(children, list) and children:
+                        facts = []
+                        for child in children:
+                            target = uuid.UUID(str(child["guard_operation_id"]))
+                            manager.deletion.retry_failed_operation(
+                                target, management_operation_id=operation_id
+                            )
+                            facts.append(manager.deletion.operation_fact(target))
+                    else:
+                        facts = manager.deletion.retry_failed_keys(
+                            keys, management_operation_id=operation_id
+                        )
+                    self._recover_cache_deletions()
+                    refreshed = [
+                        manager.deletion.operation_result_fact(
+                            uuid.UUID(str(child["guard_operation_id"]))
+                        )
+                        for child in facts
+                    ]
+                    if any(child["phase"] == "failed" for child in refreshed):
+                        raise CacheError("cache_operation_failed")
+                    if any(child["phase"] not in {"completed", "aborted"} for child in refreshed):
+                        return {"deferred": True}
+                    return {
+                        "status": "complete",
+                        "scanned": len(refreshed),
+                        "candidates": len(refreshed),
+                        "deleted": sum(child["phase"] == "completed" for child in refreshed),
+                        "freed_bytes": sum(
+                            int(str(child["original_bytes"]))
+                            for child in refreshed
+                            if child["phase"] == "completed"
+                        ),
+                        "cursor": None,
+                        "retained_reasons": {},
+                        "child_operations": [
+                            {key: value for key, value in child.items() if key != "original_bytes"}
+                            for child in refreshed
+                        ],
+                    }
+                return self._run_cache_command(
+                    operation_id,
+                    str(retry["kind"]),
+                    retry["payload"],
+                    actor,
+                    request_hash,
+                )
+            raise CacheError("cache_retry_unknown")
+        raise CacheError("cache_operation_invalid")
+
+    def _cache_child_result(self, children: object) -> dict[str, Any]:
+        """Rebuild one bounded management result from its durable child records."""
+
+        manager = self._cache_deletion_manager
+        if manager is None:
+            raise CacheError("cache_owner_unconfirmed")
+        if not isinstance(children, list) or not children or len(children) > 200:
+            raise CacheError("cache_retry_unknown")
+        facts: list[dict[str, object]] = []
+        for child in children:
+            if not isinstance(child, dict):
+                raise CacheError("cache_retry_unknown")
+            try:
+                operation_id = uuid.UUID(str(child["guard_operation_id"]))
+                generation = int(child["generation"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise CacheError("cache_retry_unknown") from error
+            fact = manager.operation_result_fact(operation_id)
+            if fact["generation"] != generation:
+                raise CacheError("cache_retry_unknown")
+            facts.append(fact)
+        return {
+            "status": "complete",
+            "scanned": len(facts),
+            "candidates": len(facts),
+            "deleted": sum(child["phase"] == "completed" for child in facts),
+            "freed_bytes": sum(
+                int(str(child["original_bytes"]))
+                for child in facts
+                if child["phase"] == "completed"
+            ),
+            "cursor": None,
+            "retained_reasons": {},
+            "child_operations": [
+                {key: value for key, value in child.items() if key != "original_bytes"}
+                for child in facts
+            ],
+        }
+
+    def _execute_cache_command(self, worker_id: int, command: Mapping[str, Any]) -> bool:
+        operation_id = uuid.UUID(str(command["operation_id"]))
+        claim_epoch = int(command["claim_epoch"])
+        request_hash = str(command["request_hash"])
+        path = self._command_receipt_path(operation_id)
+        receipt = _read_bounded_json(path, max_bytes=65_536)
+        receipt_status = None if receipt is None else receipt.get("status")
+        if receipt is not None and (
+            set(receipt)
+            != {"schema", "operation_id", "request_hash", "status", "result", "error_code"}
+            or receipt.get("schema") != SCHEMA_VERSION
+            or receipt.get("operation_id") != str(operation_id)
+            or receipt.get("request_hash") != request_hash
+            or not isinstance(receipt_status, str)
+            or receipt_status not in {"running", "completed", "failed"}
+            or not isinstance(receipt.get("result"), dict)
+            or (
+                receipt.get("error_code") is not None
+                and not isinstance(receipt.get("error_code"), str)
+            )
+        ):
+            raise CacheError("cache_operation_receipt_invalid")
+        if receipt is not None:
+            raw_children = receipt["result"].get("child_operations", [])
+            if not isinstance(raw_children, list) or len(raw_children) > 200:
+                raise CacheError("cache_operation_receipt_invalid")
+            for child in raw_children:
+                if (
+                    not isinstance(child, dict)
+                    or set(child)
+                    != {
+                        "guard_operation_id",
+                        "generation",
+                        "adapter_id",
+                        "version_id",
+                        "phase",
+                    }
+                    or not isinstance(child.get("phase"), str)
+                    or child["phase"]
+                    not in {
+                        "recorded",
+                        "trashed",
+                        "empty_trash",
+                        "receipt_pending",
+                        "completed",
+                        "aborted",
+                        "failed",
+                        "replacement_prepared",
+                        "replacement_old_trashed",
+                    }
+                    or any(
+                        not isinstance(child.get(name), int)
+                        or isinstance(child.get(name), bool)
+                        or child[name] <= 0
+                        for name in ("generation", "adapter_id", "version_id")
+                    )
+                ):
+                    raise CacheError("cache_operation_receipt_invalid")
+                try:
+                    uuid.UUID(str(child["guard_operation_id"]))
+                except (TypeError, ValueError) as error:
+                    raise CacheError("cache_operation_receipt_invalid") from error
+        if receipt is None:
+            try:
+                result = self._run_cache_command(
+                    operation_id,
+                    str(command["kind"]),
+                    command["payload"],
+                    str(command["actor"]),
+                    request_hash,
+                )
+                if result.pop("deferred", False):
+                    return False
+                children = result.get("child_operations", [])
+                status = (
+                    "running"
+                    if isinstance(children, list)
+                    and any(
+                        isinstance(child, dict)
+                        and child.get("phase") not in {"completed", "aborted"}
+                        for child in children
+                    )
+                    else "completed"
+                )
+                error_code = None
+            except CacheError as error:
+                if error.code in {"cache_lock_busy", "cache_scan_budget_exhausted"}:
+                    return False
+                result = {}
+                if str(command["kind"]) == "retry":
+                    retry_children = command["payload"].get("retry_children")
+                    if retry_children:
+                        result = self._cache_child_result(retry_children)
+                status = "failed"
+                error_code = error.code
+            receipt = {
+                "schema": SCHEMA_VERSION,
+                "operation_id": str(operation_id),
+                "request_hash": request_hash,
+                "status": status,
+                "result": result,
+                "error_code": error_code,
+            }
+            _write_json(path, receipt, strict_sync=True)
+        if receipt.get("status") == "running":
+            self._recover_cache_deletions()
+            deletion_manager = self._cache_deletion_manager
+            if deletion_manager is None:
+                raise CacheError("cache_owner_unconfirmed")
+            children = receipt.get("result", {}).get("child_operations", [])
+            refreshed = []
+            for child in children:
+                refreshed.append(
+                    deletion_manager.operation_result_fact(
+                        uuid.UUID(str(child["guard_operation_id"]))
+                    )
+                )
+            receipt["result"]["child_operations"] = [
+                {key: value for key, value in child.items() if key != "original_bytes"}
+                for child in refreshed
+            ]
+            receipt["result"]["deleted"] = sum(child["phase"] == "completed" for child in refreshed)
+            receipt["result"]["freed_bytes"] = sum(
+                int(str(child["original_bytes"]))
+                for child in refreshed
+                if child["phase"] == "completed"
+            )
+            if any(child["phase"] == "failed" for child in refreshed):
+                receipt["status"] = "failed"
+                receipt["error_code"] = "cache_operation_failed"
+            elif all(child["phase"] in {"completed", "aborted"} for child in refreshed):
+                receipt["status"] = "completed"
+            _write_json(path, receipt, strict_sync=True)
+        deletion_manager = self._cache_deletion_manager
+        if deletion_manager is not None and receipt.get("status") == "completed":
+            release_ids = [
+                uuid.UUID(str(child["guard_operation_id"]))
+                for child in receipt["result"].get("child_operations", [])
+            ]
+            guard_target = command["payload"].get("guard_operation_id")
+            if guard_target is not None:
+                release_ids.append(uuid.UUID(str(guard_target)))
+            release_ids = list(dict.fromkeys(release_ids))
+            related_management_ids = [operation_id]
+            if str(command["kind"]) == "retry":
+                for name in ("management_operation_id", "retry_root_operation_id"):
+                    candidate = command["payload"].get(name)
+                    if candidate is not None:
+                        related_management_ids.append(uuid.UUID(str(candidate)))
+            for management_id in dict.fromkeys(related_management_ids):
+                deletion_manager.release_management_records(
+                    management_id,
+                    operation_ids=release_ids,
+                )
+        self._client.report_cache_command(
+            worker_id,
+            str(operation_id),
+            claim_epoch=claim_epoch,
+            request_hash=request_hash,
+            status=str(receipt["status"]),
+            result=receipt["result"],
+            error_code=receipt.get("error_code"),
+        )
+        return receipt["status"] in {"completed", "failed"}
+
+    def _execute_cleanup_task(self, worker_id: int, task: dict[str, Any]) -> bool:
         cleanup_id = int(task["cleanup_id"])
         adapter_id = int(task["adapter_id"])
+        claim_attempt = int(task["claim_attempt"])
+        manager = self._cache_deletion_manager
+        if manager is None:
+            self._report_cleanup_with_retry(
+                worker_id,
+                cleanup_id,
+                claim_attempt=claim_attempt,
+                success=False,
+                error_code="cache_cleanup_retained",
+            )
+            return True
         try:
-            venv_manager.cleanup_adapter_environment(self._config.runtime_root, adapter_id)
-        except Exception:  # noqa: BLE001 - cleanup result is retried by Control
+            retry_operation = task.get("retry_operation_id")
+            if retry_operation is not None:
+                manager.retry_failed_cleanup(
+                    cleanup_id,
+                    management_operation_id=uuid.UUID(str(retry_operation)),
+                )
+                self._recover_cache_deletions()
+                cleanup_state = manager.cleanup_state(cleanup_id)
+                if cleanup_state == "failed":
+                    self._report_cleanup_with_retry(
+                        worker_id,
+                        cleanup_id,
+                        claim_attempt=claim_attempt,
+                        success=False,
+                        error_code="cache_cleanup_failed",
+                    )
+                    return True
+                if cleanup_state != "clear":
+                    return False
+            owner = manager.lifecycle.owner(worker_id)
+            policy = getattr(self._config, "cache_policy", None) or CachePolicy.from_environment()
+            deadline = time.monotonic() + policy.max_round_seconds
+            round_budget = manager.make_round_budget(
+                max_nodes=policy.max_scan_nodes_per_round,
+                max_bytes=policy.max_delete_bytes_per_round,
+                max_scan_nodes=policy.max_scan_nodes_per_round,
+                max_hash_bytes=policy.max_scan_hash_bytes_per_round,
+                max_scan_depth=policy.max_scan_depth,
+                deadline=deadline,
+            )
+            inspected = 0
+            if self._cleanup_entries is None:
+                self._cleanup_entries = os.scandir(manager.cache.entries)
+                self._cleanup_retry_path = None
+                self._cleanup_retained = False
+            exhausted = False
+            while inspected < policy.max_scan_entries_per_round and time.monotonic() < deadline:
+                retry_path = self._cleanup_retry_path
+                retrying_entry = retry_path is not None
+                if retry_path is not None:
+                    entry_path = retry_path
+                else:
+                    try:
+                        item = next(self._cleanup_entries)
+                    except StopIteration:
+                        exhausted = True
+                        break
+                    entry_path = Path(item.path)
+                inspected += 1
+                if entry_path.name.startswith("."):
+                    self._cleanup_retained = True
+                    self._cleanup_retry_path = None
+                    continue
+                try:
+                    observed = manager.observed_identity_bounded(entry_path, budget=round_budget)
+                except CacheError as error:
+                    if error.code == "cache_scan_budget_exhausted":
+                        if retrying_entry:
+                            self._cleanup_retained = True
+                            self._cleanup_retry_path = None
+                            continue
+                        self._cleanup_retry_path = entry_path
+                        return False
+                    raise
+                if observed is None:
+                    self._cleanup_retained = True
+                    self._cleanup_retry_path = None
+                    continue
+                identity, digest = observed
+                try:
+                    version_id = int(identity["version_id"])
+                    language = str(identity["language"])
+                    source_sha256 = str(identity["source_sha256"])
+                except (KeyError, TypeError, ValueError):
+                    self._cleanup_retained = True
+                    self._cleanup_retry_path = None
+                    continue
+                if (
+                    identity.get("adapter_id") == adapter_id
+                    and entry_path.name != f"{adapter_id}-{version_id}"
+                ):
+                    self._cleanup_retained = True
+                    self._cleanup_retry_path = None
+                    continue
+                if identity.get("adapter_id") != adapter_id:
+                    self._cleanup_retry_path = None
+                    continue
+                facts = manager.lifecycle.lifecycle(entry_path.name)
+                try:
+                    result = manager.begin(
+                        DeletionEligibility(
+                            adapter_id=adapter_id,
+                            version_id=version_id,
+                            identity=identity,
+                            digest=digest,
+                            last_used_before=float(facts["last_used_at"]),
+                            cleanup_context={
+                                "cleanup_id": cleanup_id,
+                                "claim_attempt": claim_attempt,
+                            },
+                            observed_identity={
+                                "store_id": owner["store_id"],
+                                "language": language,
+                                "source_sha256": source_sha256,
+                                "digest": digest,
+                            },
+                        ),
+                        max_seconds=max(0.001, deadline - time.monotonic()),
+                        round_budget=round_budget,
+                    )
+                except CacheError as error:
+                    if error.code in {
+                        "cache_budget_exhausted",
+                        "cache_scan_budget_exhausted",
+                        "cache_lock_busy",
+                    }:
+                        if retrying_entry and error.code != "cache_lock_busy":
+                            self._cleanup_retained = True
+                            self._cleanup_retry_path = None
+                            continue
+                        self._cleanup_retry_path = entry_path
+                        return False
+                    if error.code in {
+                        "cache_not_eligible",
+                        "cache_entry_in_use",
+                        "cache_journal_protected",
+                        "cache_identity_unverified",
+                    }:
+                        self._cleanup_retained = True
+                        self._cleanup_retry_path = None
+                        continue
+                    raise
+                except ClientError as error:
+                    try:
+                        detail = json.loads(error.body).get("detail", {})
+                        code = detail.get("code") if isinstance(detail, dict) else None
+                    except (AttributeError, TypeError, ValueError):
+                        code = None
+                    if error.status == 409 and code in {
+                        "cache_reference_active",
+                        "cache_reclamation_in_progress",
+                    }:
+                        self._cleanup_retained = True
+                        self._cleanup_retry_path = None
+                        continue
+                    raise
+                self._cleanup_retry_path = None
+                if result.status == "failed":
+                    self._cleanup_retained = True
+            if not exhausted:
+                return False
+            self._cleanup_entries.close()
+            self._cleanup_entries = None
+            pre_cache = self._config.runtime_root / "adapters" / str(adapter_id)
+            if pre_cache.exists() or pre_cache.is_symlink():
+                self._cleanup_retained = True
+            cleanup_state = manager.cleanup_state(cleanup_id)
+            if cleanup_state == "pending":
+                return False
+            if cleanup_state in {"failed", "unknown"}:
+                self._cleanup_retained = True
+        except (CacheError, OSError, ValueError, ClientError, ControlUnavailableError):
             logger.warning(
                 "adapter environment cleanup failed for adapter %s",
                 adapter_id,
             )
-            self._report_cleanup_with_retry(worker_id, cleanup_id, success=False)
-            return
-        self._report_cleanup_with_retry(worker_id, cleanup_id, success=True)
+            self._report_cleanup_with_retry(
+                worker_id,
+                cleanup_id,
+                claim_attempt=claim_attempt,
+                success=False,
+                error_code="cache_cleanup_failed",
+            )
+            if self._cleanup_entries is not None:
+                self._cleanup_entries.close()
+            self._cleanup_entries = None
+            self._cleanup_retry_path = None
+            self._cleanup_retained = False
+            return True
+        self._report_cleanup_with_retry(
+            worker_id,
+            cleanup_id,
+            claim_attempt=claim_attempt,
+            success=not self._cleanup_retained,
+            error_code="cache_cleanup_retained" if self._cleanup_retained else None,
+        )
+        self._cleanup_retained = False
+        return True
 
-    def _report_cleanup_with_retry(self, worker_id: int, cleanup_id: int, *, success: bool) -> None:
+    def _report_cleanup_with_retry(
+        self,
+        worker_id: int,
+        cleanup_id: int,
+        *,
+        claim_attempt: int,
+        success: bool,
+        error_code: str | None = None,
+    ) -> None:
         """Bounded transport retries; never send filesystem error text."""
         delay = 2.0
         for attempt in range(1, REPORT_ATTEMPTS + 1):
             try:
-                self._client.report_cleanup(worker_id, cleanup_id, success=success)
+                self._client.report_cleanup(
+                    worker_id,
+                    cleanup_id,
+                    success=success,
+                    claim_attempt=claim_attempt,
+                    error_code=error_code,
+                )
                 return
             except ControlUnavailableError as error:
                 logger.warning(
