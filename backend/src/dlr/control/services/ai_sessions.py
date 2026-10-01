@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import NoReturn
+from typing import Any, NoReturn, cast
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -20,6 +20,36 @@ from dlr.control.services.adapter import domain_error
 
 SESSION_RETENTION_DAYS = 30
 MAX_LIST_LIMIT = 100
+
+
+def cleanup_expired_sessions(
+    session: Session, *, now: datetime | None = None, batch_size: int = 100
+) -> int:
+    """Purge one bounded expiry batch; locked in-flight sessions wait for a later tick."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    cutoff = now or datetime.now(UTC)
+    ids = list(
+        session.scalars(
+            select(AiConversation.id)
+            .where(AiConversation.expires_at <= cutoff)
+            .order_by(AiConversation.expires_at, AiConversation.id)
+            .limit(batch_size)
+            .with_for_update(skip_locked=True)
+        )
+    )
+    if not ids:
+        return 0
+    result = cast(
+        Any,
+        session.execute(
+            delete(AiConversation).where(
+                AiConversation.id.in_(ids), AiConversation.expires_at <= cutoff
+            )
+        ),
+    )
+    session.commit()
+    return int(result.rowcount or 0)
 
 
 def _owner(principal: Principal) -> tuple[str, int | None]:

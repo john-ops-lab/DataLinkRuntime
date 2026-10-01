@@ -387,7 +387,7 @@ def test_rollup_acl_error_after_reservation_marks_turn_failed(
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    adapter_id = int(create_adapter(api_client, "durable-rollup-access") ["id"])
+    adapter_id = int(create_adapter(api_client, "durable-rollup-access")["id"])
     configure(api_client)
     path, session_id = _session(api_client, adapter_id)
 
@@ -649,11 +649,13 @@ def test_new_app_recovers_visible_session_without_temporary_material_or_old_code
     monkeypatch.setattr(providers, "chat_assist", fake_chat)
     attachment_text = "temporary-document-body-42"
     first = _request(session_id, message="Read the attached note")
-    first["attachments"] = [{
-        "filename": "note.txt",
-        "content_type": "text/plain",
-        "data_base64": base64.b64encode(attachment_text.encode()).decode(),
-    }]
+    first["attachments"] = [
+        {
+            "filename": "note.txt",
+            "content_type": "text/plain",
+            "data_base64": base64.b64encode(attachment_text.encode()).decode(),
+        }
+    ]
     sent = api_client.post(f"{path}/assist", json=first)
     assert sent.status_code == 200, sent.text
     assert attachment_text in str(captured[0])

@@ -99,7 +99,7 @@ def test_reconciliation_migration_fresh_and_upgrade_preserve_state() -> None:
             assert "ck_runtime_reconciliation_cursors_bounds" in checks
             with engine.connect() as connection:
                 assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                    "0044_issue161_cache_admin"
+                    "0045_issue151_ai_conversations"
                 )
                 cursor = connection.execute(
                     text("SELECT name, after_id, upper_id FROM runtime_reconciliation_cursors")

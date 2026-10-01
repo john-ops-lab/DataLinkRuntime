@@ -17,6 +17,7 @@ from dlr.control.ai import attachments as attachments_service
 from dlr.control.ai import context_budget, providers, tool_audit
 from dlr.control.ai import knowledge as knowledge_service
 from dlr.control.ai import tools as tools_service
+from dlr.control.ai.output_safety import contains_secret
 from dlr.control.ai.prompt_builder import build_prompt
 from dlr.control.ai.prompt_context import PromptContext
 from dlr.control.models import (
@@ -1223,23 +1224,8 @@ def _assist_messages(
     ).provider_messages()
 
 
-def _contains_secret(value: object, secret: str) -> bool:
-    pending = [value]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, str):
-            if secret in item:
-                return True
-        elif isinstance(item, dict):
-            pending.extend(item.keys())
-            pending.extend(item.values())
-        elif isinstance(item, (list, tuple)):
-            pending.extend(item)
-    return False
-
-
 def _reject_secret_reflection(value: object, api_key: str | None) -> None:
-    if api_key and _contains_secret(value, api_key):
+    if api_key and contains_secret(value, api_key):
         raise domain_error(
             502,
             "ai_response_invalid",

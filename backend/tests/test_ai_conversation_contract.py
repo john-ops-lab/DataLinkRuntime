@@ -167,6 +167,30 @@ def test_invalid_summary_keeps_previous_coverage(
     assert result.snapshot.covered_through == 1
 
 
+@pytest.mark.parametrize("escaped", [False, True])
+def test_summary_rejects_reflected_provider_credential(
+    monkeypatch: pytest.MonkeyPatch, escaped: bool
+) -> None:
+    secret = "synthetic-provider-secret"
+    response = _output(text=f"Summary contains {secret}")
+    if escaped:
+        response = response.replace("synthetic", "\\u0073ynthetic")
+    previous = _previous()
+    monkeypatch.setattr(providers, "chat_assist", lambda *args, **kwargs: (response, None))
+
+    result = conversation_summary.summarize_pending(
+        draft=_draft(),
+        api_key=secret,
+        adapter=providers.get_provider("custom_openai_compatible"),
+        previous=previous,
+        pending=_pending(),
+        hard_deadline=conversation_summary.time.monotonic() + 30,
+        call_budget=conversation_summary.SummaryCallBudget(),
+    )
+    assert result.error_code == "ai_summary_invalid"
+    assert not result.accepted and result.snapshot is previous
+
+
 def test_summary_over_budget_and_deadline_do_not_call_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

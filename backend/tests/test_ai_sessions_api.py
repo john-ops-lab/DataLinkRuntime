@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
 from dlr.control.services.accounts import CSRF_COOKIE_NAME, bootstrap_default_admin
+from dlr.control.services.ai_sessions import cleanup_expired_sessions
 
 
 def _account_path(path: str) -> str:
@@ -109,16 +110,24 @@ def test_account_and_deployment_spaces_rotation_and_revoke(
         assert account_a.get(_account_path(f"{path}/{forbidden_id}")).status_code == 404
     assert api_client.get(f"{path}/{a_id}").status_code == 404
     attempt = {
-        "session_id": b_id, "turn_id": str(uuid.uuid4()),
-        "idempotency_key": str(uuid.uuid4()), "expected_generation": 0,
+        "session_id": b_id,
+        "turn_id": str(uuid.uuid4()),
+        "idempotency_key": str(uuid.uuid4()),
+        "expected_generation": 0,
         "expected_session_revision": 0,
-        "message": "Explain this", "working_copy": {
+        "message": "Explain this",
+        "working_copy": {
             "code": "def handle(context, input): return input",
-            "requirements": "", "runtime_config": {},
+            "requirements": "",
+            "runtime_config": {},
         },
     }
-    assert _account_write(account_a, "POST", f"/api/adapters/{adapter_id}/ai/assist",
-                          json=attempt).status_code == 404
+    assert (
+        _account_write(
+            account_a, "POST", f"/api/adapters/{adapter_id}/ai/assist", json=attempt
+        ).status_code
+        == 404
+    )
 
     monkeypatch.setattr(settings, "admin_token", "rotated-session-token")
     assert api_client.get(f"{path}/{token_id}").status_code == 401
@@ -134,17 +143,28 @@ def test_account_and_deployment_spaces_rotation_and_revoke(
     assert account_a.get(_account_path(path)).status_code == 404
     assert account_a.get(_account_path(f"{path}/{a_id}")).status_code == 404
     assert _account_write(account_a, "POST", path).status_code == 404
-    assert _account_write(
-        account_a, "POST", f"/api/adapters/{adapter_id}/ai/assist",
-        json={**attempt, "session_id": a_id, "turn_id": str(uuid.uuid4()),
-              "idempotency_key": str(uuid.uuid4())},
-    ).status_code == 404
+    assert (
+        _account_write(
+            account_a,
+            "POST",
+            f"/api/adapters/{adapter_id}/ai/assist",
+            json={
+                **attempt,
+                "session_id": a_id,
+                "turn_id": str(uuid.uuid4()),
+                "idempotency_key": str(uuid.uuid4()),
+            },
+        ).status_code
+        == 404
+    )
     assert account_b.get(_account_path(f"{path}/{b_id}")).status_code == 200
 
 
+@pytest.mark.parametrize("summary_valid", [False, True])
 def test_session_clear_delete_expiry_and_adapter_binding(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
+    summary_valid: bool,
 ) -> None:
     adapter_id = _create_adapter(api_client, "session-clear")
     other_id = _create_adapter(api_client, "session-other")
@@ -174,6 +194,22 @@ def test_session_clear_delete_expiry_and_adapter_binding(
                 "hmac": bytes(32),
             },
         )
+        session.execute(
+            text(
+                "UPDATE ai_conversations SET summary_json=CAST(:summary AS jsonb), "
+                "summary_valid=:valid, summary_covered_from=1, "
+                "summary_covered_through=1, "
+                "summary_source_revisions=CAST(:revisions AS jsonb) WHERE id=:id"
+            ),
+            {
+                "id": uuid.UUID(session_id),
+                "summary": (
+                    '{"version":1,"text":"Earlier request","sources":[],"covered_through":1}'
+                ),
+                "revisions": '[{"sequence":1,"revision":0}]',
+                "valid": summary_valid,
+            },
+        )
         session.commit()
     detail = api_client.get(f"{path}/{session_id}")
     assert detail.status_code == 200
@@ -199,3 +235,62 @@ def test_session_clear_delete_expiry_and_adapter_binding(
     fresh_id = api_client.post(path).json()["id"]
     assert api_client.delete(f"{path}/{fresh_id}").status_code == 204
     assert api_client.get(f"{path}/{fresh_id}").status_code == 404
+
+
+def test_expired_session_cleanup_is_bounded_and_cascades_only_its_messages(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    adapter_id = _create_adapter(api_client, "session-retention")
+    other_id = _create_adapter(api_client, "session-retention-other")
+    path = f"/api/adapters/{adapter_id}/ai/sessions"
+    older = uuid.UUID(api_client.post(path).json()["id"])
+    newer = uuid.UUID(api_client.post(path).json()["id"])
+    current = uuid.UUID(api_client.post(f"/api/adapters/{other_id}/ai/sessions").json()["id"])
+    with session_factory() as session:
+        session.execute(
+            text(
+                "UPDATE ai_conversations SET created_at=now()-interval '31 days', "
+                "expires_at=now()-interval '2 days' WHERE id=:id"
+            ),
+            {"id": older},
+        )
+        session.execute(
+            text(
+                "UPDATE ai_conversations SET created_at=now()-interval '31 days', "
+                "expires_at=now()-interval '1 day' WHERE id=:id"
+            ),
+            {"id": newer},
+        )
+        for conversation_id in (older, newer, current):
+            session.execute(
+                text(
+                    "INSERT INTO ai_conversation_messages "
+                    "(id, conversation_id, sequence, turn_id, role, content, generation, "
+                    "request_status, idempotency_key, request_hmac) "
+                    "VALUES (:id, :conversation, 1, :turn, 'user', 'Visible text', 1, "
+                    "'completed', :key, :hmac)"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "conversation": conversation_id,
+                    "turn": uuid.uuid4(),
+                    "key": uuid.uuid4(),
+                    "hmac": bytes(32),
+                },
+            )
+        session.commit()
+
+    with session_factory() as session:
+        assert cleanup_expired_sessions(session, batch_size=1) == 1
+        ids = set(session.scalars(text("SELECT id FROM ai_conversations")))
+        message_owners = set(
+            session.scalars(text("SELECT conversation_id FROM ai_conversation_messages"))
+        )
+        assert ids == {newer, current}
+        assert message_owners == {newer, current}
+        assert cleanup_expired_sessions(session, batch_size=1) == 1
+        assert set(session.scalars(text("SELECT id FROM ai_conversations"))) == {current}
+        assert set(
+            session.scalars(text("SELECT conversation_id FROM ai_conversation_messages"))
+        ) == {current}

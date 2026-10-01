@@ -48,7 +48,7 @@ def test_upgrade_adds_independent_operation_table_and_backfills_active_guard() -
                 ),
                 {"operation_id": operation_id},
             )
-        _upgrade(database, "head")
+        _upgrade(database, FINAL_REVISION)
         schema = inspect(engine)
         assert "worker_cache_operations" in schema.get_table_names()
         assert "worker_cache_management_operations" in schema.get_table_names()
@@ -86,7 +86,7 @@ def test_upgrade_adds_independent_operation_table_and_backfills_active_guard() -
 
 
 def test_downgrade_refuses_unfinished_operation_then_allows_terminal() -> None:
-    with _isolated_schema("issue161_downgrade", "head") as (engine, database):
+    with _isolated_schema("issue161_downgrade", FINAL_REVISION) as (engine, database):
         operation_id = uuid.uuid4()
         with engine.begin() as connection:
             connection.execute(
@@ -137,7 +137,7 @@ def test_downgrade_refuses_unfinished_operation_then_allows_terminal() -> None:
 def test_0043_downgrade_refuses_unfinished_specialized_operation(
     operation_kind: str,
 ) -> None:
-    with _isolated_schema(f"issue161_0043_{operation_kind}", "head") as (engine, database):
+    with _isolated_schema(f"issue161_0043_{operation_kind}", FINAL_REVISION) as (engine, database):
         operation_id = uuid.uuid4()
         cleanup_id = 404 if operation_kind == "cleanup" else None
         claim_attempt = 2 if operation_kind == "cleanup" else None
@@ -183,7 +183,7 @@ def test_0043_downgrade_refuses_unfinished_specialized_operation(
 
 
 def test_0044_downgrade_refuses_active_management_operation() -> None:
-    with _isolated_schema("issue161_0044_admin", "head") as (engine, database):
+    with _isolated_schema("issue161_0044_admin", FINAL_REVISION) as (engine, database):
         operation_id = uuid.uuid4()
         with engine.begin() as connection:
             connection.execute(

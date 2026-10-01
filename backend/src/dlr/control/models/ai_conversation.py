@@ -122,7 +122,8 @@ class AiConversation(Base):
         default=lambda: {"revision": 0, "facts": []},
         server_default=text("jsonb_build_object('revision', 0, 'facts', jsonb_build_array())"),
     )
-    summary_json: Mapped[dict[str, object] | None] = mapped_column(JSONB)
+    # Python None must bind as SQL NULL: JSON null violates the range invariant.
+    summary_json: Mapped[dict[str, object] | None] = mapped_column(JSONB(none_as_null=True))
     summary_valid: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )

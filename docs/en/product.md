@@ -210,7 +210,7 @@ selects a saved session, the server retains bounded visible user and assistant t
 sourced task state, a rolling summary, and the current turn's code-only Candidate. Account users
 have separate sessions; deployment administrator Tokens share a distinct space.
 Reading and continuing a session always requires current Adapter edit access. Sessions
-expire within 30 days and can be cleared or deleted. A refresh or service restart
+expire after 30 days and are periodically purged in bounded batches; they can also be cleared or deleted. A refresh or service restart
 restores visible messages, but does not restore an old Candidate as an applicable
 change. One-request attachments, excerpts, and raw tool material must be supplied
 again; completed tools and business actions are never replayed automatically.

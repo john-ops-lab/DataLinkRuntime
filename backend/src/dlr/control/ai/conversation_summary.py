@@ -16,6 +16,7 @@ from dlr.control.ai.conversation_contract import (
     SourceRef,
     SummarySnapshot,
 )
+from dlr.control.ai.output_safety import contains_secret
 from dlr.control.schemas.ai import AiSettingDraft
 
 
@@ -153,7 +154,11 @@ def summarize_pending(
         )
         if tool_calls is not None or content is None:
             raise ValueError("summary must contain text and no tool calls")
+        if api_key and contains_secret(content, api_key):
+            raise ValueError("summary reflected a credential")
         snapshot, output = _validated_output(content, previous, pending)
+        if api_key and contains_secret(output.model_dump(mode="json"), api_key):
+            raise ValueError("summary reflected a credential")
     except (providers.AiProviderError, ValidationError, ValueError, RecursionError):
         return SummaryAttempt(False, previous, "ai_summary_invalid")
     return SummaryAttempt(
