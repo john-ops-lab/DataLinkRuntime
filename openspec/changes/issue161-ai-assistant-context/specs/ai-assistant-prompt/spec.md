@@ -5,7 +5,7 @@
 ## ADDED Requirements
 
 ### Requirement: 随版本发布且可核验的静态规则
-系统 SHALL 从随应用发布的三个只读 UTF-8 规则资源加载稳定行为、Adapter 边界和工具规则；缺失、空文件或无效编码 MUST 在启动或模块初始化时明确失败。静态规则 SHALL 有内容 revision，诊断只包含非敏感大小、名称和开关。
+系统 SHALL 从随应用发布的三个只读 UTF-8 规则资源加载稳定行为、Adapter 边界和工具规则；资源 MUST 是纯静态文本，不能含动态占位符或执行模板替换。缺失、空文件或无效编码 MUST 在启动或模块初始化时明确失败。静态规则 SHALL 有内容 revision；组装结果的消息序列及其嵌套内容 MUST 不可变，诊断 SHALL 使用不可变类型且只包含非敏感 revision、Section 名称、system/context 大小和能力/材料开关。
 
 #### Scenario: 更换工作目录与安装包运行
 - **WHEN** 在不同工作目录运行已安装 wheel、sdist 构建或容器中的 Control
@@ -14,6 +14,10 @@
 #### Scenario: 资源损坏
 - **WHEN** 任一必需资源缺失、为空或不是有效 UTF-8
 - **THEN** Control 在接受 Assist 请求前明确失败，不以旧内嵌正文静默降级
+
+#### Scenario: 组装结果被调用者尝试修改
+- **WHEN** 调用者尝试修改 Builder 返回的消息内容或诊断字段
+- **THEN** 已构造的结果不变化，静态资源没有被当成动态模板执行
 
 ### Requirement: 请求级事实快照与信任分层
 系统 SHALL 对本轮已验证的 Working Copy、基准版本、最近消息、授权 Secret 名称、Snippet、解析附件、图片和保存输入投影建立深层隔离的请求快照。当前 Working Copy MUST 是代码事实来源；当前 user 消息 SHALL 承载动态状态和参考材料，代码注释及外部材料 MUST NOT 获得 system 指令权。

@@ -12,7 +12,7 @@
 
 ### 1. 静态资源与两次有界迁移
 
-`dlr.control.ai.prompts` 只包含三个纯 UTF-8 Markdown，使用 `importlib.resources` 读取并在模块初始化验证。`PromptContext` 保存经服务端验证的请求事实，构造时防御性复制内部可变对象；`PromptBuildResult` 持有独立的消息值和非敏感 diagnostics。Wave A 把现有 `_assist_messages()` 收敛为 Builder 委托，先保持角色、顺序、条件和安全校验等价；Wave B 再把 Working Copy/材料移到当前 user 的 `DLR_REQUEST_CONTEXT_V1` 结构。机器 Schema、Runtime Contract 与 Tool 定义继续由代码生成。
+`dlr.control.ai.prompts` 只包含三个纯静态 UTF-8 Markdown，使用 `importlib.resources` 读取并在模块初始化验证；Markdown 不含 `$schema` 等动态占位符，也不经过 Jinja、`str.format` 或 `string.Template`。动态 Schema、locale、Runtime Contract 和请求数据只在 Python Builder 中拼装/JSON 序列化。`PromptContext` 保存经服务端验证的请求事实，构造时防御性复制内部可变对象；`PromptBuildResult` 持有深层不可变消息值和 typed 非敏感 diagnostics，service 向 Provider 传递时才转换成独立的可变 payload。Wave A 把现有 `_assist_messages()` 收敛为 Builder 委托，先保持角色、顺序、条件和安全校验等价；Wave B 再把 Working Copy/材料移到当前 user 的 `DLR_REQUEST_CONTEXT_V1` 结构。机器 Schema、Runtime Contract 与 Tool 定义继续由代码生成。
 
 选择两个代码检查点，是为了把结构回归与模型行为变化分开定位。替代方案是一次重写长 Prompt 和消息角色；若失败将无法判断是抽取还是行为造成。
 
