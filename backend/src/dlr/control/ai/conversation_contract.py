@@ -156,3 +156,18 @@ class ConversationState(_Contract):
             for fact in self.facts
         )
         return ConversationState(revision=next_revision, facts=updated + additions)
+
+
+class FactAdditionProposal(_Contract):
+    id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    kind: FactKind
+    confirmation_level: Literal["explicit", "confirmed", "inferred", "open"]
+    text: str = Field(min_length=1, max_length=2000)
+    source: SourceRef
+    evidence_quote: str = Field(min_length=1, max_length=500)
+
+
+class FactRevocationProposal(_Contract):
+    fact_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    source: SourceRef
+    evidence_quote: str = Field(min_length=1, max_length=500)
