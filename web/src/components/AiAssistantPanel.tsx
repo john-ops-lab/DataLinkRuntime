@@ -951,6 +951,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
 
   useEffect(
     () => () => {
+      sessionEpoch.current += 1;
       requestGeneration.current += 1;
     },
     [],
