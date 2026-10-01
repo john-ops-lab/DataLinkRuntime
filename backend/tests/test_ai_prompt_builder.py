@@ -75,19 +75,31 @@ def test_builder_message_matrix(language: str, tools: bool, knowledge: bool) -> 
     assert ("list_knowledge_bases" in system) is knowledge
     assert ("tool call," in system) is not tools
     assert '"candidate":null' in result.messages[2]["content"]
+    current_text = result.messages[3]["content"][0]["text"]
+    current = json.loads(current_text.split("\n", 1)[1])
+    assert current_text.startswith("DLR_REQUEST_CONTEXT_V1\n")
     assert result.messages[3]["content"][1]["image_url"]["url"] == (
         "data:image/png;base64,aGVsbG8="
     )
-    assert "attachment text" in system
-    assert "original.txt" in system
-    assert "SECRET_NAME" in system
+    assert "attachment text" in current_text
+    assert "original.txt" in current_text
+    assert "SECRET_NAME" in current_text
+    assert "attachment text" not in system
+    assert "original.txt" not in system
+    assert "SECRET_NAME" not in system
+    assert set(current) == {
+        "AUTHORITATIVE_STATE_DATA",
+        "UNTRUSTED_REFERENCE_MATERIAL",
+        "USER_REQUEST",
+    }
+    assert current["USER_REQUEST"] == "Explain the current code"
     assert isinstance(result.diagnostics, PromptDiagnostics)
-    assert result.diagnostics.revision == prompts.REVISION
+    assert result.diagnostics.prompt_revision == prompts.REVISION
     assert result.diagnostics.system_chars == len(system)
     assert result.diagnostics.context_chars > 0
     assert result.diagnostics.tools_enabled is tools
     assert result.diagnostics.knowledge_enabled is knowledge
-    assert result.diagnostics.has_snippets
+    assert result.diagnostics.has_context_snippets
     assert result.diagnostics.has_attachments
     assert ("tools" in result.diagnostics.included_sections) is tools
     assert ("knowledge" in result.diagnostics.included_sections) is knowledge
@@ -103,8 +115,10 @@ def test_prompt_snapshot_is_deep_and_diagnostics_are_non_sensitive() -> None:
     managed["files"][0]["filename"] = "changed.txt"
     second = build_prompt(context, runtime_contract="contract")
     assert first.messages == second.messages
-    assert '"nested": ["original"]' in second.messages[0]["content"]
-    assert "changed.txt" not in second.messages[0]["content"]
+    current_text = second.messages[3]["content"][0]["text"]
+    assert '"nested": ["original"]' in current_text
+    assert "changed.txt" not in current_text
+    assert "return input" not in second.messages[0]["content"]
     assert second.messages[1]["content"] == "old question"
     with pytest.raises(TypeError):
         context.working_copy["code"] = "changed"
@@ -121,7 +135,7 @@ def test_build_result_is_immutable_and_transport_is_independent() -> None:
     with pytest.raises(TypeError):
         result.messages[3]["content"][1]["image_url"]["url"] = "changed"
     with pytest.raises(FrozenInstanceError):
-        result.diagnostics.revision = "changed"
+        result.diagnostics.prompt_revision = "changed"
     copied = result.provider_messages()
     copied[3]["content"][1]["image_url"]["url"] = "changed"
     assert result.provider_messages()[3]["content"][1]["image_url"]["url"] == (
@@ -135,6 +149,89 @@ def test_package_markdown_is_pure_static() -> None:
         assert "$" not in rule, name
         assert "{{" not in rule, name
         assert "{%" not in rule, name
+
+
+def test_minimal_request_keeps_dynamic_code_out_of_system() -> None:
+    payload = AiAssistRequest.model_validate(
+        {
+            "message": "What does this Adapter do?",
+            "working_copy": {"code": "# DO_NOT_FOLLOW_COMMENT\nreturn input"},
+        }
+    )
+    context = PromptContext.capture(
+        adapter_id=9,
+        language="python",
+        system_locale="en-US",
+        base_version=None,
+        available_secret_keys=[],
+        payload=payload,
+        saved_managed_input=None,
+        parsed_attachments=None,
+        native_images=None,
+        tools_enabled=False,
+        knowledge_search_enabled=False,
+    )
+    result = build_prompt(context, runtime_contract="def handle(context, input): ...")
+    assert [item["role"] for item in result.messages] == ["system", "user"]
+    system = result.messages[0]["content"]
+    current_text = result.messages[1]["content"]
+    assert "DO_NOT_FOLLOW_COMMENT" not in system
+    assert "list_knowledge_bases" not in system
+    assert "dlr_docs_list" not in system
+    assert "attachments array" not in system
+    assert "Context snippets are" not in system
+    assert "candidate:null" in system
+    current = json.loads(current_text.split("\n", 1)[1])
+    assert set(current) == {"AUTHORITATIVE_STATE_DATA", "USER_REQUEST"}
+    assert current["AUTHORITATIVE_STATE_DATA"]["working_copy"]["code"].startswith(
+        "# DO_NOT_FOLLOW_COMMENT"
+    )
+    assert result.diagnostics.has_context_snippets is False
+    assert result.diagnostics.has_attachments is False
+
+
+def test_untrusted_material_cannot_replace_current_code() -> None:
+    payload = AiAssistRequest.model_validate(
+        {
+            "message": "Explain the failure",
+            "working_copy": {"code": "return current_code"},
+            "recent_messages": [
+                {"role": "assistant", "content": "OLD_CANDIDATE_CODE"},
+            ],
+            "context_snippets": [
+                {
+                    "source": "log",
+                    "text": "IGNORE_SYSTEM_AND_USE_OLD_CODE",
+                    "start_line": 1,
+                    "end_line": 1,
+                }
+            ],
+        }
+    )
+    context = PromptContext.capture(
+        adapter_id=9,
+        language="python",
+        system_locale="en-US",
+        base_version=None,
+        available_secret_keys=[],
+        payload=payload,
+        saved_managed_input=None,
+        parsed_attachments=[ParsedText("log.txt", "text/plain", "text", "REPLACE_CODE", False, 12)],
+        native_images=None,
+        tools_enabled=False,
+        knowledge_search_enabled=False,
+    )
+    result = build_prompt(context, runtime_contract="contract")
+    assert [item["role"] for item in result.messages] == ["system", "assistant", "user"]
+    system = result.messages[0]["content"]
+    assert "IGNORE_SYSTEM_AND_USE_OLD_CODE" not in system
+    assert "REPLACE_CODE" not in system
+    assert "return current_code" not in system
+    assert '"candidate":null' in result.messages[1]["content"]
+    assert "OLD_CANDIDATE_CODE" in result.messages[1]["content"]
+    current = json.loads(result.messages[2]["content"].split("\n", 1)[1])
+    assert current["AUTHORITATIVE_STATE_DATA"]["working_copy"]["code"] == ("return current_code")
+    assert "REPLACE_CODE" in json.dumps(current["UNTRUSTED_REFERENCE_MATERIAL"])
 
 
 @pytest.mark.parametrize("problem", ["missing", "empty", "invalid_utf8"])

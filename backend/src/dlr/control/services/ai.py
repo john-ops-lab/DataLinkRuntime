@@ -1721,7 +1721,7 @@ def _assist_impl(
         parsed_attachments=parsed_attachments,
         native_images=native_images,
         tools_enabled=tools_enabled,
-        knowledge_search_enabled=knowledge_search_enabled,
+        knowledge_search_enabled=knowledge_search_enabled and knowledge_available and tools_enabled,
     )
     tools_payload = (
         tools_service.tools_payload(include_knowledge=knowledge_search_enabled)

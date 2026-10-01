@@ -7,8 +7,8 @@
 
 ## 2. #128 Wave B：消息分层与行为
 
-- [ ] 2.1 把 Working Copy 和本轮材料移至当前 user 的结构化数据，保持历史顺序、native image parts 与工具消息配对；用角色/边界定向测试验证 system 不再携带动态代码。
-- [ ] 2.2 按工具和知识能力、检索开关及实际材料选择静态规则，精简普通回答/Candidate/诊断规则，保留五语言、Managed Input 与服务端硬校验；用知识状态机和输入矩阵验证。
+- [x] 2.1 把 Working Copy 和本轮材料移至当前 user 的结构化数据，保持历史顺序、native image parts 与工具消息配对；用角色/边界定向测试验证 system 不再携带动态代码。
+- [x] 2.2 按工具和知识能力、检索开关及实际材料选择静态规则，精简普通回答/Candidate/诊断规则，保留五语言、Managed Input 与服务端硬校验；用知识状态机和输入矩阵验证。
 - [ ] 2.3 对固定场景运行相关 Backend/Web 回归、静态检查及真实 Provider Smoke Test，分别记录首轮与有界重试、Java/Go 字面要求和 Candidate 应用边界；不把 Fake Provider 结果标为模型质量通过。
 
 ## 3. #151：整体预算

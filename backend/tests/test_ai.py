@@ -1140,12 +1140,17 @@ def test_assist_prompt_uses_language_contract_and_secret_names_only(
     system_prompt = messages[0]["content"]
     assert isinstance(system_prompt, str)
     assert contract_fragment in system_prompt
-    assert "server system locale zh-CN" in system_prompt
-    assert f'"language": "{language}"' in system_prompt
+    assert "Server system locale: zh-CN" in system_prompt
+    current_user = messages[-1]["content"]
+    assert isinstance(current_user, str)
+    assert current_user.startswith("DLR_REQUEST_CONTEXT_V1\n")
+    assert f'"language": "{language}"' in current_user
     encoded_code = json.dumps(working_code, ensure_ascii=False)[1:-1]
-    assert encoded_code in system_prompt
-    assert "CMDB_PASSWORD" in system_prompt
-    assert f'"id": {version["id"]}' in system_prompt
+    assert encoded_code in current_user
+    assert encoded_code not in system_prompt
+    assert "CMDB_PASSWORD" in current_user
+    assert "CMDB_PASSWORD" not in system_prompt
+    assert f'"id": {version["id"]}' in current_user
     assert BUSINESS_SECRET not in system_prompt
     assert "sensitive-user" not in system_prompt
 
@@ -1200,9 +1205,11 @@ def test_m5_8_003_candidate_is_code_only_for_all_adapter_languages(
     payload = captured["payload"]
     assert isinstance(payload, dict)
     system_prompt = payload["messages"][0]["content"]  # type: ignore[index]
-    assert "requirements, runtime_config, Credential Binding" in system_prompt
+    assert "requirements, runtime_config, credential binding" in system_prompt.lower()
     assert "manually managed by the administrator" in system_prompt
-    assert f'"requirements": "manual-{language}-dependency\\n"' in system_prompt
+    current_user = payload["messages"][-1]["content"]  # type: ignore[index]
+    assert f'"requirements": "manual-{language}-dependency\\n"' in current_user
+    assert f'"requirements": "manual-{language}-dependency\\n"' not in system_prompt
 
     # A legacy configuration field is accepted only as an exact echo; a
     # natural-language dependency suggestion is a Provider contract error.
@@ -1315,27 +1322,31 @@ def test_assist_prompt_carries_exact_selection_snapshot_without_secret_values(
     assert isinstance(messages, list) and isinstance(messages[0], dict)
     system_prompt = messages[0]["content"]
     assert isinstance(system_prompt, str)
+    current_user = messages[-1]["content"]
+    assert isinstance(current_user, str)
     # Both snippets travel verbatim (leading indentation and trailing newline
     # kept for code; masked text kept for logs), in added order, with their
-    # sources and line ranges. The prompt embeds the context JSON, so newlines
-    # appear in JSON-escaped form.
+    # sources and line ranges. Current user data uses JSON-escaped newlines.
     encoded_selection = json.dumps(selected, ensure_ascii=False)[1:-1]
-    assert encoded_selection in system_prompt
+    assert encoded_selection in current_user
+    assert encoded_selection not in system_prompt
     assert "\\n" in encoded_selection
     encoded_log = json.dumps(log_text, ensure_ascii=False)[1:-1]
-    assert encoded_log in system_prompt
-    assert '"source": "code"' in system_prompt
-    assert '"source": "log"' in system_prompt
-    assert '"start_line": 2' in system_prompt
-    assert '"end_line": 3' in system_prompt
-    assert '"start_line": 10' in system_prompt
-    assert '"end_line": 11' in system_prompt
+    assert encoded_log in current_user
+    assert encoded_log not in system_prompt
+    assert '"source": "code"' in current_user
+    assert '"source": "log"' in current_user
+    assert '"start_line": 2' in current_user
+    assert '"end_line": 3' in current_user
+    assert '"start_line": 10' in current_user
+    assert '"end_line": 11' in current_user
     # The binding name is present; the Credential truth is not. Log snippets
     # carry only masked browser-visible text, never raw Secret values.
-    assert "SELECTION_SECRET" in system_prompt
+    assert "SELECTION_SECRET" in current_user
+    assert "SELECTION_SECRET" not in system_prompt
     assert BUSINESS_SECRET not in system_prompt
     assert "selection-user" not in system_prompt
-    assert "[REDACTED]" in system_prompt
+    assert "[REDACTED]" in current_user
 
 
 @pytest.mark.parametrize(
@@ -1724,7 +1735,10 @@ def test_m5_8_005_history_assistant_is_strict_json_envelope(
 
     system_prompt = second_messages[0]["content"]
     assert isinstance(system_prompt, str)
-    assert json.dumps(second_code, ensure_ascii=False) in system_prompt
+    current_user = second_messages[-1]["content"]
+    assert isinstance(current_user, str)
+    assert json.dumps(second_code, ensure_ascii=False) in current_user
+    assert json.dumps(second_code, ensure_ascii=False) not in system_prompt
     assert json.dumps(old_candidate_code, ensure_ascii=False) not in system_prompt
     assert json.dumps(old_candidate_code, ensure_ascii=False) not in json.dumps(
         second_messages, ensure_ascii=False
