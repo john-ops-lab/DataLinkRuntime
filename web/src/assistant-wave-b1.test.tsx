@@ -492,7 +492,7 @@ it("drops a regenerate response that resolves after the panel unmounted (generat
   expect(screen.queryByText("迟到的回复")).toBeNull();
 });
 
-it("never regenerates across an Adapter switch (round snapshot adapter identity)", async () => {
+it("clears the old visible round when switching Adapters", async () => {
   const adapterA = makeAdapter({ id: 1, name: "adapter-a" });
   const adapterB = makeAdapter({ id: 2, name: "adapter-b" });
   const assistAdapter = vi
@@ -504,11 +504,8 @@ it("never regenerates across an Adapter switch (round snapshot adapter identity)
 
   // 面板直接切换 Adapter（真实 App 中会 remount，这里验证显式守卫）。
   panel.rerender({ adapter: adapterB });
-  const regenerate = screen.getByTestId("ai-regenerate") as HTMLButtonElement;
-  expect(regenerate.disabled).toBe(false);
-  fireEvent.click(regenerate);
-
-  // 旧轮次 Regenerate 不得跨 Adapter 使用：不发新请求。
+  await waitFor(() => expect(screen.queryByText("A 的回复")).toBeNull());
+  expect(screen.queryByTestId("ai-regenerate")).toBeNull();
   await waitFor(() => expect(assistAdapter).toHaveBeenCalledTimes(1));
 });
 

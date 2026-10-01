@@ -1721,7 +1721,7 @@ export function AdapterConsole({
           键盘用户将永远无法用 Tab 到达悬浮入口。
         */}
         <AiAssistantPanel
-          key={`ai-assistant-${selected?.id ?? "none"}`}
+          key={`ai-assistant-${accountPrincipal?.id ?? "deployment"}-${selected?.id ?? "none"}`}
           open={aiPanelOpen}
           adapter={selected}
           selectedVersionId={selectedVersionId}
@@ -1735,6 +1735,7 @@ export function AdapterConsole({
           onClose={() => setAiPanelOpen(false)}
           onApply={handleApplyAiCandidate}
           canUseAi={selectedCanUseAi}
+          accountOwnerId={accountPrincipal?.id ?? null}
           onRemoveContextSnippet={handleRemoveContextSnippet}
           onClearContextSnippets={handleClearContextSnippets}
           onCandidateDiffChange={handleAiCandidateDiffChange}

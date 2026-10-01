@@ -28,7 +28,7 @@
 
 - [x] 5.1 新增受限会话表、消息表及 Alembic 增量迁移，明确期限、字段上限和删除语义；用真实 PostgreSQL 升级与字段检查验证旧业务数据不变。
 - [x] 5.2 传递认证 Principal，完成 account/部署级 superadmin owner 与会话 create/list/read/continue/clear/delete API；用两个账号、Token 轮换、权限撤销和伪造 ID 的真实数据库/API 测试验证。（证据：`task-4.3-5.2-session-evidence.md`）
-- [ ] 5.3 在 AI 面板接入选定会话、刷新恢复、当前 Working Copy 重取及身份切换清理；先按项目 Ant Design skill 核版本快照，再用 Web 测试和真实 Chrome 交互验证。
+- [ ] 5.3 在 AI 面板接入选定会话、刷新恢复、当前 Working Copy 重取及身份切换清理；先按项目 Ant Design skill 核版本快照，再用 Web 测试和真实 Chrome 交互验证。（Web 实现与自动化验证证据：`task-5.3-web-evidence.md`；真实 Chrome 验收待执行）
 - [ ] 5.4 验证服务重启、临时材料失效、代码变化、会话过期/删除及不重放工具；用实际数据库和浏览器结果核对恢复范围，并同步产品/架构文档。
 
 ## 6. 第四组交付与统一人工审查

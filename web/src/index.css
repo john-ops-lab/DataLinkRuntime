@@ -1384,6 +1384,29 @@ body {
   overflow-wrap: anywhere;
 }
 
+.ai-session-controls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--dlr-border);
+  font-size: 0.75rem;
+}
+
+.ai-session-controls .ant-select {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+
+.ai-session-note {
+  flex: 1 0 100%;
+  margin: 0;
+  color: var(--dlr-text-secondary);
+  line-height: 1.4;
+}
+
 /* M5.5.13：已加入的上下文片段列表（代码 / 实时日志，可单删或清空全部）。 */
 .ai-snippets {
   flex: 0 0 auto;

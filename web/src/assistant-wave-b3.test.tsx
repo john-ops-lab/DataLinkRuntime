@@ -896,9 +896,9 @@ describe("Candidate / Diff / Apply / Secret / stale / late-response regressions 
     // 切换 Adapter：Composer 附件清空，历史快照附件体释放。
     panel.rerender({ adapter: makeAdapter({ id: 2, name: "adapter-b" }) });
     await waitFor(() => expect(screen.queryByTestId("ai-attachment-item")).toBeNull());
-    // Regenerate 不跨 Adapter：不发请求（round 的 adapter 守卫）。
-    const regenerate = screen.getByTestId("ai-regenerate") as HTMLButtonElement;
-    fireEvent.click(regenerate);
+    // 旧 Adapter 的对话与附件都从当前身份的显示区移除。
+    expect(screen.queryByText("A 回复")).toBeNull();
+    expect(screen.queryByTestId("ai-regenerate")).toBeNull();
     await waitFor(() => expect(assistAdapter).toHaveBeenCalledTimes(1));
     expect(document.body.textContent).not.toContain("switch-body");
   });
