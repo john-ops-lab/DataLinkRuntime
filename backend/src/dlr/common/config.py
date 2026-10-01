@@ -509,7 +509,7 @@ class Settings(BaseSettings):
         validation_alias="DLR_AI_CONTEXT_DEFAULT_WINDOW_TOKENS",
     )
     ai_summary_timeout_seconds: float = Field(
-        default=20.0,
+        default=35.0,
         ge=1.0,
         le=60.0,
         allow_inf_nan=False,

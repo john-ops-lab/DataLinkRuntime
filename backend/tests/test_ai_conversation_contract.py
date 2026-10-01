@@ -104,6 +104,48 @@ def test_summary_uses_existing_deadline_budget_and_no_tools(
     assert captured["timeout_seconds"] == 9.0
 
 
+@pytest.mark.parametrize(
+    ("model", "expected_mode"),
+    [("MiniMax-M3", "disabled"), ("MiniMax-M3.1-Flash-Preview", "default")],
+)
+def test_summary_uses_verified_minimax_m3_no_thinking_only_for_internal_call(
+    monkeypatch: pytest.MonkeyPatch, model: str, expected_mode: str
+) -> None:
+    draft = AiSettingDraft(
+        provider="minimax",
+        base_url="https://api.minimax.io",
+        model=model,
+        credential_id=None,
+    )
+    adapter = providers.get_provider("minimax")
+    captured: dict[str, object] = {}
+
+    def fake_chat(*args: object, **kwargs: object) -> tuple[str, None]:
+        captured["draft"] = args[0]
+        captured["adapter"] = kwargs["adapter"]
+        return _output(), None
+
+    monkeypatch.setattr(providers, "chat_assist", fake_chat)
+    result = conversation_summary.summarize_pending(
+        draft=draft,
+        api_key=None,
+        adapter=adapter,
+        previous=_previous(),
+        pending=_pending(),
+        hard_deadline=conversation_summary.time.monotonic() + 60,
+        call_budget=conversation_summary.SummaryCallBudget(),
+    )
+    assert result.accepted
+    used_draft = captured["draft"]
+    used_adapter = captured["adapter"]
+    assert isinstance(used_draft, AiSettingDraft)
+    assert isinstance(used_adapter, providers.ProviderAdapter)
+    assert used_draft.reasoning_mode == expected_mode
+    assert used_adapter.reasoning_style == ("thinking" if model == "MiniMax-M3" else "unsupported")
+    assert draft.reasoning_mode == "default"
+    assert adapter.reasoning_style == "unsupported"
+
+
 def test_summary_has_own_timeout_and_one_call_per_assist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

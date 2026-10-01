@@ -214,6 +214,39 @@ def _proposed_state(
     return ConversationState(revision=revision, facts=facts)
 
 
+def _valid_state_proposals(
+    previous: ConversationState,
+    pending: tuple[ConversationMessage, ...],
+    additions: tuple[FactAdditionProposal, ...],
+    revocations: tuple[FactRevocationProposal, ...],
+) -> tuple[tuple[FactAdditionProposal, ...], tuple[FactRevocationProposal, ...]]:
+    """Discard invalid optional proposals, never promote them into state.
+
+    One malformed assistant inference must not discard separately valid user
+    constraints. If none of the proposed changes is valid, reject the whole
+    rollup so an invalid state response cannot silently advance coverage.
+    """
+    valid_additions: tuple[FactAdditionProposal, ...] = ()
+    for addition in additions:
+        addition_batch = (*valid_additions, addition)
+        try:
+            _proposed_state(previous, pending, addition_batch, ())
+        except (ValueError, ValidationError):
+            continue
+        valid_additions = addition_batch
+    valid_revocations: tuple[FactRevocationProposal, ...] = ()
+    for revocation in revocations:
+        revocation_batch = (*valid_revocations, revocation)
+        try:
+            _proposed_state(previous, pending, valid_additions, revocation_batch)
+        except (ValueError, ValidationError):
+            continue
+        valid_revocations = revocation_batch
+    if (additions or revocations) and not (valid_additions or valid_revocations):
+        raise ValueError("all state proposals invalid")
+    return valid_additions, valid_revocations
+
+
 def persist_rollup(
     session: Session, plan: RollupPlan, attempt: conversation_summary.SummaryAttempt
 ) -> RollupResult:
@@ -250,7 +283,10 @@ def persist_rollup(
     if not set(snapshot.sources) <= permitted_sources:
         return RollupResult(False, "ai_summary_source_changed")
     try:
-        state = _proposed_state(plan.state, plan.pending, attempt.additions, attempt.revocations)
+        additions, revocations = _valid_state_proposals(
+            plan.state, plan.pending, attempt.additions, attempt.revocations
+        )
+        state = _proposed_state(plan.state, plan.pending, additions, revocations)
     except (ValueError, ValidationError):
         return RollupResult(False, "ai_summary_state_invalid")
     summary_json = snapshot.model_dump(mode="json")

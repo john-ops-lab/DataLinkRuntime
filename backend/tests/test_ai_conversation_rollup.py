@@ -317,6 +317,55 @@ def test_invalid_evidence_and_provider_timeout_keep_valid_old_summary(
         )
 
 
+def test_invalid_assistant_proposal_cannot_block_valid_user_constraint(engine: Engine) -> None:
+    conversation_id = _seed(engine)
+    with Session(engine) as session:
+        plan, error = conversation_rollup.prepare_rollup(
+            session, conversation_id, recent_from_sequence=3
+        )
+    assert error is None and plan is not None
+    payload = json.loads(_output(2))
+    payload["state_additions"].extend(
+        [
+            {
+                "id": "false-decision",
+                "kind": "confirmed_decision",
+                "confirmation_level": "confirmed",
+                "text": "Assistant statement falsely promoted to a decision",
+                "source": {"sequence": 2, "revision": 1, "role": "assistant"},
+                "evidence_quote": "I will use Python.",
+            },
+            {
+                "id": "invented-quote",
+                "kind": "inference",
+                "confirmation_level": "inferred",
+                "text": "Unquoted assistant inference",
+                "source": {"sequence": 2, "revision": 1, "role": "assistant"},
+                "evidence_quote": "not in the assistant message",
+            },
+        ]
+    )
+    output = conversation_summary.SummaryOutput.model_validate_json(json.dumps(payload))
+    snapshot = SummarySnapshot.model_validate(
+        output.model_dump(exclude={"state_additions", "state_revocations"})
+    )
+    with Session(engine) as session:
+        result = conversation_rollup.persist_rollup(
+            session,
+            plan,
+            conversation_summary.SummaryAttempt(True, snapshot, additions=output.state_additions),
+        )
+        assert result.accepted and result.covered_through == 2
+        session.commit()
+    with engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT state_json FROM ai_conversations WHERE id=:id"),
+            {"id": conversation_id},
+        ).one()
+    state = ConversationState.model_validate_json(json.dumps(row.state_json))
+    assert [fact.id for fact in state.facts] == ["constraint-1"]
+
+
 def test_uncited_source_revision_change_rejects_stale_plan(engine: Engine) -> None:
     conversation_id = _seed(engine)
     with Session(engine) as session:
