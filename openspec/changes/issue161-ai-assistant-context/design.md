@@ -24,15 +24,15 @@
 
 ### 3. 会话、状态与摘要的权威边界
 
-新增可选 `session_id`，区别于现有仅用于审计的 `conversation_id`；未选择持久会话的旧客户端仍可使用原 API，但无跨刷新恢复。服务端分配 session ID、消息顺序和修订号。状态包含带来源的明确目标、约束、确认决策、推断、待办与未解问题；摘要包含来源范围和最后覆盖消息序号，不保存代码权威副本。Web 发送当前 Working Copy，每次请求服务端重新验证 Adapter 和会话，摘要作为低优先级参考加入。
+新增可选 `session_id`，区别于现有仅用于审计的 `conversation_id`；未选择持久会话的旧客户端仍可使用原 API，但无跨刷新恢复。服务端分配 session ID、消息顺序和修订号。Web 在首次发送前为该轮生成稳定 `turn_id` 并冻结请求快照；同一 HTTP 尝试有稳定幂等键和请求摘要，失败重试复用 `turn_id` 与用户消息，响应丢失后的同键重试返回已提交结果，冲突内容使用同键则拒绝。重新生成显式指定原 `turn_id` 和已有回复，使用新 generation/幂等键；成功时只替换该轮 assistant 回复，后续轮次保持现有 UI 语义。状态包含带来源的明确目标、约束、确认决策、推断、待办与未解问题；摘要包含来源范围、最后覆盖消息序号及来源版本，不保存代码权威副本。Web 发送当前 Working Copy，每次请求服务端重新验证 Adapter 和会话，摘要作为低优先级参考加入。
 
-持久会话将待提交的 user 消息和请求代次先写入事务，再在事务外调用 Provider；完成时以会话修订号和请求代次做 CAS，防止取消、并发和迟到响应覆盖较新状态。摘要仅处理已持久化、尚未覆盖的连续范围，按来源、长度和专用 Schema 校验后 CAS 更新；失败保持旧摘要与覆盖游标，必要时明确提示上下文未完整保留。真实摘要不要求每轮调用。
+持久会话仅在新 `turn_id` 首次出现时将 user 消息和请求代次写入事务；同轮重试不再追加用户记录。Provider 在事务外调用；完成时以会话修订号、turn/generation 和请求代次做 CAS，防止取消、并发和迟到响应覆盖较新状态。重新生成若替换已被摘要或任务状态引用的回复，在**新回复成功提交的同一事务**将受影响摘要/状态标记失效，再从仍保留的原始消息重算；重算完成前不得把旧摘要送入 Provider。生成失败时保留原回复与有效摘要；若保留期限使原消息不足以重算，则在发起重新生成前明确拒绝。摘要仅处理已持久化、尚未覆盖的连续范围，按来源、长度、版本和专用 Schema 校验后 CAS 更新；失败保持仍有效的旧摘要与覆盖游标，必要时明确提示上下文未完整保留。真实摘要不要求每轮调用。
 
 替代方案是只用浏览器 recent_messages 或把完整请求 JSON 入库；前者无法恢复早期约束，后者会持久化不必要的代码与敏感材料。
 
 ### 4. 受控存储和身份
 
-用现有 PostgreSQL/SQLAlchemy/Alembic 增量新增 `ai_conversations` 与有界 `ai_conversation_messages`，含 adapter_id、owner_kind、account_user_id 或部署级 owner、revision、摘要及 cursor、过期时间；只保存用户/助手可见文本与选择的状态字段，不保存附件、工具大输出、Provider 原始响应、Credential 或完整 Working Copy。账号 owner 使用服务端 Principal 的稳定 user_id；superadmin Token 使用固定部署级 owner，不使用 Token 值或哈希。API 的 list/read/continue/clear/delete 每次均先检查 Adapter edit，再验证 owner。Web 在身份切换时清理显示状态。会话删除和期限清理只操作这些新行，不触碰业务历史、审计或现有卷。
+用现有 PostgreSQL/SQLAlchemy/Alembic 增量新增 `ai_conversations` 与有界 `ai_conversation_messages`，含 adapter_id、owner_kind、account_user_id 或部署级 owner、revision、摘要及 cursor/来源版本、过期时间；轮次记录保留 `turn_id`、generation、幂等键/请求 HMAC 与助手回复身份。只保存用户/助手可见文本与选择的状态字段，不保存附件、工具大输出、Provider 原始响应、Credential 或完整 Working Copy；请求 HMAC 使用部署级稳定密钥派生，不把可枚举短消息的裸 hash 当安全边界。账号 owner 使用服务端 Principal 的稳定 user_id；superadmin Token 使用固定部署级 owner，不使用 Token 值或哈希。API 的 list/read/continue/clear/delete 每次均先检查 Adapter edit，再验证 owner。Web 在身份切换时清理显示状态。会话删除和期限清理只操作这些新行，不触碰业务历史、审计或现有卷。
 
 替代方案是把 `user_id=None` 视作所有管理员共享；这会混淆 account 管理员与部署 Token，因而不采用。Token 共享空间的真实语义须在 UI/文档说明。
 
