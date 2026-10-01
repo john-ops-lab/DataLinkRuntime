@@ -203,8 +203,22 @@ Input contributes only ordered safe labels and the three-language
 `context.input_files` / `context.inputFiles` contract: AI never reads its Blob and
 must not claim to know content that was not separately attached. Apply only updates
 the browser Working Copy; it does not save, run, or modify Credential true values or
-run state. Prompts, raw Provider responses, reasoning, attachment bodies, and
-conversations are never persisted.
+run state.
+
+Conversations are temporary by default. When an administrator explicitly creates or
+selects a saved session, the server retains bounded visible user and assistant text,
+sourced task state, a rolling summary, and the current turn's code-only Candidate. Account users
+have separate sessions; deployment administrator Tokens share a distinct space.
+Reading and continuing a session always requires current Adapter edit access. Sessions
+expire after 30 days and are periodically purged in bounded batches; they can also be cleared or deleted. A refresh or service restart
+restores visible messages, but does not restore an old Candidate as an applicable
+change. One-request attachments, excerpts, and raw tool material must be supplied
+again; completed tools and business actions are never replayed automatically.
+Regeneration and continuation use the current Working Copy. Earlier summaries are
+lower-priority background, and a request fails explicitly if uncovered history
+cannot fit intact in the model context. Prompts, raw Provider responses, reasoning,
+attachment bodies, the full Working Copy, Credential true values, and large tool
+outputs are not stored in session tables.
 
 ## 11. Security Principles
 

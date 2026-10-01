@@ -941,11 +941,40 @@ export interface AiConversationMessage {
   content: string;
 }
 
+export interface AiSessionSummary {
+  id: string;
+  adapter_id: number;
+  revision: number;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AiSessionMessage extends AiConversationMessage {
+  sequence: number;
+  turn_id: string;
+  source_revision: number;
+  generation: number;
+  request_status: "pending" | "completed" | "failed" | "cancelled" | null;
+}
+
+export interface AiSessionDetail extends AiSessionSummary {
+  messages: AiSessionMessage[];
+  summary_covered_through: number;
+  summary_valid: boolean;
+}
+
 /** Browser-only AI conversation correlation. ``conversation_id`` is created
  * in memory for one mounted Adapter session and is never authentication or
  * persisted conversation state. */
 export interface AiAssistRequest {
   conversation_id: string;
+  session_id?: string;
+  turn_id?: string;
+  idempotency_key?: string;
+  regenerate_turn_id?: string;
+  expected_generation?: number;
+  expected_session_revision?: number;
   message: string;
   working_copy: {
     code: string;

@@ -456,6 +456,46 @@ describe("client-side bounds mirror the B2 contract", () => {
     readSpy.mockRestore();
   });
 
+  it.each([false, true])(
+    "drops an old Adapter's attachment send before consuming the new Adapter's draft (remount=%s)",
+    async (remount) => {
+      const assistAdapter = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("reply", null));
+      const view = renderPanel();
+      await addFiles(makeFile("old.txt", "text/plain", "old-body"));
+      fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "Old draft" } });
+
+      let resolveRead: ((dataUrl: string) => void) | undefined;
+      const pendingRead = new Promise<string>((resolve) => { resolveRead = resolve; });
+      const readSpy = vi.spyOn(FileReader.prototype, "readAsDataURL")
+        .mockImplementation(function (this: FileReader) {
+          // eslint-disable-next-line @typescript-eslint/no-this-alias -- deferred test callback needs this FileReader
+          const reader = this;
+          void pendingRead.then((dataUrl) => {
+            Object.defineProperty(reader, "result", { value: dataUrl, configurable: true });
+            reader.onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>);
+          });
+        });
+
+      fireEvent.click(screen.getByTestId("ai-send"));
+      if (remount) {
+        view.view.unmount();
+        renderPanel({ adapter: makeAdapter({ id: 2, name: "adapter-b" }) });
+      } else {
+        view.rerender({ adapter: makeAdapter({ id: 2, name: "adapter-b" }) });
+      }
+      await waitFor(() => expect(screen.getByTestId("ai-conversation-empty")).toBeTruthy());
+      fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "New draft" } });
+      await act(async () => {
+        resolveRead?.("data:text/plain;base64,b2xkLWJvZHk=");
+        await pendingRead;
+      });
+      expect(assistAdapter).not.toHaveBeenCalled();
+      expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe("New draft");
+      expect(screen.getByTestId("ai-conversation-empty")).toBeTruthy();
+      readSpy.mockRestore();
+    },
+  );
+
   it("keeps the draft when the runtime config is invalid (consumption happens after freezing)", async () => {
     const file = makeFile("notes.txt", "text/plain", "draft-body");
     const assistAdapter = vi
@@ -896,9 +936,9 @@ describe("Candidate / Diff / Apply / Secret / stale / late-response regressions 
     // 切换 Adapter：Composer 附件清空，历史快照附件体释放。
     panel.rerender({ adapter: makeAdapter({ id: 2, name: "adapter-b" }) });
     await waitFor(() => expect(screen.queryByTestId("ai-attachment-item")).toBeNull());
-    // Regenerate 不跨 Adapter：不发请求（round 的 adapter 守卫）。
-    const regenerate = screen.getByTestId("ai-regenerate") as HTMLButtonElement;
-    fireEvent.click(regenerate);
+    // 旧 Adapter 的对话与附件都从当前身份的显示区移除。
+    expect(screen.queryByText("A 回复")).toBeNull();
+    expect(screen.queryByTestId("ai-regenerate")).toBeNull();
     await waitFor(() => expect(assistAdapter).toHaveBeenCalledTimes(1));
     expect(document.body.textContent).not.toContain("switch-body");
   });

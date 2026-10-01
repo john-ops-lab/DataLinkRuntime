@@ -121,12 +121,14 @@ def prompt_from_assist(
     assert isinstance(messages, list) and isinstance(messages[0], dict)
     prompt = messages[0]["content"]
     assert isinstance(prompt, str)
-    return prompt
+    current = messages[-1]["content"]
+    assert isinstance(current, str) and current.startswith("DLR_REQUEST_CONTEXT_V1\n")
+    return prompt + "\n" + current
 
 
 def context_from_prompt(prompt: str) -> dict[str, Any]:
-    marker = "Current Adapter context:\n"
-    return json.loads(prompt.split(marker, 1)[1])
+    marker = "DLR_REQUEST_CONTEXT_V1\n"
+    return json.loads(prompt.split(marker, 1)[1])["AUTHORITATIVE_STATE_DATA"]
 
 
 def test_assist_prompt_includes_ordered_managed_input_metadata_only(
@@ -317,10 +319,13 @@ def test_assist_prompt_is_adapter_isolated_and_keeps_explicit_attachments_separa
     ]
     assert explicit_sentinel in first_prompt
     assert "second.txt" not in first_prompt
-    assert first_context["attachments"][0]["filename"] == "notes.txt"
-    assert first_context["attachments"][0]["text"] == explicit_sentinel
+    first_references = json.loads(first_prompt.split("DLR_REQUEST_CONTEXT_V1\n", 1)[1])[
+        "UNTRUSTED_REFERENCE_MATERIAL"
+    ]
+    assert first_references["attachments"][0]["filename"] == "notes.txt"
+    assert first_references["attachments"][0]["text"] == explicit_sentinel
     assert (
-        first_context["attachments"][0]["filename"]
+        first_references["attachments"][0]["filename"]
         != first_context["saved_managed_input"]["files"][0]["filename"]
     )
 

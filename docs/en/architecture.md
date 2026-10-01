@@ -288,10 +288,29 @@ output does not imply bounded raw HTTP transport.
 
 ## 9. AI Assistant
 
-The browser explicitly submits the current Working Copy, user instructions and a
-bounded recent conversation. Control adds server-side language, base Revision
-metadata, the Runtime Contract and Secret env-key names. The Provider's final answer
-must pass Candidate Schema validation.
+The browser explicitly submits the current Working Copy and user instructions;
+temporary conversations also submit bounded recent messages. For an explicitly
+selected saved session, the browser sends a server session ID, stable turn and
+idempotency keys, and the expected revision. Control checks the authenticated
+Principal, current Adapter edit access, and session owner on every operation, then
+reads visible history from PostgreSQL. Control adds server-side language, base
+Revision metadata, the Runtime Contract and Secret env-key names. The Provider's
+final answer must pass Candidate Schema validation. Tool follow-ups, finalization,
+and internal summaries share one deadline; each actual Provider call is budgeted
+for messages, tools, images, and reserved output separately.
+
+Saved sessions add only the bounded `ai_conversations` and
+`ai_conversation_messages` tables. User and assistant messages have stable sequence
+slots; a failed turn receives an explicit visible placeholder before the next turn.
+Same-key retries reuse a committed result, and successful regeneration replaces the
+original assistant slot. The Provider runs outside a database transaction; commit
+compares the session revision and request generation so a late result cannot
+overwrite a cleared or newer state. Rolling summaries use contiguous source ranges
+and compare every covered source revision. Replacing a covered reply invalidates
+dependent summaries and task state for rebuilding from retained original messages.
+Summary and state are lower-priority background; the current request and Working Copy
+remain authoritative. If uncovered history cannot fit intact in the model context,
+the request fails explicitly instead of silently truncating it.
 
 For one-request attachments, XLSX opens only bounded ZIP/XML members and XLS uses the
 pinned `xlrd` in-memory BIFF entry point. Both reuse file, inflation, character, and

@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from dlr.common.config import settings
 from dlr.control.ai import attachments as attachments_module
 from dlr.control.ai import providers
 from dlr.control.ai.attachments import AttachmentError
@@ -166,14 +167,18 @@ def captured_payload(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, Any
     return captured
 
 
-def system_prompt(captured: dict[str, dict[str, Any]]) -> str:
+def provider_prompt_text(captured: dict[str, dict[str, Any]]) -> str:
     payload = captured["payload"]
     assert isinstance(payload, dict)
     messages = payload["messages"]
     assert isinstance(messages, list) and isinstance(messages[0], dict)
     prompt = messages[0]["content"]
     assert isinstance(prompt, str)
-    return prompt
+    current = messages[-1]["content"]
+    if isinstance(current, list):
+        current = current[0]["text"]
+    assert isinstance(current, str) and current.startswith("DLR_REQUEST_CONTEXT_V1\n")
+    return prompt + "\n" + current
 
 
 def user_message(captured: dict[str, dict[str, Any]]) -> object:
@@ -279,7 +284,7 @@ def test_assist_text_attachment_parsed_into_bounded_context(
     assert response.json()["candidate"] is not None
     assert ATTACH_SENTINEL not in response.text
 
-    prompt = system_prompt(captured)
+    prompt = provider_prompt_text(captured)
     assert '\\"attachments\\"' in json.dumps(captured["payload"])
     assert ATTACH_SENTINEL in prompt
     assert '"filename": "notes.txt"' in prompt
@@ -287,7 +292,7 @@ def test_assist_text_attachment_parsed_into_bounded_context(
     assert '"category": "text"' in prompt
     assert '"truncated": false' in prompt
     # The user message stays a plain string (no native parts on this path).
-    assert user_message(captured) == body["message"]
+    assert json.loads(user_message(captured).split("\n", 1)[1])["USER_REQUEST"] == body["message"]
 
 
 def test_assist_code_attachment_via_octet_stream(
@@ -301,7 +306,7 @@ def test_assist_code_attachment_via_octet_stream(
     body["attachments"] = [attachment("adapter.py", "application/octet-stream", code.encode())]
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 200, response.text
-    prompt = system_prompt(captured)
+    prompt = provider_prompt_text(captured)
     assert "adapter.py" in prompt
     assert "def handle(context, input):" in prompt
     assert '"category": "text"' in prompt
@@ -318,7 +323,7 @@ def test_assist_pdf_attachment_fallback_parse(
     body["attachments"] = [attachment("report.pdf", "application/pdf", pdf)]
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 200, response.text
-    prompt = system_prompt(captured)
+    prompt = provider_prompt_text(captured)
     assert "PDF attachment sentinel report" in prompt
     assert '"category": "pdf"' in prompt
 
@@ -340,7 +345,7 @@ def test_assist_docx_attachment_fallback_parse(
     ]
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 200, response.text
-    prompt = system_prompt(captured)
+    prompt = provider_prompt_text(captured)
     assert "first docx paragraph" in prompt
     assert "second docx paragraph" in prompt
     assert '"category": "docx"' in prompt
@@ -356,7 +361,7 @@ def test_assist_xlsx_attachment_fallback_parse(
     body["attachments"] = [attachment("report.xlsx", XLSX_MIME, build_xlsx())]
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 200, response.text
-    prompt = system_prompt(captured)
+    prompt = provider_prompt_text(captured)
     assert "shared XLSX attachment sentinel" in prompt
     assert "inline XLSX value" in prompt
     assert "42" in prompt
@@ -373,7 +378,7 @@ def test_assist_xls_attachment_fallback_parse(
     body["attachments"] = [attachment("report.xls", XLS_MIME, build_xls())]
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 200, response.text
-    prompt = system_prompt(captured)
+    prompt = provider_prompt_text(captured)
     assert "Legacy XLS sentinel" in prompt
     assert "Second row" in prompt
     assert '"category": "xls"' in prompt
@@ -393,7 +398,7 @@ def test_assist_attachments_coexist_with_context_snippets(
     body["attachments"] = [attachment("a.txt", "text/plain", ATTACH_SENTINEL.encode())]
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 200, response.text
-    prompt = system_prompt(captured)
+    prompt = provider_prompt_text(captured)
     assert "selected code line" in prompt
     assert ATTACH_SENTINEL in prompt
 
@@ -422,7 +427,9 @@ def test_assist_image_native_payload_for_openai(
 
     content = user_message(captured)
     assert isinstance(content, list) and len(content) == 3
-    assert content[0] == {"type": "text", "text": body["message"]}
+    assert content[0]["type"] == "text"
+    assert content[0]["text"].startswith("DLR_REQUEST_CONTEXT_V1\n")
+    assert json.loads(content[0]["text"].split("\n", 1)[1])["USER_REQUEST"] == body["message"]
     assert content[1]["type"] == "image_url"
     assert content[1]["image_url"]["url"] == f"data:image/png;base64,{PNG_1PX_BASE64}"
     assert content[2]["image_url"]["url"].startswith("data:image/jpeg;base64,")
@@ -723,6 +730,8 @@ def test_assist_rejects_attachment_count_limit(
 def test_assist_parsed_text_is_bounded_and_marked_truncated(
     api_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Isolate the parser's per-file cap from the separate model-window guard.
+    monkeypatch.setattr(settings, "ai_context_default_window_tokens", 65536)
     adapter = create_adapter(api_client, "attach-truncate")
     configure(api_client)
     captured = captured_payload(monkeypatch)
@@ -731,19 +740,36 @@ def test_assist_parsed_text_is_bounded_and_marked_truncated(
     body["attachments"] = [attachment("long.txt", "text/plain", long_text.encode())]
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 200, response.text
-    prompt = system_prompt(captured)
+    prompt = provider_prompt_text(captured)
     assert '"truncated": true' in prompt
     assert "attachment text truncated by DLR context bound" in prompt
     # The context never carries more than the per-file cap plus the marker.
-    context = json.loads(
-        prompt[prompt.index("Current Adapter context:") + len("Current Adapter context:") :]
-    )
-    attachments = context["attachments"]
+    context = json.loads(prompt.split("DLR_REQUEST_CONTEXT_V1\n", 1)[1])
+    attachments = context["UNTRUSTED_REFERENCE_MATERIAL"]["attachments"]
     assert len(attachments) == 1
     assert attachments[0]["truncated"] is True
     assert len(attachments[0]["text"]) <= attachments_module.MAX_PARSED_CHARS_PER_FILE + len(
         attachments_module.TRUNCATION_MARKER
     )
+
+
+def test_assist_large_attachment_is_omitted_before_provider_when_window_is_small(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "ai_context_default_window_tokens", 32768)
+    adapter = create_adapter(api_client, "attach-budget")
+    configure(api_client)
+    captured = captured_payload(monkeypatch)
+    long_text = "word " * attachments_module.MAX_PARSED_CHARS_PER_FILE
+    body = assist_body()
+    body["attachments"] = [attachment("long.txt", "text/plain", long_text.encode())]
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+    assert response.status_code == 200, response.text
+    assert "省略了 1 项" in response.json()["message"]
+    prompt = provider_prompt_text(captured)
+    context = json.loads(prompt.split("DLR_REQUEST_CONTEXT_V1\n", 1)[1])
+    assert "UNTRUSTED_REFERENCE_MATERIAL" not in context
+    assert context["AUTHORITATIVE_STATE_DATA"]["working_copy"] == body["working_copy"]
 
 
 def test_total_parsed_budget_is_shared_across_attachments() -> None:
@@ -938,7 +964,7 @@ def test_attachments_leave_no_db_rows_logs_temp_files_or_response_echo(
     assert CREDENTIAL_SENTINEL not in response.text
     assert PROVIDER_KEY_SENTINEL not in response.text
     # ... but it did reach the Provider by design (the bounded contract).
-    prompt = system_prompt(captured)
+    prompt = provider_prompt_text(captured)
     assert secret_text in prompt
 
     # Failed path too: corrupt attachment must not persist or leak either.
@@ -1033,10 +1059,10 @@ def test_attachment_free_requests_keep_exact_previous_contract(
     assert response.status_code == 200, response.text
     # No attachments key in the Provider context; user message stays a plain
     # string; the system prompt keeps the exact pre-attachment shape.
-    prompt = system_prompt(captured)
+    prompt = provider_prompt_text(captured)
     assert '\\"attachments\\"' not in json.dumps(captured["payload"])
     assert "attachments array" not in prompt
-    assert user_message(captured) == body["message"]
+    assert json.loads(user_message(captured).split("\n", 1)[1])["USER_REQUEST"] == body["message"]
     # Explicit empty list behaves exactly like the omitted field.
     body["attachments"] = []
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)

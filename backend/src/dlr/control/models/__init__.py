@@ -2,6 +2,7 @@
 
 from dlr.control.models.account import User, UserSession
 from dlr.control.models.adapter import Adapter, AdapterPermission, AdapterVersion
+from dlr.control.models.ai_conversation import AiConversation, AiConversationMessage
 from dlr.control.models.builtin_package import (
     BuiltinPackage,
     BuiltinPackageSettings,
@@ -81,6 +82,8 @@ __all__ = [
     "AdapterWebhook",
     "AiModelSetting",
     "AiCustomProvider",
+    "AiConversation",
+    "AiConversationMessage",
     "Credential",
     "Execution",
     "ExecutionInputArtifactLease",

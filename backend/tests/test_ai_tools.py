@@ -395,7 +395,7 @@ def test_assist_without_tool_capability_keeps_pre_c1_payload_and_prompt(
     assert "tool_choice" not in payload
     system_prompt = payload["messages"][0]["content"]
     assert isinstance(system_prompt, str)
-    assert "tool call," in system_prompt  # pre-C1 hard rule kept verbatim
+    assert "tool call," in system_prompt
     assert "dlr_docs_list" not in system_prompt
     assert response.json()["tool_calls"] == []
 
@@ -649,8 +649,15 @@ def test_assist_tool_round_with_attachments_and_snippets_still_valid(
     assert response.json()["candidate"] is not None
     first = captured[0]
     system_prompt = first["messages"][0]["content"]
-    assert '"context_snippets"' in system_prompt
-    assert '"attachments"' in system_prompt
+    current_user = next(
+        item["content"]
+        for item in first["messages"]
+        if item["role"] == "user" and str(item["content"]).startswith("DLR_REQUEST_CONTEXT_V1")
+    )
+    assert '"context_snippets"' in current_user
+    assert '"attachments"' in current_user
+    assert '"context_snippets"' not in system_prompt
+    assert '"attachments"' not in system_prompt
     assert response.json()["tool_calls"][0]["status"] == "success"
 
 

@@ -35,6 +35,8 @@ import type {
   AiModelSetting,
   AiModelSettingDraft,
   AiProviderCapability,
+  AiSessionDetail,
+  AiSessionSummary,
   Credential,
   CredentialBinding,
   CredentialType,
@@ -768,4 +770,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+
+  createAiSession: (adapterId: number): Promise<AiSessionSummary> =>
+    request(`/api/adapters/${adapterId}/ai/sessions`, { method: "POST" }),
+
+  listAiSessions: (adapterId: number): Promise<{ sessions: AiSessionSummary[] }> =>
+    request(`/api/adapters/${adapterId}/ai/sessions`),
+
+  readAiSession: (adapterId: number, sessionId: string): Promise<AiSessionDetail> =>
+    request(`/api/adapters/${adapterId}/ai/sessions/${sessionId}`),
+
+  clearAiSession: (adapterId: number, sessionId: string): Promise<AiSessionDetail> =>
+    request(`/api/adapters/${adapterId}/ai/sessions/${sessionId}/clear`, { method: "POST" }),
+
+  deleteAiSession: (adapterId: number, sessionId: string): Promise<void> =>
+    request(`/api/adapters/${adapterId}/ai/sessions/${sessionId}`, { method: "DELETE" }),
 };

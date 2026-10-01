@@ -1,4 +1,4 @@
-/** Browser-only AI conversation and Candidate review surface (M4).
+/** AI conversation and Candidate review surface (M4, M5.10 opt-in sessions).
  *
  * M5.7 Wave A: the conversation/composer layer is rebuilt on the official
  * assistant-ui headless primitives via the External Store Runtime. DLR keeps
@@ -32,12 +32,12 @@
  * payloads, Credentials or hidden reasoning, and Regenerate replaces the
  * whole round (text + tools + Candidate) with the fresh result.
  *
- * No MCP / ima external adapters (Wave C2), no Streaming, no Reasoning UI,
- * no Thread persistence, no general Agent Runtime.
+ * M5.10 adds opt-in, owner-scoped visible-text session persistence. The
+ * temporary path and its frozen Regenerate behavior remain available.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, Spin, Switch, Tooltip } from "antd";
+import { Button, Popconfirm, Select, Spin, Switch, Tooltip } from "antd";
 import {
   CheckOutlined,
   CloseOutlined,
@@ -93,6 +93,8 @@ import type {
   AiCandidate,
   AiConversationMessage,
   AiContextSnippet,
+  AiSessionDetail,
+  AiSessionSummary,
   AiToolCallSummary,
 } from "../types";
 import { logSnippetTimeLabel } from "../unified-log";
@@ -155,6 +157,14 @@ interface AssistRoundSnapshot {
   /** Display-only names frozen from the successful attachment snapshot. */
   attachmentNames: string[];
   locale: string;
+  durableAttempt?: {
+    sessionId: string;
+    turnId: string;
+    idempotencyKey: string;
+    expectedGeneration: number;
+    expectedSessionRevision: number;
+    regenerate: boolean;
+  };
 }
 
 interface VisibleMessage {
@@ -169,6 +179,50 @@ interface VisibleMessage {
    * render through the official Tool Call UI primitives and NEVER join
    * recent_messages (which stays a plain user/assistant text history). */
   toolCalls: AiToolCallSummary[];
+  durableTurn?: {
+    turnId: string;
+    generation: number;
+    status: "pending" | "completed" | "failed" | "cancelled" | null;
+    /** The HTTP response may have been lost after the server committed this
+     * generation. Replay its frozen key to recover the Candidate. */
+    replayPending?: boolean;
+  };
+}
+
+function restoredMessages(detail: AiSessionDetail): VisibleMessage[] {
+  return detail.messages.map((row) => ({
+    id: row.sequence,
+    role: row.role,
+    content: row.content,
+    candidate: null,
+    snapshot: null,
+    toolCalls: [],
+    durableTurn: { turnId: row.turn_id, generation: row.generation, status: row.request_status },
+  }));
+}
+
+function reconcileSessionMessages(
+  detail: AiSessionDetail,
+  current: VisibleMessage[],
+): VisibleMessage[] {
+  return restoredMessages(detail).map((restored) => {
+    const previous = current.find((item) =>
+      item.role === restored.role &&
+      item.durableTurn !== undefined &&
+      item.durableTurn.turnId === restored.durableTurn?.turnId &&
+      item.durableTurn.generation === restored.durableTurn?.generation,
+    );
+    if (previous === undefined || previous.content !== restored.content) return restored;
+    return {
+      ...restored,
+      snapshot: restored.role === "user" ? previous.snapshot : null,
+      durableTurn: restored.role === "user"
+        ? { ...restored.durableTurn!, replayPending: previous.durableTurn?.replayPending }
+        : restored.durableTurn,
+      candidate: restored.role === "assistant" ? previous.candidate : null,
+      toolCalls: restored.role === "assistant" ? previous.toolCalls : [],
+    };
+  });
 }
 
 /** Candidate diff stores only data; pane labels are derived at render time
@@ -196,6 +250,8 @@ interface AiAssistantPanelProps {
   onApply: (candidate: AiCandidate) => void;
   /** Adapter ACL gate; the backend remains authoritative for every request. */
   canUseAi?: boolean;
+  /** Account ID scopes the persisted selection; null is the deployment owner. */
+  accountOwnerId?: number | null;
   onRemoveContextSnippet: (id: number) => void;
   onClearContextSnippets: () => void;
   /** Stable host keeps Monaco DiffEditor mounted across the keyed AI panel switch. */
@@ -691,13 +747,14 @@ function RegenerateButton(props: {
   userMessageId: number;
   disabled: boolean;
   retry?: boolean;
+  durable?: boolean;
 }) {
   const { t } = useTranslation(["ai"]);
   const aui = useAui();
   const label = props.retry ? t("assistant.retry") : t("assistant.regenerate");
   const ariaLabel = props.retry
     ? t("assistant.retryAria")
-    : t("assistant.regenerateAria");
+    : t(props.durable ? "assistant.regenerateAriaCurrent" : "assistant.regenerateAria");
   return (
     <Button
       size="small"
@@ -759,6 +816,31 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     [i18n.language],
   );
   const [messages, setMessages] = useState<VisibleMessage[]>([]);
+  const sessionStorageKey = props.adapter === null
+    ? null
+    : `dlr.ai.selected-session.${props.accountOwnerId == null ? "deployment" : `account-${props.accountOwnerId}`}.${props.adapter.id}`;
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(() =>
+    sessionStorageKey === null ? null : sessionStorage.getItem(sessionStorageKey),
+  );
+  const [sessionDetail, setSessionDetail] = useState<AiSessionDetail | null>(null);
+  const [sessions, setSessions] = useState<AiSessionSummary[]>([]);
+  const [sessionLoading, setSessionLoading] = useState(false);
+  const [sessionBusy, setSessionBusy] = useState(false);
+  const sessionEpoch = useRef(0);
+  // The layout effect updates before a settled file-read callback can commit
+  // its old Adapter/account draft in the new scope.
+  const latestSendScopeRef = useRef({
+    adapterId: props.adapter?.id ?? null,
+    sessionStorageKey,
+    activeSessionId,
+  });
+  useLayoutEffect(() => {
+    latestSendScopeRef.current = {
+      adapterId: props.adapter?.id ?? null,
+      sessionStorageKey,
+      activeSessionId,
+    };
+  }, [props.adapter?.id, sessionStorageKey, activeSessionId]);
   const [sending, setSending] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const [boundSecretKeys, setBoundSecretKeys] = useState<Set<string>>(new Set());
@@ -815,12 +897,13 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   // during that window, so a second click/Enter would otherwise duplicate
   // the user message and the request; the ref is set synchronously before
   // the first await and cleared in the finally block.
-  const attachmentSendInFlightRef = useRef(false);
+  const attachmentSendInFlightRef = useRef<number | null>(null);
+  const attachmentSendSequenceRef = useRef(0);
   const composerControlsRef = useRef<{
     setText: (text: string) => void;
     clearAttachments: () => Promise<void>;
   } | null>(null);
-  const previousAdapterIdRef = useRef<number | null>(props.adapter?.id ?? null);
+  const previousSessionScopeRef = useRef(sessionStorageKey);
   useEffect(() => {
     attachmentLimitsRef.current = attachmentLimits;
   }, [attachmentLimits]);
@@ -868,6 +951,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
 
   useEffect(
     () => () => {
+      sessionEpoch.current += 1;
       requestGeneration.current += 1;
     },
     [],
@@ -932,32 +1016,184 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     };
   }, [adapterId, canUseAi, props.open]);
 
-  // M5.7 Wave B3: Adapter switch isolates every historical run state — the
-  // composer's pending attachments are cleared (nothing composed for the old
-  // Adapter can leak into the new one) and the frozen attachment bodies of
-  // past rounds are released. Regenerate across Adapters is additionally
-  // blocked by the round-snapshot adapter guard in runAssist.
+  // Adapter or account scope changes discard visible state and fence every
+  // in-flight read/Assist before any result can render in the new scope.
   useEffect(() => {
-    const nextAdapterId = props.adapter?.id ?? null;
-    if (previousAdapterIdRef.current === nextAdapterId) {
+    if (previousSessionScopeRef.current === sessionStorageKey) {
       return;
     }
-    previousAdapterIdRef.current = nextAdapterId;
+    previousSessionScopeRef.current = sessionStorageKey;
+    sessionEpoch.current += 1;
+    requestGeneration.current += 1;
     setConversationId(crypto.randomUUID());
-    setMessages((current) =>
-      current.map((message) =>
-        message.snapshot !== null &&
-        (message.snapshot.attachments.length > 0 || message.snapshot.attachmentNames.length > 0)
-          ? {
-              ...message,
-              snapshot: { ...message.snapshot, attachments: [], attachmentNames: [] },
-            }
-          : message,
-      ),
-    );
+    setMessages([]);
+    setSessionDetail(null);
+    setSessions([]);
+    setSessionBusy(false);
+    setSessionLoading(false);
+    setActiveSessionId(sessionStorageKey === null ? null : sessionStorage.getItem(sessionStorageKey));
+    setSending(false);
+    setProgressStage(null);
+    setPanelError(null);
+    setCandidateDiff(null);
+    attachmentSendInFlightRef.current = null;
     void composerControlsRef.current?.clearAttachments();
     setAttachmentError(null);
-  }, [props.adapter?.id]);
+  }, [sessionStorageKey]);
+
+  useEffect(() => {
+    if (!props.open || adapterId === null || !canUseAi) {
+      return;
+    }
+    const epoch = sessionEpoch.current;
+    let cancelled = false;
+    void api.listAiSessions(adapterId).then((result) => {
+      if (!cancelled && epoch === sessionEpoch.current) {
+        setSessions(result.sessions);
+      }
+    }).catch(() => {
+      if (!cancelled && epoch === sessionEpoch.current) {
+        setSessions([]);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [activeSessionId, adapterId, canUseAi, props.open, sessionStorageKey]);
+
+  useEffect(() => {
+    if (!props.open || adapterId === null || !canUseAi || activeSessionId === null || sending) {
+      return;
+    }
+    const epoch = sessionEpoch.current;
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- selected session starts an intentional server read
+    setSessionLoading(true);
+    void api.readAiSession(adapterId, activeSessionId).then((detail) => {
+      if (cancelled || epoch !== sessionEpoch.current) return;
+      setSessionDetail(detail);
+      setMessages((current) => reconcileSessionMessages(detail, current));
+      nextMessageId.current = Math.max(1, ...detail.messages.map((row) => row.sequence + 1));
+      setPanelError(null);
+    }).catch((error: unknown) => {
+      if (cancelled || epoch !== sessionEpoch.current) return;
+      // A stored selection can expire or lose ACL between page loads.
+      if (error instanceof ApiError && error.status === 404) {
+        if (sessionStorageKey !== null) sessionStorage.removeItem(sessionStorageKey);
+        setActiveSessionId(null);
+        setSessionDetail(null);
+        setMessages([]);
+      }
+      setPanelError(userErrorMessage(error));
+    }).finally(() => {
+      if (!cancelled && epoch === sessionEpoch.current) setSessionLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [activeSessionId, adapterId, canUseAi, props.open, sending, sessionStorageKey]);
+
+  function selectSession(id: string | null) {
+    sessionEpoch.current += 1;
+    requestGeneration.current += 1;
+    setActiveSessionId(id);
+    setSessionDetail(null);
+    setMessages([]);
+    setCandidateDiff(null);
+    setProgressStage(null);
+    setPanelError(null);
+    setSending(false);
+    attachmentSendInFlightRef.current = null;
+    void composerControlsRef.current?.clearAttachments();
+    setAttachmentError(null);
+    if (sessionStorageKey !== null) {
+      if (id === null) sessionStorage.removeItem(sessionStorageKey);
+      else sessionStorage.setItem(sessionStorageKey, id);
+    }
+  }
+
+  async function createSession() {
+    if (adapterId === null || sessionBusy) return;
+    const epoch = sessionEpoch.current;
+    setSessionBusy(true);
+    try {
+      const created = await api.createAiSession(adapterId);
+      if (epoch !== sessionEpoch.current) return;
+      setSessions((current) => [created, ...current]);
+      setSessionBusy(false);
+      selectSession(created.id);
+    } catch (error) {
+      if (epoch === sessionEpoch.current) setPanelError(userErrorMessage(error));
+    } finally {
+      if (epoch === sessionEpoch.current) setSessionBusy(false);
+    }
+  }
+
+  async function reloadSession() {
+    if (adapterId === null || activeSessionId === null || sessionBusy) return;
+    const id = activeSessionId;
+    const epoch = ++sessionEpoch.current;
+    requestGeneration.current += 1;
+    setSending(false);
+    setProgressStage(null);
+    setSessionLoading(true);
+    try {
+      const detail = await api.readAiSession(adapterId, id);
+      if (epoch !== sessionEpoch.current) return;
+      setSessionDetail(detail);
+      setMessages(restoredMessages(detail));
+      nextMessageId.current = Math.max(1, ...detail.messages.map((row) => row.sequence + 1));
+      setCandidateDiff(null);
+      setPanelError(null);
+    } catch (error) {
+      if (epoch === sessionEpoch.current) {
+        setSessionDetail(null);
+        setPanelError(userErrorMessage(error));
+      }
+    } finally {
+      if (epoch === sessionEpoch.current) setSessionLoading(false);
+    }
+  }
+
+  async function clearSession() {
+    if (adapterId === null || activeSessionId === null || sessionBusy) return;
+    const id = activeSessionId;
+    const epoch = ++sessionEpoch.current;
+    requestGeneration.current += 1;
+    setSending(false);
+    setProgressStage(null);
+    setSessionBusy(true);
+    try {
+      const detail = await api.clearAiSession(adapterId, id);
+      if (epoch !== sessionEpoch.current) return;
+      setSessionDetail(detail);
+      setMessages([]);
+      setCandidateDiff(null);
+      setProgressStage(null);
+      setPanelError(null);
+    } catch (error) {
+      if (epoch === sessionEpoch.current) setPanelError(userErrorMessage(error));
+    } finally {
+      if (epoch === sessionEpoch.current) setSessionBusy(false);
+    }
+  }
+
+  async function deleteSession() {
+    if (adapterId === null || activeSessionId === null || sessionBusy) return;
+    const id = activeSessionId;
+    const epoch = ++sessionEpoch.current;
+    requestGeneration.current += 1;
+    setSending(false);
+    setProgressStage(null);
+    setSessionBusy(true);
+    try {
+      await api.deleteAiSession(adapterId, id);
+      if (epoch !== sessionEpoch.current) return;
+      setSessions((current) => current.filter((item) => item.id !== id));
+      setSessionBusy(false);
+      selectSession(null);
+    } catch (error) {
+      if (epoch === sessionEpoch.current) setPanelError(userErrorMessage(error));
+    } finally {
+      if (epoch === sessionEpoch.current) setSessionBusy(false);
+    }
+  }
 
   /** M5.7 Wave B3: type predicate — the runtime's Attachment union nests the
  * status discriminant, which TypeScript cannot narrow through assignments;
@@ -1065,14 +1301,18 @@ async function resolveComposerAttachment(
       !props.contentReady ||
       props.busy ||
       sending ||
+      sessionBusy ||
+      (activeSessionId !== null && sessionDetail === null) ||
       // Wave B1: a regenerated round is bound to the Adapter it was sent
       // against; it must never silently rerun against a switched Adapter.
       snapshot.adapterId !== adapter.id
+      || (snapshot.durableAttempt?.sessionId ?? null) !== activeSessionId
     ) {
       return;
     }
 
     const generation = ++requestGeneration.current;
+    const requestSessionEpoch = sessionEpoch.current;
     const requestAdapterId = snapshot.adapterId;
     // Regenerating explicitly returns to the regenerated exchange. A later
     // manual upward scroll can still pause following before the reply arrives.
@@ -1087,7 +1327,7 @@ async function resolveComposerAttachment(
       await new Promise<void>((resolve) => {
         setTimeout(resolve, 0);
       });
-      if (generation !== requestGeneration.current) {
+      if (generation !== requestGeneration.current || requestSessionEpoch !== sessionEpoch.current) {
         return;
       }
       setProgressStage("requesting");
@@ -1100,6 +1340,16 @@ async function resolveComposerAttachment(
         // Wave B1: the frozen round snapshot, never the current editor,
         // Adapter or config.
         conversation_id: snapshot.conversationId,
+        ...(snapshot.durableAttempt === undefined ? {} : {
+          session_id: snapshot.durableAttempt.sessionId,
+          turn_id: snapshot.durableAttempt.turnId,
+          idempotency_key: snapshot.durableAttempt.idempotencyKey,
+          expected_generation: snapshot.durableAttempt.expectedGeneration,
+          expected_session_revision: snapshot.durableAttempt.expectedSessionRevision,
+          ...(snapshot.durableAttempt.regenerate
+            ? { regenerate_turn_id: snapshot.durableAttempt.turnId }
+            : {}),
+        }),
         message: snapshot.message,
         working_copy: {
           code: snapshot.baseSnapshot.code,
@@ -1124,8 +1374,21 @@ async function resolveComposerAttachment(
       });
       // The component is keyed by Adapter in App, and this explicit guard also
       // prevents a late response from committing across an Adapter switch.
-      if (generation !== requestGeneration.current) {
+      if (generation !== requestGeneration.current || requestSessionEpoch !== sessionEpoch.current) {
         return;
+      }
+      const committedDetail = snapshot.durableAttempt === undefined
+        ? null
+        : await api.readAiSession(requestAdapterId, snapshot.durableAttempt.sessionId);
+      if (generation !== requestGeneration.current || requestSessionEpoch !== sessionEpoch.current) {
+        return;
+      }
+      if (committedDetail !== null) {
+        setSessionDetail(committedDetail);
+        nextMessageId.current = Math.max(
+          nextMessageId.current,
+          ...committedDetail.messages.map((row) => row.sequence + 1),
+        );
       }
       setProgressStage("validating");
       // Bindings can change in the Workbench while this panel stays open.
@@ -1165,6 +1428,11 @@ async function resolveComposerAttachment(
         // compatible). They render through the official Tool Call UI
         // primitives and never enter recent_messages.
         toolCalls: Array.isArray(response.tool_calls) ? response.tool_calls : [],
+        durableTurn: snapshot.durableAttempt === undefined ? undefined : {
+          turnId: snapshot.durableAttempt.turnId,
+          generation: snapshot.durableAttempt.expectedGeneration + 1,
+          status: "completed",
+        },
         // The regenerated Candidate stays anchored to the frozen base snapshot
         // of the original round, so the stale check keeps comparing against
         // the current editor honestly.
@@ -1178,27 +1446,81 @@ async function resolveComposerAttachment(
               },
       };
       setMessages((current) => {
+        let updated: VisibleMessage[];
         if (replaceAssistantMessageId === null) {
-          return [...current, assistantMessage];
+          updated = [...current, assistantMessage];
+        } else {
+          const targetIndex = current.findIndex(
+            (message) => message.id === replaceAssistantMessageId,
+          );
+          updated = targetIndex === -1
+            ? [...current, assistantMessage]
+            : current.map((message) =>
+                message.id === replaceAssistantMessageId ? assistantMessage : message,
+              );
         }
-        const targetIndex = current.findIndex(
-          (message) => message.id === replaceAssistantMessageId,
+        const clearedReplay = updated.map((item) =>
+          item.role === "user" &&
+          item.durableTurn?.turnId === snapshot.durableAttempt?.turnId &&
+          item.durableTurn?.replayPending === true
+            ? { ...item, durableTurn: { ...item.durableTurn, replayPending: false } }
+            : item,
         );
-        if (targetIndex === -1) {
-          // The target round vanished (e.g. the panel was remounted mid-run);
-          // surface the result as a new reply rather than dropping it.
-          return [...current, assistantMessage];
-        }
-        return current.map((message) =>
-          message.id === replaceAssistantMessageId ? assistantMessage : message,
-        );
+        return committedDetail === null
+          ? clearedReplay
+          : reconcileSessionMessages(committedDetail, clearedReplay);
       });
       // M5.5.5: the success stage claims "waiting to view the Diff" only when
       // a Candidate is actually rendered; a plain-text reply converges
       // silently to the assistant message itself.
       setProgressStage(assistantMessage.candidate === null ? null : "succeeded");
     } catch (error) {
-      if (generation === requestGeneration.current) {
+      if (generation === requestGeneration.current && requestSessionEpoch === sessionEpoch.current) {
+        if (snapshot.durableAttempt !== undefined) {
+          try {
+            const detail = await api.readAiSession(
+              requestAdapterId, snapshot.durableAttempt.sessionId,
+            );
+            if (generation !== requestGeneration.current || requestSessionEpoch !== sessionEpoch.current) return;
+            setSessionDetail(detail);
+            nextMessageId.current = Math.max(
+              nextMessageId.current,
+              ...detail.messages.map((row) => row.sequence + 1),
+            );
+            setMessages((current) => reconcileSessionMessages(detail, current).map((item) =>
+              item.role === "user" &&
+              item.durableTurn !== undefined &&
+              item.durableTurn.turnId === snapshot.durableAttempt?.turnId &&
+              item.snapshot?.durableAttempt?.idempotencyKey === snapshot.durableAttempt?.idempotencyKey
+                ? { ...item, durableTurn: { ...item.durableTurn, replayPending: true } }
+                : item,
+            ));
+            if (
+              !snapshot.durableAttempt.regenerate &&
+              !detail.messages.some((row) =>
+                row.role === "user" && row.turn_id === snapshot.durableAttempt?.turnId,
+              )
+            ) {
+              // Rejected before reservation: return the unsaved text to the
+              // composer. Attachment files cannot be recreated after removal.
+              composerControlsRef.current?.setText(snapshot.message);
+              if (snapshot.attachments.length > 0) {
+                setAttachmentError(t("assistant.sessions.attachmentsNeedReselect"));
+              }
+            }
+          } catch {
+            if (generation !== requestGeneration.current || requestSessionEpoch !== sessionEpoch.current) return;
+            // Keep the last known session view and the frozen request. A GET
+            // failure cannot prove the POST did not commit.
+            setMessages((current) => current.map((item) =>
+              item.role === "user" &&
+              item.snapshot?.durableAttempt?.idempotencyKey === snapshot.durableAttempt?.idempotencyKey &&
+              item.durableTurn !== undefined
+                ? { ...item, durableTurn: { ...item.durableTurn, replayPending: true } }
+                : item,
+            ));
+          }
+        }
         setPanelError(
           attachmentServerErrorMessage(error, t("assistant.errors.requestFailed")),
         );
@@ -1207,7 +1529,7 @@ async function resolveComposerAttachment(
         setProgressStage(null);
       }
     } finally {
-      if (generation === requestGeneration.current) {
+      if (generation === requestGeneration.current && requestSessionEpoch === sessionEpoch.current) {
         setSending(false);
       }
     }
@@ -1234,7 +1556,7 @@ async function resolveComposerAttachment(
       baseSnapshot: { ...props.workingCopy },
       runtimeConfig,
       baseVersionId: props.selectedVersionId,
-      recentMessages: recentVisibleMessages(messages),
+      recentMessages: activeSessionId === null ? recentVisibleMessages(messages) : [],
       contextSnippets: props.contextSnippets.map(
         ({ source, text, start_line, end_line }) => ({
           source,
@@ -1247,6 +1569,18 @@ async function resolveComposerAttachment(
       attachments,
       attachmentNames: attachments.map((attachment) => attachment.filename),
       locale: i18n.language,
+      ...(activeSessionId !== null && sessionDetail !== null
+        ? {
+            durableAttempt: {
+              sessionId: activeSessionId,
+              turnId: crypto.randomUUID(),
+              idempotencyKey: crypto.randomUUID(),
+              expectedGeneration: 0,
+              expectedSessionRevision: sessionDetail.revision,
+              regenerate: false,
+            },
+          }
+        : {}),
     };
   }
 
@@ -1271,6 +1605,8 @@ async function resolveComposerAttachment(
       !props.contentReady ||
       props.busy ||
       sending ||
+      sessionBusy ||
+      (activeSessionId !== null && sessionDetail === null) ||
       (text === "" && composerAttachments.length === 0)
     ) {
       return;
@@ -1279,10 +1615,24 @@ async function resolveComposerAttachment(
     // still false while bodies resolve, so without this a second
     // click/Enter would duplicate the round. Set synchronously before the
     // first await; reset on every exit path.
-    if (attachmentSendInFlightRef.current) {
+    if (attachmentSendInFlightRef.current !== null) {
       return;
     }
-    attachmentSendInFlightRef.current = true;
+    const sendToken = ++attachmentSendSequenceRef.current;
+    attachmentSendInFlightRef.current = sendToken;
+    const sendEpoch = sessionEpoch.current;
+    const sendScope = {
+      adapterId: adapter.id,
+      sessionStorageKey,
+      activeSessionId,
+    };
+    const sendScopeIsCurrent = () => {
+      const current = latestSendScopeRef.current;
+      return sendEpoch === sessionEpoch.current &&
+        sendScope.adapterId === current.adapterId &&
+        sendScope.sessionStorageKey === current.sessionStorageKey &&
+        sendScope.activeSessionId === current.activeSessionId;
+    };
     try {
       // A client-rejected row must never leave the browser: block the send
       // with the row's localized message and keep the draft intact (the
@@ -1305,6 +1655,7 @@ async function resolveComposerAttachment(
             ? []
             : await resolveComposerAttachments(composerAttachments);
       } catch (error) {
+        if (!sendScopeIsCurrent()) return;
         // DLR's own rejection messages (localized total-bound / refused-row
         // errors) are plain Errors; browser file-read failures surface as
         // DOMExceptions and localize through the readFailed copy instead.
@@ -1317,12 +1668,14 @@ async function resolveComposerAttachment(
         );
         return;
       }
+      if (!sendScopeIsCurrent()) return;
       const snapshot = buildRoundSnapshot(adapter, text, wireAttachments);
       if (snapshot === null) {
         // Invalid runtime config: the error is reported by
         // buildRoundSnapshot and the draft stays untouched.
         return;
       }
+      if (!sendScopeIsCurrent()) return;
       // Only after validation, resolution and freezing succeed, consume the
       // draft (adapter.remove is a no-op — no per-attachment browser
       // resources).
@@ -1335,16 +1688,24 @@ async function resolveComposerAttachment(
         candidate: null,
         snapshot,
         toolCalls: [],
+        durableTurn: snapshot.durableAttempt === undefined ? undefined : {
+          turnId: snapshot.durableAttempt.turnId,
+          generation: 1,
+          status: "pending",
+        },
       };
       setMessages((current) => [...current, userMessage]);
       setAttachmentError(null);
+      if (!sendScopeIsCurrent()) return;
       await runAssist(snapshot, null, () => {
         for (const id of snapshot.contextSnippetIds) {
           props.onRemoveContextSnippet(id);
         }
       });
     } finally {
-      attachmentSendInFlightRef.current = false;
+      if (attachmentSendInFlightRef.current === sendToken) {
+        attachmentSendInFlightRef.current = null;
+      }
     }
   }
 
@@ -1392,7 +1753,8 @@ async function resolveComposerAttachment(
     messages,
     isRunning: sending,
     isDisabled:
-      !canUseAi || props.adapter === null || !props.contentReady || props.busy || sending,
+      !canUseAi || props.adapter === null || !props.contentReady || props.busy || sending ||
+      sessionBusy || (activeSessionId !== null && sessionDetail === null),
     convertMessage: toThreadMessageLike,
     adapters: { attachments: attachmentAdapter },
     onNew: async (message: AppendMessage) => {
@@ -1418,11 +1780,73 @@ async function resolveComposerAttachment(
         return;
       }
       const snapshot = userMessage.snapshot;
-      if (snapshot === null) {
-        return;
-      }
       const userIndex = messages.findIndex((message) => message.id === userMessage.id);
       const assistantMessage = messages[userIndex + 1];
+      const replaceId = assistantMessage?.role === "assistant" ? assistantMessage.id : null;
+      if (activeSessionId !== null) {
+        const durable = userMessage.durableTurn;
+        if (durable === undefined || props.adapter === null) return;
+        if (
+          durable.replayPending === true &&
+          snapshot?.durableAttempt !== undefined
+        ) {
+          await runAssist(snapshot, replaceId);
+          return;
+        }
+        if (
+          durable.status === "failed" &&
+          snapshot?.durableAttempt !== undefined &&
+          snapshot.durableAttempt.expectedGeneration + 1 === durable.generation
+        ) {
+          await runAssist(snapshot, replaceId);
+          return;
+        }
+        if (replaceId === null && durable.status !== "completed") {
+          setPanelError(t("assistant.sessions.retryUnavailable"));
+          return;
+        }
+        const epoch = sessionEpoch.current;
+        try {
+          const detail = await api.readAiSession(props.adapter.id, activeSessionId);
+          if (epoch !== sessionEpoch.current) return;
+          const currentTurn = detail.messages.find((item) =>
+            item.role === "user" && item.turn_id === durable.turnId,
+          );
+          if (currentTurn === undefined) {
+            setPanelError(t("assistant.sessions.reloadFailed"));
+            return;
+          }
+          setSessionDetail(detail);
+          const fresh = buildRoundSnapshot(props.adapter, userMessage.content, []);
+          if (fresh === null) return;
+          fresh.durableAttempt = {
+            sessionId: activeSessionId,
+            turnId: durable.turnId,
+            idempotencyKey: crypto.randomUUID(),
+            expectedGeneration: currentTurn.generation,
+            expectedSessionRevision: detail.revision,
+            regenerate: true,
+          };
+          setMessages((current) => current.map((item) =>
+            item.id === userMessage.id
+              ? {
+                  ...item,
+                  snapshot: fresh,
+                  durableTurn: {
+                    turnId: durable.turnId,
+                    generation: currentTurn.generation + 1,
+                    status: "pending",
+                  },
+                }
+              : item,
+          ));
+          await runAssist(fresh, replaceId);
+        } catch (error) {
+          if (epoch === sessionEpoch.current) setPanelError(userErrorMessage(error));
+        }
+        return;
+      }
+      if (snapshot === null) return;
       if (assistantMessage === undefined || assistantMessage.role !== "assistant") {
         await runAssist(snapshot, null);
         return;
@@ -1589,7 +2013,8 @@ async function resolveComposerAttachment(
   );
 
   const composerDisabled =
-    !canUseAi || props.adapter === null || !props.contentReady || props.busy || sending;
+    !canUseAi || props.adapter === null || !props.contentReady || props.busy || sending ||
+    sessionBusy || (activeSessionId !== null && sessionDetail === null);
 
   const expandedPanel = (
     <aside
@@ -1654,6 +2079,60 @@ async function resolveComposerAttachment(
               </>
             )}
           </div>
+
+          {props.adapter !== null && canUseAi && (
+            <div className="ai-session-controls" data-testid="ai-session-controls">
+              <label htmlFor="ai-session-select">{t("assistant.sessions.label")}</label>
+              <Select
+                id="ai-session-select"
+                data-testid="ai-session-select"
+                value={activeSessionId ?? "legacy"}
+                loading={sessionLoading}
+                disabled={sessionBusy}
+                options={[
+                  { value: "legacy", label: t("assistant.sessions.temporary") },
+                  ...sessions.map((item) => ({
+                    value: item.id,
+                    label: `${new Date(item.created_at).toLocaleString(i18n.language)} · ${item.id.slice(0, 8)}`,
+                  })),
+                ]}
+                onChange={(value) => selectSession(value === "legacy" ? null : value)}
+              />
+              <Button size="small" loading={sessionBusy} onClick={() => void createSession()}
+                data-testid="ai-session-create">
+                {t("assistant.sessions.create")}
+              </Button>
+              {activeSessionId !== null && (
+                <>
+                  <Button size="small" onClick={() => void reloadSession()}
+                    disabled={sessionBusy} data-testid="ai-session-reload">
+                    {t("assistant.sessions.reload")}
+                  </Button>
+                  <Popconfirm title={t("assistant.sessions.clearConfirm")}
+                    okText={t("assistant.sessions.confirm")}
+                    cancelText={t("assistant.sessions.cancel")}
+                    onConfirm={() => void clearSession()}>
+                    <Button size="small" disabled={sessionBusy} data-testid="ai-session-clear">
+                      {t("assistant.sessions.clear")}
+                    </Button>
+                  </Popconfirm>
+                  <Popconfirm title={t("assistant.sessions.deleteConfirm")}
+                    okText={t("assistant.sessions.confirm")}
+                    cancelText={t("assistant.sessions.cancel")}
+                    onConfirm={() => void deleteSession()}>
+                    <Button size="small" danger disabled={sessionBusy} data-testid="ai-session-delete">
+                      {t("assistant.sessions.delete")}
+                    </Button>
+                  </Popconfirm>
+                </>
+              )}
+              {activeSessionId !== null && (
+                <p className="ai-session-note" data-testid="ai-session-note">
+                  {t("assistant.sessions.restoredNotice")}
+                </p>
+              )}
+            </div>
+          )}
 
           {props.adapter !== null && props.contextSnippets.length > 0 && (
             <div className="ai-snippets" data-testid="ai-context-snippets">
@@ -1835,10 +2314,15 @@ async function resolveComposerAttachment(
                                 ? messages[index - 1].id
                                 : message.id
                             }
-                            retry={message.role === "user"}
+                            retry={message.role === "user" ||
+                              (activeSessionId !== null &&
+                                messages[index - 1]?.durableTurn?.replayPending === true)}
+                            durable={activeSessionId !== null}
                             disabled={
                               !canUseAi ||
                               sending ||
+                              sessionBusy ||
+                              (activeSessionId !== null && sessionDetail === null) ||
                               props.busy ||
                               !props.contentReady ||
                               props.adapter === null

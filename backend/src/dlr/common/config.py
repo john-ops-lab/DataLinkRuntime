@@ -501,6 +501,20 @@ class Settings(BaseSettings):
         allow_inf_nan=False,
         validation_alias="DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS",
     )
+    # Unknown/custom model windows use this deliberately conservative bound.
+    ai_context_default_window_tokens: int = Field(
+        default=32768,
+        ge=8192,
+        le=1048576,
+        validation_alias="DLR_AI_CONTEXT_DEFAULT_WINDOW_TOKENS",
+    )
+    ai_summary_timeout_seconds: float = Field(
+        default=35.0,
+        ge=1.0,
+        le=60.0,
+        allow_inf_nan=False,
+        validation_alias="DLR_AI_SUMMARY_TIMEOUT_SECONDS",
+    )
 
     # M5.7 Wave C2: read-only KnowledgeSource (first target: Tencent ima).
     # The endpoint must be HTTPS and its host must appear in the official host
