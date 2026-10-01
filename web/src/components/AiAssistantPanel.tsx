@@ -183,6 +183,9 @@ interface VisibleMessage {
     turnId: string;
     generation: number;
     status: "pending" | "completed" | "failed" | "cancelled" | null;
+    /** The HTTP response may have been lost after the server committed this
+     * generation. Replay its frozen key to recover the Candidate. */
+    replayPending?: boolean;
   };
 }
 
@@ -213,6 +216,9 @@ function reconcileSessionMessages(
     return {
       ...restored,
       snapshot: restored.role === "user" ? previous.snapshot : null,
+      durableTurn: restored.role === "user"
+        ? { ...restored.durableTurn!, replayPending: previous.durableTurn?.replayPending }
+        : restored.durableTurn,
       candidate: restored.role === "assistant" ? previous.candidate : null,
       toolCalls: restored.role === "assistant" ? previous.toolCalls : [],
     };
@@ -821,6 +827,20 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [sessionLoading, setSessionLoading] = useState(false);
   const [sessionBusy, setSessionBusy] = useState(false);
   const sessionEpoch = useRef(0);
+  // The layout effect updates before a settled file-read callback can commit
+  // its old Adapter/account draft in the new scope.
+  const latestSendScopeRef = useRef({
+    adapterId: props.adapter?.id ?? null,
+    sessionStorageKey,
+    activeSessionId,
+  });
+  useLayoutEffect(() => {
+    latestSendScopeRef.current = {
+      adapterId: props.adapter?.id ?? null,
+      sessionStorageKey,
+      activeSessionId,
+    };
+  }, [props.adapter?.id, sessionStorageKey, activeSessionId]);
   const [sending, setSending] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const [boundSecretKeys, setBoundSecretKeys] = useState<Set<string>>(new Set());
@@ -877,7 +897,8 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   // during that window, so a second click/Enter would otherwise duplicate
   // the user message and the request; the ref is set synchronously before
   // the first await and cleared in the finally block.
-  const attachmentSendInFlightRef = useRef(false);
+  const attachmentSendInFlightRef = useRef<number | null>(null);
+  const attachmentSendSequenceRef = useRef(0);
   const composerControlsRef = useRef<{
     setText: (text: string) => void;
     clearAttachments: () => Promise<void>;
@@ -1014,6 +1035,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     setProgressStage(null);
     setPanelError(null);
     setCandidateDiff(null);
+    attachmentSendInFlightRef.current = null;
     void composerControlsRef.current?.clearAttachments();
     setAttachmentError(null);
   }, [sessionStorageKey]);
@@ -1076,6 +1098,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     setProgressStage(null);
     setPanelError(null);
     setSending(false);
+    attachmentSendInFlightRef.current = null;
     void composerControlsRef.current?.clearAttachments();
     setAttachmentError(null);
     if (sessionStorageKey !== null) {
@@ -1303,7 +1326,7 @@ async function resolveComposerAttachment(
       await new Promise<void>((resolve) => {
         setTimeout(resolve, 0);
       });
-      if (generation !== requestGeneration.current) {
+      if (generation !== requestGeneration.current || requestSessionEpoch !== sessionEpoch.current) {
         return;
       }
       setProgressStage("requesting");
@@ -1435,7 +1458,16 @@ async function resolveComposerAttachment(
                 message.id === replaceAssistantMessageId ? assistantMessage : message,
               );
         }
-        return committedDetail === null ? updated : reconcileSessionMessages(committedDetail, updated);
+        const clearedReplay = updated.map((item) =>
+          item.role === "user" &&
+          item.durableTurn?.turnId === snapshot.durableAttempt?.turnId &&
+          item.durableTurn?.replayPending === true
+            ? { ...item, durableTurn: { ...item.durableTurn, replayPending: false } }
+            : item,
+        );
+        return committedDetail === null
+          ? clearedReplay
+          : reconcileSessionMessages(committedDetail, clearedReplay);
       });
       // M5.5.5: the success stage claims "waiting to view the Diff" only when
       // a Candidate is actually rendered; a plain-text reply converges
@@ -1454,7 +1486,14 @@ async function resolveComposerAttachment(
               nextMessageId.current,
               ...detail.messages.map((row) => row.sequence + 1),
             );
-            setMessages((current) => reconcileSessionMessages(detail, current));
+            setMessages((current) => reconcileSessionMessages(detail, current).map((item) =>
+              item.role === "user" &&
+              item.durableTurn !== undefined &&
+              item.durableTurn.turnId === snapshot.durableAttempt?.turnId &&
+              item.snapshot?.durableAttempt?.idempotencyKey === snapshot.durableAttempt?.idempotencyKey
+                ? { ...item, durableTurn: { ...item.durableTurn, replayPending: true } }
+                : item,
+            ));
             if (
               !snapshot.durableAttempt.regenerate &&
               !detail.messages.some((row) =>
@@ -1470,7 +1509,15 @@ async function resolveComposerAttachment(
             }
           } catch {
             if (generation !== requestGeneration.current || requestSessionEpoch !== sessionEpoch.current) return;
-            setSessionDetail(null);
+            // Keep the last known session view and the frozen request. A GET
+            // failure cannot prove the POST did not commit.
+            setMessages((current) => current.map((item) =>
+              item.role === "user" &&
+              item.snapshot?.durableAttempt?.idempotencyKey === snapshot.durableAttempt?.idempotencyKey &&
+              item.durableTurn !== undefined
+                ? { ...item, durableTurn: { ...item.durableTurn, replayPending: true } }
+                : item,
+            ));
           }
         }
         setPanelError(
@@ -1567,10 +1614,24 @@ async function resolveComposerAttachment(
     // still false while bodies resolve, so without this a second
     // click/Enter would duplicate the round. Set synchronously before the
     // first await; reset on every exit path.
-    if (attachmentSendInFlightRef.current) {
+    if (attachmentSendInFlightRef.current !== null) {
       return;
     }
-    attachmentSendInFlightRef.current = true;
+    const sendToken = ++attachmentSendSequenceRef.current;
+    attachmentSendInFlightRef.current = sendToken;
+    const sendEpoch = sessionEpoch.current;
+    const sendScope = {
+      adapterId: adapter.id,
+      sessionStorageKey,
+      activeSessionId,
+    };
+    const sendScopeIsCurrent = () => {
+      const current = latestSendScopeRef.current;
+      return sendEpoch === sessionEpoch.current &&
+        sendScope.adapterId === current.adapterId &&
+        sendScope.sessionStorageKey === current.sessionStorageKey &&
+        sendScope.activeSessionId === current.activeSessionId;
+    };
     try {
       // A client-rejected row must never leave the browser: block the send
       // with the row's localized message and keep the draft intact (the
@@ -1593,6 +1654,7 @@ async function resolveComposerAttachment(
             ? []
             : await resolveComposerAttachments(composerAttachments);
       } catch (error) {
+        if (!sendScopeIsCurrent()) return;
         // DLR's own rejection messages (localized total-bound / refused-row
         // errors) are plain Errors; browser file-read failures surface as
         // DOMExceptions and localize through the readFailed copy instead.
@@ -1605,12 +1667,14 @@ async function resolveComposerAttachment(
         );
         return;
       }
+      if (!sendScopeIsCurrent()) return;
       const snapshot = buildRoundSnapshot(adapter, text, wireAttachments);
       if (snapshot === null) {
         // Invalid runtime config: the error is reported by
         // buildRoundSnapshot and the draft stays untouched.
         return;
       }
+      if (!sendScopeIsCurrent()) return;
       // Only after validation, resolution and freezing succeed, consume the
       // draft (adapter.remove is a no-op — no per-attachment browser
       // resources).
@@ -1631,13 +1695,16 @@ async function resolveComposerAttachment(
       };
       setMessages((current) => [...current, userMessage]);
       setAttachmentError(null);
+      if (!sendScopeIsCurrent()) return;
       await runAssist(snapshot, null, () => {
         for (const id of snapshot.contextSnippetIds) {
           props.onRemoveContextSnippet(id);
         }
       });
     } finally {
-      attachmentSendInFlightRef.current = false;
+      if (attachmentSendInFlightRef.current === sendToken) {
+        attachmentSendInFlightRef.current = null;
+      }
     }
   }
 
@@ -1718,6 +1785,13 @@ async function resolveComposerAttachment(
       if (activeSessionId !== null) {
         const durable = userMessage.durableTurn;
         if (durable === undefined || props.adapter === null) return;
+        if (
+          durable.replayPending === true &&
+          snapshot?.durableAttempt !== undefined
+        ) {
+          await runAssist(snapshot, replaceId);
+          return;
+        }
         if (
           durable.status === "failed" &&
           snapshot?.durableAttempt !== undefined &&
@@ -2239,7 +2313,9 @@ async function resolveComposerAttachment(
                                 ? messages[index - 1].id
                                 : message.id
                             }
-                            retry={message.role === "user"}
+                            retry={message.role === "user" ||
+                              (activeSessionId !== null &&
+                                messages[index - 1]?.durableTurn?.replayPending === true)}
                             durable={activeSessionId !== null}
                             disabled={
                               !canUseAi ||

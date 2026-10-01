@@ -141,6 +141,39 @@ it("retries a failed durable turn with the exact frozen key, revision and Workin
   expect(screen.getAllByTestId("ai-message-user")).toHaveLength(1);
 });
 
+it("replays a committed turn with the original key after its Candidate response is lost", async () => {
+  sessionStorage.setItem("dlr.ai.selected-session.deployment.1", sessionId);
+  let saved = detail(0);
+  vi.spyOn(api, "readAiSession").mockImplementation(async () => saved);
+  const committed = {
+    message: "Committed reply", provider: "openai" as const, model: "test-model",
+    candidate: { summary: "Recovered Candidate", code: "def handle(context, input): return 42", required_secret_keys: [] },
+  };
+  const assist = vi.spyOn(api, "assistAdapter").mockImplementation(async (_id, payload) => {
+    if (assist.mock.calls.length === 1) {
+      saved = detail(2, [
+        { sequence: 1, turn_id: payload.turn_id!, role: "user", content: payload.message, source_revision: 1, generation: 1, request_status: "completed" },
+        { sequence: 2, turn_id: payload.turn_id!, role: "assistant", content: committed.message, source_revision: 1, generation: 1, request_status: null },
+      ]);
+      throw new ApiError(503, "network_lost", "response lost");
+    }
+    return committed;
+  });
+  const view = panel();
+  await send("Build it");
+  await screen.findByText("Committed reply");
+  expect(screen.queryByTestId("ai-candidate")).toBeNull();
+  expect(screen.getByTestId("ai-retry")).toBeTruthy();
+  view.rerenderPanel({ workingCopy: { code: "changed after commit", requirements: "", runtimeConfigText: "{}" } });
+  fireEvent.click(screen.getByTestId("ai-retry"));
+  await screen.findByText("Recovered Candidate");
+  expect(assist).toHaveBeenCalledTimes(2);
+  expect(assist.mock.calls[1][1]).toEqual(assist.mock.calls[0][1]);
+  expect(screen.getAllByTestId("ai-message-user")).toHaveLength(1);
+  expect(screen.getAllByTestId("ai-message-assistant")).toHaveLength(1);
+  expect(screen.getByTestId("ai-regenerate")).toBeTruthy();
+});
+
 it("clear fences a late response and restores the send button; identity changes hide old results", async () => {
   sessionStorage.setItem("dlr.ai.selected-session.account-1.1", sessionId);
   let resolveAssist: ((value: Awaited<ReturnType<typeof api.assistAdapter>>) => void) | undefined;
