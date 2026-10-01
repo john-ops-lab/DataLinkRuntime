@@ -15,7 +15,15 @@ from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
 from dlr.control.ai import conversation_rollup, conversation_summary, providers
-from dlr.control.ai.conversation_contract import ConversationState, SummarySnapshot
+from dlr.control.ai.conversation_contract import (
+    ConversationMessage,
+    ConversationState,
+    FactAdditionProposal,
+    FactRevocationProposal,
+    SourceRef,
+    StateFact,
+    SummarySnapshot,
+)
 from dlr.control.schemas.ai import AiSettingDraft
 
 DATABASE = "dlr_test_issue151_rollup"
@@ -364,6 +372,42 @@ def test_invalid_assistant_proposal_cannot_block_valid_user_constraint(engine: E
         ).one()
     state = ConversationState.model_validate_json(json.dumps(row.state_json))
     assert [fact.id for fact in state.facts] == ["constraint-1"]
+
+
+def test_invalid_revocation_rejects_even_with_a_valid_new_fact() -> None:
+    old_source = SourceRef(sequence=1, revision=1, role="user")
+    new_source = SourceRef(sequence=3, revision=1, role="user")
+    previous = ConversationState(
+        revision=1,
+        facts=(
+            StateFact(
+                id="old-constraint",
+                kind="explicit_constraint",
+                confirmation_level="explicit",
+                text="Do not add dependencies",
+                source=old_source,
+                introduced_revision=1,
+            ),
+        ),
+    )
+    pending = (ConversationMessage(source=new_source, text="Keep pass-through behavior."),)
+    addition = FactAdditionProposal(
+        id="new-constraint",
+        kind="explicit_constraint",
+        confirmation_level="explicit",
+        text="Keep pass-through behavior",
+        source=new_source,
+        evidence_quote="Keep pass-through behavior",
+    )
+    invalid_revocation = FactRevocationProposal(
+        fact_id="old-constraint",
+        source=new_source,
+        evidence_quote="I revoke the old constraint",
+    )
+    with pytest.raises(ValueError, match="state evidence"):
+        conversation_rollup._valid_state_proposals(
+            previous, pending, (addition,), (invalid_revocation,)
+        )
 
 
 def test_uncited_source_revision_change_rejects_stale_plan(engine: Engine) -> None:

@@ -223,8 +223,9 @@ def _valid_state_proposals(
     """Discard invalid optional proposals, never promote them into state.
 
     One malformed assistant inference must not discard separately valid user
-    constraints. If none of the proposed changes is valid, reject the whole
-    rollup so an invalid state response cannot silently advance coverage.
+    constraints. A malformed revocation rejects the rollup: dropping it while
+    advancing coverage could leave an obsolete constraint active. If none of
+    the proposed additions is valid, reject instead of silently advancing.
     """
     valid_additions: tuple[FactAdditionProposal, ...] = ()
     for addition in additions:
@@ -237,10 +238,7 @@ def _valid_state_proposals(
     valid_revocations: tuple[FactRevocationProposal, ...] = ()
     for revocation in revocations:
         revocation_batch = (*valid_revocations, revocation)
-        try:
-            _proposed_state(previous, pending, valid_additions, revocation_batch)
-        except (ValueError, ValidationError):
-            continue
+        _proposed_state(previous, pending, valid_additions, revocation_batch)
         valid_revocations = revocation_batch
     if (additions or revocations) and not (valid_additions or valid_revocations):
         raise ValueError("all state proposals invalid")
