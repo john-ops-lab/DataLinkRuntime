@@ -1347,6 +1347,13 @@ def _fallback_message(
     stop_reason: str,
     tool_calls: list[AiToolCallSummary],
 ) -> str:
+    if stop_reason == _STOP_KNOWLEDGE_UNAVAILABLE:
+        if system_locale == "en":
+            return (
+                "Knowledge search is unavailable, so no retrieval was performed for this "
+                "request. Ask an administrator to configure a searchable knowledge source."
+            )
+        return "知识库检索当前不可用，本轮未执行检索。请管理员配置可检索的知识源。"
     successful = sum(item.status == "success" for item in tool_calls)
     unsuccessful = len(tool_calls) - successful
     stable_errors = sorted({item.error_code for item in tool_calls if item.error_code})
