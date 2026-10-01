@@ -238,7 +238,9 @@ SDK `callApi` 尚不能证明原始传输响应受字节上限约束，因此输
 
 ## 9. AI Assistant
 
-浏览器显式提交当前 Working Copy、用户指令与有限最近对话。Control 补充服务端 language、基准 Revision 元数据、Runtime Contract 和 Secret env key 名称。Provider final answer 必须通过 Candidate Schema 校验。
+浏览器显式提交当前 Working Copy 和用户指令；临时对话提交有限最近消息。选择保存会话后，浏览器改为提交服务端会话 ID、稳定轮次/幂等键和预期修订号，Control 每次检查认证 Principal、Adapter edit 权限和会话 owner，并从 PostgreSQL 读取可见历史。Control 补充服务端 language、基准 Revision 元数据、Runtime Contract 和 Secret env key 名称。Provider final answer 必须通过 Candidate Schema 校验。工具后续、收尾与内部摘要共享本轮时限，且每次实际 Provider 调用前分别计入消息、工具、图片和输出预算。
+
+持久会话只新增 `ai_conversations` 和 `ai_conversation_messages` 两张受限表。用户/助手消息使用稳定序号，失败轮次在继续前写入明确的可见占位；同键重试复用已提交结果，重新生成成功后才替换原助手槽。Provider 在事务外运行，提交时以会话修订与请求代次比较，迟到结果不能覆盖清空或更新后的状态。滚动摘要按连续来源范围及完整来源修订做 CAS；被覆盖的回复变更时，依赖摘要与任务状态失效并由保留的原始消息重建。摘要和状态只作为低优先级背景，当前请求与 Working Copy 始终优先。未覆盖历史不足以完整装入上下文时明确拒绝，不静默裁剪。
 
 一次性附件中的 XLSX 仅打开受限 ZIP/XML member，XLS 仅通过固定版本 `xlrd` 的内存入口读取 BIFF 单元格；两者复用附件大小、膨胀率、字符和解析超时预算，不执行公式、宏或外部关系。当前 `managed_files` 只通过数据库窄投影向 Prompt 增加按 ordinal 排序的公开标签和三语言 Context 文件 API，不读取 ArtifactStore、不创建 Lease，也不暴露 Artifact ID、storage key、路径、Token 或文件内容。
 

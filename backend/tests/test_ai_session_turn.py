@@ -1,7 +1,9 @@
 """Durable Assist retry, regeneration, and CAS using PostgreSQL/Fake Provider."""
 
+import base64
 import json
 import uuid
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -11,7 +13,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
+from dlr.control import db
 from dlr.control.ai import providers
+from dlr.control.app import create_app
 from dlr.control.schemas.ai import AiAssistRequest, AiAssistResponse
 from dlr.control.security import SUPERADMIN_PRINCIPAL
 from dlr.control.services import ai_session_turn
@@ -623,3 +627,84 @@ def test_valid_summary_enters_lower_priority_prompt_and_covered_regeneration_inv
             {"id": uuid.UUID(session_id)},
         ).one()
         assert not row.summary_valid and row.summary_covered_through == 2
+
+
+def test_new_app_recovers_visible_session_without_temporary_material_or_old_code(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh Control app uses persisted rows, not request-only attachment data."""
+    adapter_id = int(create_adapter(api_client, "durable-restart")["id"])
+    configure(api_client)
+    path, session_id = _session(api_client, adapter_id)
+    captured: list[list[dict[str, Any]]] = []
+
+    def fake_chat(*args: object, **kwargs: object) -> tuple[str, None]:
+        messages = args[2]
+        assert isinstance(messages, list)
+        captured.append(messages)
+        return json.dumps({"message": "Saved answer", "candidate": None}), None
+
+    monkeypatch.setattr(providers, "chat_assist", fake_chat)
+    attachment_text = "temporary-document-body-42"
+    first = _request(session_id, message="Read the attached note")
+    first["attachments"] = [{
+        "filename": "note.txt",
+        "content_type": "text/plain",
+        "data_base64": base64.b64encode(attachment_text.encode()).decode(),
+    }]
+    sent = api_client.post(f"{path}/assist", json=first)
+    assert sent.status_code == 200, sent.text
+    assert attachment_text in str(captured[0])
+
+    # Recreate the application and all request sessions against the same real
+    # PostgreSQL database, as a Control process restart would do.
+    fresh_app = create_app()
+
+    def get_fresh_session() -> Iterator[Session]:
+        with session_factory() as session:
+            yield session
+
+    fresh_app.dependency_overrides[db.get_session] = get_fresh_session
+    fresh_client = TestClient(
+        fresh_app,
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
+    try:
+        restored = fresh_client.get(f"{path}/sessions/{session_id}")
+        assert restored.status_code == 200, restored.text
+        restored_body = restored.json()
+        assert [(item["role"], item["content"]) for item in restored_body["messages"]] == [
+            ("user", "Read the attached note"),
+            ("assistant", "Saved answer"),
+        ]
+        assert "candidate" not in restored_body
+        assert len(captured) == 1  # Reading history does not call Provider or tools.
+
+        continued = _request(
+            session_id,
+            message="Continue using current code",
+            code="def handle(context, input): return 'CURRENT_AFTER_RESTART'",
+            expected_session_revision=restored_body["revision"],
+        )
+        response = fresh_client.post(f"{path}/assist", json=continued)
+        assert response.status_code == 200, response.text
+        assert len(captured) == 2
+        prompt = str(captured[-1])
+        assert "CURRENT_AFTER_RESTART" in prompt
+        assert "Read the attached note" in prompt
+        assert attachment_text not in prompt
+    finally:
+        fresh_client.close()
+
+    with session_factory() as session:
+        saved = session.execute(
+            text(
+                "SELECT content FROM ai_conversation_messages "
+                "WHERE conversation_id=:id ORDER BY sequence"
+            ),
+            {"id": uuid.UUID(session_id)},
+        ).all()
+        assert len(saved) == 4
+        assert attachment_text not in str(saved)
