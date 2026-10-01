@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from dlr.common.config import settings
 from dlr.control.ai import attachments as attachments_module
 from dlr.control.ai import providers
 from dlr.control.ai.attachments import AttachmentError
@@ -729,6 +730,8 @@ def test_assist_rejects_attachment_count_limit(
 def test_assist_parsed_text_is_bounded_and_marked_truncated(
     api_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Isolate the parser's per-file cap from the separate model-window guard.
+    monkeypatch.setattr(settings, "ai_context_default_window_tokens", 65536)
     adapter = create_adapter(api_client, "attach-truncate")
     configure(api_client)
     captured = captured_payload(monkeypatch)
@@ -748,6 +751,25 @@ def test_assist_parsed_text_is_bounded_and_marked_truncated(
     assert len(attachments[0]["text"]) <= attachments_module.MAX_PARSED_CHARS_PER_FILE + len(
         attachments_module.TRUNCATION_MARKER
     )
+
+
+def test_assist_large_attachment_is_omitted_before_provider_when_window_is_small(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "ai_context_default_window_tokens", 32768)
+    adapter = create_adapter(api_client, "attach-budget")
+    configure(api_client)
+    captured = captured_payload(monkeypatch)
+    long_text = "word " * attachments_module.MAX_PARSED_CHARS_PER_FILE
+    body = assist_body()
+    body["attachments"] = [attachment("long.txt", "text/plain", long_text.encode())]
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+    assert response.status_code == 200, response.text
+    assert "省略了 1 项" in response.json()["message"]
+    prompt = provider_prompt_text(captured)
+    context = json.loads(prompt.split("DLR_REQUEST_CONTEXT_V1\n", 1)[1])
+    assert "UNTRUSTED_REFERENCE_MATERIAL" not in context
+    assert context["AUTHORITATIVE_STATE_DATA"]["working_copy"] == body["working_copy"]
 
 
 def test_total_parsed_budget_is_shared_across_attachments() -> None:

@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
 from dlr.control.ai import attachments as attachments_service
+from dlr.control.ai import context_budget, providers, tool_audit
 from dlr.control.ai import knowledge as knowledge_service
-from dlr.control.ai import providers, tool_audit
 from dlr.control.ai import tools as tools_service
 from dlr.control.ai.prompt_builder import build_prompt
 from dlr.control.ai.prompt_context import PromptContext
@@ -69,6 +69,7 @@ _STOP_CONSECUTIVE_FAILURES = "consecutive_tool_failures"
 _STOP_RESULT_BUDGET = "tool_result_budget"
 _STOP_DEADLINE = "assist_deadline"
 _STOP_PROVIDER_FAILURE = "provider_followup_failure"
+_STOP_CONTEXT_BUDGET = "context_budget_exceeded"
 _STOP_KNOWLEDGE_UNAVAILABLE = "knowledge_unavailable"
 _STOP_KNOWLEDGE_SEQUENCE = "knowledge_sequence_incomplete"
 _STOP_KNOWLEDGE_LIST_EMPTY = "knowledge_list_empty"
@@ -1372,6 +1373,7 @@ def _fallback_message(
             _STOP_RESULT_BUDGET: "tool result size limit reached",
             _STOP_DEADLINE: "Assist deadline reached",
             _STOP_PROVIDER_FAILURE: "Provider follow-up failed",
+            _STOP_CONTEXT_BUDGET: "model context budget exceeded",
             _STOP_KNOWLEDGE_UNAVAILABLE: "knowledge retrieval is unavailable",
             _STOP_KNOWLEDGE_SEQUENCE: "knowledge retrieval order was not completed",
             _STOP_KNOWLEDGE_LIST_EMPTY: "no searchable knowledge base was found",
@@ -1396,6 +1398,7 @@ def _fallback_message(
         _STOP_RESULT_BUDGET: "已达到工具结果大小上限",
         _STOP_DEADLINE: "已达到 Assist 总时限",
         _STOP_PROVIDER_FAILURE: "模型后续请求失败",
+        _STOP_CONTEXT_BUDGET: "模型上下文预算已耗尽",
         _STOP_KNOWLEDGE_UNAVAILABLE: "知识库检索当前不可用",
         _STOP_KNOWLEDGE_SEQUENCE: "知识库检索顺序未完成",
         _STOP_KNOWLEDGE_LIST_EMPTY: "没有可检索的知识库",
@@ -1425,6 +1428,20 @@ def _assist_response(
         model=draft.model,
         tool_calls=tool_calls,
     )
+
+
+def _with_omission_note(
+    response: AiAssistResponse, omitted: int, system_locale: str
+) -> AiAssistResponse:
+    if omitted:
+        note = (
+            f"DLR omitted {omitted} optional history, reference, or image item(s) "
+            "to fit the model context."
+            if system_locale == "en"
+            else f"DLR 为适配模型上下文，省略了 {omitted} 项可选历史、参考材料或图片。"
+        )
+        response.message = f"{note}\n\n{response.message}"
+    return response
 
 
 def _fallback_assist_response(
@@ -1573,6 +1590,7 @@ def _finalize_after_tool_stop(
     payload: AiAssistRequest,
     executed_tools: list[AiToolCallSummary],
     knowledge_state: _KnowledgeRetrievalState | None = None,
+    omitted_materials: list[int] | None = None,
 ) -> AiAssistResponse:
     """Attempt exactly one tools-disabled final answer, then fail closed.
 
@@ -1609,13 +1627,21 @@ def _finalize_after_tool_stop(
                 "content": knowledge_state.finalization_instruction(system_locale),
             }
         )
+    budget = context_budget.prepare_call(draft, messages, None, purpose="assist_finalization")
+    if omitted_materials is not None:
+        omitted_materials[0] += budget.omitted_materials
+    if not budget.fits:
+        return _fallback_assist_response(system_locale, _STOP_CONTEXT_BUDGET, draft, executed_tools)
+    remaining = state.remaining_total_seconds()
+    if remaining <= 0:
+        return _fallback_assist_response(system_locale, _STOP_DEADLINE, draft, executed_tools)
     try:
         final_content, tool_calls = providers.chat_assist(
             draft,
             api_key,
             messages,
             tools=None,
-            image_input=image_input,
+            image_input=context_budget.has_native_image(messages),
             adapter=provider_adapter,
             timeout_seconds=remaining,
         )
@@ -1654,6 +1680,7 @@ def _assist_impl(
     adapter_id: int,
     payload: AiAssistRequest,
     audit: tool_audit.AiToolAuditTrail,
+    state: _AssistToolState,
 ) -> AiAssistResponse:
     """Generate a candidate without writing any DLR lifecycle or version state.
 
@@ -1747,10 +1774,7 @@ def _assist_impl(
         if isinstance(value, str) and value
     )
     executed_tools: list[AiToolCallSummary] = []
-    state = _AssistToolState.create(
-        settings.ai_assist_total_timeout_seconds,
-        correlation=audit.correlation,
-    )
+    omitted_materials = [0]
     knowledge_state = _KnowledgeRetrievalState.create(
         knowledge_search_enabled,
         knowledge_available and tools_enabled,
@@ -1765,13 +1789,33 @@ def _assist_impl(
             state.stop_reason = _STOP_DEADLINE
             audit.record_guard(round_index=state.tool_rounds, stop_reason=state.stop_reason)
             break
+        budget = context_budget.prepare_call(
+            draft,
+            messages,
+            tools_payload,
+            purpose="assist_initial" if state.tool_rounds == 0 else "assist_followup",
+        )
+        omitted_materials[0] += budget.omitted_materials
+        if not budget.fits:
+            if not executed_tools:
+                raise domain_error(
+                    413, "ai_context_over_budget", "AI request context exceeds the model budget"
+                )
+            state.stop_reason = _STOP_CONTEXT_BUDGET
+            audit.record_guard(round_index=state.tool_rounds, stop_reason=state.stop_reason)
+            break
+        provider_timeout = max(0.0, provider_deadline - time.monotonic())
+        if provider_timeout <= 0:
+            state.stop_reason = _STOP_DEADLINE
+            audit.record_guard(round_index=state.tool_rounds, stop_reason=state.stop_reason)
+            break
         try:
             final_content, tool_calls = providers.chat_assist(
                 draft,
                 api_key,
                 messages,
                 tools=tools_payload,
-                image_input=bool(native_images),
+                image_input=context_budget.has_native_image(messages),
                 adapter=provider_adapter,
                 timeout_seconds=provider_timeout,
             )
@@ -1820,7 +1864,9 @@ def _assist_impl(
                     ),
                     candidate=(None if knowledge_state.degraded_error_codes else output.candidate),
                 )
-            return _assist_response(output, draft, executed_tools)
+            return _with_omission_note(
+                _assist_response(output, draft, executed_tools), omitted_materials[0], system_locale
+            )
         if not tools_enabled:
             # Defensive: a provider without tool capability fabricated tool
             # calls; fail with the stable actionable error instead of guessing.
@@ -2004,7 +2050,7 @@ def _assist_impl(
                 else _STOP_KNOWLEDGE_SEQUENCE
             )
         )
-    return _finalize_after_tool_stop(
+    response = _finalize_after_tool_stop(
         state=state,
         system_locale=system_locale,
         draft=draft,
@@ -2015,7 +2061,9 @@ def _assist_impl(
         payload=payload,
         executed_tools=executed_tools,
         knowledge_state=knowledge_state,
+        omitted_materials=omitted_materials,
     )
+    return _with_omission_note(response, omitted_materials[0], system_locale)
 
 
 def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAssistResponse:
@@ -2025,8 +2073,11 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
         correlation=tool_audit.new_request_correlation(payload.conversation_id),
         adapter_id=adapter_id,
     )
+    state = _AssistToolState.create(
+        settings.ai_assist_total_timeout_seconds, correlation=audit.correlation
+    )
     try:
-        response = _assist_impl(session, adapter_id, payload, audit)
+        response = _assist_impl(session, adapter_id, payload, audit, state)
     except Exception as error:
         audit.finish(status="error", error_code=_audit_error_code(error))
         raise
