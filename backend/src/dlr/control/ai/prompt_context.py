@@ -39,6 +39,7 @@ class PromptContext:
     attachments: tuple[Mapping[str, object], ...]
     native_images: tuple[Mapping[str, object], ...]
     saved_managed_input: Mapping[str, object] | None
+    conversation_context: Mapping[str, object] | None
     tools_enabled: bool
     knowledge_search_enabled: bool
 
@@ -53,6 +54,7 @@ class PromptContext:
             "attachments",
             "native_images",
             "saved_managed_input",
+            "conversation_context",
         ):
             object.__setattr__(self, name, _freeze(getattr(self, name)))
 
@@ -71,6 +73,7 @@ class PromptContext:
         native_images: list[attachments_service.NativeImage] | None,
         tools_enabled: bool,
         knowledge_search_enabled: bool,
+        conversation_context: dict[str, object] | None = None,
     ) -> "PromptContext":
         attachment_values = [
             {
@@ -115,6 +118,11 @@ class PromptContext:
             saved_managed_input=(
                 cast(Mapping[str, object], _freeze(saved_managed_input))
                 if saved_managed_input is not None
+                else None
+            ),
+            conversation_context=(
+                cast(Mapping[str, object], _freeze(conversation_context))
+                if conversation_context is not None
                 else None
             ),
             tools_enabled=tools_enabled,

@@ -162,6 +162,15 @@ def _drop_reference(message: providers.JsonObject) -> bool:
                 assert isinstance(text_part, dict)
                 text_part["text"] = updated
             return True
+    if "UNTRUSTED_CONVERSATION_CONTEXT" in data:
+        del data["UNTRUSTED_CONVERSATION_CONTEXT"]
+        updated = REQUEST_PREFIX + json.dumps(data, ensure_ascii=False, sort_keys=True)
+        if isinstance(content, str):
+            message["content"] = updated
+        else:
+            assert isinstance(text_part, dict)
+            text_part["text"] = updated
+        return True
     return False
 
 
@@ -254,3 +263,20 @@ def has_native_image(messages: list[providers.JsonObject]) -> bool:
         ):
             return True
     return False
+
+
+def has_conversation_context(messages: list[providers.JsonObject]) -> bool:
+    request = _request_message(messages)
+    if request is None:
+        return False
+    content = request.get("content")
+    text_part = content[0] if isinstance(content, list) and content else None
+    current = (
+        content
+        if isinstance(content, str)
+        else (text_part.get("text") if isinstance(text_part, dict) else None)
+    )
+    if not isinstance(current, str) or not current.startswith(REQUEST_PREFIX):
+        return False
+    data = json.loads(current[len(REQUEST_PREFIX) :])
+    return "UNTRUSTED_CONVERSATION_CONTEXT" in data

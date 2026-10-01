@@ -108,6 +108,17 @@ def test_account_and_deployment_spaces_rotation_and_revoke(
     for forbidden_id in (b_id, token_id, str(uuid.uuid4())):
         assert account_a.get(_account_path(f"{path}/{forbidden_id}")).status_code == 404
     assert api_client.get(f"{path}/{a_id}").status_code == 404
+    attempt = {
+        "session_id": b_id, "turn_id": str(uuid.uuid4()),
+        "idempotency_key": str(uuid.uuid4()), "expected_generation": 0,
+        "expected_session_revision": 0,
+        "message": "Explain this", "working_copy": {
+            "code": "def handle(context, input): return input",
+            "requirements": "", "runtime_config": {},
+        },
+    }
+    assert _account_write(account_a, "POST", f"/api/adapters/{adapter_id}/ai/assist",
+                          json=attempt).status_code == 404
 
     monkeypatch.setattr(settings, "admin_token", "rotated-session-token")
     assert api_client.get(f"{path}/{token_id}").status_code == 401
@@ -123,6 +134,11 @@ def test_account_and_deployment_spaces_rotation_and_revoke(
     assert account_a.get(_account_path(path)).status_code == 404
     assert account_a.get(_account_path(f"{path}/{a_id}")).status_code == 404
     assert _account_write(account_a, "POST", path).status_code == 404
+    assert _account_write(
+        account_a, "POST", f"/api/adapters/{adapter_id}/ai/assist",
+        json={**attempt, "session_id": a_id, "turn_id": str(uuid.uuid4()),
+              "idempotency_key": str(uuid.uuid4())},
+    ).status_code == 404
     assert account_b.get(_account_path(f"{path}/{b_id}")).status_code == 200
 
 

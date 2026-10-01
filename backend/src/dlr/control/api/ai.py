@@ -30,7 +30,7 @@ from dlr.control.security import (
     require_business_principal,
     require_principal,
 )
-from dlr.control.services import adapter_access, ai_sessions
+from dlr.control.services import adapter_access, ai_session_turn, ai_sessions
 from dlr.control.services import ai as ai_service
 
 router = APIRouter(dependencies=[Depends(require_admin_principal)])
@@ -133,6 +133,11 @@ def assist_adapter(
     session: DbSession,
 ) -> AiAssistResponse:
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    if payload.session_id is not None:
+        # Release the request dependency's read transaction before the
+        # independently fenced Provider call and its own short transactions.
+        session.rollback()
+        return ai_session_turn.assist(adapter_id, payload, principal)
     return ai_service.assist(session, adapter_id, payload)
 
 
