@@ -27,13 +27,3 @@ def _load_resources() -> tuple[dict[str, str], str]:
 
 _RULES, REVISION = _load_resources()
 RULES = MappingProxyType(_RULES)
-
-
-def diagnostics(*, tools_enabled: bool, knowledge_search_enabled: bool) -> dict[str, object]:
-    """Only static resource metadata and capability flags; never prompt values."""
-    return {
-        "revision": REVISION,
-        "resources": {name: len(_RULES[name].encode("utf-8")) for name in _NAMES},
-        "tools_enabled": tools_enabled,
-        "knowledge_search_enabled": knowledge_search_enabled,
-    }

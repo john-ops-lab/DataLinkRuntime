@@ -17,7 +17,8 @@ from dlr.control.ai import attachments as attachments_service
 from dlr.control.ai import knowledge as knowledge_service
 from dlr.control.ai import providers, tool_audit
 from dlr.control.ai import tools as tools_service
-from dlr.control.ai.prompts.builder import PromptContext, build_prompt
+from dlr.control.ai.prompt_builder import build_prompt
+from dlr.control.ai.prompt_context import PromptContext
 from dlr.control.models import (
     AdapterCredentialBinding,
     AdapterInputArtifactBinding,
@@ -1216,7 +1217,7 @@ def _assist_messages(
         context,
         runtime_contract=_RUNTIME_CONTRACTS[language],
         managed_input_instruction=managed_input_instruction,
-    ).messages
+    ).provider_messages()
 
 
 def _contains_secret(value: object, secret: str) -> bool:

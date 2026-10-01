@@ -4,13 +4,15 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import FrozenInstanceError, asdict
 from pathlib import Path
 
 import pytest
 
 from dlr.control.ai import prompts
 from dlr.control.ai.attachments import NativeImage, ParsedText
-from dlr.control.ai.prompts.builder import PromptContext, build_prompt
+from dlr.control.ai.prompt_builder import PromptDiagnostics, build_prompt
+from dlr.control.ai.prompt_context import PromptContext
 from dlr.control.schemas.ai import AiAssistRequest
 
 
@@ -79,7 +81,17 @@ def test_builder_message_matrix(language: str, tools: bool, knowledge: bool) -> 
     assert "attachment text" in system
     assert "original.txt" in system
     assert "SECRET_NAME" in system
-    assert "aGVsbG8=" not in json.dumps(result.diagnostics)
+    assert isinstance(result.diagnostics, PromptDiagnostics)
+    assert result.diagnostics.revision == prompts.REVISION
+    assert result.diagnostics.system_chars == len(system)
+    assert result.diagnostics.context_chars > 0
+    assert result.diagnostics.tools_enabled is tools
+    assert result.diagnostics.knowledge_enabled is knowledge
+    assert result.diagnostics.has_snippets
+    assert result.diagnostics.has_attachments
+    assert ("tools" in result.diagnostics.included_sections) is tools
+    assert ("knowledge" in result.diagnostics.included_sections) is knowledge
+    assert "aGVsbG8=" not in json.dumps(asdict(result.diagnostics))
 
 
 def test_prompt_snapshot_is_deep_and_diagnostics_are_non_sensitive() -> None:
@@ -96,9 +108,33 @@ def test_prompt_snapshot_is_deep_and_diagnostics_are_non_sensitive() -> None:
     assert second.messages[1]["content"] == "old question"
     with pytest.raises(TypeError):
         context.working_copy["code"] = "changed"
-    serialized_diagnostics = json.dumps(second.diagnostics)
+    serialized_diagnostics = json.dumps(asdict(second.diagnostics))
     for sensitive in ("return input", "SECRET_NAME", "attachment text", "aGVsbG8="):
         assert sensitive not in serialized_diagnostics
+
+
+def test_build_result_is_immutable_and_transport_is_independent() -> None:
+    context, _, _ = _context()
+    result = build_prompt(context, runtime_contract="contract")
+    with pytest.raises(TypeError):
+        result.messages[0]["content"] = "changed"
+    with pytest.raises(TypeError):
+        result.messages[3]["content"][1]["image_url"]["url"] = "changed"
+    with pytest.raises(FrozenInstanceError):
+        result.diagnostics.revision = "changed"
+    copied = result.provider_messages()
+    copied[3]["content"][1]["image_url"]["url"] = "changed"
+    assert result.provider_messages()[3]["content"][1]["image_url"]["url"] == (
+        "data:image/png;base64,aGVsbG8="
+    )
+
+
+def test_package_markdown_is_pure_static() -> None:
+    for name, rule in prompts.RULES.items():
+        assert rule.strip(), name
+        assert "$" not in rule, name
+        assert "{{" not in rule, name
+        assert "{%" not in rule, name
 
 
 @pytest.mark.parametrize("problem", ["missing", "empty", "invalid_utf8"])
