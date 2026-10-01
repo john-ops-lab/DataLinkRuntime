@@ -95,12 +95,43 @@ def test_summary_uses_existing_deadline_budget_and_no_tools(
         previous=_previous(),
         pending=_pending(),
         hard_deadline=30.0,
+        call_budget=conversation_summary.SummaryCallBudget(),
     )
     assert result.accepted and result.snapshot is not None
     assert result.snapshot.covered_through == 3
     assert captured["tools"] is None
     assert captured["image_input"] is False
     assert captured["timeout_seconds"] == 9.0
+
+
+def test_summary_has_own_timeout_and_one_call_per_assist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[float] = []
+
+    def fake_chat(*args: object, **kwargs: object) -> tuple[str, None]:
+        observed.append(float(kwargs["timeout_seconds"]))
+        return _output(), None
+
+    monkeypatch.setattr(providers, "chat_assist", fake_chat)
+    monkeypatch.setattr(settings, "ai_summary_timeout_seconds", 12.0)
+    budget = conversation_summary.SummaryCallBudget()
+    arguments = {
+        "draft": _draft(),
+        "api_key": None,
+        "adapter": providers.get_provider("custom_openai_compatible"),
+        "previous": _previous(),
+        "pending": _pending(),
+        "hard_deadline": conversation_summary.time.monotonic() + 60,
+        "call_budget": budget,
+    }
+    first = conversation_summary.summarize_pending(**arguments)
+    second = conversation_summary.summarize_pending(**arguments)
+    assert first.accepted
+    assert second.error_code == "ai_summary_call_budget"
+    assert second.snapshot is arguments["previous"]
+    assert budget.calls_used == 1
+    assert observed == [12.0]
 
 
 @pytest.mark.parametrize(
@@ -129,6 +160,7 @@ def test_invalid_summary_keeps_previous_coverage(
         previous=old,
         pending=_pending(),
         hard_deadline=conversation_summary.time.monotonic() + 30,
+        call_budget=conversation_summary.SummaryCallBudget(),
     )
     assert not result.accepted
     assert result.snapshot is old
@@ -149,6 +181,7 @@ def test_summary_over_budget_and_deadline_do_not_call_provider(
         previous=old,
         pending=_pending(),
         hard_deadline=0.0,
+        call_budget=conversation_summary.SummaryCallBudget(),
     )
     assert expired.error_code == "ai_summary_deadline" and expired.snapshot is old
     monkeypatch.setattr(settings, "ai_context_default_window_tokens", 8192)
@@ -160,6 +193,7 @@ def test_summary_over_budget_and_deadline_do_not_call_provider(
         previous=old,
         pending=huge,
         hard_deadline=conversation_summary.time.monotonic() + 30,
+        call_budget=conversation_summary.SummaryCallBudget(),
     )
     assert over.error_code == "ai_summary_over_budget" and over.snapshot is old
 
@@ -178,6 +212,7 @@ def test_provider_timeout_preserves_prior_summary(monkeypatch: pytest.MonkeyPatc
         previous=old,
         pending=_pending(),
         hard_deadline=conversation_summary.time.monotonic() + 30,
+        call_budget=conversation_summary.SummaryCallBudget(),
     )
     assert not result.accepted and result.snapshot is old
 
@@ -197,6 +232,7 @@ def test_source_range_must_be_contiguous_before_provider(
         previous=old,
         pending=skipped,
         hard_deadline=conversation_summary.time.monotonic() + 30,
+        call_budget=conversation_summary.SummaryCallBudget(),
     )
     assert result.error_code == "ai_summary_range_invalid" and result.snapshot is old
 

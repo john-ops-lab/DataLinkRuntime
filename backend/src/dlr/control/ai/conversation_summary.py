@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from pydantic import ValidationError
 
+from dlr.common.config import settings
 from dlr.control.ai import context_budget, providers
 from dlr.control.ai.conversation_contract import ConversationMessage, SourceRef, SummarySnapshot
 from dlr.control.schemas.ai import AiSettingDraft
@@ -16,6 +17,20 @@ class SummaryAttempt:
     accepted: bool
     snapshot: SummarySnapshot | None
     error_code: str | None = None
+
+
+@dataclass
+class SummaryCallBudget:
+    """Request-local limit shared by every summary attempt in one Assist."""
+
+    max_calls: int = 1
+    calls_used: int = 0
+
+    def claim(self) -> bool:
+        if self.calls_used >= self.max_calls:
+            return False
+        self.calls_used += 1
+        return True
 
 
 def build_summary_messages(
@@ -84,6 +99,7 @@ def summarize_pending(
     previous: SummarySnapshot | None,
     pending: tuple[ConversationMessage, ...],
     hard_deadline: float,
+    call_budget: SummaryCallBudget,
 ) -> SummaryAttempt:
     """Use the caller's Assist deadline; every failed call retains old coverage."""
     if not _valid_pending(previous, pending):
@@ -96,6 +112,9 @@ def summarize_pending(
     remaining = hard_deadline - time.monotonic()
     if remaining <= 0:
         return SummaryAttempt(False, previous, "ai_summary_deadline")
+    if not call_budget.claim():
+        return SummaryAttempt(False, previous, "ai_summary_call_budget")
+    timeout = min(remaining, settings.ai_summary_timeout_seconds)
     try:
         content, tool_calls = providers.chat_assist(
             draft,
@@ -104,7 +123,7 @@ def summarize_pending(
             tools=None,
             image_input=False,
             adapter=adapter,
-            timeout_seconds=remaining,
+            timeout_seconds=timeout,
         )
         if tool_calls is not None or content is None:
             raise ValueError("summary must contain text and no tool calls")

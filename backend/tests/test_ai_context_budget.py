@@ -1,6 +1,7 @@
 """Per-call context guard, with semantic trimming and no partial tool rounds."""
 
 import json
+from dataclasses import asdict
 
 import pytest
 from fastapi.testclient import TestClient
@@ -51,6 +52,31 @@ def test_unknown_model_uses_configured_window_and_trims_whole_optional_items(
     request = next(item for item in messages if str(item["content"]).startswith("DLR_REQUEST"))
     envelope = json.loads(str(request["content"]).split("\n", 1)[1])
     assert envelope["AUTHORITATIVE_STATE_DATA"]["working_copy"]["code"] == "x"
+
+
+def test_budget_diagnostics_explain_decision_without_request_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "ai_context_default_window_tokens", 12000)
+    secret_marker = "private-working-copy-marker"
+    messages = [
+        {"role": "system", "content": "protocol"},
+        {"role": "user", "content": "old " * 3000},
+        {"role": "assistant", "content": "old reply"},
+        _request(code=secret_marker),
+    ]
+    result = context_budget.prepare_call(_draft(), messages, None, purpose="assist_initial")
+    diagnostic = result.diagnostics
+    assert result.fits
+    assert diagnostic.purpose == "assist_initial"
+    assert diagnostic.window_source == "configured_default"
+    assert diagnostic.window_tokens == 12000
+    assert diagnostic.estimated_before_tokens > diagnostic.estimated_after_tokens
+    assert diagnostic.estimated_after_tokens == context_budget.estimate_tokens(messages, None)
+    assert diagnostic.omitted_history_messages == 2
+    assert diagnostic.omitted_reference_items == 0
+    assert diagnostic.omitted_images == 0
+    assert secret_marker not in json.dumps(asdict(diagnostic))
 
 
 def test_history_trimming_removes_complete_user_assistant_turn(

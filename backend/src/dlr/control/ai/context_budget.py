@@ -20,11 +20,34 @@ TOOL_OVERHEAD_TOKENS = 128
 BYTES_PER_ESTIMATED_TOKEN = 2
 REQUEST_PREFIX = "DLR_REQUEST_CONTEXT_V1\n"
 CallPurpose = Literal["assist_initial", "assist_followup", "assist_finalization", "summary"]
+ESTIMATION_METHOD = "utf8_json_bytes_div2_plus_fixed_reserves_v1"
+
+
+@dataclass(frozen=True)
+class BudgetDiagnostics:
+    """Safe counters for explaining a decision without retaining request text."""
+
+    purpose: CallPurpose
+    window_tokens: int
+    window_source: Literal["verified_model", "configured_default"]
+    estimated_before_tokens: int
+    estimated_after_tokens: int
+    system_tokens: int
+    conversation_tokens: int
+    tool_message_tokens: int
+    tool_definition_tokens: int
+    output_reserve_tokens: int
+    safety_reserve_tokens: int
+    omitted_history_messages: int
+    omitted_reference_items: int
+    omitted_images: int
+    estimation_method: str = ESTIMATION_METHOD
 
 
 @dataclass(frozen=True)
 class BudgetResult:
     fits: bool
+    diagnostics: BudgetDiagnostics
     omitted_materials: int = 0
 
 
@@ -70,6 +93,23 @@ def estimate_tokens(
         + sum(_message_tokens(message) for message in messages)
         + (TOOL_OVERHEAD_TOKENS + _text_tokens(tools) if tools else 0)
     )
+
+
+def _diagnostic_parts(
+    messages: list[providers.JsonObject], tools: list[providers.JsonObject] | None
+) -> tuple[int, int, int, int]:
+    system = conversation = tool_messages = 0
+    for message in messages:
+        amount = _message_tokens(message)
+        role = message.get("role")
+        if role == "system":
+            system += amount
+        elif role == "tool":
+            tool_messages += amount
+        else:
+            conversation += amount
+    definitions = TOOL_OVERHEAD_TOKENS + _text_tokens(tools) if tools else 0
+    return system, conversation, tool_messages, definitions
 
 
 def _request_message(messages: list[providers.JsonObject]) -> providers.JsonObject | None:
@@ -133,10 +173,43 @@ def prepare_call(
     purpose: CallPurpose = "assist_initial",
 ) -> BudgetResult:
     """Mutate only optional whole history/reference/image items to fit a call."""
-    window = KNOWN_WINDOWS.get(
-        (draft.provider, draft.model), settings.ai_context_default_window_tokens
-    )
-    omitted = 0
+    verified_window = KNOWN_WINDOWS.get((draft.provider, draft.model))
+    window = verified_window or settings.ai_context_default_window_tokens
+    before = estimate_tokens(messages, tools, purpose=purpose)
+    omitted_history = omitted_references = omitted_images = 0
+
+    def result(fits: bool) -> BudgetResult:
+        system, conversation, tool_messages, definitions = _diagnostic_parts(messages, tools)
+        output_reserve = 2048 if purpose == "summary" else OUTPUT_RESERVE_TOKENS
+        after = (
+            output_reserve
+            + SAFETY_RESERVE_TOKENS
+            + system
+            + conversation
+            + tool_messages
+            + definitions
+        )
+        return BudgetResult(
+            fits=fits,
+            omitted_materials=omitted_history + omitted_references + omitted_images,
+            diagnostics=BudgetDiagnostics(
+                purpose=purpose,
+                window_tokens=window,
+                window_source="verified_model" if verified_window else "configured_default",
+                estimated_before_tokens=before,
+                estimated_after_tokens=after,
+                system_tokens=system,
+                conversation_tokens=conversation,
+                tool_message_tokens=tool_messages,
+                tool_definition_tokens=definitions,
+                output_reserve_tokens=output_reserve,
+                safety_reserve_tokens=SAFETY_RESERVE_TOKENS,
+                omitted_history_messages=omitted_history,
+                omitted_reference_items=omitted_references,
+                omitted_images=omitted_images,
+            ),
+        )
+
     while estimate_tokens(messages, tools, purpose=purpose) > window:
         request = _request_message(messages)
         if request is not None:
@@ -159,18 +232,18 @@ def prepare_call(
                     request_index,
                 )
                 del messages[first:next_user]
-                omitted += next_user - first
+                omitted_history += next_user - first
                 continue
             if _drop_reference(request):
-                omitted += 1
+                omitted_references += 1
                 continue
             content = request.get("content")
             if isinstance(content, list) and len(content) > 1:
                 content.pop()
-                omitted += 1
+                omitted_images += 1
                 continue
-        return BudgetResult(False, omitted)
-    return BudgetResult(True, omitted)
+        return result(False)
+    return result(True)
 
 
 def has_native_image(messages: list[providers.JsonObject]) -> bool:
