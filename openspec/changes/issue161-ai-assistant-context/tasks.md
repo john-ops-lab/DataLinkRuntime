@@ -1,9 +1,9 @@
 ## 1. #128 Wave A：结构等价迁移
 
-- [ ] 1.1 建立并验证三个静态 Prompt package resources、启动期非空/UTF-8 检查及 revision/非敏感诊断；用资源缺失、不同 cwd 的定向测试验证。
-- [ ] 1.2 实现 typed 请求级 PromptContext 与深层防御性快照，覆盖五语言、base version、Secret 名称、Snippet、附件/图片和 saved_managed_input；用嵌套对象修改与敏感诊断反例测试验证。
-- [ ] 1.3 建立唯一 Prompt Builder 并让 `_assist_messages()` 委托它，先保持当前 Provider 消息布局及 Strict JSON/Tool/Knowledge 行为等价；用现有 AI 测试和专用 Builder 矩阵验证。
-- [ ] 1.4 验证 Markdown 出现在 wheel、sdist 与 container 产物，缺失/坏资源在接受请求前失败，并跑适用 Backend 静态检查；保留产物检查结果。
+- [x] 1.1 建立并验证三个静态 Prompt package resources、启动期非空/UTF-8 检查及 revision/非敏感诊断；用资源缺失、不同 cwd 的定向测试验证。
+- [x] 1.2 实现 typed 请求级 PromptContext 与深层防御性快照，覆盖五语言、base version、Secret 名称、Snippet、附件/图片和 saved_managed_input；用嵌套对象修改与敏感诊断反例测试验证。
+- [x] 1.3 建立唯一 Prompt Builder 并让 `_assist_messages()` 委托它，先保持当前 Provider 消息布局及 Strict JSON/Tool/Knowledge 行为等价；用现有 AI 测试和专用 Builder 矩阵验证。
+- [x] 1.4 验证 Markdown 出现在 wheel、sdist 与 container 产物，缺失/坏资源在接受请求前失败，并跑适用 Backend 静态检查；保留产物检查结果。
 
 ## 2. #128 Wave B：消息分层与行为
 
