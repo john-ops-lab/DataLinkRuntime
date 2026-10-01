@@ -34,7 +34,7 @@
 
 ### 4. 受控存储和身份
 
-用现有 PostgreSQL/SQLAlchemy/Alembic 增量新增 `ai_conversations` 与有界 `ai_conversation_messages`，含 adapter_id、owner_kind、account_user_id 或部署级 owner、revision、摘要及 cursor/来源版本、过期时间；轮次记录保留 `turn_id`、generation、幂等键/请求 HMAC 与助手回复身份。只保存用户/助手可见文本与选择的状态字段，不保存附件、工具大输出、Provider 原始响应、Credential 或完整 Working Copy；请求 HMAC 使用部署级稳定密钥派生，不把可枚举短消息的裸 hash 当安全边界。账号 owner 使用服务端 Principal 的稳定 user_id；superadmin Token 使用固定部署级 owner，不使用 Token 值或哈希。API 的 list/read/continue/clear/delete 每次均先检查 Adapter edit，再验证 owner。Web 在身份切换时清理显示状态。会话删除和期限清理只操作这些新行，不触碰业务历史、审计或现有卷。
+用现有 PostgreSQL/SQLAlchemy/Alembic 增量新增 `ai_conversations` 与有界 `ai_conversation_messages`，含 adapter_id、owner_kind、account_user_id 或部署级 owner、revision、摘要及 cursor/来源版本、过期时间；轮次记录保留 `turn_id`、generation、幂等键/请求 HMAC 与助手回复身份。只保存用户/助手可见文本与选择的状态字段；为服务端已提交但响应丢失的同键重试，当前有效轮次可在受限期限与字段上限内保存经服务端校验的 Candidate 和必要响应元数据，作为非权威的重放结果，恢复页面不自动 Apply。不得保存附件、工具大输出、Provider 原始响应、Credential 或完整 Working Copy；请求 HMAC 使用部署级稳定密钥派生，不把可枚举短消息的裸 hash 当安全边界。账号 owner 使用服务端 Principal 的稳定 user_id；superadmin Token 使用固定部署级 owner，不使用 Token 值或哈希。API 的 list/read/continue/clear/delete 每次均先检查 Adapter edit，再验证 owner。Web 在身份切换时清理显示状态。会话删除和期限清理只操作这些新行，不触碰业务历史、审计或现有卷。
 
 替代方案是把 `user_id=None` 视作所有管理员共享；这会混淆 account 管理员与部署 Token，因而不采用。Token 共享空间的真实语义须在 UI/文档说明。
 
