@@ -1,5 +1,6 @@
 """Admin-only M4 AI model setting, discovery, test and assist endpoints."""
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -22,13 +23,14 @@ from dlr.control.schemas.ai import (
     AiSettingDraft,
     AiSettingResponse,
 )
+from dlr.control.schemas.ai_session import AiSessionDetail, AiSessionList, AiSessionSummary
 from dlr.control.security import (
     Principal,
     require_admin_principal,
     require_business_principal,
     require_principal,
 )
-from dlr.control.services import adapter_access
+from dlr.control.services import adapter_access, ai_sessions
 from dlr.control.services import ai as ai_service
 
 router = APIRouter(dependencies=[Depends(require_admin_principal)])
@@ -132,3 +134,63 @@ def assist_adapter(
 ) -> AiAssistResponse:
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
     return ai_service.assist(session, adapter_id, payload)
+
+
+@adapter_router.post(
+    "/api/adapters/{adapter_id}/ai/sessions", response_model=AiSessionSummary, status_code=201
+)
+def create_ai_session(
+    adapter_id: int,
+    principal: CurrentPrincipal,
+    session: DbSession,
+) -> AiSessionSummary:
+    adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    return ai_sessions.create_session(session, adapter_id, principal)
+
+
+@adapter_router.get("/api/adapters/{adapter_id}/ai/sessions", response_model=AiSessionList)
+def list_ai_sessions(
+    adapter_id: int,
+    principal: CurrentPrincipal,
+    session: DbSession,
+    limit: int = 50,
+) -> AiSessionList:
+    adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    return ai_sessions.list_sessions(session, adapter_id, principal, limit=limit)
+
+
+@adapter_router.get(
+    "/api/adapters/{adapter_id}/ai/sessions/{session_id}", response_model=AiSessionDetail
+)
+def read_ai_session(
+    adapter_id: int,
+    session_id: uuid.UUID,
+    principal: CurrentPrincipal,
+    session: DbSession,
+) -> AiSessionDetail:
+    adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    return ai_sessions.read_session(session, adapter_id, session_id, principal)
+
+
+@adapter_router.post(
+    "/api/adapters/{adapter_id}/ai/sessions/{session_id}/clear", response_model=AiSessionDetail
+)
+def clear_ai_session(
+    adapter_id: int,
+    session_id: uuid.UUID,
+    principal: CurrentPrincipal,
+    session: DbSession,
+) -> AiSessionDetail:
+    adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    return ai_sessions.clear_session(session, adapter_id, session_id, principal)
+
+
+@adapter_router.delete("/api/adapters/{adapter_id}/ai/sessions/{session_id}", status_code=204)
+def delete_ai_session(
+    adapter_id: int,
+    session_id: uuid.UUID,
+    principal: CurrentPrincipal,
+    session: DbSession,
+) -> None:
+    adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    ai_sessions.delete_session(session, adapter_id, session_id, principal)
