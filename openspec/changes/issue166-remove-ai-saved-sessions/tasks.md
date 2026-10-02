@@ -7,5 +7,5 @@
 ## 2. Verification and delivery
 
 - [x] 2.1 验证前端连续调试/重试/刷新/范围切换，后端旧 API 拒绝和迁移保全，完成 lint/type/build/相关测试。
-- [ ] 2.2 提交 PR 并获得当前 HEAD CI 成功。
-- [ ] 2.3 固定本机预览完成私有备份、迁移保全、真实 Provider/Worker 和 Chrome 页面验收；提交具体证据与验收结果。
+- [x] 2.2 提交 PR 并获得当前 HEAD CI 成功。
+- [x] 2.3 固定本机预览完成私有备份、迁移保全、真实 Provider/Worker 和 Chrome 页面验收；提交具体证据与验收结果。

@@ -9,7 +9,7 @@
     "headerActions": "AI assistant actions",
     "composerActions": "Composer tools",
     "messageActions": "Message actions",
-    "notice": "AI suggestions are never applied, saved as Adapter versions, tested or run automatically. Saved conversations retain visible text and a bounded code-only replay result.",
+    "notice": "AI suggestions are never applied, saved as Adapter versions, tested or run automatically. Conversations are temporary on this page and are cleared on refresh or when switching accounts or Adapters.",
     "noAdapter": "Select an Adapter first.",
     "contextSnippets": "Added context snippets",
     "clearSnippets": "Clear all context snippets",

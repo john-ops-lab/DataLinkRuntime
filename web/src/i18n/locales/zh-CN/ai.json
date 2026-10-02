@@ -9,7 +9,7 @@
     "headerActions": "AI 助手操作",
     "composerActions": "编辑器工具",
     "messageActions": "消息操作",
-    "notice": "AI 建议不会自动应用、保存为适配器版本、测试或运行。保存的会话仅保留可见文字和有界的纯代码重放结果。",
+    "notice": "AI 建议不会自动应用、保存为适配器版本、测试或运行。对话仅用于当前页面的临时调试，刷新页面或切换账号、适配器后清空。",
     "noAdapter": "请先选择一个适配器。",
     "contextSnippets": "已加入的上下文片段",
     "clearSnippets": "清空全部上下文片段",
