@@ -1,7 +1,6 @@
 """Strict request and response schemas for the M4 AI Editor boundary."""
 
 import math
-import uuid
 from datetime import datetime
 from typing import Literal
 
@@ -473,13 +472,6 @@ class AiAssistRequest(_StrictSchema):
         ),
         max_length=36,
     )
-    # Opt-in durable identity; conversation_id above remains audit-only.
-    session_id: uuid.UUID | None = None
-    turn_id: uuid.UUID | None = None
-    idempotency_key: uuid.UUID | None = None
-    regenerate_turn_id: uuid.UUID | None = None
-    expected_generation: int | None = Field(default=None, ge=0, le=2147483646)
-    expected_session_revision: int | None = Field(default=None, ge=0)
     message: str
     working_copy: AiWorkingCopy
     recent_messages: list[AiRecentMessage] = Field(default_factory=list, max_length=8)
@@ -494,43 +486,6 @@ class AiAssistRequest(_StrictSchema):
     # Knowledge search is deliberately opt-in. The value is frozen by the
     # browser per round/retry and revalidated against ACL/config server-side.
     knowledge_search_enabled: bool = False
-
-    @model_validator(mode="after")
-    def validate_session_fields(self) -> "AiAssistRequest":
-        def invalid(message: str) -> None:
-            raise HTTPException(
-                status_code=422,
-                detail={"code": "ai_session_request_invalid", "message": message},
-            )
-
-        if self.session_id is None:
-            if any(
-                item is not None
-                for item in (
-                    self.turn_id,
-                    self.idempotency_key,
-                    self.regenerate_turn_id,
-                    self.expected_generation,
-                    self.expected_session_revision,
-                )
-            ):
-                invalid("session_id is required for durable turn metadata")
-            return self
-        if (
-            self.turn_id is None
-            or self.idempotency_key is None
-            or self.expected_generation is None
-            or self.expected_session_revision is None
-        ):
-            invalid(
-                "turn_id, idempotency_key, expected_generation and "
-                "expected_session_revision are required"
-            )
-        if self.regenerate_turn_id is not None and self.regenerate_turn_id != self.turn_id:
-            invalid("regeneration target must equal the stable turn_id")
-        if self.recent_messages:
-            invalid("durable sessions use server-owned history")
-        return self
 
     @model_validator(mode="after")
     def validate_snippet_count(self) -> "AiAssistRequest":

@@ -167,7 +167,7 @@ Task Starter Code 输出“任务开始 / 任务结束”；Webhook Starter Code
 
 AI Assistant 可以读取当前 Working Copy 和最小非敏感上下文，返回完整 Candidate 并提供 Diff。一次性附件支持 PDF、DOCX、XLS、XLSX、文本、代码与受支持图片；表格只在内存中读取有界单元格显示值，不执行公式、宏或外链。当前 Managed Input 只向 AI 暴露排序后的文件名、类型等安全标签和三语言 `context.input_files` / `context.inputFiles` 指引，AI 不读取 Blob，也不得声称看见未作为附件上传的文件内容。Apply 只更新浏览器 Working Copy，不保存、不运行、不修改 Credential 真值或运行状态。
 
-对话默认是临时的。管理员显式创建或选择保存会话后，服务端才保留有界的用户与助手可见文本、带来源的任务状态、滚动摘要及当前有效轮次的代码提案 Candidate；账号各有自己的会话，部署管理员 Token 共用独立空间，读取和续聊每次都要求当前 Adapter 编辑权限。会话创建 30 天后立即失效并隐藏，后台定期批量清除过期数据；也可主动清空或删除。刷新或服务重启后能恢复可见消息；历史 Candidate 不自动恢复为可应用修改，附件、摘录和工具原文等一次性材料需要重新提供，已完成的工具或业务操作不会自动重放。重新生成与续聊始终以当前 Working Copy 为准；早期摘要只是低优先级参考，未压缩的历史若无法完整放入模型上下文，请求会明确失败。Prompt、Provider 原始响应、reasoning、附件正文、完整 Working Copy、Credential 真值与工具大输出不落入会话表。
+AI 对话仅在当前页面内存中保留，用于围绕当前 Adapter Working Copy 连续调试。同页关闭再打开面板保留临时消息；刷新、离开后重新挂载或切换账号/Adapter 会清空消息和 Candidate，不保存或恢复历史聊天。每轮携带有界最近消息，附件、摘录和工具材料按现有请求边界处理；失败重试及重新生成使用该轮冻结请求。Candidate 仍须显式查看 Diff 并 Apply，不能自动保存或执行。
 
 ## 11. 安全原则
 

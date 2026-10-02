@@ -19,7 +19,7 @@ MESSAGE_OVERHEAD_TOKENS = 32
 TOOL_OVERHEAD_TOKENS = 128
 BYTES_PER_ESTIMATED_TOKEN = 2
 REQUEST_PREFIX = "DLR_REQUEST_CONTEXT_V1\n"
-CallPurpose = Literal["assist_initial", "assist_followup", "assist_finalization", "summary"]
+CallPurpose = Literal["assist_initial", "assist_followup", "assist_finalization"]
 ESTIMATION_METHOD = "utf8_json_bytes_div2_plus_fixed_reserves_v1"
 
 
@@ -88,7 +88,7 @@ def estimate_tokens(
     purpose: CallPurpose = "assist_initial",
 ) -> int:
     return (
-        (2048 if purpose == "summary" else OUTPUT_RESERVE_TOKENS)
+        OUTPUT_RESERVE_TOKENS
         + SAFETY_RESERVE_TOKENS
         + sum(_message_tokens(message) for message in messages)
         + (TOOL_OVERHEAD_TOKENS + _text_tokens(tools) if tools else 0)
@@ -162,15 +162,6 @@ def _drop_reference(message: providers.JsonObject) -> bool:
                 assert isinstance(text_part, dict)
                 text_part["text"] = updated
             return True
-    if "UNTRUSTED_CONVERSATION_CONTEXT" in data:
-        del data["UNTRUSTED_CONVERSATION_CONTEXT"]
-        updated = REQUEST_PREFIX + json.dumps(data, ensure_ascii=False, sort_keys=True)
-        if isinstance(content, str):
-            message["content"] = updated
-        else:
-            assert isinstance(text_part, dict)
-            text_part["text"] = updated
-        return True
     return False
 
 
@@ -189,7 +180,7 @@ def prepare_call(
 
     def result(fits: bool) -> BudgetResult:
         system, conversation, tool_messages, definitions = _diagnostic_parts(messages, tools)
-        output_reserve = 2048 if purpose == "summary" else OUTPUT_RESERVE_TOKENS
+        output_reserve = OUTPUT_RESERVE_TOKENS
         after = (
             output_reserve
             + SAFETY_RESERVE_TOKENS
@@ -263,20 +254,3 @@ def has_native_image(messages: list[providers.JsonObject]) -> bool:
         ):
             return True
     return False
-
-
-def has_conversation_context(messages: list[providers.JsonObject]) -> bool:
-    request = _request_message(messages)
-    if request is None:
-        return False
-    content = request.get("content")
-    text_part = content[0] if isinstance(content, list) and content else None
-    current = (
-        content
-        if isinstance(content, str)
-        else (text_part.get("text") if isinstance(text_part, dict) else None)
-    )
-    if not isinstance(current, str) or not current.startswith(REQUEST_PREFIX):
-        return False
-    data = json.loads(current[len(REQUEST_PREFIX) :])
-    return "UNTRUSTED_CONVERSATION_CONTEXT" in data

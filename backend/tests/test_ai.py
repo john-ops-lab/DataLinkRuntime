@@ -2124,3 +2124,52 @@ def test_provider_invalid_url_is_sanitized() -> None:
             not_found_code="ai_provider_unreachable",
         )
     assert error.value.code == "ai_provider_unreachable"
+
+
+@pytest.mark.parametrize(
+    "method,suffix",
+    [
+        ("GET", "sessions"),
+        ("POST", "sessions"),
+        ("GET", "sessions/00000000-0000-4000-8000-000000000000"),
+        ("DELETE", "sessions/00000000-0000-4000-8000-000000000000"),
+        ("POST", "sessions/00000000-0000-4000-8000-000000000000/clear"),
+    ],
+)
+def test_retired_ai_session_routes_cannot_expose_history(
+    api_client: TestClient,
+    method: str,
+    suffix: str,
+) -> None:
+    adapter = create_adapter(api_client, "retired-session-api")
+    response = api_client.request(method, f"/api/adapters/{adapter['id']}/ai/{suffix}")
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("session_id", "00000000-0000-4000-8000-000000000000"),
+        ("turn_id", "00000000-0000-4000-8000-000000000000"),
+        ("idempotency_key", "00000000-0000-4000-8000-000000000000"),
+        ("regenerate_turn_id", "00000000-0000-4000-8000-000000000000"),
+        ("expected_generation", 0),
+        ("expected_session_revision", 0),
+    ],
+)
+def test_retired_ai_turn_fields_are_rejected_before_provider_call(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("Obsolete durable request must not call the Provider")
+
+    monkeypatch.setattr(providers, "chat_assist", forbidden)
+    adapter = create_adapter(api_client, "obsolete-ai-client")
+    body = assist_body()
+    body[field] = value
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+    assert response.status_code == 422
+    assert any(item["type"] == "extra_forbidden" for item in response.json()["detail"])

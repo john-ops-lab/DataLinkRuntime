@@ -22,7 +22,6 @@ from sqlalchemy.sql import Select
 
 from dlr.common.config import settings
 from dlr.control.models import Execution, ExecutionIdempotencyRecord, ExecutionOutbox
-from dlr.control.services.ai_sessions import cleanup_expired_sessions
 from dlr.control.services.execution import TERMINAL_STATUSES
 from dlr.control.services.idempotency import cleanup_expired_records
 
@@ -249,9 +248,6 @@ def _retention_tick() -> None:
     session = SessionLocal()
     try:
         cleanup_execution_retention(session)
-        # Session content has its own expiry and is never retained merely
-        # because an expired row is hidden from the UI.
-        cleanup_expired_sessions(session, batch_size=settings.execution_retention_batch_size)
     finally:
         session.close()
 
