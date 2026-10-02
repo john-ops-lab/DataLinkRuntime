@@ -109,7 +109,7 @@ def test_portable_upgrade_preserves_builtin_library() -> None:
         with engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalars().all() == ["0045_issue151_ai_conversations"]
+            ).scalars().all() == ["0046_issue166_retire_ai_history"]
             assert (
                 connection.scalar(text("SELECT quota_bytes FROM builtin_package_settings"))
                 == 2147483648

@@ -288,29 +288,9 @@ output does not imply bounded raw HTTP transport.
 
 ## 9. AI Assistant
 
-The browser explicitly submits the current Working Copy and user instructions;
-temporary conversations also submit bounded recent messages. For an explicitly
-selected saved session, the browser sends a server session ID, stable turn and
-idempotency keys, and the expected revision. Control checks the authenticated
-Principal, current Adapter edit access, and session owner on every operation, then
-reads visible history from PostgreSQL. Control adds server-side language, base
-Revision metadata, the Runtime Contract and Secret env-key names. The Provider's
-final answer must pass Candidate Schema validation. Tool follow-ups, finalization,
-and internal summaries share one deadline; each actual Provider call is budgeted
-for messages, tools, images, and reserved output separately.
+The browser explicitly submits the current Working Copy, user instruction and bounded recent messages. Control checks current Adapter edit access and adds server-side language, base Revision metadata, the Runtime Contract and Secret env-key names. The Provider final answer must pass Candidate Schema validation. Tool follow-ups and finalization share one deadline, and each actual Provider call is budgeted separately for messages, tools, images and reserved output. Recent history and optional materials may be trimmed within the existing budget; history never overrides the complete current Working Copy.
 
-Saved sessions add only the bounded `ai_conversations` and
-`ai_conversation_messages` tables. User and assistant messages have stable sequence
-slots; a failed turn receives an explicit visible placeholder before the next turn.
-Same-key retries reuse a committed result, and successful regeneration replaces the
-original assistant slot. The Provider runs outside a database transaction; commit
-compares the session revision and request generation so a late result cannot
-overwrite a cleared or newer state. Rolling summaries use contiguous source ranges
-and compare every covered source revision. Replacing a covered reply invalidates
-dependent summaries and task state for rebuilding from retained original messages.
-Summary and state are lower-priority background; the current request and Working Copy
-remain authoritative. If uncovered history cannot fit intact in the model context,
-the request fails explicitly instead of silently truncating it.
+Issue #166 removes saved-session routes and durable Assist fields, which the strict schema rejects with 422. The browser holds only in-memory messages and frozen rounds, without reading or writing persisted chat. Refresh and account/Adapter scope changes clear temporary state; request generation and scope fencing reject late results. Migration 0046 retires only `ai_conversations` and `ai_conversation_messages`, leaving tool audit and business tables unchanged. See the migration guidance below.
 
 For one-request attachments, XLSX opens only bounded ZIP/XML members and XLS uses the
 pinned `xlrd` in-memory BIFF entry point. Both reuse file, inflation, character, and
@@ -410,3 +390,14 @@ Recovery uses durable Outbox, Attempt Lease/Fencing, and same-runtime repair wit
 falling back to an old executor. Test-version rollback uses a clean matching environment.
 See [Sandbox deployment](issue130-sandbox-deployment.md) for host preparation, startup,
 and diagnostics; old migration documents are historical records only.
+
+
+## AI history retirement (Issue #166)
+
+Historical migration 0045 remains intact. Migration 0046 removes only the two AI chat tables. For existing history, stop Control API/background writers and confirm no AI request is in flight. Record chat counts and business asset snapshots, create a private PostgreSQL custom-format backup, then verify it with `pg_restore --list` and an isolated restore. Backups contain private data; restrict file/directory permissions and keep them outside the repository. Only after verification run:
+
+```sh
+alembic -x ai_history_backup_verified=true upgrade head
+```
+
+This argument is the operator acknowledgement of completed backup verification. Nonempty tables without it reject the migration and roll back the transaction; empty tables and fresh installs need no argument. Compare business snapshots and Provider settings after migration, start the candidate, and verify temporary debugging, blank history after refresh and rejected obsolete API calls. Downgrade recreates empty 0045 schema only. Content recovery requires an explicit backup choice and scoped restoration; never automatically restore the whole business database. Historical #151 evidence remains valid for its former delivery; future conversation acceptance follows #166.

@@ -238,9 +238,9 @@ SDK `callApi` 尚不能证明原始传输响应受字节上限约束，因此输
 
 ## 9. AI Assistant
 
-浏览器显式提交当前 Working Copy 和用户指令；临时对话提交有限最近消息。选择保存会话后，浏览器改为提交服务端会话 ID、稳定轮次/幂等键和预期修订号，Control 每次检查认证 Principal、Adapter edit 权限和会话 owner，并从 PostgreSQL 读取可见历史。Control 补充服务端 language、基准 Revision 元数据、Runtime Contract 和 Secret env key 名称。Provider final answer 必须通过 Candidate Schema 校验。工具后续、收尾与内部摘要共享本轮时限，且每次实际 Provider 调用前分别计入消息、工具、图片和输出预算。
+浏览器显式提交当前 Working Copy、用户指令和有界最近消息。Control 检查当前 Adapter edit 权限，补充服务端 language、基准 Revision 元数据、Runtime Contract 和 Secret env key 名称；Provider final answer 必须通过 Candidate Schema 校验。工具后续与收尾共享本轮时限，每次实际 Provider 调用前分别计入消息、工具、图片和输出预算。最近消息和可选材料按现有预算裁剪，完整当前 Working Copy 不被历史覆盖。
 
-持久会话只新增 `ai_conversations` 和 `ai_conversation_messages` 两张受限表。用户/助手消息使用稳定序号，失败轮次在继续前写入明确的可见占位；同键重试复用已提交结果，重新生成成功后才替换原助手槽。Provider 在事务外运行，提交时以会话修订与请求代次比较，迟到结果不能覆盖清空或更新后的状态。滚动摘要按连续来源范围及完整来源修订做 CAS；被覆盖的回复变更时，依赖摘要与任务状态失效并由保留的原始消息重建。摘要和状态只作为低优先级背景，当前请求与 Working Copy 始终优先。未覆盖历史不足以完整装入上下文时明确拒绝，不静默裁剪。
+Issue #166 移除保存会话路由和 Assist durable 字段，后者按严格 schema 拒绝为 422。浏览器仅持有内存消息及冻结轮次，不读取或写入聊天持久化存储；刷新与账号/Adapter 范围变化清空临时状态，迟到结果由 request generation/scope fencing 拒绝。0046 仅退役 `ai_conversations` 和 `ai_conversation_messages`，不改变工具审计或业务表；升级要求见下方迁移说明。
 
 一次性附件中的 XLSX 仅打开受限 ZIP/XML member，XLS 仅通过固定版本 `xlrd` 的内存入口读取 BIFF 单元格；两者复用附件大小、膨胀率、字符和解析超时预算，不执行公式、宏或外部关系。当前 `managed_files` 只通过数据库窄投影向 Prompt 增加按 ordinal 排序的公开标签和三语言 Context 文件 API，不读取 ArtifactStore、不创建 Lease，也不暴露 Artifact ID、storage key、路径、Token 或文件内容。
 
@@ -314,3 +314,14 @@ AI Provider 是部署外部依赖，不进入正式 Compose 拓扑。compose-smo
 运行恢复依赖持久 Outbox、Attempt Lease/Fencing 和同一机制的修复逻辑，不回退到旧
 执行器。测试版本回退采用对应版本的干净环境。宿主准备、启动顺序与诊断见
 [Sandbox 部署说明](issue130-sandbox-deployment.md)；旧迁移文档仅作历史记录。
+
+
+## AI history retirement (Issue #166)
+
+历史 0045 迁移保持原样，0046 向前移除两张 AI 聊天表。已有聊天数据时，先停止 Control 的 API/后台写入，确认无进行中的 AI 请求；记录两表数量和业务资产快照，保存 PostgreSQL custom-format 私有备份并用 `pg_restore --list` 及隔离还原验证可读。备份包含私有内容，限制文件和目录权限，不提交到仓库。确认后运行：
+
+```sh
+alembic -x ai_history_backup_verified=true upgrade head
+```
+
+该参数是操作员对已完成备份校验的确认；没有确认时，非空表迁移拒绝且事务回滚。空表与 fresh install 不需要此参数。迁移后核对业务快照和 Provider 配置，启动候选，验收临时调试、刷新空白和旧 API 拒绝。降级只重建空的 0045 结构，不恢复内容；若需要历史数据，必须明确选择备份并做受限恢复，禁止自动还原整个业务数据库。#151 的历史测试证据保留，后续聊天验收以 #166 为准。

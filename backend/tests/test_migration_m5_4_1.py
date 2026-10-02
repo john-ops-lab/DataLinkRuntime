@@ -72,7 +72,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0045_issue151_ai_conversations"
+    assert revision == "0046_issue166_retire_ai_history"
     assert {
         "adapter_type",
         "run_mode",

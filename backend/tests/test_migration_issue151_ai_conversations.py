@@ -14,7 +14,6 @@ from sqlalchemy.engine import URL, Engine, make_url
 from sqlalchemy.exc import IntegrityError
 
 from dlr.common.config import settings
-from dlr.control.ai.conversation_contract import ConversationState
 
 MIGRATION_DATABASE = "dlr_test_issue151_ai_conversations"
 OLD_REVISION = "0044_issue161_cache_admin"
@@ -100,7 +99,7 @@ def test_0044_upgrade_preserves_old_rows_and_creates_bounded_owner_storage(
     old_engine: Engine,
 ) -> None:
     config = _config(old_engine.url)
-    assert ScriptDirectory.from_config(config).get_current_head() == NEW_REVISION
+    assert ScriptDirectory.from_config(config).get_revision(NEW_REVISION) is not None
     with old_engine.begin() as connection:
         adapter_id = connection.scalar(
             text(
@@ -130,7 +129,7 @@ def test_0044_upgrade_preserves_old_rows_and_creates_bounded_owner_storage(
     with old_engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == OLD_REVISION
 
-    _upgrade(config, "head")
+    _upgrade(config, NEW_REVISION)
 
     with old_engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == NEW_REVISION
@@ -225,9 +224,7 @@ def test_0044_upgrade_preserves_old_rows_and_creates_bounded_owner_storage(
             text("SELECT state_json FROM ai_conversations WHERE id=:id"),
             {"id": account_session},
         )
-    assert ConversationState.model_validate_json(
-        json.dumps(state), strict=True
-    ) == ConversationState(revision=0)
+    assert state == {"revision": 0, "facts": []}
 
     _reject(
         old_engine,
@@ -527,3 +524,71 @@ def test_0044_upgrade_preserves_old_rows_and_creates_bounded_owner_storage(
             )
             == 1
         )
+
+
+@pytest.mark.parametrize("with_history", [False, True])
+def test_0046_retires_only_chat_tables_after_backup_confirmation(
+    old_engine: Engine,
+    with_history: bool,
+) -> None:
+    from argparse import Namespace
+
+    config = _config(old_engine.url)
+    _upgrade(config, NEW_REVISION)
+    with old_engine.begin() as connection:
+        adapter_id = connection.scalar(
+            text(
+                "INSERT INTO adapters (name, language, adapter_type) "
+                "VALUES ('retirement-preservation', 'python', 'task') RETURNING id"
+            )
+        )
+        if with_history:
+            connection.execute(
+                text(
+                    "INSERT INTO ai_conversations (id, adapter_id, owner_kind, expires_at) "
+                    "VALUES (:id, :adapter, 'deployment', now() + INTERVAL '30 days')"
+                ),
+                {"id": uuid.uuid4(), "adapter": adapter_id},
+            )
+    preserved = set(inspect(old_engine).get_table_names()) - {
+        "ai_conversations",
+        "ai_conversation_messages",
+        "alembic_version",
+    }
+
+    def snapshots() -> dict[str, list[object]]:
+        with old_engine.connect() as connection:
+            return {
+                table: list(
+                    connection.scalars(
+                        text(
+                            f'SELECT row_to_json(t)::text FROM "{table}" t '
+                            "ORDER BY row_to_json(t)::text"
+                        )
+                    )
+                )
+                for table in preserved
+            }
+
+    before = snapshots()
+    if with_history:
+        with pytest.raises(RuntimeError, match="back up and verify"):
+            _upgrade(config, "head")
+        assert snapshots() == before
+        with old_engine.connect() as connection:
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version")) == NEW_REVISION
+            )
+            assert connection.scalar(text("SELECT count(*) FROM ai_conversations")) == 1
+        config.cmd_opts = Namespace(x=["ai_history_backup_verified=true"])
+    _upgrade(config, "head")
+    assert not {"ai_conversations", "ai_conversation_messages"} & set(
+        inspect(old_engine).get_table_names()
+    )
+    assert snapshots() == before
+    # Downgrade rebuilds an empty schema only, preserving the same business rows.
+    _downgrade(config, NEW_REVISION)
+    with old_engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM ai_conversations")) == 0
+    assert snapshots() == before
+    _upgrade(config, "head")

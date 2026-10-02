@@ -21,7 +21,7 @@ def test_fresh_schema_has_active_only_name_uniqueness(test_engine: Engine) -> No
             )
         )
 
-    assert revision == "0045_issue151_ai_conversations"
+    assert revision == "0046_issue166_retire_ai_history"
     assert index_definition is not None
     assert "UNIQUE" in index_definition
     assert "archived_at IS NULL" in index_definition

@@ -1194,7 +1194,6 @@ def _assist_messages(
     native_images: list[attachments_service.NativeImage] | None = None,
     tools_enabled: bool = False,
     knowledge_search_enabled: bool = False,
-    conversation_context: dict[str, object] | None = None,
 ) -> list[providers.JsonObject]:
     saved_managed_input = _saved_managed_input_context(session, adapter_id)
     context = PromptContext.capture(
@@ -1209,7 +1208,6 @@ def _assist_messages(
         native_images=native_images,
         tools_enabled=tools_enabled,
         knowledge_search_enabled=knowledge_search_enabled,
-        conversation_context=conversation_context,
     )
     managed_input_instruction = (
         _managed_input_prompt_instruction(language)
@@ -1573,24 +1571,6 @@ def _knowledge_evidence_message(
     return f"知识库检索结果：{status}\n\n模型综合：{model_message}"
 
 
-def _require_complete_session_context(
-    payload: AiAssistRequest,
-    budget: context_budget.BudgetResult,
-    messages: list[providers.JsonObject],
-    conversation_context: dict[str, object] | None,
-) -> None:
-    if payload.session_id is None:
-        return
-    if budget.diagnostics.omitted_history_messages or (
-        conversation_context is not None and not context_budget.has_conversation_context(messages)
-    ):
-        raise domain_error(
-            413,
-            "ai_session_context_incomplete",
-            "Uncovered conversation history does not fit the current model context",
-        )
-
-
 def _finalize_after_tool_stop(
     *,
     state: _AssistToolState,
@@ -1604,7 +1584,6 @@ def _finalize_after_tool_stop(
     executed_tools: list[AiToolCallSummary],
     knowledge_state: _KnowledgeRetrievalState | None = None,
     omitted_materials: list[int] | None = None,
-    conversation_context: dict[str, object] | None = None,
 ) -> AiAssistResponse:
     """Attempt exactly one tools-disabled final answer, then fail closed.
 
@@ -1642,7 +1621,6 @@ def _finalize_after_tool_stop(
             }
         )
     budget = context_budget.prepare_call(draft, messages, None, purpose="assist_finalization")
-    _require_complete_session_context(payload, budget, messages, conversation_context)
     if omitted_materials is not None:
         omitted_materials[0] += budget.omitted_materials
     if not budget.fits:
@@ -1696,7 +1674,6 @@ def _assist_impl(
     payload: AiAssistRequest,
     audit: tool_audit.AiToolAuditTrail,
     state: _AssistToolState,
-    conversation_context: dict[str, object] | None = None,
 ) -> AiAssistResponse:
     """Generate a candidate without writing any DLR lifecycle or version state.
 
@@ -1765,7 +1742,6 @@ def _assist_impl(
         native_images=native_images,
         tools_enabled=tools_enabled,
         knowledge_search_enabled=knowledge_search_enabled and knowledge_available and tools_enabled,
-        conversation_context=conversation_context,
     )
     tools_payload = (
         tools_service.tools_payload(include_knowledge=knowledge_search_enabled)
@@ -1812,7 +1788,6 @@ def _assist_impl(
             tools_payload,
             purpose="assist_initial" if state.tool_rounds == 0 else "assist_followup",
         )
-        _require_complete_session_context(payload, budget, messages, conversation_context)
         omitted_materials[0] += budget.omitted_materials
         if not budget.fits:
             if not executed_tools:
@@ -2080,7 +2055,6 @@ def _assist_impl(
         executed_tools=executed_tools,
         knowledge_state=knowledge_state,
         omitted_materials=omitted_materials,
-        conversation_context=conversation_context,
     )
     return _with_omission_note(response, omitted_materials[0], system_locale)
 
@@ -2090,7 +2064,6 @@ def assist(
     adapter_id: int,
     payload: AiAssistRequest,
     *,
-    conversation_context: dict[str, object] | None = None,
     hard_deadline: float | None = None,
 ) -> AiAssistResponse:
     """Run one request-correlated Assist and always persist its terminal state."""
@@ -2108,9 +2081,7 @@ def assist(
         correlation=audit.correlation,
     )
     try:
-        response = _assist_impl(
-            session, adapter_id, payload, audit, state, conversation_context=conversation_context
-        )
+        response = _assist_impl(session, adapter_id, payload, audit, state)
     except Exception as error:
         audit.finish(status="error", error_code=_audit_error_code(error))
         raise
