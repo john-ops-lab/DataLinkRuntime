@@ -190,7 +190,8 @@
         "fileLimit": "Managed Input supports at most 8 files.",
         "retentionOutOfRange": "The custom retention exceeds the administrator policy maximum of {{max}} seconds.",
         "manualDeleteNotAllowed": "Permanent retention is disabled by the administrator; choose another policy.",
-        "uploadFailed": "The file upload did not complete. Try again."
+        "uploadFailed": "The file upload did not complete. Try again.",
+        "retentionIntegerRange": "Enter an integer between 3600 and {{max}} seconds. Your input is preserved; correct it before saving."
       }
     }
   },

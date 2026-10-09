@@ -140,7 +140,9 @@
       "gatewayPayloadTooLarge": "附件请求超过网关上限（32 MiB），请减少或压缩附件后重试",
       "gatewayTimeout": "模型服务响应超时（660 秒），请检查网络或稍后重试",
       "knowledgeUnavailable": "本轮知识库检索不可用：请确认管理员已配置可用知识源"
-    }
+    },
+    "stopWaiting": "停止等待",
+    "stoppedWaiting": "已停止等待，现有消息已保留。模型服务可能继续处理，直到原请求截止时间；可以再次发送。"
   },
   "model": {
     "notice": "数据范围",
@@ -209,6 +211,7 @@
     "customReferenced": "当前设置正在引用",
     "customRequired": "服务名称和基础 URL 不能为空",
     "customSaved": "自定义模型服务已保存",
-    "customDeleted": "自定义模型服务已删除"
+    "customDeleted": "自定义模型服务已删除",
+    "credentialMissing": "所选凭据已被删除或不再可用。草稿已保留，请重新选择或清空。"
   }
 }

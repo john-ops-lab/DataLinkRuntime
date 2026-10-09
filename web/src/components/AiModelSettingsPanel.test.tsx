@@ -7,6 +7,7 @@ import type {
   AiModelSetting,
   AiModelSettingDraft,
   AiProviderCapability,
+  Credential,
 } from "../types";
 import AiModelSettingsPanel from "./AiModelSettingsPanel";
 
@@ -542,4 +543,26 @@ it("测试连接与模型刷新是独立操作，互不代替", async () => {
   expect((screen.getByTestId("ai-model-input") as HTMLInputElement).value).toBe(
     "reasoning-model",
   );
+});
+
+
+it("Issue #188 refreshes deleted Credentials without overwriting drafts or accepting an older response", async () => {
+  mockLoad(modelSetting({ credential_id: 7 }));
+  const credential: Credential = { id: 7, name: "disposable-token", type: "token",
+    created_at: "2026-10-09T00:00:00Z", updated_at: "2026-10-09T00:00:00Z" };
+  let releaseOld: (items: Credential[]) => void = () => undefined;
+  vi.mocked(api.listCredentials).mockResolvedValueOnce([credential])
+    .mockImplementationOnce(() => new Promise((resolve) => { releaseOld = resolve; }))
+    .mockResolvedValueOnce([]);
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await waitFor(() => expect(screen.getByTestId("ai-summary-credential").textContent).toBe("disposable-token"));
+  const baseUrl = await screen.findByTestId("ai-base-url");
+  fireEvent.change(baseUrl, { target: { value: "https://example.invalid/preserved-draft" } });
+  act(() => window.dispatchEvent(new Event("focus")));
+  act(() => window.dispatchEvent(new Event("focus")));
+  await screen.findByText(/所选凭据已被删除/);
+  await act(async () => releaseOld([credential]));
+  expect(screen.getByText(/所选凭据已被删除/)).toBeTruthy();
+  expect((screen.getByTestId("ai-save-settings") as HTMLButtonElement).disabled).toBe(true);
+  expect((baseUrl as HTMLInputElement).value).toBe("https://example.invalid/preserved-draft");
 });

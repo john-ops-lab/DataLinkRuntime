@@ -49,6 +49,7 @@ import {
   PaperClipOutlined,
   ReloadOutlined,
   SendOutlined,
+  StopOutlined,
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import {
@@ -394,6 +395,11 @@ function ComposerSubmitButton(props: {
 }) {
   const { t } = useTranslation(["ai", "common"]);
   const composer = useAui().composer;
+  if (props.sending) {
+    return <ComposerPrimitive.Cancel className="ai-composer-send" data-testid="ai-stop">
+      <StopOutlined aria-hidden="true" />{t("assistant.stopWaiting")}
+    </ComposerPrimitive.Cancel>;
+  }
   return (
     <ComposerPrimitive.Send
       className="ai-composer-send"
@@ -793,6 +799,8 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   } | null>(null);
   const suppressClickRef = useRef(false);
   const requestGeneration = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
+  const [stoppedWaiting, setStoppedWaiting] = useState(false);
   const bindingsGeneration = useRef(0);
   const nextMessageId = useRef(1);
   const conversationRef = useRef<HTMLDivElement>(null);
@@ -878,6 +886,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     () => () => {
       scopeEpoch.current += 1;
       requestGeneration.current += 1;
+      activeRequest.current?.abort();
     },
     [],
   );
@@ -947,6 +956,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     previousScopeRef.current = scopeKey;
     scopeEpoch.current += 1;
     requestGeneration.current += 1;
+    activeRequest.current?.abort();
+    activeRequest.current = null;
+    setStoppedWaiting(false);
     setConversationId(crypto.randomUUID());
     setMessages([]);
     setSending(false);
@@ -1073,6 +1085,9 @@ async function resolveComposerAttachment(
     }
 
     const generation = ++requestGeneration.current;
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    setStoppedWaiting(false);
     const requestSessionEpoch = scopeEpoch.current;
     const requestAdapterId = snapshot.adapterId;
     // Regenerating explicitly returns to the regenerated exchange. A later
@@ -1122,7 +1137,7 @@ async function resolveComposerAttachment(
         ...(snapshot.attachments.length === 0
           ? {}
           : { attachments: snapshot.attachments }),
-      });
+      }, controller.signal);
       // The component is keyed by Adapter in App, and this explicit guard also
       // prevents a late response from committing across an Adapter switch.
       if (generation !== requestGeneration.current || requestSessionEpoch !== scopeEpoch.current) {
@@ -1210,6 +1225,7 @@ async function resolveComposerAttachment(
     } finally {
       if (generation === requestGeneration.current && requestSessionEpoch === scopeEpoch.current) {
         setSending(false);
+        if (activeRequest.current === controller) activeRequest.current = null;
       }
     }
   }
@@ -1407,7 +1423,17 @@ async function resolveComposerAttachment(
     messages,
     isRunning: sending,
     isDisabled:
-      !canUseAi || props.adapter === null || !props.contentReady || props.busy || sending,
+      !canUseAi || props.adapter === null || !props.contentReady || props.busy,
+    onCancel: async () => {
+      requestGeneration.current += 1;
+      activeRequest.current?.abort();
+      activeRequest.current = null;
+      setSending(false);
+      setProgressStage(null);
+      setPanelError(null);
+      setStoppedWaiting(true);
+      attachmentSendInFlightRef.current = null;
+    },
     convertMessage: toThreadMessageLike,
     adapters: { attachments: attachmentAdapter },
     onNew: async (message: AppendMessage) => {
@@ -1936,6 +1962,9 @@ async function resolveComposerAttachment(
           </ThreadPrimitive.Viewport>
 
           <ComposerPrimitive.Root className="ai-composer">
+            {stoppedWaiting && <p role="status" data-testid="ai-stopped-waiting">
+              {t("assistant.stoppedWaiting")}
+            </p>}
             {panelError !== null && (
               <p className="ai-panel-error" role="alert" data-testid="ai-panel-error">
                 {panelError}

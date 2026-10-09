@@ -29,3 +29,7 @@
 ## Migration Plan
 
 优先采用无需迁移的小修复和非敏感日志计量；每批提交执行受影响静态/模拟检查，并在私有固定验收配置具备条件时核实际镜像/SHA。专用无宿主挂载 Docker VM 已启动；独立 PostgreSQL/RabbitMQ/只读 S3 测试目标已经建立，Linux Worker/UI 完整验收仍需推进。保持旧数据、缓存、卷与 Token；若某修复需要改动持久合同，先补充设计和兼容/回滚证据。Issue 仍按其完整验收条件判断，不能因一个提交或 CI 通过自动关闭。
+
+## Frontend implementation boundaries
+
+#185 共享页面始终说明 EDIT 用户可通过代码和运行使用已绑定凭据，Secret 不回显，ACL 不变。#186 按后端相同的 trim 后 Unicode 字符数量校验 128 上限，不截断输入。#187 使用保留原始文本的整数秒输入并按服务端 capability 校验上下限，失焦/Enter 不改值；非法值在字段内显示并阻止保存。#188 浏览器 focus/visibility 与打开选择器只刷新凭据元数据；每个请求带本地递增序号，旧结果不覆盖新列表，删除后的选中引用留在草稿并给可修正的失效提示；后端不存在/权限保护保持。#189 目录请求错误独立于变更错误，由最新成功目录请求清除。#190 共享小 hook 在 overlay 自动聚焦前捕获原控件，关闭动画或条件卸载后恢复到仍可见且启用的原控件，否则使用明确入口回退，不引入全局焦点状态。#195 复用 assistant-ui 官方 External Store onCancel / Composer Cancel，AbortController 仅作用于本页 HTTP；取消递增现有请求序号，旧 finally 不清除新请求，既有消息和候选保留。

@@ -7709,3 +7709,63 @@ it("keeps a genuinely dirty Task timeout when external authority saves the same 
   window.dispatchEvent(leaving);
   expect(leaving.defaultPrevented).toBe(true);
 });
+
+
+it("Issue #195 stops waiting, aborts HTTP and fences late replies without discarding history", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const version = makeVersion({ code: "original-code\n" });
+  const replies: Array<(result: RouteResponse) => void> = [];
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, version), aiBindingsRoute(1), aiAttachmentCapabilitiesRoute(),
+    { method: "POST", match: "/api/adapters/1/ai/assist", respond: () => new Promise<RouteResponse>((resolve) => replies.push(resolve)) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "first preserved question" } });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await waitFor(() => expect(replies).toHaveLength(1));
+  const firstRequest = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/ai/assist"))?.[1];
+  expect(firstRequest?.signal?.aborted).toBe(false);
+  fireEvent.click(screen.getByTestId("ai-stop"));
+  await screen.findByTestId("ai-stopped-waiting");
+  expect(firstRequest?.signal?.aborted).toBe(true);
+  expect(screen.getByText("first preserved question")).toBeTruthy();
+  expect(valueOf("code-editor")).toBe("original-code\n");
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "second question" } });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await waitFor(() => expect(replies).toHaveLength(2));
+  await act(async () => replies[0]({ body: aiResponse("late cancelled reply", AI_CANDIDATE) }));
+  expect(screen.queryByText("late cancelled reply")).toBeNull();
+  expect(screen.queryByTestId("ai-candidate-summary")).toBeNull();
+  expect(screen.getByTestId("ai-stop")).toBeTruthy();
+  await act(async () => replies[1]({ body: aiResponse("second completed reply", null) }));
+  await screen.findByText("second completed reply");
+  expect(screen.queryByTestId("ai-stop")).toBeNull();
+  expect(screen.getByTestId("ai-send")).toBeTruthy();
+  expect(screen.getByText("first preserved question")).toBeTruthy();
+  expect(valueOf("code-editor")).toBe("original-code\n");
+});
+
+
+it("Issue #189 clears only the recovered catalog error and preserves the editor draft", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  let lists = 0;
+  stubFetch([
+    { method: "GET", match: "/api/adapters", respond: () => {
+      lists += 1;
+      if (lists === 2) throw new Error("offline");
+      return { body: [adapter] };
+    } },
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "preserved draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "刷新适配器列表" }));
+  await screen.findByTestId("adapter-list-error");
+  fireEvent.click(screen.getByRole("button", { name: "刷新适配器列表" }));
+  await waitFor(() => expect(screen.queryByTestId("adapter-list-error")).toBeNull());
+  expect(valueOf("code-editor")).toBe("preserved draft");
+  expect(lists).toBe(3);
+});

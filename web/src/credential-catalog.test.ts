@@ -33,10 +33,22 @@ describe("credential-catalog", () => {
     const first = vi.fn(() => {
       removeThird();
     });
-    subscribeCredentialCatalog(first);
+    const removeFirst = subscribeCredentialCatalog(first);
 
     notifyCredentialCatalogChanged();
     expect(first).toHaveBeenCalledTimes(1);
     expect(third).toHaveBeenCalledTimes(1);
+    removeFirst();
+  });
+
+  it("refreshes subscribed metadata on focus and releases the browser listeners", () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeCredentialCatalog(listener);
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(listener).toHaveBeenCalledTimes(2);
+    unsubscribe();
+    window.dispatchEvent(new Event("focus"));
+    expect(listener).toHaveBeenCalledTimes(2);
   });
 });

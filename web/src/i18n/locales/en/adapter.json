@@ -129,7 +129,8 @@
     "deleteReasonBusy": "Another operation is in progress",
     "deleteWarningWebhook": "An Adapter cannot be deleted while it is receiving or has active calls.",
     "deleteWarningTask": "An Adapter cannot be deleted while its schedule or execution is active.",
-    "dangerHint": "Deletion removes the Adapter, its history and sharing relationships, but never the global Credential object."
+    "dangerHint": "Deletion removes the Adapter, its history and sharing relationships, but never the global Credential object.",
+    "nameTooLong": "Use at most 128 characters. Your input is preserved; shorten it before saving."
   },
   "sharing": {
     "open": "Permissions and sharing",
@@ -152,7 +153,8 @@
     "noCandidates": "No accounts can be added",
     "loadFailed": "Sharing permissions could not be loaded",
     "saveFailed": "Sharing permissions could not be saved",
-    "revokeFailed": "Sharing permission could not be removed"
+    "revokeFailed": "Sharing permission could not be removed",
+    "credentialWarning": "Users with edit access can change code, run tasks and use bound Credentials through tasks. Secret values are never displayed; grant edit access only to trusted users."
   },
   "clone": {
     "title": "Clone Adapter",

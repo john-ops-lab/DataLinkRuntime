@@ -10,6 +10,7 @@ import {
 import { useTranslation } from "react-i18next";
 
 import { adapterAccessLevel } from "../adapter-access";
+import { useOverlayFocus } from "../hooks/useOverlayFocus";
 import { LANGUAGE_LABELS } from "../languages";
 import type {
   AccountPrincipal,
@@ -230,6 +231,7 @@ export default function AdapterCatalog({
   });
   const [submitting, setSubmitting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const restoreFocus = useOverlayFocus(creating, '[data-testid="show-create-form"]');
   const workersById = new Map(workers.map((worker) => [worker.id, worker]));
 
   useEffect(() => {
@@ -516,7 +518,7 @@ export default function AdapterCatalog({
         initialValues={{
           ...DEFAULT_CREATE_ADAPTER_VALUES,
         }}
-        drawerProps={{ destroyOnHidden: true }}
+        drawerProps={{ destroyOnHidden: true, afterOpenChange: restoreFocus }}
         onOpenChange={(open) => {
           if (!open) {
             createForm.resetFields();
@@ -546,7 +548,11 @@ export default function AdapterCatalog({
         <ProForm.Item
           name="name"
           label={t("catalog.name")}
-          rules={[{ required: true, whitespace: true, message: t("catalog.namePlaceholder") }]}
+          rules={[
+            { required: true, whitespace: true, message: t("catalog.namePlaceholder") },
+            { validator: (_: unknown, value: string) => Array.from(value?.trim() ?? "").length <= 128
+              ? Promise.resolve() : Promise.reject(new Error(t("settings.nameTooLong"))) },
+          ]}
         >
           <Input
             data-testid="new-adapter-name"

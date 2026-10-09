@@ -424,7 +424,8 @@
     "delete": "Delete binding {{index}}",
     "validationEnvKeyRequired": "Every binding must have a code Credential name",
     "validationEnvKeyDuplicate": "Code Credential names must be unique",
-    "validationSelectionRequired": "Every binding must select a Credential and field"
+    "validationSelectionRequired": "Every binding must select a Credential and field",
+    "credentialMissing": "The selected Credential was deleted or is no longer available. Your draft is preserved; select another or clear it."
   },
   "packageSources": {
     "kinds": {
@@ -493,8 +494,9 @@
     "reachable": "Reachable",
     "unreachable": "Unreachable",
     "timeout": "Timeout",
-    "authFailed": "Authentication failed",
-    "testDetailUnknown": "Check the URL, Credential and network"
+    "authFailed": "Reachable, authentication failed",
+    "testDetailUnknown": "Check the URL, Credential and network",
+    "credentialMissing": "The selected Credential was deleted or is no longer available. Your draft is preserved; select another or clear it."
   },
   "knowledgeSources": {
     "description": "Configure a read-only knowledge source and verify the knowledge bases it can access. Tencent ima is supported first.",

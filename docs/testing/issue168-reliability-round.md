@@ -34,3 +34,9 @@ AI 诊断批次：#180 的固定安全分类与 #183 的逐次预算/时限事�
 #173 旧失败人工重试进一步暴露 `cache_retry_unknown`：失败发生在 guard/本地记录创建之前，重试却只接受已有 failed 删除记录。补充真实首次恢复失败与窄回归；仅对 `cache_retry_unknown` 且本地记录状态 clear 允许新 Control cleanup claim 重新进入原 guard 扫描，未知/损坏状态继续失败，未改变自动重试上限。
 
 上述 #170/#171 相关 API、真实认证服务/重定向和 executor 检查批次 26 项通过。首个批次 12 PASS/14 ERROR 的原因是从仓库根目录运行 PostgreSQL fixture，找不到相对 `alembic` 路径；按项目 backend 工作目录重跑，通过，不计为产品缺陷。#173 预记录失败恢复与 #184 跨线程原因相关批次 23 项通过；此前按键/策略/删除批次 54 项通过，各批次单独记录。
+
+#179 修复后五语言 × 五个固定完整 JSON oracle 的真实 Linux Worker 执行已全部通过（25/25），每个 workspace cleanup 均完成。共享排序、null/boolean 与转义/补充字符规则分别核对；目录 UI 和其他输入/预算边界继续补证。#173 旧清理 1/2 在既有首次失败和恢复失败后，通过明确人工 retry 完成，首次记录不覆盖。
+
+#184 第三次真实 Linux Worker 跨 TTL 验收完成：合法 TTL=60 秒，周期扫描在长任务运行 88.397 秒时检查到精确被测数字键并记录 cache_entry_in_use；长任务和同版本 warm 任务原样输出、workspace cleanup 完成。任务结束后空闲扫描关联同 round 的 result 为 complete/deleted=1/freed_bytes=35798。第二次 audit 的 cache_lock_busy 与第一 fixture 前态构造失败仍独立保留。
+
+#171/#172/#185–#190/#195 前端已完成最小实现和开发回归，真实 Chrome 验收尚在推进。基线 Chrome 实测包括 129 字符创建错误被遮挡、保留期失焦静默取上限、另一页删除后 AI 草稿仍可选旧凭据、恢复联网刷新成功而全局错误滞留、关闭抽屉焦点落 BODY。#195 当前 HTTP/迟到隔离/再次发送回归已通过；新增用例在旧代码运行时失败，固定版本通过。相关字段/源/凭据/Portable/assistant 组件批次 100 项通过；取消与目录恢复两个独立状态回归通过。初期前端回归两处旧断言（HTTP 401 显示绿色可达、失焦静默钳制输入）已按此次明确修复更新；新的凭据失效提示回归曾暴露 ProForm.Item 未显示帮助，改用精确版本 Ant Design Form.Item 后通过。以上均不计作真实 Provider 或浏览器验收。

@@ -5,6 +5,7 @@ import {
   Alert,
   AutoComplete,
   Button,
+  Form,
   Card,
   Collapse,
   Input,
@@ -185,6 +186,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const settingBaselineRef = useRef<AiModelSettingDraft>({ ...DEFAULT_SETTING });
   const settingDirtyRef = useRef(false);
   const [credentials, setCredentials] = useState<Credential[]>([]);
+  const credentialRequestGeneration = useRef(0);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [providerCatalog, setProviderCatalog] = useState<AiProviderCapability[]>([]);
   const [customProviders, setCustomProviders] = useState<AiCustomProvider[]>([]);
@@ -237,6 +239,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const selectedCredentialName = credentials.find(
     (credential) => credential.id === form.credential_id,
   )?.name;
+  const credentialMissing = form.credential_id !== null && selectedCredentialName === undefined;
 
   const fail = useCallback(
     (message: string) => {
@@ -248,15 +251,21 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   );
 
   const loadCredentials = useCallback(async () => {
+    const generation = ++credentialRequestGeneration.current;
     try {
       const credentialList = await api.listCredentials();
-      setCredentials(credentialList.filter((credential) => credential.type === "token"));
+      if (generation === credentialRequestGeneration.current) {
+        setCredentials(credentialList.filter((credential) => credential.type === "token"));
+      }
     } catch (error) {
-      fail(userErrorMessage(error, i18n.t("model.requestFailed")));
+      if (generation === credentialRequestGeneration.current) {
+        fail(userErrorMessage(error, i18n.t("model.requestFailed")));
+      }
     }
   }, [fail]);
 
   const load = useCallback(async () => {
+    const credentialGeneration = ++credentialRequestGeneration.current;
     setLoading(true);
     const [settingResult, credentialsResult, catalogResult, customResult] = await Promise.allSettled([
       api.getAiSetting(),
@@ -279,11 +288,11 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       fail(userErrorMessage(settingResult.reason, i18n.t("model.requestFailed")));
     }
 
-    if (credentialsResult.status === "fulfilled") {
+    if (credentialsResult.status === "fulfilled" && credentialGeneration === credentialRequestGeneration.current) {
       setCredentials(
         credentialsResult.value.filter((credential) => credential.type === "token"),
       );
-    } else {
+    } else if (credentialsResult.status === "rejected") {
       fail(userErrorMessage(credentialsResult.reason, i18n.t("model.requestFailed")));
     }
     if (catalogResult.status === "fulfilled") {
@@ -332,6 +341,10 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   }
 
   function currentPayload(): AiModelSettingDraft | null {
+    if (credentialMissing) {
+      fail(t("model.credentialMissing"));
+      return null;
+    }
     const baseUrl = form.base_url.trim();
     const model = form.model.trim();
     if (baseUrl === "" || model === "") {
@@ -429,6 +442,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       onSaved?.();
     } catch (error) {
       fail(errorMessage(error, t("model.requestFailed")));
+      if (error instanceof ApiError && error.code === "credential_not_found") void loadCredentials();
     } finally {
       setSaving(false);
       onMutationEnd?.();
@@ -719,11 +733,14 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           <Typography.Text type="secondary">{t("model.baseUrlHint")}</Typography.Text>
         </ProForm.Item>
 
-        <ProForm.Item label={t("model.credential")}>
+        <Form.Item label={t("model.credential")}
+          validateStatus={credentialMissing ? "error" : undefined}
+          help={credentialMissing ? t("model.credentialMissing") : undefined}>
           <Select<number>
             data-testid="ai-credential"
             disabled={actionBusy}
             allowClear
+            onOpenChange={(open) => { if (open) void loadCredentials(); }}
             placeholder={t("model.credentialPlaceholder")}
             value={form.credential_id ?? undefined}
             options={credentials.map((credential) => ({
@@ -734,7 +751,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
               editForm((current) => ({ ...current, credential_id: credentialId ?? null }))
             }
           />
-        </ProForm.Item>
+        </Form.Item>
 
         <ProForm.Item label={t("model.modelId")}>
           <AutoComplete<string>
@@ -1002,7 +1019,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
             type="primary"
             data-testid="ai-save-settings"
             loading={saving}
-            disabled={actionBusy}
+            disabled={actionBusy || credentialMissing}
             onClick={() => void handleSave()}
           >
             {t("actions.save", { ns: "common" })}

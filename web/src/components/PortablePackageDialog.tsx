@@ -13,6 +13,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { ApiError, api } from "../api";
 import { currentSystemLocale } from "../i18n";
+import { useOverlayFocus } from "../hooks/useOverlayFocus";
 import type {
   Adapter,
   PortablePackage,
@@ -64,6 +65,7 @@ export default function PortablePackageDialog({
   onTemplateSaved,
 }: Props) {
   const { t } = useTranslation("portable");
+  const restoreFocus = useOverlayFocus(true, '[data-testid="show-create-form"], a[href="/adapters"]');
   const [value, setValue] = useState<PortablePackage | null>(null);
   const [themes, setThemes] = useState<TemplateTheme[]>([]);
   const [includeJson, setIncludeJson] = useState(false);
@@ -285,6 +287,7 @@ export default function PortablePackageDialog({
   return (
     <Drawer
       open
+      afterOpenChange={restoreFocus}
       title={t(mode)}
       width="min(1180px, 100vw)"
       onClose={busy ? undefined : onClose}

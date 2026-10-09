@@ -822,7 +822,9 @@ it("依赖源 HTTP 应答保持可达语义，测试请求失败会清除旧状�
   const testButton = screen.getByTestId("test-package-source") as HTMLButtonElement;
   fireEvent.click(testButton);
   await waitFor(() => expect(result.textContent).toContain("可达"));
-  expect(result.getAttribute("role")).toBe("status");
+  expect(result.textContent).toContain("认证未通过");
+  expect(result.textContent).toContain("HTTP 401");
+  expect(result.getAttribute("role")).toBe("alert");
 
   await waitFor(() => expect(testButton.disabled).toBe(false));
   fireEvent.click(testButton);

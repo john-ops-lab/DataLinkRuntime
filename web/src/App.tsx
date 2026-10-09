@@ -278,6 +278,7 @@ export function AdapterConsole({
   });
 
   const [error, setError] = useState<string | null>(null);
+  const [adapterListError, setAdapterListError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // True only after the selected adapter's version list and content loaded successfully.
   // Save is gated on it so stale or failed loads can never be persisted.
@@ -827,6 +828,7 @@ export function AdapterConsole({
     const list = await api.listAdapters();
     if (generation === adapterListGeneration.current) {
       setAdapters(list);
+      setAdapterListError(null);
     }
     return list;
   }, []);
@@ -859,10 +861,11 @@ export function AdapterConsole({
         const list = await api.listAdapters();
         if (!cancelled && generation === adapterListGeneration.current) {
           setAdapters(list);
+          setAdapterListError(null);
         }
       } catch (err) {
         if (!cancelled && generation === adapterListGeneration.current) {
-          setError(errorMessage(err));
+          setAdapterListError(errorMessage(err));
         }
       }
     }
@@ -1674,6 +1677,8 @@ export function AdapterConsole({
             hidden={activeSection !== "adapters"}
           >
             <div className="app-global-feedback">
+              {adapterListError && <Alert type="error" showIcon role="alert"
+                data-testid="adapter-list-error" message={adapterListError} />}
               {error && (
                 <Alert
                   type="error"
@@ -1706,10 +1711,13 @@ export function AdapterConsole({
                 hasUnsavedChanges: selected?.id === adapter.id && (dirty || taskRuntimeRef.current?.hasUnsavedChanges() === true || webhookRuntimeRef.current?.hasUnsavedChanges() === true),
               })}
               onRefresh={async () => {
+                const generation = adapterListGeneration.current + 1;
                 try {
                   await refreshAdapters();
                 } catch (err) {
-                  setError(errorMessage(err));
+                  if (generation === adapterListGeneration.current) {
+                    setAdapterListError(errorMessage(err));
+                  }
                 }
               }}
               accountPrincipal={accountPrincipal}

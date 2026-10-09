@@ -190,7 +190,8 @@
         "fileLimit": "托管文件最多只能选择 8 个。",
         "retentionOutOfRange": "自定义保留期限超出管理员允许范围，最多为 {{max}} 秒。",
         "manualDeleteNotAllowed": "管理员已禁用永久保留，请选择其他策略。",
-        "uploadFailed": "文件上传未完成，请重试。"
+        "uploadFailed": "文件上传未完成，请重试。",
+        "retentionIntegerRange": "请输入 3600 至 {{max}} 的整数秒数；当前输入已保留，请修正后保存。"
       }
     }
   },

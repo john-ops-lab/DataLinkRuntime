@@ -302,6 +302,14 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     mode: "system_default",
     seconds: null,
   });
+  const [retentionSecondsText, setRetentionSecondsText] = useState("");
+  const retentionInvalid = inputSourceDraft === "managed_files" && retentionDraft.mode === "custom" && (
+    !/^\d+$/.test(retentionSecondsText) ||
+    !Number.isSafeInteger(retentionDraft.seconds) ||
+    (retentionDraft.seconds ?? 0) < 3_600 ||
+    managedCapability === null ||
+    (retentionDraft.seconds ?? 0) > managedCapability.max_custom_retention_seconds
+  );
   const [uploadProgress, setUploadProgress] = useState<{
     key: string;
     filename: string;
@@ -365,6 +373,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       setInputSourceDraft(loaded.source_type);
       setInputJsonDraft(loaded.source_type === "json" ? formatJson(loaded.json_value) : "null");
       setRetentionDraft(loaded.retention);
+      setRetentionSecondsText(loaded.retention.seconds?.toString() ?? "");
       setManagedFilesDraft((current) => {
         const staged = current.filter((artifact) => artifact.status === "STAGED");
         return mergeManagedFileDrafts(loaded.artifacts, staged);
@@ -656,6 +665,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       inputConfig === null ||
       inputSourceDraft === "remote_files" ||
       managedFilesSaveBlocked ||
+      retentionInvalid ||
       props.adapter.runtime_locked === true ||
       props.runtimeSynchronizing === true
     ) {
@@ -719,6 +729,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         setInputSourceDraft(saved.source_type);
         setInputJsonDraft(saved.source_type === "json" ? formatJson(saved.json_value) : "null");
         setRetentionDraft(saved.retention);
+        setRetentionSecondsText(saved.retention.seconds?.toString() ?? "");
         setManagedFilesDraft((current) => mergeManagedFileDrafts(
           saved.artifacts,
           current.filter((artifact) => artifact.status === "STAGED" && !savedIds.has(artifact.id)),
@@ -1710,7 +1721,11 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 />
               )}
 
-              <Form.Item label={t("task.input.retentionLabel")} className="managed-input-retention-item">
+              <Form.Item label={t("task.input.retentionLabel")} className="managed-input-retention-item"
+                validateStatus={retentionInvalid ? "error" : undefined}
+                help={retentionInvalid ? t("task.input.errors.retentionIntegerRange", {
+                  max: managedCapability?.max_custom_retention_seconds ?? "—",
+                }) : undefined}>
                 <Space wrap>
                   <Select
                     data-testid="managed-input-retention-mode"
@@ -1727,6 +1742,10 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                     ]}
                     onChange={(value: InputRetention["mode"]) => {
                       inputEditEpoch.current += 1;
+                      if (value === "custom") {
+                        setRetentionSecondsText(String(retentionDraft.seconds
+                          ?? managedCapability?.default_retention_seconds ?? ""));
+                      }
                       setRetentionDraft(value === "custom"
                         ? {
                             mode: "custom",
@@ -1739,17 +1758,22 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                     }}
                   />
                   {retentionDraft.mode === "custom" && (
-                    <InputNumber
+                    <Input
                       data-testid="managed-input-retention-seconds"
-                      min={3_600}
-                      max={managedCapability?.max_custom_retention_seconds}
-                      precision={0}
-                      value={retentionDraft.seconds ?? undefined}
+                      role="spinbutton"
+                      inputMode="numeric"
+                      aria-valuemin={3_600}
+                      aria-valuemax={managedCapability?.max_custom_retention_seconds}
+                      aria-invalid={retentionInvalid}
+                      value={retentionSecondsText}
                       suffix={t("task.input.seconds")}
                       disabled={inputEditingLocked || !managedFilesEnabled}
-                      onChange={(value) => {
+                      onChange={(event) => {
                         inputEditEpoch.current += 1;
-                        setRetentionDraft({ mode: "custom", seconds: value ?? null });
+                        const text = event.target.value;
+                        setRetentionSecondsText(text);
+                        setRetentionDraft({ mode: "custom", seconds: /^\d+$/.test(text)
+                          ? Number(text) : null });
                       }}
                     />
                   )}
@@ -1789,7 +1813,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               htmlType="button"
               data-testid="save-task-input"
               loading={savingInput}
-              disabled={inputEditingLocked || inputConfig === null || managedFilesSaveBlocked}
+              disabled={inputEditingLocked || inputConfig === null || managedFilesSaveBlocked || retentionInvalid}
               onClick={() => void saveInputObject()}
             >
               {t("task.input.save")}

@@ -192,7 +192,8 @@ async function request<T>(path: string, init?: RequestInit, responseType?: "blob
   let response: Response;
   try {
     response = await fetch(path, { ...init, credentials: "same-origin", headers: { ...headers, ...init?.headers } });
-  } catch {
+  } catch (error) {
+    if (init?.signal?.aborted) throw error;
     throw new ApiError(0, "network_error", "Control is unreachable");
   }
   if (response.status === 401) {
@@ -763,10 +764,12 @@ export const api = {
   assistAdapter: (
     adapterId: number,
     payload: AiAssistRequest,
+    signal?: AbortSignal,
   ): Promise<AiAssistResponse> =>
     request(`/api/adapters/${adapterId}/ai/assist`, {
       method: "POST",
       body: JSON.stringify(payload),
+      signal,
     }),
 
 };
