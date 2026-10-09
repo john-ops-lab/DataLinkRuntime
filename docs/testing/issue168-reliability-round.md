@@ -139,3 +139,11 @@ AI 设置真实 Chrome 初次凭据请求断网、重试后模型草稿保留且
 `a4f9124` 首轮仍有额外收尾说明；`02e9025` 普通工具真实回复已仅包含两条可见操作步骤，无代码表达式/当前凭据键/候选/工具。新编号格式的三个旧文本断言首次失败（298 PASS / 3 FAIL），更新为当前边界后 Prompt/附件/预算 102 项通过。后续关闭工具配置首次连接失败，一次显式诊断重试连通但 final_json malformed_json，保留严格拒绝。进一步明确编号约束仅作用于 JSON response 的 message，避免自然语言排版规则与输出 envelope 混淆；不增加自动重试、响应格式特判或降低校验。
 
 `dd88d61` 新服务 + 真实 Provider 两配置首轮均通过：普通工具和合法关闭工具时，均只给编号 UI 操作，无代码表达式/当前凭据键/额外总结/candidate/tool_calls。原 AI 设置、版本和代码保持，临时配置移除。附件/预算/Prompt/AI 批次 301 PASS。此为新镜像服务验证，实际部署 HTTP/Chrome 另验；不代表真正无工具模型矩阵。Hosted Backend 的 Ruff 因新增英文断言 125 字符超过 100 字符而失败，Pytest 尚未执行；拆为相邻字符串而不改断言内容后，全 Backend Ruff/format/Mypy 通过，首轮 CI 失败保留。
+
+`15ed546` 的四项精确 Hosted CI 全部通过（Backend 2240 PASS / 17 SKIP；Web 684 PASS；Compose smoke、local-preview PASS）。既有私有环境的四个应用镜像更新到该 SHA，数据库/Broker、挂载、端口及配置保持；真实 Execution 138 在 Attempt 1 成功、完整输出匹配、cleanup completed。
+
+最终部署 HTTP 的真实 MiniMax-M3 普通工具及合法关闭工具两配置首轮均通过：只给当前 UI 步骤，无候选/工具/代码表达式/当前凭据键/实现总结；关闭工具的同模型配置仍不替代实际无工具模型矩阵。实际 Chrome 的绑定与 AI 设置初次凭据请求失败均只显示局部“无法确认”告警，未误报删除或未绑定；分别保留 `R196` / `R196_MODEL` 测试草稿并成功重试，名称/字段恢复、告警消失且无共享网络错误。草稿刷新丢弃，未点击保存；独立 API 核保存的 AI 配置、绑定、版本和代码相同（仅显式 Provider 临时配置往返的 updated_at 不作为业务设置）。双页删除/竞态与迟到回包的已有真实/确定性证据按原测试 SHA 留账。
+
+旧 `3e2d5b8` ready 环境在最终代码镜像继续复用：同 Adapter 32 / Version 30 和原输入的 Execution 139 在 Attempt 1 成功、cleanup completed，manifest、全部内容/mtime 摘要不变，无重新安装。测试 pin 在最终交付补验后还原。Chrome 固定产品帮助的本次首轮为 ai_provider_unreachable，DOM/原生截图保留，使用原始请求做一次明确重试；其结果在 PR 最终交付评论分列，不能抹去首次失败。页面 CDP 截图两次超时为工具采证失败，改用 Chrome 原生截图及 DOM/AX，未更改产品。
+
+收尾提交仅补充记录和完成的 Review 任务状态；最终 HEAD 的 CI、实际部署 SHA、页面明确重试和 pin 还原结果以 PR 最终交付评论为准。知识库开发/真实检索继续暂停；真实旧历史、缺新元数据的更早缓存、实际无工具模型、自然离线/重试前态仍不足，不计 PASS、不关闭 Issue、不自动合并。
