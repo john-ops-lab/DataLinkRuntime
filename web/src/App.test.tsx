@@ -4972,7 +4972,6 @@ it("loads the latest saved Webhook log on opening Live logs, including after rem
 });
 
 it("discovers a completed short Webhook between active-pointer polls and retains logs on read failure", async () => {
-  RUNTIME_REFRESH_POLICY.pollIntervalMs = 20;
   const adapter = makeAdapter({ adapter_type: "webhook", runtime_worker_id: 3, runtime_locked: true, running_execution_id: null });
   const first = makeExecution({ id: 71, trigger: "webhook", status: "succeeded", stdout: "first call\n" });
   const second = makeExecution({ id: 72, trigger: "webhook", status: "succeeded", stdout: "short second call\n" });
@@ -4988,21 +4987,32 @@ it("discovers a completed short Webhook between active-pointer polls and retains
   ]);
   render(<App />);
   await selectFirstAdapter();
-  fireEvent.click(screen.getByRole("tab", { name: "实时日志" }));
-  latest = first;
-  await waitFor(() => expect(screen.getByTestId("live-log").textContent).toContain("first call"));
-  failed = true;
-  await screen.findByTestId("error-banner");
-  expect(screen.getByTestId("live-log").textContent).toContain("first call");
-  failed = false;
-  latest = second;
-  await waitFor(() => expect(screen.getByTestId("live-log").textContent).toContain("short second call"));
-  expect(screen.getByTestId("live-log").textContent).not.toContain("first call");
-  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/events"))).toBe(false);
-  fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
-  const count = fetchMock.mock.calls.filter(([url]) => String(url).includes("limit=1&trigger=webhook")).length;
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
-  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("limit=1&trigger=webhook")).length).toBe(count);
+  // Mount with the production pace, then drive just this log poll explicitly.
+  // A 20ms real-time whole-console poll can starve CI while React renders.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  RUNTIME_REFRESH_POLICY.pollIntervalMs = 20;
+  try {
+    latest = first;
+    await act(async () => { fireEvent.click(screen.getByRole("tab", { name: "实时日志" })); });
+    expect(screen.getByTestId("live-log").textContent).toContain("first call");
+    failed = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+    expect(screen.getByTestId("error-banner")).toBeDefined();
+    expect(screen.getByTestId("live-log").textContent).toContain("first call");
+    failed = false;
+    latest = second;
+    await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+    expect(screen.getByTestId("live-log").textContent).toContain("short second call");
+    expect(screen.getByTestId("live-log").textContent).not.toContain("first call");
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/events"))).toBe(false);
+    fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
+    const count = fetchMock.mock.calls.filter(([url]) => String(url).includes("limit=1&trigger=webhook")).length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("limit=1&trigger=webhook")).length).toBe(count);
+  } finally {
+    cleanup();
+    vi.useRealTimers();
+  }
 });
 
 it("does not let a delayed saved Webhook log overwrite a newer active call", async () => {

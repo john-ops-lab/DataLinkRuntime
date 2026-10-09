@@ -108,3 +108,7 @@ Draft PR #196 首次精确 HEAD `d1cfb16` 的 Web 与 local-preview CI 通过，
 - 在应用检查点 `3e2d5b8` 的真实 Chrome 双页中，第二页启用计划后第一页面自动锁定保存、依赖和全部运行设置，保留未保存依赖草稿；停用后恢复编辑。暂停第一页面实际 POST 保存请求，第二页先启用计划，再放行得到后端 409 `adapter_runtime_locked`，页面刷新权威锁且草稿未丢失；独立网络事件核 409，计划已停用。编辑器原生键盘构造未产生代码草稿，未计通过；使用实际依赖编辑草稿完成规定前态，未保存为版本。
 
 这些补证不自动改写原自然离线/自然 retry_wait、真实旧历史、合法无工具模型和不可执行节点等缺少前态的原 BLOCKED。最终 SHA/CI/镜像/真实 Provider 与 UI 验证结果见 PR #196 的最后状态更新。
+
+Review 续验检查点 `3e2d5b8`：显式 KILL 本任务 Worker 后 Execution 135 从 running 进入 retry_wait（worker_lost），在默认三次/初始五秒退避策略下连续取消两次，终态 execution_cancelled、结束时间相同。恢复原 restart policy 并启动 Worker 后等待在线及退避窗口，仍 Attempt=1；SQL 独立核 Admission 已释放、计数/字节归零及 Slot 无活动 Attempt。这是实际 Linux 故障注入补证，原自然 retry_wait BLOCKED 不改写。缓存升级前态使用已保存 Adapter 32 / Version 30 的 python-dateutil 环境；首次漏传必需输入的业务失败保留，正确输入的 Execution 134 成功且清理完成，原缓存 manifest 与内容/时间摘要冻结并暂时 pin，升级复用结果另行核验。
+
+`4855dc9` 的首次 Hosted Web CI 为 683 PASS / 1 FAIL，已有短 Webhook 日志轮询测试超过 15 秒。原测试在整个控制台挂载前将轮询缩短为 20ms；改为挂载后仅主动推进日志计时器，仍断言短调用发现、读取失败保留旧日志、恢复为新日志、离开后停止读取。定点 1 项及完整 App 149 项通过，原失败 CI/log 留存，未放宽超时或修改业务预期。
