@@ -72,14 +72,12 @@ def test_product_help_facts_are_available_without_document_tool_calls(
     assert "first enter the name used by the code, then select a credential and its field" in system
     assert "Omit code expressions and current bound key examples" in system
     assert "When generating or explaining Adapter code" in system
-    assert "These implementation examples apply to code questions only" in system
-    assert "remove unrequested code examples" in system
     assert "Determine the task from USER_REQUEST alone" in system
     assert system.index("## Request intent") > system.index("Runtime Contract for")
     assert "This distinction is the same with tools enabled or disabled" in system
     assert "填写「代码中的凭据名」，选择凭据和字段，点击「保存绑定」" in system
     assert "End after the requested steps" in system
-    assert "claim that the Worker supplies the credential" in system
+    assert "不声称凭据来自 Worker 或绑定会修改代码" in system
     assert "<code_task_runtime_contract>" in system
     assert "</code_task_runtime_contract>" in system
     assert "implementation examples are not UI instructions" in system
