@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import os
 import re
 import shutil
@@ -28,6 +31,8 @@ from dlr.worker.cache_lifecycle import (
 )
 from dlr.worker.cache_policy import CachePolicy, GovernedVersionCache
 from dlr.worker.client import ClientError, ControlUnavailableError
+
+logger = logging.getLogger(__name__)
 
 _READY_KEY = re.compile(r"^(?P<adapter>[1-9][0-9]*)-(?P<version>[1-9][0-9]*)$")
 _STAGING_KEY = re.compile(
@@ -85,6 +90,32 @@ class CacheRoundResult:
     cursor: str | None
     retained_reasons: dict[str, int]
     child_operations: tuple[dict[str, object], ...] = ()
+
+
+def _cursor_digest(value: str | None) -> str | None:
+    # Cursor names may be unknown user-controlled filesystem entries.
+    return (
+        hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).hexdigest()
+        if value is not None
+        else None
+    )
+
+
+def _audit_reasons(value: Any) -> list[str]:
+    return sorted(
+        {
+            reason
+            if isinstance(reason, str) and re.fullmatch(r"cache_[a-z_]{1,80}", reason)
+            else "cache_reason_unknown"
+            for reason in value
+        }
+    )
+
+
+def _audit_event(**values: Any) -> None:
+    # The existing rotating Worker platform log bounds persistence. Never add
+    # identity dictionaries, absolute paths, proof text, or raw exception bodies.
+    logger.info("cache_scan_audit %s", json.dumps({"schema": 1, **values}, separators=(",", ":")))
 
 
 def _bounded_tree_size(path: Path, *, budget: CacheScanBudget) -> int:
@@ -294,7 +325,10 @@ class CachePolicyManager:
         budget: _RoundBudget | None = None,
         target_keys: frozenset[str] | None = None,
         page_limit: int | None = None,
+        audit_round_id: str | None = None,
     ) -> CacheScanResult:
+        started = self.monotonic()
+        round_id = audit_round_id or str(uuid.uuid4())
         budget = budget or self._budget()
         after = None if target_keys is not None else self._cursor()
         try:
@@ -548,7 +582,7 @@ class CachePolicyManager:
         filtered_candidates.sort(
             key=lambda item: (item.last_used_at, -item.physical_bytes, item.key)
         )
-        return CacheScanResult(
+        result = CacheScanResult(
             complete=complete,
             cursor=cursor,
             categories={name: value.public() for name, value in categories.items()},
@@ -562,6 +596,49 @@ class CachePolicyManager:
             reserved_bytes=reserved_bytes,
             observations=tuple(observations.values()),
         )
+
+        _audit_event(
+            round_id=round_id,
+            worker_id=self.deletion.worker_id,
+            mode=mode,
+            phase="scan",
+            complete=result.complete,
+            cursor_before_sha256=_cursor_digest(after),
+            cursor_after_sha256=_cursor_digest(result.cursor),
+            targeted=target_keys is not None,
+            inspected_paths=len(paths),
+            candidates=len(result.candidates),
+            committed_bytes=result.committed_bytes,
+            reserved_bytes=result.reserved_bytes,
+            retained_reasons={
+                reason: sum(
+                    count
+                    for key, count in result.retained_reasons.items()
+                    if _audit_reasons([key])[0] == reason
+                )
+                for reason in _audit_reasons(result.retained_reasons)
+            },
+            items=[
+                {
+                    "cache_key": item["cache_key"],
+                    "kind": item["kind"],
+                    "bytes": item["bytes"],
+                    "reasons": _audit_reasons(item["reasons"]),
+                }
+                for item in result.observations[:200]
+                if _READY_KEY.fullmatch(item["cache_key"])
+            ],
+            budget={
+                "max_scan_entries": self.policy.max_scan_entries_per_round,
+                "max_scan_nodes": self.policy.max_scan_nodes_per_round,
+                "scan_nodes_remaining": budget.scan.nodes_remaining,
+                "max_hash_bytes": self.policy.max_scan_hash_bytes_per_round,
+                "hash_bytes_remaining": budget.scan.hash_bytes_remaining,
+                "max_round_seconds": self.policy.max_round_seconds,
+            },
+            elapsed_ms=max(0, int((self.monotonic() - started) * 1000)),
+        )
+        return result
 
     def snapshot(
         self, *, mode: Literal["periodic", "pressure", "manual"] = "manual"
@@ -648,7 +725,10 @@ class CachePolicyManager:
             raise
         try:
             budget = self._budget()
-            report = self.scan(mode=mode, budget=budget, target_keys=target_keys)
+            round_id = str(uuid.uuid4())
+            report = self.scan(
+                mode=mode, budget=budget, target_keys=target_keys, audit_round_id=round_id
+            )
             deleted = 0
             freed = 0
             status = "complete" if report.complete else "budget_exhausted"
@@ -755,7 +835,7 @@ class CachePolicyManager:
                     break
             if not report.candidates and status == "complete":
                 status = "no_safe_candidates"
-            return CacheRoundResult(
+            round_result = CacheRoundResult(
                 status=status,
                 scanned=sum(value["entries"] for value in report.categories.values()),
                 candidates=len(report.candidates),
@@ -765,6 +845,23 @@ class CachePolicyManager:
                 retained_reasons=report.retained_reasons,
                 child_operations=tuple(child_operations),
             )
+            _audit_event(
+                round_id=round_id,
+                worker_id=self.deletion.worker_id,
+                mode=mode,
+                phase="result",
+                status=round_result.status,
+                complete=report.complete,
+                scanned=round_result.scanned,
+                candidates=round_result.candidates,
+                deleted=round_result.deleted,
+                freed_bytes=round_result.freed_bytes,
+                delete_nodes_used=budget.deletion.removed_nodes,
+                max_delete_nodes=budget.deletion.nodes,
+                max_delete_bytes=budget.deletion.bytes,
+            )
+            return round_result
+
         finally:
             round_lock.__exit__(None, None, None)
 

@@ -17,6 +17,8 @@
 5. **#180/#183 非敏感诊断。** 公共错误码保持兼容；内部分类使用固定阶段/原因枚举，禁止拼接 exception repr、字段值或原始消息。确定性坏响应用于验证分类和脱敏，真实 Provider 结果另行记录。固定内部类别覆盖 provider_json、provider_envelope、final_json、output_schema、unicode、output_safety、candidate_configuration；不向公共错误增加字段。预算/结果/失败事件复用现有有界 AI audit，以请求 ID 和逐次检查序号关联，输出估算方法、分项、裁剪、相对时限和固定结果类别；拒绝调用也记录预算事实。#182 仅以对象身份定位已经找到的当前 envelope，保留完整工具配对。
 6. **#179/#195 的已确认决定（2026-10-09）。** #179 按 Unicode 码点比较，区分大小写、稳定排序，不受 locale 影响；null/boolean 转字符串采用 `null`、`true`、`false`。保持既有跨语言同结果要求，固定共享 fixtures 后修复，不能为各实现建立不同 oracle。#195 提供“停止等待”：立即中止本页 HTTP 等待、隔离本轮迟到消息/Candidate、允许再次发送；既有可见历史保留，不自动 Apply/Save/Run，也不保证撤销 Provider 调用或计费。上游继续受现有共享 deadline/工具预算约束，不增加后台任务、取消服务或持久会话。用户已选择以上推荐方案，并要求后续相似决定按推荐方案自主推进，记录依据。
 
+7. **#173/#184 实际运行根因与审计。** 无依赖真实 Linux Python 任务在取消和 workspace cleanup 完成、Adapter 删除后，环境清理仍失败 3 次，最早阻止点为 cache_rebuild_unknown。可重建证明服务于 live-version GC；deleted-Adapter cleanup 以 Control 验证当前 claim 和无未完成引用的精确 guard 为授权，所有身份、内容、Pin、最近使用、use/journal 校验不变，普通 GC 仍要求证明。扫描完成后等待已有删除恢复，避免重复发起；Worker 报告只增加固定内部原因。#184 复用现有 Worker 轮转日志，round ID 关联 scan/result、模式、预算、游标摘要和最多 200 安全数字键，剔除 identity/proof/路径/任意目录名。
+
 ## Risks / Trade-offs
 
 - 宿主 uv 直接链不能证明 Linux sandbox/cgroup/完整 Claim 链 → 直接回归和真实 Worker/UI 验收分别列账。

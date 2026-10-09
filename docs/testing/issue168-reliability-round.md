@@ -18,3 +18,7 @@
 #179 的共享规则为 Unicode 码点、区分大小写、稳定排序；null/boolean 字符串为 `null`、`true`、`false`。#195 提供本页“停止等待”，隔离迟到响应并允许再次发送，上游仍受原 deadline/工具预算约束。其余子单及 #191–#194 验收继续进行，BLOCKED 保留原分类。
 
 AI 诊断批次：#180 的固定安全分类与 #183 的逐次预算/时限事件加入现有有界轮转 AI audit，不新增 Prompt/响应存储。9 个错误层与 2 个工具调用链基线均缺少诊断；修复后相关小批 22 项通过。扩大检查为 379 PASS / 1 FAIL，唯一失败是新增线级 JSON 测试采用了当前 CPython 能解析的嵌套深度；按本机实际解析器阈值修正测试前态后，6 个线级分类检查通过。首次结果独立保留。真实 Provider 四场景与两个原 BLOCKED 仍待运行。#182 完全相等的历史 envelope 在普通/多模态两种前态均先失败；最小改为对象身份定位当前请求后，同组 11 项通过，完整当前材料与工具配对保留。
+
+#173 的 Linux 首次链路已复现：实际 active Python 任务 stop/delete 返回等待 Worker，取消与工作区清理完成后适配器删除，但环境清理到 3 次仍失败。独立定位为 `cache_rebuild_unknown`：普通无依赖环境没有可重建证明，已删除适配器的清理误走 live-version GC 证明门槛。修复仅区分 Control 授权且无引用的 deleted-Adapter cleanup 与普通 GC；owner、内容/摘要、Pin、最后使用时间、local use/journal、cleanup claim/observed identity/guard 仍检查，普通 GC 仍要求可重建证明。预算耗尽后已完成的扫描等待既有删除恢复，不反复扫描发起新删除。新增无证明清理/重启恢复/活动引用/Pin 回归；相关缓存与替换/策略批次 69 项通过。
+
+#184 的基线缺少模式和按键扫描审计，两个新增回归先失败。审计加入现有 Worker 轮转日志，以 round ID 关联 scan/result，区分 periodic/pressure/manual，记录分页完整性、游标摘要、最多 200 个已验证数字键、固定原因及预算/释放计量。不记录 identity、路径、proof/actor、任意目录名或异常正文。单元链已证明 active use 保留并在释放后安全删除；真实 Worker 跨 TTL 证据仍待核对。新增检查第一次因把业务字节当作物理占用而失败，纠正为独立缓存账目值后，上述 69 项全部通过。各轮首次记录单独留存。

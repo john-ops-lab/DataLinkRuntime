@@ -38,7 +38,7 @@ class ReplacementGuardClient:
         replacement_context: Mapping[str, Any] | None = None,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        del timeout_seconds, cleanup_context, observed_identity
+        del timeout_seconds
         binding = (
             {key: value for key, value in replacement_context.items() if key != "claim_token"}
             if replacement_context is not None
@@ -53,8 +53,13 @@ class ReplacementGuardClient:
                 "operation_id": str(operation_id),
                 "generation": 1,
                 "phase": "acquired",
-                "operation_kind": "replacement",
+                "operation_kind": "cleanup" if cleanup_context is not None else "replacement",
                 "replacement_context": binding,
+                "cleanup_id": (cleanup_context or {}).get("cleanup_id"),
+                "cleanup_claim_attempt": (cleanup_context or {}).get("claim_attempt"),
+                "observed_identity": dict(observed_identity)
+                if observed_identity is not None
+                else None,
             },
         )
         if self.fail_acquire_response:
@@ -712,9 +717,17 @@ def test_cleanup_oversize_candidate_does_not_starve_later_entry(
         return original_observe(path, **kwargs)
 
     monkeypatch.setattr(manager, "observed_identity_bounded", track)
-    for _ in range(3):
+    for _ in range(4):
         if agent._execute_cleanup_task(7, {"cleanup_id": 3, "adapter_id": 11, "claim_attempt": 1}):
             break
     assert "11-14" in observed
     assert (cache.entry_path("11-13") / "payload.bin").read_bytes() == b"old"
+    # The small entry now reaches the authorized deletion path. Its second
+    # verification exhausted this intentionally tiny budget, so the ordinary
+    # recovery coordinator must finish it before cleanup reports the retained
+    # oversized entry. No budget exhaustion is counted as a failed attempt.
+    assert manager.cleanup_state(3) == "pending"
+    manager.recover_round()
+    assert agent._execute_cleanup_task(7, {"cleanup_id": 3, "adapter_id": 11, "claim_attempt": 1})
+    assert not cache.entry_path("11-14").exists()
     assert replies[-1]["success"] is False

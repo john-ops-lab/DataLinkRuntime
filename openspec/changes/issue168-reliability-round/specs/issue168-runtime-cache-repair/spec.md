@@ -24,3 +24,17 @@ Python 依赖准备 SHALL 在安装成功后对已知安装器私有锁元数据
 #### Scenario: A guarded queued message precedes a healthy message
 - **WHEN** 合法可达的缓存 guard 冲突影响 queued 的恢复处置，队列中另有健康消息
 - **THEN** 两者的消息/Incident 责任 SHALL 可核对，健康消息有界推进，冲突解除后原 Execution 安全续行；未验证的永久阻塞或消息丢失不得被宣称已证实
+
+### Requirement: Authorized deleted Adapter cleanup is independent of rebuild proof
+已删除 Adapter 的环境清理 SHALL 使用 Control 验证的当前 cleanup claim、observed identity 和无未完成引用的 guard 授权，不要求 live-version GC 的可重建证明。普通 GC 的可重建证明与所有 owner、内容、Pin、last-used、local use/journal、fencing 和预算检查 SHALL 保持。扫描耗尽后等待已有删除恢复，不在同一 cleanup 内重复发起删除。
+
+#### Scenario: A deleted Adapter used an environment with unknown rebuildability
+- **WHEN** 实际执行已取消且工作区清理完成，Adapter 已删除，环境没有可重建证明
+- **THEN** cleanup SHALL 在精确授权和无保护责任时有界删除并记账；活动引用、Pin、内容未知或 stale cleanup claim 仍阻止删除；恢复和重启不重复记账
+
+### Requirement: Bounded cache scan audit identifies actual observations
+缓存扫描 SHALL 在现有有界 Worker 日志输出可关联的模式、轮次、预算、分页完整性、游标摘要、已核查安全键、固定原因和释放量；不得输出路径、任意目录名、identity、证明正文、凭据或异常正文。
+
+#### Scenario: Active use spans a periodic TTL scan
+- **WHEN** 实际引用跨 TTL 且周期扫描覆盖被测键
+- **THEN** audit SHALL 明确关联该键与真实保留原因，解除引用后的安全回收与目录及账目一致；分页局部观察不可标记全量完整

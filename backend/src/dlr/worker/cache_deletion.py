@@ -741,13 +741,21 @@ class CacheDeletionManager:
         with self.lifecycle.entry_lock(key, blocking=False):
             owner = self.lifecycle.owner(self.worker_id)
             facts = self.lifecycle.lifecycle(key)
-            policy_reason = self.lifecycle.reclamation_reason(
-                key,
-                identity=eligibility.identity,
-                digest=eligibility.digest,
-                offline_protection=self.offline_protection,
-                offline_mode=self.offline_mode,
-                now=self.clock(),
+            # Rebuild proof protects a live version during GC. Deleted-Adapter
+            # cleanup instead requires Control's exact, still-current cleanup
+            # claim and no durable references; content and local protection
+            # checks below remain mandatory.
+            policy_reason = (
+                ("cache_pinned" if facts["pinned"] else None)
+                if eligibility.cleanup_context is not None
+                else self.lifecycle.reclamation_reason(
+                    key,
+                    identity=eligibility.identity,
+                    digest=eligibility.digest,
+                    offline_protection=self.offline_protection,
+                    offline_mode=self.offline_mode,
+                    now=self.clock(),
+                )
             )
             if (
                 facts["identity"] != dict(eligibility.identity)
@@ -1139,13 +1147,17 @@ class CacheDeletionManager:
                 if source_exists:
                     _assert_root_identity(source, record)
                     lifecycle = self.lifecycle.lifecycle(key)
-                    policy_reason = self.lifecycle.reclamation_reason(
-                        key,
-                        identity=record["identity"],
-                        digest=str(record["digest"]),
-                        offline_protection=self.offline_protection,
-                        offline_mode=self.offline_mode,
-                        now=self.clock(),
+                    policy_reason = (
+                        ("cache_pinned" if lifecycle["pinned"] else None)
+                        if record["operation_kind"] == "cleanup"
+                        else self.lifecycle.reclamation_reason(
+                            key,
+                            identity=record["identity"],
+                            digest=str(record["digest"]),
+                            offline_protection=self.offline_protection,
+                            offline_mode=self.offline_mode,
+                            now=self.clock(),
+                        )
                     )
                     if (
                         lifecycle["identity"] != record["identity"]
@@ -1173,13 +1185,17 @@ class CacheDeletionManager:
                         # proof expiry or a newly committed local protection.  This
                         # is the final authorization point before the first rename.
                         latest = self.lifecycle.lifecycle(key)
-                        latest_reason = self.lifecycle.reclamation_reason(
-                            key,
-                            identity=record["identity"],
-                            digest=str(record["digest"]),
-                            offline_protection=self.offline_protection,
-                            offline_mode=self.offline_mode,
-                            now=self.clock(),
+                        latest_reason = (
+                            ("cache_pinned" if latest["pinned"] else None)
+                            if record["operation_kind"] == "cleanup"
+                            else self.lifecycle.reclamation_reason(
+                                key,
+                                identity=record["identity"],
+                                digest=str(record["digest"]),
+                                offline_protection=self.offline_protection,
+                                offline_mode=self.offline_mode,
+                                now=self.clock(),
+                            )
                         )
                         if (
                             latest["identity"] != record["identity"]
