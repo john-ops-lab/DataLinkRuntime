@@ -1157,10 +1157,21 @@ class Agent:
         try:
             retry_operation = task.get("retry_operation_id")
             if retry_operation is not None:
-                manager.retry_failed_cleanup(
-                    cleanup_id,
-                    management_operation_id=uuid.UUID(str(retry_operation)),
-                )
+                try:
+                    manager.retry_failed_cleanup(
+                        cleanup_id,
+                        management_operation_id=uuid.UUID(str(retry_operation)),
+                    )
+                except CacheError as error:
+                    # A failure before guard acquisition has no deletion record
+                    # to resume. The explicit Control retry supplies a new current
+                    # cleanup claim; only a proven-clear local record set may
+                    # restart the ordinary guarded scan. Unknown state still fails.
+                    if (
+                        error.code != "cache_retry_unknown"
+                        or manager.cleanup_state(cleanup_id) != "clear"
+                    ):
+                        raise
                 self._recover_cache_deletions()
                 cleanup_state = manager.cleanup_state(cleanup_id)
                 if cleanup_state == "failed":

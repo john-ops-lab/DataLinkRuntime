@@ -85,3 +85,46 @@ def test_manual_scan_pagination_hashes_unknown_names_and_bounds_items(
     manager.scan(mode="manual")
     assert "PRIVATE-ENDPOINT-NAME" not in caplog.text
     assert str(tmp_path) not in caplog.text
+
+
+def test_periodic_audit_identifies_active_use_held_by_another_thread(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import threading
+
+    cache, lifecycle, manager = _manager(
+        tmp_path, replace(CachePolicy(), gc_enabled=True, idle_ttl_seconds=0, min_idle_seconds=0)
+    )
+    identity, digest = _ready(cache, lifecycle)
+    lifecycle.confirm_rebuildability(
+        "11-13",
+        identity=identity,
+        digest=digest,
+        source_policy="verified_offline",
+        evidence_note="local test",
+        actor="test",
+        valid_until=time.time() + 300,
+    )
+    entered, release = threading.Event(), threading.Event()
+
+    def active() -> None:
+        use = lifecycle.begin_use(
+            "11-13", worker_id=7, execution_id=23, attempt_id=29, fencing_token=1
+        )
+        with use:
+            entered.set()
+            assert release.wait(10)
+            use.release(cleanup_completed=True)
+
+    thread = threading.Thread(target=active)
+    thread.start()
+    try:
+        assert entered.wait(10)
+        caplog.set_level(logging.INFO)
+        manager.run_round(mode="periodic")
+        scan = next(e for e in _events(caplog) if e["phase"] == "scan")
+        assert scan["items"][0]["reasons"] == ["cache_entry_in_use"]
+        assert cache.entry_path("11-13").exists()
+    finally:
+        release.set()
+        thread.join()

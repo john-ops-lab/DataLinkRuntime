@@ -599,8 +599,18 @@ class CacheDeletionManager:
 
     def preview_local_safe(self, key: str, *, max_records: int, budget: CacheScanBudget) -> None:
         """Bounded, read-only local protection check for policy reporting."""
-
-        with self.lifecycle.entry_lock(key, blocking=False):
+        lock = self.lifecycle.entry_lock(key, blocking=False)
+        try:
+            lock.__enter__()
+        except CacheError as error:
+            if error.code == "cache_lock_busy":
+                # A live attempt owns the entry lock for its entire run. Its
+                # durable use/journal records can identify why the preview is
+                # retained even though we cannot acquire the lock. This read
+                # never grants deletion authority; otherwise keep lock_busy.
+                self._local_safe(key)
+            raise
+        try:
             self._local_safe(key)
             records = _local_record_page(
                 self.lifecycle.deletion_root,
@@ -619,6 +629,8 @@ class CacheDeletionManager:
                     and record.get("phase") not in _TERMINAL_PHASES
                 ):
                     raise CacheError("cache_operation_in_progress")
+        finally:
+            lock.__exit__(None, None, None)
 
     def _local_safe(self, key: str) -> None:
         records = self.lifecycle.use_records_for_key(key)

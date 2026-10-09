@@ -132,3 +132,37 @@ def test_deleted_adapter_cleanup_preserves_pin_and_active_use(tmp_path: Path) ->
     assert pinned.value.code == "cache_pinned"
     assert cache.entry_path("11-13").exists()
     assert client.operations == {}
+
+
+def test_manual_retry_restarts_cleanup_that_failed_before_local_record(tmp_path: Path) -> None:
+    import uuid
+    from types import SimpleNamespace
+
+    from dlr.worker.agent import Agent
+
+    cache, lifecycle, policy_manager = _manager(tmp_path, CachePolicy())
+    _ready(cache, lifecycle)
+    client = CleanupClient()
+    reports: list[dict[str, Any]] = []
+    client.report_cleanup = lambda *_args, **kwargs: reports.append(kwargs)  # type: ignore[attr-defined]
+    manager = policy_manager.deletion
+    manager.client = client  # type: ignore[assignment]
+    assert manager.cleanup_state(17) == "clear"
+    assert list(lifecycle.deletion_root.iterdir()) == []
+    agent = Agent(
+        SimpleNamespace(runtime_root=tmp_path, workspace_cleanup_interval_seconds=0.01),
+        client,  # type: ignore[arg-type]
+    )
+    agent._cache_deletion_manager = manager
+    assert agent._execute_cleanup_task(
+        7,
+        {
+            "cleanup_id": 17,
+            "adapter_id": 11,
+            "claim_attempt": 4,
+            "retry_operation_id": str(uuid.uuid4()),
+        },
+    )
+    assert reports[-1]["success"] is True
+    assert not cache.entry_path("11-13").exists()
+    assert manager.cleanup_state(17) == "clear"
