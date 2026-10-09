@@ -35,7 +35,10 @@ export function useOverlayFocus(open: boolean, fallbackSelector: string) {
     const available = (element: HTMLElement) => element.isConnected && element.getClientRects().length > 0 &&
       (element.tabIndex >= 0 || element.hasAttribute("tabindex")) &&
       !(element instanceof HTMLButtonElement && element.disabled) && element.getAttribute("aria-disabled") !== "true";
-    const target = previous !== null && available(previous)
+    // A keyed portal may autofocus during open. Its still-connected exiting
+    // nodes are never an external trigger, even while they have layout boxes.
+    const target = previous !== null && available(previous) &&
+      !previous.closest(".ant-drawer, .ant-modal, .ant-dropdown")
       ? previous : [...document.querySelectorAll<HTMLElement>(fallbackSelector)].find(available);
     target?.focus();
   }

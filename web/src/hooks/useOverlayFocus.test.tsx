@@ -68,3 +68,20 @@ it("restores after the drawer's own focus callback overwrites the target", () =>
   flush();
   expect(document.activeElement).toBe(trigger);
 });
+
+it("does not return focus to a still-connected portal that is exiting", () => {
+  const flush = mockFrames();
+  vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([{}] as unknown as DOMRectList);
+  const fallback = document.createElement("button");
+  fallback.id = "fallback";
+  const portal = document.createElement("div");
+  portal.className = "ant-dropdown";
+  const item = document.createElement("button");
+  portal.append(item);
+  document.body.append(fallback, portal);
+  item.focus();
+  const { result } = renderHook(() => useOverlayFocus(true, "#fallback"));
+  act(() => result.current(false));
+  flush();
+  expect(document.activeElement).toBe(fallback);
+});
