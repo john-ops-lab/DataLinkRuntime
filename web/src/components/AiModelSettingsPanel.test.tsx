@@ -566,3 +566,63 @@ it("Issue #188 refreshes deleted Credentials without overwriting drafts or accep
   expect((screen.getByTestId("ai-save-settings") as HTMLButtonElement).disabled).toBe(true);
   expect((baseUrl as HTMLInputElement).value).toBe("https://example.invalid/preserved-draft");
 });
+
+
+it("preserves a configured credential and drafts after initial catalog failure, then retries without reloading settings", async () => {
+  mockLoad(modelSetting({ credential_id: 7 }));
+  const credential: Credential = { id: 7, name: "valid-token", type: "token",
+    created_at: "2026-10-09T00:00:00Z", updated_at: "2026-10-09T00:00:00Z" };
+  vi.mocked(api.listCredentials).mockRejectedValueOnce(new Error("catalog unavailable"))
+    .mockResolvedValueOnce([credential]);
+  const update = vi.spyOn(api, "updateAiSetting").mockImplementation(async (draft) => modelSetting(draft));
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await screen.findByTestId("ai-credentials-load-failed");
+  expect(screen.queryByText(/所选凭据已被删除/)).toBeNull();
+  expect((screen.getByTestId("ai-save-settings") as HTMLButtonElement).disabled).toBe(false);
+  const baseUrl = screen.getByTestId("ai-base-url");
+  fireEvent.change(baseUrl, { target: { value: "https://models.example.com/preserved-draft" } });
+  fireEvent.click(screen.getByTestId("ai-retry-credentials"));
+  await waitFor(() => expect(screen.getByTestId("ai-summary-credential").textContent).toBe("valid-token"));
+  expect(screen.queryByTestId("ai-credentials-load-failed")).toBeNull();
+  expect((baseUrl as HTMLInputElement).value).toBe("https://models.example.com/preserved-draft");
+  expect(api.getAiSetting).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByTestId("ai-save-settings"));
+  await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({
+    credential_id: 7, base_url: "https://models.example.com/preserved-draft",
+  })));
+});
+
+it("does not declare a credential missing when a newer failed refresh supersedes the initial successful response", async () => {
+  mockLoad(modelSetting({ credential_id: 7 }));
+  const credential: Credential = { id: 7, name: "valid-token", type: "token",
+    created_at: "2026-10-09T00:00:00Z", updated_at: "2026-10-09T00:00:00Z" };
+  let releaseInitial: (items: Credential[]) => void = () => undefined;
+  vi.mocked(api.listCredentials)
+    .mockImplementationOnce(() => new Promise((resolve) => { releaseInitial = resolve; }))
+    .mockRejectedValueOnce(new Error("newer request failed"))
+    .mockResolvedValueOnce([credential]);
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await waitFor(() => expect(api.listCredentials).toHaveBeenCalledTimes(1));
+  act(() => window.dispatchEvent(new Event("focus")));
+  await waitFor(() => expect(api.listCredentials).toHaveBeenCalledTimes(2));
+  await act(async () => releaseInitial([credential]));
+  await screen.findByTestId("ai-credentials-load-failed");
+  expect(screen.queryByText(/所选凭据已被删除/)).toBeNull();
+  expect((screen.getByTestId("ai-save-settings") as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(screen.getByTestId("ai-retry-credentials"));
+  await waitFor(() => expect(screen.getByTestId("ai-summary-credential").textContent).toBe("valid-token"));
+});
+
+it("submits an unconfirmed credential to authoritative backend validation and preserves the rejected draft", async () => {
+  mockLoad(modelSetting({ credential_id: 7 }));
+  vi.mocked(api.listCredentials).mockRejectedValue(new Error("catalog unavailable"));
+  const update = vi.spyOn(api, "updateAiSetting")
+    .mockRejectedValue(new ApiError(404, "credential_not_found", "credential unavailable"));
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await screen.findByTestId("ai-credentials-load-failed");
+  fireEvent.change(screen.getByTestId("ai-base-url"), { target: { value: "https://models.example.com/draft" } });
+  fireEvent.click(screen.getByTestId("ai-save-settings"));
+  await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ credential_id: 7 })));
+  await waitFor(() => expect(screen.getByTestId("ai-settings-error").textContent).toContain("credential_not_found"));
+  expect((screen.getByTestId("ai-base-url") as HTMLInputElement).value).toBe("https://models.example.com/draft");
+});

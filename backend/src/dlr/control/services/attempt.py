@@ -570,9 +570,15 @@ def claim_dispatch(
             None,
         )
         if row is None:
-            row = outbox.create_dispatch_outbox(session, execution, available_at=now)
+            # Repair already accepted responsibility, not new ingress. An
+            # ingress quota refusal here would lose the message on ACK.
+            row = outbox.create_dispatch_outbox(
+                session, execution, available_at=now, message_id=message.message_id
+            )
         row.status = "pending"
-        row.available_at = now + timedelta(seconds=1)
+        # The incident/outbox locks above can wait. Start the minimum retry
+        # delay from the transfer itself, not the earlier execution snapshot.
+        row.available_at = database_now(session) + timedelta(seconds=1)
         row.lease_owner = None
         row.lease_expires_at = None
         row.published_at = None

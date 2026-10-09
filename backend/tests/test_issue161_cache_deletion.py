@@ -15,7 +15,9 @@ import dlr.worker.cache_deletion as deletion_module
 import dlr.worker.cache_lifecycle as lifecycle_module
 from dlr.worker.cache import CacheError, VerifiedVersionCache
 from dlr.worker.cache_deletion import CacheDeletionManager, DeletionEligibility
+from dlr.worker.cache_governance import CachePolicyManager
 from dlr.worker.cache_lifecycle import CacheLifecycleStore
+from dlr.worker.cache_policy import CachePolicy
 from dlr.worker.client import ControlUnavailableError
 
 
@@ -239,7 +241,11 @@ def test_corrupt_record_keeps_failed_item_page_incomplete_without_hiding_valid_i
     failed = manager.begin(eligibility, max_bytes=8192)
     manager.recover_round(max_items=1, max_pages=0)
     manager.recover_round(max_items=1, max_pages=0)
-    bad_path = lifecycle.deletion_root / f"{uuid.uuid4()}.json"
+    # The corrupt first record has an active remote guard of unknown local
+    # content. Reading the management page must retain both protection facts.
+    bad_operation = uuid.UUID(int=1)
+    client.acquire_cache_guard(7, adapter_id=11, version_id=90, operation_id=bad_operation)
+    bad_path = lifecycle.deletion_root / f"{bad_operation}.json"
     bad_path.write_text(contents, encoding="ascii")
     bad_path.chmod(0o600)
     items, cursor, complete = manager.failed_items_page(after=None, max_items=20)
@@ -247,6 +253,23 @@ def test_corrupt_record_keeps_failed_item_page_incomplete_without_hiding_valid_i
     assert cursor is None
     assert complete is False
     assert bad_path.read_text(encoding="ascii") == contents
+    _add_ready(cache, 11, 14)
+    policy_manager = CachePolicyManager(
+        tmp_path,
+        cache,  # type: ignore[arg-type]
+        lifecycle,
+        manager,
+        CachePolicy(),
+    )
+    for _ in range(2):
+        snapshot = policy_manager.management_snapshot()
+        assert snapshot["failed_guard_complete"] is False
+        assert snapshot["failed_guard_cursor"] is None
+        assert snapshot["failed_guard_items"] == items
+        assert any(item["cache_key"] == "11-14" for item in snapshot["items"])
+        assert cache.entry_path("11-14").exists()
+        assert bad_path.read_text(encoding="ascii") == contents
+        assert client.operations[bad_operation]["phase"] == "acquired"
 
 
 @pytest.mark.parametrize("method", ["recover", "failed_items"])

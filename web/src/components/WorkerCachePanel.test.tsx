@@ -178,6 +178,20 @@ describe("Worker cache administration", () => {
     }
   });
 
+  it("shows partial failed-guard evidence even when no readable failed items remain", async () => {
+    const view = cacheView();
+    view.failed_guard_complete = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/cache?")) return response(view);
+      return response({ items: [], next_cursor: null });
+    }));
+    renderPanel();
+
+    expect(await screen.findByText("这里只显示了部分失败保护记录。")).toBeTruthy();
+    expect(screen.getByText("11-12")).toBeTruthy();
+    expect(screen.queryByText("暂无失败保护记录")).toBeNull();
+  });
+
   it("submits only selected keys and binds protection to observed identity and digest", async () => {
     const posts: Array<Record<string, unknown>> = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

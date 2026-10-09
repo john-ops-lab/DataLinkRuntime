@@ -94,3 +94,17 @@ Control `39b0f90` 的固定普通产品帮助在真实 Chrome 首轮得到正确
 #168 与 #169–#195 共 28 个 Issue 已追加分项开发/验收更新；全部原正文及 open/closed 状态指纹前后相同，#129 未触及。未自动关闭、合并或改写原基线统计。
 
 Draft PR #196 首次精确 HEAD `d1cfb16` 的 Web 与 local-preview CI 通过，Compose smoke 在审计 JSONL 校验失败：检查器只接受原有 tool_attempt/guard/request_terminal，未跟进 #180/#183 新增的 provider_budget/provider_result/response_validation。修正只扩展闭合事件 schema，并对新事件逐项核类型、固定分类、预算总和、窗口与共享 deadline；原事件和全部敏感字面量检查保留。以本机当前及轮转审计文件复核 39 budget、39 result、30 terminal、3 response validation、16 tool attempt、3 guard 全部通过。首次 CI 失败原件保留，最终 CI 结果另行关联精确后继 HEAD；本机应用切换继续等待 CI，不把构建成功视为部署完成。
+
+## 独立 Review 后续（2026-10-09）
+
+用户明确暂停知识库功能开发与真实检索矩阵。真实 ima 来源、知识开关等未完成项单独标记暂停，不删除既有功能、不计作通过；继续更新同一 PR #196。
+
+- #188 修正凭据加载失败误判删除：AI 设置与绑定编辑分别保留最后成功快照、初次未知/失败/已确认缺失状态，提供局部重试并保留草稿。后端保存校验与 ACL 不变。7 个新增回归覆盖初次失败、初次成功被较新失败刷新隔离、重试恢复、实际缺失与后端拒绝；受影响双组件 26 项通过。真实 UI 对最终镜像另行核对。
+- #181 先前真实 Chrome 回复虽步骤正确且无工具/候选，仍附带代码表达式。进一步把通用 Secret API 指导限定到代码问题，普通 UI 帮助只解释所问的可见步骤；不使用关键词路由、文本过滤或伪造 Provider 回复。真实 Provider 对新版本的验证另行列账，知识开启矩阵暂停。
+- #175 明确现有 DLQ 边界：handler 持久化人工 Incident 后 ACK，不重置原派发行。published 行在 guard 解除后不被 Relay 自动领取，人工 recover 受控增代；confirm-before-mark 窗口的 pending 行保留原 Relay 重放责任，人工 recover 复用原代并解决 Incident。两种真实 Broker 前态、guard 期间 recover 409、健康后继先 Claim、实际 Relay 负例、重复 recover/Claim 幂等全部通过。测试替身上报结果只证明协议责任，不替代 Linux 业务输出。
+- #176 慢锁后重新读取 PostgreSQL 时钟，保留最小一秒延后；缺行异常修复保留已验证消息 ID，从权威 Execution 重建其余字段。该分支修复已接受责任，不重新以 ingress 容量拒绝后 ACK；显式删行注入回归不能证明生产正常删除 Outbox。首次回归发现原补建生成新消息 ID，修复后同 ID/代、零 Attempt/Admission 保持通过。
+- #174 补破损 JSON/结构错误 → failed_items_page → management_snapshot 的完整性 false、健康记录继续可见和未知 guard 保留；Web 即使失败列表为空也显示局部保护记录警示。补焦点触发器与回退均不可用时不覆盖当前有效外部焦点的边界。两 Web 文件 21 项通过，删除/生命周期/Prompt 批次的其余 139 项首次通过；该批次 3 个失败为未结束 owner Slot 的新测试前态和上述真实缺行身份问题，保留后再针对修复复验。
+- 消息责任受影响批次 57 PASS / 2 SKIP；额外非知识库矩阵（cache governance/admin/policy、builtin package、cancel、schedule）122 PASS。首次矩阵命令包含两处不存在的测试路径，未执行用例；核实际文件后使用独立测试数据库重跑，通过，未改产品预期。Web 完整测试、lint/typecheck/build 通过；Ruff、Mypy、OpenSpec strict、diff 检查通过。Hosted CI 与部署按精确新 HEAD 分别报告。
+- 在应用检查点 `3e2d5b8` 的真实 Chrome 双页中，第二页启用计划后第一页面自动锁定保存、依赖和全部运行设置，保留未保存依赖草稿；停用后恢复编辑。暂停第一页面实际 POST 保存请求，第二页先启用计划，再放行得到后端 409 `adapter_runtime_locked`，页面刷新权威锁且草稿未丢失；独立网络事件核 409，计划已停用。编辑器原生键盘构造未产生代码草稿，未计通过；使用实际依赖编辑草稿完成规定前态，未保存为版本。
+
+这些补证不自动改写原自然离线/自然 retry_wait、真实旧历史、合法无工具模型和不可执行节点等缺少前态的原 BLOCKED。最终 SHA/CI/镜像/真实 Provider 与 UI 验证结果见 PR #196 的最后状态更新。

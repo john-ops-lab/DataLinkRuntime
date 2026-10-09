@@ -425,7 +425,9 @@
     "validationEnvKeyRequired": "每行绑定都必须填写代码中的凭据名",
     "validationEnvKeyDuplicate": "代码中的凭据名不能重复",
     "validationSelectionRequired": "每行绑定都必须选择凭据与字段",
-    "credentialMissing": "所选凭据已被删除或不再可用。草稿已保留，请重新选择或清空。"
+    "credentialMissing": "所选凭据已被删除或不再可用。草稿已保留，请重新选择或清空。",
+    "credentialsLoadFailed": "凭据列表加载失败，暂时无法确认所选凭据是否可用。草稿已保留，请重试。",
+    "credentialsRetry": "重新加载凭据"
   },
   "packageSources": {
     "kinds": {

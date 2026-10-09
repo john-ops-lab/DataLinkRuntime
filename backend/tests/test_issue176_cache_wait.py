@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.control.models import Execution, ExecutionOutbox
+from dlr.control.services import attempt as attempt_service
 from dlr.control.services import execution as execution_service
 from dlr.control.services import outbox, rabbitmq
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
@@ -27,6 +28,84 @@ from test_issue130_b2_runtime import _dispatch, _execution, _rabbit_adapter
 from test_issue161_cache_governance import WORKER_HEADERS
 from test_issue175_guard_dlq import BROKER_URL, active_replacement_with_queued_execution
 from worker_runtime_support import unit_resource_envelope, unit_sandbox_config
+
+
+def test_guard_transfer_starts_retry_delay_after_a_slow_outbox_lock(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, _adapter, queued, _payload, _operation, _generation = (
+        active_replacement_with_queued_execution(
+            api_client, session_factory, monkeypatch, "issue176-slow-outbox-lock"
+        )
+    )
+    original_lock = attempt_service.lock_incidents_and_outbox
+    lock_returned_at: list[datetime] = []
+
+    def slow_lock(*args, **kwargs):
+        time.sleep(1.1)
+        result = original_lock(*args, **kwargs)
+        lock_returned_at.append(attempt_service.database_now(args[0]))
+        return result
+
+    monkeypatch.setattr(attempt_service, "lock_incidents_and_outbox", slow_lock)
+    response = api_client.post(
+        f"/api/workers/{worker['id']}/v3/claim",
+        json=_dispatch(session_factory, int(queued["id"])),
+        headers=WORKER_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["reason"] == "cache_dispatch_deferred"
+    with session_factory() as session:
+        row = session.scalar(
+            select(ExecutionOutbox).where(ExecutionOutbox.execution_id == int(queued["id"]))
+        )
+        assert row is not None
+        assert len(lock_returned_at) == 1
+        assert row.available_at >= lock_returned_at[0] + timedelta(seconds=1)
+
+
+def test_missing_outbox_repairs_existing_guarded_responsibility_even_at_ingress_quota(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, _adapter, queued, _payload, _operation, _generation = (
+        active_replacement_with_queued_execution(
+            api_client, session_factory, monkeypatch, "issue176-missing-outbox-repair"
+        )
+    )
+    dispatch = _dispatch(session_factory, int(queued["id"]))
+    # Explicit corruption injection tests the repair branch. Normal delivery
+    # retains this row; this is not evidence that production prunes it.
+    with session_factory.begin() as session:
+        row = session.scalar(
+            select(ExecutionOutbox).where(ExecutionOutbox.execution_id == int(queued["id"]))
+        )
+        assert row is not None
+        session.delete(row)
+    monkeypatch.setattr(outbox.settings, "outbox_max_pending_count", 1)
+    with session_factory() as session:
+        assert outbox.backlog(session).pending_count >= 1
+    response = api_client.post(
+        f"/api/workers/{worker['id']}/v3/claim", json=dispatch, headers=WORKER_HEADERS
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["reason"] == "cache_dispatch_deferred"
+    with session_factory() as session:
+        execution = session.get(Execution, int(queued["id"]))
+        rows = list(
+            session.scalars(
+                select(ExecutionOutbox).where(ExecutionOutbox.execution_id == int(queued["id"]))
+            )
+        )
+        assert execution is not None and execution.status == "queued"
+        assert execution.attempt_count == 0 and execution.admission_released_at is None
+        assert execution.dispatch_generation == dispatch["dispatch_generation"]
+        assert len(rows) == 1 and rows[0].status == "pending"
+        assert rows[0].message_id == uuid.UUID(dispatch["message_id"])
+        assert rows[0].dispatch_generation == dispatch["dispatch_generation"]
 
 
 @pytest.mark.skipif(not BROKER_URL, reason="requires dedicated real RabbitMQ fixture")

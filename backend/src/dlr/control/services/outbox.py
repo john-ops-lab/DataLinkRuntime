@@ -243,7 +243,7 @@ def _now(session: Session) -> datetime:
 
 
 def dispatch_payload_for_execution(
-    session: Session, execution: Execution
+    session: Session, execution: Execution, *, message_id: uuid.UUID | None = None
 ) -> tuple[dict[str, Any], bytes, str, uuid.UUID]:
     """Freeze the minimal dispatch body for one RabbitMQ Execution."""
 
@@ -262,6 +262,7 @@ def dispatch_payload_for_execution(
         ),
         resource_class=execution.resource_class or "default",
         target_worker_id=target_worker_id,
+        message_id=message_id,
     )
     assert_dispatch_message_safe(message)
     payload = message.model_dump(mode="json")
@@ -279,6 +280,7 @@ def create_dispatch_outbox(
     execution: Execution,
     *,
     available_at: datetime | None = None,
+    message_id: uuid.UUID | None = None,
 ) -> ExecutionOutbox:
     """Insert at most one immutable Outbox row for the current generation."""
 
@@ -292,7 +294,9 @@ def create_dispatch_outbox(
     )
     if existing is not None:
         return existing
-    payload, body, routing_key, message_id = dispatch_payload_for_execution(session, execution)
+    payload, body, routing_key, message_id = dispatch_payload_for_execution(
+        session, execution, message_id=message_id
+    )
     row = ExecutionOutbox(
         execution_id=execution.id,
         dispatch_generation=execution.dispatch_generation,

@@ -85,3 +85,21 @@ it("does not return focus to a still-connected portal that is exiting", () => {
   flush();
   expect(document.activeElement).toBe(fallback);
 });
+
+it("preserves an available external focus target when trigger and fallback are unavailable", () => {
+  const flush = mockFrames();
+  vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([{}] as unknown as DOMRectList);
+  const trigger = document.createElement("button");
+  const disabledFallback = document.createElement("button");
+  disabledFallback.id = "disabled-fallback";
+  disabledFallback.disabled = true;
+  const currentTarget = document.createElement("input");
+  document.body.append(trigger, disabledFallback, currentTarget);
+  trigger.focus();
+  const { result } = renderHook(() => useOverlayFocus(true, "#disabled-fallback, #missing-fallback"));
+  trigger.remove();
+  currentTarget.focus();
+  act(() => result.current(false));
+  flush();
+  expect(document.activeElement).toBe(currentTarget);
+});

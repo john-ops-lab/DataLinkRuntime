@@ -24,3 +24,10 @@
 #### Scenario: Verification could be bypassed
 - **WHEN** 减少校验、提高消息投递上限或无限重试能够暂时消除失败表现
 - **THEN** 本轮 SHALL 拒绝该替代方案并修复已经证实的原因或保留待证状态
+
+### Requirement: Paused knowledge work remains separate
+2026-10-09 用户暂停知识库功能开发后，本轮 SHALL 保留知识源接入和真实知识检索矩阵为暂停项，继续非知识库修复与验证。暂停 MUST 不被记为 PASS、完成或原功能移除。
+
+#### Scenario: Non-knowledge review fixes are delivered
+- **WHEN** 非知识库的凭据状态、产品帮助和消息责任修复通过验证并更新现有 PR
+- **THEN** SHALL 独立报告其证据以及暂停的知识库项，未形成真实历史、模型或节点前态的其他缺项仍明确保留

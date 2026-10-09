@@ -33,3 +33,11 @@
 ## Frontend implementation boundaries
 
 #185 共享页面始终说明 EDIT 用户可通过代码和运行使用已绑定凭据，Secret 不回显，ACL 不变。#186 按后端相同的 trim 后 Unicode 字符数量校验 128 上限，不截断输入。#187 使用保留原始文本的整数秒输入并按服务端 capability 校验上下限，失焦/Enter 不改值；非法值在字段内显示并阻止保存。#188 浏览器 focus/visibility 与打开选择器只刷新凭据元数据；每个请求带本地递增序号，旧结果不覆盖新列表，删除后的选中引用留在草稿并给可修正的失效提示；后端不存在/权限保护保持。#189 目录请求错误独立于变更错误，由最新成功目录请求清除。#190 共享小 hook 在 overlay 自动聚焦前捕获原控件，关闭动画或条件卸载后恢复到仍可见且启用的原控件，否则使用明确入口回退，不引入全局焦点状态。#195 复用 assistant-ui 官方 External Store onCancel / Composer Cancel，AbortController 仅作用于本页 HTTP；取消递增现有请求序号，旧 finally 不清除新请求，既有消息和候选保留。
+
+## Review follow-up and paused knowledge work (2026-10-09)
+
+用户授权完成非知识库工作并更新 PR #196，知识库开发及真实检索矩阵暂停，既有知识行为保持。#181 的普通 UI 帮助将代码任务的 Secret API 指导明确限定到代码问题，避免该指导与纯界面帮助冲突；不使用关键词路由、回复文本删改或伪造 Provider 成功。用实际 Provider 的无工具/普通工具配置分别复核，知识开启项保留暂停。
+
+#188 的失效判定必须基于已成功读取的凭据快照；初次读取失败、较新刷新失败与真实缺失分开，保留编辑并提供重试。服务端仍最终校验保存资格。#175 的正常 Claim guard 延后自动继续，DLQ guard 冲突持久化人工复核 Incident，handler 不重置已有派发行。published Outbox 解除 guard 后不自动重新派发，需管理员明确 recover 并按既有策略受控增代；confirm-before-mark 窗口的 pending 行仍有原 Relay 重放责任，人工 recover 复用原代并解决 Incident，不能误称这是 pending 继续的前提。重复恢复不能产生额外责任。补真实 Broker 正反回归，不改变恢复策略。损坏删除记录的 complete=false 沿既有管理快照传到 UI 警示，用链路回归补证；焦点无任何有效候选时保留当前有效外部焦点，不新增全局焦点框架。
+
+#176 责任交回的最小延后使用 incident/outbox 锁取得后的 PostgreSQL 当前时钟，避免慢锁吃掉延后；缺少 Outbox 的异常修复分支保留已经通过 Claim 验证的消息 ID，并从权威 Execution 重建其余字段。该分支修复既有责任，不能因 ingress 容量限制拒绝后再 ACK；不宣称正常生产会删除该行。
