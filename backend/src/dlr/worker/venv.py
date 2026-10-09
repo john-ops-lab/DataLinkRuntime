@@ -415,12 +415,14 @@ class DependencyPreparationError(Exception):
         hint_code: str | None = None,
         no_source: bool = False,
         error_code: str = "dependency_preparation_failed",
+        declaration_line: int | None = None,
     ) -> None:
         super().__init__(message)
         self.install_log = install_log
         self.dependency = dependency
         self.hint_code = hint_code or dependency_source_hint_code(install_log)
         self.error_code = error_code
+        self.declaration_line = declaration_line
         # Stable machine marker: this failure is exactly "no dependency source
         # is configured". The executor replaces the English instruction with
         # the Execution-locale message without relying on the dependency label.

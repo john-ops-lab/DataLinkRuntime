@@ -26,6 +26,8 @@ def parse_requirements(requirements: str) -> list[tuple[str, str, str]]:
             raise venv.DependencyPreparationError(
                 f"invalid Maven dependency on line {number}; expected groupId:artifactId:version",
                 "",
+                error_code="dependency_declaration_invalid",
+                declaration_line=number,
             )
         dependencies.append((parts[0], parts[1], parts[2]))
     return dependencies

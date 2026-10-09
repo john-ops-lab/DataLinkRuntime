@@ -37,7 +37,10 @@ def parse_requirements(requirements: str) -> dict[str, str]:
             or (name in dependencies and dependencies[name] != version)
         ):
             raise venv.DependencyPreparationError(
-                f"invalid Go dependency on line {number}; expected module/path@vX.Y.Z", ""
+                f"invalid Go dependency on line {number}; expected module/path@vX.Y.Z",
+                "",
+                error_code="dependency_declaration_invalid",
+                declaration_line=number,
             )
         dependencies[name] = version
     return dependencies

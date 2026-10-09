@@ -24,6 +24,12 @@ _MESSAGES: Final[dict[WorkerLocale, dict[str, str]]] = {
         "dependency.install_succeeded": "{dependency} 安装成功",
         "dependency.install_failed": "{dependency} 安装失败，停止本次运行",
         "dependency.preparation_failed": "依赖准备失败，停止本次运行",
+        "dependency.invalid_declaration_java": (
+            "第 {line} 行 Java 依赖声明格式无效，应为 groupId:artifactId:version"
+        ),
+        "dependency.invalid_declaration_go": (
+            "第 {line} 行 Go 依赖声明无效，应为 module/path@vX.Y.Z；同一模块须使用一致版本"
+        ),
         "dependency.prepare_failed": "{language} 依赖准备失败",
         "dependency.prepare_failed_dependency": "（失败依赖：{dependency}）",
         "dependency.script_not_started": "[系统] 本次执行未开始脚本逻辑",
@@ -86,6 +92,13 @@ _MESSAGES: Final[dict[WorkerLocale, dict[str, str]]] = {
         "dependency.install_succeeded": "{dependency} installation succeeded",
         "dependency.install_failed": "{dependency} installation failed; stopping this run",
         "dependency.preparation_failed": "Dependency preparation failed; stopping this run",
+        "dependency.invalid_declaration_java": (
+            "Invalid Java dependency on line {line}; expected groupId:artifactId:version"
+        ),
+        "dependency.invalid_declaration_go": (
+            "Invalid Go dependency on line {line}; expected module/path@vX.Y.Z "
+            "and one consistent version per module"
+        ),
         "dependency.prepare_failed": "{language} dependency preparation failed",
         "dependency.prepare_failed_dependency": " (failed dependency: {dependency})",
         "dependency.script_not_started": "[System] The Adapter script did not start",
