@@ -191,7 +191,7 @@ public class Adapter {
             while (low < high) {
                 int middle = (low + high) >>> 1;
                 Candidate existing = candidates.get(middle);
-                int comparison = candidate.order.compareTo(existing.order);
+                int comparison = compareCodePoints(candidate.order, existing.order);
                 boolean before = comparison == 0
                     ? ordinal < existing.ordinal
                     : descending ? comparison > 0 : comparison < 0;
@@ -324,7 +324,18 @@ public class Adapter {
     }
 
     private static String sortKey(Object value) {
-        return value == null ? "1" : "0" + canonicalJson(value);
+        return value == null ? "1" : "0" + (value instanceof String text ? "\"" + text : canonicalJson(value));
+    }
+
+    private static int compareCodePoints(String left, String right) {
+        int l = 0, r = 0;
+        while (l < left.length() && r < right.length()) {
+            int a = left.codePointAt(l), b = right.codePointAt(r);
+            if (a != b) return Integer.compare(a, b);
+            l += Character.charCount(a);
+            r += Character.charCount(b);
+        }
+        return Integer.compare(l < left.length() ? 1 : 0, r < right.length() ? 1 : 0);
     }
 
     private static boolean jsonEquals(Object left, Object right) {

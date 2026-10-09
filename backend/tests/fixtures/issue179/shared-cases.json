@@ -1,0 +1,316 @@
+[
+  {
+    "name": "case-sensitive-ascending",
+    "input": {
+      "records": [
+        {
+          "k": "a",
+          "id": 0
+        },
+        {
+          "k": "B",
+          "id": 1
+        }
+      ],
+      "mappings": [
+        {
+          "pointer": "/k",
+          "target": "k"
+        },
+        {
+          "pointer": "/id",
+          "target": "id"
+        }
+      ],
+      "filters": [],
+      "dedupe_by": null,
+      "sort": {
+        "field": "k",
+        "direction": "asc"
+      }
+    },
+    "expected": {
+      "records": [
+        {
+          "k": "B",
+          "id": 1
+        },
+        {
+          "k": "a",
+          "id": 0
+        }
+      ],
+      "count": 2,
+      "partial": false,
+      "checkpoint": null
+    }
+  },
+  {
+    "name": "null-boolean-spelling",
+    "input": {
+      "records": [
+        {
+          "k": null
+        },
+        {
+          "k": true
+        },
+        {
+          "k": false
+        }
+      ],
+      "mappings": [
+        {
+          "pointer": "/k",
+          "target": "k",
+          "type": "string"
+        }
+      ],
+      "filters": [],
+      "dedupe_by": null,
+      "sort": null
+    },
+    "expected": {
+      "records": [
+        {
+          "k": "null"
+        },
+        {
+          "k": "true"
+        },
+        {
+          "k": "false"
+        }
+      ],
+      "count": 3,
+      "partial": false,
+      "checkpoint": null
+    }
+  },
+  {
+    "name": "unicode-codepoints-stable-ascending",
+    "input": {
+      "records": [
+        {
+          "k": "😀",
+          "id": 0
+        },
+        {
+          "k": "",
+          "id": 1
+        },
+        {
+          "k": "é",
+          "id": 2
+        },
+        {
+          "k": "a",
+          "id": 3
+        },
+        {
+          "k": "中",
+          "id": 4
+        },
+        {
+          "k": "é",
+          "id": 5
+        }
+      ],
+      "mappings": [
+        {
+          "pointer": "/k",
+          "target": "k"
+        },
+        {
+          "pointer": "/id",
+          "target": "id"
+        }
+      ],
+      "filters": [],
+      "dedupe_by": null,
+      "sort": {
+        "field": "k",
+        "direction": "asc"
+      }
+    },
+    "expected": {
+      "records": [
+        {
+          "k": "a",
+          "id": 3
+        },
+        {
+          "k": "é",
+          "id": 2
+        },
+        {
+          "k": "é",
+          "id": 5
+        },
+        {
+          "k": "中",
+          "id": 4
+        },
+        {
+          "k": "",
+          "id": 1
+        },
+        {
+          "k": "😀",
+          "id": 0
+        }
+      ],
+      "count": 6,
+      "partial": false,
+      "checkpoint": null
+    }
+  },
+  {
+    "name": "unicode-codepoints-stable-descending",
+    "input": {
+      "records": [
+        {
+          "k": "😀",
+          "id": 0
+        },
+        {
+          "k": "",
+          "id": 1
+        },
+        {
+          "k": "é",
+          "id": 2
+        },
+        {
+          "k": "a",
+          "id": 3
+        },
+        {
+          "k": "中",
+          "id": 4
+        },
+        {
+          "k": "é",
+          "id": 5
+        }
+      ],
+      "mappings": [
+        {
+          "pointer": "/k",
+          "target": "k"
+        },
+        {
+          "pointer": "/id",
+          "target": "id"
+        }
+      ],
+      "filters": [],
+      "dedupe_by": null,
+      "sort": {
+        "field": "k",
+        "direction": "desc"
+      }
+    },
+    "expected": {
+      "records": [
+        {
+          "k": "😀",
+          "id": 0
+        },
+        {
+          "k": "",
+          "id": 1
+        },
+        {
+          "k": "中",
+          "id": 4
+        },
+        {
+          "k": "é",
+          "id": 2
+        },
+        {
+          "k": "é",
+          "id": 5
+        },
+        {
+          "k": "a",
+          "id": 3
+        }
+      ],
+      "count": 6,
+      "partial": false,
+      "checkpoint": null
+    }
+  },
+  {
+    "name": "escaped-codepoints-stable",
+    "input": {
+      "records": [
+        {
+          "k": "Z",
+          "id": 0
+        },
+        {
+          "k": "\\",
+          "id": 1
+        },
+        {
+          "k": "\"",
+          "id": 2
+        },
+        {
+          "k": "\n",
+          "id": 3
+        },
+        {
+          "k": "\n",
+          "id": 4
+        }
+      ],
+      "mappings": [
+        {
+          "pointer": "/k",
+          "target": "k"
+        },
+        {
+          "pointer": "/id",
+          "target": "id"
+        }
+      ],
+      "filters": [],
+      "dedupe_by": null,
+      "sort": {
+        "field": "k",
+        "direction": "asc"
+      }
+    },
+    "expected": {
+      "records": [
+        {
+          "k": "\n",
+          "id": 3
+        },
+        {
+          "k": "\n",
+          "id": 4
+        },
+        {
+          "k": "\"",
+          "id": 2
+        },
+        {
+          "k": "Z",
+          "id": 0
+        },
+        {
+          "k": "\\",
+          "id": 1
+        }
+      ],
+      "count": 5,
+      "partial": false,
+      "checkpoint": null
+    }
+  }
+]
