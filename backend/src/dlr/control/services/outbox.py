@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
-from dlr.control.models import Adapter, Execution, ExecutionOutbox
+from dlr.control.models import Adapter, Execution, ExecutionOutbox, WorkerCacheGuard
 from dlr.control.services import rabbitmq
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.dispatch import (
@@ -328,10 +328,27 @@ def lease_due_outbox(
         raise ValueError("outbox lease owner is invalid")
     effective_now = _as_utc(now if now is not None else _now(session))
     limit = max(1, min(limit, 100))
+    guarded_deferred_execution = (
+        select(Execution.id)
+        .join(
+            WorkerCacheGuard,
+            (WorkerCacheGuard.worker_id == Execution.target_worker_id_snapshot)
+            & (WorkerCacheGuard.version_id == Execution.version_id),
+        )
+        .where(
+            Execution.id == ExecutionOutbox.execution_id,
+            WorkerCacheGuard.phase != "idle",
+        )
+        .exists()
+    )
     rows = list(
         session.scalars(
             select(ExecutionOutbox)
-            .where(*_pending_filter(effective_now))
+            .where(
+                *_pending_filter(effective_now),
+                (ExecutionOutbox.last_error_code.is_distinct_from("cache_reclamation_in_progress"))
+                | ~guarded_deferred_execution,
+            )
             .order_by(ExecutionOutbox.available_at, ExecutionOutbox.created_at, ExecutionOutbox.id)
             .with_for_update(skip_locked=True)
             .limit(limit)

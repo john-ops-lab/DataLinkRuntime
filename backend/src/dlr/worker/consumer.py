@@ -510,11 +510,15 @@ class V3Consumer:
                 return
             if not self._ticket_can_continue(ticket, deadline_at):
                 return
+            kind = decision.get("decision")
             with self._state_lock:
                 epoch = self._active_epoch
-                if epoch is not None and epoch.number == ticket.connection_epoch:
+                if (
+                    kind in {"EXECUTE", "ACK_NOOP", "REJECT_DLQ"}
+                    and epoch is not None
+                    and epoch.number == ticket.connection_epoch
+                ):
                     epoch.successful_claim = True
-            kind = decision.get("decision")
             if kind == "ACK_NOOP":
                 self._send_disposition(ticket, deadline_at, "ack")
                 return

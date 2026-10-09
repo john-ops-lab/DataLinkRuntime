@@ -569,7 +569,7 @@ def test_non_execute_decisions_settle_before_ticket_release(
     factory = _Factory()
     consumer = _consumer(tmp_path, client, factory)
     try:
-        _epoch, connection, channel = _start_epoch(consumer, factory)
+        epoch, connection, channel = _start_epoch(consumer, factory)
         tag = next(iter(channel.consumers))
         old_ticket = consumer._tickets[0]
         channel.deliver(tag, 31, b"{}")
@@ -578,6 +578,25 @@ def test_non_execute_decisions_settle_before_ticket_release(
         assert channel.acks == expected_ack
         assert channel.nacks == expected_nack
         assert old_ticket.phase == "released"
+        assert epoch.successful_claim == (decision["decision"] in {"ACK_NOOP", "REJECT_DLQ"})
+    finally:
+        consumer.request_stop()
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+
+def test_pause_decision_preserves_reconnect_backoff_and_does_not_ack(tmp_path: Path) -> None:
+    client = _Client({"decision": "PAUSE_CONSUMER", "reason": "worker_protocol_incompatible"})
+    factory = _Factory()
+    consumer = _consumer(tmp_path, client, factory)
+    try:
+        epoch, connection, channel = _start_epoch(consumer, factory)
+        tag = next(iter(channel.consumers))
+        channel.deliver(tag, 32, b"{}")
+        channel.cancelled(tag)
+        _drain_until(connection, lambda: epoch.faulted)
+        assert epoch.successful_claim is False
+        assert channel.acks == [] and channel.nacks == []
+        assert connection.abort_errors
     finally:
         consumer.request_stop()
         consumer._pool.shutdown(wait=True, cancel_futures=True)

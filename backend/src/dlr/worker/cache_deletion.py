@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import stat
 import time
@@ -25,6 +26,8 @@ from dlr.worker.cache_lifecycle import (
     current_thread_owns_all_uses,
 )
 from dlr.worker.client import ClientError, ControlUnavailableError
+
+logger = logging.getLogger(__name__)
 
 _RECORD_FIELDS = frozenset(
     {
@@ -367,6 +370,28 @@ def _read_record(path: Path) -> dict[str, Any] | None:
 
 def _write_record(path: Path, value: Mapping[str, Any]) -> None:
     _write_json(path, value, strict_sync=True)
+
+
+def _read_record_for_scan(path: Path) -> tuple[dict[str, Any] | None, bool]:
+    """Keep corrupt records/guards intact while isolating content errors.
+
+    The lifecycle reader also wraps storage errors with its invalid code.
+    Those failures must still escape rather than masquerade as bad content.
+    Only an operation filename can safely become the persisted scan cursor.
+    """
+    try:
+        return _read_record(path), False
+    except CacheError as error:
+        if error.code not in {
+            "cache_deletion_record_invalid",
+            "cache_lifecycle_invalid",
+        } or isinstance(error.__cause__, OSError):
+            raise
+        try:
+            uuid.UUID(path.stem)
+        except ValueError:
+            raise error from None
+        return None, True
 
 
 def _local_record_page(root: Path, *, after: str | None, limit: int, deadline: float) -> list[Path]:
@@ -1447,12 +1472,14 @@ class CacheDeletionManager:
             deadline=deadline,
         )
         local_inspected = 0
+        corrupt_records = 0
         for path in pending_paths:
             if local_inspected >= max_items or time.monotonic() >= deadline:
                 break
             local_inspected += 1
             local_after = path.stem
-            record = _read_record(path)
+            record, corrupt = _read_record_for_scan(path)
+            corrupt_records += int(corrupt)
             if record is None:
                 continue
             if record["phase"] in _TERMINAL_PHASES:
@@ -1529,6 +1556,10 @@ class CacheDeletionManager:
             },
             strict_sync=True,
         )
+        if corrupt_records:
+            logger.warning(
+                "Cache deletion recovery retained %s corrupt local records", corrupt_records
+            )
         return processed
 
     def cleanup_pending(self, cleanup_id: int, *, max_records: int = 1024) -> bool:
@@ -1760,13 +1791,19 @@ class CacheDeletionManager:
         )
         page = paths[:max_items]
         items: list[dict[str, object]] = []
+        corrupt_records = 0
         for path in page:
-            record = _read_record(path)
+            record, corrupt = _read_record_for_scan(path)
+            corrupt_records += int(corrupt)
             if record is None or record["phase"] != "failed":
                 continue
             items.extend(self._failed_record_public(record))
         cursor = page[-1].stem if len(paths) > max_items and page else None
-        return items, cursor, len(paths) <= max_items
+        if corrupt_records:
+            logger.warning(
+                "Cache failed-item scan retained %s corrupt local records", corrupt_records
+            )
+        return items, cursor, len(paths) <= max_items and not corrupt_records
 
     @staticmethod
     def _failed_record_public(record: Mapping[str, Any]) -> list[dict[str, object]]:

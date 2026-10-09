@@ -1388,13 +1388,13 @@ def prepare_version_venv(
             )
             build.abort()
             raise
-        if builtin_materials is not None:
+        try:
             # uv creates its own advisory lock as 0666; it is runtime metadata,
-            # never package content. Keep the verified environment private.
+            # never package content. Normalize it for every installation path
+            # before the unchanged permission and content verification.
             uv_lock = directory / ".venv" / ".lock"
             if uv_lock.is_file() and not uv_lock.is_symlink():
-                uv_lock.chmod(0o600)
-        try:
+                uv_lock.chmod(0o600, follow_symlinks=False)
             final_directory = build.finish(
                 identity,
                 automatic_offline_proof=(
@@ -1405,7 +1405,7 @@ def prepare_version_venv(
                     )
                 ),
             )
-        except cache.CacheError as error:
+        except (cache.CacheError, OSError) as error:
             build.abort()
             raise DependencyPreparationError("version cache promotion failed", "") from error
         logger.info("venv ready for adapter %s version %s", adapter_id, version_id)

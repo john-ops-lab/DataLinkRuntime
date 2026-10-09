@@ -432,6 +432,7 @@ def claim_dispatch(
             execution_id=message.execution_id,
             dispatch_generation=message.dispatch_generation,
         )
+    cache_reclamation_blocked = False
     try:
         cache_governance.ensure_reference_allowed(
             session,
@@ -442,8 +443,9 @@ def claim_dispatch(
     except HTTPException as error:
         if _http_error_code(error) != "cache_reclamation_in_progress":
             raise
-        session.rollback()
-        return _decision("PAUSE_CONSUMER", "cache_reclamation_in_progress", retry_after_seconds=1)
+        # Retain the admission/guard lock prefix, then validate authoritative
+        # dispatch facts before transferring transport responsibility below.
+        cache_reclamation_blocked = True
     execution = session.get(
         Execution, message.execution_id, with_for_update=True, populate_existing=True
     )
@@ -556,6 +558,30 @@ def claim_dispatch(
         converge_terminal_dispositions_locked(session, execution, incidents, now=now)
         session.commit()
         return _decision("ACK_NOOP", "cancelled")
+
+    if cache_reclamation_blocked:
+        _incidents, outbox_rows = lock_incidents_and_outbox(session, execution.id)
+        row = next(
+            (
+                item
+                for item in outbox_rows
+                if item.dispatch_generation == message.dispatch_generation
+            ),
+            None,
+        )
+        if row is None:
+            row = outbox.create_dispatch_outbox(session, execution, available_at=now)
+        row.status = "pending"
+        row.available_at = now + timedelta(seconds=1)
+        row.lease_owner = None
+        row.lease_expires_at = None
+        row.published_at = None
+        row.last_error_code = "cache_reclamation_in_progress"
+        # ACK_NOOP is returned only after the same generation/message is
+        # durably retained. No Attempt, journal, capacity release or new
+        # generation is created by an infrastructure wait.
+        session.commit()
+        return _decision("ACK_NOOP", "cache_dispatch_deferred", retry_after_seconds=1)
 
     if slot.active_attempt_id is not None:
         active = next(
