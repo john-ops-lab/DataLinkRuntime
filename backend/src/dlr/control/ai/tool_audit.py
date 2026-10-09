@@ -18,13 +18,15 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
 from dlr.common.config import settings
+from dlr.control.ai import context_budget
 from dlr.control.ai import tools as tools_service
+from dlr.control.ai.diagnostics import FailureReason, FailureStage
 
 AUDIT_LOGGER_NAME = "dlr.ai.tool-audit"
 AUDIT_FILENAME = "ai-tool-audit.jsonl"
@@ -66,6 +68,7 @@ class AiToolAuditTrail:
     successful_calls: int = 0
     failed_calls: int = 0
     blocked_calls: int = 0
+    provider_checked_calls: int = 0
     max_round_index: int = 0
     stop_reason: str | None = None
     _terminal_written: bool = False
@@ -147,6 +150,64 @@ class AiToolAuditTrail:
                 "result_truncated": False,
                 "error_code": _safe_code_value(error_code),
                 "stop_reason": self.stop_reason,
+            }
+        )
+
+    def record_provider_budget(
+        self,
+        budget: context_budget.BudgetResult,
+        *,
+        elapsed_ms: int,
+        provider_deadline_ms: int,
+        hard_deadline_ms: int,
+        remaining_ms: int,
+    ) -> None:
+        """Only typed estimates/counters, never messages or tool definitions."""
+        self.provider_checked_calls += 1
+        _emit_record(
+            {
+                **self._base_record("provider_budget"),
+                **asdict(budget.diagnostics),
+                "provider_call_index": self.provider_checked_calls,
+                "status": "prepared" if budget.fits else "rejected",
+                "elapsed_ms": max(0, elapsed_ms),
+                "provider_deadline_ms": max(0, provider_deadline_ms),
+                "hard_deadline_ms": max(0, hard_deadline_ms),
+                "remaining_ms": max(0, remaining_ms),
+            }
+        )
+
+    def record_provider_result(
+        self,
+        *,
+        outcome: Literal["final", "tool_calls", "error"],
+        duration_ms: int,
+        remaining_ms: int,
+        error_code: str | None = None,
+        stage: FailureStage | None = None,
+        reason: FailureReason | None = None,
+    ) -> None:
+        _emit_record(
+            {
+                **self._base_record("provider_result"),
+                "provider_call_index": self.provider_checked_calls,
+                "outcome": outcome,
+                "duration_ms": max(0, duration_ms),
+                "remaining_ms": max(0, remaining_ms),
+                "error_code": _safe_code_value(error_code),
+                "stage": stage,
+                "reason": reason,
+            }
+        )
+
+    def record_response_failure(self, stage: FailureStage, reason: FailureReason) -> None:
+        _emit_record(
+            {
+                **self._base_record("response_validation"),
+                "provider_call_index": self.provider_checked_calls,
+                "stage": stage,
+                "reason": reason,
+                "error_code": "ai_response_invalid",
             }
         )
 

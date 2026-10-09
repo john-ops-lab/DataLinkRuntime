@@ -213,7 +213,7 @@ def prepare_call(
     while estimate_tokens(messages, tools, purpose=purpose) > window:
         request = _request_message(messages)
         if request is not None:
-            request_index = messages.index(request)
+            request_index = next(index for index, item in enumerate(messages) if item is request)
             # History ends at the current request. Tool rounds follow it and
             # are retained as indivisible assistant-call/result groups.
             history_indexes = [

@@ -17,6 +17,7 @@ from urllib import parse as url_parse
 from urllib import request as url_request
 
 from dlr.common.config import settings
+from dlr.control.ai.diagnostics import FailureReason, FailureStage, StrictJsonError
 from dlr.control.schemas.ai import (
     AiProvider,
     AiSettingDraft,
@@ -45,9 +46,21 @@ class NormalizedToolCall:
 class AiProviderError(Exception):
     """Sanitized provider failure carrying only a stable public error code."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        stage: FailureStage | None = None,
+        reason: FailureReason | None = None,
+    ) -> None:
         super().__init__(code)
         self.code = code
+        self.stage = stage or (
+            "provider_envelope" if code == "ai_response_invalid" else "provider_transport"
+        )
+        self.reason = reason or (
+            "invalid_shape" if code == "ai_response_invalid" else "transport_error"
+        )
 
 
 class _NoRedirectHandler(url_request.HTTPRedirectHandler):
@@ -277,14 +290,14 @@ def _protocol_headers(adapter: ProviderAdapter, api_key: str | None) -> dict[str
 
 
 def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"non-finite JSON number: {value}")
+    raise StrictJsonError("non_finite_number")
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError("duplicate JSON object key")
+            raise StrictJsonError("duplicate_key")
         result[key] = value
     return result
 
@@ -370,11 +383,31 @@ def _request_json(
             raise AiProviderError("ai_provider_dns_failed") from None
         raise AiProviderError("ai_provider_unreachable") from None
     if len(raw) > MAX_PROVIDER_RESPONSE_BYTES:
-        raise AiProviderError("ai_response_invalid")
+        raise AiProviderError(
+            "ai_response_invalid", stage="provider_json", reason="response_too_large"
+        )
     try:
         return load_json_strict(raw)
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        raise AiProviderError("ai_response_invalid") from None
+    except StrictJsonError as error:
+        raise AiProviderError(
+            "ai_response_invalid", stage="provider_json", reason=error.reason
+        ) from None
+    except UnicodeDecodeError:
+        raise AiProviderError(
+            "ai_response_invalid", stage="provider_json", reason="invalid_utf8"
+        ) from None
+    except json.JSONDecodeError:
+        raise AiProviderError(
+            "ai_response_invalid", stage="provider_json", reason="malformed_json"
+        ) from None
+    except RecursionError:
+        raise AiProviderError(
+            "ai_response_invalid", stage="provider_json", reason="json_limit"
+        ) from None
+    except ValueError:
+        raise AiProviderError(
+            "ai_response_invalid", stage="provider_json", reason="json_value_invalid"
+        ) from None
 
 
 def _apply_reasoning(
@@ -675,10 +708,10 @@ def _strip_thinking_container(content: str) -> str:
     while final.lower().startswith("<think>"):
         closing = final.lower().find("</think>", len("<think>"))
         if closing < 0:
-            raise AiProviderError("ai_response_invalid")
+            raise AiProviderError("ai_response_invalid", reason="incomplete_thinking")
         final = final[closing + len("</think>") :].strip()
     if not final:
-        raise AiProviderError("ai_response_invalid")
+        raise AiProviderError("ai_response_invalid", reason="empty_content")
     return final
 
 
@@ -712,7 +745,7 @@ def _extract_anthropic_round(
     if tool_calls:
         return ("".join(text_parts) or None), tool_calls
     if response.get("stop_reason") not in (None, "end_turn"):
-        raise AiProviderError("ai_response_invalid")
+        raise AiProviderError("ai_response_invalid", reason="incomplete_completion")
     return _strip_thinking_container("".join(text_parts)), None
 
 
@@ -757,7 +790,7 @@ def _extract_gemini_round(
     if tool_calls:
         return ("".join(text_parts) or None), tool_calls
     if candidate.get("finishReason") not in (None, "STOP"):
-        raise AiProviderError("ai_response_invalid")
+        raise AiProviderError("ai_response_invalid", reason="incomplete_completion")
     return _strip_thinking_container("".join(text_parts)), None
 
 
@@ -788,7 +821,7 @@ def extract_final_text(
         raise AiProviderError("ai_response_invalid")
     choice = choices[0]
     if choice.get("finish_reason") != "stop":
-        raise AiProviderError("ai_response_invalid")
+        raise AiProviderError("ai_response_invalid", reason="incomplete_completion")
     message = choice.get("message")
     if not isinstance(message, dict):
         raise AiProviderError("ai_response_invalid")
@@ -853,7 +886,7 @@ def extract_round(
             raise AiProviderError("ai_response_invalid")
         return content, tool_calls
     if choice.get("finish_reason") != "stop":
-        raise AiProviderError("ai_response_invalid")
+        raise AiProviderError("ai_response_invalid", reason="incomplete_completion")
     content = message.get("content")
     if not isinstance(content, str):
         raise AiProviderError("ai_response_invalid")

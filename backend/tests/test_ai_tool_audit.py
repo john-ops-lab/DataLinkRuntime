@@ -51,9 +51,18 @@ def _configure_for_test(
 
 
 def _records() -> list[dict[str, Any]]:
+    # These existing assertions cover the tool/guard/terminal stream. The
+    # additive per-Provider budget/response events have their own contract
+    # tests in test_issue180_ai_diagnostics/test_issue183_provider_budget_audit.
     return [
         json.loads(line)
         for line in tool_audit.audit_log_path().read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("event_type")
+        not in {
+            "provider_budget",
+            "provider_result",
+            "response_validation",
+        }
     ]
 
 
