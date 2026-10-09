@@ -563,7 +563,7 @@ export function AdapterConsole({
 
   useEffect(() => subscribeToBrowserLocation(() => {
     const nextRoute = appRouteFromPath(window.location.pathname);
-    if (nextRoute.section === "templates") {
+    if (nextRoute.section === "templates" || nextRoute.settingsCategory !== null) {
       closePagePortals();
     }
   }), [closePagePortals]);

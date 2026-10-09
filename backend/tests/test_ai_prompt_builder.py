@@ -57,6 +57,21 @@ def _context(
     return context, payload, managed
 
 
+@pytest.mark.parametrize("tools,knowledge", [(False, False), (True, False), (True, True)])
+def test_product_help_facts_are_available_without_document_tool_calls(
+    tools: bool, knowledge: bool
+) -> None:
+    context, _, _ = _context(tools=tools, knowledge=knowledge)
+    result = build_prompt(context, runtime_contract="public runtime contract")
+    system = str(result.messages[0]["content"])
+    assert "Fixed product-help facts" in system
+    assert "运行设置 → 运行节点" in system
+    assert "编辑 → 凭据绑定" in system
+    assert "系统设置 → 凭据" in system
+    assert "do not invent regions, machine sizes, alternate menus" in system
+    assert ("list_knowledge_bases" in system) is knowledge
+
+
 @pytest.mark.parametrize("language", ["python", "javascript", "typescript", "go", "java"])
 @pytest.mark.parametrize("tools,knowledge", [(False, False), (True, False), (True, True)])
 def test_builder_message_matrix(language: str, tools: bool, knowledge: bool) -> None:

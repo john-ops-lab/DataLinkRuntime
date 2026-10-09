@@ -17,6 +17,7 @@ import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import { FALLBACK_POLICY } from "./fallback-policy";
 import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
+import { pushBrowserLocation } from "./history-route";
 import type {
   Adapter,
   AiAssistResponse,
@@ -463,6 +464,21 @@ async function waitForCodeEditorValue(expected: string): Promise<void> {
 // the App reads on mount. Auth-specific tests clear it explicitly.
 beforeEach(() => {
   sessionStorage.setItem(TOKEN_STORAGE_KEY, "test-admin-token");
+});
+
+it("closes adapter settings when browser navigation enters system settings", async () => {
+  const adapter = makeAdapter({ id: 1, name: "adapter-a", adapter_type: "task" });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  await screen.findByTestId("adapter-settings-form");
+  act(() => pushBrowserLocation("/settings/package-sources"));
+  await waitFor(() => expect(screen.queryByTestId("adapter-settings-form")).toBeNull());
 });
 
 afterEach(() => {

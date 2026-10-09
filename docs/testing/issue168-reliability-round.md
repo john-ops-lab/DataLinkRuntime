@@ -57,3 +57,18 @@ AI 诊断批次：#180 的固定安全分类与 #183 的逐次预算/时限事�
 #169/#193 实际 Linux Worker 的 dateutil 普通源冷安装和 READY 复用通过，XLS/XLSX 原文件读取均返回 count=2、cpu_total=10、两个完整原样名称；PostgreSQL 原样模板读取专用只读库的两行完整 JSON，SQL 写入和多语句均在连接查询前拒绝，独立查询确认表不变；SFTP 原样模板与独立客户端均通过实际主机指纹确认、两文件读取与字节哈希，错误指纹与越界 path_escape 均拒绝。Python 原来非法/缺包声明后，在同一适配器保存合法声明、全新冷版本并执行 dateutil 通过，工作区清理完成。构造阶段曾显式发送 input:null 覆盖已保存文件、错误期待 200 而真实 Admission 是 202、将可靠业务失败的 dead_letter 误写为 failed、期待错误返回 output 而有效模板通过异常拒绝；上述首轮脚本错误保留，修正前态/核验方式后仅补未完成分支，未改变业务预期或产品校验。
 
 #178 实际 Linux Worker 首轮在当前 Maven 镜像源解析 dependency 插件超时，终态 dependency_timeout，未到业务代码；一次明确使用官方 Maven Central 的受控重试完成原样 SDK 编译、S3 两对象读取和独立哈希校验，随后恢复原默认源。真实 Chrome 手动再次运行同一保存版本，已安装 SDK 命中、输出两对象和 45 字节内容，清理完成；镜像源失败不被后续成功覆盖。
+
+
+本轮后续真实证据：#169/#193 的 dateutil、XLS、XLSX、PostgreSQL、SFTP 五个原样已保存变体均经 Chrome 手动运行并核完整输出；常规冷安装、ready 复用、修正声明后的全新冷版本与四个保护负例另有 Linux/API 和独立服务 oracle。#193 受控 A/B PyPI 实际验证长用户名及转义凭据：A 冷安装成功，切换 B 后原 READY 无新增源请求，新版本冷安装实际访问 B；错误凭据得到可达 HTTP 401。
+
+#187 公开 API 保存的 3600 秒对象自然到期，首次读取为 artifact_expired，随后 GC 一次删除完成、无错误；输入配置的保留期仍为 3600 秒。没有修改数据库或时钟。#188 真实 Chrome 在保存请求暂停期间由另一客户端合法删除仅草稿引用的测试凭据，继续提交得到 ai_credential_invalid，草稿保留、旧选择失效，实际 AI 设置不变；与绑定删除保护、断网恢复分别核对。
+
+#176 的实际 Linux guard 前态持续超过 50 秒，排队任务始终 attempt_count=0、Worker 在线、无 Incident；另一适配器成功、另一份排队任务取消。解除后 owner 与排队任务各执行一次，原 marker 输出和工作区清理完成。新增另一适配器验证首次误选没有保存版本的 fixture，纠正为已实际成功的 dateutil UI 任务，原 guard 连续存在且证据未重置；重启分支继续补证。
+
+#175 的实际 Broker 通过专用测试队列真实 reject 两个合法 dispatch 到运行中的 Control DLQ。guard 冲突的 Incident 已持久化为 open；其后已完成任务消息的 Incident 正确持久化为 ignored。专用队列不等于 Worker dispatch 队列，按合同 broker_reason=unknown，未伪造 x-death。guard 存在时人工 recover 返回 409，解除后使用同一 idempotency key 得到 dispatch_already_pending、原 generation 和 Outbox 不变，随后原任务正确执行一次。另一 queued 健康消息的批次分支仍由前述真实 Broker 回归单独验证。
+
+#192 真实 Java 上传在只发送 1 MiB、仍保有预留时，与 Python 预留重叠，第二份因合计超限被拒绝。首个脚本读取上传响应漏了 file 包装层，保留该构造错误；没有重做已完成的并发预留，使用同一上传文件接续下载验证。实际 Control HTTP 下载仅收到首个 4096 字节时，删除返回 builtin_package_busy；完整 6 MiB 下载 SHA-256 与冻结原文件相同，下载后删除成功。原文件库、容量、占用和零预留全部恢复。
+
+#180 JavaScript 固定需求真实 Chrome 返回完整候选，经查看 Diff、手工 Apply、保存、配置原三行输入并手工运行，完整输出包含正确 count/cpu_total/ids/names/items 与额外 message=ok，start/end 日志正确，依赖与运行配置不变、一次 Attempt、清理完成。Apply 后独立版本列表不变，运行按钮要求人工保存。原首次 invalid 记录、早先本轮 API 请求和此轮 UI 请求分别保留。原 XLSX、合法 TXT、Java 文档咨询在代理环境纠正后的显式 HTTP 重试分别返回正确 marker 候选、正确咨询、成功文档读取与字段说明；产品帮助虽 HTTP 200，仍暴露内部字段并描述不准确 UI，未计业务通过。
+
+#190 真实浏览器路由返回系统设置仍保留适配器抽屉，新增 App 导航回归先失败。仅将现有离开页面 portal 清理扩展到系统设置路由，回归通过。#181 加入来自当前 UI 的固定帮助事实卡并明确不推测其他菜单或权限，无工具/普通工具/知识开启三个配置前态先失败、修复后 prompt 相关 28 项通过；真实 Provider 继续复核。
