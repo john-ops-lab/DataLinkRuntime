@@ -49,9 +49,8 @@ interface Props {
   onPermissionsChanged?: () => void;
 }
 
-const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props>(function AdapterSettingsDrawerContent(props, ref) {
+const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props & { restoreFocus: (visible: boolean) => void }>(function AdapterSettingsDrawerContent(props, ref) {
   const { t } = useTranslation(["adapter", "common"]);
-  const restoreFocus = useOverlayFocus(props.open, '[data-testid="show-create-form"], a[href="/adapters"]');
   const [form] = Form.useForm<SettingsValues>();
   const adapter = props.adapter;
   const [view, setView] = useState<"settings" | "permissions">("settings");
@@ -143,7 +142,7 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props>(fun
       destroyOnHidden
       footer={footer}
       onClose={requestClose}
-      afterOpenChange={restoreFocus}
+      afterOpenChange={props.restoreFocus}
     >
       {adapter !== null && view === "permissions" && canManage && !archived && (
         <AdapterPermissionsPanel
@@ -347,9 +346,12 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props>(fun
 });
 
 const AdapterSettingsDrawer = forwardRef<PageLeaveGuardHandle, Props>(function AdapterSettingsDrawer(props, ref) {
+  // The form remounts when server details change. Keep the external trigger
+  // outside that keyed subtree so a remount never captures the drawer itself.
+  const restoreFocus = useOverlayFocus(props.open, '[data-testid="show-create-form"], a[href="/adapters"]');
   const adapterKey = props.adapter?.id ?? "none";
   const formKey = `${props.open ? "open" : "closed"}:${adapterKey}:${props.name}:${props.description}`;
-  return <AdapterSettingsDrawerContent ref={ref} key={formKey} {...props} />;
+  return <AdapterSettingsDrawerContent ref={ref} key={formKey} {...props} restoreFocus={restoreFocus} />;
 });
 
 export default AdapterSettingsDrawer;

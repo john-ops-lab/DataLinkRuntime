@@ -51,3 +51,5 @@ AI 诊断批次：#180 的固定安全分类与 #183 的逐次预算/时限事�
 #180 真实 Provider 首轮：JavaScript 返回候选；XLSX malformed_json；合法 TXT 正确咨询、无候选；Java 文档工具读取成功但最终响应 malformed_json，HTTP 200 是 stopped fallback，未计业务成功；产品帮助 malformed_json。凭据测试前态误删 AI 引用导致的诊断重试失败已与产品首次分列，原配置来源恢复后：XLSX 显式重试返回固定 marker 候选；Java 文档咨询读取当前文档并正确解释三个 Java 字段，无候选；产品帮助显式重试 provider_unreachable。此批诊断直接调用真实 Provider 服务，不替代 HTTP/UI 和人工 Apply/Save/Run 业务验收。未放松 JSON/schema 校验、未启用 Provider 不支持的 JSON mode、未新增自动重试。
 
 #183 首轮实际审计已经取得 initial、工具 followup、finalization 的逐次预算和共享 deadline，固定失败 stage/reason 可区分；真实可选材料裁剪仍待补证。#181 的真实普通问候仍主动提及当前快照和函数名，补充普通帮助不主动审查当前源码的系统指导；不新增关键词路由，知识检索开启时原流程保留。相关四个 prompt 合同回归通过，真实产品帮助仍待复核。
+
+#190 菜单入口的真实 Chrome 仍落 BODY，保留该次失败。进一步确定是设置表单按载入名称/描述重建时再次捕获抽屉内部焦点；把触发器记忆移到稳定外层，保留既有表单重建合同。新的载入中输入聚焦回归在旧实现失败、修复后通过；初版测试仅对不可聚焦 dialog 调用 focus，未形成前态，独立记为构造无效。真实 Chrome 继续验证。
