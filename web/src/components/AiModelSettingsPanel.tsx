@@ -442,7 +442,9 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       onSaved?.();
     } catch (error) {
       fail(errorMessage(error, t("model.requestFailed")));
-      if (error instanceof ApiError && error.code === "credential_not_found") void loadCredentials();
+      if (error instanceof ApiError && ["credential_not_found", "ai_credential_invalid"].includes(error.code)) {
+        void loadCredentials();
+      }
     } finally {
       setSaving(false);
       onMutationEnd?.();

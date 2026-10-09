@@ -231,7 +231,7 @@ export default function AdapterCatalog({
   });
   const [submitting, setSubmitting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const restoreFocus = useOverlayFocus(creating, '[data-testid="show-create-form"]');
+  const restoreFocus = useOverlayFocus(creating, '[data-testid="show-create-form"], a[href="/adapters"]');
   const workersById = new Map(workers.map((worker) => [worker.id, worker]));
 
   useEffect(() => {

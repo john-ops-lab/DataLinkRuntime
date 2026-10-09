@@ -140,7 +140,7 @@ function CredentialsPanel(props: {
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
-  const restoreFocus = useOverlayFocus(formOpen, '[data-testid="new-credential"]');
+  const restoreFocus = useOverlayFocus(formOpen, '[data-testid="new-credential"], a[href="/adapters"]');
   const [form, setForm] = useState<CredentialFormState>(emptyForm);
   const [submitting, setSubmitting] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
@@ -598,7 +598,7 @@ function PackageSourcesPanel(props: {
   const [defaults, setDefaults] = useState<PackageSourceDefaults | null>(null);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
-  const restoreFocus = useOverlayFocus(formOpen, '[data-testid="new-package-source"]');
+  const restoreFocus = useOverlayFocus(formOpen, '[data-testid="new-package-source"], a[href="/adapters"]');
   const [form, setForm] = useState<PackageSourceFormState>(EMPTY_SOURCE_FORM);
   const [sourceForm] = ProForm.useForm<PackageSourceFormState>();
   const credentialGeneration = useRef(0);

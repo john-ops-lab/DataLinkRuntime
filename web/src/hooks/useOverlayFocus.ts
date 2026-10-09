@@ -24,6 +24,7 @@ export function useOverlayFocus(open: boolean, fallbackSelector: string) {
     if (visible) return;
     const previous = trigger.current;
     const available = (element: HTMLElement) => element.isConnected && element.getClientRects().length > 0 &&
+      (element.tabIndex >= 0 || element.hasAttribute("tabindex")) &&
       !(element instanceof HTMLButtonElement && element.disabled) && element.getAttribute("aria-disabled") !== "true";
     const target = previous !== null && available(previous)
       ? previous : [...document.querySelectorAll<HTMLElement>(fallbackSelector)].find(available);

@@ -51,7 +51,7 @@ interface Props {
 
 const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props>(function AdapterSettingsDrawerContent(props, ref) {
   const { t } = useTranslation(["adapter", "common"]);
-  const restoreFocus = useOverlayFocus(props.open, '[data-testid="show-create-form"]');
+  const restoreFocus = useOverlayFocus(props.open, '[data-testid="show-create-form"], a[href="/adapters"]');
   const [form] = Form.useForm<SettingsValues>();
   const adapter = props.adapter;
   const [view, setView] = useState<"settings" | "permissions">("settings");
