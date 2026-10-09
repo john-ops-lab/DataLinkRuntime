@@ -77,6 +77,9 @@ def test_product_help_facts_are_available_without_document_tool_calls(
     assert "Determine the task from USER_REQUEST alone" in system
     assert system.index("## Request intent") > system.index("Runtime Contract for")
     assert "This distinction is the same with tools enabled or disabled" in system
+    assert "填写「代码中的凭据名」，选择凭据和字段，点击「保存绑定」" in system
+    assert "End after the requested steps" in system
+    assert "claim that the Worker supplies the credential" in system
     assert ("list_knowledge_bases" in system) is knowledge
 
 
