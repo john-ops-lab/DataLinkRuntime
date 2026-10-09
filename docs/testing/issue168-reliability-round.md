@@ -40,3 +40,14 @@ AI 诊断批次：#180 的固定安全分类与 #183 的逐次预算/时限事�
 #184 第三次真实 Linux Worker 跨 TTL 验收完成：合法 TTL=60 秒，周期扫描在长任务运行 88.397 秒时检查到精确被测数字键并记录 cache_entry_in_use；长任务和同版本 warm 任务原样输出、workspace cleanup 完成。任务结束后空闲扫描关联同 round 的 result 为 complete/deleted=1/freed_bytes=35798。第二次 audit 的 cache_lock_busy 与第一 fixture 前态构造失败仍独立保留。
 
 #171/#172/#185–#190/#195 前端已完成最小实现和开发回归，真实 Chrome 验收尚在推进。基线 Chrome 实测包括 129 字符创建错误被遮挡、保留期失焦静默取上限、另一页删除后 AI 草稿仍可选旧凭据、恢复联网刷新成功而全局错误滞留、关闭抽屉焦点落 BODY。#195 当前 HTTP/迟到隔离/再次发送回归已通过；新增用例在旧代码运行时失败，固定版本通过。相关字段/源/凭据/Portable/assistant 组件批次 100 项通过；取消与目录恢复两个独立状态回归通过。初期前端回归两处旧断言（HTTP 401 显示绿色可达、失焦静默钳制输入）已按此次明确修复更新；新的凭据失效提示回归曾暴露 ProForm.Item 未显示帮助，改用精确版本 Ant Design Form.Item 后通过。以上均不计作真实 Provider 或浏览器验收。
+
+
+#173 实际 Linux Worker 重启后，使用原 idempotency key 重放旧清理 1/2 的人工 retry，均返回原 operation ID、completed、无错误；独立 SQL 核适配器已删除、guard idle、缓存目录为空。原三次自动失败及人工恢复失败继续保留，不作为一次全新首轮成功。
+
+真实 Chrome 已核 #186 创建/重命名 129 字符明确就地报错且输入保留，128 个补充 Unicode 字符可保存并还原测试名；#187 越界/小数原文本在 Enter 与失焦后保留且禁止保存，两个合法边界可用；#188 双页删除后未保存草稿不变、旧选择就地失效、保存禁止，绑定删除保护与保存竞态的配置不变有 API 独立凭据；#189 断网刷新失败后，联网成功清除旧错误且未改变选择/草稿。#187 合法 3600 秒输入对象已通过公开 API 保存并开始真实 TTL 等待，不修改时钟或数据库。
+
+#190 新的真实菜单入口检查暴露两处焦点问题：捕获非聚焦 body，以及 rc-drawer 在 afterOpenChange 之后覆盖焦点恢复。回归分别在前版本先失败；最小过滤可聚焦目标，并将最终恢复延后至下一帧。普通触发器、菜单退场和触发器卸载分别继续验收。#195 真实 Chrome 请求显示停止等待，停止后旧消息保留、立即再次发送并收到新标记的回复；确定性迟到回归另行覆盖旧 finally 不影响新请求。
+
+#180 真实 Provider 首轮：JavaScript 返回候选；XLSX malformed_json；合法 TXT 正确咨询、无候选；Java 文档工具读取成功但最终响应 malformed_json，HTTP 200 是 stopped fallback，未计业务成功；产品帮助 malformed_json。凭据测试前态误删 AI 引用导致的诊断重试失败已与产品首次分列，原配置来源恢复后：XLSX 显式重试返回固定 marker 候选；Java 文档咨询读取当前文档并正确解释三个 Java 字段，无候选；产品帮助显式重试 provider_unreachable。此批诊断直接调用真实 Provider 服务，不替代 HTTP/UI 和人工 Apply/Save/Run 业务验收。未放松 JSON/schema 校验、未启用 Provider 不支持的 JSON mode、未新增自动重试。
+
+#183 首轮实际审计已经取得 initial、工具 followup、finalization 的逐次预算和共享 deadline，固定失败 stage/reason 可区分；真实可选材料裁剪仍待补证。#181 的真实普通问候仍主动提及当前快照和函数名，补充普通帮助不主动审查当前源码的系统指导；不新增关键词路由，知识检索开启时原流程保留。相关四个 prompt 合同回归通过，真实产品帮助仍待复核。

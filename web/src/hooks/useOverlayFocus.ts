@@ -10,18 +10,27 @@ export function useOverlayFocus(open: boolean, fallbackSelector: string) {
       trigger.current = document.activeElement;
     }
     if (!open && trigger.current !== null) {
-      pendingFrame.current = requestAnimationFrame(() => restoreFocus(false));
+      restoreFocus(false);
     }
     return () => {
       if (pendingFrame.current !== null) cancelAnimationFrame(pendingFrame.current);
       // Some callers conditionally unmount the open overlay on close.
-      if (trigger.current !== null) pendingFrame.current = requestAnimationFrame(() => restoreFocus(false));
+      if (trigger.current !== null) restoreFocus(false);
     };
     // The fallback is fixed by the caller; use the latest committed DOM on close.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
   function restoreFocus(visible: boolean) {
     if (visible) return;
+    if (pendingFrame.current !== null) cancelAnimationFrame(pendingFrame.current);
+    // rc-drawer restores its own saved element after afterOpenChange. Apply
+    // our checked target on the next frame, after that native restoration.
+    pendingFrame.current = requestAnimationFrame(() => {
+      pendingFrame.current = null;
+      applyFocus();
+    });
+  }
+  function applyFocus() {
     const previous = trigger.current;
     const available = (element: HTMLElement) => element.isConnected && element.getClientRects().length > 0 &&
       (element.tabIndex >= 0 || element.hasAttribute("tabindex")) &&
