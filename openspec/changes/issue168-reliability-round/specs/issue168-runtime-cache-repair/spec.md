@@ -25,6 +25,17 @@ Python 依赖准备 SHALL 在安装成功后对已知安装器私有锁元数据
 - **WHEN** 合法可达的缓存 guard 冲突影响 queued 的恢复处置，队列中另有健康消息
 - **THEN** 两者的消息/Incident 责任 SHALL 可核对，健康消息有界推进，冲突解除后原 Execution 安全续行；未验证的永久阻塞或消息丢失不得被宣称已证实
 
+### Requirement: DLQ guard conflicts retain an explicit manual recovery boundary
+合法 DLQ 消息遇到 `cache_reclamation_in_progress` 时，handler SHALL 持久化 open/manual_review Incident 后 ACK，继续处理健康后继，且不得重新 pending 已有派发行。普通 Claim 的同代延后 SHALL 保留其自动续行机制。
+
+#### Scenario: Published dispatch is reviewed after guard release
+- **WHEN** DLQ 对应的 Outbox 已 published，缓存 guard 随后解除
+- **THEN** Relay SHALL 不自动再次领取该 published 行；管理员 recover 才按既有策略受控增代并解决 Incident；重复 recover 与重复 Claim MUST 不产生额外责任
+
+#### Scenario: Confirm-before-mark still has pending Relay responsibility
+- **WHEN** Broker 已确认原发送但 Outbox 尚 pending，DLQ guard 冲突已记录 Incident
+- **THEN** pending 行 SHALL 保留原 Relay 重放责任，解除 guard 后可按原责任继续；人工 recover SHALL 复用当前代并解决 Incident，不被误称为自动续行的前提
+
 ### Requirement: Authorized deleted Adapter cleanup is independent of rebuild proof
 已删除 Adapter 的环境清理 SHALL 使用 Control 验证的当前 cleanup claim、observed identity 和无未完成引用的 guard 授权，不要求 live-version GC 的可重建证明。普通 GC 的可重建证明与所有 owner、内容、Pin、last-used、local use/journal、fencing 和预算检查 SHALL 保持。扫描耗尽后等待已有删除恢复，不在同一 cleanup 内重复发起删除。
 

@@ -112,3 +112,5 @@ Draft PR #196 首次精确 HEAD `d1cfb16` 的 Web 与 local-preview CI 通过，
 Review 续验检查点 `3e2d5b8`：显式 KILL 本任务 Worker 后 Execution 135 从 running 进入 retry_wait（worker_lost），在默认三次/初始五秒退避策略下连续取消两次，终态 execution_cancelled、结束时间相同。恢复原 restart policy 并启动 Worker 后等待在线及退避窗口，仍 Attempt=1；SQL 独立核 Admission 已释放、计数/字节归零及 Slot 无活动 Attempt。这是实际 Linux 故障注入补证，原自然 retry_wait BLOCKED 不改写。缓存升级前态使用已保存 Adapter 32 / Version 30 的 python-dateutil 环境；首次漏传必需输入的业务失败保留，正确输入的 Execution 134 成功且清理完成，原缓存 manifest 与内容/时间摘要冻结并暂时 pin，升级复用结果另行核验。
 
 `4855dc9` 的首次 Hosted Web CI 为 683 PASS / 1 FAIL，已有短 Webhook 日志轮询测试超过 15 秒。原测试在整个控制台挂载前将轮询缩短为 20ms；改为挂载后仅主动推进日志计时器，仍断言短调用发现、读取失败保留旧日志、恢复为新日志、离开后停止读取。定点 1 项及完整 App 149 项通过，原失败 CI/log 留存，未放宽超时或修改业务预期。
+
+`15837dd` 的 Hosted Web 为 683 PASS / 1 FAIL，短 Webhook 测试已通过，失败转为已有缓存 cleanup retry 测试：较慢 CI 实际触发 GET operation detail，但该测试夹具误回列表页，导致 result 未定义。三个 retry 夹具分别补正确 operation 详情；cleanup 用例主动推进一秒并断言恰好一次详情查询，再核同一 sample 的分页合并，避免快速本机掩盖错误。修正中局部变量与测试库 cleanup 同名导致首次检查失败，改名后完整 WorkerCachePanel 16 项、ESLint/typecheck 通过；所有首轮记录保留。没有把真实 API 缺字段改为通过，也未改产品容错或接口合同。DLQ published/pending 两类恢复边界同时写入本 change 的 runtime-cache spec，明确人工恢复要求和原 Relay 责任。
