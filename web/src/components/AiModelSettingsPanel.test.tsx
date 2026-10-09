@@ -563,6 +563,7 @@ it("Issue #188 refreshes deleted Credentials without overwriting drafts or accep
   await screen.findByText(/所选凭据已被删除/);
   await act(async () => releaseOld([credential]));
   expect(screen.getByText(/所选凭据已被删除/)).toBeTruthy();
+  expect(screen.getByTestId("ai-summary-credential").textContent).toBe("所选凭据不可用");
   expect((screen.getByTestId("ai-save-settings") as HTMLButtonElement).disabled).toBe(true);
   expect((baseUrl as HTMLInputElement).value).toBe("https://example.invalid/preserved-draft");
 });
@@ -578,6 +579,7 @@ it("preserves a configured credential and drafts after initial catalog failure, 
   render(<AiModelSettingsPanel onError={vi.fn()} />);
   await screen.findByTestId("ai-credentials-load-failed");
   expect(screen.queryByText(/所选凭据已被删除/)).toBeNull();
+  expect(screen.getByTestId("ai-summary-credential").textContent).toBe("凭据名称待确认");
   expect((screen.getByTestId("ai-save-settings") as HTMLButtonElement).disabled).toBe(false);
   const baseUrl = screen.getByTestId("ai-base-url");
   fireEvent.change(baseUrl, { target: { value: "https://models.example.com/preserved-draft" } });

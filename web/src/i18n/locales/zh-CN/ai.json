@@ -154,6 +154,8 @@
     "summaryCredential": "API Key 凭据",
     "summaryNotConfigured": "未配置",
     "summaryNoCredential": "未绑定凭据",
+    "summaryCredentialUnconfirmed": "凭据名称待确认",
+    "summaryCredentialUnavailable": "所选凭据不可用",
     "provider": {
       "label": "模型服务商",
       "custom": "自定义 OpenAI 兼容服务",

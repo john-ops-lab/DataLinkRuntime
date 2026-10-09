@@ -242,6 +242,11 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     (credential) => credential.id === form.credential_id,
   )?.name;
   const credentialMissing = credentialsLoaded && form.credential_id !== null && selectedCredentialName === undefined;
+  const credentialSummary = form.credential_id === null
+    ? t("model.summaryNoCredential")
+    : selectedCredentialName ?? t(credentialMissing
+      ? "model.summaryCredentialUnavailable"
+      : "model.summaryCredentialUnconfirmed");
 
   const fail = useCallback(
     (message: string) => {
@@ -660,7 +665,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
               <div>
                 <dt>{t("model.summaryCredential")}</dt>
                 <dd data-testid="ai-summary-credential">
-                  {selectedCredentialName ?? t("model.summaryNoCredential")}
+                  {credentialSummary}
                 </dd>
               </div>
             </dl>

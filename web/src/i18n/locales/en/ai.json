@@ -154,6 +154,8 @@
     "summaryCredential": "API Key Credential",
     "summaryNotConfigured": "Not configured",
     "summaryNoCredential": "No Credential bound",
+    "summaryCredentialUnconfirmed": "Credential name unconfirmed",
+    "summaryCredentialUnavailable": "Selected Credential unavailable",
     "provider": {
       "label": "Model provider",
       "custom": "Custom OpenAI-compatible service",
