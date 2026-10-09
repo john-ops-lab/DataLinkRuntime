@@ -550,7 +550,8 @@ export default function AdapterCatalog({
           label={t("catalog.name")}
           rules={[
             { required: true, whitespace: true, message: t("catalog.namePlaceholder") },
-            { validator: (_: unknown, value: string) => Array.from(value?.trim() ?? "").length <= 128
+            { validator: (_: unknown, value: string) =>
+              Array.from(value?.trim() ?? "").length <= 128
               ? Promise.resolve() : Promise.reject(new Error(t("settings.nameTooLong"))) },
           ]}
         >

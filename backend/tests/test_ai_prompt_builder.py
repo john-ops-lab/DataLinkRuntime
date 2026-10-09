@@ -69,6 +69,8 @@ def test_product_help_facts_are_available_without_document_tool_calls(
     assert "编辑 → 凭据绑定" in system
     assert "系统设置 → 凭据" in system
     assert "do not invent regions, machine sizes, alternate menus" in system
+    assert "first enter the name used by the code, then select a credential and its field" in system
+    assert "Omit code expressions and current bound key examples" in system
     assert ("list_knowledge_bases" in system) is knowledge
 
 

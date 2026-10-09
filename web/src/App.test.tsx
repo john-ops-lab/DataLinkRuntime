@@ -1785,10 +1785,10 @@ it("shows failed API responses as errors instead of pretending success", async (
     },
   ]);
   render(<App />);
-  await screen.findByTestId("error-banner");
-  expect(screen.getByTestId("error-banner").textContent).toContain("请求失败");
-  expect(screen.getByTestId("error-banner").textContent).toContain("错误码：boom");
-  expect(screen.getByTestId("error-banner").textContent).not.toContain("server exploded");
+  await screen.findByTestId("adapter-list-error");
+  expect(screen.getByTestId("adapter-list-error").textContent).toContain("请求失败");
+  expect(screen.getByTestId("adapter-list-error").textContent).toContain("错误码：boom");
+  expect(screen.getByTestId("adapter-list-error").textContent).not.toContain("server exploded");
   expect(screen.queryAllByTestId("adapter-item")).toHaveLength(0);
 });
 

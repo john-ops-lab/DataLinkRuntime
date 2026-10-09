@@ -827,6 +827,7 @@ it("依赖源 HTTP 应答保持可达语义，测试请求失败会清除旧状�
   expect(result.getAttribute("role")).toBe("alert");
 
   await waitFor(() => expect(testButton.disabled).toBe(false));
+  await waitFor(() => expect(testButton.classList.contains("ant-btn-loading")).toBe(false));
   fireEvent.click(testButton);
   await waitFor(() => expect(result.textContent).toContain("未测试"));
   expect(testSource).toHaveBeenCalledTimes(2);

@@ -72,3 +72,14 @@ AI 诊断批次：#180 的固定安全分类与 #183 的逐次预算/时限事�
 #180 JavaScript 固定需求真实 Chrome 返回完整候选，经查看 Diff、手工 Apply、保存、配置原三行输入并手工运行，完整输出包含正确 count/cpu_total/ids/names/items 与额外 message=ok，start/end 日志正确，依赖与运行配置不变、一次 Attempt、清理完成。Apply 后独立版本列表不变，运行按钮要求人工保存。原首次 invalid 记录、早先本轮 API 请求和此轮 UI 请求分别保留。原 XLSX、合法 TXT、Java 文档咨询在代理环境纠正后的显式 HTTP 重试分别返回正确 marker 候选、正确咨询、成功文档读取与字段说明；产品帮助虽 HTTP 200，仍暴露内部字段并描述不准确 UI，未计业务通过。
 
 #190 真实浏览器路由返回系统设置仍保留适配器抽屉，新增 App 导航回归先失败。仅将现有离开页面 portal 清理扩展到系统设置路由，回归通过。#181 加入来自当前 UI 的固定帮助事实卡并明确不推测其他菜单或权限，无工具/普通工具/知识开启三个配置前态先失败、修复后 prompt 相关 28 项通过；真实 Provider 继续复核。
+
+
+重启续验（2026-10-09）：实际崩溃后的同一 Execution 保留首个 `worker_lost` Attempt，按已冻结的两次上限进入等待、排队，再在真实 Worker 恢复后第二个 Attempt 原样输出成功并完成清理；离线 Admission 的同一任务恢复后仅执行一次。Chrome 历史并列显示两个 Attempt 与原 marker，未覆盖第一次失败。此为明确故障注入补充证据；原 corpus 若要求自然 retry_wait/自然离线前态，仍不能直接把其 BLOCKED 改为 PASS。
+
+专用 Worker 的真实 PATH 临时排除 Java/Go 可执行文件，注册能力如实变为 Python/JavaScript/TypeScript；没有篡改 capability 或制造虚假协议版本。系统状态正确显示，原 Java 绑定的真实运行被 `runtime_worker_invalid` 拒绝，随后恢复五语言 PATH。首个 API 探针误用了已删除 Adapter ID 而返回 404，独立保留并用实际 Java fixture ID 补验。
+
+#176 跨真实 Worker 重启补证：guard 存在时，另一适配器成功、指定 queued 取消且 Attempt=0；Worker 重启后继续观察 50 秒，原 queued 仍 Attempt=0、在线、无 Incident。解除精确 guard 后原 queued 同代执行一次，原 owner 因此次真实重启按原重试策略在第二 Attempt 成功；二者原样 marker、清理、不同 fencing 和责任代次分别核对。owner 的重试增代不能被写成 queued 的重复投递或新增执行。
+
+#181 后续事实卡真实回复未调用工具且 candidate=null，但仍附带代码表达式，且绑定步骤省略选择凭据。对照当前 UI 修正固定事实：填写代码中的凭据名、选择凭据及字段、保存绑定；普通产品帮助省略代码表达式及当前绑定键示例，不宣称所有 Adapter 都需凭据。三种工具/知识配置的回归在修改前失败，修改后完整 Prompt Builder 批次 28 项通过；真实行为复核另行记录。
+
+完整集成检查首次 Web 为 673 PASS/2 FAIL；两个失败分别为目录错误改到局部告警后的旧定位器、测试点击尚在 loading 的按钮。修正测试条件后受影响两文件 172 项通过。Backend 正确专用数据库/Broker 环境的完整批次为 2231 PASS/1 FAIL/22 SKIP，失败来自源扫描把 JSX 行内英文空串误判为用户文案；仅将 validator 分行，针对性扫描 4 项通过。重启后首次扫描调用缺少必需 RabbitMQ 环境，按既有专用测试配置纠正后通过。Ruff、Web lint/typecheck 与 `git diff --check` 分别核验；各批次不合并伪造成一次完整全绿。

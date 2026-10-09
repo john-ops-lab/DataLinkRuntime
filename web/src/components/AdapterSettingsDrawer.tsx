@@ -195,7 +195,8 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props & { 
               label={t("settings.name")}
               rules={[
                 { required: true, whitespace: true, message: t("settings.nameRequired") },
-                { validator: (_: unknown, value: string) => Array.from(value?.trim() ?? "").length <= 128
+                { validator: (_: unknown, value: string) =>
+                  Array.from(value?.trim() ?? "").length <= 128
                   ? Promise.resolve() : Promise.reject(new Error(t("settings.nameTooLong"))) },
               ]}
             >
