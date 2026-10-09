@@ -1462,6 +1462,149 @@ audit_event_fields = {
     "request_terminal": audit_common_fields
     | {"successful_calls", "failed_calls", "blocked_calls"},
 }
+audit_identity_fields = {
+    "timestamp",
+    "schema_version",
+    "event_type",
+    "request_id",
+    "conversation_id",
+    "adapter_id",
+}
+budget_counters = {
+    "window_tokens",
+    "estimated_before_tokens",
+    "estimated_after_tokens",
+    "system_tokens",
+    "conversation_tokens",
+    "tool_message_tokens",
+    "tool_definition_tokens",
+    "output_reserve_tokens",
+    "safety_reserve_tokens",
+    "omitted_history_messages",
+    "omitted_reference_items",
+    "omitted_images",
+    "provider_call_index",
+    "elapsed_ms",
+    "provider_deadline_ms",
+    "hard_deadline_ms",
+    "remaining_ms",
+}
+audit_event_fields.update(
+    {
+        "provider_budget": audit_identity_fields
+        | budget_counters
+        | {"purpose", "window_source", "estimation_method", "status"},
+        "provider_result": audit_identity_fields
+        | {
+            "provider_call_index",
+            "outcome",
+            "duration_ms",
+            "remaining_ms",
+            "error_code",
+            "stage",
+            "reason",
+        },
+        "response_validation": audit_identity_fields
+        | {"provider_call_index", "stage", "reason", "error_code"},
+    }
+)
+failure_stages = {
+    "provider_transport",
+    "provider_json",
+    "provider_envelope",
+    "final_json",
+    "output_schema",
+    "unicode",
+    "output_safety",
+    "candidate_configuration",
+}
+failure_reasons = {
+    "transport_error",
+    "response_too_large",
+    "invalid_utf8",
+    "malformed_json",
+    "duplicate_key",
+    "non_finite_number",
+    "json_limit",
+    "json_value_invalid",
+    "invalid_shape",
+    "incomplete_completion",
+    "incomplete_thinking",
+    "empty_content",
+    "schema_mismatch",
+    "invalid_unicode",
+    "secret_reflection",
+    "requirements_mismatch",
+    "runtime_config_mismatch",
+    "unexpected_tools",
+}
+
+
+def validate_provider_audit(record: dict[str, Any]) -> None:
+    event_type = record["event_type"]
+    assert (
+        type(record["provider_call_index"]) is int and record["provider_call_index"] > 0
+    ), record
+    if event_type == "provider_budget":
+        for field in budget_counters:
+            assert type(record[field]) is int and record[field] >= 0, record
+        assert record["window_tokens"] > 0, record
+        assert record["status"] in {"prepared", "rejected"}, record
+        assert record["purpose"] in {
+            "assist_initial",
+            "assist_followup",
+            "assist_finalization",
+        }, record
+        assert record["window_source"] in {"verified_model", "configured_default"}, (
+            record
+        )
+        assert (
+            record["estimation_method"] == "utf8_json_bytes_div2_plus_fixed_reserves_v1"
+        ), record
+        assert record["estimated_before_tokens"] >= record["estimated_after_tokens"], (
+            record
+        )
+        assert record["estimated_after_tokens"] == sum(
+            record[field]
+            for field in (
+                "system_tokens",
+                "conversation_tokens",
+                "tool_message_tokens",
+                "tool_definition_tokens",
+                "output_reserve_tokens",
+                "safety_reserve_tokens",
+            )
+        ), record
+        assert (record["estimated_after_tokens"] <= record["window_tokens"]) == (
+            record["status"] == "prepared"
+        ), record
+        assert (
+            record["remaining_ms"]
+            <= record["provider_deadline_ms"]
+            <= record["hard_deadline_ms"]
+        ), record
+    else:
+        assert record["stage"] in failure_stages | {None}, record
+        assert record["reason"] in failure_reasons | {None}, record
+        assert record["error_code"] is None or isinstance(record["error_code"], str), (
+            record
+        )
+        if event_type == "provider_result":
+            assert record["outcome"] in {"final", "tool_calls", "error"}, record
+            for field in ("duration_ms", "remaining_ms"):
+                assert type(record[field]) is int and record[field] >= 0, record
+            if record["outcome"] != "error":
+                assert (
+                    record["stage"] is record["reason"] is record["error_code"] is None
+                ), record
+        else:
+            assert (
+                record["stage"] in failure_stages
+                and record["reason"] in failure_reasons
+            ), record
+            assert record["error_code"] == "ai_response_invalid", record
+
+
 audit_statuses = {
     "tool_attempt": {"success", "error", "blocked"},
     "guard": {"blocked"},
@@ -1496,24 +1639,32 @@ for audit_path in audit_files:
             "Z"
         ), record
         assert type(record["adapter_id"]) is int and record["adapter_id"] > 0, record
-        assert type(record["round"]) is int and record["round"] >= 0, record
-        assert type(record["call_index"]) is int and record["call_index"] >= 0, record
-        assert isinstance(record["args_summary"], dict), record
-        assert record["status"] in audit_statuses[event_type], record
-        assert type(record["duration_ms"]) is int and record["duration_ms"] >= 0, record
-        assert type(record["result_size"]) is int and record["result_size"] >= 0, record
-        assert isinstance(record["result_truncated"], bool), record
-        assert record["error_code"] is None or isinstance(record["error_code"], str), (
-            record
-        )
-        assert record["stop_reason"] is None or isinstance(
-            record["stop_reason"], str
-        ), record
-        if event_type == "tool_attempt":
-            assert isinstance(record["tool"], str) and record["tool"], record
+        if event_type in {"provider_budget", "provider_result", "response_validation"}:
+            validate_provider_audit(record)
         else:
-            assert record["tool"] is None, record
-
+            assert type(record["round"]) is int and record["round"] >= 0, record
+            assert type(record["call_index"]) is int and record["call_index"] >= 0, (
+                record
+            )
+            assert isinstance(record["args_summary"], dict), record
+            assert record["status"] in audit_statuses[event_type], record
+            assert type(record["duration_ms"]) is int and record["duration_ms"] >= 0, (
+                record
+            )
+            assert type(record["result_size"]) is int and record["result_size"] >= 0, (
+                record
+            )
+            assert isinstance(record["result_truncated"], bool), record
+            assert record["error_code"] is None or isinstance(
+                record["error_code"], str
+            ), record
+            assert record["stop_reason"] is None or isinstance(
+                record["stop_reason"], str
+            ), record
+            if event_type == "tool_attempt":
+                assert isinstance(record["tool"], str) and record["tool"], record
+            else:
+                assert record["tool"] is None, record
         for identifier_field in ("request_id", "conversation_id"):
             identifier = record[identifier_field]
             assert isinstance(identifier, str), record

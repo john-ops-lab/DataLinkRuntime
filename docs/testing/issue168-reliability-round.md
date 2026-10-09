@@ -92,3 +92,5 @@ Control `39b0f90` 的固定普通产品帮助在真实 Chrome 首轮得到正确
 本轮临时两次/60 秒重试策略恢复原配置，Worker PATH 覆盖移除、实际五语言恢复；原执行冻结快照未被改写，测试计划停用。7 个旧 git archive 构建上下文删除，保留当前运行镜像对应源码和所有首次/恢复证据。数据库、材料/缓存卷、既有 Token/Master Key、#129 和原工作区不动；正常测试目标保留以供审查。
 
 #168 与 #169–#195 共 28 个 Issue 已追加分项开发/验收更新；全部原正文及 open/closed 状态指纹前后相同，#129 未触及。未自动关闭、合并或改写原基线统计。
+
+Draft PR #196 首次精确 HEAD `d1cfb16` 的 Web 与 local-preview CI 通过，Compose smoke 在审计 JSONL 校验失败：检查器只接受原有 tool_attempt/guard/request_terminal，未跟进 #180/#183 新增的 provider_budget/provider_result/response_validation。修正只扩展闭合事件 schema，并对新事件逐项核类型、固定分类、预算总和、窗口与共享 deadline；原事件和全部敏感字面量检查保留。以本机当前及轮转审计文件复核 39 budget、39 result、30 terminal、3 response validation、16 tool attempt、3 guard 全部通过。首次 CI 失败原件保留，最终 CI 结果另行关联精确后继 HEAD；本机应用切换继续等待 CI，不把构建成功视为部署完成。
