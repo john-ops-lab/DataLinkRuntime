@@ -76,7 +76,10 @@ def test_product_help_facts_are_available_without_document_tool_calls(
     assert system.index("## Request intent") > system.index("Runtime Contract for")
     assert "This distinction is the same with tools enabled or disabled" in system
     assert "填写「代码中的凭据名」，选择凭据和字段，点击「保存绑定」" in system
-    assert "In the JSON response, message contains numbered UI actions only, without an introduction or conclusion" in system
+    assert (
+        "In the JSON response, message contains numbered UI actions only, "
+        "without an introduction or conclusion"
+    ) in system
     assert "JSON 响应中的 message 仅包含编号的可见控件操作，不添加开场或结尾" in system
     assert "不声称凭据来自 Worker 或绑定会修改代码" in system
     assert "<code_task_runtime_contract>" in system
