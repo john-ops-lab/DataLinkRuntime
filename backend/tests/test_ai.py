@@ -1206,7 +1206,7 @@ def test_m5_8_003_candidate_is_code_only_for_all_adapter_languages(
     assert isinstance(payload, dict)
     system_prompt = payload["messages"][0]["content"]  # type: ignore[index]
     assert "requirements, runtime_config, credential binding" in system_prompt.lower()
-    assert "manually managed by the administrator" in system_prompt
+    assert "manually managed by an authorized user" in system_prompt
     current_user = payload["messages"][-1]["content"]  # type: ignore[index]
     assert f'"requirements": "manual-{language}-dependency\\n"' in current_user
     assert f'"requirements": "manual-{language}-dependency\\n"' not in system_prompt

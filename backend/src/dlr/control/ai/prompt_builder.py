@@ -95,9 +95,10 @@ def build_prompt(
         if context.knowledge_search_enabled:
             tool_instructions += "\n\n## Knowledge retrieval\n" + knowledge_rules.strip()
     schema = json.dumps(AiModelOutput.model_json_schema(), ensure_ascii=False, sort_keys=True)
+    adapter_rules, intent_rules = RULES["adapter.md"].split("\n## Request intent\n", 1)
     sections = [
         RULES["system.md"].strip(),
-        RULES["adapter.md"].strip(),
+        adapter_rules.strip(),
     ]
     if tool_instructions:
         sections.append(tool_instructions)
@@ -126,6 +127,9 @@ def build_prompt(
         sections.append(attachment_instructions.strip())
     if managed_input_instruction:
         sections.append(managed_input_instruction.strip())
+    # Put the task boundary after the Runtime Contract, whose API examples
+    # are background facts rather than a request to explain implementation.
+    sections.append("## Request intent\n" + intent_rules.strip())
     system_prompt = "\n\n".join(sections)
     messages: list[providers.JsonObject] = [{"role": "system", "content": system_prompt}]
     messages.extend(

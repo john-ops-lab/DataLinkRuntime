@@ -94,7 +94,8 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
           setCredentialLoadState("ready");
         } else {
           setCredentialLoadState("error");
-          onError(errorMessage(credentialResult.reason));
+          // This recoverable catalog error belongs to the local retry alert.
+          // A shared page error would remain after a successful retry.
         }
       }
       if (bindingResult.status === "fulfilled") {
@@ -125,13 +126,12 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
         setCredentialsLoaded(true);
         setCredentialLoadState("ready");
       }
-    } catch (error) {
+    } catch {
       if (generation === credentialGeneration.current) {
         setCredentialLoadState("error");
-        onError(errorMessage(error));
       }
     }
-  }, [canManageBindings, loadCredentialOptions, onError]);
+  }, [canManageBindings, loadCredentialOptions]);
 
   // Refresh only options; preserve unsaved binding rows.
   useEffect(

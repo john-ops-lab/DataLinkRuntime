@@ -114,3 +114,12 @@ Review 续验检查点 `3e2d5b8`：显式 KILL 本任务 Worker 后 Execution 13
 `4855dc9` 的首次 Hosted Web CI 为 683 PASS / 1 FAIL，已有短 Webhook 日志轮询测试超过 15 秒。原测试在整个控制台挂载前将轮询缩短为 20ms；改为挂载后仅主动推进日志计时器，仍断言短调用发现、读取失败保留旧日志、恢复为新日志、离开后停止读取。定点 1 项及完整 App 149 项通过，原失败 CI/log 留存，未放宽超时或修改业务预期。
 
 `15837dd` 的 Hosted Web 为 683 PASS / 1 FAIL，短 Webhook 测试已通过，失败转为已有缓存 cleanup retry 测试：较慢 CI 实际触发 GET operation detail，但该测试夹具误回列表页，导致 result 未定义。三个 retry 夹具分别补正确 operation 详情；cleanup 用例主动推进一秒并断言恰好一次详情查询，再核同一 sample 的分页合并，避免快速本机掩盖错误。修正中局部变量与测试库 cleanup 同名导致首次检查失败，改名后完整 WorkerCachePanel 16 项、ESLint/typecheck 通过；所有首轮记录保留。没有把真实 API 缺字段改为通过，也未改产品容错或接口合同。DLQ published/pending 两类恢复边界同时写入本 change 的 runtime-cache spec，明确人工恢复要求和原 Relay 责任。
+
+
+`8ccdebe` 的精确 Hosted CI 四项全部通过：Backend 2240 PASS / 17 SKIP，Web 684 PASS，Compose smoke 与 local-preview 通过。本机四个应用镜像随后切换到相同 SHA，保留 PostgreSQL/Broker、挂载、端口和私有配置；真实 Execution 136 在 Attempt 1 成功、原样输出匹配且 cleanup completed。
+
+旧缓存升级实证：保留 `3e2d5b8` 的 Adapter 32 / Version 30 ready 环境与 manifest/全部内容及 mtime 摘要，升级到 `8ccdebe` 后 Execution 137 在同版本、同输入下成功且清理完成，内容和时间摘要全部不变，没有重新下载或安装。第一检查脚本把 Compose image 标签当作可 inspect 的镜像 ID，在执行前失败；修正为容器实际 Image ID 后通过。此证据证明旧 ready 缓存复用，不证明缺新元数据的更早缓存或真实旧历史。测试 pin 在最终镜像补验后恢复原状态。
+
+最终镜像首轮复验又发现两项：凭据列表请求断网后局部重试恢复了选项和草稿，但共享页面还留着 `network_error`；真实普通工具 Provider 返回正确步骤且无候选/工具，却仍附带未请求的 Secret API 表达式。关闭工具的同模型配置首轮通过，不能据此宣称实际无工具模型矩阵通过。原设置已恢复，临时配置已移除，版本列表和代码不变。
+
+修正凭据元数据失败只显示可重试的局部告警，真实绑定读取/保存错误仍保留共享报告；受影响组件 26 项通过。将同一版本化 Adapter 规则中的 request intent 放在 Runtime Contract 示例之后，明确从 USER_REQUEST 判断任务，普通 UI 问题只给可见步骤，不从代码任务规则推断管理员权限；不增加关键词分流、响应过滤或自动重试，知识流程保持。Backend 相关首次为 235 PASS / 3 FAIL，三个代码候选测试断言旧的 administrator 固定文案；按授权用户的真实合同更新后 238 PASS，候选仅代码、配置手工管理等断言保留。Ruff/format/Mypy 与 diff 检查通过，Hosted CI 和实际 Provider/UI 的后继结果单独关联精确 HEAD。

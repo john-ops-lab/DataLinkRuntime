@@ -158,14 +158,17 @@ it("loads existing bindings despite initial credential failure and retries while
     .mockRejectedValueOnce(new Error("catalog unavailable"))
     .mockResolvedValueOnce([credential]);
   const save = vi.spyOn(api, "setAdapterBindings").mockResolvedValue([{ ...binding, env_key: "DRAFT_TOKEN" }]);
+  const onError = vi.fn();
   render(<CredentialBindingsEditor adapterId={11} disabled={false} accessLevel="owner"
-    platformRole="user" useScopedCredentialOptions onError={vi.fn()} />);
+    platformRole="user" useScopedCredentialOptions onError={onError} />);
   await screen.findByTestId("binding-credentials-load-failed");
   expect((screen.getByTestId("binding-env-key") as HTMLInputElement).value).toBe("API_TOKEN");
   expect(screen.queryByTestId("binding-credential-missing")).toBeNull();
+  expect(onError).not.toHaveBeenCalled();
   fireEvent.change(screen.getByTestId("binding-env-key"), { target: { value: "DRAFT_TOKEN" } });
   fireEvent.click(screen.getByTestId("binding-retry-credentials"));
   await waitFor(() => expect(screen.queryByTestId("binding-credentials-load-failed")).toBeNull());
+  expect(onError).not.toHaveBeenCalled();
   expect((screen.getByTestId("binding-env-key") as HTMLInputElement).value).toBe("DRAFT_TOKEN");
   expect(api.listAdapterBindings).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByTestId("save-bindings"));
