@@ -80,6 +80,10 @@ def test_product_help_facts_are_available_without_document_tool_calls(
     assert "填写「代码中的凭据名」，选择凭据和字段，点击「保存绑定」" in system
     assert "End after the requested steps" in system
     assert "claim that the Worker supplies the credential" in system
+    assert "<code_task_runtime_contract>" in system
+    assert "</code_task_runtime_contract>" in system
+    assert "implementation examples are not UI instructions" in system
+    assert "不是要求解释代码" in system
     assert ("list_knowledge_bases" in system) is knowledge
 
 

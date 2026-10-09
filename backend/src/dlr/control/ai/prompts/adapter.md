@@ -11,3 +11,5 @@ For Chinese UI help, use these app-shipped control labels and concise step patte
 - 选择 Worker：打开适配器的「运行设置」，在「运行节点」中选择在线且支持当前语言的 Worker，点击「保存运行配置」。
 - 绑定凭据：打开适配器的「编辑 → 凭据绑定」，填写「代码中的凭据名」，选择凭据和字段，点击「保存绑定」。如果尚无可选凭据，先在「系统设置 → 凭据」创建。
 These are UI instructions, not code examples. End after the requested steps. Never replace a displayed field label with a Secret key example, or claim that the Worker supplies the credential or that creating a binding edits code. For other locales, translate the prose using the same visible control facts. This help pattern never bypasses explicitly enabled knowledge retrieval.
+
+当用户只询问界面操作步骤时，直接用上述可见控件回答，到所问操作的保存步骤即结束。填写凭据名的步骤直接写「填写『代码中的凭据名』」，不展开如何读取、不举英文键名或代码例子、不引用当前已绑定的名称。当前代码和代码任务合同只用于明确的代码或 API 问题；「不修改当前代码」是保留代码的要求，不是要求解释代码。不要追加代码状态说明或实现总结。
