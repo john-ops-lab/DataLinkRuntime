@@ -16,8 +16,8 @@
     "S3"
   ],
   "logo_key": "storage-s3",
-  "version": "1.1.0",
-  "updated_at": "2026-09-07",
+  "version": "1.1.1",
+  "updated_at": "2026-10-09",
   "featured_rank": 10,
   "provenance_ids": [
     "s3-api-2006-03-01"
@@ -49,7 +49,7 @@
       "language": "java",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/s3-compatible-list-read/java.java",
-      "code_sha256": "9463c7909278c672522cc7e6474d175557e33d46e3f3d0b6e22a2471bdf14f9d",
+      "code_sha256": "7d126186dc72e745cb5cda7895a026c85cd5d3c0e5bef72795aa93caa451fa5d",
       "requirements": "software.amazon.awssdk:s3:2.32.27",
       "runtime_config": {},
       "provenance_ids": [

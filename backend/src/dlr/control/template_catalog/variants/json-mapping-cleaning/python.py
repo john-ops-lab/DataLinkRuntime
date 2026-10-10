@@ -121,6 +121,10 @@ def _convert(value: object, kind: str | None) -> object:
     if kind is None:
         return value
     if kind == "string":
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
         return str(value)
     if kind == "integer":
         return _integer(value)
@@ -164,7 +168,7 @@ def _matches(item: object, rule: dict[str, object]) -> bool:
 def _sort_key(value: object) -> tuple[int, str]:
     if value is None:
         return (1, "")
-    return (0, _canonical_json(value))
+    return (0, '"' + value if isinstance(value, str) else _canonical_json(value))
 
 
 def _json_equals(left: object, right: object) -> bool:

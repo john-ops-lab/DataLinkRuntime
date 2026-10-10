@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -187,8 +188,9 @@ def reconcile_message(
     queue_name = (
         rabbitmq.topology_names(target_worker_id).queue if target_worker_id is not None else None
     )
-    kind = _death_reason(headers or {}, queue_name=queue_name)
-    delivery_limit = kind == "delivery_limit"
+    broker_reason = _death_reason(headers or {}, queue_name=queue_name)
+    kind = broker_reason if message is not None else "invalid"
+    delivery_limit = broker_reason == "delivery_limit"
     if message is not None:
         raw_execution_id = message.execution_id
         raw_generation = message.dispatch_generation
@@ -196,17 +198,28 @@ def reconcile_message(
 
     execution: Execution | None = None
     adapter: Adapter | None = None
+    cache_reclamation_blocked = False
     if raw_execution_id is not None:
         candidate_status = session.scalar(
             select(Execution.status).where(Execution.id == raw_execution_id)
         )
-        execution = lock_execution_in_admission_order(
-            session,
-            raw_execution_id,
-            guard_reactivation=(
-                message is not None and not delivery_limit and candidate_status == "queued"
-            ),
-        )
+        try:
+            execution = lock_execution_in_admission_order(
+                session,
+                raw_execution_id,
+                guard_reactivation=(
+                    message is not None and not delivery_limit and candidate_status == "queued"
+                ),
+            )
+        except HTTPException as error:
+            if not isinstance(error.detail, Mapping) or (
+                error.detail.get("code") != "cache_reclamation_in_progress"
+            ):
+                raise
+            # The guard/admission prefix remains locked. Preserve a durable
+            # manual-review fact without reactivating the guarded reference.
+            cache_reclamation_blocked = True
+            execution = lock_execution_in_admission_order(session, raw_execution_id)
         if execution is not None:
             adapter = session.get(Adapter, execution.adapter_id)
     incident = _incident(
@@ -216,6 +229,12 @@ def reconcile_message(
         execution_id=raw_execution_id,
         dispatch_generation=raw_generation,
     )
+    if message is None:
+        # Only the fixed allowlisted transport reason is retained; never copy
+        # malformed payloads or arbitrary Broker headers into diagnostics.
+        incident.last_error = f"invalid; broker_reason={broker_reason}"
+    elif cache_reclamation_blocked:
+        incident.last_error = f"cache_reclamation_in_progress; broker_reason={broker_reason}"
     now = database_now(session)
     action = "manual_review"
     if execution is None:
@@ -239,6 +258,7 @@ def reconcile_message(
         and message.target_worker_id == execution.target_worker_id_snapshot
         and execution.status == "queued"
         and not delivery_limit
+        and not cache_reclamation_blocked
     ):
         # A delivery-limit event is not automatically hot-looped.  It remains
         # an operator decision because repeatedly publishing it could hide a

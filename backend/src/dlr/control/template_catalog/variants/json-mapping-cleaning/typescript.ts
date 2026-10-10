@@ -123,8 +123,21 @@ function matches(item: any, rule: any): any {
 function stableKey(value: any): any {
     if (value === null || value === undefined)
         return [1, ""];
-    return [0, canonicalJson(value)];
+    return [0, typeof value === "string" ? `"${value}` : canonicalJson(value)];
 }
+// Compare Unicode scalar/code points, independent of locale and UTF-16 units.
+function compareCodePoints(left: string, right: string): number {
+  let l = 0; let r = 0;
+  while (l < left.length && r < right.length) {
+    const a = left.codePointAt(l)!;
+    const b = right.codePointAt(r)!;
+    if (a !== b) return a - b;
+    l += a > 0xffff ? 2 : 1;
+    r += b > 0xffff ? 2 : 1;
+  }
+  return (l < left.length ? 1 : 0) - (r < right.length ? 1 : 0);
+}
+
 function jsonEquals(left: any, right: any): any {
     if (typeof left === "boolean" || typeof right === "boolean")
         return left === right;
@@ -309,7 +322,7 @@ export function handle(context: Context, input: any): any {
             const middle = Math.floor((low + high) / 2);
             const existing = candidates[middle];
             const comparison = candidate.order[0] - existing.order[0]
-                || candidate.order[1].localeCompare(existing.order[1]);
+                || compareCodePoints(candidate.order[1], existing.order[1]);
             const before = comparison === 0
                 ? ordinal < existing.ordinal
                 : (descending ? comparison > 0 : comparison < 0);

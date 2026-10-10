@@ -57,6 +57,38 @@ def _context(
     return context, payload, managed
 
 
+@pytest.mark.parametrize("tools,knowledge", [(False, False), (True, False), (True, True)])
+def test_product_help_facts_are_available_without_document_tool_calls(
+    tools: bool, knowledge: bool
+) -> None:
+    context, _, _ = _context(tools=tools, knowledge=knowledge)
+    result = build_prompt(context, runtime_contract="public runtime contract")
+    system = str(result.messages[0]["content"])
+    assert "Fixed product-help facts" in system
+    assert "运行设置 → 运行节点" in system
+    assert "编辑 → 凭据绑定" in system
+    assert "系统设置 → 凭据" in system
+    assert "do not invent regions, machine sizes, alternate menus" in system
+    assert "first enter the name used by the code, then select a credential and its field" in system
+    assert "Omit code expressions and current bound key examples" in system
+    assert "When generating or explaining Adapter code" in system
+    assert "Determine the task from USER_REQUEST alone" in system
+    assert system.index("## Request intent") > system.index("Runtime Contract for")
+    assert "This distinction is the same with tools enabled or disabled" in system
+    assert "填写「代码中的凭据名」，选择凭据和字段，点击「保存绑定」" in system
+    assert (
+        "In the JSON response, message contains numbered UI actions only, "
+        "without an introduction or conclusion"
+    ) in system
+    assert "JSON 响应中的 message 仅包含编号的可见控件操作，不添加开场或结尾" in system
+    assert "不声称凭据来自 Worker 或绑定会修改代码" in system
+    assert "<code_task_runtime_contract>" in system
+    assert "</code_task_runtime_contract>" in system
+    assert "implementation examples are not UI instructions" in system
+    assert "不是要求解释代码" in system
+    assert ("list_knowledge_bases" in system) is knowledge
+
+
 @pytest.mark.parametrize("language", ["python", "javascript", "typescript", "go", "java"])
 @pytest.mark.parametrize("tools,knowledge", [(False, False), (True, False), (True, True)])
 def test_builder_message_matrix(language: str, tools: bool, knowledge: bool) -> None:

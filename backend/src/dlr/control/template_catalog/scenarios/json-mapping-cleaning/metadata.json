@@ -6,8 +6,8 @@
     "en": "JSON Field Mapping"
   },
   "summary": {
-    "zh-CN": "重命名和转换 JSON 字段，按需要筛选、排序和去重。\n\n复制后在代码开头调整处理规则，运行时传入待处理数据。",
-    "en": "Rename and convert JSON fields, then filter, sort and deduplicate records.\n\nAdjust the processing rules at the top of the copied code and provide data when running."
+    "zh-CN": "重命名和转换 JSON 字段，按需要筛选、排序和去重。\n\n复制后在代码开头调整处理规则，运行时传入待处理数据。\n\n字符串按 Unicode 码点区分大小写稳定排序；转字符串时 null、布尔值使用 null、true、false。",
+    "en": "Rename and convert JSON fields, then filter, sort and deduplicate records.\n\nAdjust the processing rules at the top of the copied code and provide data when running.\n\nStrings use stable, case-sensitive Unicode code-point order. Null and boolean string conversions use null, true and false."
   },
   "vendor": "DLR",
   "adapter_type": "task",
@@ -16,8 +16,8 @@
     "RFC 6901"
   ],
   "logo_key": "data-json",
-  "version": "1.1.0",
-  "updated_at": "2026-09-07",
+  "version": "1.1.1",
+  "updated_at": "2026-10-09",
   "featured_rank": 30,
   "provenance_ids": [
     "json-pointer-rfc6901"
@@ -27,7 +27,7 @@
       "language": "python",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/json-mapping-cleaning/python.py",
-      "code_sha256": "d4d4f2dfc91fb2fc9c43b3ba479a6b0264a7786f875de244a6b88ee7bc0a68b1",
+      "code_sha256": "682d3c8d3929db29513a914b0b6cf6bace759201f9d8bbbefaa175288b350eda",
       "requirements": "",
       "runtime_config": {},
       "provenance_ids": [
@@ -38,7 +38,7 @@
       "language": "javascript",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/json-mapping-cleaning/javascript.mjs",
-      "code_sha256": "58660e9d22cea66d3f76bf770542fc444ceec4c6d6f9b2fe5bed3770bf664a2a",
+      "code_sha256": "d757530d8ccf87055d5d9c89e1adf1ae3428a3c4feb340a3d2a95c7c446ff43a",
       "requirements": "",
       "runtime_config": {},
       "provenance_ids": [
@@ -49,7 +49,7 @@
       "language": "java",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/json-mapping-cleaning/java.java",
-      "code_sha256": "4dd459a416cbed197a57e7eaceb04bf3cba4794e20dd5e5b47fb3be07b68b277",
+      "code_sha256": "9337de2c4ca39828148c3c00d497c9b26a667af9e5abf5f4c5dc7561524b26f9",
       "requirements": "",
       "runtime_config": {},
       "provenance_ids": [
@@ -60,7 +60,7 @@
       "language": "typescript",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/json-mapping-cleaning/typescript.ts",
-      "code_sha256": "1ead950997a6d7b648ca117d655246e4fb32ce5c7637da3abd00f6633a1e3f06",
+      "code_sha256": "8f05dbf51225c319eb4f182b52e5552596856a3a1a2213356771ce994a089615",
       "requirements": "",
       "runtime_config": {},
       "provenance_ids": [
@@ -71,7 +71,7 @@
       "language": "go",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/json-mapping-cleaning/go.go",
-      "code_sha256": "9ea987ece593f81cb047d1558adf7109bff868cb0fd3b0e706bc3611b8e0f0bf",
+      "code_sha256": "3de58ca7b3fd48aee1d8ec5f3a21dccfda447fe2efb0ed880c0b390999c43f9f",
       "requirements": "",
       "runtime_config": {},
       "provenance_ids": [

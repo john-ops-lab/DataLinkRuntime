@@ -443,7 +443,8 @@ it("disables conflicting actions while a regenerate is running and serializes th
   expect(assistAdapter).toHaveBeenCalledTimes(2);
 
   // 运行中：发送按钮、输入框、Regenerate、Composer 均禁用。
-  expect((screen.getByTestId("ai-send") as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByTestId("ai-send")).toBeNull();
+  expect((screen.getByTestId("ai-stop") as HTMLButtonElement).disabled).toBe(false);
   expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).disabled).toBe(true);
   expect((screen.getByTestId("ai-regenerate") as HTMLButtonElement).disabled).toBe(true);
 

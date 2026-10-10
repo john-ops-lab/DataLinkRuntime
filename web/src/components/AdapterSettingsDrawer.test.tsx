@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { applySystemLocale, DEFAULT_SYSTEM_LOCALE } from "../i18n";
@@ -90,4 +90,36 @@ it("keeps the fixed action area effective-change and bilingual contracts", async
   expect(screen.getByTestId("adapter-settings-title").textContent).toContain("Adapter settings");
   expect(screen.getByTestId("adapter-settings-summary").textContent).toContain("Python");
   expect(screen.getByTestId("update-details").textContent).toContain("Save changes");
+});
+
+it("keeps the external focus trigger when loaded details remount the open form", () => {
+  vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([{}] as unknown as DOMRectList);
+  const frames = new Map<number, FrameRequestCallback>();
+  let nextFrame = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation(callback => {
+    frames.set(++nextFrame, callback);
+    return nextFrame;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation(id => { frames.delete(id); });
+  const trigger = document.createElement("button");
+  const fallback = document.createElement("a");
+  fallback.href = "/adapters";
+  document.body.append(trigger, fallback);
+  trigger.focus();
+  const adapter = makeAdapter();
+  const props = { adapter, name: "loading", description: "", busy: false, contentReady: false,
+    onClose: vi.fn(), onUpdate: vi.fn(async () => true), onDelete: vi.fn(), onClone: vi.fn() };
+  const view = render(<AdapterSettingsDrawer {...props} open />);
+  screen.getByTestId("adapter-name").focus();
+  view.rerender(<AdapterSettingsDrawer {...props} open name={adapter.name} contentReady />);
+  view.rerender(<AdapterSettingsDrawer {...props} open={false} name={adapter.name} contentReady />);
+  act(() => {
+    const callbacks = [...frames.values()];
+    frames.clear();
+    callbacks.forEach(callback => callback(0));
+  });
+  expect(document.activeElement).toBe(trigger);
+  view.unmount();
+  trigger.remove();
+  fallback.remove();
 });

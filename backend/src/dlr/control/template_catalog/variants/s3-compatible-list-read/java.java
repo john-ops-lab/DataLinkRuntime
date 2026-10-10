@@ -121,7 +121,7 @@ public class Adapter {
         var credentials = session == null
             ? AwsBasicCredentials.create(access, secret)
             : AwsSessionCredentials.create(access, secret, session);
-        S3Client.Builder builder = S3Client.builder()
+        var builder = S3Client.builder()
             .region(Region.of(String.valueOf(input.getOrDefault("region", "us-east-1"))))
             .credentialsProvider(StaticCredentialsProvider.create(credentials))
             .forcePathStyle(!Boolean.FALSE.equals(input.get("force_path_style")));

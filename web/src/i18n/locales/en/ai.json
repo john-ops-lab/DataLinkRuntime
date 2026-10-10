@@ -140,7 +140,9 @@
       "gatewayPayloadTooLarge": "The attachment request exceeds the 32 MiB gateway limit; remove or compress files and try again",
       "gatewayTimeout": "The model service timed out after 660 seconds; check the network or try again later",
       "knowledgeUnavailable": "Knowledge search is unavailable for this round; ask an administrator to configure an available source"
-    }
+    },
+    "stopWaiting": "Stop waiting",
+    "stoppedWaiting": "Stopped waiting. Existing messages are preserved. The model service may continue until the original deadline; you can send again."
   },
   "model": {
     "notice": "Data scope",
@@ -152,6 +154,8 @@
     "summaryCredential": "API Key Credential",
     "summaryNotConfigured": "Not configured",
     "summaryNoCredential": "No Credential bound",
+    "summaryCredentialUnconfirmed": "Credential name unconfirmed",
+    "summaryCredentialUnavailable": "Selected Credential unavailable",
     "provider": {
       "label": "Model provider",
       "custom": "Custom OpenAI-compatible service",
@@ -209,6 +213,9 @@
     "customReferenced": "Referenced by active setting",
     "customRequired": "Service name and Base URL are required",
     "customSaved": "Custom model service saved",
-    "customDeleted": "Custom model service deleted"
+    "customDeleted": "Custom model service deleted",
+    "credentialMissing": "The selected Credential was deleted or is no longer available. Your draft is preserved; select another or clear it.",
+    "credentialsLoadFailed": "Could not load credentials, so availability of the selected credential is unconfirmed. Your draft is preserved. Please retry.",
+    "credentialsRetry": "Reload credentials"
   }
 }

@@ -297,6 +297,7 @@ class Agent:
         self._cleanup_entries: Any | None = None
         self._cleanup_retry_path: Path | None = None
         self._cleanup_retained = False
+        self._cleanup_scan_complete = False
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -1156,10 +1157,21 @@ class Agent:
         try:
             retry_operation = task.get("retry_operation_id")
             if retry_operation is not None:
-                manager.retry_failed_cleanup(
-                    cleanup_id,
-                    management_operation_id=uuid.UUID(str(retry_operation)),
-                )
+                try:
+                    manager.retry_failed_cleanup(
+                        cleanup_id,
+                        management_operation_id=uuid.UUID(str(retry_operation)),
+                    )
+                except CacheError as error:
+                    # A failure before guard acquisition has no deletion record
+                    # to resume. The explicit Control retry supplies a new current
+                    # cleanup claim; only a proven-clear local record set may
+                    # restart the ordinary guarded scan. Unknown state still fails.
+                    if (
+                        error.code != "cache_retry_unknown"
+                        or manager.cleanup_state(cleanup_id) != "clear"
+                    ):
+                        raise
                 self._recover_cache_deletions()
                 cleanup_state = manager.cleanup_state(cleanup_id)
                 if cleanup_state == "failed":
@@ -1185,17 +1197,22 @@ class Agent:
                 deadline=deadline,
             )
             inspected = 0
-            if self._cleanup_entries is None:
+            if self._cleanup_entries is None and not self._cleanup_scan_complete:
                 self._cleanup_entries = os.scandir(manager.cache.entries)
                 self._cleanup_retry_path = None
                 self._cleanup_retained = False
-            exhausted = False
-            while inspected < policy.max_scan_entries_per_round and time.monotonic() < deadline:
+            exhausted = self._cleanup_scan_complete
+            while (
+                not self._cleanup_scan_complete
+                and inspected < policy.max_scan_entries_per_round
+                and time.monotonic() < deadline
+            ):
                 retry_path = self._cleanup_retry_path
                 retrying_entry = retry_path is not None
                 if retry_path is not None:
                     entry_path = retry_path
                 else:
+                    assert self._cleanup_entries is not None
                     try:
                         item = next(self._cleanup_entries)
                     except StopIteration:
@@ -1281,6 +1298,8 @@ class Agent:
                         "cache_entry_in_use",
                         "cache_journal_protected",
                         "cache_identity_unverified",
+                        "cache_pinned",
+                        "cache_recently_used",
                     }:
                         self._cleanup_retained = True
                         self._cleanup_retry_path = None
@@ -1305,8 +1324,10 @@ class Agent:
                     self._cleanup_retained = True
             if not exhausted:
                 return False
-            self._cleanup_entries.close()
+            if self._cleanup_entries is not None:
+                self._cleanup_entries.close()
             self._cleanup_entries = None
+            self._cleanup_scan_complete = True
             pre_cache = self._config.runtime_root / "adapters" / str(adapter_id)
             if pre_cache.exists() or pre_cache.is_symlink():
                 self._cleanup_retained = True
@@ -1315,10 +1336,12 @@ class Agent:
                 return False
             if cleanup_state in {"failed", "unknown"}:
                 self._cleanup_retained = True
-        except (CacheError, OSError, ValueError, ClientError, ControlUnavailableError):
+        except (CacheError, OSError, ValueError, ClientError, ControlUnavailableError) as error:
             logger.warning(
-                "adapter environment cleanup failed for adapter %s",
+                "adapter environment cleanup failed: adapter_id=%s cleanup_id=%s cause=%s",
                 adapter_id,
+                cleanup_id,
+                error.code if isinstance(error, CacheError) else type(error).__name__,
             )
             self._report_cleanup_with_retry(
                 worker_id,
@@ -1332,6 +1355,7 @@ class Agent:
             self._cleanup_entries = None
             self._cleanup_retry_path = None
             self._cleanup_retained = False
+            self._cleanup_scan_complete = False
             return True
         self._report_cleanup_with_retry(
             worker_id,
@@ -1341,6 +1365,7 @@ class Agent:
             error_code="cache_cleanup_retained" if self._cleanup_retained else None,
         )
         self._cleanup_retained = False
+        self._cleanup_scan_complete = False
         return True
 
     def _report_cleanup_with_retry(

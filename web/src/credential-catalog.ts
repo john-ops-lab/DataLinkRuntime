@@ -13,12 +13,23 @@
 type Listener = () => void;
 
 const listeners = new Set<Listener>();
+function refreshVisibleCatalog() {
+  if (document.visibilityState === "visible") notifyCredentialCatalogChanged();
+}
 
 /** 订阅凭据元数据变化；返回取消订阅函数。 */
 export function subscribeCredentialCatalog(listener: Listener): () => void {
+  if (listeners.size === 0) {
+    window.addEventListener("focus", refreshVisibleCatalog);
+    document.addEventListener("visibilitychange", refreshVisibleCatalog);
+  }
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
+    if (listeners.size === 0) {
+      window.removeEventListener("focus", refreshVisibleCatalog);
+      document.removeEventListener("visibilitychange", refreshVisibleCatalog);
+    }
   };
 }
 

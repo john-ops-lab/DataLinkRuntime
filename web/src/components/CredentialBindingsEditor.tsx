@@ -55,12 +55,17 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
   const canManageBindings = props.accessLevel === undefined || props.accessLevel === "admin" || props.accessLevel === "owner";
   const isPlatformAdmin = props.platformRole === undefined || props.platformRole === "admin";
   const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [credentialsLoaded, setCredentialsLoaded] = useState(false);
+  const [credentialLoadState, setCredentialLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [rows, setRows] = useState<BindingRow[]>([]);
   const [baseline, setBaseline] = useState<BindingRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const editEpoch = useRef(0);
+  const credentialGeneration = useRef(0);
+  const credentialMissing = canManageBindings && credentialsLoaded && rows.some((row) => row.credential_id !== null &&
+    !credentials.some((credential) => credential.id === row.credential_id));
 
   const loadCredentialOptions = useCallback((): Promise<Credential[]> => {
     if (!canManageBindings) {
@@ -72,19 +77,34 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
   }, [adapterId, canManageBindings, props.useScopedCredentialOptions]);
 
   const load = useCallback(async () => {
+    const generation = ++credentialGeneration.current;
     setLoading(true);
     setNotice(null);
+    setCredentialsLoaded(false);
+    setCredentialLoadState("loading");
     try {
-      const [credentialList, bindingList] = await Promise.all([
+      const [credentialResult, bindingResult] = await Promise.allSettled([
         loadCredentialOptions(),
         api.listAdapterBindings(adapterId),
       ]);
-      setCredentials(credentialList);
-      const loaded = toRows(bindingList);
-      setRows(loaded);
-      setBaseline(loaded);
-    } catch (error) {
-      onError(errorMessage(error));
+      if (generation === credentialGeneration.current) {
+        if (credentialResult.status === "fulfilled") {
+          setCredentials(credentialResult.value);
+          setCredentialsLoaded(true);
+          setCredentialLoadState("ready");
+        } else {
+          setCredentialLoadState("error");
+          // This recoverable catalog error belongs to the local retry alert.
+          // A shared page error would remain after a successful retry.
+        }
+      }
+      if (bindingResult.status === "fulfilled") {
+        const loaded = toRows(bindingResult.value);
+        setRows(loaded);
+        setBaseline(loaded);
+      } else {
+        onError(errorMessage(bindingResult.reason));
+      }
     } finally {
       setLoading(false);
     }
@@ -95,18 +115,29 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
     void load();
   }, [load]);
 
-  // 凭据增删改后仅刷新凭据选项（UX-003）；未保存的绑定行保持原样。
+  const refreshCredentials = useCallback(async () => {
+    if (!canManageBindings) return;
+    const generation = ++credentialGeneration.current;
+    setCredentialLoadState("loading");
+    try {
+      const credentialList = await loadCredentialOptions();
+      if (generation === credentialGeneration.current) {
+        setCredentials(credentialList);
+        setCredentialsLoaded(true);
+        setCredentialLoadState("ready");
+      }
+    } catch {
+      if (generation === credentialGeneration.current) {
+        setCredentialLoadState("error");
+      }
+    }
+  }, [canManageBindings, loadCredentialOptions]);
+
+  // Refresh only options; preserve unsaved binding rows.
   useEffect(
     () =>
-      subscribeCredentialCatalog(() => {
-        if (!canManageBindings) {
-          return;
-        }
-        void loadCredentialOptions()
-          .then((credentialList) => setCredentials(credentialList))
-          .catch((error) => onError(errorMessage(error)));
-      }),
-    [canManageBindings, loadCredentialOptions, onError],
+      subscribeCredentialCatalog(() => { void refreshCredentials(); }),
+    [refreshCredentials],
   );
 
   function updateRow(index: number, patch: Partial<BindingRow>) {
@@ -130,6 +161,10 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
 
   async function handleSave() {
     if (saving || props.disabled) {
+      return;
+    }
+    if (credentialMissing) {
+      props.onError(t("bindings.credentialMissing"));
       return;
     }
     const envKeys = rows.map((row) => row.env_key.trim());
@@ -167,6 +202,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
     } catch (error) {
       setNotice(null);
       props.onError(errorMessage(error));
+      if (error instanceof ApiError && error.code === "credential_not_found") void refreshCredentials();
       if (error instanceof ApiError && error.code === "adapter_runtime_locked") {
         props.onRuntimeConflict?.();
       }
@@ -231,6 +267,14 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
         />
       )}
       {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
+      {canManageBindings && credentialLoadState === "error" && (
+        <Alert type="warning" showIcon data-testid="binding-credentials-load-failed"
+          message={t("bindings.credentialsLoadFailed")}
+          action={<Button size="small" data-testid="binding-retry-credentials"
+            onClick={() => void refreshCredentials()}>{t("bindings.credentialsRetry")}</Button>} />
+      )}
+      {credentialMissing && <Alert type="error" role="alert" showIcon
+        data-testid="binding-credential-missing" message={t("bindings.credentialMissing")} />}
        {rows.length === 0 ? (
          <Empty description={t("empty.noBindings", { ns: "common" })} />
       ) : (
@@ -264,6 +308,8 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                   <>
                     <Select
                       data-testid="binding-credential"
+                      loading={credentialLoadState === "loading"}
+                      onOpenChange={(open) => { if (open) void refreshCredentials(); }}
                       aria-label={t("bindings.credential", { index: index + 1 })}
                       placeholder={t("bindings.credentialPlaceholder")}
                       style={{ minWidth: 160 }}

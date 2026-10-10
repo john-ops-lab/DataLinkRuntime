@@ -57,6 +57,7 @@ import {
   credentialTypeLabel,
 } from "../credential-fields";
 import { notifyCredentialCatalogChanged, subscribeCredentialCatalog } from "../credential-catalog";
+import { useOverlayFocus } from "../hooks/useOverlayFocus";
 import {
   applySystemLocale,
   isSystemLocale,
@@ -139,6 +140,7 @@ function CredentialsPanel(props: {
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
+  const restoreFocus = useOverlayFocus(formOpen, '[data-testid="new-credential"], a[href="/adapters"]');
   const [form, setForm] = useState<CredentialFormState>(emptyForm);
   const [submitting, setSubmitting] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
@@ -392,7 +394,7 @@ function CredentialsPanel(props: {
         title={form.editingId === null ? t("credentials.submitCreate") : t("credentials.submitUpdate")}
         open={formOpen}
         initialValues={{ name: form.name, type: form.type, fields: form.fields }}
-        modalProps={{ destroyOnHidden: true, onCancel: closeForm }}
+        modalProps={{ destroyOnHidden: true, onCancel: closeForm, afterOpenChange: restoreFocus }}
         submitter={{
           render: () => [
             <Button
@@ -596,8 +598,12 @@ function PackageSourcesPanel(props: {
   const [defaults, setDefaults] = useState<PackageSourceDefaults | null>(null);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
+  const restoreFocus = useOverlayFocus(formOpen, '[data-testid="new-package-source"], a[href="/adapters"]');
   const [form, setForm] = useState<PackageSourceFormState>(EMPTY_SOURCE_FORM);
   const [sourceForm] = ProForm.useForm<PackageSourceFormState>();
+  const credentialGeneration = useRef(0);
+  const credentialMissing = form.credential_id !== null &&
+    !credentials.some((credential) => credential.id === form.credential_id);
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState<number | null>(null);
   const [settingDefaultId, setSettingDefaultId] = useState<number | null>(null);
@@ -621,6 +627,7 @@ function PackageSourcesPanel(props: {
   );
 
   const load = useCallback(async (): Promise<boolean> => {
+    const generation = ++credentialGeneration.current;
     setLoading(true);
     try {
       const [sourceList, credentialList, defaultsResult] = await Promise.all([
@@ -629,7 +636,7 @@ function PackageSourcesPanel(props: {
         api.getPackageSourceDefaults(),
       ]);
       setSources(sourceList);
-      setCredentials(credentialList);
+      if (generation === credentialGeneration.current) setCredentials(credentialList);
       setDefaults(defaultsResult);
       setPanelError(null);
       return true;
@@ -646,16 +653,21 @@ function PackageSourcesPanel(props: {
     void load();
   }, [load]);
 
-  // 凭据增删改后仅刷新凭据选择器（UX-003）；已打开的包源表单不会被清空。
+  const refreshCredentials = useCallback(async () => {
+    const generation = ++credentialGeneration.current;
+    try {
+      const list = await api.listCredentials();
+      if (generation === credentialGeneration.current) setCredentials(list);
+    } catch (error) {
+      if (generation === credentialGeneration.current) fail(errorMessage(error));
+    }
+  }, [fail]);
+
+  // Refresh metadata without replacing the open source draft.
   useEffect(
     () =>
-      subscribeCredentialCatalog(() => {
-        void api
-          .listCredentials()
-          .then((credentialList) => setCredentials(credentialList))
-          .catch((error) => fail(errorMessage(error)));
-      }),
-    [fail],
+      subscribeCredentialCatalog(() => { void refreshCredentials(); }),
+    [refreshCredentials],
   );
 
   function closeForm() {
@@ -665,7 +677,7 @@ function PackageSourcesPanel(props: {
   }
 
   async function handleSubmit(): Promise<boolean> {
-    if (submitting) {
+    if (submitting || credentialMissing) {
       return false;
     }
     const name = form.name.trim();
@@ -699,14 +711,16 @@ function PackageSourcesPanel(props: {
     } catch (error) {
       if (
         error instanceof ApiError &&
-        error.params.field === "index_url" &&
-        ["package_source_url_invalid", "package_source_request_invalid"].includes(error.code)
+        (error.code === "builtin_source_invalid" ||
+          (error.params.field === "index_url" &&
+            ["package_source_url_invalid", "package_source_request_invalid"].includes(error.code)))
       ) {
         sourceForm.setFields([
           { name: "index_url", errors: [t("packageSources.urlInvalid")] },
         ]);
       } else {
         fail(errorMessage(error));
+        if (error instanceof ApiError && error.code === "credential_not_found") void refreshCredentials();
       }
       return false;
     } finally {
@@ -772,16 +786,15 @@ function PackageSourcesPanel(props: {
     try {
       const result = await api.testPackageSource(source.id);
       const errorDetail = result.error?.trim() || null;
-      const authFailure = !result.ok &&
-        (result.status_code === 401 || result.status_code === 403 ||
-          /auth|unauthori|forbidden|认证/i.test(errorDetail ?? ""));
+      const authFailure = result.status_code === 401 || result.status_code === 403 ||
+        (!result.ok && /auth|unauthori|forbidden|认证/i.test(errorDetail ?? ""));
       const timeout = !result.ok &&
         (result.status_code === 408 || result.status_code === 504 ||
           /timeout|timed out|time out|超时/i.test(errorDetail ?? ""));
-      const status: PackageSourceTestStatus = result.ok
-        ? "reachable"
-        : authFailure
-          ? "auth-failed"
+      const status: PackageSourceTestStatus = authFailure
+        ? "auth-failed"
+        : result.ok
+          ? "reachable"
           : timeout
             ? "timeout"
             : "unreachable";
@@ -932,6 +945,7 @@ function PackageSourcesPanel(props: {
                   : result === undefined
                     ? t("packageSources.untested")
                     : t(`packageSources.${result.status === "auth-failed" ? "authFailed" : result.status}`)}
+                {!testingThisSource && result?.detail?.startsWith("HTTP ") && ` · ${result.detail}`}
               </Typography.Text>
             </Tooltip>
           </div>
@@ -1123,7 +1137,7 @@ function PackageSourcesPanel(props: {
         title={t("packageSources.new")}
         open={formOpen}
         initialValues={form}
-        modalProps={{ destroyOnHidden: true, onCancel: closeForm }}
+        modalProps={{ destroyOnHidden: true, onCancel: closeForm, afterOpenChange: restoreFocus }}
         submitter={{
           render: (submitterProps) => [
             <Button
@@ -1131,6 +1145,7 @@ function PackageSourcesPanel(props: {
               type="primary"
               data-testid="submit-package-source"
               loading={submitting}
+              disabled={credentialMissing}
               onClick={submitterProps.submit}
             >
               {t("actions.create", { ns: "common" })}
@@ -1200,12 +1215,15 @@ function PackageSourcesPanel(props: {
               {t("packageSources.defaultCheckbox")}
             </Checkbox>
           </Form.Item>
-          <Form.Item name="credential_id" noStyle>
+          <Form.Item name="credential_id"
+            validateStatus={credentialMissing ? "error" : undefined}
+            help={credentialMissing ? t("packageSources.credentialMissing") : undefined}>
             <Select<number>
               data-testid="package-source-credential"
               aria-label={t("packageSources.credential")}
               placeholder={t("packageSources.credentialPlaceholder")}
               allowClear
+              onOpenChange={(open) => { if (open) void refreshCredentials(); }}
               style={{ minWidth: 220 }}
               options={credentials
                 .filter((credential) =>

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import DlrDesignSystemProvider from "../design-system";
@@ -176,6 +176,20 @@ describe("Worker cache administration", () => {
       const [selectAll] = screen.queryAllByRole("checkbox") as HTMLInputElement[];
       expect(selectAll.disabled).toBe(true);
     }
+  });
+
+  it("shows partial failed-guard evidence even when no readable failed items remain", async () => {
+    const view = cacheView();
+    view.failed_guard_complete = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/cache?")) return response(view);
+      return response({ items: [], next_cursor: null });
+    }));
+    renderPanel();
+
+    expect(await screen.findByText("这里只显示了部分失败保护记录。")).toBeTruthy();
+    expect(screen.getByText("11-12")).toBeTruthy();
+    expect(screen.queryByText("暂无失败保护记录")).toBeNull();
   });
 
   it("submits only selected keys and binds protection to observed identity and digest", async () => {
@@ -371,6 +385,9 @@ describe("Worker cache administration", () => {
         retryBody = JSON.parse(String(init.body)) as Record<string, unknown>;
         return response(operation({ kind: "retry" }), 202);
       }
+      if (url.endsWith(`/cache/operations/${operation().operation_id}`)) {
+        return response(operation({ kind: "retry" }));
+      }
       return response({ items: [failed], next_cursor: null });
     }));
     renderPanel();
@@ -414,6 +431,9 @@ describe("Worker cache administration", () => {
         retryBody = JSON.parse(String(init.body)) as Record<string, unknown>;
         return response(operation({ kind: "retry", target_kind: "guard" }), 202);
       }
+      if (url.endsWith(`/cache/operations/${operation().operation_id}`)) {
+        return response(operation({ kind: "retry", target_kind: "guard" }));
+      }
       return response({ items: [], next_cursor: null });
     }));
     renderPanel();
@@ -439,6 +459,7 @@ describe("Worker cache administration", () => {
       failed_cleanup_next_cursor: null,
     };
     let retryBody: Record<string, unknown> | null = null;
+    let detailReads = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("failed_cursor=30")) return response(second);
@@ -447,20 +468,32 @@ describe("Worker cache administration", () => {
         retryBody = JSON.parse(String(init.body)) as Record<string, unknown>;
         return response(operation({ kind: "retry", target_kind: "cleanup", target_cleanup_id: 31 }), 202);
       }
+      if (url.endsWith(`/cache/operations/${operation().operation_id}`)) {
+        detailReads += 1;
+        return response(operation({ kind: "retry", target_kind: "cleanup", target_cleanup_id: 31 }));
+      }
       return response({ items: [], next_cursor: null });
     }));
     renderPanel();
 
-    const cleanup = await screen.findByText("31");
-    fireEvent.click(within(cleanup.closest("tr") as HTMLElement).getByRole("button", { name: /重\s*试/ }));
-    await waitFor(() => expect(retryBody).not.toBeNull());
-    expect(retryBody).toMatchObject({ kind: "retry", cleanup_id: 31 });
-    expect(retryBody).not.toHaveProperty("management_operation_id");
-    expect(retryBody).not.toHaveProperty("guard_operation_id");
-
-    fireEvent.click(screen.getByRole("button", { name: "加载更多失败清理" }));
-    expect(await screen.findByText("30")).toBeTruthy();
-    expect(screen.getByText("31")).toBeTruthy();
+    const cleanupRow = await screen.findByText("31");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      await act(async () => { fireEvent.click(within(cleanupRow.closest("tr") as HTMLElement).getByRole("button", { name: /重\s*试/ })); });
+      expect(retryBody).toMatchObject({ kind: "retry", cleanup_id: 31 });
+      expect(retryBody).not.toHaveProperty("management_operation_id");
+      expect(retryBody).not.toHaveProperty("guard_operation_id");
+      // Exercise the detail poll even on a fast runner; it returns an operation,
+      // not the unrelated operation-list page that masked this fixture error.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(detailReads).toBe(1);
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "加载更多失败清理" })); });
+      expect(screen.getByText("30")).toBeTruthy();
+      expect(screen.getByText("31")).toBeTruthy();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 
   it("replaces cleanup rows instead of merging when the sample changes during pagination", async () => {

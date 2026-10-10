@@ -17,6 +17,7 @@ import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import { FALLBACK_POLICY } from "./fallback-policy";
 import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
+import { pushBrowserLocation } from "./history-route";
 import type {
   Adapter,
   AiAssistResponse,
@@ -463,6 +464,21 @@ async function waitForCodeEditorValue(expected: string): Promise<void> {
 // the App reads on mount. Auth-specific tests clear it explicitly.
 beforeEach(() => {
   sessionStorage.setItem(TOKEN_STORAGE_KEY, "test-admin-token");
+});
+
+it("closes adapter settings when browser navigation enters system settings", async () => {
+  const adapter = makeAdapter({ id: 1, name: "adapter-a", adapter_type: "task" });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  await screen.findByTestId("adapter-settings-form");
+  act(() => pushBrowserLocation("/settings/package-sources"));
+  await waitFor(() => expect(screen.queryByTestId("adapter-settings-form")).toBeNull());
 });
 
 afterEach(() => {
@@ -1769,10 +1785,10 @@ it("shows failed API responses as errors instead of pretending success", async (
     },
   ]);
   render(<App />);
-  await screen.findByTestId("error-banner");
-  expect(screen.getByTestId("error-banner").textContent).toContain("请求失败");
-  expect(screen.getByTestId("error-banner").textContent).toContain("错误码：boom");
-  expect(screen.getByTestId("error-banner").textContent).not.toContain("server exploded");
+  await screen.findByTestId("adapter-list-error");
+  expect(screen.getByTestId("adapter-list-error").textContent).toContain("请求失败");
+  expect(screen.getByTestId("adapter-list-error").textContent).toContain("错误码：boom");
+  expect(screen.getByTestId("adapter-list-error").textContent).not.toContain("server exploded");
   expect(screen.queryAllByTestId("adapter-item")).toHaveLength(0);
 });
 
@@ -4956,7 +4972,6 @@ it("loads the latest saved Webhook log on opening Live logs, including after rem
 });
 
 it("discovers a completed short Webhook between active-pointer polls and retains logs on read failure", async () => {
-  RUNTIME_REFRESH_POLICY.pollIntervalMs = 20;
   const adapter = makeAdapter({ adapter_type: "webhook", runtime_worker_id: 3, runtime_locked: true, running_execution_id: null });
   const first = makeExecution({ id: 71, trigger: "webhook", status: "succeeded", stdout: "first call\n" });
   const second = makeExecution({ id: 72, trigger: "webhook", status: "succeeded", stdout: "short second call\n" });
@@ -4972,21 +4987,32 @@ it("discovers a completed short Webhook between active-pointer polls and retains
   ]);
   render(<App />);
   await selectFirstAdapter();
-  fireEvent.click(screen.getByRole("tab", { name: "实时日志" }));
-  latest = first;
-  await waitFor(() => expect(screen.getByTestId("live-log").textContent).toContain("first call"));
-  failed = true;
-  await screen.findByTestId("error-banner");
-  expect(screen.getByTestId("live-log").textContent).toContain("first call");
-  failed = false;
-  latest = second;
-  await waitFor(() => expect(screen.getByTestId("live-log").textContent).toContain("short second call"));
-  expect(screen.getByTestId("live-log").textContent).not.toContain("first call");
-  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/events"))).toBe(false);
-  fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
-  const count = fetchMock.mock.calls.filter(([url]) => String(url).includes("limit=1&trigger=webhook")).length;
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
-  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("limit=1&trigger=webhook")).length).toBe(count);
+  // Mount with the production pace, then drive just this log poll explicitly.
+  // A 20ms real-time whole-console poll can starve CI while React renders.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  RUNTIME_REFRESH_POLICY.pollIntervalMs = 20;
+  try {
+    latest = first;
+    await act(async () => { fireEvent.click(screen.getByRole("tab", { name: "实时日志" })); });
+    expect(screen.getByTestId("live-log").textContent).toContain("first call");
+    failed = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+    expect(screen.getByTestId("error-banner")).toBeDefined();
+    expect(screen.getByTestId("live-log").textContent).toContain("first call");
+    failed = false;
+    latest = second;
+    await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+    expect(screen.getByTestId("live-log").textContent).toContain("short second call");
+    expect(screen.getByTestId("live-log").textContent).not.toContain("first call");
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/events"))).toBe(false);
+    fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
+    const count = fetchMock.mock.calls.filter(([url]) => String(url).includes("limit=1&trigger=webhook")).length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("limit=1&trigger=webhook")).length).toBe(count);
+  } finally {
+    cleanup();
+    vi.useRealTimers();
+  }
 });
 
 it("does not let a delayed saved Webhook log overwrite a newer active call", async () => {
@@ -7708,4 +7734,64 @@ it("keeps a genuinely dirty Task timeout when external authority saves the same 
   leaving = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(leaving);
   expect(leaving.defaultPrevented).toBe(true);
+});
+
+
+it("Issue #195 stops waiting, aborts HTTP and fences late replies without discarding history", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const version = makeVersion({ code: "original-code\n" });
+  const replies: Array<(result: RouteResponse) => void> = [];
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, version), aiBindingsRoute(1), aiAttachmentCapabilitiesRoute(),
+    { method: "POST", match: "/api/adapters/1/ai/assist", respond: () => new Promise<RouteResponse>((resolve) => replies.push(resolve)) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "first preserved question" } });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await waitFor(() => expect(replies).toHaveLength(1));
+  const firstRequest = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/ai/assist"))?.[1];
+  expect(firstRequest?.signal?.aborted).toBe(false);
+  fireEvent.click(screen.getByTestId("ai-stop"));
+  await screen.findByTestId("ai-stopped-waiting");
+  expect(firstRequest?.signal?.aborted).toBe(true);
+  expect(screen.getByText("first preserved question")).toBeTruthy();
+  expect(valueOf("code-editor")).toBe("original-code\n");
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "second question" } });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await waitFor(() => expect(replies).toHaveLength(2));
+  await act(async () => replies[0]({ body: aiResponse("late cancelled reply", AI_CANDIDATE) }));
+  expect(screen.queryByText("late cancelled reply")).toBeNull();
+  expect(screen.queryByTestId("ai-candidate-summary")).toBeNull();
+  expect(screen.getByTestId("ai-stop")).toBeTruthy();
+  await act(async () => replies[1]({ body: aiResponse("second completed reply", null) }));
+  await screen.findByText("second completed reply");
+  expect(screen.queryByTestId("ai-stop")).toBeNull();
+  expect(screen.getByTestId("ai-send")).toBeTruthy();
+  expect(screen.getByText("first preserved question")).toBeTruthy();
+  expect(valueOf("code-editor")).toBe("original-code\n");
+});
+
+
+it("Issue #189 clears only the recovered catalog error and preserves the editor draft", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  let lists = 0;
+  stubFetch([
+    { method: "GET", match: "/api/adapters", respond: () => {
+      lists += 1;
+      if (lists === 2) throw new Error("offline");
+      return { body: [adapter] };
+    } },
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "preserved draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "刷新适配器列表" }));
+  await screen.findByTestId("adapter-list-error");
+  fireEvent.click(screen.getByRole("button", { name: "刷新适配器列表" }));
+  await waitFor(() => expect(screen.queryByTestId("adapter-list-error")).toBeNull());
+  expect(valueOf("code-editor")).toBe("preserved draft");
+  expect(lists).toBe(3);
 });

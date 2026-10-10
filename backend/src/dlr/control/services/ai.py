@@ -17,6 +17,7 @@ from dlr.control.ai import attachments as attachments_service
 from dlr.control.ai import context_budget, providers, tool_audit
 from dlr.control.ai import knowledge as knowledge_service
 from dlr.control.ai import tools as tools_service
+from dlr.control.ai.diagnostics import AiResponseInvalid, StrictJsonError
 from dlr.control.ai.output_safety import contains_secret
 from dlr.control.ai.prompt_builder import build_prompt
 from dlr.control.ai.prompt_context import PromptContext
@@ -674,6 +675,8 @@ _ATTACHMENT_ERROR_MESSAGES: dict[str, str] = {
 
 def _raise_provider_error(error: providers.AiProviderError) -> NoReturn:
     status_code, message = _PROVIDER_ERRORS.get(error.code, (502, "The AI provider request failed"))
+    if error.code == "ai_response_invalid":
+        raise AiResponseInvalid(error.stage, error.reason, message) from None
     raise domain_error(status_code, error.code, message) from None
 
 
@@ -1224,29 +1227,32 @@ def _assist_messages(
 
 def _reject_secret_reflection(value: object, api_key: str | None) -> None:
     if api_key and contains_secret(value, api_key):
-        raise domain_error(
-            502,
-            "ai_response_invalid",
-            "The AI provider returned an invalid response",
-        )
+        raise AiResponseInvalid("output_safety", "secret_reflection")
 
 
 def _parse_model_output(final_text: str, api_key: str | None = None) -> AiModelOutput:
     _reject_secret_reflection(final_text, api_key)
     try:
         raw = providers.load_json_strict(final_text)
+    except StrictJsonError as error:
+        raise AiResponseInvalid("final_json", error.reason) from None
+    except json.JSONDecodeError:
+        raise AiResponseInvalid("final_json", "malformed_json") from None
+    except RecursionError:
+        raise AiResponseInvalid("final_json", "json_limit") from None
+    except ValueError:
+        raise AiResponseInvalid("final_json", "json_value_invalid") from None
+    if contains_unicode_surrogate(raw):
+        raise AiResponseInvalid("unicode", "invalid_unicode")
+    try:
         output = AiModelOutput.model_validate(raw, strict=True)
         visible_output = output.model_dump(mode="json")
         if contains_unicode_surrogate(visible_output):
-            raise ValueError("provider output contains an invalid Unicode surrogate")
+            raise AiResponseInvalid("unicode", "invalid_unicode")
         _reject_secret_reflection(visible_output, api_key)
         return output
     except (ValueError, ValidationError, RecursionError):
-        raise domain_error(
-            502,
-            "ai_response_invalid",
-            "The AI provider returned an invalid response",
-        ) from None
+        raise AiResponseInvalid("output_schema", "schema_mismatch") from None
 
 
 def _reject_candidate_configuration_changes(
@@ -1265,20 +1271,12 @@ def _reject_candidate_configuration_changes(
         return
     fields_set = candidate.model_fields_set
     if "requirements" in fields_set and candidate.requirements != payload.working_copy.requirements:
-        raise domain_error(
-            502,
-            "ai_response_invalid",
-            "The AI provider returned an invalid response",
-        )
+        raise AiResponseInvalid("candidate_configuration", "requirements_mismatch")
     if (
         "runtime_config" in fields_set
         and candidate.runtime_config != payload.working_copy.runtime_config
     ):
-        raise domain_error(
-            502,
-            "ai_response_invalid",
-            "The AI provider returned an invalid response",
-        )
+        raise AiResponseInvalid("candidate_configuration", "runtime_config_mismatch")
 
 
 def attachment_capabilities() -> AiAttachmentCapabilitiesResponse:
@@ -1571,6 +1569,68 @@ def _knowledge_evidence_message(
     return f"知识库检索结果：{status}\n\n模型综合：{model_message}"
 
 
+def _audit_provider_budget(
+    audit: tool_audit.AiToolAuditTrail | None,
+    state: _AssistToolState,
+    budget: context_budget.BudgetResult,
+    provider_deadline: float,
+) -> None:
+    if audit is None:
+        return
+    now = time.monotonic()
+    audit.record_provider_budget(
+        budget,
+        elapsed_ms=int((now - state.started_at) * 1000),
+        provider_deadline_ms=int((provider_deadline - state.started_at) * 1000),
+        hard_deadline_ms=int((state.hard_deadline - state.started_at) * 1000),
+        remaining_ms=int(max(0.0, provider_deadline - now) * 1000),
+    )
+
+
+def _call_provider_with_audit(
+    draft: AiSettingDraft,
+    api_key: str | None,
+    messages: list[providers.JsonObject],
+    *,
+    tools: list[providers.JsonObject] | None,
+    provider_adapter: providers.ProviderAdapter,
+    timeout_seconds: float,
+    state: _AssistToolState,
+    audit: tool_audit.AiToolAuditTrail | None,
+) -> tuple[str | None, list[providers.NormalizedToolCall] | None]:
+    started_at = time.monotonic() if audit is not None else 0.0
+    try:
+        result = providers.chat_assist(
+            draft,
+            api_key,
+            messages,
+            tools=tools,
+            image_input=context_budget.has_native_image(messages),
+            adapter=provider_adapter,
+            timeout_seconds=timeout_seconds,
+        )
+    except providers.AiProviderError as error:
+        if audit is not None:
+            ended_at = time.monotonic()
+            audit.record_provider_result(
+                outcome="error",
+                duration_ms=int((ended_at - started_at) * 1000),
+                remaining_ms=int(max(0.0, state.hard_deadline - ended_at) * 1000),
+                error_code=error.code,
+                stage=error.stage,
+                reason=error.reason,
+            )
+        raise
+    if audit is not None:
+        ended_at = time.monotonic()
+        audit.record_provider_result(
+            outcome="tool_calls" if result[1] is not None else "final",
+            duration_ms=int((ended_at - started_at) * 1000),
+            remaining_ms=int(max(0.0, state.hard_deadline - ended_at) * 1000),
+        )
+    return result
+
+
 def _finalize_after_tool_stop(
     *,
     state: _AssistToolState,
@@ -1584,6 +1644,7 @@ def _finalize_after_tool_stop(
     executed_tools: list[AiToolCallSummary],
     knowledge_state: _KnowledgeRetrievalState | None = None,
     omitted_materials: list[int] | None = None,
+    audit: tool_audit.AiToolAuditTrail | None = None,
 ) -> AiAssistResponse:
     """Attempt exactly one tools-disabled final answer, then fail closed.
 
@@ -1621,6 +1682,7 @@ def _finalize_after_tool_stop(
             }
         )
     budget = context_budget.prepare_call(draft, messages, None, purpose="assist_finalization")
+    _audit_provider_budget(audit, state, budget, state.hard_deadline)
     if omitted_materials is not None:
         omitted_materials[0] += budget.omitted_materials
     if not budget.fits:
@@ -1629,20 +1691,27 @@ def _finalize_after_tool_stop(
     if remaining <= 0:
         return _fallback_assist_response(system_locale, _STOP_DEADLINE, draft, executed_tools)
     try:
-        final_content, tool_calls = providers.chat_assist(
+        final_content, tool_calls = _call_provider_with_audit(
             draft,
             api_key,
             messages,
             tools=None,
-            image_input=context_budget.has_native_image(messages),
-            adapter=provider_adapter,
+            provider_adapter=provider_adapter,
+            state=state,
+            audit=audit,
             timeout_seconds=remaining,
         )
         if tool_calls is not None or final_content is None:
-            raise ValueError("tools-disabled finalization did not return final content")
+            raise AiResponseInvalid("provider_envelope", "unexpected_tools")
         output = _parse_model_output(final_content, api_key)
         _reject_candidate_configuration_changes(output, payload)
-    except (providers.AiProviderError, HTTPException, ValueError):
+    except (providers.AiProviderError, HTTPException, ValueError) as error:
+        if audit is not None and (
+            isinstance(error, AiResponseInvalid)
+            or isinstance(error, providers.AiProviderError)
+            and error.code == "ai_response_invalid"
+        ):
+            audit.record_response_failure(error.stage, error.reason)
         return _fallback_assist_response(system_locale, state.stop_reason, draft, executed_tools)
     if knowledge_state is not None and knowledge_state.has_search_evidence:
         output = AiModelOutput(
@@ -1788,6 +1857,7 @@ def _assist_impl(
             tools_payload,
             purpose="assist_initial" if state.tool_rounds == 0 else "assist_followup",
         )
+        _audit_provider_budget(audit, state, budget, provider_deadline)
         omitted_materials[0] += budget.omitted_materials
         if not budget.fits:
             if not executed_tools:
@@ -1803,13 +1873,14 @@ def _assist_impl(
             audit.record_guard(round_index=state.tool_rounds, stop_reason=state.stop_reason)
             break
         try:
-            final_content, tool_calls = providers.chat_assist(
+            final_content, tool_calls = _call_provider_with_audit(
                 draft,
                 api_key,
                 messages,
                 tools=tools_payload,
-                image_input=context_budget.has_native_image(messages),
-                adapter=provider_adapter,
+                provider_adapter=provider_adapter,
+                state=state,
+                audit=audit,
                 timeout_seconds=provider_timeout,
             )
         except providers.AiProviderError as error:
@@ -2055,6 +2126,7 @@ def _assist_impl(
         executed_tools=executed_tools,
         knowledge_state=knowledge_state,
         omitted_materials=omitted_materials,
+        audit=audit,
     )
     return _with_omission_note(response, omitted_materials[0], system_locale)
 
@@ -2083,6 +2155,8 @@ def assist(
     try:
         response = _assist_impl(session, adapter_id, payload, audit, state)
     except Exception as error:
+        if isinstance(error, AiResponseInvalid):
+            audit.record_response_failure(error.stage, error.reason)
         audit.finish(status="error", error_code=_audit_error_code(error))
         raise
     audit.finish(status="stopped" if audit.stop_reason is not None else "success")

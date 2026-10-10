@@ -5717,7 +5717,7 @@ import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.model.*;
 public final class S3Client implements AutoCloseable {
-  public static Builder builder() { return new Builder(); }
+  public static S3ClientBuilder builder() { return new S3ClientBuilder(); }
   public ListObjectsV2Response listObjectsV2(ListObjectsV2Request request) {
     return new ListObjectsV2Response();
   }
@@ -5726,13 +5726,19 @@ public final class S3Client implements AutoCloseable {
     return new ResponseInputStream<>(new ByteArrayInputStream(new byte[120]));
   }
   public void close() {}
-  public static final class Builder {
-    public Builder region(Region value) { return this; }
-    public Builder credentialsProvider(StaticCredentialsProvider value) { return this; }
-    public Builder forcePathStyle(boolean value) { return this; }
-    public Builder endpointOverride(URI value) { return this; }
-    public S3Client build() { return new S3Client(); }
-  }
+}
+""",
+        "software/amazon/awssdk/services/s3/S3ClientBuilder.java": """
+package software.amazon.awssdk.services.s3;
+import java.net.URI;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+public final class S3ClientBuilder {
+  public S3ClientBuilder region(Region value) { return this; }
+  public S3ClientBuilder credentialsProvider(StaticCredentialsProvider value) { return this; }
+  public S3ClientBuilder forcePathStyle(boolean value) { return this; }
+  public S3ClientBuilder endpointOverride(URI value) { return this; }
+  public S3Client build() { return new S3Client(); }
 }
 """,
     }

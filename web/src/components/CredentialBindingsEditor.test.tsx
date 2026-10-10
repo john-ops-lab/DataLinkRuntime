@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { ApiError, api } from "../api";
@@ -149,4 +149,91 @@ it("keeps binding rows dirty and requests the shared runtime refresh after a 409
   expect((screen.getByTestId("binding-env-key") as HTMLInputElement).value).toBe("NEW_API_TOKEN");
   expect((screen.getByTestId("save-bindings") as HTMLButtonElement).disabled).toBe(false);
   expect(onError).toHaveBeenLastCalledWith(expect.stringContaining("adapter_runtime_locked"));
+});
+
+
+it("loads existing bindings despite initial credential failure and retries while preserving dirty rows", async () => {
+  vi.spyOn(api, "listAdapterBindings").mockResolvedValue([binding]);
+  vi.spyOn(api, "listAdapterCredentialOptions")
+    .mockRejectedValueOnce(new Error("catalog unavailable"))
+    .mockResolvedValueOnce([credential]);
+  const save = vi.spyOn(api, "setAdapterBindings").mockResolvedValue([{ ...binding, env_key: "DRAFT_TOKEN" }]);
+  const onError = vi.fn();
+  render(<CredentialBindingsEditor adapterId={11} disabled={false} accessLevel="owner"
+    platformRole="user" useScopedCredentialOptions onError={onError} />);
+  await screen.findByTestId("binding-credentials-load-failed");
+  expect((screen.getByTestId("binding-env-key") as HTMLInputElement).value).toBe("API_TOKEN");
+  expect(screen.queryByTestId("binding-credential-missing")).toBeNull();
+  expect(onError).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByTestId("binding-env-key"), { target: { value: "DRAFT_TOKEN" } });
+  fireEvent.click(screen.getByTestId("binding-retry-credentials"));
+  await waitFor(() => expect(screen.queryByTestId("binding-credentials-load-failed")).toBeNull());
+  expect(onError).not.toHaveBeenCalled();
+  expect((screen.getByTestId("binding-env-key") as HTMLInputElement).value).toBe("DRAFT_TOKEN");
+  expect(api.listAdapterBindings).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByTestId("save-bindings"));
+  await waitFor(() => expect(save).toHaveBeenCalledWith(11, [{
+    env_key: "DRAFT_TOKEN", credential_id: 7, field: "token",
+  }]));
+});
+
+it("keeps initial bindings unconfirmed after the initial credential result is superseded by a failed refresh", async () => {
+  vi.spyOn(api, "listAdapterBindings").mockResolvedValue([binding]);
+  let releaseInitial: (items: Credential[]) => void = () => undefined;
+  vi.spyOn(api, "listAdapterCredentialOptions")
+    .mockImplementationOnce(() => new Promise((resolve) => { releaseInitial = resolve; }))
+    .mockRejectedValueOnce(new Error("newer request failed"))
+    .mockResolvedValueOnce([credential]);
+  render(<CredentialBindingsEditor adapterId={11} disabled={false} accessLevel="owner"
+    platformRole="user" useScopedCredentialOptions onError={vi.fn()} />);
+  await waitFor(() => expect(api.listAdapterCredentialOptions).toHaveBeenCalledTimes(1));
+  act(() => window.dispatchEvent(new Event("focus")));
+  await waitFor(() => expect(api.listAdapterCredentialOptions).toHaveBeenCalledTimes(2));
+  await act(async () => releaseInitial([credential]));
+  await screen.findByTestId("binding-credentials-load-failed");
+  expect((screen.getByTestId("binding-env-key") as HTMLInputElement).value).toBe("API_TOKEN");
+  expect(screen.queryByTestId("binding-credential-missing")).toBeNull();
+  fireEvent.change(screen.getByTestId("binding-env-key"), { target: { value: "DRAFT_TOKEN" } });
+  fireEvent.click(screen.getByTestId("binding-retry-credentials"));
+  await waitFor(() => expect(screen.queryByTestId("binding-credentials-load-failed")).toBeNull());
+  expect((screen.getByTestId("binding-env-key") as HTMLInputElement).value).toBe("DRAFT_TOKEN");
+});
+
+it("continues to reject a confirmed deleted credential, including after a later refresh fails", async () => {
+  vi.spyOn(api, "listAdapterBindings").mockResolvedValue([binding]);
+  vi.spyOn(api, "listAdapterCredentialOptions").mockResolvedValueOnce([credential])
+    .mockResolvedValueOnce([]).mockRejectedValueOnce(new Error("later request failed"));
+  const save = vi.spyOn(api, "setAdapterBindings").mockResolvedValue([]);
+  const onError = vi.fn();
+  render(<CredentialBindingsEditor adapterId={11} disabled={false} accessLevel="owner"
+    platformRole="user" useScopedCredentialOptions onError={onError} />);
+  const envKey = await screen.findByTestId("binding-env-key");
+  fireEvent.change(envKey, { target: { value: "DRAFT_TOKEN" } });
+  act(() => window.dispatchEvent(new Event("focus")));
+  await screen.findByTestId("binding-credential-missing");
+  act(() => window.dispatchEvent(new Event("focus")));
+  await screen.findByTestId("binding-credentials-load-failed");
+  expect(screen.getByTestId("binding-credential-missing")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("save-bindings"));
+  expect(save).not.toHaveBeenCalled();
+  expect(onError).toHaveBeenLastCalledWith(expect.stringContaining("所选凭据已被删除"));
+  expect((envKey as HTMLInputElement).value).toBe("DRAFT_TOKEN");
+});
+
+it("retains backend credential rejection for an initially unconfirmed binding", async () => {
+  vi.spyOn(api, "listAdapterBindings").mockResolvedValue([binding]);
+  vi.spyOn(api, "listAdapterCredentialOptions").mockRejectedValue(new Error("catalog unavailable"));
+  const save = vi.spyOn(api, "setAdapterBindings")
+    .mockRejectedValue(new ApiError(404, "credential_not_found", "credential unavailable"));
+  const onError = vi.fn();
+  render(<CredentialBindingsEditor adapterId={11} disabled={false} accessLevel="owner"
+    platformRole="user" useScopedCredentialOptions onError={onError} />);
+  await screen.findByTestId("binding-credentials-load-failed");
+  fireEvent.change(screen.getByTestId("binding-env-key"), { target: { value: "DRAFT_TOKEN" } });
+  fireEvent.click(screen.getByTestId("save-bindings"));
+  await waitFor(() => expect(save).toHaveBeenCalledWith(11, [{
+    env_key: "DRAFT_TOKEN", credential_id: 7, field: "token",
+  }]));
+  await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringContaining("credential_not_found")));
+  expect((screen.getByTestId("binding-env-key") as HTMLInputElement).value).toBe("DRAFT_TOKEN");
 });

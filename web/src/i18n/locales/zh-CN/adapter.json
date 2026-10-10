@@ -129,7 +129,8 @@
     "deleteReasonBusy": "其他操作正在进行",
     "deleteWarningWebhook": "接收中或调用活跃期间不能删除适配器。",
     "deleteWarningTask": "定时启用或执行活跃期间不能删除适配器。",
-    "dangerHint": "删除会移除适配器及其历史和共享关系，但不会删除全局 Credential 本体。"
+    "dangerHint": "删除会移除适配器及其历史和共享关系，但不会删除全局 Credential 本体。",
+    "nameTooLong": "名称最多 128 个字符；当前输入已保留，请缩短后再保存。"
   },
   "sharing": {
     "open": "权限与共享",
@@ -152,7 +153,8 @@
     "noCandidates": "暂无可添加的账户",
     "loadFailed": "共享权限加载失败",
     "saveFailed": "共享权限保存失败",
-    "revokeFailed": "共享权限移除失败"
+    "revokeFailed": "共享权限移除失败",
+    "credentialWarning": "授予可编辑权限后，该用户可以修改代码并运行任务，也可通过任务使用已绑定的凭据。页面不会显示 Secret 真值；请仅向可信用户授予可编辑权限。"
   },
   "clone": {
     "title": "复制适配器",

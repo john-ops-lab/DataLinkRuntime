@@ -15,7 +15,9 @@ import dlr.worker.cache_deletion as deletion_module
 import dlr.worker.cache_lifecycle as lifecycle_module
 from dlr.worker.cache import CacheError, VerifiedVersionCache
 from dlr.worker.cache_deletion import CacheDeletionManager, DeletionEligibility
+from dlr.worker.cache_governance import CachePolicyManager
 from dlr.worker.cache_lifecycle import CacheLifecycleStore
+from dlr.worker.cache_policy import CachePolicy
 from dlr.worker.client import ControlUnavailableError
 
 
@@ -190,6 +192,109 @@ def _add_ready(cache: VerifiedVersionCache, adapter_id: int, version_id: int) ->
         identity=identity,
         reservation=cache.reserve(1024),
     )
+
+
+@pytest.mark.parametrize("contents", ["{}", "{broken-json"])
+@pytest.mark.parametrize("bad_count", [1, 3])
+def test_corrupt_records_preserve_unknown_guards_and_allow_bounded_recovery(
+    tmp_path: Path, contents: str, bad_count: int
+) -> None:
+    cache, lifecycle, eligibility = _ready(tmp_path)
+    client = FakeGuardClient()
+    bad_paths = []
+    bad_operations = []
+    for index in range(bad_count):
+        operation = uuid.UUID(int=index + 1)
+        client.acquire_cache_guard(7, adapter_id=11, version_id=90 + index, operation_id=operation)
+        path = lifecycle.deletion_root / f"{operation}.json"
+        path.write_text(contents, encoding="ascii")
+        path.chmod(0o600)
+        bad_paths.append(path)
+        bad_operations.append(operation)
+    manager = CacheDeletionManager(
+        cache, lifecycle, client, worker_id=7, journal_protected=lambda _key: False, retry_seconds=0
+    )
+    healthy = manager.begin(eligibility, max_nodes=1, max_bytes=8192)
+    assert healthy.status == "in_progress"
+    for _ in range(bad_count + 3):
+        manager.recover_round(max_items=1, max_pages=1, max_nodes=100, max_bytes=8192)
+        # Recreating the manager exercises the actual persisted cursor.
+        manager = CacheDeletionManager(
+            cache, lifecycle, client, worker_id=7, journal_protected=lambda _key: False
+        )
+    assert client.operations[healthy.operation_id]["phase"] == "completed"
+    assert cache._committed_bytes() == 0
+    assert all(path.read_text(encoding="ascii") == contents for path in bad_paths)
+    assert all(client.operations[operation]["phase"] == "acquired" for operation in bad_operations)
+
+
+@pytest.mark.parametrize("contents", ["{}", "{broken-json"])
+def test_corrupt_record_keeps_failed_item_page_incomplete_without_hiding_valid_items(
+    tmp_path: Path, contents: str
+) -> None:
+    cache, lifecycle, eligibility = _ready(tmp_path)
+    client = FakeGuardClient()
+    client.fail_checks = True
+    manager = CacheDeletionManager(
+        cache, lifecycle, client, worker_id=7, journal_protected=lambda _key: False, retry_seconds=0
+    )
+    failed = manager.begin(eligibility, max_bytes=8192)
+    manager.recover_round(max_items=1, max_pages=0)
+    manager.recover_round(max_items=1, max_pages=0)
+    # The corrupt first record has an active remote guard of unknown local
+    # content. Reading the management page must retain both protection facts.
+    bad_operation = uuid.UUID(int=1)
+    client.acquire_cache_guard(7, adapter_id=11, version_id=90, operation_id=bad_operation)
+    bad_path = lifecycle.deletion_root / f"{bad_operation}.json"
+    bad_path.write_text(contents, encoding="ascii")
+    bad_path.chmod(0o600)
+    items, cursor, complete = manager.failed_items_page(after=None, max_items=20)
+    assert [item["guard_operation_id"] for item in items] == [str(failed.operation_id)]
+    assert cursor is None
+    assert complete is False
+    assert bad_path.read_text(encoding="ascii") == contents
+    _add_ready(cache, 11, 14)
+    policy_manager = CachePolicyManager(
+        tmp_path,
+        cache,  # type: ignore[arg-type]
+        lifecycle,
+        manager,
+        CachePolicy(),
+    )
+    for _ in range(2):
+        snapshot = policy_manager.management_snapshot()
+        assert snapshot["failed_guard_complete"] is False
+        assert snapshot["failed_guard_cursor"] is None
+        assert snapshot["failed_guard_items"] == items
+        assert any(item["cache_key"] == "11-14" for item in snapshot["items"])
+        assert cache.entry_path("11-14").exists()
+        assert bad_path.read_text(encoding="ascii") == contents
+        assert client.operations[bad_operation]["phase"] == "acquired"
+
+
+@pytest.mark.parametrize("method", ["recover", "failed_items"])
+def test_deletion_record_io_failure_is_not_treated_as_skippable_corruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    cache, lifecycle, _eligibility = _ready(tmp_path)
+    path = lifecycle.deletion_root / f"{uuid.uuid4()}.json"
+    path.write_text("{}", encoding="ascii")
+    path.chmod(0o600)
+    manager = CacheDeletionManager(
+        cache, lifecycle, FakeGuardClient(), worker_id=7, journal_protected=lambda _key: False
+    )
+
+    def io_failure(_path: Path) -> Any:
+        raise CacheError("cache_lifecycle_invalid") from OSError("storage failure")
+
+    monkeypatch.setattr(deletion_module, "_read_record", io_failure)
+    with pytest.raises(CacheError) as failure:
+        if method == "recover":
+            manager.recover_round(max_items=1)
+        else:
+            manager.failed_items_page(after=None, max_items=1)
+    assert isinstance(failure.value.__cause__, OSError)
+    assert path.exists()
 
 
 def test_partial_trash_is_charged_and_finish_response_loss_recovers(
@@ -644,8 +749,11 @@ def test_corrupt_record_phase_is_reported_without_stopping_unsafely(
     record_path.chmod(0o600)
 
     with pytest.raises(CacheError) as caught:
-        manager.recover_round(max_items=1, max_pages=0)
+        manager.operation_phase(result.operation_id)
     assert caught.value.code == "cache_deletion_record_invalid"
+    assert manager.recover_round(max_items=1, max_pages=0) == 0
+    _items, _cursor, complete = manager.failed_items_page(after=None)
+    assert complete is False
     assert cache.entry_path("11-13").exists()
     assert client.operations[result.operation_id]["phase"] == "acquired"
 

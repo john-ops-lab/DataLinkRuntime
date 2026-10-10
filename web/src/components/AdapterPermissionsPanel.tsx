@@ -112,6 +112,12 @@ export default function AdapterPermissionsPanel({
       <Typography.Paragraph type="secondary">
         {t("sharing.owner", { owner: ownerLabel })}
       </Typography.Paragraph>
+      <Alert
+        type="warning"
+        showIcon
+        data-testid="adapter-sharing-credential-warning"
+        message={t("sharing.credentialWarning")}
+      />
       {error !== null && <Alert type="error" showIcon role="alert" message={error} />}
       <Divider orientation="left" plain>{t("sharing.grantedTitle")}</Divider>
       {permissions.length === 0 ? (

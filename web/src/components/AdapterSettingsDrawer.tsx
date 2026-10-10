@@ -22,6 +22,7 @@ import {
 import { useTranslation } from "react-i18next";
 
 import { canEditAdapter, canManageAdapter } from "../adapter-access";
+import { useOverlayFocus } from "../hooks/useOverlayFocus";
 import { LANGUAGE_LABELS } from "../languages";
 import type { PageLeaveGuardHandle } from "../page-leave-guard";
 import type { Adapter, AdapterAccessLevel } from "../types";
@@ -48,7 +49,7 @@ interface Props {
   onPermissionsChanged?: () => void;
 }
 
-const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props>(function AdapterSettingsDrawerContent(props, ref) {
+const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props & { restoreFocus: (visible: boolean) => void }>(function AdapterSettingsDrawerContent(props, ref) {
   const { t } = useTranslation(["adapter", "common"]);
   const [form] = Form.useForm<SettingsValues>();
   const adapter = props.adapter;
@@ -141,6 +142,7 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props>(fun
       destroyOnHidden
       footer={footer}
       onClose={requestClose}
+      afterOpenChange={props.restoreFocus}
     >
       {adapter !== null && view === "permissions" && canManage && !archived && (
         <AdapterPermissionsPanel
@@ -169,7 +171,7 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props>(fun
             setFormDirty(
               values.name !== props.name || values.description !== props.description,
             );
-            setFormValid(values.name.trim() !== "");
+            setFormValid(values.name.trim() !== "" && Array.from(values.name.trim()).length <= 128);
           }}
           onFinish={(values) => void submit(values)}
           onFinishFailed={() => setFormValid(false)}
@@ -191,7 +193,12 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props>(fun
             <Form.Item
               name="name"
               label={t("settings.name")}
-              rules={[{ required: true, whitespace: true, message: t("settings.nameRequired") }]}
+              rules={[
+                { required: true, whitespace: true, message: t("settings.nameRequired") },
+                { validator: (_: unknown, value: string) =>
+                  Array.from(value?.trim() ?? "").length <= 128
+                  ? Promise.resolve() : Promise.reject(new Error(t("settings.nameTooLong"))) },
+              ]}
             >
               <Input data-testid="adapter-name" disabled={props.busy || archived || !canEdit} />
             </Form.Item>
@@ -340,9 +347,12 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props>(fun
 });
 
 const AdapterSettingsDrawer = forwardRef<PageLeaveGuardHandle, Props>(function AdapterSettingsDrawer(props, ref) {
+  // The form remounts when server details change. Keep the external trigger
+  // outside that keyed subtree so a remount never captures the drawer itself.
+  const restoreFocus = useOverlayFocus(props.open, '[data-testid="show-create-form"], a[href="/adapters"]');
   const adapterKey = props.adapter?.id ?? "none";
   const formKey = `${props.open ? "open" : "closed"}:${adapterKey}:${props.name}:${props.description}`;
-  return <AdapterSettingsDrawerContent ref={ref} key={formKey} {...props} />;
+  return <AdapterSettingsDrawerContent ref={ref} key={formKey} {...props} restoreFocus={restoreFocus} />;
 });
 
 export default AdapterSettingsDrawer;

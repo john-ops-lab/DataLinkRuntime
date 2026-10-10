@@ -128,6 +128,48 @@ def test_x_death_uses_newest_event_for_the_matching_dispatch_queue(
     assert result.action == "requeue"
 
 
+@pytest.mark.parametrize("reason", ["delivery_limit", "rejected", "expired", "maxlen"])
+@pytest.mark.parametrize("malformed", ["missing_field", "invalid_type", "broken_json"])
+def test_invalid_payload_keeps_invalid_kind_and_safe_broker_diagnostic(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+    malformed: str,
+) -> None:
+    worker, execution, body = _published_execution(
+        api_client, session_factory, monkeypatch, f"issue177-{reason}-{malformed}"
+    )
+    raw = json.loads(body)
+    if malformed == "missing_field":
+        del raw["language"]
+    elif malformed == "invalid_type":
+        raw["language"] = ["secret-payload-must-not-be-logged"]
+    else:
+        body = b'{"secret-payload-must-not-be-logged":'
+    if malformed != "broken_json":
+        body = json.dumps(raw).encode()
+    queue = rabbitmq.topology_names(worker["id"]).queue
+    headers = {"x-death": [{"queue": queue, "reason": reason, "count": 1}]}
+    with session_factory() as session:
+        first = infrastructure_dlq.reconcile_message(session, body, headers=headers)
+        second = infrastructure_dlq.reconcile_message(session, body, headers=headers)
+        assert first.kind == second.kind == "invalid"
+        assert first.incident_id == second.incident_id
+        assert first.action == ("ignored" if malformed == "broken_json" else "manual_review")
+        incident = session.get(ExecutionInfrastructureIncident, first.incident_id)
+        assert incident is not None and incident.attempts == 2
+        diagnostic_reason = "unknown" if malformed == "broken_json" else reason
+        assert incident.last_error == f"invalid; broker_reason={diagnostic_reason}"
+        assert "secret-payload" not in incident.last_error
+        row = session.get(Execution, execution["id"])
+        assert row is not None and row.status == "queued" and row.attempt_count == 0
+        outbox_row = session.scalar(
+            select(ExecutionOutbox).where(ExecutionOutbox.execution_id == execution["id"])
+        )
+        assert outbox_row is not None and outbox_row.status == "published"
+
+
 @pytest.mark.parametrize(
     "malformed",
     [

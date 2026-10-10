@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
-from dlr.control.models import Adapter, Execution, ExecutionOutbox
+from dlr.control.models import Adapter, Execution, ExecutionOutbox, WorkerCacheGuard
 from dlr.control.services import rabbitmq
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.dispatch import (
@@ -243,7 +243,7 @@ def _now(session: Session) -> datetime:
 
 
 def dispatch_payload_for_execution(
-    session: Session, execution: Execution
+    session: Session, execution: Execution, *, message_id: uuid.UUID | None = None
 ) -> tuple[dict[str, Any], bytes, str, uuid.UUID]:
     """Freeze the minimal dispatch body for one RabbitMQ Execution."""
 
@@ -262,6 +262,7 @@ def dispatch_payload_for_execution(
         ),
         resource_class=execution.resource_class or "default",
         target_worker_id=target_worker_id,
+        message_id=message_id,
     )
     assert_dispatch_message_safe(message)
     payload = message.model_dump(mode="json")
@@ -279,6 +280,7 @@ def create_dispatch_outbox(
     execution: Execution,
     *,
     available_at: datetime | None = None,
+    message_id: uuid.UUID | None = None,
 ) -> ExecutionOutbox:
     """Insert at most one immutable Outbox row for the current generation."""
 
@@ -292,7 +294,9 @@ def create_dispatch_outbox(
     )
     if existing is not None:
         return existing
-    payload, body, routing_key, message_id = dispatch_payload_for_execution(session, execution)
+    payload, body, routing_key, message_id = dispatch_payload_for_execution(
+        session, execution, message_id=message_id
+    )
     row = ExecutionOutbox(
         execution_id=execution.id,
         dispatch_generation=execution.dispatch_generation,
@@ -328,10 +332,27 @@ def lease_due_outbox(
         raise ValueError("outbox lease owner is invalid")
     effective_now = _as_utc(now if now is not None else _now(session))
     limit = max(1, min(limit, 100))
+    guarded_deferred_execution = (
+        select(Execution.id)
+        .join(
+            WorkerCacheGuard,
+            (WorkerCacheGuard.worker_id == Execution.target_worker_id_snapshot)
+            & (WorkerCacheGuard.version_id == Execution.version_id),
+        )
+        .where(
+            Execution.id == ExecutionOutbox.execution_id,
+            WorkerCacheGuard.phase != "idle",
+        )
+        .exists()
+    )
     rows = list(
         session.scalars(
             select(ExecutionOutbox)
-            .where(*_pending_filter(effective_now))
+            .where(
+                *_pending_filter(effective_now),
+                (ExecutionOutbox.last_error_code.is_distinct_from("cache_reclamation_in_progress"))
+                | ~guarded_deferred_execution,
+            )
             .order_by(ExecutionOutbox.available_at, ExecutionOutbox.created_at, ExecutionOutbox.id)
             .with_for_update(skip_locked=True)
             .limit(limit)

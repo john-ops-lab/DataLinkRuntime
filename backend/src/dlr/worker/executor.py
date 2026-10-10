@@ -1346,7 +1346,16 @@ def run(
                 return result
         except venv_manager.DependencyPreparationError as error:
             preparation_error = error
-            if error.dependency is not None:
+            if error.declaration_line is not None and language in {"java", "go"}:
+                emit_dependency_log(
+                    i18n.text(
+                        locale,
+                        f"dependency.invalid_declaration_{language}",
+                        line=error.declaration_line,
+                    ),
+                    level="ERROR",
+                )
+            elif error.dependency is not None:
                 emit_dependency_log(
                     i18n.text(
                         locale,
@@ -1403,7 +1412,13 @@ def run(
             ),
             None,
         )
-        if runtime_name is not None:
+        if preparation.declaration_line is not None and language in {"java", "go"}:
+            failure_message = i18n.text(
+                locale,
+                f"dependency.invalid_declaration_{language}",
+                line=preparation.declaration_line,
+            )
+        elif runtime_name is not None:
             failure_message = i18n.text(
                 locale,
                 "runtime.unavailable",

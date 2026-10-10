@@ -1,6 +1,7 @@
 """Per-call context guard, with semantic trimming and no partial tool rounds."""
 
 import json
+from copy import deepcopy
 from dataclasses import asdict
 
 import pytest
@@ -112,6 +113,43 @@ def test_historical_envelope_prefix_cannot_displace_current_request(
     assert result.fits
     assert messages[-1] is current
     assert len(messages) == 2
+
+
+@pytest.mark.parametrize("multimodal", [False, True])
+def test_equal_historical_envelope_does_not_displace_current_object_or_tool_pair(
+    monkeypatch: pytest.MonkeyPatch, multimodal: bool
+) -> None:
+    current = _request(code="complete-working-copy-" * 200)
+    if multimodal:
+        current["content"] = [
+            {"type": "text", "text": current["content"]},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+        ]
+    historical = deepcopy(current)
+    system = {"role": "system", "content": "protocol"}
+    tool_pair = [
+        {"role": "assistant", "tool_calls": [{"id": "call-1", "function": {"arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call-1", "content": "safe tool result"},
+    ]
+    monkeypatch.setattr(
+        settings,
+        "ai_context_default_window_tokens",
+        context_budget.estimate_tokens([system, current, *tool_pair], None) + 10,
+    )
+    original_current = deepcopy(current)
+    messages = [
+        system,
+        historical,
+        {"role": "assistant", "content": "old reply"},
+        current,
+        *tool_pair,
+    ]
+    result = context_budget.prepare_call(_draft(), messages, None, purpose="assist_followup")
+    assert result.fits
+    assert result.diagnostics.omitted_history_messages == 2
+    assert result.diagnostics.omitted_images == 0
+    assert messages[1] is current and current == original_current
+    assert messages[2:] == tool_pair
 
 
 def test_required_context_and_tools_over_window_reject_without_truncation(

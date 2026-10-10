@@ -6,6 +6,8 @@ source's index URL (with embedded basic auth when a password credential is
 bound) travels inside the TaskPayload at claim time.
 """
 
+import socket
+import ssl
 from urllib import error as url_error
 from urllib import parse as url_parse
 from urllib import request as url_request
@@ -478,14 +480,55 @@ def probe_index_url(index_url: str) -> tuple[bool, int | None, str | None]:
     if index_url.startswith("dlr-builtin://"):
         return True, 200, None
     try:
+        parts = url_parse.urlsplit(index_url)
+        opener = None
+        if parts.username is not None:
+            # urllib does not interpret URL userinfo as Basic authentication.
+            # Keep the installer URL contract, but probe a bare authority using
+            # an auth handler. Its unredirected header is scoped by the password
+            # manager and must not travel to another redirect destination.
+            bare_url = url_parse.urlunsplit(
+                (
+                    parts.scheme,
+                    parts.netloc.rsplit("@", 1)[-1],
+                    parts.path,
+                    parts.query,
+                    parts.fragment,
+                )
+            )
+            passwords = url_request.HTTPPasswordMgrWithPriorAuth()
+            passwords.add_password(
+                None,
+                bare_url,
+                url_parse.unquote(parts.username),
+                url_parse.unquote(parts.password or ""),
+                is_authenticated=True,
+            )
+            opener = url_request.build_opener(url_request.HTTPBasicAuthHandler(passwords))
+            index_url = bare_url
         request = url_request.Request(index_url, method="GET")
-        with url_request.urlopen(  # noqa: S310 - admin-managed http(s) URL
-            request, timeout=REACHABILITY_TIMEOUT_SECONDS
-        ) as response:
+        response_context = (
+            url_request.urlopen(request, timeout=REACHABILITY_TIMEOUT_SECONDS)  # noqa: S310
+            if opener is None
+            else opener.open(request, timeout=REACHABILITY_TIMEOUT_SECONDS)
+        )
+        with response_context as response:
             return True, response.status, None
     except url_error.HTTPError as error:
         # A real HTTP answer: the endpoint is reachable.
         return True, error.code, None
-    except (url_error.URLError, TimeoutError, ValueError) as error:
+    except (ValueError, UnicodeError):
+        return False, None, "invalid_address"
+    except (url_error.URLError, TimeoutError, OSError) as error:
         reason = getattr(error, "reason", None) or error
-        return False, None, str(reason)
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            code = "timeout"
+        elif isinstance(reason, ssl.SSLError):
+            code = "tls_error"
+        elif isinstance(reason, socket.gaierror):
+            code = "dns_error"
+        elif isinstance(reason, ConnectionError):
+            code = "connection_error"
+        else:
+            code = "transport_error"
+        return False, None, code

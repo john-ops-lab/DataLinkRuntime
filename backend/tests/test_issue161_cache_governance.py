@@ -568,7 +568,7 @@ def test_terminal_attempt_deferred_cleanup_protects_but_completed_history_does_n
         assert facts.protected is False
 
 
-def test_claim_returns_retryable_pause_while_guard_is_active(
+def test_claim_durably_defers_dispatch_while_guard_is_active(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
@@ -583,11 +583,16 @@ def test_claim_returns_retryable_pause_while_guard_is_active(
         headers=WORKER_HEADERS,
     )
     assert response.status_code == 200, response.text
-    assert response.json()["decision"] == "PAUSE_CONSUMER"
-    assert response.json()["reason"] == "cache_reclamation_in_progress"
+    assert response.json()["decision"] == "ACK_NOOP"
+    assert response.json()["reason"] == "cache_dispatch_deferred"
     with session_factory() as session:
         row = session.get(Execution, int(execution["id"]))
         assert row is not None and row.status == "queued" and row.attempt_count == 0
+        dispatch_row = session.scalar(
+            select(ExecutionOutbox).where(ExecutionOutbox.execution_id == row.id)
+        )
+        assert dispatch_row is not None and dispatch_row.status == "pending"
+        assert dispatch_row.last_error_code == "cache_reclamation_in_progress"
 
 
 def test_retry_replay_and_incident_recovery_keep_state_while_guard_is_active(

@@ -390,7 +390,17 @@ describe("Issue #127 D1 managed input editor", () => {
     const customInput = await screen.findByTestId("managed-input-retention-seconds") as HTMLInputElement;
     fireEvent.change(customInput, { target: { value: "20000" } });
     fireEvent.blur(customInput);
-    await waitFor(() => expect(customInput.value).toBe("10800"));
+    expect(customInput.value).toBe("20000");
+    expect(customInput.getAttribute("aria-invalid")).toBe("true");
+    expect((screen.getByTestId("save-task-input") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(customInput, { key: "Enter" });
+    expect(customInput.value).toBe("20000");
+    fireEvent.change(customInput, { target: { value: "3600.5" } });
+    fireEvent.blur(customInput);
+    expect(customInput.value).toBe("3600.5");
+    expect(customInput.getAttribute("aria-invalid")).toBe("true");
+    fireEvent.change(customInput, { target: { value: "10800" } });
+    expect(customInput.getAttribute("aria-invalid")).toBe("false");
   });
 
   it("shows the server retention maximum in the localized rejection", async () => {

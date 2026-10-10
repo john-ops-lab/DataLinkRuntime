@@ -85,6 +85,12 @@ func limit(v object, k string, fallback, maximum int) int {
 func array(v any) []any    { a, _ := v.([]any); return a }
 func mapping(v any) object { m, _ := v.(map[string]any); return m }
 func encoded(v any) []byte { b, _ := json.Marshal(v); return b }
+// Go's UTF-8 string comparison preserves Unicode code-point order.
+func sortKey(v any) string {
+    if v == nil { return "1" }
+    if text, ok := v.(string); ok { return "0\"" + text }
+    return "0" + string(encoded(v))
+}
 func lookup(v any, p string) (any, bool) {
 	if p == "" {
 		return v, true
@@ -124,7 +130,7 @@ func convert(v any, kind string) (any, error) {
 		return v, nil
 	case "string":
 		if v == nil {
-			return "", nil
+			return "null", nil
 		}
 		return stringValue(v), nil
 	case "number", "integer":
@@ -228,7 +234,7 @@ func Handle(ctx *Context, input any) (any, error) {
 		field := stringValue(s["field"])
 		desc := s["direction"] == "desc"
 		sort.SliceStable(rows, func(i, j int) bool {
-			a, b := string(encoded(mapping(rows[i])[field])), string(encoded(mapping(rows[j])[field]))
+			a, b := sortKey(mapping(rows[i])[field]), sortKey(mapping(rows[j])[field])
 			if desc {
 				return a > b
 			}

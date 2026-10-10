@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import stat
 import time
@@ -25,6 +26,8 @@ from dlr.worker.cache_lifecycle import (
     current_thread_owns_all_uses,
 )
 from dlr.worker.client import ClientError, ControlUnavailableError
+
+logger = logging.getLogger(__name__)
 
 _RECORD_FIELDS = frozenset(
     {
@@ -369,6 +372,28 @@ def _write_record(path: Path, value: Mapping[str, Any]) -> None:
     _write_json(path, value, strict_sync=True)
 
 
+def _read_record_for_scan(path: Path) -> tuple[dict[str, Any] | None, bool]:
+    """Keep corrupt records/guards intact while isolating content errors.
+
+    The lifecycle reader also wraps storage errors with its invalid code.
+    Those failures must still escape rather than masquerade as bad content.
+    Only an operation filename can safely become the persisted scan cursor.
+    """
+    try:
+        return _read_record(path), False
+    except CacheError as error:
+        if error.code not in {
+            "cache_deletion_record_invalid",
+            "cache_lifecycle_invalid",
+        } or isinstance(error.__cause__, OSError):
+            raise
+        try:
+            uuid.UUID(path.stem)
+        except ValueError:
+            raise error from None
+        return None, True
+
+
 def _local_record_page(root: Path, *, after: str | None, limit: int, deadline: float) -> list[Path]:
     """Read one bounded directory page without materializing all local records."""
 
@@ -574,8 +599,18 @@ class CacheDeletionManager:
 
     def preview_local_safe(self, key: str, *, max_records: int, budget: CacheScanBudget) -> None:
         """Bounded, read-only local protection check for policy reporting."""
-
-        with self.lifecycle.entry_lock(key, blocking=False):
+        lock = self.lifecycle.entry_lock(key, blocking=False)
+        try:
+            lock.__enter__()
+        except CacheError as error:
+            if error.code == "cache_lock_busy":
+                # A live attempt owns the entry lock for its entire run. Its
+                # durable use/journal records can identify why the preview is
+                # retained even though we cannot acquire the lock. This read
+                # never grants deletion authority; otherwise keep lock_busy.
+                self._local_safe(key)
+            raise
+        try:
             self._local_safe(key)
             records = _local_record_page(
                 self.lifecycle.deletion_root,
@@ -594,6 +629,8 @@ class CacheDeletionManager:
                     and record.get("phase") not in _TERMINAL_PHASES
                 ):
                     raise CacheError("cache_operation_in_progress")
+        finally:
+            lock.__exit__(None, None, None)
 
     def _local_safe(self, key: str) -> None:
         records = self.lifecycle.use_records_for_key(key)
@@ -716,13 +753,21 @@ class CacheDeletionManager:
         with self.lifecycle.entry_lock(key, blocking=False):
             owner = self.lifecycle.owner(self.worker_id)
             facts = self.lifecycle.lifecycle(key)
-            policy_reason = self.lifecycle.reclamation_reason(
-                key,
-                identity=eligibility.identity,
-                digest=eligibility.digest,
-                offline_protection=self.offline_protection,
-                offline_mode=self.offline_mode,
-                now=self.clock(),
+            # Rebuild proof protects a live version during GC. Deleted-Adapter
+            # cleanup instead requires Control's exact, still-current cleanup
+            # claim and no durable references; content and local protection
+            # checks below remain mandatory.
+            policy_reason = (
+                ("cache_pinned" if facts["pinned"] else None)
+                if eligibility.cleanup_context is not None
+                else self.lifecycle.reclamation_reason(
+                    key,
+                    identity=eligibility.identity,
+                    digest=eligibility.digest,
+                    offline_protection=self.offline_protection,
+                    offline_mode=self.offline_mode,
+                    now=self.clock(),
+                )
             )
             if (
                 facts["identity"] != dict(eligibility.identity)
@@ -1114,13 +1159,17 @@ class CacheDeletionManager:
                 if source_exists:
                     _assert_root_identity(source, record)
                     lifecycle = self.lifecycle.lifecycle(key)
-                    policy_reason = self.lifecycle.reclamation_reason(
-                        key,
-                        identity=record["identity"],
-                        digest=str(record["digest"]),
-                        offline_protection=self.offline_protection,
-                        offline_mode=self.offline_mode,
-                        now=self.clock(),
+                    policy_reason = (
+                        ("cache_pinned" if lifecycle["pinned"] else None)
+                        if record["operation_kind"] == "cleanup"
+                        else self.lifecycle.reclamation_reason(
+                            key,
+                            identity=record["identity"],
+                            digest=str(record["digest"]),
+                            offline_protection=self.offline_protection,
+                            offline_mode=self.offline_mode,
+                            now=self.clock(),
+                        )
                     )
                     if (
                         lifecycle["identity"] != record["identity"]
@@ -1148,13 +1197,17 @@ class CacheDeletionManager:
                         # proof expiry or a newly committed local protection.  This
                         # is the final authorization point before the first rename.
                         latest = self.lifecycle.lifecycle(key)
-                        latest_reason = self.lifecycle.reclamation_reason(
-                            key,
-                            identity=record["identity"],
-                            digest=str(record["digest"]),
-                            offline_protection=self.offline_protection,
-                            offline_mode=self.offline_mode,
-                            now=self.clock(),
+                        latest_reason = (
+                            ("cache_pinned" if latest["pinned"] else None)
+                            if record["operation_kind"] == "cleanup"
+                            else self.lifecycle.reclamation_reason(
+                                key,
+                                identity=record["identity"],
+                                digest=str(record["digest"]),
+                                offline_protection=self.offline_protection,
+                                offline_mode=self.offline_mode,
+                                now=self.clock(),
+                            )
                         )
                         if (
                             latest["identity"] != record["identity"]
@@ -1447,12 +1500,14 @@ class CacheDeletionManager:
             deadline=deadline,
         )
         local_inspected = 0
+        corrupt_records = 0
         for path in pending_paths:
             if local_inspected >= max_items or time.monotonic() >= deadline:
                 break
             local_inspected += 1
             local_after = path.stem
-            record = _read_record(path)
+            record, corrupt = _read_record_for_scan(path)
+            corrupt_records += int(corrupt)
             if record is None:
                 continue
             if record["phase"] in _TERMINAL_PHASES:
@@ -1529,6 +1584,10 @@ class CacheDeletionManager:
             },
             strict_sync=True,
         )
+        if corrupt_records:
+            logger.warning(
+                "Cache deletion recovery retained %s corrupt local records", corrupt_records
+            )
         return processed
 
     def cleanup_pending(self, cleanup_id: int, *, max_records: int = 1024) -> bool:
@@ -1760,13 +1819,19 @@ class CacheDeletionManager:
         )
         page = paths[:max_items]
         items: list[dict[str, object]] = []
+        corrupt_records = 0
         for path in page:
-            record = _read_record(path)
+            record, corrupt = _read_record_for_scan(path)
+            corrupt_records += int(corrupt)
             if record is None or record["phase"] != "failed":
                 continue
             items.extend(self._failed_record_public(record))
         cursor = page[-1].stem if len(paths) > max_items and page else None
-        return items, cursor, len(paths) <= max_items
+        if corrupt_records:
+            logger.warning(
+                "Cache failed-item scan retained %s corrupt local records", corrupt_records
+            )
+        return items, cursor, len(paths) <= max_items and not corrupt_records
 
     @staticmethod
     def _failed_record_public(record: Mapping[str, Any]) -> list[dict[str, object]]:
