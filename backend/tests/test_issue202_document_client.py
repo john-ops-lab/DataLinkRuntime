@@ -191,3 +191,29 @@ def test_http_error_non_object_json_stays_stable(monkeypatch, body: bytes) -> No
         DocumentConverterClient("http://converter")._http("/v1/prepare", {}, 1)
     assert error.value.code == "ai_attachment_converter_unavailable"
     assert "private-error-text" not in str(error.value)
+
+
+@pytest.mark.parametrize("read_error", [ConnectionResetError, TimeoutError, OSError])
+def test_http_error_body_io_fault_stays_stable_and_closes_response(
+    monkeypatch: pytest.MonkeyPatch, read_error: type[OSError]
+) -> None:
+    import io
+    import urllib.error
+    import urllib.request
+
+    class ErrorBody(io.BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            raise read_error("private-error-body-or-transport-diagnostic")
+
+    body = ErrorBody(b"private response body")
+
+    class Opener:
+        def open(self, *args: Any, **kwargs: Any) -> None:
+            raise urllib.error.HTTPError("http://converter", 503, "failed", {}, body)
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(DocumentConversionError) as error:
+        DocumentConverterClient("http://converter")._http("/v1/prepare", {}, 1)
+    assert error.value.code == "ai_attachment_converter_unavailable"
+    assert "private" not in str(error.value)
+    assert body.closed

@@ -10,7 +10,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from contextlib import suppress
+from contextlib import closing, suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -190,7 +190,7 @@ class DocumentConverterClient:
             return parsed
         except urllib.error.HTTPError as exc:
             code = "ai_attachment_converter_unavailable"
-            with suppress(ValueError, TypeError):
+            with suppress(OSError, ValueError, TypeError), closing(exc):
                 body = json.loads(exc.read(4096))
                 candidate = body.get("code") if isinstance(body, dict) else None
                 if candidate in KNOWN_ERROR_CODES:
