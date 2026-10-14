@@ -80,6 +80,50 @@
         "readFailed": "The file could not be read: choose the file again",
         "empty": "The file is empty: choose a file with content",
         "rejected": "A rejected attachment cannot be sent: remove it and try again"
+      },
+      "prepared": {
+        "preparing": "Preparing attachment structure and pages…",
+        "ready": "Prepared; available for source-based reading",
+        "partial": "Some content could not be prepared. Consider the coverage limits below.",
+        "failed": "Attachment preparation failed. Retry preparation or remove it and choose another file.",
+        "retry": "Retry preparation",
+        "expired": "This round’s attachment has expired. Upload again and send a new round; Retry never replaces the original file.",
+        "directory": "Attachment sources and coverage: {{name}}",
+        "pageCoverage": "{{count}} / {{total}} pages available (the directory does not mean the model read every page)",
+        "page": "Page {{page}}",
+        "sheet": "Sheet {{name}}: {{rows}} rows × {{columns}} columns",
+        "hiddenSheet": "Hidden sheet",
+        "printArea": "Print area {{range}}",
+        "sheetPages": "Pages {{start}}–{{end}}",
+        "onDemand": "The model reads pages or cell ranges on demand. Unread content retains its source references.",
+        "textFallback": "Document visual conversion is not enabled. PDF and Office provide bounded text only; scanned pages, charts and layout may be unavailable.",
+        "visionUnknown": "The current model’s visual capability is unconfirmed. Text and cell data do not mean images or charts were read.",
+        "visionUnavailable": "The selected model has no confirmed image or native PDF support. Text and cell data do not replace chart visuals.",
+        "visionAvailable": "Using the current model {{model}} with its declared visual capability. Check attachment coverage and reply sources for actual reading.",
+        "pageStatus": {
+          "available": "Available on demand",
+          "ready": "Prepared",
+          "blank": "Blank page (original page number retained)",
+          "failed": "Preparation failed",
+          "omitted": "Not prepared"
+        },
+        "warnings": {
+          "structurePartial": "Text or table structure is incomplete; check the original pages.",
+          "printedAreaOnly": "Page visuals cover the print area only; other cells require sheet-range reading.",
+          "formulaCacheMissing": "Some formulas have no original cached values. Rendered display values are not proof of the original calculation.",
+          "ocrUnavailable": "Scanned text recognition is incomplete; some content may be unavailable.",
+          "pageRenderFailed": "Some page images could not be generated.",
+          "visualUnavailable": "Some visual content is unavailable.",
+          "partial": "Some content or representations are unavailable. Check the reply’s sources and coverage notes."
+        },
+        "directoryLimited": "The directory shows up to 64 pages and 32 sheets; other sources remain available for on-demand reading.",
+        "converterUnavailable": "Document conversion is unavailable. Retry later or choose another file.",
+        "timeout": "Attachment preparation timed out. Split the file and upload again.",
+        "encrypted": "The attachment is password-protected. Upload a readable copy.",
+        "invalid": "The attachment could not be parsed. Check for damage or a format mismatch.",
+        "originalAvailable": "The original file is retained; check preparation coverage and reply sources for actual reading.",
+        "visionDeclared": "The administrator declares visual input support for {{model}}. Check results for actual availability and coverage.",
+        "partialReady": "Partially prepared; check attachment coverage and limits."
       }
     },
     "tools": {

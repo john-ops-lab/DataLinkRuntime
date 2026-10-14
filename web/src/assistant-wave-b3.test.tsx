@@ -20,7 +20,7 @@
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ComponentProps } from "react";
+import { StrictMode, type ComponentProps } from "react";
 
 import { api, ApiError } from "./api";
 import AiAssistantPanel from "./components/AiAssistantPanel";
@@ -29,6 +29,7 @@ import type {
   Adapter,
   AiAssistResponse,
   AiAttachmentCapabilities,
+  AiPreparedAttachment,
   AiCandidate,
 } from "./types";
 
@@ -1023,3 +1024,124 @@ it.each(["incomplete", "unclassified"] as const)(
     expect(screen.queryByTestId("ai-panel-error")).toBeNull();
   },
 );
+
+
+function preparedMetadata(overrides: Partial<AiPreparedAttachment> = {}): AiPreparedAttachment {
+  return { attachment_ref: "abcdefghijklmnop", sha256: "a".repeat(64), representation_revision: "document-v1",
+    filename: "业务.pdf", content_type: "application/pdf", size_bytes: 8, status: "partial", page_count: 2,
+    pages: [{ page: 1, status: "blank" }, { page: 2, status: "available", source_sheet: "Revenue" }],
+    sheets: [{ name: "Revenue", rows: 12, columns: 4, hidden: false, print_area: "A1:D12", rendered_page_start: 2, rendered_page_end: 2 }],
+    coverage: { structure: "partial", cells: "available" }, warnings: ["formula_cache_missing", "private_unknown_warning"],
+    expires_at: new Date(Date.now() + 60_000).toISOString(), ...overrides };
+}
+function enablePrepared() {
+  vi.mocked(api.getAiAttachmentCapabilities).mockResolvedValue({ ...attachmentCapabilities, prepared_attachments_enabled: true,
+    selected: { provider: "openai", model: "verified-test-model", protocol: "openai_compatible",
+      images_native: true, native_pdf: true, capability_source: "verified_model_endpoint", max_request_bytes: 64_000_000 } });
+  vi.spyOn(api, "releasePreparedAiAttachment").mockResolvedValue();
+  vi.spyOn(api, "releaseAiAttachmentScope").mockResolvedValue();
+  vi.spyOn(api, "getPreparedAiAttachment").mockResolvedValue(preparedMetadata());
+}
+
+describe("Issue #202 prepared attachment integration", () => {
+  it.each(["zh-CN", "en"] as const)("shows truthful directory/coverage and sends refs only in %s", async (locale) => {
+    await applySystemLocale(locale); enablePrepared();
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(preparedMetadata());
+    const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("prepared-reply", null));
+    renderPanel();
+    await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("业务.pdf", "application/pdf", "prepared-body-sentinel"));
+    await screen.findByTestId("ai-prepared-directory");
+    expect(document.body.textContent).toContain("Revenue");
+    expect(document.body.textContent).toContain(locale === "zh-CN" ? "原文件缓存值" : "original cached values");
+    expect(document.body.textContent).not.toContain("private_unknown_warning");
+    expect(document.body.textContent).not.toContain("prepared-body-sentinel");
+    expect(document.body.textContent).not.toContain("a".repeat(64));
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "read the chart" } });
+    fireEvent.click(screen.getByTestId("ai-send"));
+    await screen.findByText("prepared-reply");
+    const payload = assist.mock.calls[0]?.[1];
+    expect(payload?.attachments).toBeUndefined();
+    expect(payload?.attachment_scope_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(payload?.attachment_refs).toEqual([{ attachment_ref: "abcdefghijklmnop", sha256: "a".repeat(64), representation_revision: "document-v1" }]);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(api.releasePreparedAiAttachment).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("ai-attachment-item")).toBeNull();
+    expect(screen.getByTestId("ai-message-attachments").textContent).toContain("业务.pdf");
+  });
+
+  it("retries the frozen ref after a later composer file and preserves it on collapse", async () => {
+    enablePrepared();
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValueOnce(preparedMetadata())
+      .mockResolvedValueOnce(preparedMetadata({ attachment_ref: "new-prepared-ref-id", sha256: "b".repeat(64), filename: "new.pdf" }));
+    const assist = vi.spyOn(api, "assistAdapter").mockRejectedValueOnce(new ApiError(502, "ai_request_failed", "fixture failure"))
+      .mockResolvedValueOnce(aiResponse("frozen-retry-reply", null));
+    const panel = renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("业务.pdf", "application/pdf"));
+    await screen.findByTestId("ai-prepared-directory");
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "original round" } });
+    fireEvent.click(screen.getByTestId("ai-send"));
+    await screen.findByTestId("ai-retry");
+    await addFiles(makeFile("new.pdf", "application/pdf"));
+    await waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
+    panel.rerender({ open: false }); panel.rerender({ open: true });
+    fireEvent.click(screen.getByTestId("ai-retry"));
+    await screen.findByText("frozen-retry-reply");
+    expect(assist.mock.calls[1]?.[1].attachment_refs).toEqual(assist.mock.calls[0]?.[1].attachment_refs);
+    expect(assist.mock.calls[1]?.[1].attachment_scope_id).toBe(assist.mock.calls[0]?.[1].attachment_scope_id);
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(api.releasePreparedAiAttachment).not.toHaveBeenCalled();
+    expect(api.releaseAiAttachmentScope).not.toHaveBeenCalled();
+    expect(screen.getByTestId("ai-attachment-name").textContent).toBe("new.pdf");
+  });
+
+  it("aborts and fences a late preparation across account scopes", async () => {
+    enablePrepared();
+    let resolve: (value: AiPreparedAttachment) => void = () => {};
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const panel = renderPanel({ accountOwnerId: 1 }); await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("业务.pdf", "application/pdf"));
+    await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
+    const scope = prepare.mock.calls[0]?.[1];
+    const signal = prepare.mock.calls[0]?.[3];
+    panel.rerender({ accountOwnerId: 2 });
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    await act(async () => { resolve(preparedMetadata()); });
+    expect(screen.queryByTestId("ai-prepared-directory")).toBeNull();
+    expect(screen.queryByTestId("ai-attachment-item")).toBeNull();
+    expect(api.releaseAiAttachmentScope).toHaveBeenCalledWith(1, scope);
+    expect(api.releasePreparedAiAttachment).toHaveBeenCalledWith(1, scope, "abcdefghijklmnop");
+  });
+
+  it("prepares safely through StrictMode effect replay", async () => {
+    enablePrepared();
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(preparedMetadata());
+    const props: PanelProps = { open: true, adapter: makeAdapter(), selectedVersionId: 10, selectedVersionSeq: 1,
+      workingCopy, contentReady: true, busy: false, contextSnippets: [], theme: "vs-dark",
+      onOpen: vi.fn(), onClose: vi.fn(), onApply: vi.fn(), onRemoveContextSnippet: vi.fn(), onClearContextSnippets: vi.fn() };
+    const view = render(<StrictMode><AiAssistantPanel {...props} /></StrictMode>);
+    await screen.findByTestId("ai-attachment-capability"); await addFiles(makeFile("业务.pdf", "application/pdf"));
+    await screen.findByTestId("ai-prepared-directory");
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(api.releaseAiAttachmentScope).not.toHaveBeenCalled();
+    view.unmount();
+    await waitFor(() => expect(api.releaseAiAttachmentScope).toHaveBeenCalledOnce());
+  });
+});
+
+
+it("reports expired frozen references without replacing them during Regenerate", async () => {
+  enablePrepared();
+  const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(preparedMetadata());
+  const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("first-prepared-reply", null));
+  renderPanel(); await screen.findByTestId("ai-attachment-capability");
+  await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "original file" } });
+  fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("first-prepared-reply");
+  vi.mocked(api.getPreparedAiAttachment).mockRejectedValue(new ApiError(410, "ai_attachment_expired", "expired"));
+  fireEvent.click(screen.getByTestId("ai-regenerate"));
+  await waitFor(() => expect(screen.getByTestId("ai-panel-error").textContent).toContain("已过期"));
+  expect(assist).toHaveBeenCalledOnce();
+  expect(prepare).toHaveBeenCalledOnce();
+  expect(screen.getByText("first-prepared-reply")).toBeTruthy();
+});

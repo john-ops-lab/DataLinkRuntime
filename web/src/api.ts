@@ -28,6 +28,8 @@ import type {
   AiAssistRequest,
   AiAssistResponse,
   AiAttachmentCapabilities,
+  AiAttachment,
+  AiPreparedAttachment,
   AiConnectionTestResult,
   AiCustomProvider,
   AiCustomProviderDraft,
@@ -755,8 +757,37 @@ export const api = {
     request("/api/ai/models/refresh", { method: "POST", body: JSON.stringify(payload) }),
 
   /** M5.7 Wave B2: stable attachment limits/MIME/capability contract. */
-  getAiAttachmentCapabilities: (): Promise<AiAttachmentCapabilities> =>
-    request("/api/ai/attachment-capabilities"),
+  getAiAttachmentCapabilities: async (adapterId?: number): Promise<AiAttachmentCapabilities> => {
+    if (adapterId === undefined) return request("/api/ai/attachment-capabilities");
+    try {
+      return await request(`/api/adapters/${adapterId}/ai/attachment-capabilities`);
+    } catch (error) {
+      // A missing route on an older Control can use its existing capability API.
+      // Domain access/not-found errors never trigger this compatibility fallback.
+      if (error instanceof ApiError && error.status === 404 && error.code === "unknown_error") {
+        return request("/api/ai/attachment-capabilities");
+      }
+      throw error;
+    }
+  },
+
+  prepareAiAttachment: (
+    adapterId: number, scopeId: string, attachment: AiAttachment, signal?: AbortSignal,
+  ): Promise<AiPreparedAttachment> =>
+    request(`/api/adapters/${adapterId}/ai/attachments`, {
+      method: "POST", body: JSON.stringify({ scope_id: scopeId, attachment }), signal,
+    }),
+
+  getPreparedAiAttachment: (
+    adapterId: number, scopeId: string, attachmentRef: string, signal?: AbortSignal,
+  ): Promise<AiPreparedAttachment> =>
+    request(`/api/adapters/${adapterId}/ai/attachments/${encodeURIComponent(attachmentRef)}?scope_id=${encodeURIComponent(scopeId)}`, { signal }),
+
+  releasePreparedAiAttachment: (adapterId: number, scopeId: string, attachmentRef: string): Promise<void> =>
+    request(`/api/adapters/${adapterId}/ai/attachments/${encodeURIComponent(attachmentRef)}?scope_id=${encodeURIComponent(scopeId)}`, { method: "DELETE" }),
+
+  releaseAiAttachmentScope: (adapterId: number, scopeId: string): Promise<void> =>
+    request(`/api/adapters/${adapterId}/ai/attachments/scopes/${encodeURIComponent(scopeId)}`, { method: "DELETE", keepalive: true }),
 
   getAiKnowledgeCapability: (adapterId: number): Promise<AiKnowledgeCapability> =>
     request(`/api/adapters/${adapterId}/ai/knowledge-capability`),
