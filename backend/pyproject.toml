@@ -26,6 +26,7 @@ dependencies = [
     # Legacy BIFF .xls fallback stays in memory; xlrd is the maintained,
     # pure-Python parser for the historical Excel format.
     "xlrd>=2.0.2,<3",
+    "openpyxl==3.1.5",
 ]
 
 [dependency-groups]

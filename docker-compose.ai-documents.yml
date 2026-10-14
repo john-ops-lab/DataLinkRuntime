@@ -1,0 +1,61 @@
+# Opt-in companion topology: docker compose -f docker-compose.yml \
+#   -f docker-compose.ai-documents.yml up -d --build
+# No host ports, host directories, business volumes, or Docker socket.
+services:
+  control:
+    environment:
+      DLR_AI_DOCUMENT_CONVERTER_URL: http://ai-documents:5001
+    networks:
+      - default
+      - ai-documents
+  ai-documents:
+    build:
+      context: .
+      dockerfile: docker/ai-documents.Dockerfile
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 2.0
+    mem_limit: 3g
+    memswap_limit: 3g
+    pids_limit: 256
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m,mode=1777
+    environment:
+      DLR_OFFICE_CONVERTER_URL: http://ai-office:5002
+    networks: [ai-documents]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    logging:
+      driver: local
+      options: {max-size: 5m, max-file: "2"}
+  ai-office:
+    build:
+      context: .
+      dockerfile: docker/ai-office.Dockerfile
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 1.0
+    mem_limit: 768m
+    memswap_limit: 768m
+    pids_limit: 128
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m,mode=1777
+    networks: [ai-documents]
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5002/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    logging:
+      driver: local
+      options: {max-size: 5m, max-file: "2"}
+networks:
+  ai-documents:
+    internal: true
