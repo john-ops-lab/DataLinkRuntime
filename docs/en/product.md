@@ -287,3 +287,12 @@ choose a scenario and language in Template Gallery
 - See [Sandbox deployment](issue130-sandbox-deployment.md) for current installation,
   host preparation, and diagnostics. [Old migration notes](issue130-reliable-runtime-migrations.md)
   are historical records, not fresh-install instructions.
+
+
+### Null characters in Task JSON input saves
+
+When saving JSON input, DLR first parses JSON and then recursively removes actual U+0000 characters from string values and object keys. The page reports the removed count and displays the actual value returned by the server. Literal `\\u0000` text, line breaks, tabs, other Unicode characters, and all JSON types remain unchanged. If normalized keys collide, saving returns a locatable field conflict; the draft is preserved and the current input and revision remain unchanged.
+
+The direct InputConfig API, compatibility Schedule writes, and Adapter imports share this rule. Current input and the Schedule compatibility mirror are updated consistently in the existing transaction. `PUT /api/adapters/{id}/input-config` returns `removed_null_characters`; `GET` defaults to 0. Counts are not persisted. JSON requests may include a nonnegative integer `original_json_size_bytes`, declaring the compact UTF-8 size before client normalization. This declaration can only increase the size checked by the server; without it, the actual submitted value is still checked, and declaring a smaller size cannot relax the limit. Only the JSON branch accepts this field.
+
+This behavior is limited to Task input saves: it does not change JSONB columns, clean historical data, or alter Webhook, code, credential, log, or execution-output contracts.
