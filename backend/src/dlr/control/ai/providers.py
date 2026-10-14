@@ -9,14 +9,19 @@ import json
 import math
 import re
 import socket
-from dataclasses import dataclass, replace
+import ssl
+import threading
+import time
+from contextlib import suppress
+from dataclasses import dataclass, field, replace
 from http import client as http_client
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from urllib import error as url_error
 from urllib import parse as url_parse
 from urllib import request as url_request
 
 from dlr.common.config import settings
+from dlr.control.ai.attachment_reading import AttachmentMedia
 from dlr.control.ai.diagnostics import FailureReason, FailureStage, StrictJsonError
 from dlr.control.schemas.ai import (
     AiModelOutput,
@@ -27,7 +32,12 @@ from dlr.control.schemas.ai import (
     contains_unicode_surrogate,
 )
 
+MAX_PROVIDER_REQUEST_BYTES = 32 * 1024 * 1024
 MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024
+# Match the default AnyIO caller limit used by the previous synchronous
+# transport. DNS cannot be force-cancelled; detached workers retain capacity
+# until actual termination, so retries cannot grow an unbounded thread set.
+MAX_PROVIDER_TRANSPORT_WORKERS = 40
 
 JsonObject = dict[str, object]
 StructuredOutput = Literal["json_schema", "json_object", "prompt_only"]
@@ -42,6 +52,7 @@ class NormalizedToolCall:
     id: str
     name: str
     arguments: str
+    anthropic_blocks: tuple[JsonObject, ...] = field(default=(), repr=False, compare=False)
 
 
 class AiProviderError(Exception):
@@ -79,7 +90,139 @@ class _NoRedirectHandler(url_request.HTTPRedirectHandler):
         return None
 
 
-_NO_REDIRECT_OPENER = url_request.build_opener(_NoRedirectHandler())
+_TRANSPORT_SCOPE = threading.local()
+_TRANSPORT_PERMITS = threading.BoundedSemaphore(MAX_PROVIDER_TRANSPORT_WORKERS)
+
+
+class _TransportScope:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.cancelled = False
+        self.sockets: list[socket.socket] = []
+
+    def register(self, sock: socket.socket) -> None:
+        with self.lock:
+            self.sockets.append(sock)
+            if self.cancelled:
+                self._close(sock)
+                raise TimeoutError
+
+    @staticmethod
+    def _close(sock: socket.socket) -> None:
+        with suppress(OSError):
+            sock.shutdown(socket.SHUT_RDWR)
+        with suppress(OSError):
+            sock.close()
+
+    def cancel(self) -> None:
+        with self.lock:
+            self.cancelled = True
+            for sock in self.sockets:
+                self._close(sock)
+
+
+def _scoped_create_connection(*args: Any, **kwargs: Any) -> socket.socket:
+    sock = socket.create_connection(*args, **kwargs)
+    scope = getattr(_TRANSPORT_SCOPE, "scope", None)
+    if scope is not None:
+        scope.register(sock)
+    return sock
+
+
+class _DeadlineHTTPConnection(http_client.HTTPConnection):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._create_connection = _scoped_create_connection
+
+    def connect(self) -> None:
+        super().connect()
+        scope = getattr(_TRANSPORT_SCOPE, "scope", None)
+        if scope is not None and self.sock is not None:
+            scope.register(self.sock)
+
+
+class _DeadlineHTTPSConnection(http_client.HTTPSConnection):
+    _context: ssl.SSLContext
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._create_connection = _scoped_create_connection
+
+    def connect(self) -> None:
+        # Register before TLS too, so a stalled handshake is cancellable.
+        http_client.HTTPConnection.connect(self)
+        scope = getattr(_TRANSPORT_SCOPE, "scope", None)
+        if scope is not None and self.sock is not None:
+            scope.register(self.sock)
+        server_hostname = getattr(self, "_tunnel_host", None) or self.host
+        context = self._context
+        self.sock = context.wrap_socket(
+            self.sock, server_hostname=server_hostname, do_handshake_on_connect=False
+        )
+        if scope is not None:
+            scope.register(self.sock)
+        self.sock.do_handshake()
+
+
+class _DeadlineHTTPHandler(url_request.HTTPHandler):
+    def http_open(self, req: url_request.Request) -> http_client.HTTPResponse:
+        return self.do_open(_DeadlineHTTPConnection, req)
+
+
+class _DeadlineHTTPSHandler(url_request.HTTPSHandler):
+    _context: ssl.SSLContext | None
+
+    def https_open(self, req: url_request.Request) -> http_client.HTTPResponse:
+        return self.do_open(_DeadlineHTTPSConnection, req, context=self._context)
+
+
+_NO_REDIRECT_OPENER = url_request.build_opener(
+    _NoRedirectHandler(), _DeadlineHTTPHandler(), _DeadlineHTTPSHandler()
+)
+
+
+def _bounded_http_read(request: url_request.Request, timeout: float) -> bytes:
+    if timeout <= 0:
+        raise TimeoutError
+    deadline = time.monotonic() + timeout
+    if not _TRANSPORT_PERMITS.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        raise TimeoutError
+    if time.monotonic() >= deadline:
+        _TRANSPORT_PERMITS.release()
+        raise TimeoutError
+    scope = _TransportScope()
+    finished = threading.Event()
+    replies: list[bytes] = []
+    errors: list[Exception] = []
+
+    def read() -> None:
+        _TRANSPORT_SCOPE.scope = scope
+        try:
+            with _NO_REDIRECT_OPENER.open(request, timeout=timeout) as response:
+                replies.append(response.read(MAX_PROVIDER_RESPONSE_BYTES + 1))
+        except Exception as error:
+            errors.append(error)
+        finally:
+            del _TRANSPORT_SCOPE.scope
+            _TRANSPORT_PERMITS.release()
+            finished.set()
+
+    worker = threading.Thread(target=read, daemon=True, name="dlr-ai-http")
+    try:
+        worker.start()
+    except BaseException:
+        _TRANSPORT_PERMITS.release()
+        raise
+    if not finished.wait(max(0.0, deadline - time.monotonic())):
+        scope.cancel()  # shutdown unblocks header/body reads, including byte drips.
+        worker.join(timeout=0.2)
+        raise TimeoutError
+    if time.monotonic() >= deadline:
+        scope.cancel()
+        raise TimeoutError
+    if errors:
+        raise errors[0]
+    return replies[0]
 
 
 @dataclass(frozen=True)
@@ -94,6 +237,11 @@ class ProviderAdapter:
     # never assumed: only entries in this table enable provider-native input.
     images_native: bool = False
     files_native: bool = False
+    native_pdf: bool = False
+    capability_source: Literal["verified_model_endpoint", "custom_declared", "unknown"] = "unknown"
+    multimodal_tool_results: bool = False
+    max_request_bytes: int = MAX_PROVIDER_REQUEST_BYTES
+    context_window_tokens: int | None = None
     # Tool calling is enabled by default for every model/provider. A custom
     # provider may explicitly disable it when its compatible endpoint lacks
     # that capability.
@@ -239,6 +387,222 @@ def resolve_output_adapter(setting: AiSettingDraft, adapter: ProviderAdapter) ->
         # is an explicit limitation, not a claim that upstream rejects it.
         return replace(adapter, structured_output="prompt_only")
     return adapter
+
+
+# Input support is independent from native strict output. These exact IDs and
+# snapshots are listed in the linked official model pages in the model-reading
+# contract. Extra legacy image IDs do not inherit unverified native PDF support.
+_OPENAI_NATIVE_PDF_MODELS = frozenset(
+    {
+        "gpt-4o",
+        "gpt-4o-2024-08-06",
+        "gpt-4o-2024-11-20",
+        "gpt-4o-mini",
+        "gpt-4o-mini-2024-07-18",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+    }
+)
+_OPENAI_NATIVE_IMAGE_MODELS = _OPENAI_NATIVE_PDF_MODELS | frozenset(
+    {
+        "gpt-4o-2024-05-13",
+        "gpt-4.1-2025-04-14",
+        "gpt-4.1-mini-2025-04-14",
+        "gpt-4.1-nano",
+        "gpt-4.1-nano-2025-04-14",
+        "gpt-4-turbo",
+        "gpt-4-turbo-2024-04-09",
+    }
+)
+_OPENAI_1M_CONTEXT_MODELS = frozenset(
+    {
+        "gpt-4.1",
+        "gpt-4.1-2025-04-14",
+        "gpt-4.1-mini",
+        "gpt-4.1-mini-2025-04-14",
+        "gpt-4.1-nano",
+        "gpt-4.1-nano-2025-04-14",
+    }
+)
+# Served legacy Claude IDs and the documented 4.5 aliases. Context limits come
+# from each official model page; retired 4/4.1/3.x IDs are intentionally absent.
+_ANTHROPIC_IMAGE_ONLY_WINDOWS = {
+    "claude-opus-4-5": 200000,
+    "claude-opus-4-5-20251101": 200000,
+    "claude-sonnet-4-5": 200000,
+    "claude-sonnet-4-5-20250929": 200000,
+    "claude-haiku-4-5": 200000,
+    "claude-haiku-4-5-20251001": 200000,
+    "claude-opus-4-6": 1000000,
+    "claude-sonnet-4-6": 1000000,
+    "claude-opus-4-7": 1000000,
+    "claude-opus-4-8": 1000000,
+    "claude-opus-5": 1000000,
+    "claude-sonnet-5": 1000000,
+    "claude-fable-5": 1000000,
+}
+
+
+def resolve_attachment_adapter(
+    setting: AiSettingDraft, adapter: ProviderAdapter
+) -> ProviderAdapter:
+    """Resolve actual input support; custom file flags remain declarations only."""
+    if setting.provider == "custom_openai_compatible":
+        return replace(
+            adapter,
+            native_pdf=False,
+            capability_source="custom_declared",
+            multimodal_tool_results=adapter.protocol == "anthropic" and adapter.images_native,
+        )
+    parts = url_parse.urlsplit(setting.base_url)
+    root = parts.path.rstrip("/")
+    secure = parts.scheme == "https" and parts.port in {None, 443}
+    image = pdf = multimodal_tools = False
+    window: int | None = None
+    if secure and adapter.protocol == "openai_compatible":
+        if (
+            setting.provider == "openai"
+            and parts.hostname == "api.openai.com"
+            and root in {"", "/v1"}
+            and setting.model in _OPENAI_NATIVE_IMAGE_MODELS
+        ):
+            image = True
+            pdf = setting.model in _OPENAI_NATIVE_PDF_MODELS
+            # All six official 4.1 IDs document 1,047,576 input tokens. Use a
+            # conservative 1M; 4o/Turbo retain their documented 128K boundary.
+            window = 1000000 if setting.model in _OPENAI_1M_CONTEXT_MODELS else 128000
+        elif (
+            setting.provider == "minimax"
+            and parts.hostname in {"api.minimax.cn", "api.minimax.io"}
+            and root in {"", "/v1"}
+        ):
+            image = setting.model == "MiniMax-M3"
+            window = 512000 if image else None
+        elif (
+            setting.provider == "kimi"
+            and parts.hostname in {"api.kimi.com", "api.kimi.ai"}
+            and root
+            in {
+                "/coding",
+                "/coding/v1",
+            }
+        ):
+            image = setting.model in {"k3", "k3-256k"}
+            window = 262144 if image else None
+    elif (
+        secure
+        and setting.provider == "anthropic"
+        and adapter.protocol == "anthropic"
+        and parts.hostname == "api.anthropic.com"
+        and root in {"", "/v1"}
+    ):
+        image = pdf = setting.model in {
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+        }
+        image = image or setting.model in _ANTHROPIC_IMAGE_ONLY_WINDOWS
+        multimodal_tools = image
+        window = _ANTHROPIC_IMAGE_ONLY_WINDOWS.get(setting.model, 1000000 if image else None)
+    elif (
+        secure
+        and setting.provider == "gemini"
+        and adapter.protocol == "gemini"
+        and parts.hostname == "generativelanguage.googleapis.com"
+        and root in {"", "/v1beta"}
+    ):
+        image = setting.model in {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"}
+        pdf = setting.model in {"gemini-2.5-pro", "gemini-2.5-flash-lite"}
+        window = 1048576 if image else None
+    return replace(
+        adapter,
+        images_native=image,
+        native_pdf=pdf,
+        capability_source="verified_model_endpoint" if image else "unknown",
+        multimodal_tool_results=multimodal_tools,
+        context_window_tokens=window,
+    )
+
+
+def media_content_parts(media: tuple[AttachmentMedia, ...]) -> list[JsonObject]:
+    """A provider-neutral internal part. Body bytes never join text results."""
+    return [{"type": "dlr_media", "media": item} for item in media]
+
+
+def _media_part(item: JsonObject, adapter: ProviderAdapter, protocol: Protocol) -> JsonObject:
+    media = item.get("media")
+    if not isinstance(media, AttachmentMedia):
+        raise AiProviderError("ai_response_invalid", stage="provider_envelope")
+    if media.content_type == "application/pdf":
+        if not adapter.native_pdf:
+            raise AiProviderError("ai_attachment_type_unsupported")
+        if protocol == "anthropic":
+            return {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": media.content_type,
+                    "data": media.data_base64,
+                },
+            }
+        if protocol == "gemini":
+            return {"inlineData": {"mimeType": media.content_type, "data": media.data_base64}}
+        return {
+            "type": "file",
+            "file": {
+                "filename": "attachment.pdf",
+                "file_data": f"data:application/pdf;base64,{media.data_base64}",
+            },
+        }
+    if not adapter.images_native:
+        raise AiProviderError("ai_attachment_image_unsupported")
+    if protocol == "anthropic":
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media.content_type,
+                "data": media.data_base64,
+            },
+        }
+    if protocol == "gemini":
+        return {"inlineData": {"mimeType": media.content_type, "data": media.data_base64}}
+    return {
+        "type": "image_url",
+        "image_url": {
+            "url": f"data:{media.content_type};base64,{media.data_base64}",
+            "detail": "default" if adapter.provider == "minimax" else "auto",
+        },
+    }
+
+
+def tool_result_messages(
+    call_id: str,
+    name: str,
+    content: str,
+    media: tuple[AttachmentMedia, ...],
+    adapter: ProviderAdapter,
+) -> tuple[JsonObject, JsonObject | None]:
+    """Keep all call/results complete before supplementary visual user messages."""
+    tool: JsonObject = {"role": "tool", "tool_call_id": call_id, "name": name, "content": content}
+    if adapter.protocol == "openai_compatible":
+        tool.pop("name")
+    if not media:
+        return tool, None
+    provenance = json.dumps(
+        {"tool_call_id": call_id, "sources": [item.source() for item in media]},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    parts: list[JsonObject] = [
+        {"type": "text", "text": "DLR_ATTACHMENT_TOOL_MATERIAL_V1\n" + provenance},
+        *media_content_parts(media),
+    ]
+    if adapter.multimodal_tool_results:
+        tool["content"] = [{"type": "text", "text": content}, *parts]
+        return tool, None
+    return tool, {"role": "user", "content": parts}
 
 
 def code_only_output_schema() -> JsonObject:
@@ -392,6 +756,23 @@ def _is_dns_resolution_failure(error: BaseException) -> bool:
     )
 
 
+def encoded_payload_size(payload: JsonObject) -> int:
+    return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+
+def assist_payload_size(
+    setting: AiSettingDraft,
+    messages: list[JsonObject],
+    tools: list[JsonObject] | None,
+    *,
+    adapter: ProviderAdapter | None = None,
+) -> int:
+    adapter = adapter or resolve_attachment_adapter(setting, get_provider(setting.provider))
+    return encoded_payload_size(
+        _build_protocol_payload(setting, messages, structured=True, adapter=adapter, tools=tools)
+    )
+
+
 def _request_json(
     method: str,
     url: str,
@@ -410,15 +791,13 @@ def _request_json(
     request_timeout = settings.ai_provider_timeout_seconds
     if timeout_seconds is not None:
         request_timeout = min(request_timeout, timeout_seconds)
+    deadline = time.monotonic() + request_timeout
     try:
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode()
         request = url_request.Request(url, data=data, headers=headers, method=method)
-        with _NO_REDIRECT_OPENER.open(
-            request,
-            timeout=request_timeout,  # noqa: S310 - admin-configured URL
-        ) as response:
-            raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+        raw = _bounded_http_read(request, max(0.0, deadline - time.monotonic()))
     except url_error.HTTPError as error:
+        error.close()
         if error.code in (401, 403):
             raise AiProviderError("ai_auth_failed") from None
         if error.code in (408, 504):
@@ -444,6 +823,8 @@ def _request_json(
         # M5.5.3: keep DNS resolution failures distinguishable from generic
         # transport failures so deployment docs can guide the operator to the
         # right layer (DNS vs TCP/TLS) instead of a single catch-all message.
+        if isinstance(error, url_error.URLError) and isinstance(error.reason, TimeoutError):
+            raise AiProviderError("ai_timeout") from None
         if _is_dns_resolution_failure(error):
             raise AiProviderError("ai_provider_dns_failed") from None
         raise AiProviderError("ai_provider_unreachable") from None
@@ -452,7 +833,10 @@ def _request_json(
             "ai_response_invalid", stage="provider_json", reason="response_too_large"
         )
     try:
-        return load_json_strict(raw)
+        parsed = load_json_strict(raw)
+        if time.monotonic() >= deadline:
+            raise AiProviderError("ai_timeout")
+        return parsed
     except StrictJsonError as error:
         raise AiProviderError(
             "ai_response_invalid", stage="provider_json", reason=error.reason
@@ -508,6 +892,26 @@ def build_chat_payload(
         "messages": messages,
         "stream": False,
     }
+    transport_messages: list[JsonObject] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            converted = [
+                _media_part(item, adapter, "openai_compatible")
+                if isinstance(item, dict) and item.get("type") == "dlr_media"
+                else item
+                for item in content
+            ]
+            transport_message = {**message, "content": converted}
+            if message.get("role") == "tool":
+                transport_message.pop("name", None)
+            transport_messages.append(transport_message)
+        else:
+            transport_message = dict(message)
+            if message.get("role") == "tool":
+                transport_message.pop("name", None)
+            transport_messages.append(transport_message)
+    payload["messages"] = transport_messages
     _apply_reasoning(payload, setting, adapter)
     if structured and adapter.structured_output == "json_schema":
         payload["response_format"] = {
@@ -535,8 +939,9 @@ def _content_text(content: object) -> str:
     return ""
 
 
-def _anthropic_content(content: object) -> object:
-    """Translate the DLR visible content parts into Anthropic blocks."""
+def _anthropic_content(content: object, adapter: ProviderAdapter | None = None) -> object:
+    """Translate visible content; Assist supplies its resolved capability adapter."""
+    adapter = adapter or get_provider("anthropic")
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
@@ -545,7 +950,9 @@ def _anthropic_content(content: object) -> object:
     for item in content:
         if not isinstance(item, dict):
             continue
-        if item.get("type") == "text" and isinstance(item.get("text"), str):
+        if item.get("type") == "dlr_media":
+            blocks.append(_media_part(item, adapter, "anthropic"))
+        elif item.get("type") == "text" and isinstance(item.get("text"), str):
             blocks.append({"type": "text", "text": item["text"]})
         elif item.get("type") == "image_url":
             image_url = item.get("image_url")
@@ -565,7 +972,8 @@ def _anthropic_content(content: object) -> object:
     return blocks or ""
 
 
-def _gemini_parts(content: object) -> list[JsonObject]:
+def _gemini_parts(content: object, adapter: ProviderAdapter | None = None) -> list[JsonObject]:
+    adapter = adapter or get_provider("gemini")
     if isinstance(content, str):
         return [{"text": content}]
     if not isinstance(content, list):
@@ -574,7 +982,9 @@ def _gemini_parts(content: object) -> list[JsonObject]:
     for item in content:
         if not isinstance(item, dict):
             continue
-        if item.get("type") == "text" and isinstance(item.get("text"), str):
+        if item.get("type") == "dlr_media":
+            parts.append(_media_part(item, adapter, "gemini"))
+        elif item.get("type") == "text" and isinstance(item.get("text"), str):
             parts.append({"text": item["text"]})
         elif item.get("type") == "image_url":
             image_url = item.get("image_url")
@@ -592,7 +1002,10 @@ def _gemini_parts(content: object) -> list[JsonObject]:
     return parts
 
 
-def _anthropic_messages(messages: list[JsonObject]) -> tuple[str | None, list[JsonObject]]:
+def _anthropic_messages(
+    messages: list[JsonObject], adapter: ProviderAdapter | None = None
+) -> tuple[str | None, list[JsonObject]]:
+    adapter = adapter or get_provider("anthropic")
     system_parts: list[str] = []
     result: list[JsonObject] = []
     for message in messages:
@@ -610,14 +1023,18 @@ def _anthropic_messages(messages: list[JsonObject]) -> tuple[str | None, list[Js
                         {
                             "type": "tool_result",
                             "tool_use_id": message.get("tool_call_id", "unknown"),
-                            "content": _content_text(message.get("content")),
+                            "content": _anthropic_content(message.get("content"), adapter),
                         }
                     ],
                 }
             )
             continue
+        continuation = message.get("_anthropic_continuation")
+        if role == "assistant" and isinstance(continuation, list):
+            result.append({"role": "assistant", "content": continuation})
+            continue
         role_name = "assistant" if role == "assistant" else "user"
-        blocks: object = _anthropic_content(message.get("content"))
+        blocks: object = _anthropic_content(message.get("content"), adapter)
         raw_calls = message.get("tool_calls")
         if isinstance(raw_calls, list):
             call_blocks = blocks if isinstance(blocks, list) else []
@@ -644,14 +1061,17 @@ def _anthropic_messages(messages: list[JsonObject]) -> tuple[str | None, list[Js
     return ("\n".join(system_parts) or None), result
 
 
-def _gemini_contents(messages: list[JsonObject]) -> tuple[JsonObject | None, list[JsonObject]]:
+def _gemini_contents(
+    messages: list[JsonObject], adapter: ProviderAdapter | None = None
+) -> tuple[JsonObject | None, list[JsonObject]]:
+    adapter = adapter or get_provider("gemini")
     system_parts: list[JsonObject] = []
     result: list[JsonObject] = []
     tool_names: dict[str, str] = {}
     for message in messages:
         role = message.get("role")
         if role == "system":
-            system_parts.extend(_gemini_parts(message.get("content")))
+            system_parts.extend(_gemini_parts(message.get("content"), adapter))
             continue
         if role == "tool":
             tool_call_id = message.get("tool_call_id")
@@ -673,7 +1093,7 @@ def _gemini_contents(messages: list[JsonObject]) -> tuple[JsonObject | None, lis
             )
             continue
         role_name = "model" if role == "assistant" else "user"
-        parts = _gemini_parts(message.get("content"))
+        parts = _gemini_parts(message.get("content"), adapter)
         raw_calls = message.get("tool_calls")
         if isinstance(raw_calls, list):
             for call in raw_calls:
@@ -754,7 +1174,7 @@ def _build_protocol_payload(
                 payload["reasoning_split"] = False
         return payload
     if adapter.protocol == "anthropic":
-        anthropic_system, converted = _anthropic_messages(messages)
+        anthropic_system, converted = _anthropic_messages(messages, adapter)
         anthropic_payload: JsonObject = {
             "model": setting.model,
             "messages": converted,
@@ -765,7 +1185,7 @@ def _build_protocol_payload(
         if tools is not None:
             anthropic_payload["tools"] = _anthropic_tools(tools)
         return anthropic_payload
-    gemini_system, converted = _gemini_contents(messages)
+    gemini_system, converted = _gemini_contents(messages, adapter)
     gemini_payload: JsonObject = {"contents": converted}
     if gemini_system is not None:
         gemini_payload["systemInstruction"] = gemini_system
@@ -799,11 +1219,21 @@ def _extract_anthropic_round(
     for block in response["content"]:
         if not isinstance(block, dict):
             raise AiProviderError("ai_response_invalid")
+        if contains_unicode_surrogate(block):
+            raise AiProviderError("ai_response_invalid", stage="unicode", reason="invalid_unicode")
         block_type = block.get("type")
         if block_type == "text":
             if not isinstance(block.get("text"), str):
                 raise AiProviderError("ai_response_invalid")
             text_parts.append(block["text"])
+        elif block_type == "thinking":
+            if not isinstance(block.get("thinking"), str) or not isinstance(
+                block.get("signature"), str
+            ):
+                raise AiProviderError("ai_response_invalid")
+        elif block_type == "redacted_thinking":
+            if not isinstance(block.get("data"), str):
+                raise AiProviderError("ai_response_invalid")
         elif block_type == "tool_use":
             name = block.get("name")
             call_id = block.get("id")
@@ -817,6 +1247,9 @@ def _extract_anthropic_round(
         else:
             raise AiProviderError("ai_response_invalid")
     if tool_calls:
+        # Private request-local carrier: exact content/order/signatures, never UI/audit.
+        blocks = tuple(response["content"])
+        tool_calls[0] = replace(tool_calls[0], anthropic_blocks=blocks)
         return ("".join(text_parts) or None), tool_calls
     if response.get("stop_reason") not in (None, "end_turn"):
         raise AiProviderError("ai_response_invalid", reason="incomplete_completion")
@@ -1011,6 +1444,7 @@ def chat_assist(
     image_input: bool = False,
     adapter: ProviderAdapter | None = None,
     timeout_seconds: float | None = None,
+    hard_deadline: float | None = None,
 ) -> tuple[str | None, list[NormalizedToolCall] | None]:
     """One non-streaming assist round; returns (final_content, tool_calls).
 
@@ -1020,12 +1454,19 @@ def chat_assist(
     pre-C1 assist protocol and the provider cannot call any tool. The final
     answer is still expected as strict JSON through the same chain.
     """
-    adapter = adapter or get_provider(setting.provider)
+    call_deadline = time.monotonic() + (
+        timeout_seconds if timeout_seconds is not None else settings.ai_provider_timeout_seconds
+    )
+    if hard_deadline is not None:
+        call_deadline = min(call_deadline, hard_deadline)
+    adapter = resolve_attachment_adapter(setting, adapter or get_provider(setting.provider))
     if tools is not None and not adapter.tools_supported:  # capability guard, never assumed
         raise AiProviderError("ai_tool_unsupported")
     payload = _build_protocol_payload(
         setting, messages, structured=True, adapter=adapter, tools=tools
     )
+    if encoded_payload_size(payload) > adapter.max_request_bytes:
+        raise AiProviderError("ai_context_over_budget")
     endpoint = (
         _endpoint(setting.base_url, "/v1/messages")
         if adapter.protocol == "anthropic"
@@ -1038,6 +1479,9 @@ def chat_assist(
             else _endpoint(setting.base_url, "/v1/chat/completions")
         )
     )
+    remaining = call_deadline - time.monotonic()
+    if remaining <= 0:
+        raise AiProviderError("ai_timeout")
     response = _request_json(
         "POST",
         endpoint,
@@ -1046,8 +1490,10 @@ def chat_assist(
         not_found_code="ai_model_not_found",
         reasoning_explicit=setting.reasoning_mode != "default",
         image_input=image_input,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=remaining,
     )
+    if time.monotonic() >= call_deadline:
+        raise AiProviderError("ai_timeout")
     return extract_round(setting.provider, response, adapter)
 
 

@@ -581,7 +581,7 @@ def test_provider_http_open_uses_configured_timeout(monkeypatch: pytest.MonkeyPa
         not_found_code="ai_provider_unreachable",
     )
     assert response == {}
-    assert opened_with == [247.5]
+    assert len(opened_with) == 1 and 247.0 < opened_with[0] <= 247.5
 
 
 def test_provider_http_open_never_exceeds_assist_remaining_timeout(
@@ -614,7 +614,7 @@ def test_provider_http_open_never_exceeds_assist_remaining_timeout(
         timeout_seconds=12.5,
     )
     assert response == {}
-    assert opened_with == [12.5]
+    assert len(opened_with) == 1 and 12.0 < opened_with[0] <= 12.5
 
 
 @pytest.mark.parametrize("remaining", [0.0, -1.0, float("nan"), float("inf")])
@@ -661,7 +661,7 @@ def test_chat_assist_passes_remaining_timeout_to_provider_request(
     )
     assert content is not None
     assert tool_calls is None
-    assert captured["timeout_seconds"] == 7.25
+    assert 7.0 < captured["timeout_seconds"] <= 7.25
 
 
 def test_models_refresh_normalizes_ids_and_failure_keeps_manual_model(

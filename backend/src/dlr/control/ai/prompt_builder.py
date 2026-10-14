@@ -56,11 +56,17 @@ def build_prompt(
         "available_secret_keys": list(context.available_secret_keys),
         "working_copy": _thaw(context.working_copy),
     }
+    if context.attachment_capabilities is not None:
+        authoritative_state["attachment_input_capabilities"] = _thaw(
+            context.attachment_capabilities
+        )
     if context.saved_managed_input is not None:
         authoritative_state["saved_managed_input"] = _thaw(context.saved_managed_input)
     reference_material: dict[str, object] = {}
     if context.context_snippets:
         reference_material["context_snippets"] = _thaw(context.context_snippets)
+    if context.attachment_overview is not None:
+        reference_material["attachment_directory"] = _thaw(context.attachment_overview)
     if context.attachments:
         reference_material["attachments"] = _thaw(context.attachments)
 
@@ -111,6 +117,8 @@ def build_prompt(
     ]
     if tool_instructions:
         sections.append(tool_instructions)
+    if context.attachment_overview is not None:
+        sections.append(RULES["attachments.md"].strip())
     sections.extend(
         [
             f"Server system locale: {context.system_locale}. "
@@ -175,6 +183,8 @@ def build_prompt(
         included_sections.append("knowledge")
     if context.context_snippets:
         included_sections.append("snippets")
+    if context.attachment_overview is not None:
+        included_sections.append("attachment_directory")
     if context.attachments:
         included_sections.append("attachments")
     if context.native_images:
@@ -191,6 +201,8 @@ def build_prompt(
             tools_enabled=context.tools_enabled,
             knowledge_enabled=context.knowledge_search_enabled and context.tools_enabled,
             has_context_snippets=bool(context.context_snippets),
-            has_attachments=bool(context.attachments or context.native_images),
+            has_attachments=bool(
+                context.attachments or context.native_images or context.attachment_overview
+            ),
         ),
     )

@@ -7,6 +7,7 @@ from typing import Literal
 
 from dlr.common.config import settings
 from dlr.control.ai import providers
+from dlr.control.ai.attachment_reading import AttachmentMedia
 from dlr.control.schemas.ai import AiSettingDraft
 
 # Only models with a verified minimum context window belong here. All other
@@ -41,6 +42,12 @@ class BudgetDiagnostics:
     omitted_history_messages: int
     omitted_reference_items: int
     omitted_images: int
+    payload_bytes: int = 0
+    max_payload_bytes: int = providers.MAX_PROVIDER_REQUEST_BYTES
+    schema_tokens: int = 0
+    image_count: int = 0
+    pdf_page_count: int = 0
+    media_bytes: int = 0
     estimation_method: str = ESTIMATION_METHOD
 
 
@@ -56,28 +63,75 @@ def _text_tokens(value: object) -> int:
     return math.ceil(len(encoded.encode("utf-8")) / BYTES_PER_ESTIMATED_TOKEN)
 
 
-def _message_tokens(message: providers.JsonObject) -> int:
-    content = message.get("content")
-    if isinstance(content, list):
-        images = sum(
-            1 for part in content if isinstance(part, dict) and part.get("type") == "image_url"
-        )
-        # Count native images by a fixed conservative reserve rather than the
-        # transport's base64 representation, which is not Provider tokenized.
-        content = [
-            {"type": "image", "reserve": IMAGE_RESERVE_TOKENS}
-            if isinstance(part, dict) and part.get("type") == "image_url"
-            else part
-            for part in content
-        ]
+def _media_estimate(value: object) -> tuple[object, int]:
+    """Replace internal body bytes with conservative visual reserves recursively."""
+    if isinstance(value, dict):
+        if value.get("type") == "dlr_media" and isinstance(value.get("media"), AttachmentMedia):
+            media = value["media"]
+            reserve = (
+                (media.page_count or 1) * (IMAGE_RESERVE_TOKENS + 4096)
+                + math.ceil(media.size_bytes / BYTES_PER_ESTIMATED_TOKEN)
+                if media.content_type == "application/pdf"
+                else IMAGE_RESERVE_TOKENS
+            )
+            return {"type": "media", "source": media.source()}, reserve
+        if value.get("type") == "image_url":
+            return {"type": "image", "reserve": IMAGE_RESERVE_TOKENS}, IMAGE_RESERVE_TOKENS
+        result: dict[str, object] = {}
+        total = 0
+        for key, item in value.items():
+            converted, reserve = _media_estimate(item)
+            result[key] = converted
+            total += reserve
+        return result, total
+    if isinstance(value, list):
+        items: list[object] = []
+        total = 0
+        for item in value:
+            converted, reserve = _media_estimate(item)
+            items.append(converted)
+            total += reserve
+        return items, total
+    return value, 0
+
+
+def _media_counts(value: object) -> tuple[int, int, int]:
+    if isinstance(value, dict):
+        media = value.get("media")
+        if value.get("type") == "dlr_media" and isinstance(media, AttachmentMedia):
+            return (
+                0 if media.content_type == "application/pdf" else 1,
+                (media.page_count or 1) if media.content_type == "application/pdf" else 0,
+                media.size_bytes,
+            )
+        if value.get("type") == "image_url":
+            image = value.get("image_url")
+            url = image.get("url", "") if isinstance(image, dict) else ""
+            size = 0
+            if isinstance(url, str) and url.startswith("data:") and ";base64," in url:
+                body = url.split(";base64,", 1)[1]
+                size = len(body) * 3 // 4 - len(body) + len(body.rstrip("="))
+            return 1, 0, max(0, size)
+        values: list[object] = list(value.values())
+    elif isinstance(value, list):
+        values = value
     else:
-        images = 0
+        return 0, 0, 0
+    counts = [_media_counts(item) for item in values]
+    return tuple(sum(items) for items in zip(*counts, strict=True)) if counts else (0, 0, 0)
+
+
+def _message_tokens(message: providers.JsonObject) -> int:
+    content, reserve = _media_estimate(message.get("content"))
     metadata = {key: value for key, value in message.items() if key != "content"}
+    return MESSAGE_OVERHEAD_TOKENS + _text_tokens(metadata) + _text_tokens(content) + reserve
+
+
+def _schema_tokens(adapter: providers.ProviderAdapter | None) -> int:
     return (
-        MESSAGE_OVERHEAD_TOKENS
-        + _text_tokens(metadata)
-        + _text_tokens(content)
-        + images * IMAGE_RESERVE_TOKENS
+        _text_tokens(providers.code_only_output_schema())
+        if adapter is not None and adapter.structured_output == "json_schema"
+        else 0
     )
 
 
@@ -86,12 +140,14 @@ def estimate_tokens(
     tools: list[providers.JsonObject] | None,
     *,
     purpose: CallPurpose = "assist_initial",
+    adapter: providers.ProviderAdapter | None = None,
 ) -> int:
     return (
         OUTPUT_RESERVE_TOKENS
         + SAFETY_RESERVE_TOKENS
         + sum(_message_tokens(message) for message in messages)
         + (TOOL_OVERHEAD_TOKENS + _text_tokens(tools) if tools else 0)
+        + _schema_tokens(adapter)
     )
 
 
@@ -171,16 +227,26 @@ def prepare_call(
     tools: list[providers.JsonObject] | None,
     *,
     purpose: CallPurpose = "assist_initial",
+    adapter: providers.ProviderAdapter | None = None,
 ) -> BudgetResult:
     """Mutate only optional whole history/reference/image items to fit a call."""
-    verified_window = KNOWN_WINDOWS.get((draft.provider, draft.model))
+    adapter = providers.resolve_output_adapter(
+        draft,
+        providers.resolve_attachment_adapter(
+            draft, adapter or providers.get_provider(draft.provider)
+        ),
+    )
+    verified_window = adapter.context_window_tokens or KNOWN_WINDOWS.get(
+        (draft.provider, draft.model)
+    )
     window = verified_window or settings.ai_context_default_window_tokens
-    before = estimate_tokens(messages, tools, purpose=purpose)
+    before = estimate_tokens(messages, tools, purpose=purpose, adapter=adapter)
     omitted_history = omitted_references = omitted_images = 0
 
     def result(fits: bool) -> BudgetResult:
         system, conversation, tool_messages, definitions = _diagnostic_parts(messages, tools)
         output_reserve = OUTPUT_RESERVE_TOKENS
+        image_count, pdf_page_count, media_bytes = _media_counts(messages)
         after = (
             output_reserve
             + SAFETY_RESERVE_TOKENS
@@ -188,6 +254,7 @@ def prepare_call(
             + conversation
             + tool_messages
             + definitions
+            + _schema_tokens(adapter)
         )
         return BudgetResult(
             fits=fits,
@@ -207,10 +274,22 @@ def prepare_call(
                 omitted_history_messages=omitted_history,
                 omitted_reference_items=omitted_references,
                 omitted_images=omitted_images,
+                payload_bytes=providers.assist_payload_size(
+                    draft, messages, tools, adapter=adapter
+                ),
+                max_payload_bytes=adapter.max_request_bytes,
+                schema_tokens=_schema_tokens(adapter),
+                image_count=image_count,
+                pdf_page_count=pdf_page_count,
+                media_bytes=media_bytes,
             ),
         )
 
-    while estimate_tokens(messages, tools, purpose=purpose) > window:
+    while (
+        estimate_tokens(messages, tools, purpose=purpose, adapter=adapter) > window
+        or providers.assist_payload_size(draft, messages, tools, adapter=adapter)
+        > adapter.max_request_bytes
+    ):
         request = _request_message(messages)
         if request is not None:
             request_index = next(index for index, item in enumerate(messages) if item is request)
@@ -250,7 +329,14 @@ def has_native_image(messages: list[providers.JsonObject]) -> bool:
     for message in messages:
         content = message.get("content")
         if isinstance(content, list) and any(
-            isinstance(part, dict) and part.get("type") == "image_url" for part in content
+            isinstance(part, dict)
+            and (
+                part.get("type") == "image_url"
+                or part.get("type") == "dlr_media"
+                and isinstance(part.get("media"), AttachmentMedia)
+                and part["media"].content_type.startswith("image/")
+            )
+            for part in content
         ):
             return True
     return False

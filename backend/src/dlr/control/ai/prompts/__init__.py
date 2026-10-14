@@ -5,7 +5,7 @@ from importlib import resources
 from types import MappingProxyType
 from typing import Final
 
-_NAMES: Final = ("system.md", "adapter.md", "tools.md")
+_NAMES: Final = ("system.md", "adapter.md", "tools.md", "attachments.md")
 
 
 def _load_resources() -> tuple[dict[str, str], str]:

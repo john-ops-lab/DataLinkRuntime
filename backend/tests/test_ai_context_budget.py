@@ -207,7 +207,7 @@ def test_finalization_recomputes_timeout_after_budget_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = iter([20.0, 21.0])
-    monkeypatch.setattr(ai_service.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(ai_service.time, "monotonic", lambda: next(clock, 21.0))
     monkeypatch.setattr(settings, "ai_context_default_window_tokens", 32768)
     observed: list[float] = []
 

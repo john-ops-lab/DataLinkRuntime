@@ -3,7 +3,7 @@
 import json
 import time
 from dataclasses import dataclass, field
-from typing import NoReturn
+from typing import NoReturn, cast
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
@@ -17,6 +17,7 @@ from dlr.control.ai import attachments as attachments_service
 from dlr.control.ai import context_budget, providers, tool_audit
 from dlr.control.ai import knowledge as knowledge_service
 from dlr.control.ai import tools as tools_service
+from dlr.control.ai.attachment_reading import ScopedAttachmentReader
 from dlr.control.ai.diagnostics import AiResponseInvalid, StrictJsonError
 from dlr.control.ai.output_safety import contains_secret
 from dlr.control.ai.prompt_builder import build_prompt
@@ -48,6 +49,7 @@ from dlr.control.schemas.ai import (
     AiProviderCapability,
     AiProviderDraft,
     AiProvidersResponse,
+    AiSelectedAttachmentCapability,
     AiSettingDraft,
     AiSettingResponse,
     AiToolCallSummary,
@@ -100,6 +102,9 @@ class _AssistToolState:
     request_id: str
     conversation_id: str
     format_corrections: int = 0
+    # Only the server fallback helper may mark a result safe to return after
+    # the deadline. A tool stop or a provider's candidate:null is insufficient.
+    server_fallback_returned: bool = False
     tool_rounds: int = 0
     total_tool_calls: int = 0
     consecutive_failures: int = 0
@@ -576,6 +581,7 @@ _RUNTIME_CONTRACTS = {
 }
 
 _PROVIDER_ERRORS: dict[str, tuple[int, str]] = {
+    "ai_context_over_budget": (413, "AI request exceeds the model or transport budget"),
     "ai_credential_invalid": (
         422,
         "凭据无效：所选凭据不存在或不是 token 类型，请检查凭据配置后重试",
@@ -816,7 +822,9 @@ def _adapter_for_setting(session: Session, data: AiSettingDraft) -> providers.Pr
 
 def _validate_setting(session: Session, data: AiSettingDraft) -> providers.ProviderAdapter:
     _validate_base_url(data.base_url)
-    adapter = providers.resolve_output_adapter(data, _adapter_for_setting(session, data))
+    adapter = providers.resolve_attachment_adapter(
+        data, providers.resolve_output_adapter(data, _adapter_for_setting(session, data))
+    )
     _validate_reasoning(data, adapter)
     _resolve_api_key(session, data.credential_id)
     return adapter
@@ -1198,6 +1206,8 @@ def _assist_messages(
     native_images: list[attachments_service.NativeImage] | None = None,
     tools_enabled: bool = False,
     knowledge_search_enabled: bool = False,
+    attachment_overview: dict[str, object] | None = None,
+    attachment_capabilities: dict[str, object] | None = None,
 ) -> list[providers.JsonObject]:
     saved_managed_input = _saved_managed_input_context(session, adapter_id)
     context = PromptContext.capture(
@@ -1212,6 +1222,8 @@ def _assist_messages(
         native_images=native_images,
         tools_enabled=tools_enabled,
         knowledge_search_enabled=knowledge_search_enabled,
+        attachment_overview=attachment_overview,
+        attachment_capabilities=attachment_capabilities,
     )
     managed_input_instruction = (
         _managed_input_prompt_instruction(language)
@@ -1280,10 +1292,26 @@ def _reject_candidate_configuration_changes(
         raise AiResponseInvalid("candidate_configuration", "runtime_config_mismatch")
 
 
-def attachment_capabilities() -> AiAttachmentCapabilitiesResponse:
+def attachment_capabilities(session: Session | None = None) -> AiAttachmentCapabilitiesResponse:
     """Stable Wave B3 contract: limits, accepted MIME types and the explicit
     per-Provider native-attachment capability table."""
+    selected = None
+    setting = get_setting(session) if session is not None else None
+    if setting is not None and session is not None:
+        draft = _setting_draft(setting)
+        adapter = providers.resolve_attachment_adapter(draft, _adapter_for_setting(session, draft))
+        selected = AiSelectedAttachmentCapability(
+            provider=draft.provider,
+            model=draft.model,
+            protocol=adapter.protocol,
+            images_native=adapter.images_native,
+            native_pdf=adapter.native_pdf,
+            capability_source=adapter.capability_source,
+            max_request_bytes=adapter.max_request_bytes,
+        )
     return AiAttachmentCapabilitiesResponse(
+        selected=selected,
+        prepared_attachments_enabled=bool(settings.ai_document_converter_url),
         limits=AiAttachmentLimits(
             max_attachments=attachments_service.MAX_ATTACHMENTS,
             max_file_bytes=attachments_service.MAX_FILE_BYTES,
@@ -1442,14 +1470,18 @@ def _fallback_assist_response(
     stop_reason: str,
     draft: AiSettingDraft,
     tool_calls: list[AiToolCallSummary],
+    *,
+    state: _AssistToolState,
 ) -> AiAssistResponse:
-    return AiAssistResponse(
+    response = AiAssistResponse(
         message=_fallback_message(system_locale, stop_reason, tool_calls),
         candidate=None,
         provider=draft.provider,
         model=draft.model,
         tool_calls=tool_calls,
     )
+    state.server_fallback_returned = True
+    return response
 
 
 def _transparent_knowledge_message(
@@ -1609,8 +1641,11 @@ def _call_provider_with_audit(
             tools=tools,
             image_input=context_budget.has_native_image(messages),
             adapter=provider_adapter,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=min(timeout_seconds, state.remaining_total_seconds()),
+            hard_deadline=state.hard_deadline,
         )
+        if state.remaining_total_seconds() <= 0:
+            raise providers.AiProviderError("ai_timeout")
     except providers.AiProviderError as error:
         if audit is not None:
             ended_at = time.monotonic()
@@ -1678,7 +1713,11 @@ def _parse_with_format_correction(
             },
         ]
         budget = context_budget.prepare_call(
-            draft, correction_messages, None, purpose="assist_finalization"
+            draft,
+            correction_messages,
+            None,
+            purpose="assist_finalization",
+            adapter=provider_adapter,
         )
         _audit_provider_budget(audit, state, budget, state.hard_deadline)
         if omitted_materials is not None:
@@ -1740,10 +1779,14 @@ def _finalize_after_tool_stop(
         # With no usable tool result there is no evidence from which a safe
         # Candidate can be produced. A transparent server-owned response is
         # stronger than asking the model to guess after repeated failures.
-        return _fallback_assist_response(system_locale, state.stop_reason, draft, executed_tools)
+        return _fallback_assist_response(
+            system_locale, state.stop_reason, draft, executed_tools, state=state
+        )
     remaining = state.remaining_total_seconds()
     if remaining <= 0:
-        return _fallback_assist_response(system_locale, state.stop_reason, draft, executed_tools)
+        return _fallback_assist_response(
+            system_locale, state.stop_reason, draft, executed_tools, state=state
+        )
     messages.append(
         {
             "role": "system",
@@ -1763,15 +1806,21 @@ def _finalize_after_tool_stop(
                 "content": knowledge_state.finalization_instruction(system_locale),
             }
         )
-    budget = context_budget.prepare_call(draft, messages, None, purpose="assist_finalization")
+    budget = context_budget.prepare_call(
+        draft, messages, None, purpose="assist_finalization", adapter=provider_adapter
+    )
     _audit_provider_budget(audit, state, budget, state.hard_deadline)
     if omitted_materials is not None:
         omitted_materials[0] += budget.omitted_materials
     if not budget.fits:
-        return _fallback_assist_response(system_locale, _STOP_CONTEXT_BUDGET, draft, executed_tools)
+        return _fallback_assist_response(
+            system_locale, _STOP_CONTEXT_BUDGET, draft, executed_tools, state=state
+        )
     remaining = state.remaining_total_seconds()
     if remaining <= 0:
-        return _fallback_assist_response(system_locale, _STOP_DEADLINE, draft, executed_tools)
+        return _fallback_assist_response(
+            system_locale, _STOP_DEADLINE, draft, executed_tools, state=state
+        )
     try:
         final_content, tool_calls = _call_provider_with_audit(
             draft,
@@ -1803,7 +1852,9 @@ def _finalize_after_tool_stop(
             and error.code == "ai_response_invalid"
         ):
             audit.record_response_failure(error.stage, error.reason)
-        return _fallback_assist_response(system_locale, state.stop_reason, draft, executed_tools)
+        return _fallback_assist_response(
+            system_locale, state.stop_reason, draft, executed_tools, state=state
+        )
     if knowledge_state is not None and knowledge_state.has_search_evidence:
         output = AiModelOutput(
             message=_knowledge_evidence_message(system_locale, output.message, knowledge_state),
@@ -1825,6 +1876,10 @@ def _finalize_after_tool_stop(
             ),
             candidate=None,
         )
+    if state.remaining_total_seconds() <= 0:
+        return _fallback_assist_response(
+            system_locale, _STOP_DEADLINE, draft, executed_tools, state=state
+        )
     return _assist_response(output, draft, executed_tools)
 
 
@@ -1834,6 +1889,8 @@ def _assist_impl(
     payload: AiAssistRequest,
     audit: tool_audit.AiToolAuditTrail,
     state: _AssistToolState,
+    *,
+    attachment_reader: ScopedAttachmentReader | None = None,
 ) -> AiAssistResponse:
     """Generate a candidate without writing any DLR lifecycle or version state.
 
@@ -1846,6 +1903,10 @@ def _assist_impl(
     the final answer still has to pass the strict AiModelOutput validation.
     """
     adapter = adapter_service.get_adapter(session, adapter_id)
+    if payload.attachment_refs and attachment_reader is None:
+        raise domain_error(
+            503, "ai_attachment_reader_unavailable", "A scoped attachment reader is unavailable"
+        )
     setting = get_setting(session)
     if setting is None:
         raise domain_error(409, "ai_not_configured", "AI model is not configured")
@@ -1892,6 +1953,10 @@ def _assist_impl(
         knowledge_available = available
     tools_enabled = provider_adapter.tools_supported
     system_locale = locale_service.get_system_locale(session)
+    attachment_overview = attachment_reader.overview() if attachment_reader is not None else None
+    overview_items = (attachment_overview or {}).get("attachments", [])
+    if not isinstance(overview_items, list):
+        overview_items = []
     messages = _assist_messages(
         session,
         adapter.id,
@@ -1902,9 +1967,23 @@ def _assist_impl(
         native_images=native_images,
         tools_enabled=tools_enabled,
         knowledge_search_enabled=knowledge_search_enabled and knowledge_available and tools_enabled,
+        attachment_overview=attachment_overview,
+        attachment_capabilities=(
+            {
+                "images_native": provider_adapter.images_native,
+                "native_pdf": provider_adapter.native_pdf,
+                "capability_source": provider_adapter.capability_source,
+                "tools_available": tools_enabled,
+            }
+            if attachment_reader is not None
+            else None
+        ),
     )
     tools_payload = (
-        tools_service.tools_payload(include_knowledge=knowledge_search_enabled)
+        tools_service.tools_payload(
+            include_knowledge=knowledge_search_enabled,
+            include_attachments=attachment_reader is not None,
+        )
         if tools_enabled
         else None
     )
@@ -1920,6 +1999,16 @@ def _assist_impl(
             knowledge_service.redact_values_for("ima", session) if knowledge_search_enabled else ()
         ),
         knowledge_search_enabled=knowledge_search_enabled,
+        attachment_reader=attachment_reader,
+        attachment_refs=frozenset(
+            item["attachment_ref"]
+            for item in overview_items
+            if isinstance(item, dict) and isinstance(item.get("attachment_ref"), str)
+        ),
+        hard_deadline=state.hard_deadline,
+        attachment_deadline=state.tool_deadline,
+        images_native=provider_adapter.images_native,
+        native_pdf=provider_adapter.native_pdf,
     )
     audit_redact_values = tuple(
         value
@@ -1947,6 +2036,7 @@ def _assist_impl(
             messages,
             tools_payload,
             purpose="assist_initial" if state.tool_rounds == 0 else "assist_followup",
+            adapter=provider_adapter,
         )
         _audit_provider_budget(audit, state, budget, provider_deadline)
         omitted_materials[0] += budget.omitted_materials
@@ -2029,9 +2119,12 @@ def _assist_impl(
                     candidate=(None if knowledge_state.degraded_error_codes else output.candidate),
                     request_intent=output.request_intent,
                 )
-            return _with_omission_note(
+            response = _with_omission_note(
                 _assist_response(output, draft, executed_tools), omitted_materials[0], system_locale
             )
+            if state.remaining_total_seconds() <= 0:
+                _raise_provider_error(providers.AiProviderError("ai_timeout"))
+            return response
         if not tools_enabled:
             # Defensive: a provider without tool capability fabricated tool
             # calls; fail with the stable actionable error instead of guessing.
@@ -2183,14 +2276,32 @@ def _assist_impl(
                     ],
                 }
             )
-            messages.extend(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": tools_service.tool_result_content(execution),
-                }
-                for call, execution in processed_calls
-            )
+            if tool_calls[0].anthropic_blocks and len(processed_calls) == len(tool_calls):
+                private_blocks = list(tool_calls[0].anthropic_blocks)
+                # Signed turns must be echoed verbatim. If existing safety redaction
+                # would change a tool argument, reject rather than corrupt the turn.
+                for call, _execution in processed_calls:
+                    safe_call = _assistant_tool_call(call, api_key, tool_context)
+                    if providers.load_json_strict(
+                        cast(dict[str, str], safe_call["function"])["arguments"]
+                    ) != (providers.load_json_strict(call.arguments)):
+                        raise AiResponseInvalid("output_safety", "secret_reflection")
+                messages[-1]["_anthropic_continuation"] = private_blocks
+            tool_messages: list[providers.JsonObject] = []
+            supplementary: list[providers.JsonObject] = []
+            for call, execution in processed_calls:
+                result_message, visual_message = providers.tool_result_messages(
+                    call.id,
+                    call.name,
+                    tools_service.tool_result_content(execution),
+                    execution.media,
+                    provider_adapter,
+                )
+                tool_messages.append(result_message)
+                if visual_message is not None:
+                    supplementary.append(visual_message)
+            messages.extend(tool_messages)
+            messages.extend(supplementary)
         if knowledge_correction_needed and state.stop_reason is None:
             messages.append({"role": "system", "content": knowledge_state.correction_message()})
         elif knowledge_progress_needed and state.stop_reason is None:
@@ -2238,6 +2349,7 @@ def assist(
     payload: AiAssistRequest,
     *,
     hard_deadline: float | None = None,
+    attachment_reader: ScopedAttachmentReader | None = None,
 ) -> AiAssistResponse:
     """Run one request-correlated Assist and always persist its terminal state."""
 
@@ -2254,7 +2366,13 @@ def assist(
         correlation=audit.correlation,
     )
     try:
-        response = _assist_impl(session, adapter_id, payload, audit, state)
+        response = _assist_impl(
+            session, adapter_id, payload, audit, state, attachment_reader=attachment_reader
+        )
+        if state.remaining_total_seconds() <= 0 and not (
+            state.server_fallback_returned and response.candidate is None
+        ):
+            _raise_provider_error(providers.AiProviderError("ai_timeout"))
     except Exception as error:
         if isinstance(error, AiResponseInvalid):
             audit.record_response_failure(error.stage, error.reason)
