@@ -34,6 +34,10 @@ from dlr.control.schemas.ai import (
 
 MAX_PROVIDER_REQUEST_BYTES = 32 * 1024 * 1024
 MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024
+# Match the default AnyIO caller limit used by the previous synchronous
+# transport. DNS cannot be force-cancelled; detached workers retain capacity
+# until actual termination, so retries cannot grow an unbounded thread set.
+MAX_PROVIDER_TRANSPORT_WORKERS = 40
 
 JsonObject = dict[str, object]
 StructuredOutput = Literal["json_schema", "json_object", "prompt_only"]
@@ -87,6 +91,7 @@ class _NoRedirectHandler(url_request.HTTPRedirectHandler):
 
 
 _TRANSPORT_SCOPE = threading.local()
+_TRANSPORT_PERMITS = threading.BoundedSemaphore(MAX_PROVIDER_TRANSPORT_WORKERS)
 
 
 class _TransportScope:
@@ -180,6 +185,11 @@ def _bounded_http_read(request: url_request.Request, timeout: float) -> bytes:
     if timeout <= 0:
         raise TimeoutError
     deadline = time.monotonic() + timeout
+    if not _TRANSPORT_PERMITS.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        raise TimeoutError
+    if time.monotonic() >= deadline:
+        _TRANSPORT_PERMITS.release()
+        raise TimeoutError
     scope = _TransportScope()
     finished = threading.Event()
     replies: list[bytes] = []
@@ -193,11 +203,16 @@ def _bounded_http_read(request: url_request.Request, timeout: float) -> bytes:
         except Exception as error:
             errors.append(error)
         finally:
-            finished.set()
             del _TRANSPORT_SCOPE.scope
+            _TRANSPORT_PERMITS.release()
+            finished.set()
 
     worker = threading.Thread(target=read, daemon=True, name="dlr-ai-http")
-    worker.start()
+    try:
+        worker.start()
+    except BaseException:
+        _TRANSPORT_PERMITS.release()
+        raise
     if not finished.wait(max(0.0, deadline - time.monotonic())):
         scope.cancel()  # shutdown unblocks header/body reads, including byte drips.
         worker.join(timeout=0.2)

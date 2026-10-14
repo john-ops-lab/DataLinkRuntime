@@ -61,3 +61,5 @@ Anthropic thinking/redacted_thinking 与签名仅保留在请求内私有续轮�
 Provider HTTP 使用绝对 monotonic 期限，同时主动 shutdown/close 已建立的 TCP/TLS socket，阻止逐字滴流延长读取；每次调用后和 Assist 返回前再次检查原始总期限。迟到的模型输出不能成为 Candidate 或成功答复。
 
 工具执行后，若最终模型等待耗尽总期限，Assist 仍保留服务器生成的安全降级说明与脱敏工具摘要，candidate=null。仅服务器降级路径设置请求内私有标记，允许这一降级响应通过最终期限门禁；工具停止原因或模型返回 candidate=null 都不能放行迟到的模型正文或代码。
+
+Provider HTTP 每进程固定最多40个传输worker，与此前同步调用入口的默认并发容量相同；等待容量计入原始期限，耗尽仍返回既有ai_timeout。调用方超时会关闭已登记socket，但不提前释放worker名额，只有worker实际退出才释放，避免系统DNS阻塞时重试产生无界线程。Python无法强制终止getaddrinfo，DNS名额可能保留到系统解析返回；不引入新DNS进程或依赖。
