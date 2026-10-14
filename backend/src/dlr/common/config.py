@@ -1,6 +1,7 @@
 """Platform settings loaded from environment variables."""
 
 from os.path import isabs
+from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from pydantic import Field, model_validator
@@ -514,6 +515,36 @@ class Settings(BaseSettings):
         le=60.0,
         allow_inf_nan=False,
         validation_alias="DLR_AI_SUMMARY_TIMEOUT_SECONDS",
+    )
+    # Independent ephemeral AI files. Direct uv development retains the old
+    # inline path unless an isolated conversion service is configured.
+    ai_document_converter_url: str | None = Field(
+        default=None, validation_alias="DLR_AI_DOCUMENT_CONVERTER_URL"
+    )
+    ai_attachment_root: Path = Field(
+        default=Path("/tmp/dlr-ai-attachments"), validation_alias="DLR_AI_ATTACHMENT_ROOT"
+    )
+    ai_attachment_ttl_seconds: int = Field(
+        default=1800, ge=60, le=86400, validation_alias="DLR_AI_ATTACHMENT_TTL_SECONDS"
+    )
+    ai_attachment_store_max_bytes: int = Field(
+        default=512 * 1024 * 1024,
+        ge=64 * 1024 * 1024,
+        le=2 * 1024 * 1024 * 1024,
+        validation_alias="DLR_AI_ATTACHMENT_STORE_MAX_BYTES",
+    )
+    ai_attachment_derived_max_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=10 * 1024 * 1024,
+        le=128 * 1024 * 1024,
+        validation_alias="DLR_AI_ATTACHMENT_DERIVED_MAX_BYTES",
+    )
+    ai_attachment_prepare_timeout_seconds: float = Field(
+        default=60,
+        ge=5,
+        le=120,
+        allow_inf_nan=False,
+        validation_alias="DLR_AI_ATTACHMENT_PREPARE_TIMEOUT_SECONDS",
     )
 
     # M5.7 Wave C2: read-only KnowledgeSource (first target: Tencent ima).

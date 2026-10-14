@@ -3,6 +3,7 @@
 import math
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
@@ -460,6 +461,32 @@ class AiContextSnippet(_StrictSchema):
         return self
 
 
+class AiAttachmentReference(_StrictSchema):
+    """Frozen temporary identity; it never grants access without the authenticated scope."""
+
+    attachment_ref: str = Field(pattern=r"^[A-Za-z0-9_-]{16,96}$")
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    representation_revision: str = Field(pattern=r"^[A-Za-z0-9_.:-]{1,128}$")
+
+
+class AiAttachmentPrepareRequest(_StrictSchema):
+    scope_id: UUID
+    attachment: AiAttachment
+
+
+class AiPreparedAttachment(AiAttachmentReference):
+    filename: str
+    content_type: str
+    size_bytes: int = Field(gt=0, le=MAX_FILE_BYTES)
+    status: Literal["ready", "partial"]
+    page_count: int = Field(ge=0, le=1000)
+    pages: list[dict[str, object]] = Field(default_factory=list)
+    sheets: list[dict[str, object]] = Field(default_factory=list)
+    coverage: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    expires_at: datetime
+
+
 class AiAssistRequest(_StrictSchema):
     task_intent: Literal["auto", "consultation", "code_change"] = "auto"
     # Browser-generated, request-only correlation metadata. It is neither an
@@ -484,6 +511,8 @@ class AiAssistRequest(_StrictSchema):
     # M5.7 Wave B2: request-only attachments (base64 bodies). Omitted or
     # empty keeps the pre-attachment request contract byte-for-byte.
     attachments: list[AiAttachment] = Field(default_factory=list)
+    attachment_scope_id: UUID | None = None
+    attachment_refs: list[AiAttachmentReference] = Field(default_factory=list)
     # Knowledge search is deliberately opt-in. The value is frozen by the
     # browser per round/retry and revalidated against ACL/config server-side.
     knowledge_search_enabled: bool = False
@@ -504,12 +533,32 @@ class AiAssistRequest(_StrictSchema):
 
     @model_validator(mode="after")
     def validate_attachment_count(self) -> "AiAssistRequest":
-        if len(self.attachments) > MAX_ATTACHMENTS:
+        if len(self.attachments) + len(self.attachment_refs) > MAX_ATTACHMENTS:
             raise HTTPException(
                 status_code=422,
                 detail={
                     "code": "ai_attachment_count_exceeded",
                     "message": "AI request contains too many attachments",
+                },
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_attachment_references(self) -> "AiAssistRequest":
+        if self.attachment_refs and self.attachment_scope_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_attachment_reference_invalid",
+                    "message": "Invalid attachment scope",
+                },
+            )
+        if len({item.attachment_ref for item in self.attachment_refs}) != len(self.attachment_refs):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_attachment_reference_invalid",
+                    "message": "Duplicate attachment reference",
                 },
             )
         return self
@@ -645,6 +694,16 @@ class AiProviderAttachmentCapability(_StrictSchema):
     files_native: bool
 
 
+class AiSelectedAttachmentCapability(_StrictSchema):
+    provider: AiProvider
+    model: str
+    protocol: AiProviderProtocol
+    images_native: bool
+    native_pdf: bool
+    capability_source: Literal["verified_model_endpoint", "custom_declared", "unknown"]
+    max_request_bytes: int = Field(gt=0)
+
+
 class AiAttachmentCapabilitiesResponse(_StrictSchema):
     """Stable Wave B3 contract: limits, accepted MIME types and Provider
     capability table for the current build."""
@@ -652,3 +711,5 @@ class AiAttachmentCapabilitiesResponse(_StrictSchema):
     limits: AiAttachmentLimits
     supported_content_types: list[str]
     providers: list[AiProviderAttachmentCapability]
+    prepared_attachments_enabled: bool = False
+    selected: AiSelectedAttachmentCapability | None = None
