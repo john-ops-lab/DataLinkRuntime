@@ -179,9 +179,8 @@ export class PreparedAttachmentSession {
     if (entries.some((entry) => entry?.metadata == null)) throw new Error("Attachment is not prepared");
     const refs = entries.map((entry) => {
       const metadata = entry!.metadata!;
-      if (Date.parse(metadata.expires_at) <= Date.now()) {
-        throw new ApiError(410, "ai_attachment_expired", "Upload the file again");
-      }
+      // Freeze identity only. Assist can renew the server TTL after prepare;
+      // the authenticated GET remains authoritative for reference validity.
       return { attachment_ref: metadata.attachment_ref, sha256: metadata.sha256,
         representation_revision: metadata.representation_revision };
     });
@@ -190,15 +189,33 @@ export class PreparedAttachmentSession {
   }
 
   async validate(refs: readonly AiPreparedAttachmentRef[], signal: AbortSignal) {
+    signal.throwIfAborted();
     for (const ref of refs) {
-      const entry = [...this.entries.values()].find((item) => item.metadata?.attachment_ref === ref.attachment_ref);
-      if (this.closed || entry?.metadata == null || Date.parse(entry.metadata.expires_at) <= Date.now()) {
+      const match = [...this.entries].find(([, entry]) => entry.metadata?.attachment_ref === ref.attachment_ref);
+      if (this.closed || match?.[1].metadata == null) {
         throw new ApiError(410, "ai_attachment_expired", "Upload the file again");
       }
-      const actual = await this.transport.getPreparedAiAttachment(this.adapterId, this.scopeId, ref.attachment_ref, signal);
-      if (actual.attachment_ref !== ref.attachment_ref || actual.sha256 !== ref.sha256
-        || actual.representation_revision !== ref.representation_revision) {
-        throw new ApiError(409, "ai_attachment_expired", "Frozen attachment representation changed");
+      const [id, entry] = match;
+      const validationSignal = AbortSignal.any([signal, entry.controller.signal]);
+      validationSignal.throwIfAborted();
+      try {
+        const actual = await this.transport.getPreparedAiAttachment(this.adapterId, this.scopeId, ref.attachment_ref, validationSignal);
+        validationSignal.throwIfAborted();
+        if (this.closed || this.entries.get(id) !== entry) {
+          throw new ApiError(410, "ai_attachment_expired", "Upload the file again");
+        }
+        if (actual.attachment_ref !== ref.attachment_ref || actual.sha256 !== ref.sha256
+          || actual.representation_revision !== ref.representation_revision) {
+          throw new ApiError(409, "ai_attachment_expired", "Frozen attachment representation changed");
+        }
+        entry.metadata = actual;
+        this.update(id, { phase: "ready", metadata: actual, error: null });
+      } catch (error) {
+        validationSignal.throwIfAborted();
+        if (error instanceof ApiError && error.code === "ai_attachment_expired" && this.entries.get(id) === entry) {
+          this.update(id, { phase: "expired", metadata: entry.metadata, error });
+        }
+        throw error;
       }
     }
   }
@@ -211,7 +228,9 @@ export class PreparedAttachmentSession {
 
   checkExpired() {
     for (const [id, entry] of this.entries) {
-      if (entry.active === 0 && entry.metadata !== null && Date.parse(entry.metadata.expires_at) <= Date.now()
+      // A frozen round may have renewed its TTL during Assist after the last
+      // metadata GET. Only a server check can declare that reference expired.
+      if (entry.frozen === 0 && entry.active === 0 && entry.metadata !== null && Date.parse(entry.metadata.expires_at) <= Date.now()
         && this.state[id]?.phase === "ready") {
         this.update(id, { phase: "expired", metadata: entry.metadata, error: null });
       }

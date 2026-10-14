@@ -1506,6 +1506,10 @@ async function resolveComposerAttachment(
               attachment.name, attachment.contentType ?? attachment.file!.type, attachment.file!,
             )));
           }
+          // A local timestamp is only a hint. Recheck elapsed composer refs
+          // before consuming the draft; actual expiry still keeps it intact.
+          const elapsed = preparedAttachments.filter((metadata) => Date.parse(metadata.expires_at) <= Date.now());
+          if (elapsed.length > 0) await preparedSession.validate(elapsed, new AbortController().signal);
         } else {
           wireAttachments = composerAttachments.length === 0
             ? []
@@ -1517,7 +1521,9 @@ async function resolveComposerAttachment(
         // errors) are plain Errors; browser file-read failures surface as
         // DOMExceptions and localize through the readFailed copy instead.
         setAttachmentError(
-          error instanceof ApiError
+          error instanceof ApiError && error.code === "ai_attachment_expired"
+            ? t("assistant.attachments.prepared.expired")
+            : error instanceof ApiError
             ? attachmentServerErrorMessage(error, t("assistant.attachments.prepared.failed"))
             : error instanceof Error &&
             error.message !== "" &&

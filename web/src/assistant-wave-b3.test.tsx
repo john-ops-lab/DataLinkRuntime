@@ -1044,6 +1044,64 @@ function enablePrepared() {
 }
 
 describe("Issue #202 prepared attachment integration", () => {
+  it.each(["server valid", "server expired"] as const)("preserves server authority for an elapsed composer ref: %s", async (serverState) => {
+    enablePrepared();
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const original = preparedMetadata();
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(original);
+    const get = vi.mocked(api.getPreparedAiAttachment);
+    const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("server-valid-reply", null));
+    renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "preserved draft" } });
+    now = Date.parse(original.expires_at) + 1_000;
+    if (serverState === "server expired") {
+      get.mockRejectedValue(new ApiError(410, "ai_attachment_expired", "expired"));
+    } else get.mockResolvedValue(preparedMetadata());
+    fireEvent.click(screen.getByTestId("ai-send"));
+    if (serverState === "server expired") {
+      await waitFor(() => expect(screen.getByTestId("ai-attachment-error").textContent).toContain("已过期"));
+      expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe("preserved draft");
+      expect(screen.getByTestId("ai-attachment-item")).toBeTruthy();
+      expect(screen.queryByTestId("ai-message-attachments")).toBeNull();
+      expect(assist).not.toHaveBeenCalled();
+    } else {
+      await screen.findByText("server-valid-reply");
+      expect(assist.mock.calls[0]?.[1].attachment_refs).toEqual([{ attachment_ref: original.attachment_ref,
+        sha256: original.sha256, representation_revision: original.representation_revision }]);
+      expect(screen.queryByTestId("ai-attachment-item")).toBeNull();
+    }
+    expect(get).toHaveBeenCalled();
+    expect(prepare).toHaveBeenCalledOnce();
+  });
+
+  it("Regenerate keeps the original refs after a successful Assist renews TTL past the first deadline", async () => {
+    enablePrepared();
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const original = preparedMetadata();
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(original);
+    const get = vi.mocked(api.getPreparedAiAttachment).mockResolvedValue(original);
+    const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("renewed-reply", null));
+    renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
+    now += 20_000;
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "original round" } });
+    fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("renewed-reply");
+    const renewed = preparedMetadata();
+    now = Date.parse(original.expires_at) + 1_000;
+    expect(now).toBeLessThan(Date.parse(renewed.expires_at));
+    get.mockResolvedValue(renewed);
+    fireEvent.click(screen.getByTestId("ai-regenerate"));
+    await waitFor(() => expect(assist).toHaveBeenCalledTimes(2));
+    expect(assist.mock.calls[1]?.[1].attachment_refs).toEqual(assist.mock.calls[0]?.[1].attachment_refs);
+    expect(assist.mock.calls[1]?.[1].attachment_scope_id).toBe(assist.mock.calls[0]?.[1].attachment_scope_id);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId("ai-panel-error")).toBeNull();
+  });
+
   it.each(["zh-CN", "en"] as const)("shows truthful directory/coverage and sends refs only in %s", async (locale) => {
     await applySystemLocale(locale); enablePrepared();
     const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(preparedMetadata());

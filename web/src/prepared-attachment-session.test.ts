@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PreparedAttachmentSession, type PreparedAttachmentTransport } from "./prepared-attachment-session";
+import { ApiError } from "./api";
 import type { AiPreparedAttachment } from "./types";
 
 function metadata(overrides: Partial<AiPreparedAttachment> = {}): AiPreparedAttachment {
@@ -83,23 +84,92 @@ describe("prepared attachment resource lifecycle", () => {
     expect(transport.releasePreparedAiAttachment).not.toHaveBeenCalled();
   });
 
-  it("reports expiry without silently re-preparing frozen references", async () => {
+  it("reports server expiry without silently re-preparing frozen references", async () => {
     vi.useFakeTimers();
     const { session, transport, read } = setup();
     await session.prepare("row", read); const refs = session.freeze(["row"]);
     vi.advanceTimersByTime(61_000); session.checkExpired();
-    expect(session.snapshot().row?.phase).toBe("expired");
+    expect(session.snapshot().row?.phase).toBe("ready");
+    transport.getPreparedAiAttachment.mockRejectedValue(new ApiError(410, "ai_attachment_expired", "expired"));
     await expect(session.validate(refs, new AbortController().signal)).rejects.toMatchObject({ code: "ai_attachment_expired" });
+    expect(session.snapshot().row?.phase).toBe("expired");
     expect(transport.prepareAiAttachment).toHaveBeenCalledOnce();
-    expect(transport.getPreparedAiAttachment).not.toHaveBeenCalled();
+    expect(transport.getPreparedAiAttachment).toHaveBeenCalledOnce();
   });
 
-  it("rejects changed frozen representations", async () => {
+  it.each([
+    { representation_revision: "rev-2" },
+    { sha256: "b".repeat(64) },
+    { attachment_ref: "replacement-reference" },
+  ])("rejects changed frozen identity %j without adopting replacement metadata", async (changed) => {
     const { session, transport, read } = setup();
-    await session.prepare("row", read); const refs = session.freeze(["row"]);
-    transport.getPreparedAiAttachment.mockResolvedValue(metadata({ representation_revision: "rev-2" }));
+    const original = await session.prepare("row", read); const refs = session.freeze(["row"]);
+    transport.getPreparedAiAttachment.mockResolvedValue(metadata(changed));
     await expect(session.validate(refs, new AbortController().signal)).rejects.toMatchObject({ code: "ai_attachment_expired" });
     expect(refs[0]?.representation_revision).toBe("rev-1");
+    expect(refs[0]?.sha256).toBe("a".repeat(64));
+    expect(refs[0]?.attachment_ref).toBe("abcdefghijklmnop");
+    expect(session.snapshot().row?.metadata).toBe(original);
+  });
+
+  it("uses the renewed server TTL after the initial prepare expiry without changing frozen identity", async () => {
+    vi.useFakeTimers();
+    const { session, transport, read } = setup();
+    const original = await session.prepare("row", read);
+    const originalExpiry = Date.parse(original.expires_at);
+    const refs = session.freeze(["row"]); session.removeComposer("row");
+    vi.setSystemTime(originalExpiry - 40_000);
+    // Production reader() renews TTL on Assist pin; a later GET returns it.
+    const renewed = metadata();
+    transport.getPreparedAiAttachment.mockResolvedValue(renewed);
+    await session.validate(refs, new AbortController().signal);
+    expect(session.snapshot().row?.metadata?.expires_at).toBe(renewed.expires_at);
+    vi.setSystemTime(originalExpiry + 1_000);
+    expect(Date.now()).toBeLessThan(Date.parse(renewed.expires_at));
+    session.checkExpired();
+    expect(session.snapshot().row?.phase).toBe("ready");
+    await session.validate(refs, new AbortController().signal);
+    expect(transport.getPreparedAiAttachment).toHaveBeenCalledTimes(2);
+    expect(refs).toEqual([{ attachment_ref: original.attachment_ref, sha256: original.sha256,
+      representation_revision: original.representation_revision }]);
+    expect(transport.prepareAiAttachment).toHaveBeenCalledOnce();
+  });
+
+  it("checks a locally elapsed composer ref with the server before freezing the original identity", async () => {
+    vi.useFakeTimers();
+    const { session, transport, read } = setup();
+    const original = await session.prepare("row", read);
+    vi.setSystemTime(Date.parse(original.expires_at) + 1_000); session.checkExpired();
+    expect(session.snapshot().row?.phase).toBe("expired");
+    const renewed = metadata();
+    transport.getPreparedAiAttachment.mockResolvedValue(renewed);
+    await session.validate([original], new AbortController().signal);
+    expect(session.snapshot().row?.phase).toBe("ready");
+    expect(session.freeze(["row"])).toEqual([{ attachment_ref: original.attachment_ref,
+      sha256: original.sha256, representation_revision: original.representation_revision }]);
+    session.checkExpired();
+    expect(session.snapshot().row?.phase).toBe("ready");
+    expect(transport.prepareAiAttachment).toHaveBeenCalledOnce();
+  });
+
+  it.each(["request abort", "composer removal", "scope close"] as const)("fences late validation after %s", async (action) => {
+    const { session, transport, read } = setup();
+    const original = await session.prepare("row", read);
+    const result = deferred<AiPreparedAttachment>();
+    transport.getPreparedAiAttachment.mockReturnValueOnce(result.promise);
+    const controller = new AbortController();
+    const pending = session.validate([original], controller.signal);
+    expect(transport.getPreparedAiAttachment).toHaveBeenCalledOnce();
+    if (action === "request abort") controller.abort();
+    else if (action === "composer removal") session.removeComposer("row");
+    else session.close();
+    expect(transport.getPreparedAiAttachment.mock.calls[0]?.[3]?.aborted).toBe(true);
+    result.resolve(metadata({ expires_at: new Date(Date.now() + 120_000).toISOString() }));
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    if (action === "request abort") expect(session.snapshot().row?.metadata).toBe(original);
+    else expect(session.snapshot().row).toBeUndefined();
+    expect(transport.prepareAiAttachment).toHaveBeenCalledOnce();
+    session.close();
   });
 
   it("retries explicitly and preserves resource scopes during StrictMode effect replay", async () => {
