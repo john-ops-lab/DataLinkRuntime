@@ -374,6 +374,33 @@ def resolve_output_adapter(setting: AiSettingDraft, adapter: ProviderAdapter) ->
     return adapter
 
 
+# Input support is independent from native strict output. These exact IDs and
+# snapshots are listed in the linked official model pages in the model-reading
+# contract. Extra legacy image IDs do not inherit unverified native PDF support.
+_OPENAI_NATIVE_PDF_MODELS = frozenset(
+    {
+        "gpt-4o",
+        "gpt-4o-2024-08-06",
+        "gpt-4o-2024-11-20",
+        "gpt-4o-mini",
+        "gpt-4o-mini-2024-07-18",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+    }
+)
+_OPENAI_NATIVE_IMAGE_MODELS = _OPENAI_NATIVE_PDF_MODELS | frozenset(
+    {
+        "gpt-4o-2024-05-13",
+        "gpt-4.1-2025-04-14",
+        "gpt-4.1-mini-2025-04-14",
+        "gpt-4.1-nano",
+        "gpt-4.1-nano-2025-04-14",
+        "gpt-4-turbo",
+        "gpt-4-turbo-2024-04-09",
+    }
+)
+
+
 def resolve_attachment_adapter(
     setting: AiSettingDraft, adapter: ProviderAdapter
 ) -> ProviderAdapter:
@@ -395,18 +422,10 @@ def resolve_attachment_adapter(
             setting.provider == "openai"
             and parts.hostname == "api.openai.com"
             and root in {"", "/v1"}
-            and setting.model
-            in {
-                "gpt-4o",
-                "gpt-4o-2024-08-06",
-                "gpt-4o-2024-11-20",
-                "gpt-4o-mini",
-                "gpt-4o-mini-2024-07-18",
-                "gpt-4.1",
-                "gpt-4.1-mini",
-            }
+            and setting.model in _OPENAI_NATIVE_IMAGE_MODELS
         ):
-            image = pdf = True
+            image = True
+            pdf = setting.model in _OPENAI_NATIVE_PDF_MODELS
             window = 128000
         elif (
             setting.provider == "minimax"
@@ -448,8 +467,8 @@ def resolve_attachment_adapter(
         and parts.hostname == "generativelanguage.googleapis.com"
         and root in {"", "/v1beta"}
     ):
-        image = setting.model in {"gemini-2.5-pro", "gemini-2.5-flash"}
-        pdf = setting.model == "gemini-2.5-pro"
+        image = setting.model in {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"}
+        pdf = setting.model in {"gemini-2.5-pro", "gemini-2.5-flash-lite"}
         window = 1048576 if image else None
     return replace(
         adapter,

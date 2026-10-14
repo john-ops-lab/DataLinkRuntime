@@ -15,15 +15,21 @@
 | 协议与官方根路径 | 模型 | 图片 | 原生 PDF |
 |---|---|---|---|
 | OpenAI，api.openai.com 的根或 /v1 | gpt-4o、2024-08-06/2024-11-20 快照，gpt-4o-mini及2024-07-18快照，gpt-4.1、gpt-4.1-mini | 是 | 是 |
+| 相同 OpenAI 端点 | gpt-4o-2024-05-13、gpt-4.1-2025-04-14、gpt-4.1-mini-2025-04-14、gpt-4.1-nano及2025-04-14快照、gpt-4-turbo及2024-04-09快照 | 是 | 未单独核实 |
 | MiniMax OpenAI-compatible，api.minimax.cn / api.minimax.io 根或 /v1 | MiniMax-M3 | 是 | 未确认 |
 | Kimi Code OpenAI-compatible，api.kimi.com / api.kimi.ai 的 /coding 或 /coding/v1 | k3、k3-256k | 是 | 未确认 |
 | Anthropic Messages，api.anthropic.com 根或 /v1 | claude-fable-5-1、claude-opus-5-5、claude-sonnet-5-5、claude-haiku-5-5 | 是 | 是 |
 | Gemini generateContent，generativelanguage.googleapis.com 根或 /v1beta | gemini-2.5-pro | 是 | 是 |
 | 相同 Gemini 端点 | gemini-2.5-flash | 是 | 未单独核实 |
+| 相同 Gemini 端点 | gemini-2.5-flash-lite | 是 | 是 |
 
 仅匹配 HTTPS、默认 TLS 端口与精确 Provider/协议/模型/根路径。未知模型、代理子路径或其他组合不会继承品牌能力；DLR不自动切换模型、端点或协议。支持声明与平台实际账户可用性分开：上游拒绝仍明确失败。
 
+图片输入、原生 PDF 与严格结构化输出分别核实。补充精确型号与快照用于保持已有 inline 图片入口，不提升输出策略或推断 PDF 能力；这些 OpenAI 型号仍使用保守的 128K 上下文门禁。已退役或受账户限制的上游模型不会因此恢复可用。
+
 依据：[MiniMax 国内图片协议](https://platform.minimax.cn/docs/api-reference/text-openai-api)、[Kimi Code 原生视觉](https://www.kimi.com/code/docs/en/third-party-tools/hermes.html)、[OpenAI PDF输入](https://developers.openai.com/api/docs/guides/file-inputs)、[Anthropic当前模型](https://platform.claude.com/docs/en/models/overview)和[PDF合同](https://platform.claude.com/docs/en/build-with-claude/pdf-support)、[Gemini 2.5 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-pro)与[文档理解](https://ai.google.dev/gemini-api/docs/document-processing)。集合需随明确验证更新，不按型号名称前缀猜测。
+
+精确图片型号与快照依据官方 [GPT-4o](https://developers.openai.com/api/docs/models/gpt-4o)、[GPT-4.1](https://developers.openai.com/api/docs/models/gpt-4.1)、[GPT-4.1 mini](https://developers.openai.com/api/docs/models/gpt-4.1-mini)、[GPT-4.1 nano](https://developers.openai.com/api/docs/models/gpt-4.1-nano)、[GPT-4 Turbo](https://developers.openai.com/api/docs/models/gpt-4-turbo) 和 [Gemini 2.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-lite) 页面；Flash-Lite 还明确列出 PDF 输入。
 
 ## 只读工具
 

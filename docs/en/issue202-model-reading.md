@@ -15,15 +15,21 @@ The narrow documented set is:
 | Official protocol/host/root | Models | Image | Native PDF |
 |---|---|---|---|
 | OpenAI Chat, api.openai.com root or /v1 | gpt-4o and 2024-08-06/2024-11-20 snapshots; gpt-4o-mini and 2024-07-18 snapshot; gpt-4.1; gpt-4.1-mini | Yes | Yes |
+| Same OpenAI endpoint | gpt-4o-2024-05-13; gpt-4.1-2025-04-14; gpt-4.1-mini-2025-04-14; gpt-4.1-nano and 2025-04-14 snapshot; gpt-4-turbo and 2024-04-09 snapshot | Yes | Not independently established |
 | MiniMax Chat, api.minimax.cn / api.minimax.io root or /v1 | MiniMax-M3 | Yes | Unconfirmed |
 | Kimi Code Chat, api.kimi.com / api.kimi.ai /coding or /coding/v1 | k3; k3-256k | Yes | Unconfirmed |
 | Anthropic Messages, api.anthropic.com root or /v1 | claude-fable-5-1; claude-opus-5-5; claude-sonnet-5-5; claude-haiku-5-5 | Yes | Yes |
 | Gemini generateContent, generativelanguage.googleapis.com root or /v1beta | gemini-2.5-pro | Yes | Yes |
 | Same Gemini endpoint | gemini-2.5-flash | Yes | Not independently established |
+| Same Gemini endpoint | gemini-2.5-flash-lite | Yes | Yes |
 
 Matching requires HTTPS, the default TLS port, and exact provider, protocol, model and root. Unknown models or proxy subpaths do not inherit brand capabilities. DLR never changes the selected model, endpoint or protocol. Documented support does not guarantee account availability; upstream rejection remains an explicit failure.
 
+Image input, native PDF and strict structured output are separate capabilities. The added fixed IDs keep the existing inline-image path usable; they do not promote the output strategy or infer PDF support. The conservative OpenAI context guard remains 128K for these IDs. Retired or account-restricted upstream models are not made available by this declaration.
+
 Sources: [MiniMax image protocol](https://platform.minimax.cn/docs/api-reference/text-openai-api), [Kimi Code vision](https://www.kimi.com/code/docs/en/third-party-tools/hermes.html), [OpenAI file inputs](https://developers.openai.com/api/docs/guides/file-inputs), [current Claude models](https://platform.claude.com/docs/en/models/overview) and [PDF support](https://platform.claude.com/docs/en/build-with-claude/pdf-support), [Gemini 2.5 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-pro) and [document understanding](https://ai.google.dev/gemini-api/docs/document-processing). Update explicit evidence rather than guessing capabilities from model prefixes.
+
+Exact image IDs and snapshots are documented in the official [GPT-4o](https://developers.openai.com/api/docs/models/gpt-4o), [GPT-4.1](https://developers.openai.com/api/docs/models/gpt-4.1), [GPT-4.1 mini](https://developers.openai.com/api/docs/models/gpt-4.1-mini), [GPT-4.1 nano](https://developers.openai.com/api/docs/models/gpt-4.1-nano), [GPT-4 Turbo](https://developers.openai.com/api/docs/models/gpt-4-turbo) and [Gemini 2.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-lite) pages; Flash-Lite explicitly lists PDF input as well.
 
 ## Read-only tools
 
