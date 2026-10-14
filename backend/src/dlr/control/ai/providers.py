@@ -214,6 +214,7 @@ def resolve_output_adapter(setting: AiSettingDraft, adapter: ProviderAdapter) ->
     if (
         setting.provider == "openai"
         and hostname == "api.openai.com"
+        and url_parse.urlsplit(setting.base_url).path.rstrip("/") in {"", "/v1"}
         and setting.model
         in {
             "gpt-4o-mini",

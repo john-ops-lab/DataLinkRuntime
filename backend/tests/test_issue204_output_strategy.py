@@ -11,6 +11,10 @@ from dlr.control.schemas.ai import AiSettingDraft
     "provider,url,model,strategy",
     [
         ("openai", "https://api.openai.com", "gpt-4o-2024-08-06", "json_schema"),
+        ("openai", "https://api.openai.com/", "gpt-4o-2024-08-06", "json_schema"),
+        ("openai", "https://api.openai.com/v1/", "gpt-4o-2024-08-06", "json_schema"),
+        ("openai", "https://api.openai.com/proxy", "gpt-4o-2024-08-06", "json_object"),
+        ("openai", "https://api.openai.com/custom/v1", "gpt-4o-2024-08-06", "json_object"),
         ("openai", "https://gateway.invalid", "gpt-4o-2024-08-06", "json_object"),
         ("openai", "https://api.openai.com", "unknown-model", "json_object"),
         ("minimax", "https://api.minimax.cn", "MiniMax-M3", "prompt_only"),
