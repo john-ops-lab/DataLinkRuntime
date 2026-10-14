@@ -46,3 +46,7 @@ OpenAI Chat Completions 的tool只接收文本，先完成全部tool_call/result
 可选历史、inline参考或首轮媒体可按完整项裁剪，目录引用保留；后续必要tool-call/result及其视觉材料不拆散，超限给稳定预算失败，不把删尽必要图像后的文本答复当作已完成视觉读取。结构或单元格超限明确partial/truncated并保留来源；原件与未选页/range仍可再次有界读取。
 
 Candidate/Diff/显式Apply/Save/Run、Strict JSON、Secret reflection、Unicode与配置边界保持。真实图片、数字/扫描PDF、XLSX与真正XLS的首轮视觉及业务验收仍须独立记录。
+
+Anthropic thinking/redacted_thinking 与签名仅保留在请求内私有续轮载体，按原始顺序完整回传，不进入 UI、审计或重试 DTO；需安全改写的工具参数不能破坏签名内容，直接拒绝。依据[官方 thinking 工具续轮合同](https://platform.claude.com/docs/en/build-with-claude/thinking-tool-workflows)。
+
+Provider HTTP 使用绝对 monotonic 期限，同时主动 shutdown/close 已建立的 TCP/TLS socket，阻止逐字滴流延长读取；每次调用后和 Assist 返回前再次检查原始总期限。迟到的模型输出不能成为 Candidate 或成功答复。

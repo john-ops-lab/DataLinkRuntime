@@ -48,3 +48,7 @@ Optional history, inline references and first-round media can be omitted as whol
 Candidate/Diff/explicit Apply/Save/Run, strict JSON, Secret reflection, Unicode and configuration boundaries remain intact. Real image, digital/scanned PDF, XLSX and genuine XLS first-result visual/business acceptance is still independently required.
 
 Safe audit diagnostics include image_count, pdf_page_count and media_bytes; visual reserves stay in the corresponding message-token category and are not counted twice.
+
+Anthropic thinking/redacted_thinking signatures stay in a private request-local continuation carrier. Echo the complete original content array in order; never expose it to UI, audit, or retry DTOs. If tool arguments require safety rewriting, reject instead of corrupting signed content. See the [official thinking tool-workflow contract](https://platform.claude.com/docs/en/build-with-claude/thinking-tool-workflows).
+
+HTTP transport uses an absolute monotonic deadline and actively shuts down/closes established TCP/TLS sockets, including dripping headers or bodies. Check the original total deadline again after each call and before returning Assist: late output cannot become an accepted Candidate or successful answer.

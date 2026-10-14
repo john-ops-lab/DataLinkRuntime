@@ -3,7 +3,7 @@
 import json
 import time
 from dataclasses import dataclass, field
-from typing import NoReturn
+from typing import NoReturn, cast
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
@@ -1634,8 +1634,11 @@ def _call_provider_with_audit(
             tools=tools,
             image_input=context_budget.has_native_image(messages),
             adapter=provider_adapter,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=min(timeout_seconds, state.remaining_total_seconds()),
+            hard_deadline=state.hard_deadline,
         )
+        if state.remaining_total_seconds() <= 0:
+            raise providers.AiProviderError("ai_timeout")
     except providers.AiProviderError as error:
         if audit is not None:
             ended_at = time.monotonic()
@@ -1856,6 +1859,8 @@ def _finalize_after_tool_stop(
             ),
             candidate=None,
         )
+    if state.remaining_total_seconds() <= 0:
+        return _fallback_assist_response(system_locale, _STOP_DEADLINE, draft, executed_tools)
     return _assist_response(output, draft, executed_tools)
 
 
@@ -2095,9 +2100,12 @@ def _assist_impl(
                     candidate=(None if knowledge_state.degraded_error_codes else output.candidate),
                     request_intent=output.request_intent,
                 )
-            return _with_omission_note(
+            response = _with_omission_note(
                 _assist_response(output, draft, executed_tools), omitted_materials[0], system_locale
             )
+            if state.remaining_total_seconds() <= 0:
+                _raise_provider_error(providers.AiProviderError("ai_timeout"))
+            return response
         if not tools_enabled:
             # Defensive: a provider without tool capability fabricated tool
             # calls; fail with the stable actionable error instead of guessing.
@@ -2249,6 +2257,17 @@ def _assist_impl(
                     ],
                 }
             )
+            if tool_calls[0].anthropic_blocks and len(processed_calls) == len(tool_calls):
+                private_blocks = list(tool_calls[0].anthropic_blocks)
+                # Signed turns must be echoed verbatim. If existing safety redaction
+                # would change a tool argument, reject rather than corrupt the turn.
+                for call, _execution in processed_calls:
+                    safe_call = _assistant_tool_call(call, api_key, tool_context)
+                    if providers.load_json_strict(
+                        cast(dict[str, str], safe_call["function"])["arguments"]
+                    ) != (providers.load_json_strict(call.arguments)):
+                        raise AiResponseInvalid("output_safety", "secret_reflection")
+                messages[-1]["_anthropic_continuation"] = private_blocks
             tool_messages: list[providers.JsonObject] = []
             supplementary: list[providers.JsonObject] = []
             for call, execution in processed_calls:
@@ -2331,6 +2350,8 @@ def assist(
         response = _assist_impl(
             session, adapter_id, payload, audit, state, attachment_reader=attachment_reader
         )
+        if state.remaining_total_seconds() <= 0:
+            _raise_provider_error(providers.AiProviderError("ai_timeout"))
     except Exception as error:
         if isinstance(error, AiResponseInvalid):
             audit.record_response_failure(error.stage, error.reason)

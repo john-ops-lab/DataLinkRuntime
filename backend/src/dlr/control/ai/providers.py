@@ -9,9 +9,13 @@ import json
 import math
 import re
 import socket
-from dataclasses import dataclass, replace
+import ssl
+import threading
+import time
+from contextlib import suppress
+from dataclasses import dataclass, field, replace
 from http import client as http_client
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from urllib import error as url_error
 from urllib import parse as url_parse
 from urllib import request as url_request
@@ -44,6 +48,7 @@ class NormalizedToolCall:
     id: str
     name: str
     arguments: str
+    anthropic_blocks: tuple[JsonObject, ...] = field(default=(), repr=False, compare=False)
 
 
 class AiProviderError(Exception):
@@ -81,7 +86,128 @@ class _NoRedirectHandler(url_request.HTTPRedirectHandler):
         return None
 
 
-_NO_REDIRECT_OPENER = url_request.build_opener(_NoRedirectHandler())
+_TRANSPORT_SCOPE = threading.local()
+
+
+class _TransportScope:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.cancelled = False
+        self.sockets: list[socket.socket] = []
+
+    def register(self, sock: socket.socket) -> None:
+        with self.lock:
+            self.sockets.append(sock)
+            if self.cancelled:
+                self._close(sock)
+                raise TimeoutError
+
+    @staticmethod
+    def _close(sock: socket.socket) -> None:
+        with suppress(OSError):
+            sock.shutdown(socket.SHUT_RDWR)
+        with suppress(OSError):
+            sock.close()
+
+    def cancel(self) -> None:
+        with self.lock:
+            self.cancelled = True
+            for sock in self.sockets:
+                self._close(sock)
+
+
+def _scoped_create_connection(*args: Any, **kwargs: Any) -> socket.socket:
+    sock = socket.create_connection(*args, **kwargs)
+    scope = getattr(_TRANSPORT_SCOPE, "scope", None)
+    if scope is not None:
+        scope.register(sock)
+    return sock
+
+
+class _DeadlineHTTPConnection(http_client.HTTPConnection):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._create_connection = _scoped_create_connection
+
+    def connect(self) -> None:
+        super().connect()
+        scope = getattr(_TRANSPORT_SCOPE, "scope", None)
+        if scope is not None and self.sock is not None:
+            scope.register(self.sock)
+
+
+class _DeadlineHTTPSConnection(http_client.HTTPSConnection):
+    _context: ssl.SSLContext
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._create_connection = _scoped_create_connection
+
+    def connect(self) -> None:
+        # Register before TLS too, so a stalled handshake is cancellable.
+        http_client.HTTPConnection.connect(self)
+        scope = getattr(_TRANSPORT_SCOPE, "scope", None)
+        if scope is not None and self.sock is not None:
+            scope.register(self.sock)
+        server_hostname = getattr(self, "_tunnel_host", None) or self.host
+        context = self._context
+        self.sock = context.wrap_socket(
+            self.sock, server_hostname=server_hostname, do_handshake_on_connect=False
+        )
+        if scope is not None:
+            scope.register(self.sock)
+        self.sock.do_handshake()
+
+
+class _DeadlineHTTPHandler(url_request.HTTPHandler):
+    def http_open(self, req: url_request.Request) -> http_client.HTTPResponse:
+        return self.do_open(_DeadlineHTTPConnection, req)
+
+
+class _DeadlineHTTPSHandler(url_request.HTTPSHandler):
+    _context: ssl.SSLContext | None
+
+    def https_open(self, req: url_request.Request) -> http_client.HTTPResponse:
+        return self.do_open(_DeadlineHTTPSConnection, req, context=self._context)
+
+
+_NO_REDIRECT_OPENER = url_request.build_opener(
+    _NoRedirectHandler(), _DeadlineHTTPHandler(), _DeadlineHTTPSHandler()
+)
+
+
+def _bounded_http_read(request: url_request.Request, timeout: float) -> bytes:
+    if timeout <= 0:
+        raise TimeoutError
+    deadline = time.monotonic() + timeout
+    scope = _TransportScope()
+    finished = threading.Event()
+    replies: list[bytes] = []
+    errors: list[Exception] = []
+
+    def read() -> None:
+        _TRANSPORT_SCOPE.scope = scope
+        try:
+            with _NO_REDIRECT_OPENER.open(request, timeout=timeout) as response:
+                replies.append(response.read(MAX_PROVIDER_RESPONSE_BYTES + 1))
+        except Exception as error:
+            errors.append(error)
+        finally:
+            finished.set()
+            del _TRANSPORT_SCOPE.scope
+
+    worker = threading.Thread(target=read, daemon=True, name="dlr-ai-http")
+    worker.start()
+    if not finished.wait(max(0.0, deadline - time.monotonic())):
+        scope.cancel()  # shutdown unblocks header/body reads, including byte drips.
+        worker.join(timeout=0.2)
+        raise TimeoutError
+    if time.monotonic() >= deadline:
+        scope.cancel()
+        raise TimeoutError
+    if errors:
+        raise errors[0]
+    return replies[0]
 
 
 @dataclass(frozen=True)
@@ -601,15 +727,13 @@ def _request_json(
     request_timeout = settings.ai_provider_timeout_seconds
     if timeout_seconds is not None:
         request_timeout = min(request_timeout, timeout_seconds)
+    deadline = time.monotonic() + request_timeout
     try:
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode()
         request = url_request.Request(url, data=data, headers=headers, method=method)
-        with _NO_REDIRECT_OPENER.open(
-            request,
-            timeout=request_timeout,  # noqa: S310 - admin-configured URL
-        ) as response:
-            raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+        raw = _bounded_http_read(request, max(0.0, deadline - time.monotonic()))
     except url_error.HTTPError as error:
+        error.close()
         if error.code in (401, 403):
             raise AiProviderError("ai_auth_failed") from None
         if error.code in (408, 504):
@@ -635,6 +759,8 @@ def _request_json(
         # M5.5.3: keep DNS resolution failures distinguishable from generic
         # transport failures so deployment docs can guide the operator to the
         # right layer (DNS vs TCP/TLS) instead of a single catch-all message.
+        if isinstance(error, url_error.URLError) and isinstance(error.reason, TimeoutError):
+            raise AiProviderError("ai_timeout") from None
         if _is_dns_resolution_failure(error):
             raise AiProviderError("ai_provider_dns_failed") from None
         raise AiProviderError("ai_provider_unreachable") from None
@@ -643,7 +769,10 @@ def _request_json(
             "ai_response_invalid", stage="provider_json", reason="response_too_large"
         )
     try:
-        return load_json_strict(raw)
+        parsed = load_json_strict(raw)
+        if time.monotonic() >= deadline:
+            raise AiProviderError("ai_timeout")
+        return parsed
     except StrictJsonError as error:
         raise AiProviderError(
             "ai_response_invalid", stage="provider_json", reason=error.reason
@@ -833,6 +962,10 @@ def _anthropic_messages(
                 }
             )
             continue
+        continuation = message.get("_anthropic_continuation")
+        if role == "assistant" and isinstance(continuation, list):
+            result.append({"role": "assistant", "content": continuation})
+            continue
         role_name = "assistant" if role == "assistant" else "user"
         blocks: object = _anthropic_content(message.get("content"), adapter)
         raw_calls = message.get("tool_calls")
@@ -1018,11 +1151,21 @@ def _extract_anthropic_round(
     for block in response["content"]:
         if not isinstance(block, dict):
             raise AiProviderError("ai_response_invalid")
+        if contains_unicode_surrogate(block):
+            raise AiProviderError("ai_response_invalid", stage="unicode", reason="invalid_unicode")
         block_type = block.get("type")
         if block_type == "text":
             if not isinstance(block.get("text"), str):
                 raise AiProviderError("ai_response_invalid")
             text_parts.append(block["text"])
+        elif block_type == "thinking":
+            if not isinstance(block.get("thinking"), str) or not isinstance(
+                block.get("signature"), str
+            ):
+                raise AiProviderError("ai_response_invalid")
+        elif block_type == "redacted_thinking":
+            if not isinstance(block.get("data"), str):
+                raise AiProviderError("ai_response_invalid")
         elif block_type == "tool_use":
             name = block.get("name")
             call_id = block.get("id")
@@ -1036,6 +1179,9 @@ def _extract_anthropic_round(
         else:
             raise AiProviderError("ai_response_invalid")
     if tool_calls:
+        # Private request-local carrier: exact content/order/signatures, never UI/audit.
+        blocks = tuple(response["content"])
+        tool_calls[0] = replace(tool_calls[0], anthropic_blocks=blocks)
         return ("".join(text_parts) or None), tool_calls
     if response.get("stop_reason") not in (None, "end_turn"):
         raise AiProviderError("ai_response_invalid", reason="incomplete_completion")
@@ -1230,6 +1376,7 @@ def chat_assist(
     image_input: bool = False,
     adapter: ProviderAdapter | None = None,
     timeout_seconds: float | None = None,
+    hard_deadline: float | None = None,
 ) -> tuple[str | None, list[NormalizedToolCall] | None]:
     """One non-streaming assist round; returns (final_content, tool_calls).
 
@@ -1239,6 +1386,11 @@ def chat_assist(
     pre-C1 assist protocol and the provider cannot call any tool. The final
     answer is still expected as strict JSON through the same chain.
     """
+    call_deadline = time.monotonic() + (
+        timeout_seconds if timeout_seconds is not None else settings.ai_provider_timeout_seconds
+    )
+    if hard_deadline is not None:
+        call_deadline = min(call_deadline, hard_deadline)
     adapter = resolve_attachment_adapter(setting, adapter or get_provider(setting.provider))
     if tools is not None and not adapter.tools_supported:  # capability guard, never assumed
         raise AiProviderError("ai_tool_unsupported")
@@ -1259,6 +1411,9 @@ def chat_assist(
             else _endpoint(setting.base_url, "/v1/chat/completions")
         )
     )
+    remaining = call_deadline - time.monotonic()
+    if remaining <= 0:
+        raise AiProviderError("ai_timeout")
     response = _request_json(
         "POST",
         endpoint,
@@ -1267,8 +1422,10 @@ def chat_assist(
         not_found_code="ai_model_not_found",
         reasoning_explicit=setting.reasoning_mode != "default",
         image_input=image_input,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=remaining,
     )
+    if time.monotonic() >= call_deadline:
+        raise AiProviderError("ai_timeout")
     return extract_round(setting.provider, response, adapter)
 
 
