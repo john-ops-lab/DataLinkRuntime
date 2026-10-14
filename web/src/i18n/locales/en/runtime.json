@@ -192,7 +192,10 @@
         "manualDeleteNotAllowed": "Permanent retention is disabled by the administrator; choose another policy.",
         "uploadFailed": "The file upload did not complete. Try again.",
         "retentionIntegerRange": "Enter an integer between 3600 and {{max}} seconds. Your input is preserved; correct it before saving."
-      }
+      },
+      "savedNormalized": "Saved successfully; removed {{count}} null characters (U+0000)",
+      "saveSuccess": "Saved successfully",
+      "keyConflict": "Key {{key}} conflicts in object {{path}} after removing null characters. Correct the input"
     }
   },
   "webhook": {

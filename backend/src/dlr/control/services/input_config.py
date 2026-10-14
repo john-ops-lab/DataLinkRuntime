@@ -51,6 +51,35 @@ class ResolvedInput:
     artifact_ids: tuple[int, ...] = ()
 
 
+def normalize_json_input(value: Any, *, path: str = "") -> tuple[Any, int]:
+    """Remove only actual NULs; reject normalized-key collisions before writes."""
+    if isinstance(value, str):
+        return value.replace("\x00", ""), value.count("\x00")
+    if isinstance(value, list):
+        items = [normalize_json_input(item, path=f"{path}/{i}") for i, item in enumerate(value)]
+        return [item for item, _ in items], sum(count for _, count in items)
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        originals: dict[str, str] = {}
+        count = 0
+        for key, item in value.items():
+            cleaned_key = key.replace("\x00", "")
+            if cleaned_key in result:
+                raise domain_error(
+                    422,
+                    "input_json_key_conflict",
+                    "JSON keys conflict after removing U+0000",
+                    {"path": path, "keys": [originals[cleaned_key], key], "key": cleaned_key},
+                )
+            token = key.replace("~", "~0").replace("/", "~1")
+            cleaned_item, removed = normalize_json_input(item, path=f"{path}/{token}")
+            result[cleaned_key] = cleaned_item
+            originals[cleaned_key] = key
+            count += key.count("\x00") + removed
+        return result, count
+    return value, 0
+
+
 def _retention_response(config: AdapterInputConfig) -> InputRetention:
     return InputRetention(
         mode=cast(InputRetentionMode, config.retention_mode),
@@ -325,6 +354,7 @@ def input_config_response(
         revision=config.revision,
         source_type=config.source_type,  # type: ignore[arg-type]
         json_value=config.json_value,
+        removed_null_characters=config.__dict__.get("_removed_null_characters", 0),
         retention=_retention_response(config),
         artifacts=[
             _artifact_summary(artifact, ordinal=binding.ordinal) for binding, artifact in current
@@ -601,7 +631,9 @@ def _apply_input_config_update_locked(
             "Managed file input is not available yet",
         )
     if data.source_type == "json":
-        input_size = len(compact_json_bytes(data.json_value))
+        input_size = max(
+            len(compact_json_bytes(data.json_value)), data.original_json_size_bytes or 0
+        )
         if input_size > settings.execution_input_max_bytes:
             raise domain_error(
                 413,
@@ -609,6 +641,11 @@ def _apply_input_config_update_locked(
                 f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
                 {"max_bytes": settings.execution_input_max_bytes},
             )
+
+    normalized_json = data.json_value
+    removed_null_characters = 0
+    if data.source_type == "json":
+        normalized_json, removed_null_characters = normalize_json_input(data.json_value)
 
     current_bindings = _lock_binding_rows(session, adapter_id)
     current_ids = [row.artifact_id for row in current_bindings]
@@ -665,11 +702,13 @@ def _apply_input_config_update_locked(
                 )
             )
 
+    # Transient operation feedback: not a mapped column or durable history.
+    config.__dict__["_removed_null_characters"] = removed_null_characters
     config.source_type = data.source_type
     if data.source_type == "json":
         # A Python None must be persisted as JSON null, not SQL NULL; the
         # latter means "no JSON field" and is reserved for non-JSON sources.
-        config.json_value = JSON.NULL if data.json_value is None else data.json_value
+        config.json_value = JSON.NULL if normalized_json is None else normalized_json
         # JSON number/bool pairs compare equal in Python (0 == False and
         # 1 == True).  A valid save always advances the revision, so force the
         # JSONB column into the UPDATE instead of letting ORM equality erase
