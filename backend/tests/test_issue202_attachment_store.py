@@ -203,6 +203,22 @@ def test_public_directory_never_contains_binary_paths_or_extracted_content(store
         assert overview["attachments"][0]["attachment_ref"] == result.attachment_ref
 
 
+def test_mixed_inline_and_prepared_bytes_share_one_request_boundary(store) -> None:
+    from dlr.control.ai.attachments import MAX_TOTAL_BYTES
+
+    value, _ = store
+    scope, result, ref = prepared(store)
+    remaining = MAX_TOTAL_BYTES - result.size_bytes
+    with value.reader(("account", 1), 10, scope, [ref], inline_bytes=remaining) as reader:
+        assert reader.overview()["attachments"][0]["size_bytes"] == result.size_bytes
+    with (
+        pytest.raises(DocumentConversionError, match="ai_attachment_total_too_large"),
+        value.reader(("account", 1), 10, scope, [ref], inline_bytes=remaining + 1),
+    ):
+        pytest.fail("prepared bytes must contribute to the combined request limit")
+    assert value._records[result.attachment_ref].pins == 0
+
+
 def test_original_disk_failure_does_not_leak_unaccounted_directory(
     store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

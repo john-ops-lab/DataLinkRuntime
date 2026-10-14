@@ -11,6 +11,9 @@ from fastapi.testclient import TestClient
 
 from conftest import WORKER_TOKEN
 from dlr.control.ai.attachment_store import AiAttachmentStore, get_attachment_store
+from dlr.control.api import ai as ai_api
+from dlr.control.schemas.ai import AiAssistResponse
+from dlr.control.services import ai as ai_service
 from test_account_wave_c import (
     account_path,
     account_write,
@@ -19,6 +22,7 @@ from test_account_wave_c import (
     grant,
     wave_c_accounts,
 )
+from test_ai import assist_body
 from test_issue202_attachment_store import Converter
 
 assert wave_c_accounts  # Register the shared account fixture in this module.
@@ -142,3 +146,86 @@ def test_disconnected_prepare_cancels_and_reclaims_before_return(
     assert list(store.directory.iterdir()) == [store.directory / ".dlr-ai-owner.json"]
     converter.block = False
     assert api_client.post(path, json=payload()).status_code == 200
+
+
+def frozen_body(scope: str, resource: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **assist_body(),
+        "attachment_scope_id": scope,
+        "attachment_refs": [
+            {key: resource[key] for key in ("attachment_ref", "sha256", "representation_revision")}
+        ],
+    }
+
+
+def test_assist_pins_only_its_frozen_resource_and_always_releases_pin(
+    api_client: TestClient, resources, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _ = resources
+    monkeypatch.setattr(ai_api, "get_attachment_store", lambda: store)
+    adapter = create_adapter(api_client, "prepared-assist")
+    path = f"/api/adapters/{adapter['id']}/ai"
+    prepare_body = payload()
+    ready = api_client.post(path + "/attachments", json=prepare_body).json()
+    body = frozen_body(prepare_body["scope_id"], ready)
+    calls = []
+
+    def assist(session, adapter_id, request, *, attachment_reader):
+        calls.append(adapter_id)
+        record = store._records[ready["attachment_ref"]]
+        assert record.pins == 1
+        assert attachment_reader.overview()["attachments"][0]["sha256"] == ready["sha256"]
+        page = attachment_reader.read_page(ready["attachment_ref"], 3, "both", timeout_seconds=2)
+        assert page.data["page"] == 3 and page.media[0].page == 3
+        return AiAssistResponse(
+            message="Read original page 3",
+            candidate=None,
+            request_intent="consultation",
+            task_status="answered",
+            provider="minimax",
+            model="MiniMax-M3",
+        )
+
+    monkeypatch.setattr(ai_service, "assist", assist)
+    bad = frozen_body(prepare_body["scope_id"], {**ready, "sha256": "0" * 64})
+    rejected = api_client.post(path + "/assist", json=bad)
+    assert rejected.status_code == 409 and calls == []
+    response = api_client.post(path + "/assist", json=body)
+    assert response.status_code == 200, response.text
+    assert store._records[ready["attachment_ref"]].pins == 0
+    assert "data_base64" not in response.text
+    assert (
+        api_client.delete(path + "/attachments/scopes/" + prepare_body["scope_id"]).status_code
+        == 204
+    )
+    assert api_client.post(path + "/assist", json=body).status_code == 410
+    assert len(calls) == 1 and store._used_bytes == 0
+
+
+def test_assist_observes_real_acl_revocation_even_on_cached_read(
+    api_client: TestClient, resources, wave_c_accounts, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _ = resources
+    monkeypatch.setattr(ai_api, "get_attachment_store", lambda: store)
+    owner, editor = wave_c_accounts["owner_client"], wave_c_accounts["editor_client"]
+    adapter = create_account_adapter(owner, "prepared-live-acl")
+    adapter_id = adapter["id"]
+    editor_id = wave_c_accounts["editor"]["id"]
+    assert grant(owner, adapter_id, editor_id, "edit").status_code == 200
+    path = f"/api/adapters/{adapter_id}/ai"
+    prepare_body = payload()
+    ready = account_write(editor, "POST", path + "/attachments", json=prepare_body).json()
+
+    def assist(session, adapter_id, request, *, attachment_reader):
+        attachment_reader.read_page(ready["attachment_ref"], 3, "both", timeout_seconds=2)
+        assert grant(owner, adapter_id, editor_id, "read").status_code == 200
+        # This is a cache hit, and must still query the changed database ACL.
+        return attachment_reader.read_page(ready["attachment_ref"], 3, "both", timeout_seconds=2)
+
+    monkeypatch.setattr(ai_service, "assist", assist)
+    response = account_write(
+        editor, "POST", path + "/assist", json=frozen_body(prepare_body["scope_id"], ready)
+    )
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["code"] == "adapter_read_only"
+    assert store._records[ready["attachment_ref"]].pins == 0

@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 
 import pytest
@@ -422,14 +423,15 @@ def test_service_reader_hook_and_selected_capability(
         )
 
     monkeypatch.setattr(providers, "_request_json", request)
-    original_assist = ai.assist
-    monkeypatch.setattr(
-        ai,
-        "assist",
-        lambda session, adapter_id, payload, **kw: original_assist(
-            session, adapter_id, payload, attachment_reader=reader, **kw
-        ),
-    )
+    from dlr.control.api import ai as ai_api
+
+    class TestStore:
+        @contextmanager
+        def reader(self, owner, adapter_id, scope, references, **kwargs):
+            kwargs["permission_check"]()
+            yield reader
+
+    monkeypatch.setattr(ai_api, "get_attachment_store", TestStore)
     body = assist_body()
     body.update(
         message="Explain page 3 chart colors only",
@@ -471,7 +473,14 @@ def test_service_reader_hook_and_selected_capability(
     assert ai.attachment_capabilities().prepared_attachments_enabled
 
 
-def test_refs_without_reader_fail_closed_before_provider(api_client, monkeypatch) -> None:
+def test_refs_without_reader_fail_closed_before_provider(
+    api_client, monkeypatch, session_factory
+) -> None:
+    from fastapi import HTTPException
+
+    from dlr.common.config import settings
+    from dlr.control.schemas.ai import AiAssistRequest
+    from dlr.control.services import ai
     from test_ai import assist_body, create_adapter
 
     adapter = create_adapter(api_client, "issue202-no-reader")
@@ -488,7 +497,12 @@ def test_refs_without_reader_fail_closed_before_provider(api_client, monkeypatch
             }
         ],
     )
+    monkeypatch.setattr(settings, "ai_document_converter_url", None)
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "ai_attachment_reader_unavailable"
+    assert response.json()["detail"]["code"] == "ai_attachment_converter_unavailable"
+    with session_factory() as session, pytest.raises(HTTPException) as error:
+        ai.assist(session, adapter["id"], AiAssistRequest.model_validate(body))
+    assert error.value.status_code == 503
+    assert error.value.detail["code"] == "ai_attachment_reader_unavailable"
     assert calls == []

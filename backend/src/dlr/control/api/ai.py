@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from dlr.control import db
+from dlr.control.ai import attachments
+from dlr.control.ai.attachment_store import get_attachment_store, principal_owner
 from dlr.control.schemas.ai import (
     AiAssistRequest,
     AiAssistResponse,
@@ -104,10 +106,10 @@ def refresh_ai_models(payload: AiProviderDraft, session: DbSession) -> AiModelsR
 
 
 @router.get("/api/ai/attachment-capabilities", response_model=AiAttachmentCapabilitiesResponse)
-def get_ai_attachment_capabilities() -> AiAttachmentCapabilitiesResponse:
+def get_ai_attachment_capabilities(session: DbSession) -> AiAttachmentCapabilitiesResponse:
     """M5.7 Wave B2: stable attachment limits, accepted MIME types and the
     per-Provider native-attachment capability table for the Wave B3 UI."""
-    return ai_service.attachment_capabilities()
+    return ai_service.attachment_capabilities(session)
 
 
 @adapter_router.get(
@@ -132,11 +134,33 @@ def assist_adapter(
 ) -> AiAssistResponse:
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
     if payload.attachment_refs:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "ai_attachment_reader_unavailable",
-                "message": "Prepared attachment reading is not enabled",
-            },
-        )
+        assert payload.attachment_scope_id is not None  # Enforced by the request schema.
+        try:
+            inline_bytes = sum(
+                len(attachments.decode_data(item.data_base64)) for item in payload.attachments
+            )
+        except attachments.AttachmentError as error:
+            raise HTTPException(
+                status_code=attachments.ATTACHMENT_ERROR_STATUS.get(error.code, 422),
+                detail={"code": error.code, "message": "AI attachment is invalid"},
+            ) from None
+        bind = session.get_bind()
+
+        def check_edit_permission() -> None:
+            # Tool callbacks may run on another thread. A fresh session also
+            # observes revocation, archival and ownership changes during Assist.
+            with Session(bind=bind) as acl_session:
+                adapter_access.require_adapter_access(acl_session, adapter_id, principal, "edit")
+
+        with get_attachment_store().reader(
+            principal_owner(principal),
+            adapter_id,
+            payload.attachment_scope_id,
+            payload.attachment_refs,
+            inline_bytes=inline_bytes,
+            permission_check=check_edit_permission,
+        ) as reader:
+            result = ai_service.assist(session, adapter_id, payload, attachment_reader=reader)
+            check_edit_permission()
+            return result
     return ai_service.assist(session, adapter_id, payload)
