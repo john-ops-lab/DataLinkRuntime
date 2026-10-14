@@ -19,6 +19,7 @@
 | MiniMax OpenAI-compatible，api.minimax.cn / api.minimax.io 根或 /v1 | MiniMax-M3 | 是 | 未确认 |
 | Kimi Code OpenAI-compatible，api.kimi.com / api.kimi.ai 的 /coding 或 /coding/v1 | k3、k3-256k | 是 | 未确认 |
 | Anthropic Messages，api.anthropic.com 根或 /v1 | claude-fable-5-1、claude-opus-5-5、claude-sonnet-5-5、claude-haiku-5-5 | 是 | 是 |
+| 相同 Anthropic 端点 | claude-opus-4-5、claude-sonnet-4-5、claude-haiku-4-5及各自20251101/20250929/20251001快照；claude-opus-4-6、claude-sonnet-4-6、claude-opus-4-7、claude-opus-4-8、claude-opus-5、claude-sonnet-5、claude-fable-5 | 是 | 未单独核实 |
 | Gemini generateContent，generativelanguage.googleapis.com 根或 /v1beta | gemini-2.5-pro | 是 | 是 |
 | 相同 Gemini 端点 | gemini-2.5-flash | 是 | 未单独核实 |
 | 相同 Gemini 端点 | gemini-2.5-flash-lite | 是 | 是 |
@@ -30,6 +31,8 @@
 依据：[MiniMax 国内图片协议](https://platform.minimax.cn/docs/api-reference/text-openai-api)、[Kimi Code 原生视觉](https://www.kimi.com/code/docs/en/third-party-tools/hermes.html)、[OpenAI PDF输入](https://developers.openai.com/api/docs/guides/file-inputs)、[Anthropic当前模型](https://platform.claude.com/docs/en/models/overview)和[PDF合同](https://platform.claude.com/docs/en/build-with-claude/pdf-support)、[Gemini 2.5 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-pro)与[文档理解](https://ai.google.dev/gemini-api/docs/document-processing)。集合需随明确验证更新，不按型号名称前缀猜测。
 
 精确图片型号与快照依据官方 [GPT-4o](https://developers.openai.com/api/docs/models/gpt-4o)、[GPT-4.1](https://developers.openai.com/api/docs/models/gpt-4.1)、[GPT-4.1 mini](https://developers.openai.com/api/docs/models/gpt-4.1-mini)、[GPT-4.1 nano](https://developers.openai.com/api/docs/models/gpt-4.1-nano)、[GPT-4 Turbo](https://developers.openai.com/api/docs/models/gpt-4-turbo) 和 [Gemini 2.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-lite) 页面；Flash-Lite 还明确列出 PDF 输入。
+
+仍提供服务的 Claude 图片型号与4.5别名依据官方[生命周期表](https://platform.claude.com/docs/en/about-claude/model-deprecations)、[型号规则](https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions)及其链接的 legacy 型号页面；4.5使用200K上下文门禁，所列4.6及以后legacy型号使用1M。Sonnet 4.5在公告的2026-11-30退役前仍提供服务；不补入已退役4/4.1/3.x或需专门访问资格的Mythos型号，新增legacy组合的原生PDF能力仍单独保守处理。
 
 ## 只读工具
 

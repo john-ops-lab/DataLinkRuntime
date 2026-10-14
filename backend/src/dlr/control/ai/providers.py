@@ -399,6 +399,23 @@ _OPENAI_NATIVE_IMAGE_MODELS = _OPENAI_NATIVE_PDF_MODELS | frozenset(
         "gpt-4-turbo-2024-04-09",
     }
 )
+# Served legacy Claude IDs and the documented 4.5 aliases. Context limits come
+# from each official model page; retired 4/4.1/3.x IDs are intentionally absent.
+_ANTHROPIC_IMAGE_ONLY_WINDOWS = {
+    "claude-opus-4-5": 200000,
+    "claude-opus-4-5-20251101": 200000,
+    "claude-sonnet-4-5": 200000,
+    "claude-sonnet-4-5-20250929": 200000,
+    "claude-haiku-4-5": 200000,
+    "claude-haiku-4-5-20251001": 200000,
+    "claude-opus-4-6": 1000000,
+    "claude-sonnet-4-6": 1000000,
+    "claude-opus-4-7": 1000000,
+    "claude-opus-4-8": 1000000,
+    "claude-opus-5": 1000000,
+    "claude-sonnet-5": 1000000,
+    "claude-fable-5": 1000000,
+}
 
 
 def resolve_attachment_adapter(
@@ -458,8 +475,9 @@ def resolve_attachment_adapter(
             "claude-sonnet-5-5",
             "claude-haiku-5-5",
         }
+        image = image or setting.model in _ANTHROPIC_IMAGE_ONLY_WINDOWS
         multimodal_tools = image
-        window = 1000000 if image else None
+        window = _ANTHROPIC_IMAGE_ONLY_WINDOWS.get(setting.model, 1000000 if image else None)
     elif (
         secure
         and setting.provider == "gemini"

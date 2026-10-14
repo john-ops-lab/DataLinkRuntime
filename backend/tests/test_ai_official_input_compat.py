@@ -20,12 +20,28 @@ RESTORED_OPENAI_IDS = (
     "gpt-4-turbo",
     "gpt-4-turbo-2024-04-09",
 )
+RESTORED_ANTHROPIC_IDS = (
+    "claude-opus-4-5",
+    "claude-opus-4-5-20251101",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5-20250929",
+    "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+)
 
 
 @pytest.mark.parametrize(
     "provider,model,url",
     [
         *[("openai", model, "https://api.openai.com") for model in RESTORED_OPENAI_IDS],
+        *[("anthropic", model, "https://api.anthropic.com") for model in RESTORED_ANTHROPIC_IDS],
         ("gemini", "gemini-2.5-flash-lite", "https://generativelanguage.googleapis.com"),
     ],
 )
@@ -37,6 +53,11 @@ def test_documented_model_keeps_legacy_inline_pixels(api_client, monkeypatch, pr
 
     def upstream(*args, **kwargs):
         captured.append(args[3])
+        if provider == "anthropic":
+            return {
+                "content": [{"type": "text", "text": json.dumps(output)}],
+                "stop_reason": "end_turn",
+            }
         if provider == "gemini":
             return {
                 "candidates": [
@@ -65,6 +86,16 @@ def test_documented_model_keeps_legacy_inline_pixels(api_client, monkeypatch, pr
             if "inlineData" in part
         )
         assert pixels == {"mimeType": "image/png", "data": PNG}
+    elif provider == "anthropic":
+        assert captured[0]["model"] == model and "response_format" not in captured[0]
+        pixels = next(
+            part["source"]
+            for message in captured[0]["messages"]
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if part.get("type") == "image"
+        )
+        assert pixels == {"type": "base64", "media_type": "image/png", "data": PNG}
     else:
         assert captured[0]["model"] == model
         pixels = next(
@@ -143,3 +174,21 @@ def test_flash_lite_native_pdf_uses_documented_inline_transport():
         "mimeType": "application/pdf",
         "data": item.data_base64,
     }
+
+
+@pytest.mark.parametrize("model", RESTORED_ANTHROPIC_IDS)
+def test_served_anthropic_image_ids_keep_their_verified_window(model):
+    draft = AiSettingDraft(provider="anthropic", model=model, base_url="https://api.anthropic.com")
+    adapter = providers.resolve_attachment_adapter(draft, providers.get_provider("anthropic"))
+    assert adapter.images_native and adapter.multimodal_tool_results
+    assert not adapter.native_pdf and adapter.structured_output == "prompt_only"
+    assert adapter.context_window_tokens == (200000 if "-4-5" in model else 1000000)
+
+
+@pytest.mark.parametrize(
+    "model", ["claude-opus-4-1-20250805", "claude-sonnet-4-20250514", "claude-haiku-4-5-20990101"]
+)
+def test_retired_or_invented_anthropic_ids_are_not_added(model):
+    draft = AiSettingDraft(provider="anthropic", model=model, base_url="https://api.anthropic.com")
+    adapter = providers.resolve_attachment_adapter(draft, providers.get_provider("anthropic"))
+    assert not adapter.images_native and adapter.capability_source == "unknown"

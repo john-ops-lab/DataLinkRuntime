@@ -19,6 +19,7 @@ The narrow documented set is:
 | MiniMax Chat, api.minimax.cn / api.minimax.io root or /v1 | MiniMax-M3 | Yes | Unconfirmed |
 | Kimi Code Chat, api.kimi.com / api.kimi.ai /coding or /coding/v1 | k3; k3-256k | Yes | Unconfirmed |
 | Anthropic Messages, api.anthropic.com root or /v1 | claude-fable-5-1; claude-opus-5-5; claude-sonnet-5-5; claude-haiku-5-5 | Yes | Yes |
+| Same Anthropic endpoint | claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5 and their 20251101/20250929/20251001 snapshots; claude-opus-4-6, claude-sonnet-4-6, claude-opus-4-7, claude-opus-4-8, claude-opus-5, claude-sonnet-5, claude-fable-5 | Yes | Not independently established |
 | Gemini generateContent, generativelanguage.googleapis.com root or /v1beta | gemini-2.5-pro | Yes | Yes |
 | Same Gemini endpoint | gemini-2.5-flash | Yes | Not independently established |
 | Same Gemini endpoint | gemini-2.5-flash-lite | Yes | Yes |
@@ -30,6 +31,8 @@ Image input, native PDF and strict structured output are separate capabilities. 
 Sources: [MiniMax image protocol](https://platform.minimax.cn/docs/api-reference/text-openai-api), [Kimi Code vision](https://www.kimi.com/code/docs/en/third-party-tools/hermes.html), [OpenAI file inputs](https://developers.openai.com/api/docs/guides/file-inputs), [current Claude models](https://platform.claude.com/docs/en/models/overview) and [PDF support](https://platform.claude.com/docs/en/build-with-claude/pdf-support), [Gemini 2.5 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-pro) and [document understanding](https://ai.google.dev/gemini-api/docs/document-processing). Update explicit evidence rather than guessing capabilities from model prefixes.
 
 Exact image IDs and snapshots are documented in the official [GPT-4o](https://developers.openai.com/api/docs/models/gpt-4o), [GPT-4.1](https://developers.openai.com/api/docs/models/gpt-4.1), [GPT-4.1 mini](https://developers.openai.com/api/docs/models/gpt-4.1-mini), [GPT-4.1 nano](https://developers.openai.com/api/docs/models/gpt-4.1-nano), [GPT-4 Turbo](https://developers.openai.com/api/docs/models/gpt-4-turbo) and [Gemini 2.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-lite) pages; Flash-Lite explicitly lists PDF input as well.
+
+The [Claude lifecycle table](https://platform.claude.com/docs/en/about-claude/model-deprecations), [model IDs](https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions) and linked legacy model pages establish served image-capable IDs and 4.5 aliases. Claude 4.5 uses a 200K context guard; the listed 4.6 and later legacy models use 1M. Sonnet 4.5 remains served until its announced November 30, 2026 retirement. Retired 4/4.1/3.x IDs and specialized restricted-access Mythos models are not added. Native PDF remains separately unconfirmed for the added legacy combinations.
 
 ## Read-only tools
 
