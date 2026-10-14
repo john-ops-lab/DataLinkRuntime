@@ -39,3 +39,5 @@ These checks do not replace real Chrome, the selected Vision model, Candidate/Di
 ## Rollback
 
 Stop new attachment operations, cancel active jobs and release this feature's temporary assets. Remove the overlay and converter URL before reverting the app/services. Never remove business database or Managed Input volumes, tokens, Master Key or historical logs.
+
+Text and code use the exact existing attachment MIME/extension whitelist. Strict UTF-8 original text is split into 64Ki-character chunks with 1-based page identities; prepare reads only the first chunk and later reads can reach the final chunk without truncating the stored source. Character offsets are zero-based and end-exclusive. `text`/`both` return original text with `source_origin=original_text`; no code executes and no image/PDF is invented. Image/PDF views are unsupported. Invalid UTF-8/NUL, empty text and source size overflow retain explicit errors.

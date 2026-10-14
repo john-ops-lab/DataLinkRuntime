@@ -145,6 +145,7 @@ KNOWN_ERROR_CODES = frozenset(
         "ai_attachment_cancelled",
         "ai_attachment_parse_timeout",
         "ai_attachment_parse_failed",
+        "ai_attachment_no_text",
         "ai_attachment_unsafe_archive",
         "ai_attachment_range_exceeded",
         "ai_attachment_sheet_not_found",

@@ -21,6 +21,56 @@ MAX_PAGES = 200
 MAX_PIXELS = 16_000_000
 MAX_MEDIA = 10 * 1024 * 1024
 
+MAX_TEXT_PAGE_CHARS = 64 * 1024
+# Mirrors attachments.py's existing text/code contract; parity is regression-tested.
+TEXT_EXTENSIONS = frozenset(
+    {
+        "txt",
+        "md",
+        "markdown",
+        "csv",
+        "json",
+        "yaml",
+        "yml",
+        "xml",
+        "toml",
+        "ini",
+        "conf",
+        "cfg",
+        "properties",
+        "env",
+        "py",
+        "js",
+        "mjs",
+        "cjs",
+        "ts",
+        "tsx",
+        "jsx",
+        "go",
+        "rs",
+        "java",
+        "kt",
+        "sh",
+        "bash",
+        "sql",
+        "html",
+        "css",
+    }
+)
+TEXT_MIME_EXTENSIONS = {
+    "text/plain": TEXT_EXTENSIONS,
+    "application/octet-stream": TEXT_EXTENSIONS,
+    "text/markdown": frozenset({"md", "markdown"}),
+    "text/csv": frozenset({"csv"}),
+    "application/json": frozenset({"json"}),
+    "text/x-yaml": frozenset({"yaml", "yml"}),
+    "application/x-yaml": frozenset({"yaml", "yml"}),
+    "text/xml": frozenset({"xml"}),
+    "application/xml": frozenset({"xml"}),
+    "text/javascript": frozenset({"js", "mjs", "cjs"}),
+    "application/javascript": frozenset({"js", "mjs", "cjs"}),
+}
+
 
 class ConversionError(Exception):
     def __init__(self, code):
@@ -387,11 +437,73 @@ def read_pdf_page(pdf, page_number, use_ocr, extract_structure=True):
     return asset, data, warnings
 
 
+def text_document(source, request, extension):
+    """Read original UTF-8 character chunks; never parse or execute source code."""
+    content_type = str(request.get("content_type", "text/plain")).split(";", 1)[0].strip().lower()
+    if extension[1:] not in TEXT_MIME_EXTENSIONS.get(content_type, frozenset()):
+        raise ConversionError("ai_attachment_type_unsupported")
+    if request["operation"] not in {"prepare", "read-page"}:
+        raise ConversionError("ai_attachment_type_unsupported")
+    view = request.get("view", "both")
+    if view in {"image", "pdf"}:
+        raise ConversionError("ai_attachment_type_unsupported")
+    if view not in {"text", "both"}:
+        raise ConversionError("ai_attachment_invalid")
+    try:
+        text = source.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ConversionError("ai_attachment_parse_failed") from None
+    if "\x00" in text:
+        raise ConversionError("ai_attachment_parse_failed")
+    if not text.strip():
+        raise ConversionError("ai_attachment_no_text")
+    count = (len(text) + MAX_TEXT_PAGE_CHARS - 1) // MAX_TEXT_PAGE_CHARS
+    number = 1 if request["operation"] == "prepare" else request.get("page", 1)
+    if type(number) is not int or not 1 <= number <= count:
+        raise ConversionError("ai_attachment_page_not_found")
+    start = (number - 1) * MAX_TEXT_PAGE_CHARS
+    end = min(start + MAX_TEXT_PAGE_CHARS, len(text))
+    result = base_result(source)
+    result.update(
+        page_count=count,
+        pages=[
+            dict(
+                page=page,
+                status="ready" if page == number else "available",
+                structure_status="original_text",
+            )
+            for page in range(1, count + 1)
+        ],
+        data=dict(
+            page=number,
+            text=text[start:end],
+            text_origin="original_text",
+            source_origin="original_text",
+            char_start=start,
+            char_end=end,
+            total_chars=len(text),
+            chunk_chars=MAX_TEXT_PAGE_CHARS,
+        ),
+        coverage=dict(
+            pages="success" if count == 1 else "partial",
+            read_pages=1,
+            total_pages=count,
+            unread_pages=count - 1,
+            structure="original_text",
+            visual="not_applicable",
+            ocr="not_applicable",
+        ),
+    )
+    return result
+
+
 def dispatch(request):
     source = decode(request["data_base64"])
     result = base_result(source)
     extension = Path(request["filename"]).suffix.lower()
     operation = request["operation"]
+    if extension[1:] in TEXT_EXTENSIONS:
+        return text_document(source, request, extension)
     result["warnings"].extend(request.get("office_warnings", []))
     if extension not in {
         ".pdf",

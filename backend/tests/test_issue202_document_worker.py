@@ -245,3 +245,107 @@ def test_generated_media_obeys_reader_pixel_and_byte_limits(pixels, size, error)
         asset = processor.png_asset(EncodedImage())
         assert asset["width"] * asset["height"] == processor.MAX_PIXELS
         assert asset["size_bytes"] == processor.MAX_MEDIA
+
+
+def test_text_contract_matches_all_existing_text_and_code_mime_extensions() -> None:
+    from dlr.control.ai import attachments
+
+    text_types = {
+        content_type: extensions
+        for content_type, extensions in attachments.MIME_EXTENSIONS.items()
+        if content_type
+        not in {
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "application/pdf",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+    }
+    assert text_types == processor.TEXT_MIME_EXTENSIONS
+    for content_type, extensions in text_types.items():
+        for extension in extensions:
+            source = '原件\r\nprint("do not execute")'.encode()
+            result = processor.dispatch(
+                dict(
+                    operation="prepare",
+                    filename=f"source.{extension}",
+                    content_type=content_type,
+                    data_base64=base64.b64encode(source).decode(),
+                )
+            )
+            assert result["page_count"] == 1
+            assert result["data"]["text"] == source.decode()
+            assert result["data"]["source_origin"] == "original_text"
+            assert result["assets"] == []
+
+
+def test_text_directory_can_read_exact_last_chunk_and_preserves_source_hash() -> None:
+    import hashlib
+
+    text = "中文\r\n" * 40000 + "FINAL_SOURCE_SENTINEL"
+    source = text.encode()
+    request = dict(
+        filename="requirements.md",
+        content_type="text/markdown",
+        data_base64=base64.b64encode(source).decode(),
+    )
+    prepared = processor.dispatch(dict(request, operation="prepare"))
+    count = prepared["page_count"]
+    assert count > 2
+    assert [row["page"] for row in prepared["pages"]] == list(range(1, count + 1))
+    assert prepared["data"]["text"] == text[: 64 * 1024]
+    recovered = []
+    for page in range(1, count + 1):
+        result = processor.dispatch(dict(request, operation="read-page", page=page, view="both"))
+        assert result["source_sha256"] == hashlib.sha256(source).hexdigest()
+        assert len(result["data"]["text"]) <= 64 * 1024
+        assert result["data"]["char_start"] == (page - 1) * 64 * 1024
+        assert result["assets"] == []
+        recovered.append(result["data"]["text"])
+    assert "".join(recovered) == text
+    assert recovered[-1].endswith("FINAL_SOURCE_SENTINEL")
+
+
+@pytest.mark.parametrize(
+    "source,view,error",
+    [
+        (b"", "text", "ai_attachment_no_text"),
+        (b" \r\n", "text", "ai_attachment_no_text"),
+        (b"\xff", "text", "ai_attachment_parse_failed"),
+        (b"a\x00b", "text", "ai_attachment_parse_failed"),
+        (b"x", "image", "ai_attachment_type_unsupported"),
+        (b"x", "pdf", "ai_attachment_type_unsupported"),
+        (b"x" * (6 * 1024 * 1024 + 1), "text", "ai_attachment_too_large"),
+    ],
+)
+def test_text_errors_are_explicit_and_bounded(source, view, error) -> None:
+    with pytest.raises(processor.ConversionError, match=error):
+        processor.dispatch(
+            dict(
+                operation="read-page",
+                filename="source.py",
+                content_type="text/plain",
+                data_base64=base64.b64encode(source).decode(),
+                page=1,
+                view=view,
+            )
+        )
+
+
+def test_text_rejects_mime_mismatch_and_invalid_page() -> None:
+    request = dict(
+        operation="read-page",
+        filename="source.py",
+        content_type="application/json",
+        data_base64=base64.b64encode(b"print('source')").decode(),
+        page=1,
+    )
+    with pytest.raises(processor.ConversionError, match="type_unsupported"):
+        processor.dispatch(request)
+    request["content_type"] = "text/plain"
+    for page in (0, 2, True):
+        with pytest.raises(processor.ConversionError, match="page_not_found"):
+            processor.dispatch(dict(request, page=page))

@@ -49,3 +49,5 @@ XLSX 同时返回原始公式和原始缓存。缓存缺失保持 `null` 与 mis
 ## 回滚
 
 先停止新的 AI 附件请求，取消活动 job 并释放本功能临时附件；移除附加 Compose 清单和 Control 转换 URL 后回退应用/组件。只清理本功能临时资产，不删除业务 PostgreSQL/Managed Input 卷、Token、Master Key 或历史日志。
+
+文本与代码复用原附件 MIME/扩展名白名单，严格按 UTF-8 原件读取，每段最多 64Ki 字符并保留 1-based 段页目录。prepare 只返回首段，后续可按页读取到末段，不截断原件；字符偏移从 0 开始，结束偏移不包含在段中。`text/both` 返回 `source_origin=original_text` 的原文，不执行代码，不生成伪图/PDF；image/pdf 视图明确不支持。非法 UTF-8/NUL、空文本及原件超限继续返回明确错误。
