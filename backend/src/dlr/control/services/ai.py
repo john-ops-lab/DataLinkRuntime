@@ -102,6 +102,9 @@ class _AssistToolState:
     request_id: str
     conversation_id: str
     format_corrections: int = 0
+    # Only the server fallback helper may mark a result safe to return after
+    # the deadline. A tool stop or a provider's candidate:null is insufficient.
+    server_fallback_returned: bool = False
     tool_rounds: int = 0
     total_tool_calls: int = 0
     consecutive_failures: int = 0
@@ -1467,14 +1470,18 @@ def _fallback_assist_response(
     stop_reason: str,
     draft: AiSettingDraft,
     tool_calls: list[AiToolCallSummary],
+    *,
+    state: _AssistToolState,
 ) -> AiAssistResponse:
-    return AiAssistResponse(
+    response = AiAssistResponse(
         message=_fallback_message(system_locale, stop_reason, tool_calls),
         candidate=None,
         provider=draft.provider,
         model=draft.model,
         tool_calls=tool_calls,
     )
+    state.server_fallback_returned = True
+    return response
 
 
 def _transparent_knowledge_message(
@@ -1772,10 +1779,14 @@ def _finalize_after_tool_stop(
         # With no usable tool result there is no evidence from which a safe
         # Candidate can be produced. A transparent server-owned response is
         # stronger than asking the model to guess after repeated failures.
-        return _fallback_assist_response(system_locale, state.stop_reason, draft, executed_tools)
+        return _fallback_assist_response(
+            system_locale, state.stop_reason, draft, executed_tools, state=state
+        )
     remaining = state.remaining_total_seconds()
     if remaining <= 0:
-        return _fallback_assist_response(system_locale, state.stop_reason, draft, executed_tools)
+        return _fallback_assist_response(
+            system_locale, state.stop_reason, draft, executed_tools, state=state
+        )
     messages.append(
         {
             "role": "system",
@@ -1802,10 +1813,14 @@ def _finalize_after_tool_stop(
     if omitted_materials is not None:
         omitted_materials[0] += budget.omitted_materials
     if not budget.fits:
-        return _fallback_assist_response(system_locale, _STOP_CONTEXT_BUDGET, draft, executed_tools)
+        return _fallback_assist_response(
+            system_locale, _STOP_CONTEXT_BUDGET, draft, executed_tools, state=state
+        )
     remaining = state.remaining_total_seconds()
     if remaining <= 0:
-        return _fallback_assist_response(system_locale, _STOP_DEADLINE, draft, executed_tools)
+        return _fallback_assist_response(
+            system_locale, _STOP_DEADLINE, draft, executed_tools, state=state
+        )
     try:
         final_content, tool_calls = _call_provider_with_audit(
             draft,
@@ -1837,7 +1852,9 @@ def _finalize_after_tool_stop(
             and error.code == "ai_response_invalid"
         ):
             audit.record_response_failure(error.stage, error.reason)
-        return _fallback_assist_response(system_locale, state.stop_reason, draft, executed_tools)
+        return _fallback_assist_response(
+            system_locale, state.stop_reason, draft, executed_tools, state=state
+        )
     if knowledge_state is not None and knowledge_state.has_search_evidence:
         output = AiModelOutput(
             message=_knowledge_evidence_message(system_locale, output.message, knowledge_state),
@@ -1860,7 +1877,9 @@ def _finalize_after_tool_stop(
             candidate=None,
         )
     if state.remaining_total_seconds() <= 0:
-        return _fallback_assist_response(system_locale, _STOP_DEADLINE, draft, executed_tools)
+        return _fallback_assist_response(
+            system_locale, _STOP_DEADLINE, draft, executed_tools, state=state
+        )
     return _assist_response(output, draft, executed_tools)
 
 
@@ -2350,7 +2369,9 @@ def assist(
         response = _assist_impl(
             session, adapter_id, payload, audit, state, attachment_reader=attachment_reader
         )
-        if state.remaining_total_seconds() <= 0:
+        if state.remaining_total_seconds() <= 0 and not (
+            state.server_fallback_returned and response.candidate is None
+        ):
             _raise_provider_error(providers.AiProviderError("ai_timeout"))
     except Exception as error:
         if isinstance(error, AiResponseInvalid):
