@@ -1,6 +1,7 @@
 """Authorization, immutable identity, bounded lifetime and real store accounting."""
 
 import base64
+import errno
 import hashlib
 import shutil
 import threading
@@ -136,6 +137,56 @@ def prepared(store, scope=None):
         }
     )
     return scope, result, ref
+
+
+@pytest.mark.parametrize("failure_stage", ["owner_marker", "orphan_cleanup"])
+def test_initialization_io_failure_releases_owner_and_allows_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_stage: str
+) -> None:
+    root = tmp_path / "owned"
+    root.mkdir()
+    unrelated = root / "instance-unrelated"
+    unrelated.mkdir()
+    (unrelated / "preserve.txt").write_text("not an owned attachment namespace")
+    orphan = root / "instance-orphan"
+    if failure_stage == "orphan_cleanup":
+        orphan.mkdir()
+        (orphan / ".dlr-ai-owner.json").write_text('{"schema":"dlr-ai-ephemeral-v1"}')
+    original_write = Path.write_text
+    original_remove = shutil.rmtree
+
+    def failed_write(path: Path, *args, **kwargs):
+        if path.name == ".dlr-ai-owner.json":
+            raise OSError(errno.ENOSPC, "simulated disk full")
+        return original_write(path, *args, **kwargs)
+
+    def failed_remove(path: Path, *args, **kwargs):
+        if path == orphan:
+            raise PermissionError("simulated temporary cleanup failure")
+        return original_remove(path, *args, **kwargs)
+
+    with monkeypatch.context() as faults:
+        if failure_stage == "owner_marker":
+            faults.setattr(Path, "write_text", failed_write)
+        else:
+            faults.setattr(shutil, "rmtree", failed_remove)
+        with pytest.raises(DocumentConversionError, match="ai_attachment_store_unavailable"):
+            AiAttachmentStore(root, Converter())
+
+    # Retrying in the same process must acquire ownership without a Control restart.
+    recovered = AiAttachmentStore(root, Converter())
+    try:
+        scope = uuid4()
+        result = recovered.prepare(
+            ("account", 1), 10, scope, attachment(), deadline=time.monotonic() + 5
+        )
+        actual = recovered.get(("account", 1), 10, scope, result.attachment_ref)
+        assert actual.sha256 == result.sha256
+        assert not orphan.exists()
+        assert set(root.glob("instance-*")) == {unrelated, recovered.directory}
+        assert (unrelated / "preserve.txt").read_text() == "not an owned attachment namespace"
+    finally:
+        recovered.close()
 
 
 def test_public_directory_never_contains_binary_paths_or_extracted_content(store) -> None:

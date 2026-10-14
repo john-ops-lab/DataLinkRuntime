@@ -20,7 +20,7 @@ import stat
 import threading
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -142,36 +142,50 @@ class AiAttachmentStore:
         self._used_bytes = 0
         self._active = threading.BoundedSemaphore(MAX_ACTIVE_OPERATIONS)
         self._pending = threading.BoundedSemaphore(MAX_PENDING_OPERATIONS)
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if root.is_symlink():
-            raise _error("ai_attachment_store_unavailable")
-        root.chmod(0o700)
-        self._owner_fd = os.open(root / "owner.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        owner_fd: int | None = None
+        created_directory: Path | None = None
         try:
-            fcntl.flock(self._owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(self._owner_fd)
-            raise _error("ai_attachment_store_busy") from None
-        # Only this function's marked, inactive namespace is eligible for orphan cleanup.
-        for child in root.glob("instance-*"):
-            marker = child / ".dlr-ai-owner.json"
-            if (
-                child.is_dir()
-                and not child.is_symlink()
-                and marker.is_file()
-                and not marker.is_symlink()
-            ):
-                try:
-                    owned = json.loads(marker.read_text()) == {"schema": "dlr-ai-ephemeral-v1"}
-                except (OSError, ValueError):
-                    owned = False
-                if owned:
-                    shutil.rmtree(child)
-        self.directory = root / ("instance-" + secrets.token_hex(16))
-        self.directory.mkdir(mode=0o700)
-        marker = self.directory / ".dlr-ai-owner.json"
-        marker.write_text('{"schema":"dlr-ai-ephemeral-v1"}')
-        marker.chmod(0o600)
+            root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if root.is_symlink():
+                raise _error("ai_attachment_store_unavailable")
+            root.chmod(0o700)
+            owner_fd = os.open(root / "owner.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            try:
+                fcntl.flock(owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise _error("ai_attachment_store_busy") from None
+            # Only this function's marked, inactive namespace is eligible for orphan cleanup.
+            for child in root.glob("instance-*"):
+                marker = child / ".dlr-ai-owner.json"
+                if (
+                    child.is_dir()
+                    and not child.is_symlink()
+                    and marker.is_file()
+                    and not marker.is_symlink()
+                ):
+                    try:
+                        owned = json.loads(marker.read_text()) == {"schema": "dlr-ai-ephemeral-v1"}
+                    except (OSError, ValueError):
+                        owned = False
+                    if owned:
+                        shutil.rmtree(child)
+            self.directory = root / ("instance-" + secrets.token_hex(16))
+            self.directory.mkdir(mode=0o700)
+            created_directory = self.directory
+            marker = self.directory / ".dlr-ai-owner.json"
+            marker.write_text('{"schema":"dlr-ai-ephemeral-v1"}')
+            marker.chmod(0o600)
+        except Exception as error:
+            # A failed constructor never transfers ownership to the store singleton.
+            if created_directory is not None:
+                with suppress(OSError):
+                    shutil.rmtree(created_directory)
+            if owner_fd is not None:
+                os.close(owner_fd)
+            if isinstance(error, OSError):
+                raise _error("ai_attachment_store_unavailable") from None
+            raise
+        self._owner_fd = owner_fd
 
     def _scope(self, owner: Owner, adapter_id: int, scope_id: UUID | str) -> Scope:
         return owner, adapter_id, str(scope_id)
