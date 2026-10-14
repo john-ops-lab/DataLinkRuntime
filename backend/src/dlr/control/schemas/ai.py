@@ -461,6 +461,7 @@ class AiContextSnippet(_StrictSchema):
 
 
 class AiAssistRequest(_StrictSchema):
+    task_intent: Literal["auto", "consultation", "code_change"] = "auto"
     # Browser-generated, request-only correlation metadata. It is neither an
     # authentication token nor persisted conversation state. Older clients
     # may omit it and receive a request-scoped server fallback for auditing.
@@ -563,6 +564,7 @@ class AiModelOutput(_StrictSchema):
 
     message: str
     candidate: AiCandidate | None
+    request_intent: Literal["consultation", "code_change"] | None = None
 
     @field_validator("message")
     @classmethod
@@ -609,6 +611,9 @@ class AiAssistResponse(AiModelOutput):
 
     provider: AiProvider
     model: str
+    task_status: Literal["answered", "candidate_ready", "incomplete", "unclassified"] = (
+        "unclassified"
+    )
     # M5.7 Wave C1: sanitized Tool execution summaries (empty for rounds that
     # never called a tool, keeping the pre-C1 response shape compatible).
     tool_calls: list[AiToolCallSummary] = Field(default_factory=list)

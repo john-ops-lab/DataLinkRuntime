@@ -158,6 +158,7 @@ interface AssistRoundSnapshot {
 }
 
 interface VisibleMessage {
+  taskStatus?: "answered" | "candidate_ready" | "incomplete" | "unclassified";
   id: number;
   role: "user" | "assistant";
   content: string;
@@ -1175,6 +1176,7 @@ async function resolveComposerAttachment(
         id: nextMessageId.current++,
         role: "assistant",
         content: response.message,
+        taskStatus: response.task_status,
         snapshot: null,
         // M5.7 Wave C1: sanitized Tool execution summaries (empty when the
         // round never called a tool — the pre-C1 response shape stays
@@ -1798,6 +1800,13 @@ async function resolveComposerAttachment(
                           tools: { Fallback: DlrToolCallUI },
                         }}
                       />
+                      {message.role === "assistant" &&
+                        (message.taskStatus === "incomplete" || message.taskStatus === "unclassified") && (
+                          <p role="status" data-testid="ai-task-status">
+                            {t(message.taskStatus === "incomplete"
+                              ? "assistant.taskIncomplete" : "assistant.taskUnclassified")}
+                          </p>
+                        )}
                       {message.role === "user" && message.snapshot !== null &&
                         message.snapshot.attachmentNames.length > 0 && (
                           <div className="ai-message-attachments" data-testid="ai-message-attachments">
@@ -1968,6 +1977,8 @@ async function resolveComposerAttachment(
             {panelError !== null && (
               <p className="ai-panel-error" role="alert" data-testid="ai-panel-error">
                 {panelError}
+                <br />
+                <span data-testid="ai-recovery-hint">{t("assistant.recoveryHint")}</span>
               </p>
             )}
             {/* M5.7 Wave B3: the composer attachment surface (dropzone, file

@@ -74,7 +74,13 @@ def test_invalid_response_has_fixed_failure_layer_without_sensitive_content(
         assert marker not in serialized and "unexpected-secret-name" not in serialized
         records = [json.loads(line) for line in serialized.splitlines()]
         failures = [record for record in records if record["event_type"] == "response_validation"]
-        assert len(failures) == 1
+        corrected = stage in {"final_json", "output_schema"}
+        assert len(failures) == (2 if corrected else 1)
+        if corrected:
+            assert failures[1]["provider_call_index"] == 2
+            assert failures[1]["stage"] == stage
+            corrections = [r for r in records if r["event_type"] == "format_correction"]
+            assert len(corrections) == 1 and corrections[0]["correction_count"] == 1
         assert failures[0]["stage"] == stage and failures[0]["reason"] == reason
         assert failures[0]["provider_call_index"] == 1
         assert failures[0]["request_id"] == records[-1]["request_id"]

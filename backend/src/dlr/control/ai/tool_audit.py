@@ -183,6 +183,8 @@ class AiToolAuditTrail:
         outcome: Literal["final", "tool_calls", "error"],
         duration_ms: int,
         remaining_ms: int,
+        strategy: str | None = None,
+        correction_count: int = 0,
         error_code: str | None = None,
         stage: FailureStage | None = None,
         reason: FailureReason | None = None,
@@ -192,6 +194,8 @@ class AiToolAuditTrail:
                 **self._base_record("provider_result"),
                 "provider_call_index": self.provider_checked_calls,
                 "outcome": outcome,
+                "strategy": _safe_code_value(strategy),
+                "correction_count": min(1, max(0, correction_count)),
                 "duration_ms": max(0, duration_ms),
                 "remaining_ms": max(0, remaining_ms),
                 "error_code": _safe_code_value(error_code),
@@ -200,11 +204,28 @@ class AiToolAuditTrail:
             }
         )
 
-    def record_response_failure(self, stage: FailureStage, reason: FailureReason) -> None:
+    def record_format_correction(self, *, strategy: str, correction_count: int) -> None:
+        _emit_record(
+            {
+                **self._base_record("format_correction"),
+                "provider_call_index": self.provider_checked_calls,
+                "strategy": _safe_code_value(strategy),
+                "correction_count": min(1, max(0, correction_count)),
+                "elapsed_ms": max(0, int((time.monotonic() - self.started_at) * 1000)),
+            }
+        )
+
+    def record_response_failure(
+        self, stage: FailureStage, reason: FailureReason, *, provider_call_index: int | None = None
+    ) -> None:
         _emit_record(
             {
                 **self._base_record("response_validation"),
-                "provider_call_index": self.provider_checked_calls,
+                "provider_call_index": (
+                    self.provider_checked_calls
+                    if provider_call_index is None
+                    else provider_call_index
+                ),
                 "stage": stage,
                 "reason": reason,
                 "error_code": "ai_response_invalid",

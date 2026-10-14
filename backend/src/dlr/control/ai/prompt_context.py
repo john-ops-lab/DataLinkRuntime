@@ -41,6 +41,7 @@ class PromptContext:
     saved_managed_input: Mapping[str, object] | None
     tools_enabled: bool
     knowledge_search_enabled: bool
+    task_intent: str = "auto"
 
     def __post_init__(self) -> None:
         """Seal nested caller-owned values even when constructed directly."""
@@ -100,6 +101,7 @@ class PromptContext:
                 Mapping[str, object], _freeze(payload.working_copy.model_dump(mode="json"))
             ),
             message=payload.message,
+            task_intent=payload.task_intent,
             recent_messages=tuple(
                 cast(Mapping[str, object], _freeze(item.model_dump(mode="json")))
                 for item in payload.recent_messages
