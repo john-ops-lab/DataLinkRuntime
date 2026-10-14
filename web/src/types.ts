@@ -947,6 +947,7 @@ export interface AiConversationMessage {
  * in memory for one mounted Adapter session and is never authentication or
  * persisted conversation state. */
 export interface AiAssistRequest {
+  task_intent?: "auto" | "consultation" | "code_change";
   conversation_id: string;
   message: string;
   working_copy: {
@@ -973,6 +974,8 @@ export interface AiContextSnippet {
 }
 
 export interface AiAssistResponse {
+  request_intent?: "consultation" | "code_change" | null;
+  task_status?: "answered" | "candidate_ready" | "incomplete" | "unclassified";
   message: string;
   candidate: AiCandidate | null;
   provider: AiProvider;

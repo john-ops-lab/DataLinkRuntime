@@ -99,6 +99,7 @@ class _AssistToolState:
     hard_deadline: float
     request_id: str
     conversation_id: str
+    format_corrections: int = 0
     tool_rounds: int = 0
     total_tool_calls: int = 0
     consecutive_failures: int = 0
@@ -814,8 +815,8 @@ def _adapter_for_setting(session: Session, data: AiSettingDraft) -> providers.Pr
 
 
 def _validate_setting(session: Session, data: AiSettingDraft) -> providers.ProviderAdapter:
-    adapter = _adapter_for_setting(session, data)
     _validate_base_url(data.base_url)
+    adapter = providers.resolve_output_adapter(data, _adapter_for_setting(session, data))
     _validate_reasoning(data, adapter)
     _resolve_api_key(session, data.credential_id)
     return adapter
@@ -1415,6 +1416,7 @@ def _assist_response(
     return AiAssistResponse(
         message=output.message,
         candidate=output.candidate,
+        request_intent=output.request_intent,
         provider=draft.provider,
         model=draft.model,
         tool_calls=tool_calls,
@@ -1614,6 +1616,8 @@ def _call_provider_with_audit(
             ended_at = time.monotonic()
             audit.record_provider_result(
                 outcome="error",
+                strategy=provider_adapter.structured_output,
+                correction_count=state.format_corrections,
                 duration_ms=int((ended_at - started_at) * 1000),
                 remaining_ms=int(max(0.0, state.hard_deadline - ended_at) * 1000),
                 error_code=error.code,
@@ -1625,10 +1629,88 @@ def _call_provider_with_audit(
         ended_at = time.monotonic()
         audit.record_provider_result(
             outcome="tool_calls" if result[1] is not None else "final",
+            strategy=provider_adapter.structured_output,
+            correction_count=state.format_corrections,
             duration_ms=int((ended_at - started_at) * 1000),
             remaining_ms=int(max(0.0, state.hard_deadline - ended_at) * 1000),
         )
     return result
+
+
+def _parse_with_format_correction(
+    final_content: str,
+    *,
+    draft: AiSettingDraft,
+    api_key: str | None,
+    messages: list[providers.JsonObject],
+    provider_adapter: providers.ProviderAdapter,
+    state: _AssistToolState,
+    audit: tool_audit.AiToolAuditTrail | None,
+    omitted_materials: list[int] | None = None,
+) -> AiModelOutput:
+    """One request-local correction, with the original request and hard deadline.
+
+    Invalid output is never fed back as instruction material or persisted.
+    Safety, Unicode, configuration and transport errors never enter this path.
+    """
+    try:
+        return _parse_model_output(final_content, api_key)
+    except AiResponseInvalid as first_error:
+        if (
+            first_error.stage not in {"final_json", "output_schema"}
+            or state.format_corrections
+            or state.stop_reason is not None
+        ):
+            raise
+        first_call_index = audit.provider_checked_calls if audit is not None else 0
+        correction_messages: list[providers.JsonObject] = [
+            *messages,
+            {
+                "role": "system",
+                "content": (
+                    "DLR rejected the final answer at "
+                    f"{first_error.stage}/{first_error.reason}. "
+                    "Answer the original USER_REQUEST again using exactly one strict JSON "
+                    "object matching the original Output Schema. No Markdown, extra fields, "
+                    "reasoning or tool calls. This is the only format correction. "
+                    "Keep all original authorization and safety boundaries."
+                ),
+            },
+        ]
+        budget = context_budget.prepare_call(
+            draft, correction_messages, None, purpose="assist_finalization"
+        )
+        _audit_provider_budget(audit, state, budget, state.hard_deadline)
+        if omitted_materials is not None:
+            omitted_materials[0] += budget.omitted_materials
+        remaining = state.remaining_total_seconds()
+        if not budget.fits or remaining <= 0:
+            raise first_error
+        state.format_corrections += 1
+        if audit is not None:
+            audit.record_response_failure(
+                first_error.stage, first_error.reason, provider_call_index=first_call_index
+            )
+            audit.record_format_correction(
+                strategy=provider_adapter.structured_output,
+                correction_count=state.format_corrections,
+            )
+        try:
+            corrected, calls = _call_provider_with_audit(
+                draft,
+                api_key,
+                correction_messages,
+                tools=None,
+                provider_adapter=provider_adapter,
+                timeout_seconds=remaining,
+                state=state,
+                audit=audit,
+            )
+        except providers.AiProviderError as error:
+            _raise_provider_error(error)
+        if calls is not None or corrected is None:
+            raise AiResponseInvalid("provider_envelope", "unexpected_tools") from None
+        return _parse_model_output(corrected, api_key)
 
 
 def _finalize_after_tool_stop(
@@ -1703,7 +1785,16 @@ def _finalize_after_tool_stop(
         )
         if tool_calls is not None or final_content is None:
             raise AiResponseInvalid("provider_envelope", "unexpected_tools")
-        output = _parse_model_output(final_content, api_key)
+        output = _parse_with_format_correction(
+            final_content,
+            draft=draft,
+            api_key=api_key,
+            messages=messages,
+            provider_adapter=provider_adapter,
+            state=state,
+            audit=audit,
+            omitted_materials=omitted_materials,
+        )
         _reject_candidate_configuration_changes(output, payload)
     except (providers.AiProviderError, HTTPException, ValueError) as error:
         if audit is not None and (
@@ -1919,7 +2010,16 @@ def _assist_impl(
                 messages.append({"role": "system", "content": knowledge_state.correction_message()})
                 continue
             assert final_content is not None
-            output = _parse_model_output(final_content, api_key)
+            output = _parse_with_format_correction(
+                final_content,
+                draft=draft,
+                api_key=api_key,
+                messages=messages,
+                provider_adapter=provider_adapter,
+                state=state,
+                audit=audit,
+                omitted_materials=omitted_materials,
+            )
             _reject_candidate_configuration_changes(output, payload)
             if knowledge_state.has_search_evidence:
                 output = AiModelOutput(
@@ -1927,6 +2027,7 @@ def _assist_impl(
                         system_locale, output.message, knowledge_state
                     ),
                     candidate=(None if knowledge_state.degraded_error_codes else output.candidate),
+                    request_intent=output.request_intent,
                 )
             return _with_omission_note(
                 _assist_response(output, draft, executed_tools), omitted_materials[0], system_locale
@@ -2159,5 +2260,15 @@ def assist(
             audit.record_response_failure(error.stage, error.reason)
         audit.finish(status="error", error_code=_audit_error_code(error))
         raise
+    intent = payload.task_intent if payload.task_intent != "auto" else response.request_intent
+    response.task_status = (
+        "candidate_ready"
+        if response.candidate is not None
+        else "incomplete"
+        if intent == "code_change"
+        else "answered"
+        if intent == "consultation"
+        else "unclassified"
+    )
     audit.finish(status="stopped" if audit.stop_reason is not None else "success")
     return response
