@@ -119,7 +119,7 @@ def test_context_budget_does_not_admit_correction(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(AiResponseInvalid):
         ai._parse_with_format_correction(
             "{broken",
-            draft=_draft(),
+            draft=_draft().model_copy(update={"base_url": "https://unverified.invalid"}),
             api_key=None,
             messages=[
                 {"role": "system", "content": "Original system contract"},

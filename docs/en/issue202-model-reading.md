@@ -1,0 +1,50 @@
+# AI attachments: model capabilities and bounded reading
+
+The `issue202-multimodal-attachments` OpenSpec and attachment API define temporary identities and lifecycle. This document covers model reading; protocol and CI success do not establish real visual business acceptance.
+
+## Actual capability
+
+`selected` describes the current provider/model/protocol, images_native, native_pdf, capability_source and DLR max_request_bytes. The legacy providers catalog is a compatibility declaration, not verification of the selected combination. Refresh selected after changing settings.
+
+- `verified_model_endpoint`: documentation for an exact official combination; real local business acceptance is separate.
+- `custom_declared`: the administrator's custom image declaration. A files_native checkbox alone never enables native PDF.
+- `unknown`: no verified visual input contract for this combination. Text fallback cannot claim charts were seen.
+
+The narrow documented set is:
+
+| Official protocol/host/root | Models | Image | Native PDF |
+|---|---|---|---|
+| OpenAI Chat, api.openai.com root or /v1 | gpt-4o and 2024-08-06/2024-11-20 snapshots; gpt-4o-mini and 2024-07-18 snapshot; gpt-4.1; gpt-4.1-mini | Yes | Yes |
+| MiniMax Chat, api.minimax.cn / api.minimax.io root or /v1 | MiniMax-M3 | Yes | Unconfirmed |
+| Kimi Code Chat, api.kimi.com / api.kimi.ai /coding or /coding/v1 | k3; k3-256k | Yes | Unconfirmed |
+| Anthropic Messages, api.anthropic.com root or /v1 | claude-fable-5-1; claude-opus-5-5; claude-sonnet-5-5; claude-haiku-5-5 | Yes | Yes |
+| Gemini generateContent, generativelanguage.googleapis.com root or /v1beta | gemini-2.5-pro | Yes | Yes |
+| Same Gemini endpoint | gemini-2.5-flash | Yes | Not independently established |
+
+Matching requires HTTPS, the default TLS port, and exact provider, protocol, model and root. Unknown models or proxy subpaths do not inherit brand capabilities. DLR never changes the selected model, endpoint or protocol. Documented support does not guarantee account availability; upstream rejection remains an explicit failure.
+
+Sources: [MiniMax image protocol](https://platform.minimax.cn/docs/api-reference/text-openai-api), [Kimi Code vision](https://www.kimi.com/code/docs/en/third-party-tools/hermes.html), [OpenAI file inputs](https://developers.openai.com/api/docs/guides/file-inputs), [current Claude models](https://platform.claude.com/docs/en/models/overview) and [PDF support](https://platform.claude.com/docs/en/build-with-claude/pdf-support), [Gemini 2.5 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-pro) and [document understanding](https://ai.google.dev/gemini-api/docs/document-processing). Update explicit evidence rather than guessing capabilities from model prefixes.
+
+## Read-only tools
+
+- `list_attachments`: this frozen request's directory, page/sheet metadata and coverage. A directory is not evidence of reading the content.
+- `read_attachment_page(attachment_ref,page,view)`: one original 1-based page; view is text/image/both/pdf. PDF requires verified native_pdf; both combines available structure and real visual material. Blank pages retain their positions.
+- `read_attachment_sheet(attachment_ref,sheet,range)`: exact sheet and uppercase A1 range, at most 200 cells. Preserve raw values, formats, formula/cache provenance; never execute formulas or macros.
+
+Only requests with a scoped reader receive these tools. Arbitrary paths, URLs, shell, other scopes and business Managed Input blobs are inaccessible. The reader revalidates principal/Adapter/scope, original hash and representation revision at every read. Tools enforce the frozen whitelist, arguments and deadlines; media provenance must match the requested ref and original page/range.
+
+Existing tools retain a 10-second bound. Only read_attachment_page receives a separate maximum of 30 seconds for OCR/heavy reading. Actual time is the minimum of that bound, the remaining Assist deadline and tool-phase deadline. The converter receives this same limit and owns actual process cancellation/kill and cleanup; no deadline renewal is allowed.
+
+## Real transport and budgets
+
+Binary bodies live in internal AttachmentMedia objects, with MIME magic, size, SHA-256, image dimensions/pixels or trusted PDF page counts checked. They never enter ordinary tool JSON, browser summaries or audit bodies. A single-page derived PDF retains the original attachment_ref/page; its media hash identifies the derived bytes.
+
+OpenAI Chat tool messages accept text only: append all tool-call/results first, followed by server-associated provenance and real user image/file parts. Anthropic embeds image/document blocks inside tool_result. Current verified Gemini combinations use functionResponse followed by real user inlineData. Supplementary user media remains untrusted tool material and gains no user instruction authority. See [OpenAI tool message contract](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) and [Anthropic tool content blocks](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls).
+
+Initial, follow-up, finalization and one format-correction calls all recheck budgets. Images receive conservative visual reserves; PDFs use trusted page counts and byte estimates. Native output Schema contributes schema_tokens. Audit records contain safe numerical estimates, stages and strategies only. Actual payload_bytes uses final protocol JSON UTF-8 encoding, including base64, Schema and tool definitions. DLR currently caps request bodies at 32 MiB, below some upstream limits.
+
+Optional history, inline references and first-round media can be omitted as whole items, while directory references remain. Necessary follow-up tool-call/results and visuals remain intact; an oversized group fails with a stable budget error instead of deleting all necessary imagery and claiming visual reading succeeded. Truncated structure/cell data is explicitly partial and retains provenance. Original files and unselected pages/ranges remain available for subsequent bounded reads.
+
+Candidate/Diff/explicit Apply/Save/Run, strict JSON, Secret reflection, Unicode and configuration boundaries remain intact. Real image, digital/scanned PDF, XLSX and genuine XLS first-result visual/business acceptance is still independently required.
+
+Safe audit diagnostics include image_count, pdf_page_count and media_bytes; visual reserves stay in the corresponding message-token category and are not counted twice.

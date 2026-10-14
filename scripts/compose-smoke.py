@@ -1483,6 +1483,12 @@ budget_counters = {
     "omitted_history_messages",
     "omitted_reference_items",
     "omitted_images",
+    "schema_tokens",
+    "image_count",
+    "pdf_page_count",
+    "media_bytes",
+    "payload_bytes",
+    "max_payload_bytes",
     "provider_call_index",
     "elapsed_ms",
     "provider_deadline_ms",
@@ -1578,11 +1584,14 @@ def validate_provider_audit(record: dict[str, Any]) -> None:
                 "tool_definition_tokens",
                 "output_reserve_tokens",
                 "safety_reserve_tokens",
+                "schema_tokens",
             )
         ), record
-        assert (record["estimated_after_tokens"] <= record["window_tokens"]) == (
-            record["status"] == "prepared"
-        ), record
+        assert record["max_payload_bytes"] > 0, record
+        assert (
+            record["estimated_after_tokens"] <= record["window_tokens"]
+            and record["payload_bytes"] <= record["max_payload_bytes"]
+        ) == (record["status"] == "prepared"), record
         assert (
             record["remaining_ms"]
             <= record["provider_deadline_ms"]

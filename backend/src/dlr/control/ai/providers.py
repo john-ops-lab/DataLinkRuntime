@@ -17,6 +17,7 @@ from urllib import parse as url_parse
 from urllib import request as url_request
 
 from dlr.common.config import settings
+from dlr.control.ai.attachment_reading import AttachmentMedia
 from dlr.control.ai.diagnostics import FailureReason, FailureStage, StrictJsonError
 from dlr.control.schemas.ai import (
     AiModelOutput,
@@ -27,6 +28,7 @@ from dlr.control.schemas.ai import (
     contains_unicode_surrogate,
 )
 
+MAX_PROVIDER_REQUEST_BYTES = 32 * 1024 * 1024
 MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024
 
 JsonObject = dict[str, object]
@@ -94,6 +96,11 @@ class ProviderAdapter:
     # never assumed: only entries in this table enable provider-native input.
     images_native: bool = False
     files_native: bool = False
+    native_pdf: bool = False
+    capability_source: Literal["verified_model_endpoint", "custom_declared", "unknown"] = "unknown"
+    multimodal_tool_results: bool = False
+    max_request_bytes: int = MAX_PROVIDER_REQUEST_BYTES
+    context_window_tokens: int | None = None
     # Tool calling is enabled by default for every model/provider. A custom
     # provider may explicitly disable it when its compatible endpoint lacks
     # that capability.
@@ -239,6 +246,173 @@ def resolve_output_adapter(setting: AiSettingDraft, adapter: ProviderAdapter) ->
         # is an explicit limitation, not a claim that upstream rejects it.
         return replace(adapter, structured_output="prompt_only")
     return adapter
+
+
+def resolve_attachment_adapter(
+    setting: AiSettingDraft, adapter: ProviderAdapter
+) -> ProviderAdapter:
+    """Resolve actual input support; custom file flags remain declarations only."""
+    if setting.provider == "custom_openai_compatible":
+        return replace(
+            adapter,
+            native_pdf=False,
+            capability_source="custom_declared",
+            multimodal_tool_results=adapter.protocol == "anthropic" and adapter.images_native,
+        )
+    parts = url_parse.urlsplit(setting.base_url)
+    root = parts.path.rstrip("/")
+    secure = parts.scheme == "https" and parts.port in {None, 443}
+    image = pdf = multimodal_tools = False
+    window: int | None = None
+    if secure and adapter.protocol == "openai_compatible":
+        if (
+            setting.provider == "openai"
+            and parts.hostname == "api.openai.com"
+            and root in {"", "/v1"}
+            and setting.model
+            in {
+                "gpt-4o",
+                "gpt-4o-2024-08-06",
+                "gpt-4o-2024-11-20",
+                "gpt-4o-mini",
+                "gpt-4o-mini-2024-07-18",
+                "gpt-4.1",
+                "gpt-4.1-mini",
+            }
+        ):
+            image = pdf = True
+            window = 128000
+        elif (
+            setting.provider == "minimax"
+            and parts.hostname in {"api.minimax.cn", "api.minimax.io"}
+            and root in {"", "/v1"}
+        ):
+            image = setting.model == "MiniMax-M3"
+            window = 512000 if image else None
+        elif (
+            setting.provider == "kimi"
+            and parts.hostname in {"api.kimi.com", "api.kimi.ai"}
+            and root
+            in {
+                "/coding",
+                "/coding/v1",
+            }
+        ):
+            image = setting.model in {"k3", "k3-256k"}
+            window = 262144 if image else None
+    elif (
+        secure
+        and setting.provider == "anthropic"
+        and adapter.protocol == "anthropic"
+        and parts.hostname == "api.anthropic.com"
+        and root in {"", "/v1"}
+    ):
+        image = pdf = setting.model in {
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+        }
+        multimodal_tools = image
+        window = 1000000 if image else None
+    elif (
+        secure
+        and setting.provider == "gemini"
+        and adapter.protocol == "gemini"
+        and parts.hostname == "generativelanguage.googleapis.com"
+        and root in {"", "/v1beta"}
+    ):
+        image = setting.model in {"gemini-2.5-pro", "gemini-2.5-flash"}
+        pdf = setting.model == "gemini-2.5-pro"
+        window = 1048576 if image else None
+    return replace(
+        adapter,
+        images_native=image,
+        native_pdf=pdf,
+        capability_source="verified_model_endpoint" if image else "unknown",
+        multimodal_tool_results=multimodal_tools,
+        context_window_tokens=window,
+    )
+
+
+def media_content_parts(media: tuple[AttachmentMedia, ...]) -> list[JsonObject]:
+    """A provider-neutral internal part. Body bytes never join text results."""
+    return [{"type": "dlr_media", "media": item} for item in media]
+
+
+def _media_part(item: JsonObject, adapter: ProviderAdapter, protocol: Protocol) -> JsonObject:
+    media = item.get("media")
+    if not isinstance(media, AttachmentMedia):
+        raise AiProviderError("ai_response_invalid", stage="provider_envelope")
+    if media.content_type == "application/pdf":
+        if not adapter.native_pdf:
+            raise AiProviderError("ai_attachment_type_unsupported")
+        if protocol == "anthropic":
+            return {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": media.content_type,
+                    "data": media.data_base64,
+                },
+            }
+        if protocol == "gemini":
+            return {"inlineData": {"mimeType": media.content_type, "data": media.data_base64}}
+        return {
+            "type": "file",
+            "file": {
+                "filename": "attachment.pdf",
+                "file_data": f"data:application/pdf;base64,{media.data_base64}",
+            },
+        }
+    if not adapter.images_native:
+        raise AiProviderError("ai_attachment_image_unsupported")
+    if protocol == "anthropic":
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media.content_type,
+                "data": media.data_base64,
+            },
+        }
+    if protocol == "gemini":
+        return {"inlineData": {"mimeType": media.content_type, "data": media.data_base64}}
+    return {
+        "type": "image_url",
+        "image_url": {
+            "url": f"data:{media.content_type};base64,{media.data_base64}",
+            "detail": "default" if adapter.provider == "minimax" else "auto",
+        },
+    }
+
+
+def tool_result_messages(
+    call_id: str,
+    name: str,
+    content: str,
+    media: tuple[AttachmentMedia, ...],
+    adapter: ProviderAdapter,
+) -> tuple[JsonObject, JsonObject | None]:
+    """Keep all call/results complete before supplementary visual user messages."""
+    tool: JsonObject = {"role": "tool", "tool_call_id": call_id, "name": name, "content": content}
+    if adapter.protocol == "openai_compatible":
+        tool.pop("name")
+    if not media:
+        return tool, None
+    provenance = json.dumps(
+        {"tool_call_id": call_id, "sources": [item.source() for item in media]},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    parts: list[JsonObject] = [
+        {"type": "text", "text": "DLR_ATTACHMENT_TOOL_MATERIAL_V1\n" + provenance},
+        *media_content_parts(media),
+    ]
+    if adapter.multimodal_tool_results:
+        tool["content"] = [{"type": "text", "text": content}, *parts]
+        return tool, None
+    return tool, {"role": "user", "content": parts}
 
 
 def code_only_output_schema() -> JsonObject:
@@ -392,6 +566,23 @@ def _is_dns_resolution_failure(error: BaseException) -> bool:
     )
 
 
+def encoded_payload_size(payload: JsonObject) -> int:
+    return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+
+def assist_payload_size(
+    setting: AiSettingDraft,
+    messages: list[JsonObject],
+    tools: list[JsonObject] | None,
+    *,
+    adapter: ProviderAdapter | None = None,
+) -> int:
+    adapter = adapter or resolve_attachment_adapter(setting, get_provider(setting.provider))
+    return encoded_payload_size(
+        _build_protocol_payload(setting, messages, structured=True, adapter=adapter, tools=tools)
+    )
+
+
 def _request_json(
     method: str,
     url: str,
@@ -508,6 +699,26 @@ def build_chat_payload(
         "messages": messages,
         "stream": False,
     }
+    transport_messages: list[JsonObject] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            converted = [
+                _media_part(item, adapter, "openai_compatible")
+                if isinstance(item, dict) and item.get("type") == "dlr_media"
+                else item
+                for item in content
+            ]
+            transport_message = {**message, "content": converted}
+            if message.get("role") == "tool":
+                transport_message.pop("name", None)
+            transport_messages.append(transport_message)
+        else:
+            transport_message = dict(message)
+            if message.get("role") == "tool":
+                transport_message.pop("name", None)
+            transport_messages.append(transport_message)
+    payload["messages"] = transport_messages
     _apply_reasoning(payload, setting, adapter)
     if structured and adapter.structured_output == "json_schema":
         payload["response_format"] = {
@@ -535,7 +746,7 @@ def _content_text(content: object) -> str:
     return ""
 
 
-def _anthropic_content(content: object) -> object:
+def _anthropic_content(content: object, adapter: ProviderAdapter) -> object:
     """Translate the DLR visible content parts into Anthropic blocks."""
     if isinstance(content, str):
         return content
@@ -545,7 +756,9 @@ def _anthropic_content(content: object) -> object:
     for item in content:
         if not isinstance(item, dict):
             continue
-        if item.get("type") == "text" and isinstance(item.get("text"), str):
+        if item.get("type") == "dlr_media":
+            blocks.append(_media_part(item, adapter, "anthropic"))
+        elif item.get("type") == "text" and isinstance(item.get("text"), str):
             blocks.append({"type": "text", "text": item["text"]})
         elif item.get("type") == "image_url":
             image_url = item.get("image_url")
@@ -565,7 +778,7 @@ def _anthropic_content(content: object) -> object:
     return blocks or ""
 
 
-def _gemini_parts(content: object) -> list[JsonObject]:
+def _gemini_parts(content: object, adapter: ProviderAdapter) -> list[JsonObject]:
     if isinstance(content, str):
         return [{"text": content}]
     if not isinstance(content, list):
@@ -574,7 +787,9 @@ def _gemini_parts(content: object) -> list[JsonObject]:
     for item in content:
         if not isinstance(item, dict):
             continue
-        if item.get("type") == "text" and isinstance(item.get("text"), str):
+        if item.get("type") == "dlr_media":
+            parts.append(_media_part(item, adapter, "gemini"))
+        elif item.get("type") == "text" and isinstance(item.get("text"), str):
             parts.append({"text": item["text"]})
         elif item.get("type") == "image_url":
             image_url = item.get("image_url")
@@ -592,7 +807,9 @@ def _gemini_parts(content: object) -> list[JsonObject]:
     return parts
 
 
-def _anthropic_messages(messages: list[JsonObject]) -> tuple[str | None, list[JsonObject]]:
+def _anthropic_messages(
+    messages: list[JsonObject], adapter: ProviderAdapter
+) -> tuple[str | None, list[JsonObject]]:
     system_parts: list[str] = []
     result: list[JsonObject] = []
     for message in messages:
@@ -610,14 +827,14 @@ def _anthropic_messages(messages: list[JsonObject]) -> tuple[str | None, list[Js
                         {
                             "type": "tool_result",
                             "tool_use_id": message.get("tool_call_id", "unknown"),
-                            "content": _content_text(message.get("content")),
+                            "content": _anthropic_content(message.get("content"), adapter),
                         }
                     ],
                 }
             )
             continue
         role_name = "assistant" if role == "assistant" else "user"
-        blocks: object = _anthropic_content(message.get("content"))
+        blocks: object = _anthropic_content(message.get("content"), adapter)
         raw_calls = message.get("tool_calls")
         if isinstance(raw_calls, list):
             call_blocks = blocks if isinstance(blocks, list) else []
@@ -644,14 +861,16 @@ def _anthropic_messages(messages: list[JsonObject]) -> tuple[str | None, list[Js
     return ("\n".join(system_parts) or None), result
 
 
-def _gemini_contents(messages: list[JsonObject]) -> tuple[JsonObject | None, list[JsonObject]]:
+def _gemini_contents(
+    messages: list[JsonObject], adapter: ProviderAdapter
+) -> tuple[JsonObject | None, list[JsonObject]]:
     system_parts: list[JsonObject] = []
     result: list[JsonObject] = []
     tool_names: dict[str, str] = {}
     for message in messages:
         role = message.get("role")
         if role == "system":
-            system_parts.extend(_gemini_parts(message.get("content")))
+            system_parts.extend(_gemini_parts(message.get("content"), adapter))
             continue
         if role == "tool":
             tool_call_id = message.get("tool_call_id")
@@ -673,7 +892,7 @@ def _gemini_contents(messages: list[JsonObject]) -> tuple[JsonObject | None, lis
             )
             continue
         role_name = "model" if role == "assistant" else "user"
-        parts = _gemini_parts(message.get("content"))
+        parts = _gemini_parts(message.get("content"), adapter)
         raw_calls = message.get("tool_calls")
         if isinstance(raw_calls, list):
             for call in raw_calls:
@@ -754,7 +973,7 @@ def _build_protocol_payload(
                 payload["reasoning_split"] = False
         return payload
     if adapter.protocol == "anthropic":
-        anthropic_system, converted = _anthropic_messages(messages)
+        anthropic_system, converted = _anthropic_messages(messages, adapter)
         anthropic_payload: JsonObject = {
             "model": setting.model,
             "messages": converted,
@@ -765,7 +984,7 @@ def _build_protocol_payload(
         if tools is not None:
             anthropic_payload["tools"] = _anthropic_tools(tools)
         return anthropic_payload
-    gemini_system, converted = _gemini_contents(messages)
+    gemini_system, converted = _gemini_contents(messages, adapter)
     gemini_payload: JsonObject = {"contents": converted}
     if gemini_system is not None:
         gemini_payload["systemInstruction"] = gemini_system
@@ -1020,12 +1239,14 @@ def chat_assist(
     pre-C1 assist protocol and the provider cannot call any tool. The final
     answer is still expected as strict JSON through the same chain.
     """
-    adapter = adapter or get_provider(setting.provider)
+    adapter = resolve_attachment_adapter(setting, adapter or get_provider(setting.provider))
     if tools is not None and not adapter.tools_supported:  # capability guard, never assumed
         raise AiProviderError("ai_tool_unsupported")
     payload = _build_protocol_payload(
         setting, messages, structured=True, adapter=adapter, tools=tools
     )
+    if encoded_payload_size(payload) > adapter.max_request_bytes:
+        raise AiProviderError("ai_context_over_budget")
     endpoint = (
         _endpoint(setting.base_url, "/v1/messages")
         if adapter.protocol == "anthropic"

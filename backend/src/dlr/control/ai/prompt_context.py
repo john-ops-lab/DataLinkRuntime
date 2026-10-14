@@ -42,6 +42,8 @@ class PromptContext:
     tools_enabled: bool
     knowledge_search_enabled: bool
     task_intent: str = "auto"
+    attachment_overview: Mapping[str, object] | None = None
+    attachment_capabilities: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         """Seal nested caller-owned values even when constructed directly."""
@@ -54,6 +56,8 @@ class PromptContext:
             "attachments",
             "native_images",
             "saved_managed_input",
+            "attachment_overview",
+            "attachment_capabilities",
         ):
             object.__setattr__(self, name, _freeze(getattr(self, name)))
 
@@ -72,6 +76,8 @@ class PromptContext:
         native_images: list[attachments_service.NativeImage] | None,
         tools_enabled: bool,
         knowledge_search_enabled: bool,
+        attachment_overview: Mapping[str, object] | None = None,
+        attachment_capabilities: Mapping[str, object] | None = None,
     ) -> "PromptContext":
         attachment_values = [
             {
@@ -102,6 +108,8 @@ class PromptContext:
             ),
             message=payload.message,
             task_intent=payload.task_intent,
+            attachment_overview=attachment_overview,
+            attachment_capabilities=attachment_capabilities,
             recent_messages=tuple(
                 cast(Mapping[str, object], _freeze(item.model_dump(mode="json")))
                 for item in payload.recent_messages
