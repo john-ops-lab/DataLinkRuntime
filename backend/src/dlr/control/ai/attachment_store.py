@@ -179,9 +179,17 @@ class AiAttachmentStore:
     def _delete_locked(self, record: _Record) -> None:
         if record.pins or record.preparing or record.jobs:
             return
-        if self._records.pop(record.attachment_ref, None) is not None:
+        if record.attachment_ref in self._records:
+            try:
+                shutil.rmtree(record.directory)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                # Keep the closed record and its conservative charge for a later sweep.
+                logger.warning("AI attachment cleanup will retry")
+                return
+            self._records.pop(record.attachment_ref)
             self._used_bytes -= record.charge
-            shutil.rmtree(record.directory)
 
     def sweep(self) -> None:
         now = time.monotonic()
@@ -279,13 +287,15 @@ class AiAttachmentStore:
                 record.jobs.add(job_id)
             yield job_id
         finally:
-            with self._lock:
-                record.jobs.discard(job_id)
-                if record.closed:
-                    self._delete_locked(record)
-            if active:
-                self._active.release()
-            self._pending.release()
+            try:
+                with self._lock:
+                    record.jobs.discard(job_id)
+                    if record.closed:
+                        self._delete_locked(record)
+            finally:
+                if active:
+                    self._active.release()
+                self._pending.release()
 
     def _accept_result(self, record: _Record, result: DocumentResult) -> tuple[str, ...]:
         if result.source_sha256 != record.sha256 or result.status == "failure":
@@ -295,6 +305,17 @@ class AiAttachmentStore:
             and result.representation_revision != record.representation_revision
         ):
             raise _error("ai_attachment_hash_mismatch")
+        if (
+            not isinstance(result.pages, list)
+            or not all(isinstance(page, dict) for page in result.pages)
+            or not isinstance(result.sheets, list)
+            or not all(isinstance(sheet, dict) for sheet in result.sheets)
+            or not isinstance(result.coverage, dict)
+            or not isinstance(result.data, dict)
+            or not isinstance(result.warnings, list)
+            or not all(isinstance(warning, str) for warning in result.warnings)
+        ):
+            raise _error("ai_attachment_converter_invalid_result")
         descriptor = _bounded_metadata(
             {
                 "status": result.status,
@@ -451,10 +472,7 @@ class AiAttachmentStore:
             directory = self.directory / secrets.token_hex(20)
             try:
                 directory.mkdir(mode=0o700)
-                self._write_bytes(directory / "original", data)
             except OSError:
-                if directory.exists():
-                    shutil.rmtree(directory)
                 raise _error("ai_attachment_store_unavailable") from None
             record = _Record(
                 scope,
@@ -470,6 +488,14 @@ class AiAttachmentStore:
             )
             self._records[reference] = record
             self._used_bytes += len(data)
+            try:
+                self._write_bytes(directory / "original", data)
+            except OSError:
+                record.preparing = False
+                record.closed = True
+                record.cancel.set()
+                self._delete_locked(record)
+                raise _error("ai_attachment_store_unavailable") from None
         try:
             with self._operation(record, deadline) as job_id:
                 result = self.client.prepare(
@@ -485,7 +511,10 @@ class AiAttachmentStore:
                 record.preparing = False
                 if record.closed or record.cancel.is_set():
                     raise _error("ai_attachment_cancelled")
-                return self._public(record)
+                try:
+                    return self._public(record)
+                except ValueError:
+                    raise _error("ai_attachment_converter_invalid_result") from None
         except Exception:
             with self._lock:
                 record.closed = True

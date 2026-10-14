@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -167,6 +168,77 @@ def test_original_disk_failure_does_not_leak_unaccounted_directory(
     assert list(value.directory.iterdir()) == [value.directory / ".dlr-ai-owner.json"]
 
 
+def test_cleanup_failure_keeps_capacity_charge_and_retries_on_sweep(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value, _ = store
+    scope, result, _ = prepared(store)
+    charge = value._used_bytes
+    record = value._records[result.attachment_ref]
+    original = shutil.rmtree
+    attempts = 0
+
+    def transient(path, *args, **kwargs):
+        nonlocal attempts
+        if path == record.directory:
+            attempts += 1
+            if attempts == 1:
+                raise OSError("transient cleanup failure")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", transient)
+    value.release(("account", 1), 10, scope)
+    assert record.closed and record.directory.exists()
+    assert value._used_bytes == charge and result.attachment_ref in value._records
+    with pytest.raises(DocumentConversionError, match="ai_attachment_expired"):
+        value._get_locked(record.scope, result.attachment_ref)
+    value.sweep()
+    assert attempts == 2 and not record.directory.exists()
+    assert value._used_bytes == 0 and not value._records
+
+
+def test_failed_cleanup_after_prepare_cancellation_releases_operation_slots(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value, client = store
+    client.block = True
+    scope = uuid4()
+    errors = []
+
+    def start():
+        try:
+            prepared(store, scope)
+        except DocumentConversionError as error:
+            errors.append(error.code)
+
+    thread = threading.Thread(target=start)
+    thread.start()
+    assert client.entered.wait(1)
+    record = next(iter(value._records.values()))
+    original = shutil.rmtree
+
+    def failed(path, *args, **kwargs):
+        if path == record.directory:
+            raise OSError("transient cleanup failure")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", failed)
+    value.release(("account", 1), 10, scope)
+    thread.join(1)
+    assert not thread.is_alive() and errors == ["ai_attachment_cancelled"]
+    assert record.closed and not record.preparing and value._used_bytes == record.charge
+    for semaphore, count in [(value._active, 2), (value._pending, 4)]:
+        for _ in range(count):
+            assert semaphore.acquire(blocking=False)
+        for _ in range(count):
+            semaphore.release()
+    monkeypatch.setattr(shutil, "rmtree", original)
+    client.block = False
+    new_scope, fresh, _ = prepared(store)
+    assert not record.directory.exists() and len(value._records) == 1
+    value.release(("account", 1), 10, new_scope, fresh.attachment_ref)
+
+
 def test_invalid_converter_pixels_never_publish_ready(
     store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -197,9 +269,11 @@ def test_reference_is_not_authorization(store, owner, adapter, other_scope) -> N
         value.get(owner, adapter, scope, result.attachment_ref)
     value.release(owner, adapter, scope, result.attachment_ref)
     assert len(value._records) == 1
-    with pytest.raises(DocumentConversionError, match="ai_attachment_expired"):
-        with value.reader(owner, adapter, scope, [ref]):
-            pytest.fail("unauthorized pin")
+    with (
+        pytest.raises(DocumentConversionError, match="ai_attachment_expired"),
+        value.reader(owner, adapter, scope, [ref]),
+    ):
+        pytest.fail("unauthorized pin")
 
 
 def test_each_read_rechecks_permission_and_frozen_hash_even_on_cache_hit(store) -> None:
@@ -227,9 +301,11 @@ def test_each_read_rechecks_permission_and_frozen_hash_even_on_cache_hit(store) 
             reader.read_page(result.attachment_ref, 3, "both", timeout_seconds=3)
     assert checks >= 5
     bad = ref.model_copy(update={"sha256": "0" * 64})
-    with pytest.raises(DocumentConversionError, match="ai_attachment_hash_mismatch"):
-        with value.reader(("account", 1), 10, scope, [bad]):
-            pytest.fail("hash mismatch accepted")
+    with (
+        pytest.raises(DocumentConversionError, match="ai_attachment_hash_mismatch"),
+        value.reader(("account", 1), 10, scope, [bad]),
+    ):
+        pytest.fail("hash mismatch accepted")
 
 
 def test_original_tamper_and_outside_request_rejected_before_conversion(store) -> None:
