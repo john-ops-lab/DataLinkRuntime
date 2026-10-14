@@ -93,3 +93,58 @@ def test_cancel_requires_termination_confirmation() -> None:
 
     with pytest.raises(DocumentConversionError, match="cancel_failed"):
         Converter("http://converter").cancel("job123")
+
+
+def test_single_page_pdf_asset_requires_magic_and_one_page() -> None:
+    source = b"source"
+    pdf = b"%PDF-1.7\nencoded server page"
+    payload = {
+        "status": "success",
+        "source_sha256": hashlib.sha256(source).hexdigest(),
+        "representation_revision": "v1",
+        "page_count": 12,
+        "assets": [
+            {
+                "asset_id": "pdfasset",
+                "content_type": "application/pdf",
+                "data_base64": base64.b64encode(pdf).decode(),
+                "sha256": hashlib.sha256(pdf).hexdigest(),
+                "size_bytes": len(pdf),
+                "page_count": 1,
+            }
+        ],
+    }
+    assert _result(payload, source).assets[0].page_count == 1
+    payload["assets"][0]["page_count"] = 2
+    with pytest.raises(DocumentConversionError, match="invalid_result"):
+        _result(payload, source)
+
+
+def test_http_rejects_redirect_and_never_echoes_arbitrary_error_code() -> None:
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    requests: list[str] = []
+
+    class Redirect(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            requests.append(self.path)
+            self.send_response(307)
+            self.send_header("Location", "/leak")
+            self.end_headers()
+            self.wfile.write(b'{"code":"secret-file-name-or-body"}')
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        client = DocumentConverterClient(f"http://127.0.0.1:{server.server_port}")
+        with pytest.raises(DocumentConversionError, match="ai_attachment_converter_unavailable"):
+            client._http("/prepare", {"data_base64": "private"}, 2)
+        assert requests == ["/prepare"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)

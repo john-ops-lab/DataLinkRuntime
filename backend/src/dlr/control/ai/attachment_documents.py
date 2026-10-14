@@ -33,6 +33,7 @@ class DocumentAsset:
     size_bytes: int
     width: int | None = None
     height: int | None = None
+    page_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,14 @@ def _result(payload: dict[str, Any], source: bytes) -> DocumentResult:
             or not isinstance(asset_id, str)
             or not asset_id.isalnum()
             or len(asset_id) > 80
-            or row.get("content_type") not in {"image/png", "image/jpeg", "image/webp"}
+            or row.get("content_type")
+            not in {"image/png", "image/jpeg", "image/webp", "application/pdf"}
+        ):
+            raise DocumentConversionError("ai_attachment_converter_invalid_result")
+        if row.get("content_type") == "application/pdf" and (
+            not data.startswith(b"%PDF-")
+            or type(row.get("page_count")) is not int
+            or row["page_count"] != 1
         ):
             raise DocumentConversionError("ai_attachment_converter_invalid_result")
         assets.append(
@@ -89,6 +97,7 @@ def _result(payload: dict[str, Any], source: bytes) -> DocumentResult:
                 len(data),
                 row.get("width"),
                 row.get("height"),
+                row.get("page_count"),
             )
         )
     pdf = _decode(payload["rendered_pdf"]) if payload.get("rendered_pdf") else None
@@ -111,6 +120,37 @@ def _result(payload: dict[str, Any], source: bytes) -> DocumentResult:
     )
 
 
+KNOWN_ERROR_CODES = frozenset(
+    {
+        "ai_attachment_invalid",
+        "ai_attachment_filename_invalid",
+        "ai_attachment_type_unsupported",
+        "ai_attachment_too_large",
+        "ai_attachment_converter_invalid_result",
+        "ai_attachment_converter_unavailable",
+        "ai_attachment_converter_busy",
+        "ai_attachment_cancel_failed",
+        "ai_attachment_cancelled",
+        "ai_attachment_parse_timeout",
+        "ai_attachment_parse_failed",
+        "ai_attachment_unsafe_archive",
+        "ai_attachment_range_exceeded",
+        "ai_attachment_sheet_not_found",
+        "ai_attachment_page_not_found",
+        "ai_attachment_page_limit",
+        "ai_attachment_image_too_large",
+        "ai_attachment_encrypted",
+    }
+)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> None:
+        return None
+
+
 class DocumentConverterClient:
     def __init__(self, url: str) -> None:
         self.url = url.rstrip("/")
@@ -125,7 +165,7 @@ class DocumentConverterClient:
             method=method,
             headers={"Content-Type": "application/json"},
         )
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         try:
             with opener.open(request, timeout=timeout) as response:
                 body = response.read(MAX_WIRE_BYTES + 1)
@@ -138,7 +178,9 @@ class DocumentConverterClient:
         except urllib.error.HTTPError as exc:
             code = "ai_attachment_converter_unavailable"
             with suppress(ValueError, TypeError):
-                code = str(json.loads(exc.read(4096)).get("code", code))
+                candidate = json.loads(exc.read(4096)).get("code")
+                if candidate in KNOWN_ERROR_CODES:
+                    code = candidate
             raise DocumentConversionError(code) from exc
         except (OSError, ValueError) as exc:
             raise DocumentConversionError("ai_attachment_converter_unavailable") from exc
