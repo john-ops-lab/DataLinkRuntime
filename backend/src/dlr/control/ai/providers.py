@@ -875,8 +875,9 @@ def _content_text(content: object) -> str:
     return ""
 
 
-def _anthropic_content(content: object, adapter: ProviderAdapter) -> object:
-    """Translate the DLR visible content parts into Anthropic blocks."""
+def _anthropic_content(content: object, adapter: ProviderAdapter | None = None) -> object:
+    """Translate visible content; Assist supplies its resolved capability adapter."""
+    adapter = adapter or get_provider("anthropic")
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
@@ -907,7 +908,8 @@ def _anthropic_content(content: object, adapter: ProviderAdapter) -> object:
     return blocks or ""
 
 
-def _gemini_parts(content: object, adapter: ProviderAdapter) -> list[JsonObject]:
+def _gemini_parts(content: object, adapter: ProviderAdapter | None = None) -> list[JsonObject]:
+    adapter = adapter or get_provider("gemini")
     if isinstance(content, str):
         return [{"text": content}]
     if not isinstance(content, list):
@@ -937,8 +939,9 @@ def _gemini_parts(content: object, adapter: ProviderAdapter) -> list[JsonObject]
 
 
 def _anthropic_messages(
-    messages: list[JsonObject], adapter: ProviderAdapter
+    messages: list[JsonObject], adapter: ProviderAdapter | None = None
 ) -> tuple[str | None, list[JsonObject]]:
+    adapter = adapter or get_provider("anthropic")
     system_parts: list[str] = []
     result: list[JsonObject] = []
     for message in messages:
@@ -995,8 +998,9 @@ def _anthropic_messages(
 
 
 def _gemini_contents(
-    messages: list[JsonObject], adapter: ProviderAdapter
+    messages: list[JsonObject], adapter: ProviderAdapter | None = None
 ) -> tuple[JsonObject | None, list[JsonObject]]:
+    adapter = adapter or get_provider("gemini")
     system_parts: list[JsonObject] = []
     result: list[JsonObject] = []
     tool_names: dict[str, str] = {}

@@ -1189,8 +1189,8 @@ assert image_blocked["detail"]["code"] == "ai_attachment_image_unsupported", (
 )
 assert "更换支持图片的模型" in image_blocked["detail"]["message"], image_blocked
 
-# openai 能力表明确支持原生图片：fake 收到 content 数组形式的 image_url 部
-# 分并回显 "with native image"；随后恢复 custom 设置。
+# 精确 resolver 不因品牌将本地 fake endpoint 当成已核实图片能力。
+# 先验证 unknown 组合拒绝，再用管理员显式 custom profile 声明测试图片传输。
 openai_setting = {
     "provider": "openai",
     "base_url": AI_FAKE_BASE_URL,
@@ -1200,6 +1200,45 @@ openai_setting = {
     "reasoning_effort": None,
 }
 request("PUT", "/ai/settings", openai_setting)
+image_unknown = request(
+    "POST",
+    f"/adapters/{ai_adapter['id']}/ai/assist",
+    {
+        "message": "Describe the image.",
+        "working_copy": working_copy,
+        "recent_messages": [],
+        "attachments": [
+            {
+                "filename": "smoke.png",
+                "content_type": "image/png",
+                "data_base64": PNG_1PX_BASE64,
+            }
+        ],
+    },
+    expected=422,
+)
+assert image_unknown["detail"]["code"] == "ai_attachment_image_unsupported", (
+    image_unknown
+)
+image_profile = request(
+    "POST",
+    "/ai/custom-providers",
+    {
+        "name": "Smoke explicitly declared native image provider",
+        "protocol": "openai_compatible",
+        "base_url": AI_FAKE_BASE_URL,
+        "credential_id": None,
+        "images_native": True,
+        "files_native": False,
+        "tools_supported": True,
+    },
+)
+image_setting = {
+    **openai_setting,
+    "provider": "custom_openai_compatible",
+    "custom_provider_id": image_profile["id"],
+}
+request("PUT", "/ai/settings", image_setting)
 image_assisted = request(
     "POST",
     f"/adapters/{ai_adapter['id']}/ai/assist",
@@ -1221,6 +1260,7 @@ assert "with native image" in image_assisted["message"], image_assisted
 assert PNG_1PX_BASE64 not in json.dumps(image_assisted), image_assisted
 assert "SMOKE_REASONING_MUST_NOT_REACH_BROWSER" not in json.dumps(image_assisted)
 request("PUT", "/ai/settings", setting)
+request("DELETE", f"/ai/custom-providers/{image_profile['id']}", expected=204)
 
 # M5.7 Wave C1: the controlled read-only Tool Call chain. The fake Provider
 # only enters a tool scenario when the DLR whitelist really reached it and the
