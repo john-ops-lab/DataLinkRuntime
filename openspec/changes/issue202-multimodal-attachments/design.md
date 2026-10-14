@@ -20,7 +20,7 @@
 
 ### 2. 小型隔离转换服务，逐次监督实际进程
 
-正式 Compose 提供仅内部可见的 CPU 文档转换服务，控制节点只调用受限 API。每次重解析由独立子进程/进程组执行，设墙钟、内存、PID、临时目录和输出字节硬限制，取消或期限到达后 kill/wait 并检查目录释放。Docling Serve Local 线程池客户端超时后仍持续转换的实测反证禁止其作为硬取消实现。Office 使用经过同样本验证的 Gotenberg/LibreOffice，必须验证官方取消能够停止对应转换；若 HTTP 包装不能保证，则复用同一固定镜像内 LibreOffice 的薄进程监督入口，保持相同版式结果。此选择依据取消证据完成，不能用断开 HTTP 代替终止。
+正式 Compose 提供仅内部可见的 CPU 文档转换服务，控制节点只调用受限 API。每次重解析由独立子进程/进程组执行，设墙钟、内存、PID、临时目录和输出字节硬限制，取消或期限到达后 kill/wait 并检查目录释放。Docling Serve Local 线程池客户端超时后仍持续转换的实测反证禁止其作为硬取消实现。Office 确定采用固定 Gotenberg 镜像内 LibreOffice 的薄进程监督入口：同样本直接转换与 HTTP 入口的逐页文本、outline 和首页像素一致；HTTP 断开不能保证转换立即终止。正式服务启用 init 收割孤儿，取消必须有界确认整个进程组已消失，无法确认则返回 cancel_failed，不能提前确认 terminated。
 
 目录/页数先有界取得，不将全部页图塞进首轮。PDF 保留原始 1-based 页号，页图和 OCR 按单页请求生成；Office 保存派生 PDF 及真实 outline sheet→页范围，可按页读取。每个工作簿记录 hidden/print-area/merged-range/chart 概况，精确原件读取保留 raw/type/number_format/formula/cached value，派生页显示值允许 LibreOffice 重算但明确来源。页图标记可读像素、MIME、尺寸、哈希，拒绝 placeholder。无结构信息时标 unknown/partial，不推断内容完整。
 

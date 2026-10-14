@@ -2,10 +2,10 @@
 
 ## 1. 附件表示、资源与转换
 
-- [ ] 1.1 用同一套数字/扫描 PDF、含图表 XLSX、真实 BIFF XLS 验证固定 Docling CPU/LibreOffice/openpyxl/xlrd 组合，记录版本、字体、权重、SHA-256、覆盖、延时和内存；记录单组件不足及实际取消证据。
+- [x] 1.1 用同一套数字/扫描 PDF、含图表 XLSX、真实 BIFF XLS 验证固定 Docling CPU/LibreOffice/openpyxl/xlrd 组合，记录版本、字体、权重、SHA-256、覆盖、延时和内存；记录单组件不足及实际取消证据。
 - [ ] 1.2 实现独立临时附件库与 prepare/get/release/scope-release API，验证 Principal/Adapter/scope/请求引用隔离、hash/TTL/refcount/容量、释放和旧inline兼容。
 - [ ] 1.3 实现受限转换服务、原始页号/outline sheet映射和按页生成真实像素，验证原件不变、空白页、扫描OCR、错误覆盖、子进程实际终止与资源清理。
-- [ ] 1.4 实现有界 XLSX/XLS 原件metadata/range读取，验证 raw/format/merged/formula/cache/derived来源及宏/外部关系禁止执行。
+- [x] 1.4 实现有界 XLSX/XLS 原件metadata/range读取，验证 raw/format/merged/formula/cache/derived来源及宏/外部关系禁止执行。
 - [ ] 1.5 添加固定镜像/依赖/字体/权重及 CPU Compose配置、双语部署与回滚说明；通过 Ruff/mypy/API测试、Compose渲染及真实隔离资源检查，并提交第一批PR。
 
 ## 2. 模型能力、只读工具与预算
