@@ -52,7 +52,7 @@ def _group_exists(group):
     return True
 
 
-def terminate(process):
+def terminate(process, *, deadline=None):
     """Confirm the entire process group disappeared, including orphan descendants.
 
     The container's init is responsible for reaping adopted grandchildren. A
@@ -63,17 +63,24 @@ def terminate(process):
     group = process.pid
     try:
         for sig, grace in ((signal.SIGTERM, 0.25), (signal.SIGKILL, 2.0)):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise ConversionError("ai_attachment_cancel_failed")
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(group, sig)
-            deadline = time.monotonic() + grace
+            until = time.monotonic() + grace
+            if deadline is not None:
+                until = min(until, deadline)
             while True:
                 process.poll()  # Reap our direct child before testing the group.
                 if not _group_exists(group):
-                    process.wait(timeout=max(0.01, deadline - time.monotonic()))
+                    wait_seconds = max(0.01, until - time.monotonic())
+                    if deadline is not None:
+                        wait_seconds = min(wait_seconds, max(0, deadline - time.monotonic()))
+                    process.wait(timeout=wait_seconds)
                     return
-                if time.monotonic() >= deadline:
+                if time.monotonic() >= until:
                     break
-                time.sleep(0.01)
+                time.sleep(min(0.01, max(0, until - time.monotonic())))
     except (OSError, subprocess.TimeoutExpired):
         raise ConversionError("ai_attachment_cancel_failed") from None
     raise ConversionError("ai_attachment_cancel_failed")
@@ -87,6 +94,10 @@ class Job:
         self.run_finished = False
         self.group_reaped = False
         self.owns_slot = True
+        self.office_started = False
+        self.office_reaped = False
+        self.recovering = False
+        self.registered = False
 
 
 class Supervisor:
@@ -95,17 +106,78 @@ class Supervisor:
         self.slots = threading.BoundedSemaphore(1)
         self.jobs = {}
         self.tombstones = {}
+        self.stopped = {}
+
+    def _remember_stopped_locked(self, job_id):
+        now = time.monotonic()
+        self.stopped = {k: v for k, v in self.stopped.items() if now - v < 120}
+        if len(self.stopped) >= 512 and job_id not in self.stopped:
+            self.stopped.pop(next(iter(self.stopped)))
+        self.stopped[job_id] = now
 
     def _finalize_locked(self, job_id, job):
         # A reaped process alone does not finish an active Office call or the
         # run's temporary-directory cleanup. Retain the permit until both end.
-        if not (job.run_finished and job.group_reaped and job.owns_slot):
+        if not (
+            job.run_finished
+            and job.group_reaped
+            and job.owns_slot
+            and (not job.office_started or job.office_reaped)
+        ):
             return
         if self.jobs.get(job_id) is job:
             self.jobs.pop(job_id)
         job.owns_slot = False
         self.slots.release()
+        if job.registered:
+            self._remember_stopped_locked(job_id)
         job.done.set()
+
+    def _cancel_office(self, job_id, job, *, deadline=None):
+        timeout = 3 if deadline is None else min(3, deadline - time.monotonic())
+        if timeout <= 0:
+            raise ConversionError("ai_attachment_cancel_failed")
+        try:
+            reply = http_office(f"/v1/jobs/{job_id}", None, timeout, method="DELETE")
+        except (OSError, ValueError):
+            raise ConversionError("ai_attachment_cancel_failed") from None
+        if not isinstance(reply, dict) or reply.get("terminated") is not True:
+            raise ConversionError("ai_attachment_cancel_failed")
+        if job is not None:
+            with self.lock:
+                job.office_reaped = True
+
+    def _recover_finished(self, deadline):
+        # A failed Control operation may have discarded its job locator. New
+        # admission therefore retries the sole finished quarantine, within the
+        # new request's original deadline and without disturbing active runs.
+        with self.lock:
+            candidate = next(
+                (
+                    (job_id, job)
+                    for job_id, job in self.jobs.items()
+                    if job.run_finished and job.owns_slot and not job.recovering
+                ),
+                None,
+            )
+            if candidate is None:
+                return
+            job_id, job = candidate
+            job.recovering = True
+        try:
+            if not job.group_reaped:
+                terminate(job.process, deadline=deadline)
+                with self.lock:
+                    job.group_reaped = True
+            if job.office_started and not job.office_reaped:
+                self._cancel_office(job_id, job, deadline=deadline)
+            with self.lock:
+                self._finalize_locked(job_id, job)
+        except ConversionError:
+            pass  # Keep both the retryable job and its conservative permit.
+        finally:
+            with self.lock:
+                job.recovering = False
 
     def cancel(self, job_id):
         with self.lock:
@@ -115,25 +187,25 @@ class Supervisor:
                 self.tombstones.pop(next(iter(self.tombstones)))
             self.tombstones[job_id] = now
             job = self.jobs.get(job_id)
+            stopped_at = self.stopped.get(job_id)
+            known_stopped = stopped_at is not None and now - stopped_at < 120
             if job:
                 job.cancelled.set()
                 terminate(job.process)
                 job.group_reaped = True
-        if ROLE == "docling":
-            try:
-                reply = http_office(f"/v1/jobs/{job_id}", None, 3, method="DELETE")
-                if reply.get("terminated") is not True:
-                    raise ConversionError("ai_attachment_cancel_failed")
-            except (OSError, urllib.error.URLError):
-                # No Office call is needed for PDF/sheet jobs; a running Office
-                # phase records itself before the network request.
-                if job and getattr(job, "office_active", False):
-                    raise ConversionError("ai_attachment_cancel_failed") from None
+            needs_office = ROLE == "docling" and (
+                (job.office_started and not job.office_reaped) if job else not known_stopped
+            )
+        if needs_office:
+            self._cancel_office(job_id, job)
         if job:
             with self.lock:
                 self._finalize_locked(job_id, job)
             if not job.done.wait(3):
                 raise ConversionError("ai_attachment_cancel_failed")
+        else:
+            with self.lock:
+                self._remember_stopped_locked(job_id)
         return {"terminated": True, "cancelled": True}
 
     def run(self, request, operation):
@@ -151,13 +223,18 @@ class Supervisor:
         source = decode(request.get("data_base64"))
         deadline = time.monotonic() + min(60, max(0.05, float(request.get("timeout_seconds", 30))))
         if not self.slots.acquire(blocking=False):
-            raise ConversionError("ai_attachment_converter_busy")
+            self._recover_finished(deadline)
+            if time.monotonic() >= deadline:
+                raise ConversionError("ai_attachment_parse_timeout")
+            if not self.slots.acquire(blocking=False):
+                raise ConversionError("ai_attachment_converter_busy")
         job = Job()
         try:
             with self.lock:
                 if job_id in self.jobs or job_id in self.tombstones:
                     raise ConversionError("ai_attachment_cancelled")
                 self.jobs[job_id] = job
+                job.registered = True
             request = {**request, "operation": operation}
             extension = Path(filename).suffix.lower()
             if (
@@ -169,7 +246,11 @@ class Supervisor:
                 blocked = archive_policy(source) if extension in {".xlsx", ".docx"} else []
                 request["office_warnings"] = blocked
                 if not blocked:
-                    job.office_active = True
+                    with self.lock:
+                        if job.cancelled.is_set():
+                            raise ConversionError("ai_attachment_cancelled")
+                        job.office_started = True
+                        job.office_active = True
                     try:
                         reply = http_office(
                             "/v1/prepare",
@@ -177,11 +258,16 @@ class Supervisor:
                             max(0.05, deadline - time.monotonic()),
                         )
                         request["rendered_pdf_base64"] = reply["rendered_pdf"]
+                        with self.lock:
+                            # The Office supervisor returns success only after its
+                            # process group and temporary directory have finished.
+                            job.office_reaped = True
                     except (OSError, urllib.error.URLError, KeyError, ValueError):
-                        http_office(f"/v1/jobs/{job_id}", None, 3, method="DELETE")
+                        self._cancel_office(job_id, job)
                         request["office_failed"] = True
                     finally:
-                        job.office_active = False
+                        with self.lock:
+                            job.office_active = False
             if job.cancelled.is_set():
                 raise ConversionError("ai_attachment_cancelled")
             if time.monotonic() >= deadline:

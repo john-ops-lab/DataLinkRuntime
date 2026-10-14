@@ -251,10 +251,10 @@ def test_supervisor_quarantines_failed_reaping_and_cancel_retry_restores_capacit
         directories.append(Path(command[-2]).parent)
         return process
 
-    def reap(process):
+    def reap(process, *, deadline=None):
         if process is not None and failed_reaping.is_set():
             raise module.ConversionError("ai_attachment_cancel_failed")
-        return real_terminate(process)
+        return real_terminate(process, deadline=deadline)
 
     monkeypatch.setattr(module.subprocess, "Popen", spawn)
     monkeypatch.setattr(module, "terminate", reap)
@@ -281,7 +281,10 @@ def test_supervisor_quarantines_failed_reaping_and_cancel_retry_restores_capacit
         assert supervisor.jobs["quarantined"] is job and job.owns_slot
 
         failed_reaping.clear()
-        assert supervisor.cancel("quarantined")["terminated"] is True
+        # Control may have lost the old locator: a new request must recover it.
+        assert supervisor.run(
+            {**request, "job_id": "healthy-next", "timeout_seconds": 3}, "prepare"
+        ) == {"ok": True}
         assert children[0].poll() is not None
         with pytest.raises(ProcessLookupError):
             os.killpg(children[0].pid, 0)
@@ -293,9 +296,6 @@ def test_supervisor_quarantines_failed_reaping_and_cancel_retry_restores_capacit
         assert supervisor.slots.acquire(blocking=False)
         assert not supervisor.slots.acquire(blocking=False)
         supervisor.slots.release()
-        assert supervisor.run(
-            {**request, "job_id": "healthy-next", "timeout_seconds": 3}, "prepare"
-        ) == {"ok": True}
         assert supervisor.jobs == {} and all(not path.exists() for path in directories)
     finally:
         failed_reaping.clear()
@@ -314,7 +314,7 @@ def test_supervisor_cancel_waits_for_run_cleanup_before_releasing_capacity(
 
     monkeypatch.syspath_prepend(str(TOOLS))
     module = _module("server")
-    monkeypatch.setattr(module, "ROLE", "docling" if phase == "office_call" else "office")
+    monkeypatch.setattr(module, "ROLE", "docling")
     supervisor = module.Supervisor()
     cleanup_started = threading.Event()
     cleanup_continue = threading.Event()
@@ -331,6 +331,7 @@ def test_supervisor_cancel_waits_for_run_cleanup_before_releasing_capacity(
             return super().__exit__(*args)
 
     def office(path, payload, timeout, method="POST"):
+        assert phase == "office_call", "A PDF job must never depend on Office availability"
         if method == "DELETE":
             return {"terminated": True}
         cleanup_started.set()
@@ -392,6 +393,263 @@ def test_supervisor_cancel_waits_for_run_cleanup_before_releasing_capacity(
             cancel_thread.join(timeout=3)
         for process in children:
             module.terminate(process)
+
+
+@pytest.mark.parametrize("failed_delete", ["unreachable", "unconfirmed"])
+def test_office_unknown_termination_is_quarantined_and_next_request_recovers(
+    monkeypatch: pytest.MonkeyPatch, failed_delete: str
+) -> None:
+    import os
+    import subprocess
+    import sys
+    import threading
+    import urllib.error
+
+    monkeypatch.syspath_prepend(str(TOOLS))
+    module = _module("server")
+    monkeypatch.setattr(module, "ROLE", "docling")
+    supervisor = module.Supervisor()
+    real_popen = subprocess.Popen
+    office_children = []
+    local_children = []
+    fault = threading.Event()
+    fault.set()
+    recovery_started = threading.Event()
+    recovery_continue = threading.Event()
+    next_results = []
+    delete_calls = []
+    next_thread = None
+
+    def office(path, payload, timeout, method="POST"):
+        if method == "DELETE":
+            delete_calls.append(path)
+            if fault.is_set():
+                if failed_delete == "unconfirmed":
+                    return {"terminated": False}
+                raise urllib.error.URLError("Office cancellation disconnected")
+            recovery_started.set()
+            assert recovery_continue.wait(3)
+            for child in office_children:
+                module.terminate(child)
+            return {"terminated": True}
+        child = real_popen(
+            [sys.executable, "-c", "import time; time.sleep(60)" if fault.is_set() else "pass"],
+            start_new_session=True,
+        )
+        office_children.append(child)
+        if fault.is_set():
+            raise urllib.error.URLError("Office accepted POST but response disconnected")
+        child.wait(timeout=3)
+        return {"rendered_pdf": base64.b64encode(b"%PDF-source").decode()}
+
+    def spawn(command, **kwargs):
+        script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"ok\":true}')"
+        child = real_popen([sys.executable, "-c", script, command[-1]], **kwargs)
+        local_children.append(child)
+        return child
+
+    monkeypatch.setattr(module, "http_office", office)
+    monkeypatch.setattr(module.subprocess, "Popen", spawn)
+    request = {
+        "job_id": "office-unknown",
+        "filename": "source.xls",
+        "data_base64": base64.b64encode(b"source").decode(),
+        "timeout_seconds": 3,
+    }
+    try:
+        with pytest.raises(module.ConversionError, match="ai_attachment_cancel_failed"):
+            supervisor.run(request, "prepare")
+        job = supervisor.jobs["office-unknown"]
+        assert job.run_finished and job.group_reaped and job.owns_slot
+        assert job.office_started and not job.office_reaped and not job.done.is_set()
+        assert office_children[0].poll() is None
+        os.killpg(office_children[0].pid, 0)
+        with pytest.raises(module.ConversionError, match="ai_attachment_cancel_failed"):
+            supervisor.cancel("office-unknown")
+        # No completed receipt exists: a missing job cannot excuse an Office failure.
+        with pytest.raises(module.ConversionError, match="ai_attachment_cancel_failed"):
+            supervisor.cancel("unknown-job")
+        with pytest.raises(module.ConversionError, match="ai_attachment_converter_busy"):
+            supervisor.run({**request, "job_id": "still-too-early"}, "prepare")
+        assert supervisor.jobs["office-unknown"] is job and job.owns_slot
+
+        fault.clear()
+        # No manual DELETE of the old internal locator is needed for recovery.
+        deletes_before_recovery = len(delete_calls)
+        next_thread = threading.Thread(
+            target=lambda: next_results.append(
+                supervisor.run({**request, "job_id": "healthy-office"}, "prepare")
+            )
+        )
+        next_thread.start()
+        assert recovery_started.wait(1)
+        with pytest.raises(module.ConversionError, match="ai_attachment_converter_busy"):
+            supervisor.run({**request, "job_id": "contender"}, "prepare")
+        assert len(delete_calls) == deletes_before_recovery + 1
+        recovery_continue.set()
+        next_thread.join(timeout=3)
+        assert not next_thread.is_alive() and next_results == [{"ok": True}]
+        assert office_children[0].poll() is not None
+        with pytest.raises(ProcessLookupError):
+            os.killpg(office_children[0].pid, 0)
+        assert supervisor.jobs == {} and job.office_reaped and job.done.is_set()
+        assert not job.owns_slot and not job.recovering
+        assert supervisor.cancel("office-unknown")["terminated"] is True
+        with supervisor.lock:
+            supervisor._finalize_locked("office-unknown", job)
+        assert supervisor.slots.acquire(blocking=False)
+        assert not supervisor.slots.acquire(blocking=False)
+        supervisor.slots.release()
+    finally:
+        fault.clear()
+        recovery_continue.set()
+        if next_thread is not None:
+            next_thread.join(timeout=3)
+        for child in office_children + local_children:
+            module.terminate(child)
+
+
+@pytest.mark.parametrize("operation", ["prepare", "read-sheet"])
+def test_docling_jobs_without_office_remain_available_when_office_is_down(
+    monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    import subprocess
+    import sys
+    import urllib.error
+
+    monkeypatch.syspath_prepend(str(TOOLS))
+    module = _module("server")
+    monkeypatch.setattr(module, "ROLE", "docling")
+    supervisor = module.Supervisor()
+    real_popen = subprocess.Popen
+    office_calls = []
+    children = []
+
+    def office(*args, **kwargs):
+        office_calls.append(args)
+        raise urllib.error.URLError("Office is down")
+
+    def spawn(command, **kwargs):
+        script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"ok\":true}')"
+        child = real_popen([sys.executable, "-c", script, command[-1]], **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(module, "http_office", office)
+    monkeypatch.setattr(module.subprocess, "Popen", spawn)
+    request = {
+        "job_id": "no-office",
+        "filename": "source.pdf" if operation == "prepare" else "source.xls",
+        "data_base64": base64.b64encode(b"source").decode(),
+    }
+    try:
+        assert supervisor.run(request, operation) == {"ok": True}
+        assert supervisor.cancel("no-office")["terminated"] is True
+        assert supervisor.cancel("no-office")["terminated"] is True
+        assert office_calls == [] and supervisor.jobs == {}
+    finally:
+        for child in children:
+            module.terminate(child)
+
+
+def test_quarantine_recovery_consumes_only_new_request_remaining_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.error
+
+    monkeypatch.syspath_prepend(str(TOOLS))
+    module = _module("server")
+    monkeypatch.setattr(module, "ROLE", "docling")
+    now = [100.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    supervisor = module.Supervisor()
+    assert supervisor.slots.acquire(blocking=False)
+    job = module.Job()
+    job.run_finished = job.group_reaped = job.office_started = True
+    supervisor.jobs["quarantined"] = job
+    timeouts = []
+
+    def office(path, payload, timeout, method="POST"):
+        assert method == "DELETE"
+        timeouts.append(timeout)
+        now[0] += timeout
+        raise urllib.error.URLError("Office timed out")
+
+    monkeypatch.setattr(module, "http_office", office)
+    with pytest.raises(module.ConversionError, match="ai_attachment_parse_timeout"):
+        supervisor.run(
+            {
+                "job_id": "new-request",
+                "filename": "source.pdf",
+                "data_base64": base64.b64encode(b"source").decode(),
+                "timeout_seconds": 0.05,
+            },
+            "prepare",
+        )
+    assert len(timeouts) == 1 and 0 < timeouts[0] <= 0.05
+    assert supervisor.jobs == {"quarantined": job}
+    assert job.owns_slot and not job.office_reaped and not job.recovering
+    assert not supervisor.slots.acquire(blocking=False)
+
+
+def test_stopped_receipts_are_bounded_and_expired_receipts_require_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.error
+
+    monkeypatch.syspath_prepend(str(TOOLS))
+    module = _module("server")
+    monkeypatch.setattr(module, "ROLE", "docling")
+    now = [100.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    supervisor = module.Supervisor()
+    with supervisor.lock:
+        for index in range(600):
+            supervisor._remember_stopped_locked(f"completed-{index}")
+    assert len(supervisor.stopped) == 512
+    assert "completed-0" not in supervisor.stopped
+    assert supervisor.cancel("completed-599")["terminated"] is True
+    now[0] += 121
+
+    def office(*args, **kwargs):
+        raise urllib.error.URLError("Office is unavailable after receipt expired")
+
+    monkeypatch.setattr(module, "http_office", office)
+    with pytest.raises(module.ConversionError, match="ai_attachment_cancel_failed"):
+        supervisor.cancel("completed-599")
+
+
+def test_rejected_registration_does_not_turn_unknown_office_work_into_stopped_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.error
+
+    monkeypatch.syspath_prepend(str(TOOLS))
+    module = _module("server")
+    monkeypatch.setattr(module, "ROLE", "docling")
+    supervisor = module.Supervisor()
+
+    def office(*args, **kwargs):
+        raise urllib.error.URLError("Office termination is unknown")
+
+    monkeypatch.setattr(module, "http_office", office)
+    with pytest.raises(module.ConversionError, match="ai_attachment_cancel_failed"):
+        supervisor.cancel("unknown-office")
+    with pytest.raises(module.ConversionError, match="ai_attachment_cancelled"):
+        supervisor.run(
+            {
+                "job_id": "unknown-office",
+                "filename": "source.pdf",
+                "data_base64": base64.b64encode(b"source").decode(),
+            },
+            "prepare",
+        )
+    assert "unknown-office" not in supervisor.stopped
+    with pytest.raises(module.ConversionError, match="ai_attachment_cancel_failed"):
+        supervisor.cancel("unknown-office")
+    assert supervisor.slots.acquire(blocking=False)
+    assert not supervisor.slots.acquire(blocking=False)
+    supervisor.slots.release()
 
 
 @pytest.mark.parametrize(
