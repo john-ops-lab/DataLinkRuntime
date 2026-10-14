@@ -1508,7 +1508,9 @@ async function resolveComposerAttachment(
           }
           // A local timestamp is only a hint. Recheck elapsed composer refs
           // before consuming the draft; actual expiry still keeps it intact.
-          const elapsed = preparedAttachments.filter((metadata) => Date.parse(metadata.expires_at) <= Date.now());
+          const elapsed = preparedAttachments.filter((metadata) => {
+            return Date.parse(metadata.expires_at) <= Date.now();
+          });
           if (elapsed.length > 0) await preparedSession.validate(elapsed, new AbortController().signal);
         } else {
           wireAttachments = composerAttachments.length === 0
