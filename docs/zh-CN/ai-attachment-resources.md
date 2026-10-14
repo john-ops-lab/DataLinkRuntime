@@ -14,6 +14,8 @@
 
 默认 TTL 为30分钟、同范围8件、原件总48MiB、全库512MiB、单件派生64MiB。原件、派生文件、目录和读取缓存均计入容量；最多2个活动转换、4个活动加等候操作、32个缓存读取、128个范围。Assist 只 pin 本次冻结的 refs/hash/revision，每次读取重新检查原件哈希与权限，混合 inline/refs 共同受数量与原件总量门禁。显式关闭立即阻止后续读取，TTL 清理不删除活动 pin。
 
+浏览器在同一页面范围内串行准备附件，最多保留8个活动或排队任务。删除排队附件立即移出队列，关闭范围清空等待任务；活动取消还需由服务端确认进程已终止。其他页面的并发转换或尚未完成的取消可能返回可重试的忙状态。Retry/Regenerate 使用发送时冻结的 refs/hash/revision，不用后来加入的文件替换旧轮次。pagehide 关闭当前范围；从 BFCache 恢复时新建页面范围并清空旧临时会话，普通 pageshow 不重置会话。
+
 设置为 `DLR_AI_ATTACHMENT_ROOT`、`DLR_AI_ATTACHMENT_TTL_SECONDS`、`DLR_AI_ATTACHMENT_STORE_MAX_BYTES`、`DLR_AI_ATTACHMENT_DERIVED_MAX_BYTES`、`DLR_AI_ATTACHMENT_PREPARE_TIMEOUT_SECONDS`，详见配置中的有界取值。库目录700、文件600，用户文件名不用于磁盘路径；单 Control 实例用 owner lock 防止并行进程误清理，重启仅回收本功能有标记的孤儿目录。跨重启引用过期，需要重新附加文件。
 
 第一批交付准备 API 与转换组件时，`prepared_attachments_enabled=false`，refs Assist 返回 `ai_attachment_reader_unavailable`，旧 inline 请求仍可用。第二批接入请求 reader 后才启用能力，第三批界面根据能力使用准备流程。回滚先取消并释放本功能资源，保留业务卷和认证密钥。固定组件和真实组件验证范围见 [CPU 转换组件](issue202-document-conversion.md)。
