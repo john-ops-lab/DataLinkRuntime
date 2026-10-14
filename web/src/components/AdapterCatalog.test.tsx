@@ -391,3 +391,14 @@ it("orders adapter actions as copy, export, save as template, settings", async (
   fireEvent.click(within(menu).getByRole("menuitem", { name: "导出适配器" }));
   expect(portable).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }), "exportAdapter");
 });
+
+
+it("focuses the visible name field when creating an Adapter", async () => {
+  renderCatalog([]);
+  fireEvent.click(screen.getByTestId("show-create-form"));
+  const name = await screen.findByTestId("new-adapter-name");
+  await waitFor(() => expect(document.activeElement).toBe(name));
+  expect(name.getAttribute("aria-label")).toBe("适配器名称");
+  fireEvent.click(screen.getByRole("button", { name: /取\s*消/ }));
+  await waitFor(() => expect(screen.queryByTestId("new-adapter-name")).toBeNull());
+});

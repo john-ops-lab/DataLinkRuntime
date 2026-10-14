@@ -9,7 +9,7 @@ import App, {
   EDITOR_THEME_STORAGE_KEY,
   TOKEN_STORAGE_KEY,
 } from "./App";
-import { clearTemplateVariantCache, setAuthToken } from "./api";
+import { api, clearTemplateVariantCache, setAuthToken } from "./api";
 import TaskRunSettingsPanel from "./components/TaskRunSettingsPanel";
 import type { TaskRunSettingsHandle } from "./components/TaskRunSettingsPanel";
 import TaskWorkbenchHeader from "./components/TaskWorkbenchHeader";
@@ -7027,6 +7027,7 @@ it("does not POST when the user cancels leaving an unsaved Task input draft", as
   window.dispatchEvent(beforeUnload);
   expect(beforeUnload.defaultPrevented).toBe(true);
 
+  vi.spyOn(window, "confirm").mockReturnValue(true);
   fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
   fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
   await waitForCodeEditorValue(templateVariantFixture.code);
@@ -7034,6 +7035,7 @@ it("does not POST when the user cancels leaving an unsaved Task input draft", as
   const nameInput = screen.getByRole("textbox", { name: "适配器名称" });
   fireEvent.change(nameInput, { target: { value: "保留 Task 草稿" } });
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  confirm.mockClear();
   fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
 
   await waitFor(() => expect((nameInput as HTMLInputElement).value).toBe("保留 Task 草稿"));
@@ -7794,4 +7796,72 @@ it("Issue #189 clears only the recovered catalog error and preserves the editor 
   await waitFor(() => expect(screen.queryByTestId("adapter-list-error")).toBeNull());
   expect(valueOf("code-editor")).toBe("preserved draft");
   expect(lists).toBe(3);
+});
+
+
+it("guards Gallery navigation for STAGED input without changing saved bindings or the draft", async () => {
+  window.history.replaceState(null, "", "/adapters");
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const config = {
+    adapter_id: 1, revision: 4, source_type: "managed_files" as const, json_value: null,
+    retention: { mode: "system_default" as const, seconds: null }, artifacts: [],
+    valid_for_run: false, invalid_reason: "managed_files_empty",
+  };
+  vi.spyOn(api, "getInputConfig").mockResolvedValue(config);
+  vi.spyOn(api, "getManagedInputCapability").mockResolvedValue({
+    managed_files_enabled: true, ready: true, default_retention_seconds: 86400,
+    max_custom_retention_seconds: 2592000, allow_manual_delete: true,
+    allowed_extensions: [".txt"],
+  });
+  const staged = [{ id: 91, original_filename: "fixture.txt", content_type: "text/plain",
+    size_bytes: 15, sha256: "a".repeat(64), status: "STAGED" as const,
+    created_at: "2026-10-14T00:00:00Z", expires_at: null }];
+  vi.spyOn(api, "listInputArtifacts").mockResolvedValue(staged);
+  const put = vi.spyOn(api, "putInputConfig");
+  const remove = vi.spyOn(api, "deleteInputArtifact");
+  stubFetch([...consoleWithVersionRoutes(adapter, makeVersion()), readyWorkerRoute, ...templateGalleryRoutes()]);
+  const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("managed-input-status-91");
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  expect(window.location.pathname).toBe("/adapters");
+  expect(screen.getByTestId("managed-input-status-91").textContent).toContain("待保存");
+  expect(confirm).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  await screen.findByTestId("template-gallery");
+  expect(window.location.pathname).toBe("/templates");
+  fireEvent.click(screen.getByRole("link", { name: "适配器" }));
+  expect(screen.getByTestId("managed-input-status-91").textContent).toContain("待保存");
+  expect(confirm).toHaveBeenCalledTimes(2);
+  expect(put).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+  expect(config.revision).toBe(4);
+  expect(config.artifacts).toEqual([]);
+});
+
+
+it("guards native Settings navigation from the Gallery while its hidden input draft is mounted", async () => {
+  window.history.replaceState(null, "", "/adapters");
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([...consoleWithVersionRoutes(adapter, makeVersion()), readyWorkerRoute, ...templateGalleryRoutes()]);
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  fireEvent.click(await screen.findByTestId("task-input-source-json"));
+  fireEvent.change(await screen.findByTestId("task-input-json"), { target: { value: '"draft"' } });
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  await screen.findByTestId("template-gallery");
+  confirm.mockClear();
+  confirm.mockReturnValue(false);
+  act(() => {
+    window.history.pushState(null, "", "/settings/credentials");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/templates"));
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(valueOf("task-input-json")).toBe('"draft"');
+  expect(screen.getByTestId("adapter-surface").hidden).toBe(true);
 });

@@ -1027,3 +1027,43 @@ it("来源配置按 10、20、50 条分页，选择后实际改变显示数量",
     await waitFor(() => expect(visibleRows()).toHaveLength(size));
   }
 });
+
+
+it.each(["zh-CN", "en"] as const)("links credential required errors to the corrected field in %s", async (locale) => {
+  applySystemLocale(locale);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  const create = vi.spyOn(api, "createCredential");
+  render(<SystemSettingsDrawer open category="credentials" onClose={vi.fn()} />);
+  await screen.findByTestId("credentials-panel");
+  fireEvent.click(screen.getByTestId("new-credential"));
+  const name = screen.getByTestId("credential-name");
+  fireEvent.change(name, { target: { value: "   " } });
+  fireEvent.click(screen.getByTestId("submit-credential"));
+  expect(name.getAttribute("aria-invalid")).toBe("true");
+  const errorId = name.getAttribute("aria-describedby") as string;
+  expect(name.getAttribute("aria-errormessage")).toBe(errorId);
+  const error = document.getElementById(errorId);
+  expect(error?.textContent).toBe(locale === "zh-CN" ? "凭据名称不能为空" : "Credential name cannot be empty");
+  expect(name.closest('[role="dialog"]')?.contains(error)).toBe(true);
+  expect(create).not.toHaveBeenCalled();
+  fireEvent.change(name, { target: { value: "non-secret draft" } });
+  expect(name.getAttribute("aria-invalid")).toBe("false");
+  expect(name.hasAttribute("aria-describedby")).toBe(false);
+  expect(document.getElementById(errorId)).toBeNull();
+  fireEvent.click(screen.getByTestId("submit-credential"));
+  const username = screen.getByTestId("credential-field-username");
+  expect(username.getAttribute("aria-invalid")).toBe("true");
+  const usernameErrorId = username.getAttribute("aria-describedby") as string;
+  expect(document.getElementById(usernameErrorId)?.textContent).toContain(locale === "zh-CN" ? "用户名" : "Username");
+  fireEvent.change(username, { target: { value: "fixture-user" } });
+  expect(username.getAttribute("aria-invalid")).toBe("false");
+  expect(document.getElementById(usernameErrorId)).toBeNull();
+  fireEvent.click(screen.getByTestId("submit-credential"));
+  expect(screen.getByTestId("credential-field-password").getAttribute("aria-invalid")).toBe("true");
+  expect(create).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: locale === "zh-CN" ? /取\s*消/ : "Cancel" }));
+  await waitFor(() => expect(screen.queryByTestId("credential-form")).toBeNull());
+  fireEvent.click(screen.getByTestId("new-credential"));
+  expect(screen.getByTestId("credential-name").getAttribute("aria-invalid")).toBe("false");
+  expect(create).not.toHaveBeenCalled();
+});

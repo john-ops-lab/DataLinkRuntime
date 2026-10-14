@@ -5034,3 +5034,9 @@ body {
     flex-wrap: wrap;
   }
 }
+
+/* Keep credential field errors next to their inputs inside the dialog. */
+.credential-form-field {
+  flex: 1 1 200px;
+  min-width: 0;
+}
