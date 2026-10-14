@@ -23,9 +23,9 @@ docker compose -f docker-compose.yml -f docker-compose.ai-documents.yml up -d --
 
 实际子进程另外以 seccomp 拒绝 IPv4/IPv6 socket，保留 Office 需要的 Unix socket；原件不能向外部地址取内容。Office 使用每次独立、最高宏安全级别且禁止宏执行的空 profile。带宏或外部关系的 OOXML 不进入 Office 渲染，原件 metadata 仍可读取并返回覆盖限制。XLS 的外部访问同样被进程 socket 过滤禁止。
 
-私有 HTTP 合同为 `prepare/read-page/read-sheet` 加 `DELETE /v1/jobs/{job_id}`。每个请求有独立 job_id 和剩余期限；取消/超时必须杀死并 wait 整个进程组、清理临时目录后才能确认 `terminated`。Docling 父监督器将相同 job_id、期限和取消传给 Office 服务。网络错误也要求取消确认；不能用断开 HTTP 代替实际终止。服务与 Control 客户端均拒绝重定向，不回显上游自由错误文本。
+私有 HTTP 合同为 `prepare/read-page/read-sheet` 加 `DELETE /v1/jobs/{job_id}`。每个请求有独立 job_id 和剩余期限；取消/超时必须杀死并 wait 整个进程组、清理临时目录后才能确认 `terminated`。Compose `init: true` 负责收割被接管的后代；监督器在最多 2.25 秒内确认进程组已经消失，否则返回 `ai_attachment_cancel_failed`，不确认成功。Docling 父监督器将相同 job_id、期限和取消传给 Office 服务。网络错误也要求取消确认；不能用断开 HTTP 代替实际终止。服务与 Control 客户端均拒绝重定向，不回显上游自由错误文本。
 
-当前硬边界：原件 6MiB、派生 64MiB、私有 wire 96MiB、200 页、单图 2000 万像素、单次最长 60 秒、sheet/range 最多 200 cells。单件内存压力超过容器额度时失败并回收；真实样本的中文 OCR 在 2GiB 下曾 OOM，3GiB 下通过，不能声称 2GiB 足够。
+当前硬边界：原件 6MiB、派生 64MiB、私有 wire 96MiB、200 页、单图 1600 万像素、单件媒体 10MiB、单次最长 60 秒、sheet/range 最多 200 cells。单件内存压力超过容器额度时失败并回收；真实样本的中文 OCR 在 2GiB 下曾 OOM，3GiB 下通过，不能声称 2GiB 足够。
 
 ## 表示与覆盖
 

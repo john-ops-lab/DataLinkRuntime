@@ -44,20 +44,39 @@ def http_office(path, payload, timeout, method="POST"):
     return json.loads(body)
 
 
+def _group_exists(group):
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def terminate(process):
+    """Confirm the entire process group disappeared, including orphan descendants.
+
+    The container's init is responsible for reaping adopted grandchildren. A
+    reaped launcher alone is insufficient evidence that conversion has stopped.
+    """
     if process is None:
         return
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGTERM)
+    group = process.pid
     try:
-        process.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=1)
-    # Reap/kill descendants too; Office may exit its launcher before a child.
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGKILL)
+        for sig, grace in ((signal.SIGTERM, 0.25), (signal.SIGKILL, 2.0)):
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(group, sig)
+            deadline = time.monotonic() + grace
+            while True:
+                process.poll()  # Reap our direct child before testing the group.
+                if not _group_exists(group):
+                    process.wait(timeout=max(0.01, deadline - time.monotonic()))
+                    return
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.01)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ConversionError("ai_attachment_cancel_failed") from None
+    raise ConversionError("ai_attachment_cancel_failed")
 
 
 class Job:

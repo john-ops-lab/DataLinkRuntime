@@ -14,6 +14,8 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
+MAX_ATTACHMENT_MEDIA_BYTES = 10 * 1024 * 1024
+MAX_ATTACHMENT_PIXELS = 16_000_000
 MAX_DERIVED_BYTES = 64 * 1024 * 1024
 MAX_WIRE_BYTES = 96 * 1024 * 1024
 
@@ -70,6 +72,8 @@ def _result(payload: dict[str, Any], source: bytes) -> DocumentResult:
     assets = []
     for row in payload.get("assets", []):
         data = _decode(row.get("data_base64"))
+        if not 0 < len(data) <= MAX_ATTACHMENT_MEDIA_BYTES:
+            raise DocumentConversionError("ai_attachment_too_large")
         asset_digest = hashlib.sha256(data).hexdigest()
         asset_id = row.get("asset_id")
         if (
@@ -82,6 +86,14 @@ def _result(payload: dict[str, Any], source: bytes) -> DocumentResult:
             not in {"image/png", "image/jpeg", "image/webp", "application/pdf"}
         ):
             raise DocumentConversionError("ai_attachment_converter_invalid_result")
+        if str(row.get("content_type", "")).startswith("image/") and (
+            type(row.get("width")) is not int
+            or type(row.get("height")) is not int
+            or row["width"] <= 0
+            or row["height"] <= 0
+            or row["width"] * row["height"] > MAX_ATTACHMENT_PIXELS
+        ):
+            raise DocumentConversionError("ai_attachment_image_too_large")
         if row.get("content_type") == "application/pdf" and (
             not data.startswith(b"%PDF-")
             or type(row.get("page_count")) is not int

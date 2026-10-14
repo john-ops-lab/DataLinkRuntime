@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import importlib.util
 import io
 from pathlib import Path
@@ -137,3 +138,110 @@ def test_cancel_before_registration_remains_terminal(monkeypatch: pytest.MonkeyP
             "prepare",
         )
     assert supervisor.jobs == {}
+
+
+@pytest.mark.parametrize("launcher_exits", [False, True])
+def test_cancel_reaps_entire_group_after_launcher_exit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, launcher_exits: bool
+) -> None:
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    monkeypatch.syspath_prepend(str(TOOLS))
+    module = _module("server")
+    marker = tmp_path / "descendant.pid"
+    # A real descendant ignores TERM and keeps running after its launcher dies.
+    script = """
+import os, signal, sys, time
+pid = os.fork()
+if pid == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    with open(sys.argv[1], 'w') as output:
+        output.write(str(os.getpid()))
+    while True:
+        time.sleep(.01)
+if sys.argv[2] == 'exit':
+    sys.exit(0)
+while True:
+    time.sleep(.01)
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(marker), "exit" if launcher_exits else "wait"],
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 3
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker.exists()
+        descendant = int(marker.read_text())
+        os.kill(descendant, 0)
+        if launcher_exits:
+            assert process.wait(timeout=3) == 0
+        started = time.monotonic()
+        module.terminate(process)
+        assert time.monotonic() - started < 3
+        assert process.poll() is not None
+        with pytest.raises(ProcessLookupError):
+            os.killpg(process.pid, 0)
+        with pytest.raises(ProcessLookupError):
+            os.kill(descendant, 0)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=3)
+
+
+def test_cancel_never_acknowledges_unconfirmed_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import itertools
+    import subprocess
+    import sys
+
+    monkeypatch.syspath_prepend(str(TOOLS))
+    module = _module("server")
+    monkeypatch.setattr(module, "ROLE", "office")
+    process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    process.wait(timeout=3)
+    monkeypatch.setattr(module, "_group_exists", lambda group: True)
+    clock = itertools.count()
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(clock))
+    supervisor = module.Supervisor()
+    job = module.Job()
+    job.process = process
+    job.done.set()
+    supervisor.jobs["unconfirmed"] = job
+    with pytest.raises(module.ConversionError, match="ai_attachment_cancel_failed"):
+        supervisor.cancel("unconfirmed")
+
+
+@pytest.mark.parametrize(
+    "pixels,size,error",
+    [
+        (16_000_000, 10 * 1024 * 1024, None),
+        (16_000_001, 1, "ai_attachment_image_too_large"),
+        (1, 10 * 1024 * 1024 + 1, "ai_attachment_too_large"),
+    ],
+)
+def test_generated_media_obeys_reader_pixel_and_byte_limits(pixels, size, error) -> None:
+    class EncodedImage:
+        width = pixels
+        height = 1
+
+        def save(self, stream, *, format):
+            assert format == "PNG"
+            stream.write(b"x" * size)
+
+    assert processor.MAX_PIXELS == 16_000_000
+    assert processor.MAX_MEDIA == 10 * 1024 * 1024
+    if error:
+        with pytest.raises(processor.ConversionError, match=error):
+            processor.png_asset(EncodedImage())
+    else:
+        asset = processor.png_asset(EncodedImage())
+        assert asset["width"] * asset["height"] == processor.MAX_PIXELS
+        assert asset["size_bytes"] == processor.MAX_MEDIA

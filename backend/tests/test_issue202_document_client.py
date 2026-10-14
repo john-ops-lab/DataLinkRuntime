@@ -148,3 +148,29 @@ def test_http_rejects_redirect_and_never_echoes_arbitrary_error_code() -> None:
         server.shutdown()
         server.server_close()
         worker.join(timeout=2)
+
+
+@pytest.mark.parametrize(
+    "pixels,size,error",
+    [(16_000_001, 1, "image_too_large"), (1, 10 * 1024 * 1024 + 1, "too_large")],
+)
+def test_private_client_rejects_media_outside_reader_bounds(pixels, size, error) -> None:
+    source = b"source"
+    asset = b"x" * size
+    payload = {
+        "status": "success",
+        "source_sha256": hashlib.sha256(source).hexdigest(),
+        "assets": [
+            {
+                "asset_id": "bounded",
+                "content_type": "image/png",
+                "data_base64": base64.b64encode(asset).decode(),
+                "sha256": hashlib.sha256(asset).hexdigest(),
+                "size_bytes": size,
+                "width": pixels,
+                "height": 1,
+            }
+        ],
+    }
+    with pytest.raises(DocumentConversionError, match=error):
+        _result(payload, source)

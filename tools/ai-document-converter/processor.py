@@ -18,7 +18,8 @@ REVISION = "dlr-documents-v1-docling2.138-lo26.8"
 MAX_SOURCE = 6 * 1024 * 1024
 MAX_DERIVED = 64 * 1024 * 1024
 MAX_PAGES = 200
-MAX_PIXELS = 20_000_000
+MAX_PIXELS = 16_000_000
+MAX_MEDIA = 10 * 1024 * 1024
 
 
 class ConversionError(Exception):
@@ -237,7 +238,7 @@ def png_asset(image):
     stream = io.BytesIO()
     image.save(stream, format="PNG")
     data = stream.getvalue()
-    if len(data) > MAX_DERIVED:
+    if len(data) > MAX_MEDIA:
         raise ConversionError("ai_attachment_too_large")
     return dict(
         asset_id=uuid.uuid4().hex,
@@ -470,6 +471,8 @@ def dispatch(request):
         stream = io.BytesIO()
         writer.write(stream)
         content = stream.getvalue()
+        if len(content) > MAX_MEDIA:
+            raise ConversionError("ai_attachment_too_large")
         asset = {
             "asset_id": uuid.uuid4().hex,
             "content_type": "application/pdf",

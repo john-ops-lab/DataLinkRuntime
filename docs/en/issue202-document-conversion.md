@@ -20,9 +20,9 @@ The overlay sets `DLR_AI_DOCUMENT_CONVERTER_URL=http://ai-documents:5001` on Con
 
 Each actual child denies IPv4/IPv6 socket creation through seccomp. Unix sockets needed by Office remain available. Office uses a fresh profile with highest macro security and macros disabled. OOXML containing macros or external relationships skips rendering and reports limited coverage; source metadata remains readable. XLS cannot fetch external resources either.
 
-Private endpoints are prepare, read-page, read-sheet and `DELETE /v1/jobs/{job_id}`. A deadline or cancellation kills and waits for the whole process group and removes temporary files before acknowledging termination. The Docling supervisor forwards the same job ID, remaining deadline and cancellation to Office. Transport failure also requires a cancellation acknowledgement. Both internal clients reject redirects and expose only fixed safe error codes.
+Private endpoints are prepare, read-page, read-sheet and `DELETE /v1/jobs/{job_id}`. A deadline or cancellation kills and waits for the whole process group and removes temporary files before acknowledging termination. Compose `init: true` reaps adopted descendants; the supervisor verifies that the group no longer exists within 2.25 seconds, otherwise returning `ai_attachment_cancel_failed` without a successful acknowledgement. The Docling supervisor forwards the same job ID, remaining deadline and cancellation to Office. Transport failure also requires a cancellation acknowledgement. Both internal clients reject redirects and expose only fixed safe error codes.
 
-Limits: 6MiB source, 64MiB derivatives, 96MiB private wire, 200 pages, 20 million pixels per image, 60 seconds per operation and 200 cells per range. Chinese OCR exceeded a 2GiB limit in an actual test and succeeded at 3GiB; 2GiB is not a verified deployment budget.
+Limits: 6MiB source, 64MiB derivatives, 96MiB private wire, 200 pages, 16 million pixels and 10MiB per media asset, 60 seconds per operation and 200 cells per range. Chinese OCR exceeded a 2GiB limit in an actual test and succeeded at 3GiB; 2GiB is not a verified deployment budget.
 
 ## Representations and verification
 
