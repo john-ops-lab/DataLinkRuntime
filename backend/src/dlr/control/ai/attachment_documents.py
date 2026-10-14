@@ -190,7 +190,8 @@ class DocumentConverterClient:
         except urllib.error.HTTPError as exc:
             code = "ai_attachment_converter_unavailable"
             with suppress(ValueError, TypeError):
-                candidate = json.loads(exc.read(4096)).get("code")
+                body = json.loads(exc.read(4096))
+                candidate = body.get("code") if isinstance(body, dict) else None
                 if candidate in KNOWN_ERROR_CODES:
                     code = candidate
             raise DocumentConversionError(code) from exc

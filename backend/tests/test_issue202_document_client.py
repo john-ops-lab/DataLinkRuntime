@@ -174,3 +174,20 @@ def test_private_client_rejects_media_outside_reader_bounds(pixels, size, error)
     }
     with pytest.raises(DocumentConversionError, match=error):
         _result(payload, source)
+
+
+@pytest.mark.parametrize("body", [b"[]", b"null", b'"private-error-text"', b"123"])
+def test_http_error_non_object_json_stays_stable(monkeypatch, body: bytes) -> None:
+    import io
+    import urllib.error
+    import urllib.request
+
+    class Opener:
+        def open(self, *args: Any, **kwargs: Any) -> None:
+            raise urllib.error.HTTPError("http://converter", 503, "failed", {}, io.BytesIO(body))
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(DocumentConversionError) as error:
+        DocumentConverterClient("http://converter")._http("/v1/prepare", {}, 1)
+    assert error.value.code == "ai_attachment_converter_unavailable"
+    assert "private-error-text" not in str(error.value)
