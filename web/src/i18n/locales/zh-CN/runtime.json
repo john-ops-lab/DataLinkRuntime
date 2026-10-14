@@ -192,7 +192,10 @@
         "manualDeleteNotAllowed": "管理员已禁用永久保留，请选择其他策略。",
         "uploadFailed": "文件上传未完成，请重试。",
         "retentionIntegerRange": "请输入 3600 至 {{max}} 的整数秒数；当前输入已保留，请修正后保存。"
-      }
+      },
+      "savedNormalized": "保存成功，已移除 {{count}} 个空字符（U+0000）",
+      "saveSuccess": "保存成功",
+      "keyConflict": "对象 {{path}} 中的键 {{key}} 在移除空字符后重名，请修正输入"
     }
   },
   "webhook": {

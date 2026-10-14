@@ -69,6 +69,7 @@ def test_new_task_gets_none_config_and_safe_response(
         "revision": 1,
         "source_type": "none",
         "json_value": None,
+        "removed_null_characters": 0,
         "retention": {"mode": "system_default", "seconds": None},
         "artifacts": [],
         "valid_for_run": True,

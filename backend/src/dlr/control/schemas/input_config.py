@@ -36,6 +36,8 @@ class AdapterInputConfigUpsert(BaseModel):
     # ``model_fields_set`` distinguishes omitted json_value from explicit
     # JSON null, which is a valid JSON source value.
     json_value: Any = None
+    # Conservative pre-normalization size supplied by Web; never reduces the actual size.
+    original_json_size_bytes: int = Field(default=0, ge=0, strict=True)
     # Keep the nine-file boundary in the domain service so it can return the
     # stable structured ``managed_files_limit`` reason instead of a generic
     # Pydantic list-length error.
@@ -46,7 +48,9 @@ class AdapterInputConfigUpsert(BaseModel):
     def validate_source_fields(self) -> "AdapterInputConfigUpsert":
         fields = self.model_fields_set
         if self.source_type == "none":
-            forbidden = fields.intersection({"json_value", "artifact_ids", "retention"})
+            forbidden = fields.intersection(
+                {"json_value", "original_json_size_bytes", "artifact_ids", "retention"}
+            )
             if forbidden:
                 raise ValueError("none input does not accept source-specific fields")
         elif self.source_type == "json":
@@ -64,10 +68,12 @@ class AdapterInputConfigUpsert(BaseModel):
                 raise ValueError("artifact_ids must be unique")
             if any(artifact_id <= 0 for artifact_id in self.artifact_ids):
                 raise ValueError("artifact_ids must be positive")
-            if "json_value" in fields:
+            if fields.intersection({"json_value", "original_json_size_bytes"}):
                 raise ValueError("managed_files input does not accept json_value")
         else:
-            forbidden = fields.intersection({"json_value", "artifact_ids", "retention"})
+            forbidden = fields.intersection(
+                {"json_value", "original_json_size_bytes", "artifact_ids", "retention"}
+            )
             if forbidden:
                 raise ValueError("remote_files input does not accept source-specific fields")
         return self
@@ -98,6 +104,7 @@ class AdapterInputConfigResponse(BaseModel):
     revision: int
     source_type: InputSourceType
     json_value: Any
+    removed_null_characters: int = Field(default=0, ge=0)
     retention: InputRetention
     # Current selection metadata is safe to expose; storage keys, upload
     # sessions, paths, and contents remain outside the response contract.

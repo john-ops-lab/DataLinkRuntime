@@ -28,6 +28,7 @@ import type {
   TaskRunMode,
   Worker,
 } from "../types";
+import { JsonInputKeyConflict, normalizeJsonInput } from "../json-input-normalization";
 import { userErrorMessage } from "../user-message";
 import ManagedInputExamples from "./ManagedInputExamples";
 
@@ -290,6 +291,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   const [loadingInput, setLoadingInput] = useState(true);
   const [inputLoadFailed, setInputLoadFailed] = useState(false);
   const [savingInput, setSavingInput] = useState(false);
+  const [inputSaveFeedback, setInputSaveFeedback] = useState<number | null>(null);
   const [inputValidationError, setInputValidationError] = useState<string | null>(null);
   const [managedCapability, setManagedCapability] = useState<ManagedInputCapability | null>(null);
   const [loadingManagedCapability, setLoadingManagedCapability] = useState(true);
@@ -363,6 +365,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     const epoch = inputLoadEpoch.current + 1;
     inputLoadEpoch.current = epoch;
     setLoadingInput(true);
+    setInputSaveFeedback(null);
+    setSavingInput(false);
     setInputLoadFailed(false);
     try {
       const loaded = await api.getInputConfig(adapterId);
@@ -672,6 +676,25 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       return;
     }
 
+    let removedNullCharacters = 0;
+    let normalizedJson: unknown;
+    let originalJsonSizeBytes: number | undefined;
+    const parsedJson = inputSourceDraft === "json" ? parseJson(inputJsonDraft) : null;
+    if (parsedJson?.ok) {
+      try {
+        const normalized = normalizeJsonInput(parsedJson.value);
+        normalizedJson = normalized.value;
+        removedNullCharacters = normalized.removed;
+        originalJsonSizeBytes = new TextEncoder().encode(JSON.stringify(parsedJson.value)).byteLength;
+      } catch (error) {
+        if (!(error instanceof JsonInputKeyConflict)) throw error;
+        const message = t("task.input.keyConflict", { path: error.path || "/", key: JSON.stringify(error.key) });
+        setInputValidationError(message);
+        setInputSaveFeedback(null);
+        onError(message);
+        return;
+      }
+    }
     const payload = inputSourceDraft === "none"
       ? { expected_revision: inputConfig.revision, source_type: "none" as const }
       : inputSourceDraft === "managed_files"
@@ -682,14 +705,14 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             retention: retentionDraft,
           }
         : (() => {
-            const parsed = parseJson(inputJsonDraft);
-            if (!parsed.ok) {
+            if (parsedJson === null || !parsedJson.ok) {
               return null;
             }
             return {
               expected_revision: inputConfig.revision,
               source_type: "json" as const,
-              json_value: parsed.value,
+              json_value: normalizedJson,
+              ...(removedNullCharacters > 0 ? { original_json_size_bytes: originalJsonSizeBytes } : {}),
             };
           })();
     if (payload === null) {
@@ -715,13 +738,17 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     }
 
     const submittedEditEpoch = inputEditEpoch.current;
+    const submittedLoadEpoch = inputLoadEpoch.current;
     const mutation = beginRuntimeMutation();
     if (mutation === null) return;
     setSavingInput(true);
+    setInputSaveFeedback(null);
     setInputValidationError(null);
     onError(null);
     try {
       const saved = await api.putInputConfig(adapterId, payload);
+      if (inputLoadEpoch.current !== submittedLoadEpoch) return;
+      setInputSaveFeedback(removedNullCharacters + (saved.removed_null_characters ?? 0));
       setInputConfig(saved);
       const savedIds = new Set(saved.artifacts.map((artifact) => artifact.id));
       setStagedArtifacts((current) => current.filter((artifact) => !savedIds.has(artifact.id)));
@@ -743,7 +770,10 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     } catch (error) {
       // Keep both the last valid server resource and the user's draft intact.
       // In particular, a 409 must not silently replace the stale page's text.
-      const message = localizedInputError(error);
+      if (inputLoadEpoch.current !== submittedLoadEpoch) return;
+      const message = error instanceof ApiError && error.code === "input_json_key_conflict"
+        ? t("task.input.keyConflict", { path: error.params.path || "/", key: JSON.stringify(error.params.key) })
+        : localizedInputError(error);
       setInputValidationError(message);
       onError(message);
       if (error instanceof ApiError && error.code === "adapter_runtime_locked") {
@@ -753,7 +783,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       }
     } finally {
       mutation.finish();
-      setSavingInput(false);
+      if (inputLoadEpoch.current === submittedLoadEpoch) setSavingInput(false);
     }
   }
 
@@ -1805,6 +1835,16 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               showIcon
               data-testid="task-input-invalid"
               message={inputInvalidMessage ?? t("task.input.invalidConfig")}
+            />
+          )}
+          {inputSaveFeedback !== null && (
+            <Alert
+              type="success"
+              showIcon
+              data-testid="task-input-save-feedback"
+              message={inputSaveFeedback > 0
+                ? t("task.input.savedNormalized", { count: inputSaveFeedback })
+                : t("task.input.saveSuccess")}
             />
           )}
           <div className="task-input-actions">
