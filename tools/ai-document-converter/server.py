@@ -84,6 +84,9 @@ class Job:
         self.cancelled = threading.Event()
         self.done = threading.Event()
         self.process = None
+        self.run_finished = False
+        self.group_reaped = False
+        self.owns_slot = True
 
 
 class Supervisor:
@@ -92,6 +95,17 @@ class Supervisor:
         self.slots = threading.BoundedSemaphore(1)
         self.jobs = {}
         self.tombstones = {}
+
+    def _finalize_locked(self, job_id, job):
+        # A reaped process alone does not finish an active Office call or the
+        # run's temporary-directory cleanup. Retain the permit until both end.
+        if not (job.run_finished and job.group_reaped and job.owns_slot):
+            return
+        if self.jobs.get(job_id) is job:
+            self.jobs.pop(job_id)
+        job.owns_slot = False
+        self.slots.release()
+        job.done.set()
 
     def cancel(self, job_id):
         with self.lock:
@@ -104,6 +118,7 @@ class Supervisor:
             if job:
                 job.cancelled.set()
                 terminate(job.process)
+                job.group_reaped = True
         if ROLE == "docling":
             try:
                 reply = http_office(f"/v1/jobs/{job_id}", None, 3, method="DELETE")
@@ -114,8 +129,11 @@ class Supervisor:
                 # phase records itself before the network request.
                 if job and getattr(job, "office_active", False):
                     raise ConversionError("ai_attachment_cancel_failed") from None
-        if job and not job.done.wait(3):
-            raise ConversionError("ai_attachment_cancel_failed")
+        if job:
+            with self.lock:
+                self._finalize_locked(job_id, job)
+            if not job.done.wait(3):
+                raise ConversionError("ai_attachment_cancel_failed")
         return {"terminated": True, "cancelled": True}
 
     def run(self, request, operation):
@@ -212,12 +230,17 @@ class Supervisor:
                         return result
                 raise ConversionError("ai_attachment_parse_failed")
         finally:
-            terminate(job.process)
-            with self.lock:
-                if self.jobs.get(job_id) is job:
-                    self.jobs.pop(job_id)
-            job.done.set()
-            self.slots.release()
+            reaped = False
+            try:
+                terminate(job.process)
+                reaped = True
+            finally:
+                with self.lock:
+                    job.run_finished = True
+                    job.group_reaped = job.group_reaped or reaped
+                    # Failed reaping leaves the job quarantined. A later cancel
+                    # can confirm its group stopped and finalize this same permit.
+                    self._finalize_locked(job_id, job)
 
 
 SUPERVISOR = Supervisor()

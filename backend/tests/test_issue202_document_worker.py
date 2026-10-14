@@ -219,6 +219,181 @@ def test_cancel_never_acknowledges_unconfirmed_group(
         supervisor.cancel("unconfirmed")
 
 
+def test_supervisor_quarantines_failed_reaping_and_cancel_retry_restores_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+    import os
+    import subprocess
+    import sys
+    import threading
+
+    monkeypatch.syspath_prepend(str(TOOLS))
+    module = _module("server")
+    monkeypatch.setattr(module, "ROLE", "office")
+    supervisor = module.Supervisor()
+    real_popen = subprocess.Popen
+    real_terminate = module.terminate
+    children = []
+    directories = []
+    failed_reaping = threading.Event()
+    failed_reaping.set()
+
+    def spawn(command, **kwargs):
+        request = json.loads(Path(command[-2]).read_text())
+        script = (
+            "import time; time.sleep(60)"
+            if request["job_id"] == "quarantined"
+            else "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"ok\":true}')"
+        )
+        process = real_popen([sys.executable, "-c", script, command[-1]], **kwargs)
+        children.append(process)
+        directories.append(Path(command[-2]).parent)
+        return process
+
+    def reap(process):
+        if process is not None and failed_reaping.is_set():
+            raise module.ConversionError("ai_attachment_cancel_failed")
+        return real_terminate(process)
+
+    monkeypatch.setattr(module.subprocess, "Popen", spawn)
+    monkeypatch.setattr(module, "terminate", reap)
+    request = {
+        "job_id": "quarantined",
+        "filename": "source.pdf",
+        "data_base64": base64.b64encode(b"source").decode(),
+        "timeout_seconds": 0.05,
+    }
+    try:
+        with pytest.raises(module.ConversionError, match="ai_attachment_cancel_failed"):
+            supervisor.run(request, "prepare")
+        job = supervisor.jobs["quarantined"]
+        assert job.run_finished and not job.done.is_set()
+        assert job.owns_slot and not job.group_reaped
+        assert children[0].poll() is None
+        os.killpg(children[0].pid, 0)
+        assert not directories[0].exists()
+        assert not supervisor.slots.acquire(blocking=False)
+        with pytest.raises(module.ConversionError, match="ai_attachment_converter_busy"):
+            supervisor.run({**request, "job_id": "too-early"}, "prepare")
+        with pytest.raises(module.ConversionError, match="ai_attachment_cancel_failed"):
+            supervisor.cancel("quarantined")
+        assert supervisor.jobs["quarantined"] is job and job.owns_slot
+
+        failed_reaping.clear()
+        assert supervisor.cancel("quarantined")["terminated"] is True
+        assert children[0].poll() is not None
+        with pytest.raises(ProcessLookupError):
+            os.killpg(children[0].pid, 0)
+        assert supervisor.jobs == {} and job.done.is_set() and not job.owns_slot
+        # Both a duplicate cancellation and duplicate finalization must be harmless.
+        assert supervisor.cancel("quarantined")["terminated"] is True
+        with supervisor.lock:
+            supervisor._finalize_locked("quarantined", job)
+        assert supervisor.slots.acquire(blocking=False)
+        assert not supervisor.slots.acquire(blocking=False)
+        supervisor.slots.release()
+        assert supervisor.run(
+            {**request, "job_id": "healthy-next", "timeout_seconds": 3}, "prepare"
+        ) == {"ok": True}
+        assert supervisor.jobs == {} and all(not path.exists() for path in directories)
+    finally:
+        failed_reaping.clear()
+        for process in children:
+            real_terminate(process)
+
+
+@pytest.mark.parametrize("phase", ["office_call", "temporary_cleanup"])
+def test_supervisor_cancel_waits_for_run_cleanup_before_releasing_capacity(
+    monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    import subprocess
+    import sys
+    import tempfile
+    import threading
+
+    monkeypatch.syspath_prepend(str(TOOLS))
+    module = _module("server")
+    monkeypatch.setattr(module, "ROLE", "docling" if phase == "office_call" else "office")
+    supervisor = module.Supervisor()
+    cleanup_started = threading.Event()
+    cleanup_continue = threading.Event()
+    cancel_returned = threading.Event()
+    real_directory = tempfile.TemporaryDirectory
+    real_popen = subprocess.Popen
+    children = []
+    outcomes = []
+
+    class DelayedCleanup(real_directory):
+        def __exit__(self, *args):
+            cleanup_started.set()
+            assert cleanup_continue.wait(3)
+            return super().__exit__(*args)
+
+    def office(path, payload, timeout, method="POST"):
+        if method == "DELETE":
+            return {"terminated": True}
+        cleanup_started.set()
+        assert cleanup_continue.wait(3)
+        return {"rendered_pdf": base64.b64encode(b"%PDF-source").decode()}
+
+    def spawn(command, **kwargs):
+        script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"ok\":true}')"
+        process = real_popen([sys.executable, "-c", script, command[-1]], **kwargs)
+        children.append(process)
+        return process
+
+    if phase == "temporary_cleanup":
+        monkeypatch.setattr(module.tempfile, "TemporaryDirectory", DelayedCleanup)
+    monkeypatch.setattr(module, "http_office", office)
+    monkeypatch.setattr(module.subprocess, "Popen", spawn)
+    request = {
+        "job_id": "active-run",
+        "filename": "source.xls" if phase == "office_call" else "source.pdf",
+        "data_base64": base64.b64encode(b"source").decode(),
+    }
+
+    def run():
+        try:
+            outcomes.append(supervisor.run(request, "prepare"))
+        except module.ConversionError as error:
+            outcomes.append(error.code)
+
+    def cancel():
+        try:
+            outcomes.append(supervisor.cancel("active-run"))
+        finally:
+            cancel_returned.set()
+
+    run_thread = threading.Thread(target=run)
+    cancel_thread = threading.Thread(target=cancel)
+    run_thread.start()
+    try:
+        assert cleanup_started.wait(3)
+        job = supervisor.jobs["active-run"]
+        cancel_thread.start()
+        assert job.cancelled.wait(1)
+        assert not job.run_finished and not job.done.is_set() and job.owns_slot
+        assert not supervisor.slots.acquire(blocking=False)
+        assert not cancel_returned.wait(0.05)
+        cleanup_continue.set()
+        run_thread.join(timeout=3)
+        cancel_thread.join(timeout=3)
+        assert not run_thread.is_alive() and not cancel_thread.is_alive()
+        assert {"terminated": True, "cancelled": True} in outcomes
+        assert supervisor.jobs == {} and job.done.is_set() and not job.owns_slot
+        assert supervisor.slots.acquire(blocking=False)
+        assert not supervisor.slots.acquire(blocking=False)
+        supervisor.slots.release()
+    finally:
+        cleanup_continue.set()
+        run_thread.join(timeout=3)
+        if cancel_thread.ident is not None:
+            cancel_thread.join(timeout=3)
+        for process in children:
+            module.terminate(process)
+
+
 @pytest.mark.parametrize(
     "pixels,size,error",
     [
