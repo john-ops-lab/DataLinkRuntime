@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useId,
   useRef,
   useState,
   type ChangeEvent,
@@ -142,6 +143,8 @@ function CredentialsPanel(props: {
   const [formOpen, setFormOpen] = useState(false);
   const restoreFocus = useOverlayFocus(formOpen, '[data-testid="new-credential"], a[href="/adapters"]');
   const [form, setForm] = useState<CredentialFormState>(emptyForm);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const fieldErrorId = useId();
   const [submitting, setSubmitting] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -176,12 +179,14 @@ function CredentialsPanel(props: {
   }, [load]);
 
   function openCreate() {
+    setFieldErrors({});
     setNotice(null);
     setForm(emptyForm());
     setFormOpen(true);
   }
 
   function openUpdate(credential: Credential) {
+    setFieldErrors({});
     setNotice(null);
     setForm({
       editingId: credential.id,
@@ -193,11 +198,13 @@ function CredentialsPanel(props: {
   }
 
   function closeForm() {
+    setFieldErrors({});
     setFormOpen(false);
     props.onDirtyClear?.();
   }
 
   function handleTypeChange(type: CredentialType) {
+    setFieldErrors((current): Record<string, string> => current.name === undefined ? {} : { name: current.name });
     setForm((current) => ({ ...current, type, fields: {} }));
   }
 
@@ -207,7 +214,7 @@ function CredentialsPanel(props: {
     }
     const name = values.name.trim();
     if (name === "") {
-      fail(t("credentials.nameRequired"));
+      setFieldErrors({ name: t("credentials.nameRequired") });
       return false;
     }
     const type = values.type;
@@ -216,11 +223,12 @@ function CredentialsPanel(props: {
     for (const key of required) {
       const value = (values.fields?.[key] ?? "").trim();
       if (value === "") {
-        fail(t("credentials.fieldRequired", { field: credentialFieldLabel(key) }));
+        setFieldErrors({ [key]: t("credentials.fieldRequired", { field: credentialFieldLabel(key) }) });
         return false;
       }
       fields[key] = value;
     }
+    setFieldErrors({});
     // M5.5.7：创建前一次性明文提醒。保存后 Secret 真值无法再通过浏览器
     // 查看，因此必须在最终提交前明确告知用户先妥善保存或复制。
     if (form.editingId === null) {
@@ -419,6 +427,14 @@ function CredentialsPanel(props: {
         }}
         onValuesChange={(changed, values) => {
           props.onDirty?.();
+          setFieldErrors((current) => {
+            const next = { ...current };
+            if (changed.name !== undefined && (values.name ?? "").trim() !== "") delete next.name;
+            for (const key of Object.keys(changed.fields ?? {})) {
+              if ((values.fields?.[key] ?? "").trim() !== "") delete next[key];
+            }
+            return next;
+          });
           const nextType = values.type ?? form.type;
           setForm((current) => ({
             ...current,
@@ -437,13 +453,23 @@ function CredentialsPanel(props: {
           data-settings-subform="true"
           data-testid="credential-form"
         >
-          <Form.Item name="name" noStyle>
-            <Input
-              data-testid="credential-name"
-              aria-label={t("credentials.name")}
-              placeholder={t("labels.name", { ns: "common" })}
-            />
-          </Form.Item>
+          <div className="credential-form-field">
+            <Form.Item name="name" noStyle>
+              <Input
+                data-testid="credential-name"
+                aria-label={t("credentials.name")}
+                aria-required="true"
+                aria-invalid={fieldErrors.name !== undefined}
+                aria-describedby={fieldErrors.name === undefined ? undefined : `${fieldErrorId}-name`}
+                aria-errormessage={fieldErrors.name === undefined ? undefined : `${fieldErrorId}-name`}
+                status={fieldErrors.name === undefined ? undefined : "error"}
+                placeholder={t("labels.name", { ns: "common" })}
+              />
+            </Form.Item>
+            {fieldErrors.name !== undefined && (
+              <p id={`${fieldErrorId}-name`} className="settings-panel-error" role="alert">{fieldErrors.name}</p>
+            )}
+          </div>
           <Form.Item name="type" noStyle>
             <Select<CredentialType>
               data-testid="credential-type"
@@ -460,14 +486,24 @@ function CredentialsPanel(props: {
             />
           </Form.Item>
           {formFieldKeys.map((key) => (
-            <Form.Item key={key} name={["fields", key]} noStyle>
-              <Input.Password
-                data-testid={`credential-field-${key}`}
-                aria-label={t("credentials.fieldAria", { field: key })}
-                placeholder={credentialFieldLabel(key)}
-                autoComplete="new-password"
-              />
-            </Form.Item>
+            <div key={key} className="credential-form-field">
+              <Form.Item name={["fields", key]} noStyle>
+                <Input.Password
+                  data-testid={`credential-field-${key}`}
+                  aria-label={t("credentials.fieldAria", { field: key })}
+                  aria-required="true"
+                  aria-invalid={fieldErrors[key] !== undefined}
+                  aria-describedby={fieldErrors[key] === undefined ? undefined : `${fieldErrorId}-${key}`}
+                  aria-errormessage={fieldErrors[key] === undefined ? undefined : `${fieldErrorId}-${key}`}
+                  status={fieldErrors[key] === undefined ? undefined : "error"}
+                  placeholder={credentialFieldLabel(key)}
+                  autoComplete="new-password"
+                />
+              </Form.Item>
+              {fieldErrors[key] !== undefined && (
+                <p id={`${fieldErrorId}-${key}`} className="settings-panel-error" role="alert">{fieldErrors[key]}</p>
+              )}
+            </div>
           ))}
           {form.editingId !== null && (
             <Typography.Text type="secondary">

@@ -1,7 +1,8 @@
 /** 左侧 Adapter Catalog：高密度行式导航 + 新建表单（M3.1 §7，业务合同仍沿用 M1）。 */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Button, Dropdown, Empty, Input, Popover, Radio, Select, Tooltip } from "antd";
+import type { InputRef } from "antd";
 import { QuestionCircleOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   DrawerForm,
@@ -223,6 +224,7 @@ export default function AdapterCatalog({
 }: AdapterCatalogProps) {
   const { t } = useTranslation(["adapter", "common"]);
   const [creating, setCreating] = useState(false);
+  const createNameRef = useRef<InputRef>(null);
   const [createForm] = ProForm.useForm<CreateAdapterValues>();
   const [filters, setFilters] = useState<CatalogFilterValues>({
     search: "",
@@ -239,6 +241,25 @@ export default function AdapterCatalog({
       createForm.setFieldsValue(DEFAULT_CREATE_ADAPTER_VALUES);
     }
   }, [createForm, creating]);
+
+  function handleCreateDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Tab") return;
+    const controls = [...event.currentTarget.querySelectorAll<HTMLElement>(
+      'button, input, textarea, select, a[href], [tabindex]',
+    )].filter((element) => element.tabIndex >= 0
+      && element.getClientRects().length > 0
+      && !element.matches(':disabled, [aria-disabled="true"], [aria-hidden="true"]'));
+    const first = controls[0];
+    const last = controls.at(-1);
+    if (first === undefined || last === undefined) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus({ preventScroll: true });
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus({ preventScroll: true });
+    }
+  }
 
   async function handleCreate(values: CreateAdapterValues): Promise<boolean> {
     const trimmed = values.name.trim();
@@ -518,7 +539,15 @@ export default function AdapterCatalog({
         initialValues={{
           ...DEFAULT_CREATE_ADAPTER_VALUES,
         }}
-        drawerProps={{ destroyOnHidden: true, afterOpenChange: restoreFocus }}
+        drawerProps={{
+          destroyOnHidden: true,
+          autoFocus: false,
+          afterOpenChange: (open) => {
+            if (open) createNameRef.current?.focus({ preventScroll: true });
+            restoreFocus(open);
+          },
+          onKeyDown: handleCreateDialogKeyDown,
+        }}
         onOpenChange={(open) => {
           if (!open) {
             createForm.resetFields();
@@ -556,6 +585,8 @@ export default function AdapterCatalog({
           ]}
         >
           <Input
+            ref={createNameRef}
+            autoFocus
             data-testid="new-adapter-name"
             aria-label={t("catalog.name")}
             placeholder={t("catalog.namePlaceholder")}
