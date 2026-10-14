@@ -1209,3 +1209,32 @@ describe("Issue #211 BFCache lifecycle", () => {
     expect(screen.queryByText("late-old-bfcache-reply")).toBeNull();
   });
 });
+
+it("prepares a normal multi-file selection sequentially against a single conversion worker", async () => {
+  enablePrepared();
+  vi.mocked(api.getPreparedAiAttachment).mockImplementation(async (_adapter, _scope, ref) => preparedMetadata({ attachment_ref: ref }));
+  let finishFirst!: () => void;
+  let converting = false;
+  const prepare = vi.spyOn(api, "prepareAiAttachment").mockImplementation(async (_adapter, _scope, attachment) => {
+    if (converting) throw new ApiError(503, "ai_attachment_converter_busy", "single worker busy");
+    converting = true;
+    try {
+      if (attachment.filename === "chart.png") await new Promise<void>((resolve) => { finishFirst = resolve; });
+      return preparedMetadata({ filename: attachment.filename, content_type: attachment.content_type,
+        attachment_ref: attachment.filename === "chart.png" ? "chart-reference-id" : "text-reference-id" });
+    } finally { converting = false; }
+  });
+  const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("batch-ready-reply", null));
+  renderPanel(); await screen.findByTestId("ai-attachment-capability");
+  await addFiles(makeFile("chart.png", "image/png", "small-image"), makeFile("context.txt", "text/plain", "tiny-context"));
+  await waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+  expect(screen.getAllByTestId("ai-attachment-item")).toHaveLength(2);
+  await act(async () => { finishFirst(); });
+  await waitFor(() => expect(screen.getAllByTestId("ai-prepared-directory")).toHaveLength(2));
+  expect(prepare).toHaveBeenCalledTimes(2);
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "read both original files" } });
+  fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("batch-ready-reply");
+  expect(assist.mock.calls[0]?.[1].attachment_refs?.map((ref) => ref.attachment_ref))
+    .toEqual(["chart-reference-id", "text-reference-id"]);
+  expect(screen.queryByTestId("ai-panel-error")).toBeNull();
+});

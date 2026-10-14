@@ -32,6 +32,7 @@ export class PreparedAttachmentSession {
   private closed = false;
   private mounts = 0;
   private used = false;
+  private prepareTail: Promise<void> = Promise.resolve();
 
   mount() {
     this.mounts += 1;
@@ -58,6 +59,26 @@ export class PreparedAttachmentSession {
     this.listeners.forEach((listener) => listener());
   }
 
+  private enqueuePreparation(entry: Entry, run: () => Promise<AiPreparedAttachment>) {
+    const signal = entry.controller.signal;
+    let rejectAbort!: (error: DOMException) => void;
+    const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+    const onAbort = () => rejectAbort(new DOMException("Preparation cancelled", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    // Cancelled queued rows stay behind their predecessor until their turn,
+    // so removing one cannot let later rows overtake an active conversion.
+    const queued = this.prepareTail.then(() => {
+      signal.throwIfAborted();
+      return Promise.race([run(), aborted]);
+    });
+    this.prepareTail = queued.then(() => {}, () => {});
+    // An abort releases an active slot even if a transport ignores its signal.
+    // The original run still fences and releases any late returned reference.
+    return Promise.race([queued, aborted]).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  }
+
   prepare(id: string, read: () => Promise<AiAttachment>, retry = false): Promise<AiPreparedAttachment> {
     if (this.closed) return Promise.reject(new DOMException("Scope closed", "AbortError"));
     const previous = this.entries.get(id);
@@ -71,7 +92,7 @@ export class PreparedAttachmentSession {
       metadata: null };
     this.entries.set(id, entry);
     this.update(id, { phase: "preparing", metadata: null, error: null });
-    entry.promise = (async () => {
+    entry.promise = this.enqueuePreparation(entry, async () => {
       try {
         const wire = await read();
         controller.signal.throwIfAborted();
@@ -90,7 +111,7 @@ export class PreparedAttachmentSession {
         }
         throw error;
       }
-    })();
+    });
     // Automatic preparation may finish before the user sends; error rows remain retryable.
     void entry.promise.catch(() => {});
     return entry.promise;

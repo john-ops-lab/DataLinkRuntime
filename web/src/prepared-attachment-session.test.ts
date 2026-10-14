@@ -47,7 +47,7 @@ describe("prepared attachment resource lifecycle", () => {
     let resolve: (value: AiPreparedAttachment) => void = () => {};
     transport.prepareAiAttachment.mockImplementation(() => new Promise((done) => { resolve = done; }));
     const pending = session.prepare("pending", read);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(transport.prepareAiAttachment).toHaveBeenCalledTimes(2));
     session.removeComposer("pending");
     expect(transport.prepareAiAttachment.mock.calls[1]?.[3]?.aborted).toBe(true);
     resolve(metadata({ attachment_ref: "late-reference-id" }));
@@ -61,7 +61,7 @@ describe("prepared attachment resource lifecycle", () => {
     let resolve: (value: AiPreparedAttachment) => void = () => {};
     transport.prepareAiAttachment.mockImplementation(() => new Promise((done) => { resolve = done; }));
     const pending = session.prepare("row", read);
-    await Promise.resolve(); session.close();
+    await vi.waitFor(() => expect(transport.prepareAiAttachment).toHaveBeenCalledOnce()); session.close();
     expect(transport.prepareAiAttachment.mock.calls[0]?.[3]?.aborted).toBe(true);
     resolve(metadata());
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
@@ -117,5 +117,95 @@ describe("prepared attachment resource lifecycle", () => {
     expect(transport.releaseAiAttachmentScope).toHaveBeenCalledOnce();
     const empty = setup(); empty.session.close();
     expect(empty.transport.releaseAiAttachmentScope).not.toHaveBeenCalled();
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((done, failed) => { resolve = done; reject = failed; });
+  return { promise, resolve, reject };
+}
+
+describe("same-session bounded preparation queue", () => {
+  it("serializes batch requests and allows freezing only once both original files are ready", async () => {
+    const { session, transport, read } = setup();
+    const first = deferred<AiPreparedAttachment>();
+    transport.prepareAiAttachment.mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(metadata({ attachment_ref: "second-reference" }));
+    const one = session.prepare("one", read);
+    const two = session.prepare("two", read);
+    await vi.waitFor(() => expect(transport.prepareAiAttachment).toHaveBeenCalledOnce());
+    expect(read).toHaveBeenCalledOnce();
+    expect(() => session.freeze(["one", "two"])).toThrow("not prepared");
+    first.resolve(metadata()); await one; await two;
+    expect(transport.prepareAiAttachment).toHaveBeenCalledTimes(2);
+    expect(session.freeze(["one", "two"]).map((ref) => ref.attachment_ref))
+      .toEqual(["abcdefghijklmnop", "second-reference"]);
+  });
+
+  it("skips a removed queued row without letting its successor overtake the active request", async () => {
+    const { session, transport, read } = setup();
+    const first = deferred<AiPreparedAttachment>();
+    transport.prepareAiAttachment.mockReturnValueOnce(first.promise);
+    const one = session.prepare("one", read);
+    const removed = session.prepare("removed", read);
+    const three = session.prepare("three", read);
+    await vi.waitFor(() => expect(transport.prepareAiAttachment).toHaveBeenCalledOnce());
+    session.removeComposer("removed");
+    await expect(removed).rejects.toMatchObject({ name: "AbortError" });
+    expect(transport.prepareAiAttachment).toHaveBeenCalledOnce();
+    first.resolve(metadata()); await one; await three;
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(transport.prepareAiAttachment).toHaveBeenCalledTimes(2);
+    expect(session.snapshot().removed).toBeUndefined();
+  });
+
+  it("scope close rejects queued rows without reading them or issuing HTTP", async () => {
+    const { session, transport, read } = setup();
+    const first = deferred<AiPreparedAttachment>();
+    transport.prepareAiAttachment.mockReturnValueOnce(first.promise);
+    const one = session.prepare("one", read);
+    const two = session.prepare("two", read);
+    await vi.waitFor(() => expect(transport.prepareAiAttachment).toHaveBeenCalledOnce());
+    session.close();
+    await expect(one).rejects.toMatchObject({ name: "AbortError" });
+    await expect(two).rejects.toMatchObject({ name: "AbortError" });
+    first.resolve(metadata()); await vi.waitFor(() => expect(transport.releasePreparedAiAttachment).toHaveBeenCalledOnce());
+    expect(transport.prepareAiAttachment).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledOnce();
+    expect(session.snapshot()).toEqual({});
+  });
+
+  it("advances after an active failure without disguising genuine busy errors", async () => {
+    const { session, transport, read } = setup();
+    const first = deferred<AiPreparedAttachment>();
+    transport.prepareAiAttachment.mockReturnValueOnce(first.promise);
+    const one = session.prepare("one", read);
+    const two = session.prepare("two", read);
+    await vi.waitFor(() => expect(transport.prepareAiAttachment).toHaveBeenCalledOnce());
+    const busy = { code: "ai_attachment_converter_busy" };
+    first.reject(busy); await expect(one).rejects.toBe(busy); await two;
+    expect(session.snapshot().one?.phase).toBe("error");
+    expect(session.snapshot().one?.error).toBe(busy);
+    expect(session.snapshot().two?.phase).toBe("ready");
+  });
+
+  it("advances after active cancellation even with a non-cooperative transport and cleans a late ref", async () => {
+    const { session, transport, read } = setup();
+    const first = deferred<AiPreparedAttachment>();
+    transport.prepareAiAttachment.mockReturnValueOnce(first.promise);
+    const one = session.prepare("one", read);
+    const two = session.prepare("two", read);
+    await vi.waitFor(() => expect(transport.prepareAiAttachment).toHaveBeenCalledOnce());
+    session.removeComposer("one");
+    await expect(one).rejects.toMatchObject({ name: "AbortError" }); await two;
+    expect(transport.prepareAiAttachment).toHaveBeenCalledTimes(2);
+    expect(transport.prepareAiAttachment.mock.calls[0]?.[3]?.aborted).toBe(true);
+    first.resolve(metadata({ attachment_ref: "cancelled-late-ref" }));
+    await vi.waitFor(() => expect(transport.releasePreparedAiAttachment)
+      .toHaveBeenCalledWith(7, "scope-id", "cancelled-late-ref"));
+    expect(session.snapshot().one).toBeUndefined();
+    expect(session.snapshot().two?.phase).toBe("ready");
   });
 });

@@ -35,3 +35,7 @@ Leaving the page aborts waiting, fences late results and releases the old attach
 Three bilingual/late-response lifecycle regressions use synthetic page events on the real component to verify new preparation, ref-based sending and response fencing. They do not establish actual Chrome BFCache eligibility; real Back/Forward restoration remains separate acceptance.
 
 #211 validation: Node 24 attachment/panel regressions 59 passed, including 3 new lifecycle cases; final lifecycle-only rerun 3 passed; typecheck, changed-file ESLint and pinned AntD checks passed. The unrelated full Web suite was not repeated, and synthetic events are not reported as real BFCache acceptance.
+
+File preparation within one page scope runs sequentially in selection order under the existing eight-file and size limits; server processes, CPU and queues are unchanged. Each row remains cancellable. Removing a queued row neither reads its file nor sends HTTP and cannot let a successor overtake the active preparation. Failure or cancellation advances the queue, while late returned refs are still released. Genuine busy responses from other scopes/conversions remain visible with explicit retry.
+
+Serial preparation validation: Node 24 session/API/panel regressions 65 passed, including five queue cancellation/failure/order cases and one normal multi-selection component regression against a simulated single conversion worker. Real conversion-service batch selection remains acceptance on the integrated SHA.
