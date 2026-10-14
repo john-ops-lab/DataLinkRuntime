@@ -471,6 +471,8 @@ def test_service_reader_hook_and_selected_capability(
     assert ai.attachment_capabilities().selected is None
     monkeypatch.setattr(settings, "ai_document_converter_url", "http://converter.invalid")
     assert ai.attachment_capabilities().prepared_attachments_enabled
+    monkeypatch.setattr(settings, "ai_document_converter_url", "")
+    assert not ai.attachment_capabilities().prepared_attachments_enabled
 
 
 def test_refs_without_reader_fail_closed_before_provider(
