@@ -414,6 +414,16 @@ _OPENAI_NATIVE_IMAGE_MODELS = _OPENAI_NATIVE_PDF_MODELS | frozenset(
         "gpt-4-turbo-2024-04-09",
     }
 )
+_OPENAI_1M_CONTEXT_MODELS = frozenset(
+    {
+        "gpt-4.1",
+        "gpt-4.1-2025-04-14",
+        "gpt-4.1-mini",
+        "gpt-4.1-mini-2025-04-14",
+        "gpt-4.1-nano",
+        "gpt-4.1-nano-2025-04-14",
+    }
+)
 # Served legacy Claude IDs and the documented 4.5 aliases. Context limits come
 # from each official model page; retired 4/4.1/3.x IDs are intentionally absent.
 _ANTHROPIC_IMAGE_ONLY_WINDOWS = {
@@ -458,7 +468,9 @@ def resolve_attachment_adapter(
         ):
             image = True
             pdf = setting.model in _OPENAI_NATIVE_PDF_MODELS
-            window = 128000
+            # All six official 4.1 IDs document 1,047,576 input tokens. Use a
+            # conservative 1M; 4o/Turbo retain their documented 128K boundary.
+            window = 1000000 if setting.model in _OPENAI_1M_CONTEXT_MODELS else 128000
         elif (
             setting.provider == "minimax"
             and parts.hostname in {"api.minimax.cn", "api.minimax.io"}

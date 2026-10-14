@@ -26,7 +26,7 @@
 
 仅匹配 HTTPS、默认 TLS 端口与精确 Provider/协议/模型/根路径。未知模型、代理子路径或其他组合不会继承品牌能力；DLR不自动切换模型、端点或协议。支持声明与平台实际账户可用性分开：上游拒绝仍明确失败。
 
-图片输入、原生 PDF 与严格结构化输出分别核实。补充精确型号与快照用于保持已有 inline 图片入口，不提升输出策略或推断 PDF 能力；这些 OpenAI 型号仍使用保守的 128K 上下文门禁。已退役或受账户限制的上游模型不会因此恢复可用。
+图片输入、原生 PDF 与严格结构化输出分别核实。补充精确型号与快照用于保持已有 inline 图片入口，不提升输出策略或推断 PDF 能力；官方 GPT-4.1/mini/nano 别名及2025-04-14快照共六个精确型号采用保守的1M门禁，低于文档中的1,047,576 token窗口，GPT-4o/Turbo仍为128K。这也适用于没有附件的 Working Copy，不能用无关型号的128K上限拒绝合法大代码快照；未知组合继续使用配置的默认预算。已退役或受账户限制的上游模型不会因此恢复可用。
 
 依据：[MiniMax 国内图片协议](https://platform.minimax.cn/docs/api-reference/text-openai-api)、[Kimi Code 原生视觉](https://www.kimi.com/code/docs/en/third-party-tools/hermes.html)、[OpenAI PDF输入](https://developers.openai.com/api/docs/guides/file-inputs)、[Anthropic当前模型](https://platform.claude.com/docs/en/models/overview)和[PDF合同](https://platform.claude.com/docs/en/build-with-claude/pdf-support)、[Gemini 2.5 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-pro)与[文档理解](https://ai.google.dev/gemini-api/docs/document-processing)。集合需随明确验证更新，不按型号名称前缀猜测。
 
