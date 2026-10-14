@@ -1145,3 +1145,67 @@ it("reports expired frozen references without replacing them during Regenerate",
   expect(prepare).toHaveBeenCalledOnce();
   expect(screen.getByText("first-prepared-reply")).toBeTruthy();
 });
+
+function pageTransition(type: "pagehide" | "pageshow", persisted: boolean) {
+  const event = new Event(type);
+  Object.defineProperty(event, "persisted", { value: persisted });
+  fireEvent(window, event);
+}
+
+describe("Issue #211 BFCache lifecycle", () => {
+  it.each(["zh-CN", "en"] as const)("opens a new scope and clears released history/composer on persisted restore in %s", async (locale) => {
+    await applySystemLocale(locale); enablePrepared();
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(preparedMetadata());
+    const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("old-bfcache-reply", null));
+    renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
+    const originalScope = prepare.mock.calls[0]?.[1];
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "old frozen round" } });
+    fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("old-bfcache-reply");
+    await addFiles(makeFile("draft.pdf", "application/pdf")); await screen.findByTestId("ai-attachment-item");
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "unsent old draft" } });
+    pageTransition("pageshow", false);
+    expect(screen.getByText("old-bfcache-reply")).toBeTruthy();
+    expect(api.releaseAiAttachmentScope).not.toHaveBeenCalled();
+    pageTransition("pagehide", true);
+    expect(api.releaseAiAttachmentScope).toHaveBeenCalledWith(1, originalScope);
+    pageTransition("pageshow", true);
+    await waitFor(() => {
+      expect(screen.queryByText("old-bfcache-reply")).toBeNull();
+      expect(screen.queryByTestId("ai-regenerate")).toBeNull();
+      expect(screen.queryByTestId("ai-attachment-item")).toBeNull();
+      expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe("");
+    });
+    await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("restored.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
+    const restoredScope = prepare.mock.calls.at(-1)?.[1];
+    expect(restoredScope).not.toBe(originalScope);
+    expect(restoredScope).toMatch(/^[0-9a-f-]{36}$/);
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "fresh restored round" } });
+    fireEvent.click(screen.getByTestId("ai-send"));
+    await waitFor(() => expect(assist).toHaveBeenCalledTimes(2));
+    expect(assist.mock.calls[1]?.[1].attachment_scope_id).toBe(restoredScope);
+    expect(assist.mock.calls[1]?.[1].recent_messages).toEqual([]);
+  });
+
+  it("aborts waiting and fences a late Assist response before persisted restoration", async () => {
+    enablePrepared();
+    let resolve!: (response: AiAssistResponse) => void;
+    const assist = vi.spyOn(api, "assistAdapter").mockImplementationOnce(() => new Promise((done) => { resolve = done; }))
+      .mockResolvedValue(aiResponse("new-bfcache-reply", null));
+    renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "late old request" } });
+    fireEvent.click(screen.getByTestId("ai-send")); await waitFor(() => expect(assist).toHaveBeenCalledOnce());
+    const signal = assist.mock.calls[0]?.[2];
+    pageTransition("pagehide", true);
+    expect(signal?.aborted).toBe(true);
+    await act(async () => { resolve(aiResponse("late-old-bfcache-reply", null)); });
+    expect(screen.queryByText("late-old-bfcache-reply")).toBeNull();
+    pageTransition("pageshow", true);
+    await waitFor(() => expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe(""));
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "new round" } });
+    fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("new-bfcache-reply");
+    expect(assist.mock.calls[1]?.[1].conversation_id).not.toBe(assist.mock.calls[0]?.[1].conversation_id);
+    expect(screen.queryByText("late-old-bfcache-reply")).toBeNull();
+  });
+});

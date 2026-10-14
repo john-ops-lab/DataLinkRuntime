@@ -27,3 +27,11 @@ Node24 tests cover frozen identities, expiry, changed representations, cancellat
 Real image/PDF/XLSX/XLS/DOCX conversion, Vision models, page/sheet tools and budgets, ownership, TTL and actual asset/process cleanup remain integration acceptance on the precise SHA. Isolated UI regressions do not replace those business results.
 
 Validated on Node 24: targeted session/API/panel tests 56 passed; full Web suite 55 files / 713 tests passed (117.23s); typecheck, lint and production build passed; AntD CLI 6.6.1 against 5.29.3 reported zero issues for the changed panel. Bilingual isolated Playwright: 4 passed (13.5s). The first full run found an old global-only capability fixture; it was corrected to match the scoped contract and the final full suite passed.
+
+## BFCache restoration (#211)
+
+Leaving the page aborts waiting, fences late results and releases the old attachment scope. When Back/Forward restores the same React tree from BFCache (`pageshow.persisted=true`), the panel creates a fresh UUID scope, clears temporary conversation/Candidate/Composer state and refreshes capability metadata. A released scope is never reopened and old rounds are never silently re-prepared. Ordinary initial `pageshow` preserves the live conversation.
+
+Three bilingual/late-response lifecycle regressions use synthetic page events on the real component to verify new preparation, ref-based sending and response fencing. They do not establish actual Chrome BFCache eligibility; real Back/Forward restoration remains separate acceptance.
+
+#211 validation: Node 24 attachment/panel regressions 59 passed, including 3 new lifecycle cases; final lifecycle-only rerun 3 passed; typecheck, changed-file ESLint and pinned AntD checks passed. The unrelated full Web suite was not repeated, and synthetic events are not reported as real BFCache acceptance.

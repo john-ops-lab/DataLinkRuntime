@@ -27,3 +27,11 @@ Node24 单元/组件/API 回归覆盖冻结、过期、拒绝更新表示、取�
 真实图片/PDF/XLSX/XLS/DOCX、真实转换和 Vision 模型、页/表格工具与预算、账号/Adapter 权限、TTL 及实际资产/进程回收由主 Agent 在集成 SHA 上验收。隔离界面回归不替代这些业务结果。
 
 Node 24 验证：session/API/Panel 专项 56 项通过；完整 Web 套件 55 文件、713 项通过（117.23 秒）；typecheck、lint、生产构建通过；AntD CLI 6.6.1 / 5.29.3 对改动面板检查 0 项问题。双语隔离 Playwright 4 项通过（13.5 秒）。首轮全套发现旧 capability fixture 仅匹配全局路由，修正为本次 Adapter 范围合同后最终全套通过。
+
+## BFCache 返回（#211）
+
+浏览器离开页面时会中止等待、隔离迟到结果并释放旧附件 scope。若 Back/Forward 从 BFCache 恢复同一 React 树（`pageshow.persisted=true`），面板创建新 UUID scope，清空旧临时会话、Candidate 和 Composer，刷新能力元数据。已释放的 scope 不会重新打开，旧轮次也不会暗中重准备。普通首次 `pageshow` 不清空当前会话。
+
+三项双语/迟到响应生命周期回归使用真实组件上的合成页面事件，验证新文件准备、refs 发送及旧响应隔离；这不代表真实 Chrome 已将页面纳入 BFCache，浏览器资格与真实 Back/Forward 恢复仍需独立验收。
+
+#211 验证：Node 24 附件/Panel 相关 59 项通过（含 3 项新增 lifecycle）；最终 lifecycle 专项 3 项通过；typecheck、改动文件 ESLint、Pinned AntD 检查通过。未重复无关全 Web 套件，也未将合成事件标记为真实 BFCache 验收。

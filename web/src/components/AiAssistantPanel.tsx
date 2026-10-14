@@ -855,24 +855,14 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     [i18n.language],
   );
   const [messages, setMessages] = useState<VisibleMessage[]>([]);
-  const scopeKey = `${props.accountOwnerId ?? "deployment"}.${props.adapter?.id ?? "none"}`;
+  const [pageGeneration, setPageGeneration] = useState(0);
+  const scopeKey = `${props.accountOwnerId ?? "deployment"}.${props.adapter?.id ?? "none"}.${pageGeneration}`;
   const preparedSession = useMemo(() => new PreparedAttachmentSession(
     props.adapter?.id ?? 0, crypto.randomUUID(), api, scopeKey,
   ), [scopeKey, props.adapter?.id]);
   const preparedStates = useSyncExternalStore(preparedSession.subscribe, preparedSession.snapshot);
   const preparedSessionRef = useRef(preparedSession);
   useLayoutEffect(() => { preparedSessionRef.current = preparedSession; }, [preparedSession]);
-  useEffect(() => {
-    const detach = preparedSession.mount();
-    const onPageHide = () => preparedSession.close();
-    const timer = window.setInterval(() => preparedSession.checkExpired(), 1000);
-    window.addEventListener("pagehide", onPageHide);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("pagehide", onPageHide);
-      detach();
-    };
-  }, [preparedSession]);
   const scopeEpoch = useRef(0);
   const latestSendScopeRef = useRef(scopeKey);
   useLayoutEffect(() => {
@@ -945,6 +935,29 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     clearAttachments: () => Promise<void>;
   } | null>(null);
   const previousScopeRef = useRef(scopeKey);
+  useEffect(() => {
+    const detach = preparedSession.mount();
+    const onPageHide = () => {
+      // BFCache retains the React tree. Fence work before the page freezes;
+      // a released UUID must never resume when that same tree returns.
+      scopeEpoch.current += 1;
+      requestGeneration.current += 1;
+      activeRequest.current?.abort();
+      preparedSession.close();
+    };
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) setPageGeneration((generation) => generation + 1);
+    };
+    const timer = window.setInterval(() => preparedSession.checkExpired(), 1000);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
+      detach();
+    };
+  }, [preparedSession]);
   useEffect(() => {
     attachmentLimitsRef.current = attachmentLimits;
   }, [attachmentLimits]);
@@ -1056,7 +1069,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [adapterId, canUseAi, props.open, props.accountOwnerId]);
+  }, [adapterId, canUseAi, props.open, scopeKey]);
 
   // Scope changes discard temporary state and fence every in-flight result.
   useEffect(() => {
