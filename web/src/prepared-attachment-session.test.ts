@@ -169,6 +169,8 @@ describe("same-session bounded preparation queue", () => {
     const two = session.prepare("two", read);
     await vi.waitFor(() => expect(transport.prepareAiAttachment).toHaveBeenCalledOnce());
     session.close();
+    expect((session as unknown as { preparationQueue: unknown[] }).preparationQueue).toEqual([]);
+    expect((session as unknown as { activePreparation: unknown }).activePreparation).toBeNull();
     await expect(one).rejects.toMatchObject({ name: "AbortError" });
     await expect(two).rejects.toMatchObject({ name: "AbortError" });
     first.resolve(metadata()); await vi.waitFor(() => expect(transport.releasePreparedAiAttachment).toHaveBeenCalledOnce());
@@ -208,4 +210,50 @@ describe("same-session bounded preparation queue", () => {
     expect(session.snapshot().one).toBeUndefined();
     expect(session.snapshot().two?.phase).toBe("ready");
   });
+});
+
+it("bounds live preparation tasks across repeated queued add/delete and drops cancelled closures immediately", async () => {
+  const { session, transport, read } = setup();
+  const active = deferred<AiPreparedAttachment>();
+  transport.prepareAiAttachment.mockReturnValueOnce(active.promise);
+  const first = session.prepare("active", read);
+  await vi.waitFor(() => expect(transport.prepareAiAttachment).toHaveBeenCalledOnce());
+  // Inspect retained tasks: a composer-count assertion alone cannot detect
+  // File/read closures retained behind a long active conversion.
+  const registry = session as unknown as {
+    preparationQueue: { run: unknown; resolve: unknown; reject: unknown; onAbort: unknown }[];
+    activePreparation: unknown;
+  };
+  const deletedReads: ReturnType<typeof vi.fn>[] = [];
+  for (let round = 0; round < 25; round += 1) {
+    const rows = Array.from({ length: 7 }, (_, index) => `queued-${round}-${index}`);
+    const pending = rows.map((id) => {
+      const neverRead = vi.fn(read); deletedReads.push(neverRead);
+      return session.prepare(id, neverRead);
+    });
+    expect(registry.preparationQueue).toHaveLength(7);
+    expect(registry.activePreparation).not.toBeNull();
+    const retained = [...registry.preparationQueue];
+    await expect(session.prepare(`overflow-${round}`, read)).rejects.toMatchObject({ code: "ai_attachment_count_exceeded" });
+    session.removeComposer(`overflow-${round}`);
+    rows.forEach((id) => session.removeComposer(id));
+    for (const promise of pending) await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+    expect(registry.preparationQueue).toHaveLength(0);
+    for (const job of retained) expect(job).toMatchObject({ run: null, resolve: null, reject: null, onAbort: null });
+    expect(transport.prepareAiAttachment).toHaveBeenCalledOnce();
+  }
+  deletedReads.forEach((neverRead) => expect(neverRead).not.toHaveBeenCalled());
+  const secondRead = vi.fn(async () => ({ ...(await read()), filename: "second.pdf" }));
+  const thirdRead = vi.fn(async () => ({ ...(await read()), filename: "third.pdf" }));
+  const second = session.prepare("second", secondRead);
+  const third = session.prepare("third", thirdRead);
+  expect(registry.preparationQueue).toHaveLength(2);
+  active.resolve(metadata()); await first; await second; await third;
+  expect(transport.prepareAiAttachment.mock.calls.map((call) => call[2].filename))
+    .toEqual(["sample.pdf", "second.pdf", "third.pdf"]);
+  expect(registry.preparationQueue).toHaveLength(0);
+  expect(registry.activePreparation).toBeNull();
+  session.close();
+  expect(session.snapshot()).toEqual({});
+  expect(registry.preparationQueue).toHaveLength(0);
 });

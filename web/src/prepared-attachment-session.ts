@@ -24,6 +24,16 @@ interface Entry {
   metadata: AiPreparedAttachment | null;
 }
 
+interface PreparationJob {
+  signal: AbortSignal;
+  run: (() => Promise<AiPreparedAttachment>) | null;
+  resolve: ((value: AiPreparedAttachment) => void) | null;
+  reject: ((error: unknown) => void) | null;
+  onAbort: (() => void) | null;
+}
+
+const MAX_LIVE_PREPARATIONS = 8;
+
 /** This registry owns resources only. Visible rounds/Candidates stay in the panel. */
 export class PreparedAttachmentSession {
   private entries = new Map<string, Entry>();
@@ -32,7 +42,8 @@ export class PreparedAttachmentSession {
   private closed = false;
   private mounts = 0;
   private used = false;
-  private prepareTail: Promise<void> = Promise.resolve();
+  private preparationQueue: PreparationJob[] = [];
+  private activePreparation: PreparationJob | null = null;
 
   mount() {
     this.mounts += 1;
@@ -59,23 +70,52 @@ export class PreparedAttachmentSession {
     this.listeners.forEach((listener) => listener());
   }
 
+  private settlePreparation(job: PreparationJob, value: AiPreparedAttachment | null, error?: unknown) {
+    if (job.onAbort !== null) job.signal.removeEventListener("abort", job.onAbort);
+    const resolve = job.resolve;
+    const reject = job.reject;
+    job.run = null;
+    job.onAbort = null;
+    job.resolve = null;
+    job.reject = null;
+    if (value !== null) resolve?.(value);
+    else reject?.(error);
+    if (this.activePreparation === job) this.activePreparation = null;
+    this.startNextPreparation();
+  }
+
+  private startNextPreparation() {
+    if (this.closed || this.activePreparation !== null) return;
+    const job = this.preparationQueue.shift();
+    if (job === undefined) return;
+    this.activePreparation = job;
+    const run = job.run!;
+    job.run = null;
+    // Keep only the running operation's closure. A cancelled queued job is
+    // removed immediately; cancelled active work still owns late-ref cleanup.
+    void Promise.resolve().then(() => {
+      job.signal.throwIfAborted();
+      return run();
+    }).then(
+      (value) => this.settlePreparation(job, value),
+      (error: unknown) => this.settlePreparation(job, null, error),
+    );
+  }
+
   private enqueuePreparation(entry: Entry, run: () => Promise<AiPreparedAttachment>) {
-    const signal = entry.controller.signal;
-    let rejectAbort!: (error: DOMException) => void;
-    const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
-    const onAbort = () => rejectAbort(new DOMException("Preparation cancelled", "AbortError"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    // Cancelled queued rows stay behind their predecessor until their turn,
-    // so removing one cannot let later rows overtake an active conversion.
-    const queued = this.prepareTail.then(() => {
-      signal.throwIfAborted();
-      return Promise.race([run(), aborted]);
-    });
-    this.prepareTail = queued.then(() => {}, () => {});
-    // An abort releases an active slot even if a transport ignores its signal.
-    // The original run still fences and releases any late returned reference.
-    return Promise.race([queued, aborted]).finally(() => {
-      signal.removeEventListener("abort", onAbort);
+    if (this.preparationQueue.length + (this.activePreparation === null ? 0 : 1) >= MAX_LIVE_PREPARATIONS) {
+      return Promise.reject(new ApiError(422, "ai_attachment_count_exceeded", "Too many pending attachments"));
+    }
+    return new Promise<AiPreparedAttachment>((resolve, reject) => {
+      const job: PreparationJob = { signal: entry.controller.signal, run, resolve, reject, onAbort: null };
+      job.onAbort = () => {
+        const index = this.preparationQueue.indexOf(job);
+        if (index !== -1) this.preparationQueue.splice(index, 1);
+        this.settlePreparation(job, null, new DOMException("Preparation cancelled", "AbortError"));
+      };
+      job.signal.addEventListener("abort", job.onAbort, { once: true });
+      this.preparationQueue.push(job);
+      this.startNextPreparation();
     });
   }
 
@@ -93,24 +133,22 @@ export class PreparedAttachmentSession {
     this.entries.set(id, entry);
     this.update(id, { phase: "preparing", metadata: null, error: null });
     entry.promise = this.enqueuePreparation(entry, async () => {
-      try {
-        const wire = await read();
-        controller.signal.throwIfAborted();
-        this.used = true;
-        const prepared = await this.transport.prepareAiAttachment(this.adapterId, this.scopeId, wire, controller.signal);
-        entry.metadata = prepared;
-        if (this.closed || controller.signal.aborted || this.entries.get(id) !== entry || !entry.composer) {
-          void this.transport.releasePreparedAiAttachment(this.adapterId, this.scopeId, prepared.attachment_ref).catch(() => {});
-          throw new DOMException("Preparation cancelled", "AbortError");
-        }
-        this.update(id, { phase: "ready", metadata: prepared, error: null });
-        return prepared;
-      } catch (error) {
-        if (this.entries.get(id) === entry && !controller.signal.aborted) {
-          this.update(id, { phase: "error", metadata: null, error });
-        }
-        throw error;
+      const wire = await read();
+      controller.signal.throwIfAborted();
+      this.used = true;
+      const prepared = await this.transport.prepareAiAttachment(this.adapterId, this.scopeId, wire, controller.signal);
+      entry.metadata = prepared;
+      if (this.closed || controller.signal.aborted || this.entries.get(id) !== entry || !entry.composer) {
+        void this.transport.releasePreparedAiAttachment(this.adapterId, this.scopeId, prepared.attachment_ref).catch(() => {});
+        throw new DOMException("Preparation cancelled", "AbortError");
       }
+      this.update(id, { phase: "ready", metadata: prepared, error: null });
+      return prepared;
+    }).catch((error: unknown) => {
+      if (this.entries.get(id) === entry && !controller.signal.aborted) {
+        this.update(id, { phase: "error", metadata: null, error });
+      }
+      throw error;
     });
     // Automatic preparation may finish before the user sends; error rows remain retryable.
     void entry.promise.catch(() => {});
@@ -185,6 +223,7 @@ export class PreparedAttachmentSession {
     this.closed = true;
     this.entries.forEach((entry) => entry.controller.abort());
     this.entries.clear();
+    this.preparationQueue = [];
     this.state = {};
     this.listeners.clear();
     if (this.used) void this.transport.releaseAiAttachmentScope(this.adapterId, this.scopeId).catch(() => {});

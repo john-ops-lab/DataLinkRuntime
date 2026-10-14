@@ -39,3 +39,7 @@ Three bilingual/late-response lifecycle regressions use synthetic page events on
 File preparation within one page scope runs sequentially in selection order under the existing eight-file and size limits; server processes, CPU and queues are unchanged. Each row remains cancellable. Removing a queued row neither reads its file nor sends HTTP and cannot let a successor overtake the active preparation. Failure or cancellation advances the queue, while late returned refs are still released. Genuine busy responses from other scopes/conversions remain visible with explicit retry.
 
 Serial preparation validation: Node 24 session/API/panel regressions 65 passed, including five queue cancellation/failure/order cases and one normal multi-selection component regression against a simulated single conversion worker. Real conversion-service batch selection remains acceptance on the integrated SHA.
+
+The explicit live task queue is capped at eight including the active task. Queued cancellation immediately removes the task and clears its read/run closure and abort listener; scope close clears the queue. Frontend active cancellation allows the next task to proceed, but it can still receive genuine busy before backend cancellation acknowledgement. An AbortSignal does not prove conversion-process termination.
+
+Explicit-queue final validation: Node 24 related tests 66 passed, with typecheck, changed-file ESLint and diff check passing. The new regression holds an active request pending through 25 cancellation cycles and checks the hard live-task bound.
