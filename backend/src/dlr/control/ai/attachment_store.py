@@ -68,8 +68,8 @@ def principal_owner(principal: Principal) -> Owner:
     return principal.kind, principal.user_id
 
 
-def _error(code: str) -> DocumentConversionError:
-    return DocumentConversionError(code)
+def _error(code: str, *, reason: str | None = None) -> DocumentConversionError:
+    return DocumentConversionError(code, reason=reason)
 
 
 def _bounded_metadata(value: object) -> dict[str, Any]:
@@ -464,7 +464,7 @@ class AiAttachmentStore:
         self.sweep()
         with self._lock:
             if scope in self._closed_scopes:
-                raise _error("ai_attachment_cancelled")
+                raise _error("ai_attachment_cancelled", reason="scope_closed")
             scopes = {record.scope for record in self._records.values()}
             if scope not in scopes and len(scopes) >= MAX_SCOPES:
                 raise _error("ai_attachment_store_full")

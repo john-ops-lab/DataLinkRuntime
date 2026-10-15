@@ -16,6 +16,8 @@ AI 面板沿用 assistant-ui、当前页面临时对话、Candidate → Diff →
 
 资源 registry 只管理 composer、可见冻结轮次和进行中请求的引用，不另建 history/Candidate 状态。删除 composer 中的文件仅在未被冻结或活动请求引用时释放单 ref。Retry/Regenerate 先用 `GET /api/adapters/{id}/ai/attachments/{ref}?scope_id=...` 校验原引用与表示；不读取新 composer 文件，不重新准备一个替代原件。过期或表示变化明确提示重新上传并发送新轮次。
 
+准备请求收到 `409 ai_attachment_cancelled` 且 `detail.params.reason=scope_closed` 时，当前仍活跃的准备最多更换一次资源 UUID 并重试；对话、Candidate、文本和 File 保留。其他排队文件沿用串行准备，发送前避免混用旧、新资源世代。旧轮次冻结引用继续失效，不能被新文件替换。普通取消、坏文件、已移除行和离页后的回包不会触发范围恢复；第二次失败保留错误，等待用户处理。
+
 移除正在准备的行使用 AbortController；迟到准备若仍返回 ref，会尝试释放该 ref，不能进入新范围。账号/Adapter 切换与组件卸载取消请求并发起 `DELETE /api/adapters/{id}/ai/attachments/scopes/{scope_id}`；同页收起/再打开保留范围。React StrictMode 的 effect replay 不会误关闭仍挂载的范围。
 
 真实 pagehide 发起带 keepalive 的范围释放；通知可丢失，所以浏览器发起请求与服务端清理完成必须分别核验。服务器 TTL、所有权、活动 pin/refcount 和取消/进程资源回收仍是服务端合同。前端 AbortSignal 或收到 HTTP 200 不证明转换子进程已经终止。

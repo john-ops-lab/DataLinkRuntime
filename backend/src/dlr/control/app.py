@@ -169,14 +169,15 @@ def create_app() -> FastAPI:
             "ai_attachment_parse_timeout": 504,
             "ai_attachment_cancel_failed": 503,
         }.get(exc.code, 422)
+        detail: dict[str, object] = {
+            "code": exc.code,
+            "message": "AI attachment operation could not be completed",
+        }
+        if exc.code == "ai_attachment_cancelled" and exc.reason == "scope_closed":
+            detail["params"] = {"reason": "scope_closed"}
         return JSONResponse(
             status_code=status,
-            content={
-                "detail": {
-                    "code": exc.code,
-                    "message": "AI attachment operation could not be completed",
-                }
-            },
+            content={"detail": detail},
         )
 
     @app.middleware("http")

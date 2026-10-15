@@ -20,6 +20,15 @@ it("uses the old capability route only when an older Control lacks the new route
   expect(fetch.mock.calls[1]?.[0]).toBe("/api/ai/attachment-capabilities");
 });
 
+it("preserves the precise closed-scope reason without changing the cancellation error code", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    detail: { code: "ai_attachment_cancelled", message: "cancelled", params: { reason: "scope_closed" } },
+  }), { status: 409 })));
+  await expect(api.prepareAiAttachment(7, scope, {
+    filename: "fixture.txt", content_type: "text/plain", data_base64: "eA==",
+  })).rejects.toMatchObject({ status: 409, code: "ai_attachment_cancelled", params: { reason: "scope_closed" } });
+});
+
 it("passes cancellation and exact scope/ref routes while keeping source bytes out of GET/DELETE", async () => {
   setAuthToken("synthetic-client-token");
   const fetch = vi.fn().mockImplementation(async (_path: string, init: RequestInit) =>

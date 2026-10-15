@@ -15,6 +15,7 @@ export interface PreparedAttachmentState {
 }
 
 interface Entry {
+  scopeId: string;
   composer: boolean;
   frozen: number;
   active: number;
@@ -41,7 +42,7 @@ export class PreparedAttachmentSession {
   private state: Readonly<Record<string, PreparedAttachmentState>> = {};
   private closed = false;
   private mounts = 0;
-  private used = false;
+  private usedScopes = new Set<string>();
   private preparationQueue: PreparationJob[] = [];
   private activePreparation: PreparationJob | null = null;
 
@@ -53,7 +54,27 @@ export class PreparedAttachmentSession {
     };
   }
 
-  constructor(readonly adapterId: number, readonly scopeId: string, private transport: PreparedAttachmentTransport, readonly ownerKey = "") {}
+  constructor(readonly adapterId: number, private currentScopeId: string, private transport: PreparedAttachmentTransport, readonly ownerKey = "") {}
+
+  get scopeId() { return this.currentScopeId; }
+
+  private releaseScope(scopeId: string) {
+    if (!this.usedScopes.delete(scopeId)) return;
+    void this.transport.releaseAiAttachmentScope(this.adapterId, scopeId).catch(() => {});
+  }
+
+  private renewClosedScope(scopeId: string) {
+    this.currentScopeId = crypto.randomUUID();
+    // The server has closed this whole resource generation. Keep historical
+    // frozen rows visible as expired; a new composer file cannot replace them.
+    for (const [id, entry] of this.entries) {
+      if (entry.scopeId === scopeId && entry.metadata !== null) {
+        this.update(id, { phase: "expired", metadata: entry.metadata,
+          error: new ApiError(410, "ai_attachment_expired", "Upload the file again") });
+      }
+    }
+    this.releaseScope(scopeId);
+  }
 
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -122,24 +143,47 @@ export class PreparedAttachmentSession {
   prepare(id: string, read: () => Promise<AiAttachment>, retry = false): Promise<AiPreparedAttachment> {
     if (this.closed) return Promise.reject(new DOMException("Scope closed", "AbortError"));
     const previous = this.entries.get(id);
-    if (previous !== undefined && !retry) return previous.promise!;
+    // A surviving composer row keeps its File/read closure, but its old
+    // metadata belongs to the retired generation and must be prepared anew.
+    if (previous !== undefined && !retry && previous.scopeId === this.scopeId) return previous.promise!;
     if (previous !== undefined && (previous.frozen > 0 || previous.active > 0)) {
       return Promise.reject(new ApiError(410, "ai_attachment_expired", "Upload the file again"));
     }
     if (previous !== undefined) this.removeComposer(id);
     const controller = new AbortController();
-    const entry: Entry = { composer: true, frozen: 0, active: 0, controller, read,
+    const entry: Entry = { scopeId: this.scopeId, composer: true, frozen: 0, active: 0, controller, read,
       metadata: null };
     this.entries.set(id, entry);
     this.update(id, { phase: "preparing", metadata: null, error: null });
     entry.promise = this.enqueuePreparation(entry, async () => {
       const wire = await read();
       controller.signal.throwIfAborted();
-      this.used = true;
-      const prepared = await this.transport.prepareAiAttachment(this.adapterId, this.scopeId, wire, controller.signal);
+      // Assign at queue execution time: an earlier row may have renewed the
+      // scope while this row was waiting. All HTTP remains in the same queue.
+      entry.scopeId = this.scopeId;
+      this.usedScopes.add(entry.scopeId);
+      let prepared: AiPreparedAttachment;
+      try {
+        prepared = await this.transport.prepareAiAttachment(this.adapterId, entry.scopeId, wire, controller.signal);
+      } catch (error) {
+        controller.signal.throwIfAborted();
+        if (this.closed || this.entries.get(id) !== entry || !entry.composer) {
+          throw new DOMException("Preparation cancelled", "AbortError");
+        }
+        // Only the explicit tombstone reason permits one bounded renewal.
+        // Plain cancellation, bad files and a second failure stay retryable
+        // error rows; they never start an automatic retry loop.
+        if (!(error instanceof ApiError) || error.status !== 409
+          || error.code !== "ai_attachment_cancelled" || error.params.reason !== "scope_closed") throw error;
+        this.renewClosedScope(entry.scopeId);
+        controller.signal.throwIfAborted();
+        entry.scopeId = this.scopeId;
+        this.usedScopes.add(entry.scopeId);
+        prepared = await this.transport.prepareAiAttachment(this.adapterId, entry.scopeId, wire, controller.signal);
+      }
       entry.metadata = prepared;
       if (this.closed || controller.signal.aborted || this.entries.get(id) !== entry || !entry.composer) {
-        void this.transport.releasePreparedAiAttachment(this.adapterId, this.scopeId, prepared.attachment_ref).catch(() => {});
+        void this.transport.releasePreparedAiAttachment(this.adapterId, entry.scopeId, prepared.attachment_ref).catch(() => {});
         throw new DOMException("Preparation cancelled", "AbortError");
       }
       this.update(id, { phase: "ready", metadata: prepared, error: null });
@@ -170,13 +214,16 @@ export class PreparedAttachmentSession {
     this.entries.delete(id);
     this.update(id, null);
     if (entry.metadata !== null) {
-      void this.transport.releasePreparedAiAttachment(this.adapterId, this.scopeId, entry.metadata.attachment_ref).catch(() => {});
+      void this.transport.releasePreparedAiAttachment(this.adapterId, entry.scopeId, entry.metadata.attachment_ref).catch(() => {});
     }
   }
 
   freeze(ids: readonly string[]): AiPreparedAttachmentRef[] {
     const entries = ids.map((id) => this.entries.get(id));
     if (entries.some((entry) => entry?.metadata == null)) throw new Error("Attachment is not prepared");
+    if (entries.some((entry) => entry!.scopeId !== this.scopeId)) {
+      throw new ApiError(410, "ai_attachment_expired", "Upload the file again");
+    }
     const refs = entries.map((entry) => {
       const metadata = entry!.metadata!;
       // Freeze identity only. Assist can renew the server TTL after prepare;
@@ -192,16 +239,16 @@ export class PreparedAttachmentSession {
     signal.throwIfAborted();
     for (const ref of refs) {
       const match = [...this.entries].find(([, entry]) => entry.metadata?.attachment_ref === ref.attachment_ref);
-      if (this.closed || match?.[1].metadata == null) {
+      if (this.closed || match?.[1].metadata == null || match[1].scopeId !== this.scopeId) {
         throw new ApiError(410, "ai_attachment_expired", "Upload the file again");
       }
       const [id, entry] = match;
       const validationSignal = AbortSignal.any([signal, entry.controller.signal]);
       validationSignal.throwIfAborted();
       try {
-        const actual = await this.transport.getPreparedAiAttachment(this.adapterId, this.scopeId, ref.attachment_ref, validationSignal);
+        const actual = await this.transport.getPreparedAiAttachment(this.adapterId, entry.scopeId, ref.attachment_ref, validationSignal);
         validationSignal.throwIfAborted();
-        if (this.closed || this.entries.get(id) !== entry) {
+        if (this.closed || this.entries.get(id) !== entry || entry.scopeId !== this.scopeId) {
           throw new ApiError(410, "ai_attachment_expired", "Upload the file again");
         }
         if (actual.attachment_ref !== ref.attachment_ref || actual.sha256 !== ref.sha256
@@ -245,6 +292,6 @@ export class PreparedAttachmentSession {
     this.preparationQueue = [];
     this.state = {};
     this.listeners.clear();
-    if (this.used) void this.transport.releaseAiAttachmentScope(this.adapterId, this.scopeId).catch(() => {});
+    for (const scopeId of this.usedScopes) this.releaseScope(scopeId);
   }
 }

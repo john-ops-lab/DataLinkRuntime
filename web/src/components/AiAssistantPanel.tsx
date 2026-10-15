@@ -35,7 +35,7 @@
  * Issue #166 keeps visible messages and frozen requests in memory only.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button, Spin, Switch, Tooltip } from "antd";
 import {
   CheckOutlined,
@@ -71,7 +71,8 @@ import {
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 
-import { PreparedAttachmentSession, type PreparedAttachmentState } from "../prepared-attachment-session";
+import type { PreparedAttachmentState } from "../prepared-attachment-session";
+import { usePreparedAttachmentSession } from "../hooks/usePreparedAttachmentSession";
 import { api, ApiError } from "../api";
 import {
   acceptStringFor,
@@ -857,10 +858,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [messages, setMessages] = useState<VisibleMessage[]>([]);
   const [pageGeneration, setPageGeneration] = useState(0);
   const scopeKey = `${props.accountOwnerId ?? "deployment"}.${props.adapter?.id ?? "none"}.${pageGeneration}`;
-  const preparedSession = useMemo(() => new PreparedAttachmentSession(
-    props.adapter?.id ?? 0, crypto.randomUUID(), api, scopeKey,
-  ), [scopeKey, props.adapter?.id]);
-  const preparedStates = useSyncExternalStore(preparedSession.subscribe, preparedSession.snapshot);
+  const { session: preparedSession, states: preparedStates } = usePreparedAttachmentSession(
+    props.adapter?.id ?? 0, scopeKey, api,
+  );
   const preparedSessionRef = useRef(preparedSession);
   useLayoutEffect(() => { preparedSessionRef.current = preparedSession; }, [preparedSession]);
   const scopeEpoch = useRef(0);
@@ -936,7 +936,6 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   } | null>(null);
   const previousScopeRef = useRef(scopeKey);
   useEffect(() => {
-    const detach = preparedSession.mount();
     const onPageHide = () => {
       // BFCache retains the React tree. Fence work before the page freezes;
       // a released UUID must never resume when that same tree returns.
@@ -955,7 +954,6 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       window.clearInterval(timer);
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
-      detach();
     };
   }, [preparedSession]);
   useEffect(() => {
@@ -1495,16 +1493,26 @@ async function resolveComposerAttachment(
       const preparedAttachments: AiPreparedAttachment[] = [];
       try {
         if (preparedEnabledRef.current && composerAttachments.length > 0) {
-          let totalBytes = 0;
-          for (const attachment of composerAttachments) {
-            if (attachment.file === undefined) throw new Error(t("assistant.attachments.error.readFailed"));
-            totalBytes += attachment.file.size;
-            if (totalBytes > attachmentLimitsRef.current.max_total_bytes) {
-              throw new Error(attachmentAddErrorMessage("total_too_large", attachmentLimitsRef.current, translateRef.current));
+          // A later row may discover that the server closed the old scope.
+          // Revisit surviving composer rows once so a round never mixes old
+          // metadata with the newly prepared generation. Cached current rows
+          // are reused, while historical frozen rounds remain untouched.
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            const preparationScope = preparedSession.scopeId;
+            preparedAttachments.length = 0;
+            let totalBytes = 0;
+            for (const attachment of composerAttachments) {
+              if (attachment.file === undefined) throw new Error(t("assistant.attachments.error.readFailed"));
+              totalBytes += attachment.file.size;
+              if (totalBytes > attachmentLimitsRef.current.max_total_bytes) {
+                throw new Error(attachmentAddErrorMessage("total_too_large", attachmentLimitsRef.current, translateRef.current));
+              }
+              preparedAttachments.push(await preparedSession.prepare(attachment.id, () => buildWireAttachment(
+                attachment.name, attachment.contentType ?? attachment.file!.type, attachment.file!,
+              )));
             }
-            preparedAttachments.push(await preparedSession.prepare(attachment.id, () => buildWireAttachment(
-              attachment.name, attachment.contentType ?? attachment.file!.type, attachment.file!,
-            )));
+            if (preparedSession.scopeId === preparationScope) break;
+            if (attempt === 1) throw new ApiError(410, "ai_attachment_expired", "Upload the file again");
           }
           // A local timestamp is only a hint. Recheck elapsed composer refs
           // before consuming the draft; actual expiry still keeps it intact.

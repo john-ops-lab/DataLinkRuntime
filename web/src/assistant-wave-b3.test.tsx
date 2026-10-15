@@ -1204,6 +1204,56 @@ it("reports expired frozen references without replacing them during Regenerate",
   expect(screen.getByText("first-prepared-reply")).toBeTruthy();
 });
 
+it("recovers same-page reupload after a closed scope while preserving the draft, history and original Candidate", async () => {
+  enablePrepared();
+  const original = preparedMetadata();
+  const recovered = preparedMetadata({ attachment_ref: "reuploaded-reference", filename: "new.pdf", sha256: "b".repeat(64) });
+  const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValueOnce(original)
+    .mockRejectedValueOnce(new ApiError(409, "ai_attachment_cancelled", "cancelled", { reason: "scope_closed" }))
+    .mockResolvedValueOnce(recovered);
+  const assist = vi.spyOn(api, "assistAdapter")
+    .mockResolvedValueOnce(aiResponse("original closed-scope answer", makeCandidate({ summary: "original Candidate stays" })))
+    .mockResolvedValueOnce(aiResponse("new scope answer", null));
+  renderPanel(); await screen.findByTestId("ai-attachment-capability");
+  await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "original round" } });
+  fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("original closed-scope answer");
+  const firstPayload = structuredClone(assist.mock.calls[0]![1]);
+  vi.mocked(api.getPreparedAiAttachment).mockRejectedValue(new ApiError(410, "ai_attachment_expired", "expired"));
+  fireEvent.click(screen.getByTestId("ai-regenerate"));
+  await waitFor(() => expect(screen.getByTestId("ai-panel-error").textContent).toContain("已过期"));
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "keep draft for new round" } });
+  await addFiles(makeFile("new.pdf", "application/pdf", "new-body"));
+  await waitFor(() => expect(prepare).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(screen.getAllByTestId("ai-prepared-directory")
+    .some(directory => directory.textContent?.includes("new.pdf"))).toBe(true));
+  expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe("keep draft for new round");
+  expect(screen.getByTestId("ai-attachment-name").textContent).toBe("new.pdf");
+  expect(screen.getByText("original closed-scope answer")).toBeTruthy();
+  expect(screen.getByTestId("ai-candidate-summary").textContent).toBe("original Candidate stays");
+  const renewedScope = prepare.mock.calls[2]![1];
+  expect(renewedScope).not.toBe(firstPayload.attachment_scope_id);
+  expect(prepare.mock.calls[1]![1]).toBe(firstPayload.attachment_scope_id);
+  // Retrying the historical round after renewal still fails locally and
+  // never substitutes the newly selected composer file into its request.
+  fireEvent.click(screen.getByTestId("ai-regenerate"));
+  await waitFor(() => expect(screen.getByTestId("ai-panel-error").textContent).toContain("已过期"));
+  expect(assist).toHaveBeenCalledOnce();
+  expect(assist.mock.calls[0]![1]).toEqual(firstPayload);
+  vi.mocked(api.getPreparedAiAttachment).mockResolvedValue(recovered);
+  fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("new scope answer");
+  const nextPayload = assist.mock.calls[1]![1];
+  expect(nextPayload.attachment_scope_id).toBe(renewedScope);
+  expect(nextPayload.conversation_id).toBe(firstPayload.conversation_id);
+  expect(nextPayload.message).toBe("keep draft for new round");
+  expect(nextPayload.attachment_refs?.[0]?.attachment_ref).toBe("reuploaded-reference");
+  expect(nextPayload.recent_messages).toEqual([
+    { role: "user", content: "original round" },
+    { role: "assistant", content: "original closed-scope answer" },
+  ]);
+  expect(screen.getByTestId("ai-candidate-summary").textContent).toBe("original Candidate stays");
+});
+
 function pageTransition(type: "pagehide" | "pageshow", persisted: boolean) {
   const event = new Event(type);
   Object.defineProperty(event, "persisted", { value: persisted });
