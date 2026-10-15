@@ -20,7 +20,7 @@
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ComponentProps } from "react";
+import { StrictMode, type ComponentProps } from "react";
 
 import { api, ApiError } from "./api";
 import AiAssistantPanel from "./components/AiAssistantPanel";
@@ -29,6 +29,7 @@ import type {
   Adapter,
   AiAssistResponse,
   AiAttachmentCapabilities,
+  AiPreparedAttachment,
   AiCandidate,
 } from "./types";
 
@@ -1023,3 +1024,325 @@ it.each(["incomplete", "unclassified"] as const)(
     expect(screen.queryByTestId("ai-panel-error")).toBeNull();
   },
 );
+
+
+function preparedMetadata(overrides: Partial<AiPreparedAttachment> = {}): AiPreparedAttachment {
+  return { attachment_ref: "abcdefghijklmnop", sha256: "a".repeat(64), representation_revision: "document-v1",
+    filename: "业务.pdf", content_type: "application/pdf", size_bytes: 8, status: "partial", page_count: 2,
+    pages: [{ page: 1, status: "blank" }, { page: 2, status: "available", source_sheet: "Revenue" }],
+    sheets: [{ name: "Revenue", rows: 12, columns: 4, hidden: false, print_area: "A1:D12", rendered_page_start: 2, rendered_page_end: 2 }],
+    coverage: { structure: "partial", cells: "available" }, warnings: ["formula_cache_missing", "private_unknown_warning"],
+    expires_at: new Date(Date.now() + 60_000).toISOString(), ...overrides };
+}
+function enablePrepared() {
+  vi.mocked(api.getAiAttachmentCapabilities).mockResolvedValue({ ...attachmentCapabilities, prepared_attachments_enabled: true,
+    selected: { provider: "openai", model: "verified-test-model", protocol: "openai_compatible",
+      images_native: true, native_pdf: true, capability_source: "verified_model_endpoint", max_request_bytes: 64_000_000 } });
+  vi.spyOn(api, "releasePreparedAiAttachment").mockResolvedValue();
+  vi.spyOn(api, "releaseAiAttachmentScope").mockResolvedValue();
+  vi.spyOn(api, "getPreparedAiAttachment").mockResolvedValue(preparedMetadata());
+}
+
+describe("Issue #202 prepared attachment integration", () => {
+  it.each(["server valid", "server expired"] as const)("preserves server authority for an elapsed composer ref: %s", async (serverState) => {
+    enablePrepared();
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const original = preparedMetadata();
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(original);
+    const get = vi.mocked(api.getPreparedAiAttachment);
+    const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("server-valid-reply", null));
+    renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "preserved draft" } });
+    now = Date.parse(original.expires_at) + 1_000;
+    if (serverState === "server expired") {
+      get.mockRejectedValue(new ApiError(410, "ai_attachment_expired", "expired"));
+    } else get.mockResolvedValue(preparedMetadata());
+    fireEvent.click(screen.getByTestId("ai-send"));
+    if (serverState === "server expired") {
+      await waitFor(() => expect(screen.getByTestId("ai-attachment-error").textContent).toContain("已过期"));
+      expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe("preserved draft");
+      expect(screen.getByTestId("ai-attachment-item")).toBeTruthy();
+      expect(screen.queryByTestId("ai-message-attachments")).toBeNull();
+      expect(assist).not.toHaveBeenCalled();
+    } else {
+      await screen.findByText("server-valid-reply");
+      expect(assist.mock.calls[0]?.[1].attachment_refs).toEqual([{ attachment_ref: original.attachment_ref,
+        sha256: original.sha256, representation_revision: original.representation_revision }]);
+      expect(screen.queryByTestId("ai-attachment-item")).toBeNull();
+    }
+    expect(get).toHaveBeenCalled();
+    expect(prepare).toHaveBeenCalledOnce();
+  });
+
+  it("Regenerate keeps the original refs after a successful Assist renews TTL past the first deadline", async () => {
+    enablePrepared();
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const original = preparedMetadata();
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(original);
+    const get = vi.mocked(api.getPreparedAiAttachment).mockResolvedValue(original);
+    const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("renewed-reply", null));
+    renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
+    now += 20_000;
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "original round" } });
+    fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("renewed-reply");
+    const renewed = preparedMetadata();
+    now = Date.parse(original.expires_at) + 1_000;
+    expect(now).toBeLessThan(Date.parse(renewed.expires_at));
+    get.mockResolvedValue(renewed);
+    fireEvent.click(screen.getByTestId("ai-regenerate"));
+    await waitFor(() => expect(assist).toHaveBeenCalledTimes(2));
+    expect(assist.mock.calls[1]?.[1].attachment_refs).toEqual(assist.mock.calls[0]?.[1].attachment_refs);
+    expect(assist.mock.calls[1]?.[1].attachment_scope_id).toBe(assist.mock.calls[0]?.[1].attachment_scope_id);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId("ai-panel-error")).toBeNull();
+  });
+
+  it.each(["zh-CN", "en"] as const)("shows truthful directory/coverage and sends refs only in %s", async (locale) => {
+    await applySystemLocale(locale); enablePrepared();
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(preparedMetadata());
+    const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("prepared-reply", null));
+    renderPanel();
+    await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("业务.pdf", "application/pdf", "prepared-body-sentinel"));
+    await screen.findByTestId("ai-prepared-directory");
+    expect(document.body.textContent).toContain("Revenue");
+    expect(document.body.textContent).toContain(locale === "zh-CN" ? "原文件缓存值" : "original cached values");
+    expect(document.body.textContent).not.toContain("private_unknown_warning");
+    expect(document.body.textContent).not.toContain("prepared-body-sentinel");
+    expect(document.body.textContent).not.toContain("a".repeat(64));
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "read the chart" } });
+    fireEvent.click(screen.getByTestId("ai-send"));
+    await screen.findByText("prepared-reply");
+    const payload = assist.mock.calls[0]?.[1];
+    expect(payload?.attachments).toBeUndefined();
+    expect(payload?.attachment_scope_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(payload?.attachment_refs).toEqual([{ attachment_ref: "abcdefghijklmnop", sha256: "a".repeat(64), representation_revision: "document-v1" }]);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(api.releasePreparedAiAttachment).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("ai-attachment-item")).toBeNull();
+    expect(screen.getByTestId("ai-message-attachments").textContent).toContain("业务.pdf");
+  });
+
+  it("retries the frozen ref after a later composer file and preserves it on collapse", async () => {
+    enablePrepared();
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValueOnce(preparedMetadata())
+      .mockResolvedValueOnce(preparedMetadata({ attachment_ref: "new-prepared-ref-id", sha256: "b".repeat(64), filename: "new.pdf" }));
+    const assist = vi.spyOn(api, "assistAdapter").mockRejectedValueOnce(new ApiError(502, "ai_request_failed", "fixture failure"))
+      .mockResolvedValueOnce(aiResponse("frozen-retry-reply", null));
+    const panel = renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("业务.pdf", "application/pdf"));
+    await screen.findByTestId("ai-prepared-directory");
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "original round" } });
+    fireEvent.click(screen.getByTestId("ai-send"));
+    await screen.findByTestId("ai-retry");
+    await addFiles(makeFile("new.pdf", "application/pdf"));
+    await waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
+    panel.rerender({ open: false }); panel.rerender({ open: true });
+    fireEvent.click(screen.getByTestId("ai-retry"));
+    await screen.findByText("frozen-retry-reply");
+    expect(assist.mock.calls[1]?.[1].attachment_refs).toEqual(assist.mock.calls[0]?.[1].attachment_refs);
+    expect(assist.mock.calls[1]?.[1].attachment_scope_id).toBe(assist.mock.calls[0]?.[1].attachment_scope_id);
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(api.releasePreparedAiAttachment).not.toHaveBeenCalled();
+    expect(api.releaseAiAttachmentScope).not.toHaveBeenCalled();
+    expect(screen.getByTestId("ai-attachment-name").textContent).toBe("new.pdf");
+  });
+
+  it("aborts and fences a late preparation across account scopes", async () => {
+    enablePrepared();
+    let resolve: (value: AiPreparedAttachment) => void = () => {};
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const panel = renderPanel({ accountOwnerId: 1 }); await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("业务.pdf", "application/pdf"));
+    await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
+    const scope = prepare.mock.calls[0]?.[1];
+    const signal = prepare.mock.calls[0]?.[3];
+    panel.rerender({ accountOwnerId: 2 });
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    await act(async () => { resolve(preparedMetadata()); });
+    expect(screen.queryByTestId("ai-prepared-directory")).toBeNull();
+    expect(screen.queryByTestId("ai-attachment-item")).toBeNull();
+    expect(api.releaseAiAttachmentScope).toHaveBeenCalledWith(1, scope);
+    expect(api.releasePreparedAiAttachment).toHaveBeenCalledWith(1, scope, "abcdefghijklmnop");
+  });
+
+  it("prepares safely through StrictMode effect replay", async () => {
+    enablePrepared();
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(preparedMetadata());
+    const props: PanelProps = { open: true, adapter: makeAdapter(), selectedVersionId: 10, selectedVersionSeq: 1,
+      workingCopy, contentReady: true, busy: false, contextSnippets: [], theme: "vs-dark",
+      onOpen: vi.fn(), onClose: vi.fn(), onApply: vi.fn(), onRemoveContextSnippet: vi.fn(), onClearContextSnippets: vi.fn() };
+    const view = render(<StrictMode><AiAssistantPanel {...props} /></StrictMode>);
+    await screen.findByTestId("ai-attachment-capability"); await addFiles(makeFile("业务.pdf", "application/pdf"));
+    await screen.findByTestId("ai-prepared-directory");
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(api.releaseAiAttachmentScope).not.toHaveBeenCalled();
+    view.unmount();
+    await waitFor(() => expect(api.releaseAiAttachmentScope).toHaveBeenCalledOnce());
+  });
+});
+
+
+it("reports expired frozen references without replacing them during Regenerate", async () => {
+  enablePrepared();
+  const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(preparedMetadata());
+  const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("first-prepared-reply", null));
+  renderPanel(); await screen.findByTestId("ai-attachment-capability");
+  await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "original file" } });
+  fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("first-prepared-reply");
+  vi.mocked(api.getPreparedAiAttachment).mockRejectedValue(new ApiError(410, "ai_attachment_expired", "expired"));
+  fireEvent.click(screen.getByTestId("ai-regenerate"));
+  await waitFor(() => expect(screen.getByTestId("ai-panel-error").textContent).toContain("已过期"));
+  expect(assist).toHaveBeenCalledOnce();
+  expect(prepare).toHaveBeenCalledOnce();
+  expect(screen.getByText("first-prepared-reply")).toBeTruthy();
+});
+
+it("recovers same-page reupload after a closed scope while preserving the draft, history and original Candidate", async () => {
+  enablePrepared();
+  const original = preparedMetadata();
+  const recovered = preparedMetadata({ attachment_ref: "reuploaded-reference", filename: "new.pdf", sha256: "b".repeat(64) });
+  const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValueOnce(original)
+    .mockRejectedValueOnce(new ApiError(409, "ai_attachment_cancelled", "cancelled", { reason: "scope_closed" }))
+    .mockResolvedValueOnce(recovered);
+  const assist = vi.spyOn(api, "assistAdapter")
+    .mockResolvedValueOnce(aiResponse("original closed-scope answer", makeCandidate({ summary: "original Candidate stays" })))
+    .mockResolvedValueOnce(aiResponse("new scope answer", null));
+  renderPanel(); await screen.findByTestId("ai-attachment-capability");
+  await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "original round" } });
+  fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("original closed-scope answer");
+  const firstPayload = structuredClone(assist.mock.calls[0]![1]);
+  vi.mocked(api.getPreparedAiAttachment).mockRejectedValue(new ApiError(410, "ai_attachment_expired", "expired"));
+  fireEvent.click(screen.getByTestId("ai-regenerate"));
+  await waitFor(() => expect(screen.getByTestId("ai-panel-error").textContent).toContain("已过期"));
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "keep draft for new round" } });
+  await addFiles(makeFile("new.pdf", "application/pdf", "new-body"));
+  await waitFor(() => expect(prepare).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(screen.getAllByTestId("ai-prepared-directory")
+    .some(directory => directory.textContent?.includes("new.pdf"))).toBe(true));
+  expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe("keep draft for new round");
+  expect(screen.getByTestId("ai-attachment-name").textContent).toBe("new.pdf");
+  expect(screen.getByText("original closed-scope answer")).toBeTruthy();
+  expect(screen.getByTestId("ai-candidate-summary").textContent).toBe("original Candidate stays");
+  const renewedScope = prepare.mock.calls[2]![1];
+  expect(renewedScope).not.toBe(firstPayload.attachment_scope_id);
+  expect(prepare.mock.calls[1]![1]).toBe(firstPayload.attachment_scope_id);
+  // Retrying the historical round after renewal still fails locally and
+  // never substitutes the newly selected composer file into its request.
+  fireEvent.click(screen.getByTestId("ai-regenerate"));
+  await waitFor(() => expect(screen.getByTestId("ai-panel-error").textContent).toContain("已过期"));
+  expect(assist).toHaveBeenCalledOnce();
+  expect(assist.mock.calls[0]![1]).toEqual(firstPayload);
+  vi.mocked(api.getPreparedAiAttachment).mockResolvedValue(recovered);
+  fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("new scope answer");
+  const nextPayload = assist.mock.calls[1]![1];
+  expect(nextPayload.attachment_scope_id).toBe(renewedScope);
+  expect(nextPayload.conversation_id).toBe(firstPayload.conversation_id);
+  expect(nextPayload.message).toBe("keep draft for new round");
+  expect(nextPayload.attachment_refs?.[0]?.attachment_ref).toBe("reuploaded-reference");
+  expect(nextPayload.recent_messages).toEqual([
+    { role: "user", content: "original round" },
+    { role: "assistant", content: "original closed-scope answer" },
+  ]);
+  expect(screen.getByTestId("ai-candidate-summary").textContent).toBe("original Candidate stays");
+});
+
+function pageTransition(type: "pagehide" | "pageshow", persisted: boolean) {
+  const event = new Event(type);
+  Object.defineProperty(event, "persisted", { value: persisted });
+  fireEvent(window, event);
+}
+
+describe("Issue #211 BFCache lifecycle", () => {
+  it.each(["zh-CN", "en"] as const)("opens a new scope and clears released history/composer on persisted restore in %s", async (locale) => {
+    await applySystemLocale(locale); enablePrepared();
+    const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(preparedMetadata());
+    const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("old-bfcache-reply", null));
+    renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
+    const originalScope = prepare.mock.calls[0]?.[1];
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "old frozen round" } });
+    fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("old-bfcache-reply");
+    await addFiles(makeFile("draft.pdf", "application/pdf")); await screen.findByTestId("ai-attachment-item");
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "unsent old draft" } });
+    pageTransition("pageshow", false);
+    expect(screen.getByText("old-bfcache-reply")).toBeTruthy();
+    expect(api.releaseAiAttachmentScope).not.toHaveBeenCalled();
+    pageTransition("pagehide", true);
+    expect(api.releaseAiAttachmentScope).toHaveBeenCalledWith(1, originalScope);
+    pageTransition("pageshow", true);
+    await waitFor(() => {
+      expect(screen.queryByText("old-bfcache-reply")).toBeNull();
+      expect(screen.queryByTestId("ai-regenerate")).toBeNull();
+      expect(screen.queryByTestId("ai-attachment-item")).toBeNull();
+      expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe("");
+    });
+    await screen.findByTestId("ai-attachment-capability");
+    await addFiles(makeFile("restored.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
+    const restoredScope = prepare.mock.calls.at(-1)?.[1];
+    expect(restoredScope).not.toBe(originalScope);
+    expect(restoredScope).toMatch(/^[0-9a-f-]{36}$/);
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "fresh restored round" } });
+    fireEvent.click(screen.getByTestId("ai-send"));
+    await waitFor(() => expect(assist).toHaveBeenCalledTimes(2));
+    expect(assist.mock.calls[1]?.[1].attachment_scope_id).toBe(restoredScope);
+    expect(assist.mock.calls[1]?.[1].recent_messages).toEqual([]);
+  });
+
+  it("aborts waiting and fences a late Assist response before persisted restoration", async () => {
+    enablePrepared();
+    let resolve!: (response: AiAssistResponse) => void;
+    const assist = vi.spyOn(api, "assistAdapter").mockImplementationOnce(() => new Promise((done) => { resolve = done; }))
+      .mockResolvedValue(aiResponse("new-bfcache-reply", null));
+    renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "late old request" } });
+    fireEvent.click(screen.getByTestId("ai-send")); await waitFor(() => expect(assist).toHaveBeenCalledOnce());
+    const signal = assist.mock.calls[0]?.[2];
+    pageTransition("pagehide", true);
+    expect(signal?.aborted).toBe(true);
+    await act(async () => { resolve(aiResponse("late-old-bfcache-reply", null)); });
+    expect(screen.queryByText("late-old-bfcache-reply")).toBeNull();
+    pageTransition("pageshow", true);
+    await waitFor(() => expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe(""));
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "new round" } });
+    fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("new-bfcache-reply");
+    expect(assist.mock.calls[1]?.[1].conversation_id).not.toBe(assist.mock.calls[0]?.[1].conversation_id);
+    expect(screen.queryByText("late-old-bfcache-reply")).toBeNull();
+  });
+});
+
+it("prepares a normal multi-file selection sequentially against a single conversion worker", async () => {
+  enablePrepared();
+  vi.mocked(api.getPreparedAiAttachment).mockImplementation(async (_adapter, _scope, ref) => preparedMetadata({ attachment_ref: ref }));
+  let finishFirst!: () => void;
+  let converting = false;
+  const prepare = vi.spyOn(api, "prepareAiAttachment").mockImplementation(async (_adapter, _scope, attachment) => {
+    if (converting) throw new ApiError(503, "ai_attachment_converter_busy", "single worker busy");
+    converting = true;
+    try {
+      if (attachment.filename === "chart.png") await new Promise<void>((resolve) => { finishFirst = resolve; });
+      return preparedMetadata({ filename: attachment.filename, content_type: attachment.content_type,
+        attachment_ref: attachment.filename === "chart.png" ? "chart-reference-id" : "text-reference-id" });
+    } finally { converting = false; }
+  });
+  const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("batch-ready-reply", null));
+  renderPanel(); await screen.findByTestId("ai-attachment-capability");
+  await addFiles(makeFile("chart.png", "image/png", "small-image"), makeFile("context.txt", "text/plain", "tiny-context"));
+  await waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+  expect(screen.getAllByTestId("ai-attachment-item")).toHaveLength(2);
+  await act(async () => { finishFirst(); });
+  await waitFor(() => expect(screen.getAllByTestId("ai-prepared-directory")).toHaveLength(2));
+  expect(prepare).toHaveBeenCalledTimes(2);
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "read both original files" } });
+  fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("batch-ready-reply");
+  expect(assist.mock.calls[0]?.[1].attachment_refs?.map((ref) => ref.attachment_ref))
+    .toEqual(["chart-reference-id", "text-reference-id"]);
+  expect(screen.queryByTestId("ai-panel-error")).toBeNull();
+});

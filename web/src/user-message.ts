@@ -39,6 +39,14 @@ export function userErrorMessage(
       : fallback ??
         translatedDomainError(error, locale) ??
         i18n.getFixedT(locale, "common")("errors.unknown");
+  const httpStatus = error.params.http_status;
+  const httpHint =
+    error.code === "ai_provider_http_error" &&
+    typeof httpStatus === "number" &&
+    Number.isInteger(httpStatus) &&
+    httpStatus >= 100 && httpStatus <= 599
+      ? ` ${i18n.getFixedT(locale, "common")("errors.provider_http_status", { status: httpStatus })}`
+      : "";
   const retryAfter = error.params.retry_after;
   const retryHint =
     (error.status === 429 || error.status === 503) &&
@@ -48,6 +56,6 @@ export function userErrorMessage(
       ? ` ${i18n.getFixedT(locale, "common")("errors.retry_after", { seconds: retryAfter })}`
       : "";
   return locale === "en"
-    ? `${primary}${retryHint} (Error code: ${error.code})`
-    : `${primary}${retryHint}（错误码：${error.code}）`;
+    ? `${primary}${httpHint}${retryHint} (Error code: ${error.code})`
+    : `${primary}${httpHint}${retryHint}（错误码：${error.code}）`;
 }

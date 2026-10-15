@@ -80,6 +80,50 @@
         "readFailed": "附件读取失败：请重新选择文件",
         "empty": "文件内容为空：请选择包含内容的文件",
         "rejected": "被拒绝的附件不能发送：请删除后重试"
+      },
+      "prepared": {
+        "preparing": "正在准备附件结构与页面…",
+        "ready": "附件已准备，可按来源读取",
+        "partial": "部分内容未能准备，回答需要结合以下覆盖限制。",
+        "failed": "附件准备失败；可重试准备或移除后选择新的文件。",
+        "retry": "重试准备",
+        "expired": "本轮附件已过期，请重新上传并发送新轮次；重试不会替换原附件。",
+        "directory": "附件来源与覆盖：{{name}}",
+        "pageCoverage": "可访问 {{count}} / {{total}} 页（目录不代表模型已阅读全文）",
+        "page": "第 {{page}} 页",
+        "sheet": "工作表 {{name}}：{{rows}} 行 × {{columns}} 列",
+        "hiddenSheet": "隐藏工作表",
+        "printArea": "打印区域 {{range}}",
+        "sheetPages": "对应第 {{start}}–{{end}} 页",
+        "onDemand": "模型依据目录按需读取页或表格范围；尚未读取的内容仍保留来源。",
+        "textFallback": "文档视觉转换尚未启用：PDF 和 Office 仅提供有界文本，扫描页、图表与版式可能无法读取。",
+        "visionUnknown": "当前模型的视觉能力尚未确认；文字和单元格数据可用不代表已读取图片或图表。",
+        "visionUnavailable": "当前所选模型不支持已确认的图像或原生 PDF 输入；文字与单元格数据不替代图表视觉信息。",
+        "visionAvailable": "使用当前模型 {{model}} 的已声明视觉能力，实际覆盖以附件状态和回复来源为准。",
+        "pageStatus": {
+          "available": "可按需读取",
+          "ready": "已准备",
+          "blank": "空白页（保留原页号）",
+          "failed": "准备失败",
+          "omitted": "未准备"
+        },
+        "warnings": {
+          "structurePartial": "文字或表格结构提取不完整，请结合原始页面核对。",
+          "printedAreaOnly": "页面视觉仅覆盖打印区域，其他单元格仍须按工作表范围读取。",
+          "formulaCacheMissing": "部分公式缺少原文件缓存值，不能把生成页面上的显示值当作原始计算结果。",
+          "ocrUnavailable": "扫描文字尚未完成识别，部分内容可能无法读取。",
+          "pageRenderFailed": "部分页面图像生成失败。",
+          "visualUnavailable": "部分视觉内容尚不可用。",
+          "partial": "部分内容或表示尚不可用，请按回复中的来源与覆盖说明核对。"
+        },
+        "directoryLimited": "目录显示前 64 页与 32 张工作表；其余来源仍可由模型按需读取。",
+        "converterUnavailable": "文档转换服务当前不可用，可稍后重试或换一个文件。",
+        "timeout": "附件准备超时，可拆分文件后重新上传。",
+        "encrypted": "附件受密码保护，请上传可读取的副本。",
+        "invalid": "附件无法解析，请核对文件是否损坏或格式是否匹配。",
+        "originalAvailable": "附件原件已保留，读取覆盖以准备状态和回复来源为准。",
+        "visionDeclared": "管理员声明模型 {{model}} 支持视觉输入，实际可用性与覆盖仍需依据结果核对。",
+        "partialReady": "部分准备成功，请检查附件覆盖与限制。"
       }
     },
     "tools": {

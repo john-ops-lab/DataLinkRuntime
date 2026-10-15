@@ -487,6 +487,8 @@
     "ai_credential_invalid": "The AI Credential is missing, invalid or not a Token",
     "ai_base_url_invalid": "AI Base URL must be a valid http(s) URL",
     "ai_provider_unreachable": "The model service is unreachable. Check network, firewall and proxy settings",
+    "ai_provider_http_error": "The model service returned an HTTP error. Check the service status or request configuration",
+    "provider_http_status": "Upstream HTTP {{status}}",
     "ai_provider_dns_failed": "The model service hostname could not be resolved. Check container DNS",
     "ai_auth_failed": "The model service rejected the selected Credential",
     "ai_model_not_found": "Model ID not found",
