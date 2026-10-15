@@ -1,6 +1,6 @@
 """Fixed internal failure categories; public errors and raw output stay separate."""
 
-from typing import Literal
+from typing import Literal, cast
 
 from fastapi import HTTPException
 
@@ -34,6 +34,27 @@ FailureReason = Literal[
     "runtime_config_mismatch",
     "unexpected_tools",
 ]
+
+
+TransportFailureCategory = Literal[
+    "http", "dns", "tls", "connection", "timeout", "protocol", "unknown"
+]
+_TRANSPORT_FAILURE_CATEGORIES = frozenset(
+    {"http", "dns", "tls", "connection", "timeout", "protocol", "unknown"}
+)
+
+
+def safe_transport_category(value: object) -> TransportFailureCategory:
+    """Only fixed categories may cross the private audit boundary."""
+    return cast(
+        TransportFailureCategory,
+        value if isinstance(value, str) and value in _TRANSPORT_FAILURE_CATEGORIES else "unknown",
+    )
+
+
+def safe_http_status(value: object) -> int | None:
+    """Discard booleans, strings and non-HTTP values instead of coercing them."""
+    return value if type(value) is int and 100 <= value <= 599 else None
 
 
 class StrictJsonError(ValueError):

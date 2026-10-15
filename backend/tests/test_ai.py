@@ -509,7 +509,8 @@ def test_provider_redirect_is_not_followed_or_forwarded() -> None:
                 {"working_copy": "must-not-reach-second-hop"},
                 not_found_code="ai_model_not_found",
             )
-        assert error.value.code == "ai_provider_unreachable"
+        assert error.value.code == "ai_provider_http_error"
+        assert error.value.transport_category == "http" and error.value.http_status == 302
         assert second_hop_requests == []
     finally:
         first.shutdown()
@@ -976,7 +977,8 @@ def test_refresh_error_messages_are_chinese_and_actionable(
     assert response.status_code == 502
     message = response.json()["detail"]["message"]
     assert "无法连接模型服务" in message
-    assert "TCP 连接或 TLS 握手失败" in message
+    assert "请检查网络连通性、防火墙与代理设置" in message
+    assert "TCP 连接或 TLS 握手失败" not in message
 
 
 def test_model_normalization_preserves_order_for_large_unique_list() -> None:

@@ -487,6 +487,8 @@
     "ai_credential_invalid": "AI 凭据不存在、无效或不是 Token 类型",
     "ai_base_url_invalid": "AI Base URL 必须是合法的 http(s) 地址",
     "ai_provider_unreachable": "无法连接模型服务，请检查网络、防火墙与代理",
+    "ai_provider_http_error": "模型服务返回 HTTP 错误，请检查服务状态或请求配置",
+    "provider_http_status": "上游 HTTP {{status}}",
     "ai_provider_dns_failed": "模型服务域名解析失败，请检查容器 DNS 配置",
     "ai_auth_failed": "模型服务拒绝了所选凭据",
     "ai_model_not_found": "模型 ID 不存在",

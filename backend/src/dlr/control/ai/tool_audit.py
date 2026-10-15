@@ -26,7 +26,13 @@ from typing import Literal
 from dlr.common.config import settings
 from dlr.control.ai import context_budget
 from dlr.control.ai import tools as tools_service
-from dlr.control.ai.diagnostics import FailureReason, FailureStage
+from dlr.control.ai.diagnostics import (
+    FailureReason,
+    FailureStage,
+    TransportFailureCategory,
+    safe_http_status,
+    safe_transport_category,
+)
 
 AUDIT_LOGGER_NAME = "dlr.ai.tool-audit"
 AUDIT_FILENAME = "ai-tool-audit.jsonl"
@@ -188,10 +194,22 @@ class AiToolAuditTrail:
         error_code: str | None = None,
         stage: FailureStage | None = None,
         reason: FailureReason | None = None,
+        transport_category: TransportFailureCategory | None = None,
+        http_status: int | None = None,
     ) -> None:
+        # Add only fixed diagnostic fields on a failed Provider call. Success
+        # records keep their existing shape and no upstream text is accepted.
+        diagnostics: dict[str, object] = {}
+        if outcome == "error":
+            category = safe_transport_category(transport_category)
+            diagnostics["transport_category"] = category
+            status = safe_http_status(http_status)
+            if category == "http" and status is not None:
+                diagnostics["http_status"] = status
         _emit_record(
             {
                 **self._base_record("provider_result"),
+                **diagnostics,
                 "provider_call_index": self.provider_checked_calls,
                 "outcome": outcome,
                 "strategy": _safe_code_value(strategy),

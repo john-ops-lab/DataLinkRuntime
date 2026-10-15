@@ -598,7 +598,11 @@ _PROVIDER_ERRORS: dict[str, tuple[int, str]] = {
     ),
     "ai_provider_unreachable": (
         502,
-        "无法连接模型服务：TCP 连接或 TLS 握手失败，请检查网络连通性、防火墙与代理设置后重试",
+        "无法连接模型服务，请检查网络连通性、防火墙与代理设置后重试",
+    ),
+    "ai_provider_http_error": (
+        502,
+        "模型服务返回 HTTP 错误，请检查服务状态或请求配置",
     ),
     "ai_provider_dns_failed": (
         502,
@@ -694,7 +698,12 @@ def _raise_provider_error(error: providers.AiProviderError) -> NoReturn:
     status_code, message = _PROVIDER_ERRORS.get(error.code, (502, "The AI provider request failed"))
     if error.code == "ai_response_invalid":
         raise AiResponseInvalid(error.stage, error.reason, message) from None
-    raise domain_error(status_code, error.code, message) from None
+    params = (
+        {"http_status": error.http_status}
+        if error.code == "ai_provider_http_error" and error.http_status is not None
+        else None
+    )
+    raise domain_error(status_code, error.code, message, params) from None
 
 
 def _raise_tool_error(code: str) -> NoReturn:
@@ -1679,6 +1688,8 @@ def _call_provider_with_audit(
                 error_code=error.code,
                 stage=error.stage,
                 reason=error.reason,
+                transport_category=error.transport_category,
+                http_status=error.http_status,
             )
         raise
     if audit is not None:
