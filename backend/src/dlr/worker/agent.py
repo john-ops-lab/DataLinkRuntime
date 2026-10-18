@@ -1129,6 +1129,11 @@ class Agent:
                     management_id,
                     operation_ids=release_ids,
                 )
+        if str(command["kind"]) != "preview" and receipt["status"] in {"completed", "failed"}:
+            # The durable receipt prevents replaying the mutation if either
+            # snapshot publication or the terminal acknowledgement is lost.
+            # Publish the resulting observation before the UI sees completion.
+            self._report_cache_snapshot(worker_id)
         self._client.report_cache_command(
             worker_id,
             str(operation_id),

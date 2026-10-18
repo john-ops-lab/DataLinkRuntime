@@ -42,8 +42,23 @@ WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
 class _CommandClient:
     def __init__(self) -> None:
         self.reports: list[dict[str, object]] = []
+        self.snapshots: list[dict[str, object]] = []
+        self.events: list[str] = []
+        self.snapshot_failures = 0
+        self.ack_failures = 0
+
+    def report_cache_snapshot(self, _worker_id: int, payload) -> None:
+        self.events.append("snapshot")
+        if self.snapshot_failures:
+            self.snapshot_failures -= 1
+            raise ControlUnavailableError("snapshot publication unavailable")
+        self.snapshots.append(payload)
 
     def report_cache_command(self, _worker_id: int, _operation_id: str, **payload) -> None:
+        self.events.append("command")
+        if self.ack_failures:
+            self.ack_failures -= 1
+            raise ControlUnavailableError("terminal acknowledgement unavailable")
         self.reports.append(payload)
 
 
@@ -892,6 +907,8 @@ def test_mixed_children_second_retry_succeeds_and_counts_actuals_once(tmp_path: 
     first = agent._client.reports[-1]
     assert first["status"] == "failed"
     assert first["result"]["deleted"] == 1
+    assert agent._client.events == ["snapshot", "command"]
+    assert [item["cache_key"] for item in agent._client.snapshots[-1]["items"]] == ["11-14"]
     children = first["result"]["child_operations"]
 
     first_retry_id = uuid.uuid4()
@@ -934,6 +951,8 @@ def test_mixed_children_second_retry_succeeds_and_counts_actuals_once(tmp_path: 
     assert completed["result"]["freed_bytes"] >= 8192
     assert not cache.entry_path("11-13").exists()
     assert not cache.entry_path("11-14").exists()
+    assert agent._client.snapshots[-1]["items"] == []
+    assert agent._client.events == ["snapshot", "command"] * 3
 
 
 def test_cleanup_retry_reuses_request_and_one_failure_stops(
@@ -1173,3 +1192,112 @@ def test_local_command_receipt_replays_after_restart_without_repeating_side_effe
     command["claim_epoch"] = 2
     assert restarted._execute_cache_command(7, command)
     assert [report["claim_epoch"] for report in client.reports] == [1, 2]
+    assert client.snapshots == []  # Read-only previews do not trigger another observation.
+
+
+def _protect_local_command(identity, digest) -> dict[str, object]:
+    return {
+        "operation_id": str(uuid.uuid4()),
+        "claim_epoch": 1,
+        "request_hash": "b" * 64,
+        "kind": "protect",
+        "payload": {
+            "protect": [
+                {
+                    "adapter_id": 11,
+                    "version_id": 13,
+                    "identity": identity,
+                    "digest": digest,
+                    "pinned": True,
+                }
+            ]
+        },
+        "actor": "admin",
+    }
+
+
+def test_mutating_terminal_command_publishes_resulting_snapshot_before_completion(
+    tmp_path: Path,
+) -> None:
+    cache, lifecycle, manager = policy_manager(
+        tmp_path, replace(CachePolicy(), max_bytes=1_048_576, disk_reserve_bytes=0)
+    )
+    identity, digest = policy_ready(cache, lifecycle)
+    agent = _local_agent(lifecycle, manager)
+    assert agent._execute_cache_command(7, _protect_local_command(identity, digest))
+    assert agent._client.events == ["snapshot", "command"]
+    assert agent._client.snapshots[-1]["items"][0]["pinned"] is True
+    assert agent._client.reports[-1]["status"] == "completed"
+
+
+@pytest.mark.parametrize("transport_failure", ["snapshot", "ack"])
+def test_terminal_replay_refreshes_snapshot_and_reuses_receipt_after_transport_failure(
+    tmp_path: Path, monkeypatch, transport_failure: str
+) -> None:
+    cache, lifecycle, manager = policy_manager(
+        tmp_path, replace(CachePolicy(), max_bytes=1_048_576, disk_reserve_bytes=0)
+    )
+    identity, digest = policy_ready(cache, lifecycle)
+    first = _local_agent(lifecycle, manager)
+    client = first._client
+    command = _protect_local_command(identity, digest)
+    if transport_failure == "snapshot":
+        client.snapshot_failures = 1
+    else:
+        client.ack_failures = 1
+    with pytest.raises(ControlUnavailableError):
+        first._execute_cache_command(7, command)
+    after_mutation = lifecycle.lifecycle("11-13")
+    assert after_mutation["pinned"] is True
+    receipt_path = first._command_receipt_path(uuid.UUID(str(command["operation_id"])))
+    receipt_before = receipt_path.read_bytes()
+    assert client.reports == []
+    restarted = _local_agent(lifecycle, manager)
+    restarted._client = client
+    monkeypatch.setattr(
+        restarted,
+        "_run_cache_command",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("mutation repeated")),
+    )
+    command["claim_epoch"] = 2
+    assert restarted._execute_cache_command(7, command)
+    assert receipt_path.read_bytes() == receipt_before
+    assert lifecycle.lifecycle("11-13")["policy_revision"] == after_mutation["policy_revision"]
+    assert client.reports[-1]["claim_epoch"] == 2
+    assert client.snapshots[-1]["items"][0]["pinned"] is True
+    expected = (
+        ["snapshot", "snapshot", "command"]
+        if transport_failure == "snapshot"
+        else ["snapshot", "command", "snapshot", "command"]
+    )
+    assert client.events == expected
+
+
+def test_clean_terminal_snapshot_has_no_deleted_entries(tmp_path: Path) -> None:
+    cache, lifecycle, manager = policy_manager(
+        tmp_path,
+        replace(CachePolicy(), max_bytes=1_048_576, disk_reserve_bytes=0, min_idle_seconds=0),
+    )
+    identity, digest = policy_ready(cache, lifecycle)
+    lifecycle.confirm_rebuildability(
+        "11-13",
+        identity=identity,
+        digest=digest,
+        source_policy="verified_offline",
+        evidence_note="owned temporary test cache",
+        actor="admin",
+        valid_until=datetime.now(UTC).timestamp() + 300,
+    )
+    agent = _local_agent(lifecycle, manager)
+    command = {
+        "operation_id": str(uuid.uuid4()),
+        "claim_epoch": 1,
+        "request_hash": "c" * 64,
+        "kind": "clean",
+        "payload": {"keys": [{"adapter_id": 11, "version_id": 13}]},
+        "actor": "admin",
+    }
+    assert agent._execute_cache_command(7, command)
+    assert agent._client.events == ["snapshot", "command"]
+    assert agent._client.snapshots[-1]["items"] == []
+    assert agent._client.reports[-1]["result"]["deleted"] == 1
