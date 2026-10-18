@@ -59,7 +59,10 @@ class AttachmentMedia:
         validate_attachment_reference(self.attachment_ref)
         if self.content_type not in {"image/png", "image/jpeg", "image/webp", "application/pdf"}:
             raise ValueError("ai_attachment_media_invalid")
-        if not 0 < self.size_bytes <= MAX_ATTACHMENT_MEDIA_BYTES:
+        if (
+            type(self.size_bytes) is not int
+            or not 0 < self.size_bytes <= MAX_ATTACHMENT_MEDIA_BYTES
+        ):
             raise ValueError("ai_attachment_media_invalid")
         if len(self.data_base64) > (MAX_ATTACHMENT_MEDIA_BYTES + 2) // 3 * 4:
             raise ValueError("ai_attachment_media_invalid")
@@ -82,16 +85,22 @@ class AttachmentMedia:
             raise ValueError("ai_attachment_media_invalid")
         if self.content_type.startswith("image/"):
             if (
-                self.width is None
+                type(self.width) is not int
+                or type(self.height) is not int
+                or self.width is None
                 or self.height is None
                 or self.width <= 0
                 or self.height <= 0
                 or self.width * self.height > MAX_ATTACHMENT_PIXELS
             ):
                 raise ValueError("ai_attachment_media_invalid")
-        elif self.page_count is None or not 0 < self.page_count <= 1000:
+        elif (
+            type(self.page_count) is not int
+            or self.page_count is None
+            or not 0 < self.page_count <= 1000
+        ):
             raise ValueError("ai_attachment_media_invalid")
-        if self.page is not None and self.page <= 0:
+        if self.page is not None and (type(self.page) is not int or self.page <= 0):
             raise ValueError("ai_attachment_media_invalid")
         if self.range_a1 is not None:
             validate_sheet_range(self.range_a1)

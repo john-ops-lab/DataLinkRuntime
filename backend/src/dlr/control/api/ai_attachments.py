@@ -43,7 +43,7 @@ def capabilities(
     session: DbSession,
 ) -> AiAttachmentCapabilitiesResponse:
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
-    return ai_service.attachment_capabilities()
+    return ai_service.attachment_capabilities(session)
 
 
 @router.post("/api/adapters/{adapter_id}/ai/attachments", response_model=AiPreparedAttachment)

@@ -303,7 +303,7 @@ def test_resources_load_outside_repo_cwd(tmp_path: Path) -> None:
     )
     revision, count = result.stdout.strip().split()
     assert revision == prompts.REVISION
-    assert count == "3"
+    assert count == "4"
 
 
 def test_bad_resource_fails_at_module_import(tmp_path: Path) -> None:

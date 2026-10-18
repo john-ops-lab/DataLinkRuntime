@@ -46,7 +46,18 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from dlr.control.ai import dlr_docs, knowledge
+from fastapi import HTTPException
+
+from dlr.control.ai import dlr_docs, knowledge, providers
+from dlr.control.ai.attachment_documents import KNOWN_ERROR_CODES, DocumentConversionError
+from dlr.control.ai.attachment_reading import (
+    AttachmentMedia,
+    AttachmentReadResult,
+    ScopedAttachmentReader,
+    validate_attachment_reference,
+    validate_sheet_range,
+)
+from dlr.control.schemas.ai import contains_unicode_surrogate
 
 logger = logging.getLogger("dlr.ai.tools")
 
@@ -101,7 +112,8 @@ class ToolSpec:
     name: str
     description: str
     parameters: dict[str, Any]
-    handler: Callable[[dict[str, Any]], dict[str, Any]]
+    handler: Callable[[dict[str, Any]], dict[str, Any] | AttachmentReadResult]
+    timeout_seconds: float | None = None
 
 
 @dataclass
@@ -118,6 +130,12 @@ class ToolExecutionContext:
     session: Any = None
     secret_values: list[str] = field(default_factory=list)
     knowledge_search_enabled: bool = False
+    attachment_reader: ScopedAttachmentReader | None = None
+    attachment_refs: frozenset[str] = frozenset()
+    hard_deadline: float | None = None
+    attachment_deadline: float | None = None
+    images_native: bool = False
+    native_pdf: bool = False
 
 
 # Execution is strictly sequential (MAX_TOOL_CONCURRENCY is fixed at 1), so
@@ -152,6 +170,7 @@ class ToolExecution:
     result_truncated: bool
     result_size: int
     source: str | None
+    media: tuple[AttachmentMedia, ...] = ()
 
 
 def _redact_values(
@@ -338,10 +357,10 @@ class ToolArgsValidator:
         keys, wrong types or oversized strings.
         """
         try:
-            parsed = json.loads(raw_arguments, parse_constant=_reject_constant)
+            parsed = providers.load_json_strict(raw_arguments)
         except (json.JSONDecodeError, ValueError, RecursionError):
             raise ToolFailure(CODE_ARGS_INVALID, "tool arguments must be a JSON object") from None
-        if not isinstance(parsed, dict):
+        if not isinstance(parsed, dict) or contains_unicode_surrogate(parsed):
             raise ToolFailure(CODE_ARGS_INVALID, "tool arguments must be a JSON object")
         self._check_unknown_keys(parsed)
         validated: dict[str, Any] = {}
@@ -391,11 +410,176 @@ class ToolArgsValidator:
         raise ToolFailure(CODE_ARGS_INVALID, "invalid tool argument")  # defensive
 
 
-def _reject_constant(value: str) -> None:
-    raise ValueError(f"non-finite JSON number: {value}")
+_ATTACHMENT_TOOLS = frozenset({"list_attachments", "read_attachment_page", "read_attachment_sheet"})
+# Converter errors already have a closed public-code contract. Add the store's
+# identity/capacity errors explicitly; arbitrary exception codes are not public data.
+_ATTACHMENT_READ_ERROR_CODES = KNOWN_ERROR_CODES | frozenset(
+    {
+        "ai_attachment_expired",
+        "ai_attachment_hash_mismatch",
+        "ai_attachment_not_ready",
+        "ai_attachment_reference_invalid",
+        "ai_attachment_range_invalid",
+        "ai_attachment_count_exceeded",
+        "ai_attachment_total_too_large",
+        "ai_attachment_store_busy",
+        "ai_attachment_store_full",
+        "ai_attachment_store_unavailable",
+    }
+)
+
+
+def _attachment_context(
+    *, timeout_limit: float = TOOL_TIMEOUT_SECONDS
+) -> tuple[ToolExecutionContext, ScopedAttachmentReader, float]:
+    context = _TOOL_CONTEXT.get()
+    if not isinstance(context, ToolExecutionContext) or context.attachment_reader is None:
+        raise ToolFailure("ai_attachment_scope_invalid", "attachment reading is unavailable")
+    deadlines = [d for d in (context.hard_deadline, context.attachment_deadline) if d is not None]
+    remaining = min(deadlines) - time.monotonic() if deadlines else timeout_limit
+    if remaining <= 0:
+        raise ToolFailure(CODE_TIMEOUT, "attachment deadline exceeded")
+    return context, context.attachment_reader, min(timeout_limit, remaining)
+
+
+def _attachment_ref(args: dict[str, Any], context: ToolExecutionContext) -> str:
+    reference = args["attachment_ref"]
+    if not isinstance(reference, str):
+        raise ToolFailure(CODE_ARGS_INVALID, "invalid attachment reference")
+    try:
+        validate_attachment_reference(reference)
+    except ValueError:
+        raise ToolFailure(CODE_ARGS_INVALID, "invalid attachment reference") from None
+    if reference not in context.attachment_refs:
+        raise ToolFailure("ai_attachment_scope_invalid", "attachment is outside this request")
+    return reference
+
+
+def _attachment_read[T](call: Callable[[], T]) -> T:
+    try:
+        result = call()
+    except DocumentConversionError as error:
+        attachment_code = (
+            CODE_TIMEOUT
+            if error.code == "ai_attachment_parse_timeout"
+            else error.code
+            if error.code in _ATTACHMENT_READ_ERROR_CODES
+            else CODE_FAILED
+        )
+        raise ToolFailure(attachment_code, "attachment read failed") from None
+    except HTTPException as error:
+        code = error.detail.get("code") if isinstance(error.detail, dict) else None
+        if isinstance(code, str) and re.fullmatch(r"ai_attachment_[a-z_]{1,48}", code):
+            raise ToolFailure(code, "attachment read failed") from None
+        raise ToolFailure(CODE_FAILED, "attachment read failed") from None
+    return result
+
+
+def _handler_list_attachments(args: dict[str, Any]) -> dict[str, Any]:
+    _context, reader, _timeout = _attachment_context()
+    return {"tool": "list_attachments", **_attachment_read(reader.overview)}
+
+
+def _handler_read_attachment_page(args: dict[str, Any]) -> AttachmentReadResult:
+    context, reader, timeout = _attachment_context(timeout_limit=30.0)
+    reference = _attachment_ref(args, context)
+    page = args["page"]
+    view = args.get("view", "both")
+    if not 1 <= page <= 1000 or view not in {"text", "image", "both", "pdf"}:
+        raise ToolFailure(CODE_ARGS_INVALID, "invalid page or view")
+    if view == "pdf" and not context.native_pdf:
+        raise ToolFailure("ai_attachment_type_unsupported", "native PDF is not verified")
+    if view in {"image", "both"} and not context.images_native:
+        raise ToolFailure("ai_attachment_image_unsupported", "image input is not available")
+    result = _attachment_read(
+        lambda: reader.read_page(reference, page, view, timeout_seconds=timeout)
+    )
+    return AttachmentReadResult(
+        {
+            **result.data,
+            "tool": "read_attachment_page",
+            "attachment_ref": reference,
+            "page": page,
+            "view": view,
+        },
+        result.media,
+    )
+
+
+def _handler_read_attachment_sheet(args: dict[str, Any]) -> AttachmentReadResult:
+    context, reader, timeout = _attachment_context()
+    reference = _attachment_ref(args, context)
+    sheet, range_a1 = args["sheet"], args["range"]
+    if not sheet or len(sheet) > 128 or "\x00" in sheet:
+        raise ToolFailure(CODE_ARGS_INVALID, "invalid sheet")
+    try:
+        validate_sheet_range(range_a1)
+    except ValueError:
+        raise ToolFailure(CODE_ARGS_INVALID, "invalid sheet range") from None
+    result = _attachment_read(
+        lambda: reader.read_sheet(reference, sheet, range_a1, timeout_seconds=timeout)
+    )
+    return AttachmentReadResult(
+        {
+            **result.data,
+            "tool": "read_attachment_sheet",
+            "attachment_ref": reference,
+            "sheet": sheet,
+            "range": range_a1,
+        },
+        result.media,
+    )
 
 
 _TOOLS: dict[str, ToolSpec] = {
+    "list_attachments": ToolSpec(
+        name="list_attachments",
+        description=(
+            "List only this request's frozen attachments, page/sheet directory and coverage. "
+            "Read-only; directory does not mean material was read."
+        ),
+        parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        handler=_handler_list_attachments,
+    ),
+    "read_attachment_page": ToolSpec(
+        name="read_attachment_page",
+        description=(
+            "Read one original 1-based attachment page. view is text/image/both/pdf; "
+            "PDF requires verified native PDF input. Only frozen request refs; "
+            "no paths or URLs. Read-only."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "attachment_ref": {"type": "string"},
+                "page": {"type": "integer", "minimum": 1, "maximum": 1000},
+                "view": {"type": "string", "enum": ["text", "image", "both", "pdf"]},
+            },
+            "required": ["attachment_ref", "page"],
+            "additionalProperties": False,
+        },
+        handler=_handler_read_attachment_page,
+        timeout_seconds=30.0,
+    ),
+    "read_attachment_sheet": ToolSpec(
+        name="read_attachment_sheet",
+        description=(
+            "Read at most 200 cells from one exact sheet/A1 range of a frozen request attachment. "
+            "Preserve raw values, formatting, formula/cache provenance. "
+            "No paths or URLs. Read-only."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "attachment_ref": {"type": "string"},
+                "sheet": {"type": "string"},
+                "range": {"type": "string"},
+            },
+            "required": ["attachment_ref", "sheet", "range"],
+            "additionalProperties": False,
+        },
+        handler=_handler_read_attachment_sheet,
+    ),
     "dlr_docs_list": ToolSpec(
         name="dlr_docs_list",
         description=(
@@ -544,7 +728,9 @@ _TOOLS: dict[str, ToolSpec] = {
 }
 
 
-def tools_payload(include_knowledge: bool | None = None) -> list[dict[str, Any]]:
+def tools_payload(
+    include_knowledge: bool | None = None, *, include_attachments: bool = False
+) -> list[dict[str, Any]]:
     """Build provider-neutral tool definitions for the active capability set.
 
     ``None`` preserves the historical complete registry for direct callers and
@@ -554,8 +740,11 @@ def tools_payload(include_knowledge: bool | None = None) -> list[dict[str, Any]]
     specs = [
         spec
         for spec in _TOOLS.values()
-        if include_knowledge is not False
-        or spec.name not in {"list_knowledge_bases", "search_knowledge", "read_knowledge"}
+        if (
+            include_knowledge is not False
+            or spec.name not in {"list_knowledge_bases", "search_knowledge", "read_knowledge"}
+        )
+        and (include_attachments or spec.name not in _ATTACHMENT_TOOLS)
     ]
     return [
         {
@@ -632,7 +821,7 @@ def _execute_one(
     validated_args: dict[str, Any],
     redact_values: tuple[str, ...],
     context: ToolExecutionContext | None,
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[dict[str, Any], bool, tuple[AttachmentMedia, ...]]:
     """Run one handler with a wall-clock timeout (sequential executor).
 
     The per-execution context (DB session + collected source credential
@@ -641,13 +830,48 @@ def _execute_one(
     """
     started = time.monotonic()
     result: dict[str, Any] = {}
+    media: tuple[AttachmentMedia, ...] = ()
     truncated = False
     token = _TOOL_CONTEXT.set(context)
     try:
         # The executor is deliberately a single worker: MAX_TOOL_CONCURRENCY
         # is fixed at 1 and each call gets its own timeout budget.
         output = spec.handler(validated_args)
-        result = output if isinstance(output, dict) else {"value": output}
+        if isinstance(output, AttachmentReadResult):
+            result, media = output.data, output.media
+            if (
+                context is None
+                or len(media) > 4
+                or sum(item.size_bytes for item in media) > 16 * 1024 * 1024
+            ):
+                raise ToolFailure(CODE_FAILED, "invalid media result")
+            for item in media:
+                if item.attachment_ref not in context.attachment_refs:
+                    raise ToolFailure(
+                        "ai_attachment_scope_invalid", "media is outside this request"
+                    )
+                if item.attachment_ref != validated_args.get("attachment_ref"):
+                    raise ToolFailure("ai_attachment_scope_invalid", "media source mismatch")
+                if spec.name == "read_attachment_page" and item.page != validated_args.get("page"):
+                    raise ToolFailure(CODE_FAILED, "media page mismatch")
+                if spec.name == "read_attachment_sheet" and (
+                    item.sheet != validated_args.get("sheet")
+                    or item.range_a1 != validated_args.get("range")
+                ):
+                    raise ToolFailure(CODE_FAILED, "media sheet/range mismatch")
+                if item.content_type == "application/pdf":
+                    if not context.native_pdf:
+                        raise ToolFailure(
+                            "ai_attachment_type_unsupported", "native PDF is not verified"
+                        )
+                    if spec.name == "read_attachment_page" and item.page_count != 1:
+                        raise ToolFailure(CODE_FAILED, "single-page PDF required")
+                elif not context.images_native:
+                    raise ToolFailure(
+                        "ai_attachment_image_unsupported", "image input is not available"
+                    )
+        else:
+            result = output if isinstance(output, dict) else {"value": output}
     except ToolFailure:
         raise
     except Exception:
@@ -655,7 +879,16 @@ def _execute_one(
     finally:
         _TOOL_CONTEXT.reset(token)
         elapsed_ms = int((time.monotonic() - started) * 1000)
-    if elapsed_ms > TOOL_TIMEOUT_SECONDS * 1000:
+    if (
+        elapsed_ms > (spec.timeout_seconds or TOOL_TIMEOUT_SECONDS) * 1000
+        or context is not None
+        and context.hard_deadline is not None
+        and time.monotonic() >= context.hard_deadline
+        or spec.name in _ATTACHMENT_TOOLS
+        and context is not None
+        and context.attachment_deadline is not None
+        and time.monotonic() >= context.attachment_deadline
+    ):
         raise ToolFailure(CODE_TIMEOUT, "tool execution timed out")
     # Sanitize the raw handler output before it can reach the model.
     result = _sanitize_result(result, redact_values)
@@ -663,29 +896,59 @@ def _execute_one(
     if len(encoded) > MAX_TOOL_RESULT_CHARS:
         result = _truncate_result(result, redact_values)
         truncated = True
-    return result, truncated
+    return result, truncated, media
 
 
 def _sanitize_result(result: dict[str, Any], redact_values: tuple[str, ...]) -> dict[str, Any]:
-    """Deep-sanitize one tool result: redact secrets and clamp string length."""
-    sanitized: dict[str, Any] = {}
-    for key, value in result.items():
+    """Deep-sanitize structured values, including cell matrices and warning lists."""
+
+    def sanitize(value: Any) -> Any:
         if isinstance(value, str):
-            sanitized[key] = sanitize_text(value, None, MAX_TOOL_RESULT_CHARS, redact_values)
-        elif isinstance(value, dict):
-            sanitized[key] = _sanitize_result(value, redact_values)
-        elif isinstance(value, list):
-            sanitized[key] = [
-                _sanitize_result(item, redact_values) if isinstance(item, dict) else item
-                for item in value
-            ]
-        else:
-            sanitized[key] = value
-    return sanitized
+            return sanitize_text(value, None, MAX_TOOL_RESULT_CHARS, redact_values)
+        if isinstance(value, dict):
+            return {key: sanitize(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [sanitize(item) for item in value]
+        return value
+
+    return {key: sanitize(value) for key, value in result.items()}
 
 
 def _truncate_result(result: dict[str, Any], redact_values: tuple[str, ...]) -> dict[str, Any]:
     """Deterministically cut an oversized sanitized result to the bound."""
+    if result.get("tool") in _ATTACHMENT_TOOLS:
+        attachment_preserved: dict[str, Any] = {
+            key: result[key]
+            for key in ("tool", "attachment_ref", "page", "view", "sheet", "range")
+            if key in result
+        }
+        attachment_preserved.update(truncated=True, coverage="partial")
+        cells = result.get("cells")
+        if isinstance(cells, list):
+            attachment_preserved["cells"] = []
+            for cell in cells:
+                cell_candidate = {
+                    **attachment_preserved,
+                    "cells": [*attachment_preserved["cells"], cell],
+                }
+                if (
+                    len(json.dumps(cell_candidate, ensure_ascii=False, sort_keys=True))
+                    > MAX_TOOL_RESULT_CHARS - 80
+                ):
+                    break
+                attachment_preserved = cell_candidate
+            attachment_preserved["omitted_cells"] = len(cells) - len(attachment_preserved["cells"])
+        else:
+            raw = json.dumps(result, ensure_ascii=False, sort_keys=True)
+            remaining = (
+                MAX_TOOL_RESULT_CHARS
+                - len(json.dumps(attachment_preserved, ensure_ascii=False))
+                - 100
+            )
+            attachment_preserved["content_excerpt"] = sanitize_text(
+                raw, None, max(1, remaining // 2), redact_values
+            )
+        return attachment_preserved
     item = result.get("item")
     if result.get("tool") == "read_knowledge" and isinstance(item, dict):
         content = item.get("content")
@@ -837,7 +1100,7 @@ def execute_tool_call(
             elapsed_ms,
         )
     try:
-        result, truncated = _execute_one(spec, validated_args, redact_values, context)
+        result, truncated, media = _execute_one(spec, validated_args, redact_values, context)
     except ToolFailure as error:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         logger.info(
@@ -882,6 +1145,7 @@ def execute_tool_call(
         result_truncated=truncated,
         result_size=size,
         source=source,
+        media=media,
     )
 
 

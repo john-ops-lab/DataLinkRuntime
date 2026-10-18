@@ -412,9 +412,12 @@ def test_assist_image_native_payload_for_openai(
     api_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     adapter = create_adapter(api_client, "attach-image-native")
-    configure(api_client, provider="openai")
-    # Test native wire shape independently of optional image budget trimming.
-    monkeypatch.setattr(settings, "ai_context_default_window_tokens", 65536)
+    configure(
+        api_client,
+        provider="openai",
+        base_url="https://api.openai.com",
+        model="gpt-4o-2024-08-06",
+    )
     captured = captured_payload(monkeypatch)
     body = assist_body()
     body["attachments"] = [
