@@ -49,6 +49,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from dlr.control.ai import dlr_docs, knowledge, providers
+from dlr.control.ai.attachment_documents import KNOWN_ERROR_CODES, DocumentConversionError
 from dlr.control.ai.attachment_reading import (
     AttachmentMedia,
     AttachmentReadResult,
@@ -410,6 +411,22 @@ class ToolArgsValidator:
 
 
 _ATTACHMENT_TOOLS = frozenset({"list_attachments", "read_attachment_page", "read_attachment_sheet"})
+# Converter errors already have a closed public-code contract. Add the store's
+# identity/capacity errors explicitly; arbitrary exception codes are not public data.
+_ATTACHMENT_READ_ERROR_CODES = KNOWN_ERROR_CODES | frozenset(
+    {
+        "ai_attachment_expired",
+        "ai_attachment_hash_mismatch",
+        "ai_attachment_not_ready",
+        "ai_attachment_reference_invalid",
+        "ai_attachment_range_invalid",
+        "ai_attachment_count_exceeded",
+        "ai_attachment_total_too_large",
+        "ai_attachment_store_busy",
+        "ai_attachment_store_full",
+        "ai_attachment_store_unavailable",
+    }
+)
 
 
 def _attachment_context(
@@ -438,9 +455,18 @@ def _attachment_ref(args: dict[str, Any], context: ToolExecutionContext) -> str:
     return reference
 
 
-def _attachment_read(call: Callable[[], AttachmentReadResult]) -> AttachmentReadResult:
+def _attachment_read[T](call: Callable[[], T]) -> T:
     try:
         result = call()
+    except DocumentConversionError as error:
+        attachment_code = (
+            CODE_TIMEOUT
+            if error.code == "ai_attachment_parse_timeout"
+            else error.code
+            if error.code in _ATTACHMENT_READ_ERROR_CODES
+            else CODE_FAILED
+        )
+        raise ToolFailure(attachment_code, "attachment read failed") from None
     except HTTPException as error:
         code = error.detail.get("code") if isinstance(error.detail, dict) else None
         if isinstance(code, str) and re.fullmatch(r"ai_attachment_[a-z_]{1,48}", code):
@@ -451,7 +477,7 @@ def _attachment_read(call: Callable[[], AttachmentReadResult]) -> AttachmentRead
 
 def _handler_list_attachments(args: dict[str, Any]) -> dict[str, Any]:
     _context, reader, _timeout = _attachment_context()
-    return {"tool": "list_attachments", **reader.overview()}
+    return {"tool": "list_attachments", **_attachment_read(reader.overview)}
 
 
 def _handler_read_attachment_page(args: dict[str, Any]) -> AttachmentReadResult:
