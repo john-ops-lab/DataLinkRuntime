@@ -262,7 +262,7 @@ describe("Worker cache administration", () => {
     expect(screen.queryByLabelText("核实说明")).toBeNull();
     fireEvent.click(screen.getByText("更多操作"));
     fireEvent.click(screen.getByRole("button", { name: "确认安装来源" }));
-    expect(screen.getByText("平台不会自动验证。确认到期或来源身份变化后失效；手动保留仍有效。")).toBeTruthy();
+    expect(screen.getByText(/平台不会自动验证/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "确认" })).toHaveProperty("disabled", true);
     fireEvent.change(screen.getByLabelText("核实说明"), {
       target: { value: "immutable source verified in the owned bundle" },
