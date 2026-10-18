@@ -165,6 +165,12 @@ interface AssistRoundSnapshot {
   locale: string;
 }
 
+interface ComposerControls {
+  getState: () => { text: string; attachments: readonly Attachment[] };
+  setText: (text: string) => void;
+  clearAttachments: () => Promise<void>;
+}
+
 interface VisibleMessage {
   taskStatus?: "answered" | "candidate_ready" | "incomplete" | "unclassified";
   id: number;
@@ -390,8 +396,8 @@ function formatAttachmentGuidanceSize(bytes: number): string {
 
 /** M5.7 Wave A: 发送按钮。点击路径由 DLR 同步启动 assist 流程（保持既有
  * “准备态先于请求可见”的生命周期回归语义），并阻止原语自带的异步 send()
- * 双路径；Enter / Ctrl/Cmd+Enter 键盘路径仍走表单提交 → External Store
- * Runtime onNew。两条路径汇聚到同一个 DLR runAssist。
+ * 双路径；Enter / Ctrl/Cmd+Enter 键盘路径走表单提交的安全发送入口。
+ * 两条路径汇聚到同一个 DLR runAssist。
  *
  * M5.7 Wave B3: the click captures the composer draft (text + attachment
  * rows) without clearing anything — DLR's send path validates and resolves
@@ -442,12 +448,7 @@ function ComposerSubmitButton(props: {
  * switch) to the panel. */
 function ComposerAttachmentsBridge(props: {
   onAttachmentsChange: (attachments: readonly Attachment[]) => void;
-  onControlsChange: (
-    controls: {
-      setText: (text: string) => void;
-      clearAttachments: () => Promise<void>;
-    } | null,
-  ) => void;
+  onControlsChange: (controls: ComposerControls | null) => void;
 }) {
   const aui = useAui();
   const attachments = useAuiState((state) => state.composer.attachments);
@@ -456,6 +457,7 @@ function ComposerAttachmentsBridge(props: {
   }, [attachments, props]);
   useEffect(() => {
     props.onControlsChange({
+      getState: () => aui.composer.getState(),
       setText: (text: string) => aui.composer.setText(text),
       clearAttachments: () => aui.composer.clearAttachments(),
     });
@@ -870,6 +872,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   }, [scopeKey]);
   const [sending, setSending] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
+  const [showRecoveryHint, setShowRecoveryHint] = useState(true);
   const [boundSecretKeys, setBoundSecretKeys] = useState<Set<string>>(new Set());
   const [bindingsLoading, setBindingsLoading] = useState(false);
   const [bindingsVerified, setBindingsVerified] = useState(false);
@@ -922,6 +925,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const supportedContentTypesRef = useRef(supportedContentTypes);
   const translateRef = useRef<(key: string, options?: Record<string, unknown>) => string>(t);
   const composerAttachmentsRef = useRef<readonly Attachment[]>([]);
+  // Adapter mutations can precede the runtime's published attachment list
+  // (notably asynchronous removal), so fence them at the event boundary.
+  const composerAttachmentSequenceRef = useRef(0);
   const wireCacheRef = useRef(new WeakMap<object, AiAttachment>());
   // Wave B3: guards the send entry against re-entry while attachment bodies
   // are being resolved. The draft stays visible and `sending` is still false
@@ -930,10 +936,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   // the first await and cleared in the finally block.
   const attachmentSendInFlightRef = useRef<number | null>(null);
   const attachmentSendSequenceRef = useRef(0);
-  const composerControlsRef = useRef<{
-    setText: (text: string) => void;
-    clearAttachments: () => Promise<void>;
-  } | null>(null);
+  const composerControlsRef = useRef<ComposerControls | null>(null);
   const previousScopeRef = useRef(scopeKey);
   useEffect(() => {
     const onPageHide = () => {
@@ -1084,6 +1087,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     setCandidateDiff(null);
     setProgressStage(null);
     setPanelError(null);
+    setShowRecoveryHint(true);
     setAttachmentError(null);
     setAttachmentCapabilities(null);
     attachmentSendInFlightRef.current = null;
@@ -1132,6 +1136,7 @@ async function resolveComposerAttachment(
     return {
       get accept() { return legacy.accept; },
       async add(options) {
+        composerAttachmentSequenceRef.current += 1;
         // This project adapter returns a Promise, not an incremental generator.
         const row = await (legacy.add(options) as Promise<PendingAttachment>);
         if (preparedEnabledRef.current && row.status.type !== "incomplete") {
@@ -1143,6 +1148,7 @@ async function resolveComposerAttachment(
       },
       send: (attachment) => legacy.send(attachment),
       async remove(attachment) {
+        composerAttachmentSequenceRef.current += 1;
         preparedSessionRef.current.removeComposer(attachment.id);
         await legacy.remove?.(attachment);
       },
@@ -1205,6 +1211,7 @@ async function resolveComposerAttachment(
     snapshot: AssistRoundSnapshot,
     replaceAssistantMessageId: number | null,
     onRequestStarted?: () => void,
+    attachmentRefsValidated = false,
   ) {
     const adapter = props.adapter;
     if (
@@ -1233,11 +1240,12 @@ async function resolveComposerAttachment(
     // manual upward scroll can still pause following before the reply arrives.
     followLatestRef.current = true;
     setPanelError(null);
+    setShowRecoveryHint(true);
     setSending(true);
     setProgressStage("preparing");
     const releaseActive = preparedSession.retainActive(snapshot.attachmentRefs);
     try {
-      if (snapshot.attachmentRefs.length > 0) {
+      if (snapshot.attachmentRefs.length > 0 && !attachmentRefsValidated) {
         if (snapshot.attachmentScopeId !== preparedSession.scopeId) {
           throw new ApiError(410, "ai_attachment_expired", "Upload the file again");
         }
@@ -1365,6 +1373,7 @@ async function resolveComposerAttachment(
       setProgressStage(assistantMessage.candidate === null ? null : "succeeded");
     } catch (error) {
       if (requestIsCurrent()) {
+        setShowRecoveryHint(!(error instanceof ApiError && error.code === "ai_attachment_tools_unsupported"));
         setPanelError(
           error instanceof ApiError && error.code === "ai_attachment_expired"
             ? t("assistant.attachments.prepared.expired")
@@ -1396,6 +1405,7 @@ async function resolveComposerAttachment(
   ): AssistRoundSnapshot | null {
     const runtimeConfig = parseRuntimeConfig(props.workingCopy.runtimeConfigText);
     if (runtimeConfig === null) {
+      setShowRecoveryHint(true);
       setPanelError(t("assistant.invalidRuntimeConfig"));
       return null;
     }
@@ -1469,11 +1479,25 @@ async function resolveComposerAttachment(
     attachmentSendInFlightRef.current = sendToken;
     const sendEpoch = scopeEpoch.current;
     const sendScope = scopeKey;
+    const attachmentSequence = composerAttachmentSequenceRef.current;
     const sendScopeIsCurrent = () => {
       const current = latestSendScopeRef.current;
       return sendEpoch === scopeEpoch.current &&
         sendScope === current;
     };
+    const draftIsUnchanged = () => {
+      const current = composerControlsRef.current?.getState();
+      return current !== undefined && current.text === rawText
+        && attachmentSequence === composerAttachmentSequenceRef.current
+        && current.attachments.length === composerAttachments.length
+        && current.attachments.every((attachment, index) => {
+          const original = composerAttachments[index];
+          return attachment.id === original.id && attachment.file === original.file;
+        });
+    };
+    // An explicit runtime onNew may already have consumed its own draft.
+    // UI click and form submission keep ownership until validation finishes.
+    const ownsComposerDraft = draftIsUnchanged();
     try {
       // A client-rejected row must never leave the browser: block the send
       // with the row's localized message and keep the draft intact (the
@@ -1514,19 +1538,17 @@ async function resolveComposerAttachment(
             if (preparedSession.scopeId === preparationScope) break;
             if (attempt === 1) throw new ApiError(410, "ai_attachment_expired", "Upload the file again");
           }
-          // A local timestamp is only a hint. Recheck elapsed composer refs
-          // before consuming the draft; actual expiry still keeps it intact.
-          const elapsed = preparedAttachments.filter((metadata) => {
-            return Date.parse(metadata.expires_at) <= Date.now();
-          });
-          if (elapsed.length > 0) await preparedSession.validate(elapsed, new AbortController().signal);
+          // A future local timestamp cannot prove the server still owns the
+          // ref (for example after a Control restart). Validate every ref
+          // before freezing or consuming the user's text and File rows.
+          await preparedSession.validate(preparedAttachments, new AbortController().signal);
         } else {
           wireAttachments = composerAttachments.length === 0
             ? []
             : await resolveComposerAttachments(composerAttachments);
         }
       } catch (error) {
-        if (!sendScopeIsCurrent()) return;
+        if (!sendScopeIsCurrent() || (ownsComposerDraft && !draftIsUnchanged())) return;
         // DLR's own rejection messages (localized total-bound / refused-row
         // errors) are plain Errors; browser file-read failures surface as
         // DOMExceptions and localize through the readFailed copy instead.
@@ -1544,6 +1566,9 @@ async function resolveComposerAttachment(
         return;
       }
       if (!sendScopeIsCurrent()) return;
+      // Preparation and server validation are asynchronous. Never consume a
+      // newer edit or attachment selection when an older send settles late.
+      if (ownsComposerDraft && !draftIsUnchanged()) return;
       const snapshot = buildRoundSnapshot(adapter, text, wireAttachments, preparedAttachments,
         preparedAttachments.length > 0 ? composerAttachments.map((attachment) => attachment.id) : []);
       if (snapshot === null) {
@@ -1555,8 +1580,10 @@ async function resolveComposerAttachment(
       // Only after validation, resolution and freezing succeed, consume the
       // draft (adapter.remove is a no-op — no per-attachment browser
       // resources).
-      composerControlsRef.current?.setText("");
-      void composerControlsRef.current?.clearAttachments();
+      if (ownsComposerDraft) {
+        composerControlsRef.current?.setText("");
+        void composerControlsRef.current?.clearAttachments();
+      }
       const userMessage: VisibleMessage = {
         id: nextMessageId.current++,
         role: "user",
@@ -1572,7 +1599,7 @@ async function resolveComposerAttachment(
         for (const id of snapshot.contextSnippetIds) {
           props.onRemoveContextSnippet(id);
         }
-      });
+      }, preparedAttachments.length > 0);
     } finally {
       if (attachmentSendInFlightRef.current === sendToken) {
         attachmentSendInFlightRef.current = null;
@@ -1614,6 +1641,7 @@ async function resolveComposerAttachment(
         setCopiedMessageId((current) => (current === message.id ? null : current));
       }, 1500);
     } catch {
+      setShowRecoveryHint(true);
       setPanelError(t("assistant.copyFailed"));
     }
   }
@@ -2173,15 +2201,23 @@ async function resolveComposerAttachment(
             )}
           </ThreadPrimitive.Viewport>
 
-          <ComposerPrimitive.Root className="ai-composer">
+          <ComposerPrimitive.Root className="ai-composer" onSubmit={(event) => {
+            // The runtime's default form send clears the composer before
+            // onNew. Use the same draft-preserving path as the click button.
+            event.preventDefault();
+            const draft = composerControlsRef.current?.getState();
+            if (draft !== undefined) void sendMessage(draft.text, draft.attachments);
+          }}>
             {stoppedWaiting && <p role="status" data-testid="ai-stopped-waiting">
               {t("assistant.stoppedWaiting")}
             </p>}
             {panelError !== null && (
               <p className="ai-panel-error" role="alert" data-testid="ai-panel-error">
                 {panelError}
-                <br />
-                <span data-testid="ai-recovery-hint">{t("assistant.recoveryHint")}</span>
+                {showRecoveryHint && <>
+                  <br />
+                  <span data-testid="ai-recovery-hint">{t("assistant.recoveryHint")}</span>
+                </>}
               </p>
             )}
             {/* M5.7 Wave B3: the composer attachment surface (dropzone, file
