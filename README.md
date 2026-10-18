@@ -27,6 +27,8 @@
   <a href="https://github.com/john-ops-lab/DataLinkRuntime/issues">Issues</a>
 </p>
 
+<p align="center">稳定版：<a href="https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.5.0">v0.5.0</a></p>
+
 ---
 
 ## DataLinkRuntime 是什么？
@@ -130,6 +132,8 @@ Create → Edit → Save → Run / Schedule → Observe
 
 保存后，DLR 为运行内容保留不可变快照；Execution 始终基于已保存内容执行。
 
+编辑区使用“保存代码”：已有版本且没有修改时禁用，避免生成重复版本。输入数据、运行设置和凭据绑定分别保存。
+
 ### 3. 让 DLR 管运行时
 
 你不需要为每段脚本重新搭一套运行框架：
@@ -171,11 +175,12 @@ Create → Edit → Save → Run / Schedule → Observe
 | 🧰 | **模板广场** | 搜索全部模板或按分类筛选，复制后进入独立适配器编辑草稿 |
 | 🖥️ | **Web Workbench** | 在浏览器中创建、编辑、保存、Clone 和管理 Adapter |
 | ⚡ | **多语言 Runtime** | Python、JavaScript、Java、TypeScript、Go 使用一致的 Input / Output / Log 模型 |
-| ⏱️ | **Task & Schedule** | 手动运行，或通过 Cron + Timezone 定时执行 |
+| ⏱️ | **Task & Schedule** | 手动运行，或按每天、每周、每小时及自定义 Cron 定时执行，保存前可预览计划时间 |
 | 🔔 | **Webhook** | 接收外部 HTTP 事件并异步创建 Execution |
-| 🔐 | **Credential** | 加密保存凭据，通过 Secret Binding 按执行注入 |
-| 📜 | **实时日志与历史** | SSE 实时日志、状态、耗时、Input / Output 与历史 Execution |
+| 🔐 | **Credential** | 加密保存凭据，按执行注入；管理员可查看配置中的引用位置 |
+| 📜 | **实时日志与历史** | 运行时查看实时日志，历史记录查看本次输入、输出、日志及运行过程 |
 | 🧱 | **Worker Runtime** | Control 与实际代码执行分离，由 Worker 承担 Adapter Execution |
+| 🗂️ | **缓存管理** | 按适配器查看缓存；管理员设置定期清理和空间不足时清理，保留占用、手动保留及来源保护 |
 | ✨ | **AI Assistant** | 根据代码、日志和显式上下文生成 Candidate，经 Diff 确认后 Apply |
 | 🌐 | **自托管与国际化** | Docker Compose 部署，提供简体中文 / English 界面 |
 
@@ -213,6 +218,8 @@ AI 不会自动替你执行：
 
 **Apply 只是把候选修改放回 Working Copy；最终保存与运行必须由用户明确触发。**
 
+对话用于当前页面的临时调试，刷新页面或切换账号、适配器后清空。可添加附件作为本轮资料；需要文档转换时，按[转换组件说明](docs/zh-CN/issue202-document-conversion.md)启用附加服务。模型对附件的事实和引用仍需核对，已知限制见[版本说明](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.5.0)。
+
 ---
 
 ## 适合什么场景？
@@ -242,6 +249,7 @@ DLR 专注的是 **独立 Adapter 的开发和运行**，而不是 Workflow / DA
 ```bash
 git clone https://github.com/john-ops-lab/DataLinkRuntime.git
 cd DataLinkRuntime
+git checkout v0.5.0
 
 cp .env.example .env
 ```
@@ -308,8 +316,7 @@ docker compose up -d --wait postgres rabbitmq
 docker compose run --rm --no-deps control alembic upgrade head
 ```
 
-当前版本只支持唯一执行机制；新迁移会拒绝旧 Worker/执行数据，不隐式清除或转换。
-这是全新安装流程，[旧迁移说明](docs/zh-CN/issue130-reliable-runtime-migrations.md) 仅作历史记录。
+这是全新安装流程。旧执行协议的数据不能隐式转换，历史边界见[迁移说明](docs/zh-CN/issue130-reliable-runtime-migrations.md)；已有部署按下面的升级说明处理，不要重建数据库或删除持久卷。
 
 ### 5. 启动 DLR
 
@@ -342,6 +349,15 @@ Worker 启动时必须通过真实资源隔离预检；失败时不会退回无�
 首次进入 Web Console 使用 `.env` 中的 `DLR_ADMIN_TOKEN`。
 
 > 想了解完整部署参数、日志轮转和生产路径，请阅读 [部署文档](docs/deployment/platform-logs.md)。
+
+---
+
+## 已有部署升级
+
+- **v0.4.4 → v0.5.0 无新增数据库迁移**，最终 revision 仍为 `0046_issue166_retire_ai_history`。升级前备份数据库和材料数据，保留 Worker 的运行与恢复目录、持久卷、Token 和 Master Key。
+- 等待运行任务和清理操作结束，再停止旧 Control/Worker；切换到 `v0.5.0`，沿用原 `.env`、Compose 附加清单和持久卷构建、迁移并启动 Control、Worker 和 Web。
+- 两个自动清理开关需要新版 Worker。已有开关设置保留；尚未保存时沿用部署默认值。设置文件损坏时暂停自动清理，节点继续工作，其他缓存保护不变。详见[缓存管理](docs/zh-CN/issue139-cache-governance.md)。
+- v0.4.3 及更早版本先核对 [v0.4.4 升级说明](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.4.4)，特别是 AI 历史表退役和备份要求。跨服务器 Worker 池与高可用部署（#129）不属于本版范围。
 
 ---
 

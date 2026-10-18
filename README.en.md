@@ -27,6 +27,8 @@
   <a href="https://github.com/john-ops-lab/DataLinkRuntime/issues">Issues</a>
 </p>
 
+<p align="center">Stable release: <a href="https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.5.0">v0.5.0</a></p>
+
 ---
 
 ## What is DataLinkRuntime?
@@ -130,6 +132,8 @@ Create → Edit → Save → Run / Schedule → Observe
 
 Saving creates an immutable runtime snapshot, and Executions always run from saved content.
 
+The editor uses **Save code**. It is disabled when a saved version has no changes, avoiding duplicate versions. Input data, runtime settings, and credential bindings are saved separately.
+
 ### 3. Let DLR handle the runtime
 
 | You focus on | DLR handles |
@@ -169,11 +173,12 @@ Adapter menus support ZIP export and saving as a template; the adapter list supp
 | 🧰 | **Template Gallery** | Search all templates or filter by category, then copy into an independent Adapter draft |
 | 🖥️ | **Web Workbench** | Create, edit, save, clone, and manage Adapters in the browser |
 | ⚡ | **Multi-language Runtime** | Python, JavaScript, Java, TypeScript, and Go share a consistent Input / Output / Log model |
-| ⏱️ | **Task & Schedule** | Run manually or schedule with Cron + Timezone |
+| ⏱️ | **Task & Schedule** | Run manually or use daily, weekly, hourly, or custom Cron schedules; preview upcoming times before saving |
 | 🔔 | **Webhook** | Receive external HTTP events and create asynchronous Executions |
-| 🔐 | **Credentials** | Store credentials encrypted and inject them through Secret Binding |
-| 📜 | **Live logs & history** | SSE logs, status, duration, Input / Output, and historical Executions |
+| 🔐 | **Credentials** | Store credentials encrypted, inject them per execution, and let administrators inspect configuration references |
+| 📜 | **Live logs & history** | Follow live logs while running; inspect inputs, outputs, saved logs, and the run process in history |
 | 🧱 | **Worker Runtime** | Separate Control from actual Adapter execution |
+| 🗂️ | **Cache management** | Group caches by Adapter; administrators control periodic and low-space cleanup while preserving usage, manual retention, and source protections |
 | ✨ | **AI Assistant** | Generate a Candidate from explicit context, review the Diff, then Apply |
 | 🌐 | **Self-hosted & i18n** | Deploy with Docker Compose; Simplified Chinese and English UI |
 
@@ -211,6 +216,8 @@ The AI does not automatically:
 
 **Apply only updates the browser Working Copy. Saving and running always require an explicit user action.**
 
+Conversations are temporary debugging sessions for the current page. Refreshing or switching accounts or Adapters clears them. Attachments can provide material for the current request; enable optional services as described in [document conversion](docs/en/issue202-document-conversion.md) when needed. Check model facts and citations against the attachments; see the [release notes](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.5.0) for known limitations.
+
 ---
 
 ## Where DLR fits
@@ -240,6 +247,7 @@ DLR focuses on **developing and running independent Adapters**, not Workflow / D
 ```bash
 git clone https://github.com/john-ops-lab/DataLinkRuntime.git
 cd DataLinkRuntime
+git checkout v0.5.0
 
 cp .env.example .env
 ```
@@ -312,10 +320,9 @@ docker compose up -d --wait postgres rabbitmq
 docker compose run --rm --no-deps control alembic upgrade head
 ```
 
-The current version supports one execution mechanism. Its new migration refuses old
-Worker/execution data instead of silently deleting or converting it. This is a fresh
-installation workflow; [old migration notes](docs/en/issue130-reliable-runtime-migrations.md)
-are historical records only.
+This workflow is for a fresh installation. Data from the old execution protocol is not
+silently converted; see the historical [migration notes](docs/en/issue130-reliable-runtime-migrations.md).
+For an existing deployment, follow the upgrade guidance below without recreating the database or deleting persistent volumes.
 
 ### 5. Start DLR
 
@@ -346,6 +353,15 @@ Once all services are healthy:
 | Health API | `http://localhost:8080/api/health` |
 
 Use `DLR_ADMIN_TOKEN` from `.env` for the first Web Console login.
+
+---
+
+## Upgrading an existing deployment
+
+- **v0.4.4 → v0.5.0 adds no database migration**; the final revision remains `0046_issue166_retire_ai_history`. Back up the database and material data, and preserve Worker runtime and recovery directories, persistent volumes, Tokens, and the Master Key.
+- Wait for running tasks and cleanup operations to finish before stopping the old Control and Worker. Check out `v0.5.0`, then build, migrate, and start Control, Worker, and Web with the same `.env`, Compose overlays, and persistent volumes.
+- Both automatic-cleanup switches require an updated Worker. Saved settings remain in effect; deployments without saved settings keep their environment defaults. Invalid settings suspend automatic cleanup while the node continues working, without relaxing other cache protections. See [cache management](docs/en/issue139-cache-governance.md).
+- For v0.4.3 or earlier, first check the [v0.4.4 upgrade notes](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.4.4), especially AI history retirement and backup requirements. Cross-server Worker pools and high availability (#129) are outside this release.
 
 ---
 
