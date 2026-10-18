@@ -291,25 +291,41 @@ def _check_capacity(
     capacity: ManagedInputCapacity,
     additional_bytes: int,
     store: LocalFileArtifactStore,
-) -> None:
+    *,
+    preferred_bytes: int | None = None,
+) -> int:
+    """Validate required growth and bound optional batching under the writer locks."""
     if additional_bytes <= 0:
-        return
+        return 0
     adapter_actual, adapter_reserved = _adapter_usage(session, adapter_id)
-    if adapter_actual + adapter_reserved + additional_bytes > int(setting.adapter_quota_bytes):
+    adapter_available = int(setting.adapter_quota_bytes) - adapter_actual - adapter_reserved
+    if additional_bytes > adapter_available:
         raise domain_error(
             409,
             ManagedInputErrorCode.ADAPTER_QUOTA_EXCEEDED.value,
             "Adapter input quota exceeded",
         )
-    if int(capacity.actual_bytes) + int(capacity.reserved_bytes) + additional_bytes > int(
-        setting.platform_quota_bytes
-    ):
+    platform_available = (
+        int(setting.platform_quota_bytes)
+        - int(capacity.actual_bytes)
+        - int(capacity.reserved_bytes)
+    )
+    if additional_bytes > platform_available:
         raise domain_error(
             409,
             ManagedInputErrorCode.PLATFORM_QUOTA_EXCEEDED.value,
             "Platform input quota exceeded",
         )
     check_stream_low_watermark(store, setting, additional_bytes)
+    if preferred_bytes is None:
+        return additional_bytes
+    # Optional headroom must never turn a legal write into a quota rejection.
+    # Actual writes still perform their own immediate low-watermark check.
+    disk_available = max(0, _free_bytes(store) - int(setting.min_free_space_bytes))
+    return max(
+        additional_bytes,
+        min(preferred_bytes, adapter_available, platform_available, disk_available),
+    )
 
 
 def _refresh_expiry(setting: ManagedInputSettings, now: datetime) -> datetime:
@@ -379,8 +395,15 @@ def begin_upload(
     adapter = _lock_adapter(session, adapter_id)
     capacity = _lock_capacity(session)
     setting = policy_service.get_settings(session)
-    initial_bytes = min(INITIAL_RESERVATION_BYTES, int(setting.max_file_bytes))
-    _check_capacity(session, adapter.id, setting, capacity, initial_bytes, store)
+    initial_bytes = _check_capacity(
+        session,
+        adapter.id,
+        setting,
+        capacity,
+        1,
+        store,
+        preferred_bytes=min(INITIAL_RESERVATION_BYTES, int(setting.max_file_bytes)),
+    )
     now = utcnow()
     expires_at = _refresh_expiry(setting, now)
     upload_session_id = secrets.token_urlsafe(32)
@@ -534,16 +557,25 @@ def expand_upload_reservation(
             ManagedInputErrorCode.FILE_TOO_LARGE.value,
             "Input file is too large",
         )
+    preferred_total_bytes = requested_total_bytes
     if growth_bytes is not None and growth_bytes > 0:
-        requested_total_bytes = min(
+        preferred_total_bytes = min(
             int(setting.max_file_bytes),
             max(requested_total_bytes, int(reservation.reserved_bytes) + growth_bytes),
         )
     delta = requested_total_bytes - int(reservation.reserved_bytes)
     if delta > 0:
         store = store or LocalFileArtifactStore()
-        _check_capacity(session, adapter_id, setting, capacity, delta, store)
-        reservation.reserved_bytes = requested_total_bytes
+        delta = _check_capacity(
+            session,
+            adapter_id,
+            setting,
+            capacity,
+            delta,
+            store,
+            preferred_bytes=preferred_total_bytes - int(reservation.reserved_bytes),
+        )
+        reservation.reserved_bytes += delta
         capacity.reserved_bytes += delta
     reservation.expires_at = _refresh_expiry(setting, now)
     artifact.expires_at = reservation.expires_at
