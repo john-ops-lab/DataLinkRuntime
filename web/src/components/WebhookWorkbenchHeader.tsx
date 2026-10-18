@@ -18,6 +18,7 @@ import type { WebhookRuntimeState } from "./WebhookTriggerPanel";
 
 interface Props {
   adapter: Adapter;
+  dirty: boolean;
   runtimeWorker: Worker | null;
   runtimeState: WebhookRuntimeState;
   busy: boolean;
@@ -43,7 +44,9 @@ export default function WebhookWorkbenchHeader(props: Props) {
         ? t("webhook.reasons.contentNotReady")
         : props.busy
           ? t("webhook.reasons.busy")
-          : null;
+          : !props.dirty && props.adapter.latest_version_id !== null
+            ? t("editor.noChanges", { ns: "common" })
+            : null;
   const receiveReason = props.runtimeState.enabled
     ? null
     : !props.runtimeState.loaded
@@ -133,7 +136,6 @@ export default function WebhookWorkbenchHeader(props: Props) {
           </>
         )}
       </div>
-      {!readOnly && <p className="ux-save-scope">{t("editor.saveScope", { ns: "common" })}</p>}
       </div>
     </header>
   );

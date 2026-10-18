@@ -2037,6 +2037,7 @@ it("ignores out-of-order content loads when switching adapters rapidly", async (
 // --- Review regressions: Save acknowledgement --------------------------------
 
 it("acknowledges a successful Save locally even when the follow-up refresh fails", async () => {
+  let savedVersion = false;
   stubFetch([
     healthRoute({ status: "ok", database: true }),
     {
@@ -2065,6 +2066,7 @@ it("acknowledges a successful Save locally even when the follow-up refresh fails
       match: "/api/adapters/1/versions",
       respond: (body) => {
         const payload = JSON.parse(body ?? "{}") as { code: string };
+        savedVersion = true;
         return { status: 201, body: makeVersion({ code: payload.code }) };
       },
     },
@@ -2072,7 +2074,7 @@ it("acknowledges a successful Save locally even when the follow-up refresh fails
       // Best-effort Adapter refresh after Save succeeds.
       method: "GET",
       match: "/api/adapters/1",
-      respond: () => ({ body: makeAdapter({ latest_version_id: 10 }) }),
+      respond: () => ({ body: makeAdapter({ latest_version_id: savedVersion ? 10 : null }) }),
     },
   ]);
   render(<App />);
@@ -2677,10 +2679,9 @@ it("blocks running while unsaved edits exist and unblocks after Save (M5.5.9)", 
   render(<App />);
   await selectFirstAdapter();
 
-  // 等待内容加载完成（save 可用），避免加载完成时覆盖编辑快照。
-  await waitFor(() =>
-    expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(false),
-  );
+  // 等待代码加载完成；已有版本且无修改时保存保持禁用。
+  await waitFor(() => expect(valueOf("code-editor")).toBe(STARTER_CODE));
+  expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(true);
   // Clearing the disabled reason removes the Tooltip wrapper and replaces the
   // button. Query the current node on each retry, never a detached old button.
   await waitFor(() =>
@@ -5922,6 +5923,7 @@ it("keeps Webhook receive disabled until the active call reaches a terminal stat
   };
   const { rerender } = render(
     <WebhookWorkbenchHeader
+      dirty={false}
       {...commonProps}
       runtimeState={{ loaded: true, enabled: true, runtimeLocked: true, changingState: false, startBlockedReason: null, mutationInFlight: false }}
     />,
@@ -5930,6 +5932,7 @@ it("keeps Webhook receive disabled until the active call reaches a terminal stat
 
   rerender(
     <WebhookWorkbenchHeader
+      dirty={false}
       {...commonProps}
       runtimeState={{ loaded: true, enabled: false, runtimeLocked: true, changingState: false, startBlockedReason: null, mutationInFlight: false }}
     />,
@@ -5943,6 +5946,7 @@ it("keeps Webhook receive disabled until the active call reaches a terminal stat
 
   rerender(
     <WebhookWorkbenchHeader
+      dirty={false}
       {...commonProps}
       adapter={{ ...adapter, runtime_locked: false, running_execution_id: null }}
       runtimeState={{ loaded: true, enabled: false, runtimeLocked: false, changingState: false, startBlockedReason: null, mutationInFlight: false }}
@@ -6931,7 +6935,7 @@ it("copies the Variant into an unsaved ordinary Adapter editor without a Revisio
   expect(screen.getByRole("tab", { name: "编辑" }).getAttribute("aria-selected")).toBe("true");
   expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(true);
 
-  expect((screen.getByRole("button", { name: "保存编辑内容" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole("button", { name: "保存代码" }) as HTMLButtonElement).disabled).toBe(false);
   const unload = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(unload);
   expect(unload.defaultPrevented).toBe(true);
@@ -7058,7 +7062,7 @@ it("restores and protects copied code without depending on an empty version-hist
   expect(window.location.pathname).toBe("/adapters");
   await waitForCodeEditorValue(templateVariantFixture.code);
   expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/42/versions")).toBe(false);
-  expect((screen.getByRole("button", { name: "保存编辑内容" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole("button", { name: "保存代码" }) as HTMLButtonElement).disabled).toBe(false);
   const unload = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(unload);
   expect(unload.defaultPrevented).toBe(true);
@@ -7993,4 +7997,85 @@ it("keeps the new adapter draft when template navigation is cancelled for unsave
   fireEvent.click(screen.getByRole("button", { name: "从模板创建" }));
   expect(window.location.pathname).not.toBe("/templates");
   expect((screen.getByTestId("new-adapter-name") as HTMLInputElement).value).toBe("keep-new-draft");
+});
+
+it.each(["task", "webhook"] as const)("only saves changed code and dependencies for %s, then blocks duplicate versions", async (adapterType) => {
+  let adapter = makeAdapter({ adapter_type: adapterType, latest_version_id: 10 });
+  let version = makeVersion({ runtime_config: { inherited: true } });
+  const originalCode = version.code;
+  const savedBodies: unknown[] = [];
+  let rejectSave = true;
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }), readyWorkerRoute,
+    { method: "GET", match: "/api/adapters/1/webhook", respond: () => ({ body: makeWebhook() }) },
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [version] }) },
+    { method: "GET", match: /\/api\/adapters\/1\/versions\/\d+$/, respond: () => ({ body: version }) },
+    { method: "POST", match: "/api/adapters/1/versions", respond: (body) => {
+      if (rejectSave) return { status: 409, body: { detail: { code: "fixture_save_failed", message: "save failed" } } };
+      const payload = JSON.parse(body ?? "{}");
+      savedBodies.push(payload);
+      version = makeVersion({ id: 11, seq: 2, ...payload });
+      adapter = { ...adapter, latest_version_id: version.id };
+      return { status: 201, body: version };
+    } },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  const save = () => screen.getByRole("button", { name: "保存代码" }) as HTMLButtonElement;
+  expect(save().disabled).toBe(true);
+  expect(document.querySelector(".ux-save-scope")).toBeNull();
+  fireEvent.click(save());
+  expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/versions") && init?.method === "POST")).toHaveLength(0);
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: originalCode + "\n# edit" } });
+  expect(save().disabled).toBe(false);
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: originalCode } });
+  expect(save().disabled).toBe(true);
+  fireEvent.click(screen.getByTestId("requirements-collapse-header"));
+  const dependencies = await screen.findByTestId("requirements-input");
+  fireEvent.change(dependencies, { target: { value: "requests==2.32.0" } });
+  expect(save().disabled).toBe(false);
+  fireEvent.change(dependencies, { target: { value: "" } });
+  expect(save().disabled).toBe(true);
+  fireEvent.change(dependencies, { target: { value: "requests==2.32.0" } });
+  fireEvent.click(save());
+  await screen.findByTestId("error-banner");
+  await waitFor(() => expect(save().disabled).toBe(false));
+  expect(valueOf("requirements-input")).toBe("requests==2.32.0");
+  rejectSave = false;
+  fireEvent.click(save());
+  await screen.findByText("适配器已保存");
+  await waitFor(() => expect(save().disabled).toBe(true));
+  expect(savedBodies).toEqual([{ code: originalCode, requirements: "requests==2.32.0", runtime_config: { inherited: true } }]);
+  fireEvent.click(save());
+  expect(savedBodies).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([, init]) => ["PATCH", "PUT"].includes(init?.method ?? ""))).toHaveLength(0);
+});
+
+it.each(["task", "webhook"] as const)("allows the first unsaved starter version for %s without typing, then disables save", async (adapterType) => {
+  let adapter = makeAdapter({ adapter_type: adapterType });
+  const versions: VersionDetail[] = [];
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }), readyWorkerRoute,
+    { method: "GET", match: "/api/adapters/1/webhook", respond: () => ({ body: makeWebhook() }) },
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: versions }) },
+    { method: "POST", match: "/api/adapters/1/versions", respond: (body) => {
+      const saved = makeVersion(JSON.parse(body ?? "{}"));
+      versions.push(saved);
+      adapter = { ...adapter, latest_version_id: saved.id };
+      return { status: 201, body: saved };
+    } },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  const save = () => screen.getByRole("button", { name: "保存代码" }) as HTMLButtonElement;
+  expect(save().disabled).toBe(false);
+  fireEvent.click(save());
+  await screen.findByText("适配器已保存");
+  await waitFor(() => expect(save().disabled).toBe(true));
+  fireEvent.click(save());
+  expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/versions") && init?.method === "POST")).toHaveLength(1);
 });

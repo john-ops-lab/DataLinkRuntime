@@ -3,10 +3,10 @@
 .ux-create-types .ant-radio-wrapper { margin: 0; padding: 14px; border: 1px solid #dbe3ef; border-radius: 8px; align-items: flex-start; }
 .ux-create-types .ant-radio-wrapper-checked { border-color: #1677ff; background: #f0f6ff; }
 .ux-create-types small { display: block; margin-top: 6px; color: #596a80; line-height: 1.6; }
-.ux-muted, .ux-save-scope { color: #596a80; line-height: 1.6; }
+.ux-muted { color: #596a80; line-height: 1.6; }
 .workbench-actions { flex: 0 1 auto; min-width: 0; max-width: 100%; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
-.workbench-actions .ux-save-scope { margin: 0; max-width: 34rem; font-size: 12px; text-align: right; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .workbench-header { flex-wrap: wrap; } .workbench-actions { width: 100%; } }
+@media (max-width: 560px) { .console-body .ai-assistant-collapsed { top: calc(100% - 56px); transform: none; } }
 .editor-pane { overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
 .ux-permission-scopes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
 .ux-permission-scopes > div { padding: 14px; border: 1px solid #dbe3ef; border-radius: 8px; }

@@ -62,6 +62,7 @@ it("removes task write, run, stop and schedule controls for read-only shares", (
 it("removes Webhook save and receiving controls for read-only shares", () => {
   render(
     <WebhookWorkbenchHeader
+      dirty={false}
       adapter={adapter("webhook")}
       runtimeWorker={null}
       runtimeState={{

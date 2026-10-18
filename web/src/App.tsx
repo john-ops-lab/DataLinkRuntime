@@ -511,6 +511,7 @@ export function AdapterConsole({
     snapshot.code !== baseline.code ||
     snapshot.requirements !== baseline.requirements ||
     snapshot.runtimeConfigText !== baseline.runtimeConfigText;
+  const versionNeedsSave = dirty || selected?.latest_version_id === null;
   const selectedAdapterId = selected?.id ?? null;
   useLayoutEffect(() => {
     selectedAdapterIdRef.current = selectedAdapterId;
@@ -1222,7 +1223,7 @@ export function AdapterConsole({
   }
 
   async function persistVersion(runtimeWorkerId?: number) {
-    if (!selected || !selectedCanEdit || busy || !contentReady || selectedRuntimeLocked) {
+    if (!selected || !selectedCanEdit || busy || !contentReady || selectedRuntimeLocked || !versionNeedsSave) {
       return;
     }
     const runtimeConfig = parseRuntimeConfig(snapshot.runtimeConfigText);
@@ -1314,7 +1315,7 @@ export function AdapterConsole({
   }
 
   function handleSaveVersion() {
-    if (!selected || !selectedCanEdit || busy || !contentReady || selectedRuntimeLocked) {
+    if (!selected || !selectedCanEdit || busy || !contentReady || selectedRuntimeLocked || !versionNeedsSave) {
       return;
     }
     if (parseRuntimeConfig(snapshot.runtimeConfigText) === null) {
@@ -1826,6 +1827,7 @@ export function AdapterConsole({
               ) : (
               <WebhookWorkbenchHeader
                 adapter={selected}
+                dirty={dirty}
                 runtimeWorker={selectedRuntimeWorker}
                 runtimeState={webhookRuntimeState}
                 busy={busy}

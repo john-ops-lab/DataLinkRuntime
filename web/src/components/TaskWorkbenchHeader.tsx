@@ -59,7 +59,9 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
         ? t("task.reasons.contentNotReady")
         : props.busy
           ? t("task.reasons.busy")
-          : null;
+          : !props.dirty && props.adapter.latest_version_id !== null
+            ? t("editor.noChanges", { ns: "common" })
+            : null;
   // M5.5.9：存在未保存修改时不得直接运行，先保存。
   const runBlockedReason = props.dirty
     ? t("task.reasons.dirtyRun")
@@ -208,7 +210,6 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
           </>
         )}
       </div>
-      {!readOnly && <p className="ux-save-scope">{t("editor.saveScope", { ns: "common" })}</p>}
       </div>
     </header>
   );
