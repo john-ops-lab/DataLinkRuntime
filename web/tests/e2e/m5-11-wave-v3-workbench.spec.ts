@@ -208,8 +208,11 @@ function diagnosticsFor(page: Page, scenario: Scenario) {
       return;
     }
     const text = message.text();
+    const sourceUrl = message.location().url;
     const expected =
       scenario === "read" && text.includes("status of 401") ||
+      scenario === "read" && text.includes("status of 404") &&
+        new URL(sourceUrl, "http://fixture.invalid").pathname === "/api/adapters/1/schedule" ||
       scenario === "error" && text.includes("status of 503");
     if (expected) {
       expectedConsoleErrors.push(text);
@@ -253,6 +256,31 @@ async function installRoutes(
     }
     if (path === "/api/workers" && method === "GET") {
       await fulfillJson(route, [worker]);
+      return;
+    }
+    if (path === "/api/system/managed-input-capability" && method === "GET") {
+      await fulfillJson(route, {
+        managed_files_enabled: false,
+        ready: false,
+        default_retention_seconds: 86400,
+        max_custom_retention_seconds: 604800,
+        allow_manual_delete: false,
+        allowed_extensions: [],
+      });
+      return;
+    }
+    const inputConfigMatch = path.match(/^\/api\/adapters\/(\d+)\/input-config$/);
+    if (inputConfigMatch && method === "GET") {
+      await fulfillJson(route, {
+        adapter_id: Number(inputConfigMatch[1]),
+        revision: 1,
+        source_type: "none",
+        json_value: null,
+        retention: { mode: "system_default", seconds: null },
+        artifacts: [],
+        valid_for_run: true,
+        invalid_reason: null,
+      });
       return;
     }
     if (path === "/api/adapters" && method === "GET") {
@@ -484,6 +512,14 @@ async function measureOverflow(page: Page) {
 async function loginAndOpenAdapter(page: Page, locale: Locale, scenario: Scenario, adapterId = 1) {
   await page.goto("/");
   if (scenario === "read") {
+    // Login language follows the browser preference, independently of the
+    // authenticated system locale. Choose it through the visible control.
+    await page.getByTestId("login-locale-select").click();
+    const languageDropdown = page.locator(".ant-select-dropdown:visible");
+    await expect(languageDropdown).toBeVisible();
+    await languageDropdown.locator(".ant-select-item-option").filter({
+      hasText: locale === "zh-CN" ? "简体中文" : "English",
+    }).click();
     await expect(page.getByRole("heading", { name: locale === "zh-CN" ? "账号登录" : "Account login" })).toBeVisible();
     await page.getByTestId("account-username-input").fill("reader-user");
     await page.getByTestId("account-password-input").fill("fixture-password");
@@ -674,7 +710,14 @@ async function runErrorScenario(page: Page, locale: Locale, width: number, diagn
 }
 
 async function runReadScenario(page: Page, locale: Locale, width: number, diagnostics: ReturnType<typeof diagnosticsFor>, unknownRequests: string[]) {
+  const scheduleResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "GET" &&
+    new URL(response.url()).pathname === "/api/adapters/1/schedule",
+  );
   await loginAndOpenAdapter(page, locale, "read");
+  const scheduleResponse = await scheduleResponsePromise;
+  expect(scheduleResponse.status()).toBe(404);
+  expect(await scheduleResponse.json()).toEqual(errorBody("schedule_not_configured", "Fixture schedule is not configured"));
   await expect(page.getByTestId("adapter-read-only-notice")).toBeVisible();
   await expect(page.getByTestId("adapter-read-only")).toBeVisible();
   await expect(page.getByTestId("editor-main")).toHaveAttribute("aria-label", locale === "zh-CN" ? "适配器代码编辑器" : "Adapter code editor");
@@ -695,7 +738,10 @@ async function runReadScenario(page: Page, locale: Locale, width: number, diagno
     console_errors: diagnostics.consoleErrors,
     expected_console_errors: diagnostics.expectedConsoleErrors,
     page_errors: diagnostics.pageErrors,
-    http_errors: [{ path: "/api/auth/account/me", status: 401 }],
+    http_errors: [
+      { path: "/api/auth/account/me", status: 401 },
+      { path: "/api/adapters/1/schedule", status: 404 },
+    ],
     unexpected_http_errors: [],
     unknown_requests: unknownRequests,
     overflow,

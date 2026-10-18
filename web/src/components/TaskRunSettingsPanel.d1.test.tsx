@@ -713,7 +713,7 @@ describe("Issue #127 D1 managed input editor", () => {
       target: { files: [new File(["blocked"], "blocked.csv", { type: "text/csv" })] },
     });
 
-    await waitFor(() => expect(onError.mock.calls.at(-1)?.[0]).toContain("可用存储空间不足"));
+    await waitFor(() => expect(onError.mock.calls.at(-1)?.[0]).toContain("文件存储空间不足"));
     expect(onError.mock.calls.at(-1)?.[0]).not.toContain("internal storage path");
   });
 
