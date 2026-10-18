@@ -247,6 +247,12 @@ def create_operation(
             )
         session.rollback()
         return existing
+    if request.policy is not None and not worker.isolation_capabilities.get(
+        "cache_policy_control_v1", False
+    ):
+        raise domain_error(
+            409, "cache_policy_unsupported", "Worker does not support cache policy updates"
+        )
     if request.kind == "protect":
         now = datetime.now(UTC)
         for selection in request.protect or []:
@@ -374,6 +380,13 @@ def claim_command(session: Session, worker_id: int) -> CacheCommandClaim | None:
             {"guard_operation_id": str(child.guard_operation_id), "generation": child.generation}
             for child in children
         ]
+    retry_payload = payload.get("retry_command", {})
+    updates_policy = "policy" in payload or (
+        isinstance(retry_payload, dict) and "policy" in retry_payload.get("payload", {})
+    )
+    if updates_policy and worker.isolation_capabilities.get("cache_policy_control_v1") is not True:
+        session.rollback()
+        return None
     session.commit()
     actor_kind = str(operation.actor.get("kind", "administrator"))
     actor_id = operation.actor.get("user_id")

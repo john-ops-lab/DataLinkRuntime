@@ -730,6 +730,7 @@ export interface CacheAdminView {
 }
 
 export interface CacheOperation {
+  request?: { policy?: CacheAutomaticCleanupUpdate };
   retryable?: boolean | null;
   operation_id: string;
   worker_id: number;
@@ -751,9 +752,15 @@ export interface CacheOperationPage {
   next_cursor: string | null;
 }
 
+export interface CacheAutomaticCleanupUpdate {
+  gc_enabled?: boolean;
+  pressure_gc_enabled?: boolean;
+}
+
 export type CacheOperationCreate =
   | { kind: "preview" | "clean"; idempotency_key: string; keys: CacheKeySelection[] }
   | { kind: "protect"; idempotency_key: string; protect: CacheProtectSelection[] }
+  | { kind: "protect"; idempotency_key: string; policy: CacheAutomaticCleanupUpdate }
   | {
       kind: "retry";
       idempotency_key: string;

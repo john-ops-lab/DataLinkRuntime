@@ -277,7 +277,10 @@
       "cache_retry_target_unavailable": "The selected operation cannot be retried.",
       "cleanup_retry_unavailable": "The cleanup cannot be retried.",
       "cleanup_retry_active": "The cleanup already has a retry in progress.",
-      "cache_operation_not_found": "The cache operation no longer exists."
+      "cache_operation_not_found": "The cache operation no longer exists.",
+      "cache_policy_unsupported": "Update this worker to change settings.",
+      "cache_policy_invalid": "Invalid automatic cleanup settings.",
+      "cache_policy_write_failed": "Could not save cleanup settings. Try again."
     },
     "collectionDetails": "View collection record",
     "usageTitle": "Current cache usage",
@@ -332,7 +335,11 @@
     "failureObject": "Object",
     "pendingSelection": "{{count}} awaiting confirmation",
     "submissionUncertain": "Submission outcome unknown",
-    "requestScope": "Requested caches"
+    "requestScope": "Requested caches",
+    "periodicCleanup": "Scheduled cleanup",
+    "pressureCleanup": "Clean when space is low",
+    "policyUpdate": "Automatic cleanup settings",
+    "policyUpdateUnsupported": "Update this worker to change settings."
   },
   "managedInput": {
     "title": "Managed Input",

@@ -53,7 +53,7 @@
 
 .worker-cache-panel { display:grid; gap:16px; }
 .worker-cache-toolbar,.worker-cache-footer,.worker-cache-automatic { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-.worker-cache-automatic { justify-content:flex-start; }
+.worker-cache-automatic { justify-content:flex-start; flex-wrap:wrap; }
 .worker-cache-panel .ant-table-selection-column { width:44px !important; min-width:44px; }
 .worker-cache-panel .admin-stat { border:0; padding:8px 0; }
 .worker-cache-panel .admin-help { margin-bottom:0; }

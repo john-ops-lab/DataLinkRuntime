@@ -5,7 +5,15 @@ import uuid
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 CacheOperationKind = Literal["preview", "clean", "protect", "retry"]
 CacheOperationStatus = Literal["pending", "running", "completed", "failed"]
@@ -67,12 +75,27 @@ class CacheProtectSelection(CacheKeySelection):
         return self
 
 
+class CacheAutomaticCleanupUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    gc_enabled: StrictBool | None = None
+    pressure_gc_enabled: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def validate_update(self) -> "CacheAutomaticCleanupUpdate":
+        if not self.model_fields_set or any(
+            getattr(self, name) is None for name in self.model_fields_set
+        ):
+            raise ValueError("provide at least one boolean cleanup setting")
+        return self
+
+
 class CacheOperationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: CacheOperationKind
     idempotency_key: str = Field(min_length=1, max_length=128)
     keys: list[CacheKeySelection] | None = Field(default=None, min_length=1, max_length=200)
     protect: list[CacheProtectSelection] | None = Field(default=None, min_length=1, max_length=200)
+    policy: CacheAutomaticCleanupUpdate | None = None
     management_operation_id: uuid.UUID | None = None
     guard_operation_id: uuid.UUID | None = None
     cleanup_id: StrictInt | None = Field(default=None, gt=0)
@@ -80,7 +103,16 @@ class CacheOperationCreate(BaseModel):
     @model_validator(mode="after")
     def validate_shape(self) -> "CacheOperationCreate":
         targets = [self.management_operation_id, self.guard_operation_id, self.cleanup_id]
-        if self.kind == "protect":
+        if self.policy is not None:
+            if (
+                self.kind != "protect"
+                or self.protect is not None
+                or self.keys is not None
+                or any(v is not None for v in targets)
+            ):
+                raise ValueError("policy update requires only protect kind and policy")
+            pairs = []
+        elif self.kind == "protect":
             if self.protect is None or self.keys is not None or any(v is not None for v in targets):
                 raise ValueError("protect requires only protect items")
             pairs = [(v.adapter_id, v.version_id) for v in self.protect]

@@ -24,6 +24,7 @@ import { api, ApiError } from "../api";
 import type {
   Adapter,
   CacheAdminView,
+  CacheAutomaticCleanupUpdate,
   CacheKeySelection,
   CacheOperation,
   CacheOperationCreate,
@@ -53,6 +54,7 @@ interface ProofDraft {
 type CacheOperationDraft =
   | { kind: "preview" | "clean"; keys: CacheKeySelection[] }
   | { kind: "protect"; protect: CacheProtectSelection[] }
+  | { kind: "protect"; policy: CacheAutomaticCleanupUpdate }
   | {
       kind: "retry";
       management_operation_id?: string;
@@ -115,8 +117,9 @@ function operationFingerprint(payload: CacheOperationDraft): string {
 }
 
 function operationFamily(payload: CacheOperationDraft): string {
+  if (payload.kind === "protect" && "policy" in payload) return "automatic-cleanup";
   if (payload.kind !== "retry") return payload.kind === "protect"
-    ? `protect-${payload.protect.some((item) => item.pinned !== undefined) ? "pin" : "proof"}`
+    ? `protect-${"protect" in payload && payload.protect.some((item) => item.pinned !== undefined) ? "pin" : "proof"}`
     : payload.kind;
   if (payload.management_operation_id !== undefined) return "retry-management";
   if (payload.guard_operation_id !== undefined) return "retry-guard";
@@ -478,6 +481,12 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
   }
 
   const busy = loading || submitting || (activeOperation !== null && !TERMINAL_STATUSES.has(activeOperation.status));
+  const policyControlSupported = worker.isolation_capabilities?.cache_policy_control_v1 === true;
+  const updateAutomaticCleanup = (field: keyof CacheAutomaticCleanupUpdate, value: boolean) => {
+    if (busy || !mutatingAllowed || !policyControlSupported || typeof policy?.[field] !== "boolean"
+      || policy[field] === value) return;
+    void submit({ kind: "protect", policy: { [field]: value } });
+  };
   const canClean = (item: CacheSnapshotItem) => !item.pinned && item.reasons.length === 0
     && (item.kind === "staging" ? item.identity === null && item.digest === null
       : item.rebuildability === "confirmed" && item.identity !== null && item.digest !== null
@@ -610,7 +619,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
     { title: t("cache.operationTime"), key: "time", render: (_, operation) => formatTime(operation.created_at, locale) },
     {
       title: t("cache.operation"), key: "operation", render: (_, operation) => <div>
-        {t(`cache.operationKinds.${operation.kind}`)}
+        {t(operation.request?.policy ? "cache.policyUpdate" : `cache.operationKinds.${operation.kind}`)}
         <details className="admin-help cache-source-details"><summary>{t("cache.recordDetails")}</summary>
           <Typography.Text copyable>{operation.operation_id}</Typography.Text>
           {resultReasonEntries(operation).map(([subject, reasons], index) => <p key={`${subject}-${index}`}>{reasons.map((reason) => t(`cache.reasonsMap.${reason}`, {
@@ -708,8 +717,18 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
             <div className="admin-stat"><strong>{formatBytes(policy?.max_bytes)}</strong><span>{t("cache.maxBytes")}</span></div>
           </div>
           <div className="worker-cache-automatic"><Typography.Text>{t("cache.automaticCleanup")}</Typography.Text>
-            <Tag>{formatPolicyBoolean(typeof policy?.gc_enabled === "boolean" && typeof policy?.pressure_gc_enabled === "boolean"
-              ? policy.gc_enabled || policy.pressure_gc_enabled : undefined, t)}</Tag>
+            <Space wrap size="large">
+              {(["gc_enabled", "pressure_gc_enabled"] as const).map((field) => <Space key={field}
+                title={policyControlSupported ? undefined : t("cache.policyUpdateUnsupported")}>
+                <Typography.Text>{t(field === "gc_enabled" ? "cache.periodicCleanup" : "cache.pressureCleanup")}</Typography.Text>
+                {typeof policy?.[field] === "boolean" ? <Switch size="small" checked={policy[field]}
+                  aria-label={t(field === "gc_enabled" ? "cache.periodicCleanup" : "cache.pressureCleanup")}
+                  disabled={busy || !mutatingAllowed || !policyControlSupported}
+                  loading={busy && activeOperation?.request?.policy?.[field] !== undefined}
+                  onChange={(value) => updateAutomaticCleanup(field, value)}
+                /> : <Typography.Text>—</Typography.Text>}
+              </Space>)}
+            </Space>
           </div>
           <details className="admin-help"><summary>{t("cache.policyTitle")}</summary>
             <div className="admin-policy-summary">

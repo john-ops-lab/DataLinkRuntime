@@ -123,10 +123,10 @@ function response(body: unknown, status = 200): Response {
   });
 }
 
-function renderPanel() {
+function renderPanel(node: Worker = worker) {
   return render(
     <DlrDesignSystemProvider>
-      <WorkerCachePanel worker={worker} open onClose={() => undefined} />
+      <WorkerCachePanel worker={node} open onClose={() => undefined} />
     </DlrDesignSystemProvider>,
   );
 }
@@ -253,9 +253,9 @@ describe("Worker cache administration", () => {
     renderPanel();
     await expandVersions();
     for (let n = 1; n <= 3; n += 1) {
-      fireEvent.click(screen.getByRole("switch"));
+      fireEvent.click(screen.getByRole("switch", { name: /^保留：/ }));
       await waitFor(() => expect(posts).toHaveLength(n));
-      await waitFor(() => expect(screen.getByRole("switch")).toHaveProperty("disabled", false));
+      await waitFor(() => expect(screen.getByRole("switch", { name: /^保留：/ })).toHaveProperty("disabled", false));
     }
     expect(posts[0].idempotency_key).toBe(posts[1].idempotency_key);
     expect(posts[1].idempotency_key).toBe(posts[2].idempotency_key);
@@ -575,4 +575,98 @@ describe("Worker cache administration", () => {
     expect(screen.queryByRole("button", { name: /重\s*试/ })).toBeNull();
   }, 5000);
 
+});
+
+describe("automatic cleanup switches", () => {
+  const capableWorker: Worker = {
+    ...worker, isolation_capabilities: { cache_governance_v1: true, cache_policy_control_v1: true },
+  };
+  const names = { gc_enabled: "定期清理", pressure_gc_enabled: "空间不足时清理" } as const;
+
+  it.each([
+    ["gc_enabled", false], ["gc_enabled", true],
+    ["pressure_gc_enabled", false], ["pressure_gc_enabled", true],
+  ] as const)("changes only %s from %s and reads the applied state", async (field, initial) => {
+    const view = cacheView();
+    view.summary!.policy[field] = initial;
+    const before = { ...view.summary!.policy };
+    const requests: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", mockCache(view, (body) => {
+      requests.push(body);
+      view.summary!.policy[field] = !initial;
+      return response(operation({ kind: "protect", status: "completed", request: { policy: { [field]: !initial } } }));
+    }));
+    renderPanel(capableWorker);
+    const toggle = await screen.findByRole("switch", { name: names[field] });
+    await waitFor(() => expect(toggle).toHaveProperty("disabled", false));
+    expect(toggle.getAttribute("aria-checked")).toBe(String(initial));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe(String(!initial)));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toEqual({ kind: "protect", idempotency_key: expect.any(String), policy: { [field]: !initial } });
+    expect(view.summary!.policy).toEqual({ ...before, [field]: !initial });
+  });
+
+  it("keeps the old value and disables both switches until the node confirms", async () => {
+    const view = cacheView();
+    const submitted = operation({ kind: "protect", request: { policy: { gc_enabled: true } } });
+    let finished = false;
+    const posts: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") { posts.push(init.body); return response(submitted); }
+      if (String(input).includes("/operations/")) return response({ ...submitted, status: finished ? "completed" : "running" });
+      if (String(input).includes("/cache?")) return response(view);
+      return response({ items: [], next_cursor: null });
+    }));
+    renderPanel(capableWorker);
+    const periodic = await screen.findByRole("switch", { name: names.gc_enabled });
+    const pressure = screen.getByRole("switch", { name: names.pressure_gc_enabled });
+    await waitFor(() => expect(periodic).toHaveProperty("disabled", false));
+    fireEvent.click(periodic);
+    await waitFor(() => expect(periodic).toHaveProperty("disabled", true));
+    expect(pressure).toHaveProperty("disabled", true);
+    expect(periodic.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(pressure);
+    expect(posts).toHaveLength(1);
+    view.summary!.policy.gc_enabled = true;
+    finished = true;
+    await waitFor(() => expect(periodic.getAttribute("aria-checked")).toBe("true"), { timeout: 3000 });
+    await waitFor(() => expect(periodic).toHaveProperty("disabled", false));
+  });
+
+  it("preserves the old value after failure and retries the same logical request", async () => {
+    const view = cacheView();
+    const requests: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", mockCache(view, (body) => {
+      requests.push(body);
+      if (requests.length === 1) return response({ detail: { code: "unavailable" } }, 503);
+      view.summary!.policy.gc_enabled = true;
+      return response(operation({ kind: "protect", status: "completed", request: { policy: { gc_enabled: true } } }));
+    }));
+    renderPanel(capableWorker);
+    const toggle = await screen.findByRole("switch", { name: names.gc_enabled });
+    await waitFor(() => expect(toggle).toHaveProperty("disabled", false));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(requests).toHaveLength(1));
+    await waitFor(() => expect(toggle).toHaveProperty("disabled", false));
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+  });
+
+  it.each(["offline", "stale", "owner_unconfirmed"] as const)("disables switches when %s", async (status) => {
+    vi.stubGlobal("fetch", mockCache(cacheView(status)));
+    renderPanel(capableWorker);
+    expect(await screen.findByRole("switch", { name: names.gc_enabled })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("switch", { name: names.pressure_gc_enabled })).toHaveProperty("disabled", true);
+  });
+
+  it("keeps old nodes read-only for both settings", async () => {
+    vi.stubGlobal("fetch", mockCache(cacheView()));
+    renderPanel();
+    expect(await screen.findByRole("switch", { name: names.gc_enabled })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("switch", { name: names.pressure_gc_enabled })).toHaveProperty("disabled", true);
+  });
 });

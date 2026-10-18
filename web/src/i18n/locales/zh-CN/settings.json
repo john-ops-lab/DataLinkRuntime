@@ -277,7 +277,10 @@
       "cache_retry_target_unavailable": "所选操作不能重试。",
       "cleanup_retry_unavailable": "该清理任务不能重试。",
       "cleanup_retry_active": "该清理任务已有重试正在进行。",
-      "cache_operation_not_found": "缓存操作已不存在。"
+      "cache_operation_not_found": "缓存操作已不存在。",
+      "cache_policy_unsupported": "请更新运行节点后设置。",
+      "cache_policy_invalid": "自动清理设置无效。",
+      "cache_policy_write_failed": "自动清理设置未保存，请重试。"
     },
     "collectionDetails": "查看采集记录",
     "usageTitle": "当前缓存用量",
@@ -332,7 +335,11 @@
     "failureObject": "对象",
     "pendingSelection": "待确认 {{count}} 项",
     "submissionUncertain": "提交结果待确认",
-    "requestScope": "本次范围"
+    "requestScope": "本次范围",
+    "periodicCleanup": "定期清理",
+    "pressureCleanup": "空间不足时清理",
+    "policyUpdate": "自动清理设置",
+    "policyUpdateUnsupported": "请更新运行节点后设置。"
   },
   "managedInput": {
     "title": "文件托管",

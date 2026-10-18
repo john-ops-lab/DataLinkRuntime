@@ -110,3 +110,7 @@ At minimum, verify that:
 3. Every proposed entry has a current, time-limited confirmation covering all dependencies; shared and unknown occupancy is excluded from reclaimable bytes.
 4. A dedicated test environment covers low-capacity installation, concurrent use, disconnection, restart, and partial-trash recovery. A build or unit test does not replace runtime acceptance.
 5. Begin with conservative budgets and thresholds, observe actual occupancy, and then adjust. Reducing a budget is not a force-delete mechanism.
+
+## Administrator automatic-cleanup switches
+
+The cache page offers independent Scheduled cleanup and Clean when space is low switches. The Worker durably applies them before reporting the effective snapshot; no restart is needed. The two persisted values override the corresponding environment defaults and survive restarts. Older Workers without `cache_policy_control_v1` remain read-only for these settings. Updates reuse the existing `protect` operation with a `policy` patch restricted to the two boolean fields `gc_enabled` and `pressure_gc_enabled`. Administrator authorization, idempotency, auditing, all cleanup protections and other deployment thresholds remain unchanged. Turning a mode off stops new rounds, not recovery of existing operations.
