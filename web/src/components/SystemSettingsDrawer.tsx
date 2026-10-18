@@ -546,7 +546,11 @@ function CredentialsPanel(props: {
       <Modal open={usageCredential !== null} title={t("credentials.usageTitle", { name: usageCredential?.name })} footer={null}
         onCancel={() => { ++usageGeneration.current; setUsageCredential(null); }} destroyOnHidden>
         <p>{t("credentials.usageScope")}</p>
-        {usageLoading ? <Spin /> : usageError !== null ? <Alert type="error" showIcon message={usageError} /> : usage !== null && (
+        {usageLoading ? (
+          <Spin />
+        ) : usageError !== null ? (
+          <Alert type="error" showIcon message={usageError} />
+        ) : usage !== null && (
           usage.items.length === 0 ? <Empty description={t("credentials.usageEmpty")} /> :
           <ul className="admin-usage-list">{usage.items.map((item, index) => <li key={`${item.kind}-${index}`}>
             <strong>{item.name}</strong><Tag>{t(`credentials.usageKinds.${item.kind}`, { defaultValue: item.kind })}</Tag>

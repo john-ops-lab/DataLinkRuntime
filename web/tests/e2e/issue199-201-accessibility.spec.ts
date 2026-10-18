@@ -20,12 +20,35 @@ async function installEmptyConsole(page: Page, locale: "zh-CN" | "en") {
 async function expectVisibleNamedFocus(page: Page) {
   await expect.poll(() => page.evaluate(() => {
     const element = document.activeElement as HTMLElement;
-    const rect = element?.getBoundingClientRect();
     const input = element as HTMLInputElement;
+    // AntD Radio.Button keeps its keyboard-focused native input at 0x0.
+    // Its associated label is the visible focus surface, with :has(:focus-visible).
+    const radioButton = element?.closest<HTMLLabelElement>("label.ant-radio-button-wrapper");
+    const rect = (radioButton ?? element)?.getBoundingClientRect();
+    const ring = radioButton === null ? null : getComputedStyle(radioButton);
+    const visibleRadioRing = radioButton === null || (element.matches(":focus-visible")
+      && ring?.outlineStyle !== "none" && Number.parseFloat(ring?.outlineWidth ?? "0") > 0
+      && ring?.outlineColor !== "transparent" && ring?.outlineColor !== "rgba(0, 0, 0, 0)");
     const name = element?.getAttribute("aria-label") || input.labels?.[0]?.textContent || element?.textContent;
-    return Boolean(rect && rect.width > 0 && rect.height > 0 && name?.trim()
+    return Boolean(rect && rect.width > 0 && rect.height > 0 && name?.trim() && visibleRadioRing
       && element.closest('[role="dialog"]') && !element.hasAttribute("data-sentinel"));
   })).toBe(true);
+  const focusedRadio = page.locator('input[type="radio"]:focus');
+  if (await focusedRadio.count() > 0) {
+    await expect(focusedRadio).toHaveAccessibleName(/\S/);
+    if (await focusedRadio.evaluate((input) => input.closest("label.ant-radio-button-wrapper") !== null)) {
+      const evidence = await focusedRadio.evaluate((input) => {
+        const label = input.closest("label.ant-radio-button-wrapper")!;
+        const nativeRect = input.getBoundingClientRect();
+        const surfaceRect = label.getBoundingClientRect();
+        const style = getComputedStyle(label);
+        return { nativeRect: nativeRect.toJSON(), surfaceRect: surfaceRect.toJSON(),
+          outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, outlineColor: style.outlineColor,
+          focusVisible: input.matches(":focus-visible"), insideDialog: input.closest('[role="dialog"]') !== null };
+      });
+      await test.info().attach("radio-button-focus", { body: JSON.stringify(evidence), contentType: "application/json" });
+    }
+  }
 }
 
 for (const locale of ["zh-CN", "en"] as const) {
