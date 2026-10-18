@@ -2790,7 +2790,7 @@ it("keeps Schedule disablement separate from cancelling the current Execution", 
   expect(lockedEnable.textContent).toBe("启用定时");
   expect(lockedEnable.disabled).toBe(true);
   expect(lockedEnable.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
-    "当前执行仍在运行，请等待终态或停止当前执行后再启用定时",
+    "当前执行仍在运行，请等待执行结束，或请求停止并确认结束后再启用定时",
   );
   fireEvent.click(lockedEnable);
   expect(onToggleSchedule).toHaveBeenCalledOnce();
@@ -5527,7 +5527,7 @@ it("stops receiving without unlocking an active call or exposing the Token", asy
   expect(screen.getByTestId("webhook-path-locked")).toBeDefined();
   await waitFor(() =>
     expect(screen.getByTestId("webhook-active-execution").textContent).toContain(
-      "当前调用仍在执行，运行配置已锁定",
+      "当前调用仍在执行，运行设置已锁定",
     ),
   );
 });
@@ -5751,7 +5751,7 @@ it("keeps the true stopped state with an actionable error when cancel fails", as
   expect(screen.getByTestId("webhook-path-locked").textContent).toContain("a8f3c9d2");
   await waitFor(() =>
     expect(screen.getByTestId("webhook-active-execution").textContent).toContain(
-      "当前调用仍在执行，运行配置已锁定",
+      "当前调用仍在执行，运行设置已锁定",
     ),
   );
 });
@@ -5882,7 +5882,7 @@ it("keeps Webhook receive disabled until the active call reaches a terminal stat
   expect(lockedStart.textContent).toBe("开启接收");
   expect(lockedStart.disabled).toBe(true);
   expect(lockedStart.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
-    "已有调用仍在运行，请等待其进入终态后再开启接收或修改运行配置",
+    "已有调用仍在运行，请等待调用结束后再开启接收或修改运行设置",
   );
 
   rerender(

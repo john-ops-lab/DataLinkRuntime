@@ -811,7 +811,7 @@ describe("Issue #127 D2 execution history", () => {
     const incidentAlert = await screen.findByTestId("execution-incident-901");
     expect(incidentAlert.textContent).toContain("观测 3 次");
     expect(incidentAlert.textContent).toContain("人工处置 0 次");
-    expect(incidentAlert.textContent).toContain("执行已是终态");
+    expect(incidentAlert.textContent).toContain("执行已经结束");
     const verifyButton = within(incidentAlert).getByRole("button", { name: "核实并关闭事件" });
     verifyButton.focus();
     expect(document.activeElement).toBe(verifyButton);
@@ -824,7 +824,7 @@ describe("Issue #127 D2 execution history", () => {
       expected_generation: 2,
       reason_code: "verified_terminal",
     });
-    expect((await screen.findByTestId("incident-result-901")).textContent).toContain("已核实终态并关闭事件");
+    expect((await screen.findByTestId("incident-result-901")).textContent).toContain("已核实执行结束并关闭事件");
   });
 
   it("reuses the same idempotency key when an explicit action is retried before refresh", async () => {
@@ -896,11 +896,11 @@ describe("Issue #127 D2 execution history", () => {
     renderHistory(execution({ status: "running" }));
     fireEvent.click(await screen.findByTestId("history-row"));
     expect((await screen.findByRole("button", { name: "请求取消" })).hasAttribute("disabled")).toBe(false);
-    expect(screen.getByTestId("incident-cooperative-cancellation").textContent).toContain("协作式取消");
+    expect(screen.getByTestId("incident-cooperative-cancellation").textContent).toContain("不会立即停止执行");
 
     await applyUiLocale("en");
     expect((await screen.findByRole("button", { name: "Request cancellation" })).hasAttribute("disabled")).toBe(false);
-    expect(screen.getByTestId("incident-cooperative-cancellation").textContent).toContain("cooperative cancellation");
+    expect(screen.getByTestId("incident-cooperative-cancellation").textContent).toContain("does not stop it immediately");
   });
 
   it("keeps both actions disabled when the server reports read-only access", async () => {
