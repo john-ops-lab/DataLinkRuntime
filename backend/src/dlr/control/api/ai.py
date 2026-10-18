@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from dlr.control import db
@@ -131,4 +131,12 @@ def assist_adapter(
     session: DbSession,
 ) -> AiAssistResponse:
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    if payload.attachment_refs:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "ai_attachment_reader_unavailable",
+                "message": "Prepared attachment reading is not enabled",
+            },
+        )
     return ai_service.assist(session, adapter_id, payload)

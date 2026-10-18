@@ -15,10 +15,13 @@ from starlette.responses import Response
 from dlr.common.config import settings, validate_deployment_configuration
 from dlr.common.platform_logging import configure_platform_logging
 from dlr.control import db
+from dlr.control.ai.attachment_documents import DocumentConversionError
+from dlr.control.ai.attachment_store import attachment_gc_loop
 from dlr.control.ai.tool_audit import configure_ai_tool_audit_logging
 from dlr.control.api import (
     adapters,
     ai,
+    ai_attachments,
     auth,
     builtin_packages,
     cache_admin,
@@ -87,6 +90,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     background tasks and no external scheduler framework is introduced.
     """
     bootstrap_task = asyncio.create_task(_demo_bootstrap_loop())
+    ai_attachment_task = asyncio.create_task(attachment_gc_loop())
     task = asyncio.create_task(scheduler_loop())
     retention_task = asyncio.create_task(retention_loop())
     artifact_gc_task = asyncio.create_task(artifact_gc_loop())
@@ -105,6 +109,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         for background_task in (
             task,
+            ai_attachment_task,
             bootstrap_task,
             retention_task,
             artifact_gc_task,
@@ -117,6 +122,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             background_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+        with contextlib.suppress(asyncio.CancelledError):
+            await ai_attachment_task
         with contextlib.suppress(asyncio.CancelledError):
             await bootstrap_task
         with contextlib.suppress(asyncio.CancelledError):
@@ -146,6 +153,31 @@ def create_app() -> FastAPI:
     # release gates validate all 51 before packaging.
     get_template_catalog()
     app = FastAPI(title="DLR Control", version="0.0.1", lifespan=lifespan)
+
+    @app.exception_handler(DocumentConversionError)
+    async def _ai_attachment_error(request: Request, exc: DocumentConversionError) -> JSONResponse:
+        status = {
+            "ai_attachment_expired": 410,
+            "ai_attachment_hash_mismatch": 409,
+            "ai_attachment_not_ready": 409,
+            "ai_attachment_cancelled": 409,
+            "ai_attachment_converter_busy": 429,
+            "ai_attachment_store_full": 429,
+            "ai_attachment_converter_unavailable": 503,
+            "ai_attachment_store_unavailable": 503,
+            "ai_attachment_store_busy": 503,
+            "ai_attachment_parse_timeout": 504,
+            "ai_attachment_cancel_failed": 503,
+        }.get(exc.code, 422)
+        return JSONResponse(
+            status_code=status,
+            content={
+                "detail": {
+                    "code": exc.code,
+                    "message": "AI attachment operation could not be completed",
+                }
+            },
+        )
 
     @app.middleware("http")
     async def _entry_boundary(
@@ -212,6 +244,16 @@ def create_app() -> FastAPI:
                     "detail": {
                         "code": "portable_package_invalid",
                         "message": "Invalid or unsupported DLR package",
+                    }
+                },
+            )
+        if request.url.path.startswith("/api/adapters/") and "/ai/attachments" in request.url.path:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "ai_attachment_invalid",
+                        "message": "Invalid AI attachment request",
                     }
                 },
             )
@@ -315,6 +357,7 @@ def create_app() -> FastAPI:
     app.include_router(managed_input.adapter_router)
     app.include_router(ai.router)
     app.include_router(ai.adapter_router)
+    app.include_router(ai_attachments.router)
     app.include_router(credentials.router)
     app.include_router(credentials.adapter_router)
     app.include_router(package_sources.router)
