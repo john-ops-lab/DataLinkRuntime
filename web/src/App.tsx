@@ -451,13 +451,6 @@ export function AdapterConsole({
   const webhookRuntimeRef = useRef<WebhookTriggerHandle>(null);
   const systemSettingsLeaveGuardRef = useRef<PageLeaveGuardHandle>(null);
   const adapterSettingsLeaveGuardRef = useRef<PageLeaveGuardHandle>(null);
-  useLayoutEffect(() => setBrowserLocationBlocker(() => {
-    if (busy) {
-      return false;
-    }
-    return systemSettingsLeaveGuardRef.current?.confirmLeave() !== false
-      && adapterSettingsLeaveGuardRef.current?.confirmLeave() !== false;
-  }), [busy]);
   const [waitingForWebhook, setWaitingForWebhook] = useState(false);
   const [saveWorkerPromptOpen, setSaveWorkerPromptOpen] = useState(false);
   const [saveWorkerId, setSaveWorkerId] = useState<number | null>(null);
@@ -895,14 +888,14 @@ export function AdapterConsole({
     });
   }
 
-  function confirmDiscard(): boolean {
-    if (!dirty) {
-      return true;
+  const confirmWorkspaceLeave = useCallback((preserveWorkingCopy = false): boolean => {
+    // Gallery browsing keeps the code workspace mounted. Only the Input Object
+    // leave contract applies there; actual workspace unmounts use the full guard.
+    if (preserveWorkingCopy) {
+      return selected?.adapter_type !== "task"
+        || taskRuntimeRef.current?.hasUnsavedInputChanges() !== true
+        || taskRuntimeRef.current.confirmInputLeave();
     }
-    return window.confirm(t("confirm.discardChanges"));
-  }
-
-  function confirmWorkspaceLeave(): boolean {
     const taskHasDraft = selected?.adapter_type === "task"
       && taskRuntimeRef.current?.hasUnsavedChanges() === true;
     const webhookHasDraft = selected?.adapter_type === "webhook"
@@ -916,8 +909,20 @@ export function AdapterConsole({
     if (webhookHasDraft) {
       return webhookRuntimeRef.current?.confirmLeave() !== false;
     }
-    return confirmDiscard();
-  }
+    return window.confirm(t("confirm.discardChanges"));
+  }, [dirty, selected?.adapter_type, t]);
+
+  useLayoutEffect(() => setBrowserLocationBlocker((nextLocation) => {
+    if (busy) return false;
+    const nextRoute = appRouteFromPath(new URL(nextLocation, window.location.origin).pathname);
+    const leavesWorkspace = requestedSettingsCategory === null && (
+      (nextRoute.section === "adapters" && nextRoute.settingsCategory !== null)
+      || (activeSection === "adapters" && nextRoute.section === "templates")
+    );
+    return systemSettingsLeaveGuardRef.current?.confirmLeave() !== false
+      && adapterSettingsLeaveGuardRef.current?.confirmLeave() !== false
+      && (!leavesWorkspace || confirmWorkspaceLeave(nextRoute.section === "templates"));
+  }), [activeSection, busy, confirmWorkspaceLeave, requestedSettingsCategory]);
 
   async function refreshSystemStatus(): Promise<void> {
     if (systemStatusRefreshInFlight.current) {
@@ -940,6 +945,7 @@ export function AdapterConsole({
     if (settingsCategory !== null) {
       return;
     }
+    if (!confirmWorkspaceLeave()) return;
     pushBrowserLocation(settingsPath("system-status"), {
       dlrSettings: true,
       from: browserLocation,
@@ -950,6 +956,7 @@ export function AdapterConsole({
     if (settingsCategory !== null) {
       return;
     }
+    if (!confirmWorkspaceLeave()) return;
     pushBrowserLocation(settingsPath("general"), {
       dlrSettings: true,
       from: browserLocation,
@@ -1091,10 +1098,12 @@ export function AdapterConsole({
   }
 
   function handlePrimarySectionChange(section: PrimarySection): void {
+    if (section === activeSection && requestedSettingsCategory === null) return;
     if (
       busy
       || systemSettingsLeaveGuardRef.current?.confirmLeave() === false
       || adapterSettingsLeaveGuardRef.current?.confirmLeave() === false
+      || (activeSection === "adapters" && section === "templates" && !confirmWorkspaceLeave(true))
     ) {
       return;
     }

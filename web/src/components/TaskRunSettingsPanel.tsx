@@ -48,6 +48,8 @@ export interface TaskRunSettingsHandle {
   stopExecution: () => void;
   toggleSchedule: () => void;
   hasUnsavedChanges: () => boolean;
+  hasUnsavedInputChanges: () => boolean;
+  confirmInputLeave: () => boolean;
   confirmLeave: () => boolean;
 }
 
@@ -1207,6 +1209,12 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     stopExecution: () => void stopExecution(),
     toggleSchedule: () => void saveSchedule(!scheduleEnabled),
     hasUnsavedChanges: () => hasUnsavedChanges,
+    hasUnsavedInputChanges: () => inputDirty || stagedArtifacts.length > 0,
+    confirmInputLeave: () => !(inputDirty || stagedArtifacts.length > 0) || window.confirm(
+      stagedArtifacts.length > 0
+        ? t("task.input.stagedLeaveWarning")
+        : t("confirm.discardChanges", { ns: "common" }),
+    ),
     confirmLeave: () => !hasUnsavedChanges || window.confirm(
       stagedArtifacts.length > 0
         ? t("task.input.stagedLeaveWarning")
