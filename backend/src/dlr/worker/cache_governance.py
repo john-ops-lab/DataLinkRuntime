@@ -406,6 +406,25 @@ class CachePolicyManager:
                         retained["cache_lifecycle_unknown"] += 1
                         continue
                     digest = str(inspected["digest"])
+                    from dlr.worker.cache_rebuild import revalidate_for_scan
+
+                    try:
+                        revalidate_for_scan(
+                            self.lifecycle,
+                            key,
+                            identity=identity,
+                            digest=digest,
+                            budget=budget.scan,
+                            now=now,
+                        )
+                    except (OSError, UnicodeError, ValueError, TypeError):
+                        # Missing legacy declarations or unusable local material
+                        # keep the original protection; reporting must continue.
+                        pass
+                    except CacheError as error:
+                        if error.code == "cache_scan_budget_exhausted":
+                            raise
+                    facts = self.lifecycle.lifecycle(key)
                     observation = {
                         "cache_key": key,
                         "kind": "version",
@@ -426,6 +445,7 @@ class CachePolicyManager:
                         offline_protection=self.policy.offline_protection,
                         offline_mode=self.policy.offline_mode,
                         now=now,
+                        budget=budget.scan,
                     )
                     if reason is None and now - float(facts["last_used_at"]) < idle_threshold:
                         reason = "cache_recently_used"

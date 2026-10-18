@@ -35,11 +35,11 @@ Workers validate this configuration strictly at startup. Invalid booleans, out-o
 
 ## Before an entry may become a candidate
 
-An idle version environment starts as `rebuildability=unknown` and cannot be reclaimed. It can become a candidate only when all of these facts hold:
+A version environment without verifiable rebuilding material remains `rebuildability=unknown` and cannot be reclaimed. The system checks current local material. It can become a candidate only when all of these facts hold:
 
 - the current content identity and digest exactly match the confirmation;
 - it is not pinned and has passed the applicable recent-use interval;
-- a rebuilding confirmation is still valid, for at most 24 hours after confirmation;
+- a rebuilding confirmation is still valid, for at most 24 hours after confirmation; an expiring automatic confirmation requires fresh verification, rather than merely extending its lifetime;
 - no Execution, Attempt, Slot, cleanup, Incident, recovery material, persistent use, or journal is responsible for it;
 - Worker-root ownership, object identity, the Control guard, and local filesystem facts are all verified; and
 - every condition is checked again immediately before the destructive rename.
@@ -51,7 +51,9 @@ A rebuilding confirmation has one of two explicit meanings:
 - `verified_offline`: the operator confirms that current, immutable, usable local material covers every dependency of the environment. It remains usable in explicit offline mode.
 - `managed_online`: the operator confirms that a controlled, repeatable online source is currently usable. This is a time-limited operational assertion; the platform does not claim to probe or verify the external repository. Explicit offline mode protects it.
 
-The confirmation binds the current identity and digest and includes a non-sensitive note, actor, confirmation time, and expiry. The platform may automatically issue `verified_offline` only for an environment with no external dependency whose built-in material identity has already been verified.
+The confirmation binds the current identity and digest and includes a non-sensitive note, actor, confirmation time, and expiry. After a successful prepare or cache hit, all five languages can record a separate rebuilding receipt for environments with no external dependencies or with complete persistent built-in material. Receipts bind current content and local tools. Scanning revalidates tools and material, and deletion checks them again. Missing or changed material, identity mismatches, or insufficient verification budget retain the entry. Automatic verification neither overwrites an operator confirmation nor clears a separately observed source failure.
+
+Existing cache formats and the strict Worker upload protocol are unchanged. A legacy Python entry gains a receipt only when its complete dependency declaration and interpreter can be verified exactly and it has neither actual dependencies nor install options. Other legacy entries without sufficient evidence stay protected until a successful real prepare records their material. Upgrading does not make every old entry reclaimable.
 
 When dependency preparation reports a stable not-configured or unavailable result for the same source, older environments depending on that source are retained. The relation is a private stable identifier derived after credentials are removed; URLs, tokens, and log bodies are not stored. After checking the source or material, an operator must reconfirm the current identity and digest to clear this protection.
 
@@ -71,14 +73,15 @@ Each failed install reservation may run at most one bounded pressure round and t
 
 ## Management contract
 
-The final management surface belongs in the Worker's cache area. It reports sample time, completeness, effective policy, occupancy by class, estimated reclaimable bytes, and retention reasons. An offline, stale, or incomplete paginated snapshot is observation only and cannot authorize deletion.
+The Worker's cache area emphasizes used space, reclaimable space, the limit, and automatic-cleanup status. Adapter groups expose versions and retention, with essential rules and nonzero reservations available on demand. An offline, stale, or incomplete paginated snapshot is observation only and cannot authorize deletion. Raw collection and policy diagnostics remain in the management API rather than the ordinary page.
 
 Administrator operations follow these rules:
 
-- Preview describes one sample; execution rechecks every Control and Worker fact.
+- The page previews an explicit scope before confirmation. Preview describes one sample; execution rechecks every Control and Worker fact.
 - Only one management operation may be active for a Worker. Repeating the same idempotent request returns the original operation instead of adding cleanup.
 - One operation may name at most 200 keys. A selected-key operation cannot clean unselected entries.
 - Protect binds the most recently observed identity and digest. A conflict is rejected instead of overwriting newer content.
+- Unchanged retention does not submit an operation, and protected entries cannot enter the cleanup selection. The read-only management view supplies actual save sequences without disguising internal IDs as sequence numbers.
 - Operation and audit records contain only non-sensitive IDs, stable reasons, estimated and actual freed bytes, operation/generation, and timestamps.
 - Audit queries are limited to 100 rows per page. Terminal audit defaults to 90 days and at most 1,000 rows per Worker. An unfinished operation or guard, or audit still referenced by cleanup, is never removed by retention.
 
@@ -86,11 +89,13 @@ A failed Adapter cleanup is retried through its original `cleanup_id`, not a sec
 
 After a managed cleanup fails, its original failed audit remains available. A later explicit retry has its own operation record and includes completed children from the original cleanup without counting freed bytes twice. A new retry is rejected once the target has been recovered; repeating the same idempotent request still returns its original operation.
 
+The unified failure list routes managed children back to their management operation, even when that operation is outside the current history page. Independent reclamation and Adapter cleanup retain their original retry targets. Resolved failures stay in audit history without remaining active work items. Retry availability comes from current child and retry facts. This read-only association does not change strict Worker observations.
+
 ## Disconnection, failure, and recovery
 
 When Control, journal, use, root owner, identity, digest, source, or recovery responsibility cannot be verified, the entry is retained. Unknown journals, symlinks, corrupt sidecars, open Incidents, deferred cleanup, and active Attempts cannot be bypassed by a manual request or configuration switch.
 
-Deletion uses a durable guard, operation/generation, atomic rename into private trash, and bounded continuation. An interruption after rename must continue or safely stop the original operation. Trash cannot become a new candidate, and an old terminal receipt cannot release a newer generation. After three real consecutive failures, automatic hot retry stops and waits for an explicit administrator retry, which still performs every protection check.
+Deletion uses a durable guard, operation/generation, atomic rename into private trash, and bounded continuation. After controlled physical deletion, matching instance metadata is retired while the original guard remains authoritative, before completion acknowledgement. New protection prevents retirement. Rebuilt entries are observed as new instances; ordinary identity conflicts are not relaxed. An interruption after rename must continue or safely stop the original operation. Trash cannot become a new candidate, and an old terminal receipt cannot release a newer generation. After three real consecutive failures, automatic hot retry stops and waits for an explicit administrator retry, which still performs every protection check.
 
 Disabling `GC_ENABLED` or `PRESSURE_GC_ENABLED` stops only new automatic rounds of that kind. It does not revoke a guard already acquired or a transaction that has already renamed its source. Recovery must still converge that durable operation, or responsibility for an already-performed filesystem action would be lost.
 

@@ -3,13 +3,13 @@ import {
   Alert,
   Button,
   Card,
-  Descriptions,
   Form,
   Input,
   InputNumber,
   Modal,
   Select,
   Space,
+  Switch,
   Table,
   Tag,
   Typography,
@@ -29,8 +29,6 @@ import type {
   CacheOperationCreate,
   CacheProtectSelection,
   CacheSnapshotItem,
-  FailedCacheCleanupItem,
-  FailedCacheGuardItem,
   Worker,
 } from "../types";
 
@@ -125,40 +123,6 @@ function operationFamily(payload: CacheOperationDraft): string {
   return "retry-cleanup";
 }
 
-function operationResultFacts(operation: CacheOperation): Array<[string, number | string | boolean]> {
-  const result = operation.result;
-  if (result === null) return [];
-  const facts: Array<[string, number | string | boolean]> = [];
-  const allowed = operation.kind === "preview"
-    ? ["complete"]
-    : operation.kind === "clean"
-      ? ["status", "scanned", "candidates", "deleted", "freed_bytes", "cursor"]
-      : operation.kind === "protect"
-        ? ["changed"]
-        : operation.target_kind === "cleanup"
-          ? ["cleanup_id", "attempts", "success"]
-          : ["complete", "status", "scanned", "candidates", "deleted", "freed_bytes", "cursor", "changed", "retry_status", "guard_phase"];
-  for (const key of allowed) {
-    const value = result[key];
-    if (typeof value === "number" && Number.isFinite(value)) facts.push([key, value]);
-    if (typeof value === "string" || typeof value === "boolean") facts.push([key, value]);
-  }
-  if ((operation.kind === "preview" || operation.kind === "retry") && Array.isArray(result.items)) {
-    facts.push(["items", result.items.length]);
-  }
-  if (operation.kind === "clean" || operation.kind === "retry") {
-    const retained = result.retained_reasons;
-    if (retained !== null && typeof retained === "object" && !Array.isArray(retained)) {
-      const count = Object.values(retained).reduce(
-        (total, value) => total + (typeof value === "number" && Number.isFinite(value) ? value : 0),
-        0,
-      );
-      facts.push(["retained", count]);
-    }
-  }
-  return facts;
-}
-
 function resultReasonEntries(operation: CacheOperation): Array<[string, string[]]> {
   const result = operation.result;
   if (result === null) return [];
@@ -191,6 +155,18 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
   const [operations, setOperations] = useState<CacheOperation[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Key[]>([]);
+  const [selectionTouched, setSelectionTouched] = useState(false);
+  const [expandedAdapters, setExpandedAdapters] = useState<Key[]>([]);
+  const [proofTarget, setProofTarget] = useState<CacheSnapshotItem | null>(null);
+  const [cleanRequest, setCleanRequest] = useState<{
+    workerId: number; operationId: string; items: CacheSnapshotItem[];
+  } | null>(null);
+  const [uncertainClean, setUncertainClean] = useState<{ workerId: number; items: CacheSnapshotItem[] } | null>(null);
+  const interactionGeneration = useRef(0);
+  const previewGeneration = useRef(0);
+  const [cleanReview, setCleanReview] = useState<{
+    workerId: number; items: CacheSnapshotItem[]; expiresAt: number;
+  } | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadingFailedCleanups, setLoadingFailedCleanups] = useState(false);
@@ -213,7 +189,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
     if (caught instanceof ApiError) {
       return t(`cache.errors.${caught.code}`, {
         defaultValue: t(`cache.${fallbackKey}`),
-      }) + t("cache.errorCodeSuffix", { code: caught.code });
+      });
     }
     return t(`cache.${fallbackKey}`);
   }, [t]);
@@ -228,6 +204,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
       if (cacheRequestGeneration.current !== generation) return;
       setView(nextView);
       setSelectedKeys([]);
+      setCleanReview(null);
     } catch (caught) {
       if (cacheRequestGeneration.current === generation) {
         setError(stableError(caught, "loadFailed"));
@@ -250,8 +227,13 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
       if (cacheRequestGeneration.current !== generation) return;
       setView(nextView);
       setOperations(page.items);
+      setActiveOperation((current) => current === null ? null : page.items.find((item) => item.operation_id === current.operation_id) ?? current);
+      setPollStartedAt(Date.now());
+      setPollTimedOut(false);
+      setPollRevision((current) => current + 1);
       setNextCursor(page.next_cursor);
       setSelectedKeys([]);
+      setCleanReview(null);
     } catch (caught) {
       if (cacheRequestGeneration.current === generation) {
         setError(stableError(caught, "loadFailed"));
@@ -262,9 +244,27 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
   }, [open, stableError, worker.id]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setProofOpen(false), 0);
-    return () => window.clearTimeout(timer);
+    interactionGeneration.current += 1;
+    previewGeneration.current += 1;
+    const timer = window.setTimeout(() => {
+      setProofOpen(false);
+      setProofTarget(null);
+      setCleanRequest(null);
+      setCleanReview(null);
+      setSelectionTouched(false);
+      setExpandedAdapters([]);
+    }, 0);
+    return () => { interactionGeneration.current += 1; window.clearTimeout(timer); };
   }, [open, worker.id]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setActiveOperation(null);
+      setUncertainClean(null);
+      pendingSubmissions.current.clear();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [worker.id]);
 
   useEffect(() => {
     if (!open) return;
@@ -292,7 +292,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
           setOperations((current) => [latest, ...current.filter(
             (operation) => operation.operation_id !== latest.operation_id,
           )]);
-          if (TERMINAL_STATUSES.has(latest.status)) void refreshCache();
+          if (TERMINAL_STATUSES.has(latest.status) && latest.kind !== "preview") void load();
         })
         .catch((caught) => {
           if (!cancelled) {
@@ -305,23 +305,20 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeOperation, open, pollRevision, pollStartedAt, refreshCache, stableError, worker.id]);
+  }, [activeOperation, load, open, pollRevision, pollStartedAt, stableError, worker.id]);
 
   const selectedItems = useMemo(() => {
     const selected = new Set(selectedKeys.map(String));
     return (view?.items ?? []).filter((item) => selected.has(item.cache_key));
   }, [selectedKeys, view?.items]);
 
-  const selectedPairs = useMemo<CacheKeySelection[]>(() => selectedItems.map((item) => ({
-    adapter_id: item.adapter_id,
-    version_id: item.version_id,
-  })), [selectedItems]);
-
-  const selectedProtectable = useMemo(() => selectedItems.filter((item) => (
+  const proofItems = proofTarget === null ? [] : [proofTarget];
+  const selectedProtectable = proofItems.filter((item) => (
     item.kind !== "staging" && item.identity !== null && item.digest !== null
-  )), [selectedItems]);
+  ));
 
   const submit = useCallback(async (draft: CacheOperationDraft, logicalFingerprint?: string) => {
+    const generation = interactionGeneration.current;
     const fingerprint = logicalFingerprint ?? operationFingerprint(draft);
     const family = operationFamily(draft);
     let pending = pendingSubmissions.current.get(fingerprint);
@@ -341,6 +338,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
     try {
       const operation = await api.createWorkerCacheOperation(worker.id, payload);
       pendingSubmissions.current.delete(fingerprint);
+      if (generation !== interactionGeneration.current) return operation;
       setActiveOperation(operation);
       setPollStartedAt(Date.now());
       setPollRevision(0);
@@ -348,10 +346,13 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
       setOperations((current) => [operation, ...current.filter(
         (item) => item.operation_id !== operation.operation_id,
       )]);
+      if (TERMINAL_STATUSES.has(operation.status) && operation.kind !== "preview") void load();
+      return operation;
     } catch (caught) {
       if (caught instanceof ApiError && 0 < caught.status && caught.status < 500) {
         pendingSubmissions.current.delete(fingerprint);
       }
+      if (generation !== interactionGeneration.current) return;
       setError(stableError(caught));
       if (caught instanceof ApiError && [
         "cache_snapshot_changed",
@@ -364,40 +365,22 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
     } finally {
       setSubmitting(false);
     }
-  }, [refreshCache, stableError, worker.id]);
+  }, [load, refreshCache, stableError, worker.id]);
 
-  const submitKeyOperation = useCallback((kind: "preview" | "clean") => {
-    if (selectedPairs.length === 0) return;
-    const perform = () => void submit({ kind, keys: selectedPairs });
-    if (kind === "clean") {
-      Modal.confirm({
-        title: t("cache.cleanConfirmTitle"),
-        content: t("cache.cleanConfirmDescription", { count: selectedPairs.length }),
-        okText: t("cache.clean"),
-        okButtonProps: { danger: true },
-        cancelText: t("cache.cancel"),
-        onOk: perform,
-      });
-      return;
-    }
-    perform();
-  }, [selectedPairs, submit, t]);
-
-  const submitPin = useCallback((pinned: boolean) => {
-    if (selectedProtectable.length === 0 || selectedProtectable.length !== selectedItems.length) return;
-    const protect: CacheProtectSelection[] = selectedProtectable.map((item) => ({
+  const submitPin = useCallback((item: CacheSnapshotItem, pinned: boolean) => {
+    if (item.pinned === pinned || item.kind === "staging" || item.identity === null || item.digest === null) return;
+    void submit({ kind: "protect", protect: [{
       adapter_id: item.adapter_id,
       version_id: item.version_id,
-      identity: item.identity!,
-      digest: item.digest!,
+      identity: item.identity,
+      digest: item.digest,
       pinned,
-    }));
-    void submit({ kind: "protect", protect });
-  }, [selectedItems.length, selectedProtectable, submit]);
+    }] });
+  }, [submit]);
 
   const submitProof = useCallback(() => {
     const note = proof.note.trim();
-    if (selectedProtectable.length === 0 || selectedProtectable.length !== selectedItems.length
+    if (selectedProtectable.length === 0 || selectedProtectable.length !== proofItems.length
         || !note || proof.hours <= 0 || proof.hours > 24) return;
     const validUntil = new Date(Date.now() + proof.hours * 60 * 60 * 1_000).toISOString();
     const protect: CacheProtectSelection[] = selectedProtectable.map((item) => ({
@@ -419,7 +402,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
       valid_hours: proof.hours,
     }));
     void submit({ kind: "protect", protect }, JSON.stringify({ kind: "protect-proof", protect: logicalProtect }));
-  }, [proof, selectedItems.length, selectedProtectable, submit]);
+  }, [proof, proofItems.length, selectedProtectable, submit]);
 
   const loadMoreOperations = useCallback(async () => {
     if (nextCursor === null || loadingMore) return;
@@ -494,448 +477,315 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
     return t("cache.durationSeconds", { value: seconds });
   }
 
+  const busy = loading || submitting || (activeOperation !== null && !TERMINAL_STATUSES.has(activeOperation.status));
+  const canClean = (item: CacheSnapshotItem) => !item.pinned && item.reasons.length === 0
+    && (item.kind === "staging" ? item.identity === null && item.digest === null
+      : item.rebuildability === "confirmed" && item.identity !== null && item.digest !== null
+        && item.identity.adapter_id === item.adapter_id && item.identity.version_id === item.version_id);
+  const cleanableItems = (view?.items ?? []).filter(canClean);
+  const cleanTargets = selectionTouched ? selectedItems.filter(canClean) : cleanableItems;
+  const adapterName = (id: number) => adapters.find((adapter) => adapter.id === id)?.name
+    ?? t("managedInput.adapterFallback", { id });
+  const versionName = (item: CacheSnapshotItem) => item.kind === "staging"
+    ? t("cache.itemKinds.staging")
+    : item.version_seq != null ? t("cache.versionLabel", { version: item.version_seq }) : t("cache.versionUnknown");
+  const targetName = (item: CacheSnapshotItem) => `${adapterName(item.adapter_id)} · ${versionName(item)}`;
+  const groups = Array.from(new Set((view?.items ?? []).map((item) => item.adapter_id))).map((id) => ({
+    adapter_id: id,
+    items: (view?.items ?? []).filter((item) => item.adapter_id === id),
+  }));
+
+  const startCleanPreview = async () => {
+    if (!mutatingAllowed || busy || cleanTargets.length === 0) return;
+    const items = [...cleanTargets];
+    const generation = previewGeneration.current;
+    const operation = await submit({ kind: "preview", keys: items.map(({ adapter_id, version_id }) => ({ adapter_id, version_id })) });
+    if (operation !== undefined && generation === previewGeneration.current) setCleanRequest({ workerId: worker.id, operationId: operation.operation_id, items });
+  };
+
+  useEffect(() => {
+    if (!open || cleanRequest === null || cleanRequest.workerId !== worker.id || activeOperation?.operation_id !== cleanRequest.operationId
+        || !TERMINAL_STATUSES.has(activeOperation.status)) return;
+    const result = activeOperation.result;
+    const observations = result?.items;
+    const expected = new Map(cleanRequest.items.map((item) => [item.cache_key, item]));
+    const valid = activeOperation.status === "completed" && result?.complete === true && Array.isArray(observations)
+      && observations.length === expected.size && observations.every((value) => {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+        const observed = value as CacheSnapshotItem;
+        const original = expected.get(observed.cache_key);
+        if (original === undefined || observed.kind !== original.kind || observed.adapter_id !== original.adapter_id || observed.version_id !== original.version_id
+          || observed.digest !== original.digest || (observed.identity?.language !== original.identity?.language
+            || observed.identity?.source_sha256 !== original.identity?.source_sha256
+            || observed.identity?.adapter_id !== original.identity?.adapter_id
+            || observed.identity?.version_id !== original.identity?.version_id)
+          || !Array.isArray(observed.reasons) || observed.reasons.length !== 0 || observed.pinned !== false
+          || (observed.kind === "staging" && observed.identity !== null)
+          || (observed.kind !== "staging" && observed.rebuildability !== "confirmed")) return false;
+        expected.delete(observed.cache_key);
+        return true;
+      });
+    const timer = window.setTimeout(() => {
+      setCleanRequest(null);
+      if (valid) setCleanReview({ workerId: worker.id, items: cleanRequest.items, expiresAt: Date.now() + 30_000 });
+      else {
+        setError(t("cache.previewChanged"));
+        void refreshCache(true);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeOperation, cleanRequest, open, refreshCache, t, worker.id]);
+
+  useEffect(() => {
+    if (cleanReview === null) return;
+    const timer = window.setTimeout(() => {
+      setCleanReview(null);
+      setError(t("cache.previewExpired"));
+    }, Math.max(0, cleanReview.expiresAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [cleanReview, t]);
+
+  const confirmClean = async () => {
+    if (cleanReview === null || cleanReview.workerId !== worker.id || !mutatingAllowed || busy) return;
+    if (Date.now() >= cleanReview.expiresAt) {
+      setCleanReview(null);
+      setError(t("cache.previewExpired"));
+      return;
+    }
+    const keys = cleanReview.items.map(({ adapter_id, version_id }) => ({ adapter_id, version_id }));
+    const request = { workerId: worker.id, items: cleanReview.items };
+    const draft = { kind: "clean" as const, keys };
+    const generation = interactionGeneration.current;
+    setCleanReview(null);
+    await submit(draft);
+    if (generation === interactionGeneration.current && pendingSubmissions.current.has(operationFingerprint(draft))) setUncertainClean(request);
+  };
+
+  const retryCleanSubmission = async () => {
+    if (uncertainClean === null || uncertainClean.workerId !== worker.id || busy || !mutatingAllowed) return;
+    const draft = { kind: "clean" as const, keys: uncertainClean.items.map(({ adapter_id, version_id }) => ({ adapter_id, version_id })) };
+    const generation = interactionGeneration.current;
+    await submit(draft);
+    if (generation === interactionGeneration.current && !pendingSubmissions.current.has(operationFingerprint(draft))) setUncertainClean(null);
+  };
+
   const cacheColumns: TableColumnsType<CacheSnapshotItem> = [
     {
-      title: t("cache.key"), key: "cache_key", render: (_, item) => (
-        <Space direction="vertical" size={0}>
-          <Typography.Text strong>{adapters.find((adapter) => adapter.id === item.adapter_id)?.name ?? t("managedInput.adapterFallback", { id: item.adapter_id })}</Typography.Text>
-          <Typography.Text type="secondary">{t("cache.versionLabel", { version: item.version_id })}</Typography.Text>
+      title: t("cache.version"), key: "cache_key", render: (_, item) => (
+        <div>
+          <Typography.Text>{versionName(item)}</Typography.Text>
           <details className="admin-help cache-source-details">
             <summary>{t("cache.sourceDetails")}</summary>
             <Typography.Text>{item.cache_key}</Typography.Text>
             <p>{item.identity?.language ?? "—"}</p>
-            <p>{t(`cache.itemKinds.${item.kind ?? "version"}`)}</p>
-            <p>{item.kind === "staging" ? t("cache.identityUnavailable") : t(`cache.rebuildability.${item.rebuildability}`)}</p>
+            <p>{t(`cache.rebuildability.${item.rebuildability}`)}</p>
+            {item.kind !== "staging" && <Button size="small" disabled={busy || !mutatingAllowed || item.identity === null || item.digest === null}
+              onClick={() => { setProofTarget(item); setProofOpen(true); }}>{t("cache.proofDetails")}</Button>}
           </details>
-        </Space>
+        </div>
       ),
     },
     { title: t("cache.bytes"), dataIndex: "bytes", key: "bytes", render: formatBytes },
     {
-      title: t("cache.currentRestrictions"),
-      key: "restrictions",
-      render: (_, item) => {
+      title: t("cache.currentRestrictions"), key: "restrictions", render: (_, item) => {
         const reasons = new Set(item.reasons);
         if (item.pinned) reasons.add("cache_pinned");
-        if (item.kind !== "staging" && item.rebuildability !== "confirmed" && !reasons.has("cache_rebuild_unavailable")) {
-          reasons.add("cache_rebuild_unknown");
-        }
+        if (item.kind !== "staging" && item.rebuildability !== "confirmed" && !reasons.has("cache_rebuild_unavailable")) reasons.add("cache_rebuild_unknown");
         if (reasons.has("cache_rebuild_unavailable")) reasons.delete("cache_rebuild_unknown");
-        return reasons.size === 0 ? (
-          <Typography.Text type="secondary">{t("cache.recheckBeforeCleanup")}</Typography.Text>
-        ) : (
-          <Space size={[4, 4]} wrap>{Array.from(reasons).map((reason) => (
-            <Tag key={reason}>{t(`cache.reasonsMap.${reason}`, {
-              defaultValue: t("cache.unknownReason", { code: reason }),
-            })}</Tag>
-          ))}</Space>
-        );
+        return reasons.size === 0 ? <Typography.Text type="secondary">{t("cache.cleanable")}</Typography.Text>
+          : <Space size={[4, 4]} wrap>{Array.from(reasons).map((reason) => <Tag key={reason}>{t(`cache.reasonsMap.${reason}`, {
+            defaultValue: t("cache.protectedUnknown"),
+          })}</Tag>)}</Space>;
       },
+    },
+    {
+      title: t("cache.pinned"), key: "pinned", render: (_, item) => <Switch
+        size="small" checked={item.pinned} aria-label={t("cache.pinLabel", { target: targetName(item) })}
+        disabled={busy || !mutatingAllowed || item.kind === "staging" || item.identity === null || item.digest === null}
+        onChange={(pinned) => submitPin(item, pinned)} />,
     },
   ];
 
   const operationColumns: TableColumnsType<CacheOperation> = [
+    { title: t("cache.operationTime"), key: "time", render: (_, operation) => formatTime(operation.created_at, locale) },
     {
-      title: t("cache.operation"), key: "operation", render: (_, operation) => (
-        <Space direction="vertical" size={0}>
-          <span>{t(`cache.operationKinds.${operation.kind}`)}</span>
-          <Typography.Text type="secondary" copyable>{operation.operation_id}</Typography.Text>
-        </Space>
-      ),
-    },
-    {
-      title: t("cache.operationStatus"), dataIndex: "status", key: "status",
-      render: (status: CacheOperation["status"]) => (
-        <Tag color={status === "completed" ? "green" : status === "failed" ? "red" : "blue"}>
-          {t(`cache.operationStatuses.${status}`)}
-        </Tag>
-      ),
+      title: t("cache.operation"), key: "operation", render: (_, operation) => <div>
+        {t(`cache.operationKinds.${operation.kind}`)}
+        <details className="admin-help cache-source-details"><summary>{t("cache.recordDetails")}</summary>
+          <Typography.Text copyable>{operation.operation_id}</Typography.Text>
+          {resultReasonEntries(operation).map(([subject, reasons], index) => <p key={`${subject}-${index}`}>{reasons.map((reason) => t(`cache.reasonsMap.${reason}`, {
+            defaultValue: t("cache.protectedUnknown"),
+          })).join("、") || t("cache.cleanable")}</p>)}
+        </details>
+      </div>,
     },
     {
       title: t("cache.actualResult"), key: "result", render: (_, operation) => {
-        const facts = operationResultFacts(operation);
-        const reasonEntries = resultReasonEntries(operation);
-        const errorText = operation.error_code ? t(`cache.errors.${operation.error_code}`, {
-            defaultValue: t("cache.unknownReason", { code: operation.error_code }),
-          }) : null;
-        if (errorText === null && facts.length === 0 && reasonEntries.length === 0) return "—";
-        return (
-          <Space direction="vertical" size={0}>
-            {errorText !== null && <Typography.Text type="danger">{errorText}</Typography.Text>}
-            {facts.map(([key, value]) => (
-              <span key={key}>{t(`cache.resultFields.${key}`)}: {
-                key.includes("bytes") ? formatBytes(value) : String(value)
-              }</span>
-            ))}
-            {reasonEntries.map(([subject, reasons]) => operation.kind === "clean" ? (
-              <span key={`retained-${reasons[0]}`}>{t("cache.retainedReason", {
-                count: subject,
-                reason: t(`cache.reasonsMap.${reasons[0]}`, {
-                  defaultValue: t("cache.unknownReason", { code: reasons[0] }),
-                }),
-              })}</span>
-            ) : (
-              <span key={`preview-${subject}`}>{subject}: {reasons.length === 0
-                ? t("cache.previewCandidate")
-                : reasons.map((reason) => (
-                    <Tag key={reason}>{t(`cache.reasonsMap.${reason}`, {
-                      defaultValue: t("cache.unknownReason", { code: reason }),
-                    })}</Tag>
-                  ))}</span>
-            ))}
-          </Space>
-        );
+        const result = operation.result;
+        const deleted = finiteNumber(result?.deleted);
+        const changed = finiteNumber(result?.changed);
+        return <Space direction="vertical" size={0}>
+          <Typography.Text type={operation.status === "failed" ? "danger" : undefined}>{t(`cache.operationStatuses.${operation.status}`)}</Typography.Text>
+          {deleted !== null && <span>{t("cache.cleanupResult", { count: deleted, bytes: formatBytes(result?.freed_bytes) })}</span>}
+          {changed !== null && <span>{t("cache.changedResult", { count: changed })}</span>}
+          {operation.error_code && <Typography.Text type="danger">{t(`cache.errors.${operation.error_code}`, { defaultValue: t("cache.operationFailed") })}</Typography.Text>}
+        </Space>;
       },
     },
-    {
-      title: t("cache.actions"), key: "actions", render: (_, operation) => (
-        operation.status === "failed" ? (
-          <Button
-            size="small"
-            disabled={submitting}
-            onClick={() => void submit({
-              kind: "retry",
-              management_operation_id: operation.operation_id,
-            })}
-          >
-            {t("cache.retry")}
-          </Button>
-        ) : "—"
-      ),
-    },
   ];
 
-  const failedGuardColumns: TableColumnsType<FailedCacheGuardItem> = [
-    {
-      title: t("cache.guardOperation"), key: "guard", render: (_, item) => (
-        <Space direction="vertical" size={0}>
-          <Typography.Text copyable>{item.guard_operation_id}</Typography.Text>
-          <Typography.Text type="secondary">
-            {t("cache.guardGeneration", { generation: item.generation })}
-          </Typography.Text>
-        </Space>
-      ),
-    },
-    { title: t("cache.key"), key: "key", render: (_, item) => `${item.adapter_id}-${item.version_id}` },
-    { title: t("cache.guardKind"), dataIndex: "operation_kind", key: "operation_kind" },
-    { title: t("cache.resumePhase"), dataIndex: "resume_phase", key: "resume_phase" },
-    { title: t("cache.attempts"), dataIndex: "failure_count", key: "failure_count" },
-    {
-      title: t("cache.failureCode"), key: "error", render: (_, item) => (
-        t(`cache.errors.${item.error_code}`, {
-          defaultValue: t("cache.unknownReason", { code: item.error_code }),
-        })
-      ),
-    },
-    {
-      title: t("cache.actions"), key: "actions", render: (_, item) => item.operation_kind === "gc" ? (
-        <Button
-          size="small"
-          disabled={submitting || !mutatingAllowed}
-          onClick={() => void submit({ kind: "retry", guard_operation_id: item.guard_operation_id })}
-        >
-          {t("cache.retry")}
-        </Button>
-      ) : <Typography.Text type="secondary">{
-        t(`cache.guardRetryRoutes.${item.operation_kind}`, { defaultValue: "—" })
-      }</Typography.Text>,
-    },
+  type Failure = { key: string; subject: string; error: string | null; details: string; retry?: CacheOperationDraft; route?: string; retryDisabled?: boolean };
+  const completedRetries = new Set(operations.filter((operation) => operation.kind === "retry"
+    && operation.target_kind === "management" && operation.status === "completed").map((operation) => operation.target_operation_id));
+  const activeRetries = new Set(operations.filter((operation) => operation.kind === "retry"
+    && operation.target_kind === "management" && !TERMINAL_STATUSES.has(operation.status)).map((operation) => operation.target_operation_id));
+  const actionableManagementFailure = (operation: CacheOperation) => operation.status === "failed"
+    && (typeof operation.retryable === "boolean" ? operation.retryable : !completedRetries.has(operation.operation_id));
+  const failures: Failure[] = [
+    ...operations.filter(actionableManagementFailure).map((operation): Failure => ({
+      key: `operation-${operation.operation_id}`, subject: t(`cache.operationKinds.${operation.kind}`), error: operation.error_code,
+      details: operation.operation_id, retry: { kind: "retry", management_operation_id: operation.operation_id },
+      retryDisabled: activeRetries.has(operation.operation_id),
+    })),
+    ...(view?.failed_guard_items ?? []).filter((item) => item.management_operation_retryable !== false
+      && (!item.management_operation_id || (item.management_operation_retryable === true || !completedRetries.has(item.management_operation_id))
+        && !operations.some((operation) => operation.operation_id === item.management_operation_id && actionableManagementFailure(operation))))
+      .map((item): Failure => ({
+      key: `guard-${item.guard_operation_id}`, subject: adapterName(item.adapter_id), error: item.error_code,
+      details: `${item.guard_operation_id} · ${item.generation} · ${item.resume_phase}`,
+      ...(item.management_operation_id ? {
+        retry: { kind: "retry", management_operation_id: item.management_operation_id } as CacheOperationDraft,
+        retryDisabled: item.management_operation_status !== "failed" || activeRetries.has(item.management_operation_id),
+      } : item.operation_kind === "gc" ? { retry: { kind: "retry", guard_operation_id: item.guard_operation_id } as CacheOperationDraft }
+        : { route: t(`cache.guardRetryRoutes.${item.operation_kind}`, { defaultValue: t("cache.operationFailed") }) }),
+    })),
+    ...(view?.failed_cleanup_items ?? []).map((item): Failure => ({
+      key: `cleanup-${item.cleanup_id}`, subject: adapterName(item.adapter_id), error: item.error_code,
+      details: String(item.cleanup_id), retry: { kind: "retry", cleanup_id: item.cleanup_id },
+    })),
+  ];
+  const failureColumns: TableColumnsType<Failure> = [
+    { title: t("cache.failureObject"), key: "subject", render: (_, item) => <div>{item.subject}
+      <details className="admin-help cache-source-details"><summary>{t("cache.recordDetails")}</summary><Typography.Text copyable>{item.details}</Typography.Text></details>
+    </div> },
+    { title: t("cache.failureCode"), key: "reason", render: (_, item) => item.error
+      ? t(`cache.errors.${item.error}`, { defaultValue: t("cache.operationFailed") }) : t("cache.operationFailed") },
+    { title: t("cache.actions"), key: "actions", render: (_, item) => item.retry
+      ? <Button size="small" disabled={busy || !mutatingAllowed || item.retryDisabled} onClick={() => void submit(item.retry!)}>{t("cache.retry")}</Button>
+      : <Typography.Text type="secondary">{item.route}</Typography.Text> },
   ];
 
-  const failedCleanupColumns: TableColumnsType<FailedCacheCleanupItem> = [
-    { title: t("cache.cleanupId"), dataIndex: "cleanup_id", key: "cleanup_id" },
-    { title: t("cache.adapterId"), dataIndex: "adapter_id", key: "adapter_id" },
-    { title: t("cache.attempts"), dataIndex: "attempts", key: "attempts" },
-    {
-      title: t("cache.failureCode"), key: "error", render: (_, item) => (
-        item.error_code === null ? "—" : t(`cache.errors.${item.error_code}`, {
-          defaultValue: t("cache.unknownReason", { code: item.error_code }),
-        })
-      ),
-    },
-    {
-      title: t("cache.actions"), key: "actions", render: (_, item) => (
-        <Button
-          size="small"
-          disabled={submitting || !mutatingAllowed}
-          onClick={() => void submit({ kind: "retry", cleanup_id: item.cleanup_id })}
-        >
-          {t("cache.retry")}
-        </Button>
-      ),
-    },
-  ];
+  const footer = <div className="worker-cache-footer">
+    <Typography.Text type="secondary">{t(uncertainClean !== null ? "cache.pendingSelection" : "cache.cleanSelection", { count: uncertainClean?.items.length ?? cleanTargets.length })}</Typography.Text>
+    <Button type="primary" danger disabled={!mutatingAllowed || busy || (uncertainClean === null && cleanTargets.length === 0)} loading={submitting}
+      onClick={() => void (uncertainClean === null ? startCleanPreview() : retryCleanSubmission())}>{t(uncertainClean !== null
+        ? "cache.retrySubmission" : selectionTouched ? "cache.clean" : "cache.cleanAvailable")}</Button>
+  </div>;
 
-  return (
-    <Modal
-      open={open}
-      title={t("cache.title", { worker: worker.name })}
-      width={1000}
-      footer={null}
-      destroyOnHidden
-      onCancel={onClose}
-    >
+  return <>
+    <Modal open={open} title={t("cache.title", { worker: worker.name })} width={1000}
+      className="worker-cache-modal" footer={footer} styles={{ body: { maxHeight: "calc(100dvh - 220px)", overflowY: "auto" } }}
+      destroyOnHidden onCancel={onClose}>
       <div className="worker-cache-panel" data-testid="worker-cache-panel">
         <div className="worker-cache-toolbar">
-          <Typography.Text type="secondary">{t("cache.scopeHint")}</Typography.Text>
-          <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
-            {t("cache.refresh")}
-          </Button>
+          <Typography.Text type="secondary">{t("cache.sampledAt")}: {formatTime(view?.sampled_at ?? null, locale)}</Typography.Text>
+          <Button icon={<ReloadOutlined />} loading={loading} onClick={() => { previewGeneration.current += 1; setCleanRequest(null); setCleanReview(null); void load(); }}>{t("cache.refresh")}</Button>
         </div>
         {error !== null && <Alert type="error" showIcon message={error} closable onClose={() => setError(null)} />}
-        {view !== null && status !== "complete" && (
-          <Alert
-            showIcon
-            type={status === "incomplete" || status === "stale" ? "warning" : "error"}
-            message={t(`cache.states.${status}`)}
-            description={t(`cache.stateDescriptions.${status}`)}
-          />
-        )}
+        {view !== null && status !== "complete" && <Alert showIcon type={status === "incomplete" || status === "stale" ? "warning" : "error"}
+          message={t(`cache.states.${status}`)} description={t(`cache.stateDescriptions.${status}`)} />}
+        {uncertainClean !== null && <Alert type="warning" showIcon message={t("cache.submissionUncertain")} description={
+          <details className="cache-pending-scope"><summary>{t("cache.requestScope")}</summary>
+            <ul className="cache-confirm-targets">{uncertainClean.items.map((item) => <li key={item.cache_key}>{targetName(item)}</li>)}</ul>
+          </details>
+        } />}
         {pollTimedOut && <Alert type="warning" showIcon message={t("cache.pollStopped")} />}
-
         <Card size="small" title={t("cache.usageTitle")} loading={loading && view === null}>
-          <Space wrap><Tag color={status === "complete" ? "green" : "gold"}>{status ? t(`cache.states.${status}`) : "—"}</Tag><Typography.Text type="secondary">{t("cache.sampledAt")}: {formatTime(view?.sampled_at ?? null, locale)}</Typography.Text></Space>
           <div className="admin-stat-grid">
             <div className="admin-stat"><strong>{capacityKnown ? formatBytes(accounting?.committed_bytes) : "—"}</strong><span>{t("cache.committed")}</span></div>
-            <div className="admin-stat"><strong>{capacityKnown ? formatBytes(accounting?.reserved_bytes) : "—"}</strong><span>{t("cache.reserved")}</span></div>
+            <div className="admin-stat"><strong>{formatBytes(estimated)}</strong><span>{t("cache.estimatedReclaimable")}</span></div>
             <div className="admin-stat"><strong>{formatBytes(policy?.max_bytes)}</strong><span>{t("cache.maxBytes")}</span></div>
           </div>
-          <details className="admin-help"><summary>{t("cache.collectionDetails")}</summary>
-          <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }} items={[
-            { key: "status", label: t("cache.snapshotStatus"), children: status ? t(`cache.states.${status}`) : "—" },
-            { key: "sampled", label: t("cache.sampledAt"), children: formatTime(view?.sampled_at ?? null, locale) },
-            { key: "received", label: t("cache.receivedAt"), children: formatTime(view?.received_at ?? null, locale) },
-            { key: "sampleId", label: t("cache.sampleId"), children: view?.sample_id ? <Typography.Text copyable>{view.sample_id}</Typography.Text> : "—" },
-            { key: "sequence", label: t("cache.sequence"), children: view?.sequence ?? "—" },
-            { key: "complete", label: t("cache.completeness"), children: view?.complete ? t("cache.complete") : t("cache.partial") },
-            { key: "cursor", label: t("cache.cursor"), children: view?.cursor ?? "—" },
-            { key: "committed", label: t("cache.committed"), children: capacityKnown ? formatBytes(accounting?.committed_bytes) : "—" },
-            { key: "reserved", label: t("cache.reserved"), children: capacityKnown ? formatBytes(accounting?.reserved_bytes) : "—" },
-            { key: "estimated", label: t("cache.estimatedReclaimable"), children: formatBytes(estimated) },
-            { key: "gc", label: t("cache.gcEnabled"), children: typeof policy?.gc_enabled === "boolean" ? t(policy.gc_enabled ? "cache.enabled" : "cache.disabled") : "—" },
-            { key: "pressure", label: t("cache.pressureGcEnabled"), children: typeof policy?.pressure_gc_enabled === "boolean" ? t(policy.pressure_gc_enabled ? "cache.enabled" : "cache.disabled") : "—" },
-            { key: "max", label: t("cache.maxBytes"), children: formatBytes(policy?.max_bytes) },
-            { key: "minIdle", label: t("cache.minIdleSeconds"), children: integer(policy?.min_idle_seconds) ?? "—" },
-          ]} />
-          <div className="worker-cache-categories">
-            {CATEGORY_NAMES.map((name) => {
-              const category = capacityKnown ? categories?.[name] : undefined;
-              return (
-                <Card size="small" key={name} title={t(`cache.categories.${name}`)}>
-                  <strong>{category?.entries ?? "—"}</strong>
-                  <span>{formatBytes(category?.bytes)}</span>
-                  <Typography.Text type="secondary">
-                    {t("cache.reclaimableValue", { value: formatBytes(category?.reclaimable_bytes) })}
-                  </Typography.Text>
-                  {category !== undefined && Object.keys(category.reasons).length > 0 && (
-                    <Typography.Text type="secondary">
-                      {t("cache.reasonCount", { count: Object.values(category.reasons).reduce((total, count) => total + count, 0) })}
-                    </Typography.Text>
-                  )}
-                </Card>
-              );
-            })}
+          <div className="worker-cache-automatic"><Typography.Text>{t("cache.automaticCleanup")}</Typography.Text>
+            <Tag>{formatPolicyBoolean(typeof policy?.gc_enabled === "boolean" && typeof policy?.pressure_gc_enabled === "boolean"
+              ? policy.gc_enabled || policy.pressure_gc_enabled : undefined, t)}</Tag>
           </div>
-          </details>
-        </Card>
-        <details className="admin-help"><summary>{t("cache.policyTitle")}</summary>
-        <Card size="small" title={t("cache.policyTitle")} extra={<Typography.Text type="secondary">{t("cache.policyScope")}</Typography.Text>}>
-          <div className="admin-policy-summary">
-            <div><Typography.Text strong>{t("cache.policyPressureTitle")}</Typography.Text> <Tag>{formatPolicyBoolean(policy?.pressure_gc_enabled, t)}</Tag>
-              <div className="admin-stat-grid">
-                <div className="admin-stat"><strong>{finiteNumber(policy?.high_watermark_percent) ?? "—"}%</strong><span>{t("cache.highWaterHint")}</span></div>
-                <div className="admin-stat"><strong>{finiteNumber(policy?.low_watermark_percent) ?? "—"}%</strong><span>{t("cache.lowWaterHint")}</span></div>
-              </div><Typography.Text type="secondary">{t("cache.pressureHint")}</Typography.Text>
+          <details className="admin-help"><summary>{t("cache.policyTitle")}</summary>
+            <div className="admin-policy-summary">
+              <p>{t("cache.periodicRule", { duration: idleDuration(policy?.idle_ttl_seconds) })} {formatPolicyBoolean(policy?.gc_enabled, t)}</p>
+              <p>{t("cache.installRule", { duration: idleDuration(policy?.min_idle_seconds) })} {formatPolicyBoolean(policy?.pressure_gc_enabled, t)}</p>
+              <p>{t("cache.sharedHint")}</p>
+              {finiteNumber(accounting?.reserved_bytes) !== null && accounting?.reserved_bytes !== 0
+                && <p>{t("cache.reserved")}: {formatBytes(accounting?.reserved_bytes)}</p>}
             </div>
-            <div><Tag>{formatPolicyBoolean(policy?.gc_enabled, t)}</Tag><Typography.Text>{t("cache.periodicRule", { duration: idleDuration(policy?.idle_ttl_seconds) })}</Typography.Text></div>
-            <div><Tag>{formatPolicyBoolean(policy?.pressure_gc_enabled, t)}</Tag><Typography.Text>{t("cache.installRule", { duration: idleDuration(policy?.min_idle_seconds) })}</Typography.Text></div>
-            <Alert type="info" showIcon message={t("cache.sharedHint")} description={t("cache.protectionHint")} />
-          </div>
-          <details className="worker-cache-policy admin-help">
-            <summary>{t("cache.policyDetails")}</summary>
-            <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }} items={[
-              { key: "gc_enabled", label: t("cache.policyFields.gc_enabled"), children: formatPolicyBoolean(policy?.gc_enabled, t) },
-              { key: "pressure_gc_enabled", label: t("cache.policyFields.pressure_gc_enabled"), children: formatPolicyBoolean(policy?.pressure_gc_enabled, t) },
-              { key: "scan_interval_seconds", label: t("cache.policyFields.scan_interval_seconds"), children: integer(policy?.scan_interval_seconds) ?? "—" },
-              { key: "idle_ttl_seconds", label: t("cache.policyFields.idle_ttl_seconds"), children: integer(policy?.idle_ttl_seconds) ?? "—" },
-              { key: "min_idle_seconds", label: t("cache.policyFields.min_idle_seconds"), children: integer(policy?.min_idle_seconds) ?? "—" },
-              { key: "high_watermark_percent", label: t("cache.policyFields.high_watermark_percent"), children: finiteNumber(policy?.high_watermark_percent) ?? "—" },
-              { key: "low_watermark_percent", label: t("cache.policyFields.low_watermark_percent"), children: finiteNumber(policy?.low_watermark_percent) ?? "—" },
-              { key: "max_delete_entries_per_round", label: t("cache.policyFields.max_delete_entries_per_round"), children: integer(policy?.max_delete_entries_per_round) ?? "—" },
-              { key: "max_delete_bytes_per_round", label: t("cache.policyFields.max_delete_bytes_per_round"), children: formatBytes(policy?.max_delete_bytes_per_round) },
-              { key: "max_round_seconds", label: t("cache.policyFields.max_round_seconds"), children: finiteNumber(policy?.max_round_seconds) ?? "—" },
-              { key: "max_scan_entries_per_round", label: t("cache.policyFields.max_scan_entries_per_round"), children: integer(policy?.max_scan_entries_per_round) ?? "—" },
-              { key: "max_scan_nodes_per_round", label: t("cache.policyFields.max_scan_nodes_per_round"), children: integer(policy?.max_scan_nodes_per_round) ?? "—" },
-              { key: "max_scan_depth", label: t("cache.policyFields.max_scan_depth"), children: integer(policy?.max_scan_depth) ?? "—" },
-              { key: "max_scan_hash_bytes_per_round", label: t("cache.policyFields.max_scan_hash_bytes_per_round"), children: formatBytes(policy?.max_scan_hash_bytes_per_round) },
-              { key: "max_bytes", label: t("cache.policyFields.max_bytes"), children: formatBytes(policy?.max_bytes) },
-              { key: "disk_reserve_bytes", label: t("cache.policyFields.disk_reserve_bytes"), children: formatBytes(policy?.disk_reserve_bytes) },
-              { key: "staging_ttl_seconds", label: t("cache.policyFields.staging_ttl_seconds"), children: integer(policy?.staging_ttl_seconds) ?? "—" },
-              { key: "offline_protection", label: t("cache.policyFields.offline_protection"), children: formatPolicyBoolean(policy?.offline_protection, t) },
-              { key: "offline_mode", label: t("cache.policyFields.offline_mode"), children: formatPolicyBoolean(policy?.offline_mode, t) },
-              { key: "shared_cache_mode", label: t("cache.policyFields.shared_cache_mode"), children: policy?.shared_cache_mode ?? "—" },
-            ]} />
           </details>
-        </Card></details>
-
+        </Card>
         <Card size="small" title={t("cache.entriesTitle")}>
-          <Table
-            size="small"
-            rowKey="cache_key"
-            loading={loading && view !== null}
-            dataSource={view?.items ?? []}
-            columns={cacheColumns}
-            pagination={false}
-            scroll={{ x: 640 }}
-            rowSelection={{
-              columnWidth: 84,
-              columnTitle: (originalNode) => <Space size={4}>{originalNode}{t("cache.selectionColumn")}</Space>,
-              selectedRowKeys: selectedKeys,
-              preserveSelectedRowKeys: false,
-              onChange: setSelectedKeys,
-              getCheckboxProps: () => ({ disabled: !mutatingAllowed }),
-            }}
-          />
+          <Table size="small" rowKey="adapter_id" loading={loading && view !== null} dataSource={groups}
+            pagination={{ pageSize: 6, hideOnSinglePage: true, showSizeChanger: false }}
+            columns={[
+              { title: t("cache.adapter"), key: "adapter", render: (_, group) => <Typography.Text strong>{adapterName(group.adapter_id)}</Typography.Text> },
+              { title: t("cache.versionCount"), key: "versions", render: (_, group) => group.items.length },
+              { title: t("cache.bytes"), key: "bytes", render: (_, group) => formatBytes(group.items.reduce((total, item) => total + item.bytes, 0)) },
+              { title: t("cache.actions"), key: "actions", render: (_, group) => <Button type="link" size="small"
+                aria-label={t("cache.viewVersionsLabel", { adapter: adapterName(group.adapter_id) })}
+                aria-expanded={expandedAdapters.includes(group.adapter_id)}
+                onClick={() => setExpandedAdapters((current) => current.includes(group.adapter_id)
+                  ? current.filter((id) => id !== group.adapter_id) : [...current, group.adapter_id])}>
+                {t(expandedAdapters.includes(group.adapter_id) ? "cache.hideVersions" : "cache.viewVersions")}</Button> },
+            ]}
+            expandable={{ showExpandColumn: false, expandedRowKeys: expandedAdapters,
+              expandedRowRender: (group) => <Table size="small" rowKey="cache_key" dataSource={group.items} columns={cacheColumns}
+                pagination={{ pageSize: 5, hideOnSinglePage: true, showSizeChanger: false }} scroll={{ x: 580 }}
+                rowSelection={{ columnWidth: 44, selectedRowKeys: selectedKeys, preserveSelectedRowKeys: true,
+                  onChange: (keys) => {
+                    previewGeneration.current += 1; setSelectionTouched(true); setCleanRequest(null); setCleanReview(null);
+                    const otherGroups = selectedKeys.filter((key) => !group.items.some((item) => item.cache_key === key));
+                    setSelectedKeys([...new Set([...otherGroups, ...keys])]);
+                  }, getCheckboxProps: (item) => ({ disabled: busy || !mutatingAllowed || !canClean(item) }) }} />,
+            }} />
           <Typography.Paragraph type="secondary" className="cache-safety-note">{t("cache.protectionHint")}</Typography.Paragraph>
-          <Space wrap className="worker-cache-actions">
-            <Button disabled={selectedPairs.length === 0 || submitting || !mutatingAllowed} onClick={() => submitKeyOperation("preview")}>
-              {t("cache.preview")}
-            </Button>
-            <Button danger disabled={selectedPairs.length === 0 || submitting || !mutatingAllowed} onClick={() => submitKeyOperation("clean")}>
-              {t("cache.clean")}
-            </Button>
-          </Space>
-          {selectedItems.length === 0 && <Typography.Text type="secondary">{t("cache.selectionHint")}</Typography.Text>}
-          <details className="admin-help cache-more-actions"><summary>{t("cache.moreActions")}</summary>
-          <Space wrap>
-            <Button disabled={selectedProtectable.length === 0 || selectedProtectable.length !== selectedItems.length || submitting || !mutatingAllowed} onClick={() => submitPin(true)}>
-              {t("cache.pin")}
-            </Button>
-            <Button disabled={selectedProtectable.length === 0 || selectedProtectable.length !== selectedItems.length || submitting || !mutatingAllowed} onClick={() => submitPin(false)}>
-              {t("cache.unpin")}
-            </Button>
-            <Button
-              aria-expanded={proofOpen}
-              aria-controls={`cache-source-confirmation-${worker.id}`}
-              disabled={selectedProtectable.length === 0 || selectedProtectable.length !== selectedItems.length || submitting || !mutatingAllowed}
-              onClick={() => setProofOpen((current) => !current)}
-            >{t("cache.proofDetails")}</Button>
-          </Space>
-          {proofOpen && <section id={`cache-source-confirmation-${worker.id}`} aria-label={t("cache.proofDetails")}>
-          <Form layout="vertical" className="worker-cache-proof-form">
-            <Alert
-              type="warning"
-              showIcon
-              message={t("cache.proofCommitmentTitle")}
-              description={t("cache.proofCommitmentDescription")}
-            />
-            <Form.Item label={t("cache.sourcePolicy")} htmlFor="cache-source-policy"
-              extra={t(proof.sourcePolicy === "verified_offline" ? "cache.proofOfflineHint" : "cache.proofOnlineHint")}>
-              <Select
-                id="cache-source-policy"
-                value={proof.sourcePolicy}
-                options={[
-                  { value: "verified_offline", label: t("cache.sourcePolicies.verified_offline") },
-                  { value: "managed_online", label: t("cache.sourcePolicies.managed_online") },
-                ]}
-                onChange={(sourcePolicy) => setProof((current) => ({ ...current, sourcePolicy }))}
-              />
-            </Form.Item>
-            <Form.Item label={t("cache.evidenceNote")} htmlFor="cache-evidence-note">
-              <Input.TextArea
-                id="cache-evidence-note"
-                value={proof.note}
-                maxLength={256}
-                showCount
-                onChange={(event) => setProof((current) => ({ ...current, note: event.target.value }))}
-              />
-            </Form.Item>
-            <Form.Item label={t("cache.validHours")} htmlFor="cache-valid-hours">
-              <InputNumber
-                id="cache-valid-hours"
-                min={1}
-                max={24}
-                precision={0}
-                value={proof.hours}
-                onChange={(hours) => setProof((current) => ({ ...current, hours: hours ?? 1 }))}
-              />
-            </Form.Item>
-            <Space className="cache-proof-actions" wrap>
-            <Button
-              type="primary"
-              disabled={selectedProtectable.length === 0 || selectedProtectable.length !== selectedItems.length || !proof.note.trim() || submitting || !mutatingAllowed}
-              onClick={submitProof}
-            >
-              {t("cache.confirmRebuildability")}
-            </Button>
-            <Button disabled={submitting} onClick={() => setProofOpen(false)}>{t("cache.cancel")}</Button>
-            </Space>
-          </Form></section>}
-          </details>
         </Card>
-
-        {view !== null && (view.failed_guard_items.length > 0 || view.failed_guard_complete === false) && (
-          <Card size="small" title={t("cache.failedGuardsTitle")}>
-            <Alert type="warning" showIcon message={t("cache.failedRetryHint")} />
-            {view.failed_guard_complete === false && (
-              <Alert
-                type="warning"
-                showIcon
-                message={t("cache.failedGuardsIncomplete")}
-                description={(
-                  <Space direction="vertical" size={0}>
-                    <span>{t("cache.failedGuardCursor")}</span>
-                    <Typography.Text copyable>{view.failed_guard_cursor ?? "—"}</Typography.Text>
-                  </Space>
-                )}
-              />
-            )}
-            <Table
-              size="small"
-              rowKey="guard_operation_id"
-              dataSource={view?.failed_guard_items ?? []}
-              columns={failedGuardColumns}
-              pagination={false}
-              scroll={{ x: 820 }}
-            />
-          </Card>
-        )}
-
-        {(view?.failed_cleanup_items.length ?? 0) > 0 && (
-          <Card size="small" title={t("cache.failedCleanupsTitle")}>
-            <Alert type="warning" showIcon message={t("cache.failedRetryHint")} />
-            <Table
-              size="small"
-              rowKey="cleanup_id"
-              dataSource={view?.failed_cleanup_items ?? []}
-              columns={failedCleanupColumns}
-              pagination={false}
-              scroll={{ x: 680 }}
-            />
-            {view?.failed_cleanup_next_cursor != null && (
-              <Button loading={loadingFailedCleanups} onClick={() => void loadMoreFailedCleanups()}>
-                {t("cache.loadMoreFailedCleanups")}
-              </Button>
-            )}
-          </Card>
-        )}
-
-        <Card size="small" title={t("cache.operationsTitle")}>
-          <Table
-            size="small"
-            rowKey="operation_id"
-            dataSource={operations}
-            columns={operationColumns}
-            pagination={false}
-            scroll={{ x: 720 }}
-          />
-          {nextCursor !== null && (
-            <Button loading={loadingMore} onClick={() => void loadMoreOperations()}>
-              {t("cache.loadMore")}
-            </Button>
-          )}
-        </Card>
+        {(failures.length > 0 || view?.failed_guard_complete === false) && <Card size="small" title={t("cache.needsAttention")}>
+          {view?.failed_guard_complete === false && <Alert type="warning" showIcon message={t("cache.failedGuardsIncomplete")} />}
+          <Table size="small" rowKey="key" dataSource={failures} columns={failureColumns}
+            pagination={{ pageSize: 5, hideOnSinglePage: true, showSizeChanger: false }} scroll={{ x: 580 }} />
+          {view?.failed_cleanup_next_cursor != null && <Button loading={loadingFailedCleanups} onClick={() => void loadMoreFailedCleanups()}>{t("cache.loadMoreFailedCleanups")}</Button>}
+        </Card>}
+        {operations.length > 0 && <details className="admin-help cache-operation-history"><summary>{t("cache.operationsTitle")}</summary>
+          <Table size="small" rowKey="operation_id" dataSource={operations} columns={operationColumns}
+            pagination={{ pageSize: 5, hideOnSinglePage: true, showSizeChanger: false }} scroll={{ x: 580 }} />
+          {nextCursor !== null && <Button loading={loadingMore} onClick={() => void loadMoreOperations()}>{t("cache.loadMore")}</Button>}
+        </details>}
       </div>
     </Modal>
-  );
+    <Modal open={open && cleanReview !== null} title={t("cache.cleanConfirmTitle")} okText={t("cache.cleanConfirmAction")}
+      cancelText={t("cache.cancel")} okButtonProps={{ danger: true, disabled: busy || !mutatingAllowed }}
+      onOk={() => void confirmClean()} onCancel={() => setCleanReview(null)} destroyOnHidden>
+      <p>{t("cache.cleanScope", { count: cleanReview?.items.length ?? 0,
+        bytes: formatBytes(cleanReview?.items.reduce((total, item) => total + item.bytes, 0)) })}</p>
+      <ul className="cache-confirm-targets">{cleanReview?.items.map((item) => <li key={item.cache_key}>{targetName(item)}</li>)}</ul>
+      <Typography.Text type="secondary">{t("cache.cleanConfirmDescription")}</Typography.Text>
+    </Modal>
+    <Modal open={open && proofOpen} title={t("cache.proofDetails")} footer={null} onCancel={() => setProofOpen(false)} destroyOnHidden>
+      <p>{proofTarget && targetName(proofTarget)}</p>
+      <Form layout="vertical" className="worker-cache-proof-form">
+        <Alert type="warning" showIcon message={t("cache.proofCommitmentTitle")} description={t("cache.proofCommitmentDescription")} />
+        <Form.Item label={t("cache.sourcePolicy")} htmlFor="cache-source-policy"
+          extra={t(proof.sourcePolicy === "verified_offline" ? "cache.proofOfflineHint" : "cache.proofOnlineHint")}>
+          <Select id="cache-source-policy" value={proof.sourcePolicy} options={[
+            { value: "verified_offline", label: t("cache.sourcePolicies.verified_offline") },
+            { value: "managed_online", label: t("cache.sourcePolicies.managed_online") },
+          ]} onChange={(sourcePolicy) => setProof((current) => ({ ...current, sourcePolicy }))} />
+        </Form.Item>
+        <Form.Item label={t("cache.evidenceNote")} htmlFor="cache-evidence-note"><Input.TextArea id="cache-evidence-note"
+          value={proof.note} maxLength={256} showCount onChange={(event) => setProof((current) => ({ ...current, note: event.target.value }))} /></Form.Item>
+        <Form.Item label={t("cache.validHours")} htmlFor="cache-valid-hours"><InputNumber id="cache-valid-hours" min={1} max={24}
+          precision={0} value={proof.hours} onChange={(hours) => setProof((current) => ({ ...current, hours: hours ?? 1 }))} /></Form.Item>
+        <Space className="cache-proof-actions" wrap><Button type="primary"
+          disabled={selectedProtectable.length === 0 || !proof.note.trim() || busy || !mutatingAllowed} onClick={submitProof}>{t("cache.confirmRebuildability")}</Button>
+          <Button disabled={submitting} onClick={() => setProofOpen(false)}>{t("cache.cancel")}</Button></Space>
+      </Form>
+    </Modal>
+  </>;
 }

@@ -44,8 +44,8 @@ def create_cache_operation(
     session: DbSession,
     principal: AdminPrincipal,
 ) -> CacheOperationResponse:
-    return CacheOperationResponse.model_validate(
-        service.create_operation(session, worker_id, payload, principal)
+    return service.operation_response(
+        session, service.create_operation(session, worker_id, payload, principal)
     )
 
 
@@ -69,6 +69,6 @@ def list_cache_operations(
 def get_cache_operation(
     worker_id: int, operation_id: uuid.UUID, session: DbSession
 ) -> CacheOperationResponse:
-    return CacheOperationResponse.model_validate(
-        service.get_operation(session, worker_id, operation_id)
+    return service.operation_response(
+        session, service.get_operation(session, worker_id, operation_id)
     )

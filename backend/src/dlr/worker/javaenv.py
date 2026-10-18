@@ -107,15 +107,12 @@ def prepare_version_java(
             raise venv.dependency_cache_error(error) from error
         classes = directory / "classes"
         if build is None and (classes / "Adapter.class").is_file():
-            if builtin_materials is not None:
-                venv.reconcile_builtin_rebuildability(
-                    runtime_root,
-                    adapter_id=adapter_id,
-                    version_id=version_id,
-                    identity=identity,
-                    builtin_materials=builtin_materials,
-                    external_dependencies_present=bool(dependencies),
-                )
+            venv.reconcile_local_rebuildability(
+                runtime_root,
+                identity=identity,
+                builtin_materials=builtin_materials,
+                external_dependencies_present=bool(dependencies),
+            )
             if dependency_log is not None:
                 for group, artifact, version in dependencies:
                     dependency_log(f"{group}:{artifact}:{version} 已安装，检查通过")
@@ -311,16 +308,14 @@ def prepare_version_java(
             if settings_path is not None:
                 settings_path.unlink(missing_ok=True)
         try:
-            return build.finish(
-                identity,
-                automatic_offline_proof=(
-                    builtin_materials is not None
-                    and venv.builtin_rebuildability_verified(
-                        builtin_materials,
-                        external_dependencies_present=bool(dependencies),
-                    )
-                ),
+            final_directory = build.finish(identity)
+            venv.reconcile_local_rebuildability(
+                runtime_root,
+                identity=identity,
+                builtin_materials=builtin_materials,
+                external_dependencies_present=bool(dependencies),
             )
+            return final_directory
         except CacheError as error:
             build.abort()
             raise venv.DependencyPreparationError("version cache promotion failed", "") from error

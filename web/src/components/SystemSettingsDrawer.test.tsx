@@ -1083,7 +1083,7 @@ it("缓存 Portal 选择与来源表单取消不会触发系统设置离开确�
     complete: true, cursor: null, summary: null,
     items: [{ cache_key: "11-12", kind: "version", adapter_id: 11, version_id: 12,
       identity: { language: "javascript", source_sha256: "a".repeat(64), adapter_id: 11, version_id: 12 },
-      digest: "b".repeat(64), bytes: 4096, pinned: false, rebuildability: "unknown", reasons: ["cache_rebuild_unknown"] }],
+      digest: "b".repeat(64), bytes: 4096, pinned: false, rebuildability: "confirmed", reasons: [], version_seq: 2 }],
     failed_guard_items: [], failed_guard_cursor: null, failed_guard_complete: true,
     failed_cleanup_items: [], failed_cleanup_next_cursor: null,
   };
@@ -1095,15 +1095,16 @@ it("缓存 Portal 选择与来源表单取消不会触发系统设置离开确�
   const view = render(<SystemSettingsDrawer open category="system-status" workers={[worker]} workersLoading={false} onClose={vi.fn()} onCategoryChange={navigate} />);
   fireEvent.click(screen.getByRole("button", { name: "缓存管理" }));
   const panel = await screen.findByTestId("worker-cache-panel");
-  await within(panel).findByText("代码版本 12");
+  fireEvent.click(await within(panel).findByRole("button", { name: "查看版本：适配器 11" }));
+  await within(panel).findByText("第 2 版");
   // Exercise the real Ant Design Portal: DOM outside the settings content still bubbles through its React parent.
   expect(view.container.contains(panel)).toBe(false);
-  fireEvent.click(within(panel).getByText("更多操作", { exact: true }));
   fireEvent.click(within(panel).getAllByRole("checkbox")[1]);
+  fireEvent.click(within(panel).getByText("详情", { exact: true }));
   fireEvent.click(within(panel).getByRole("button", { name: "确认安装来源" }));
-  expect(within(panel).getByLabelText("核实说明")).toHaveProperty("value", "");
-  fireEvent.click(within(panel).getByRole("button", { name: /^取\s*消$/ }));
-  expect(within(panel).queryByLabelText("核实说明")).toBeNull();
+  expect(screen.getByLabelText("核实说明")).toHaveProperty("value", "");
+  fireEvent.click(screen.getByRole("button", { name: /^取\s*消$/ }));
+  await waitFor(() => expect(screen.queryByLabelText("核实说明")).toBeNull());
   fireEvent.click(screen.getByRole("button", { name: "Close" }));
   await waitFor(() => expect(screen.queryByTestId("worker-cache-panel")).toBeNull());
   fireEvent.click(screen.getByRole("menuitem", { name: "文件托管" }));

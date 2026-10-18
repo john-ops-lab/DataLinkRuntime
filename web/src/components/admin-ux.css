@@ -50,3 +50,19 @@
   .managed-policy-savebar .ant-btn { width:100%; }
 }
 .managed-input-settings-panel .managed-input-usage-summary .admin-stat { border:0; padding:8px 0; }
+
+.worker-cache-panel { display:grid; gap:16px; }
+.worker-cache-toolbar,.worker-cache-footer,.worker-cache-automatic { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.worker-cache-automatic { justify-content:flex-start; }
+.worker-cache-panel .ant-table-selection-column { width:44px !important; min-width:44px; }
+.worker-cache-panel .admin-stat { border:0; padding:8px 0; }
+.worker-cache-panel .admin-help { margin-bottom:0; }
+.worker-cache-panel .cache-safety-note { margin-bottom:0; }
+.cache-confirm-targets { max-height:240px; overflow:auto; padding-left:24px; }
+.worker-cache-modal { top:32px; }
+@media (max-width:720px) {
+  .worker-cache-modal { top:16px; }
+  .worker-cache-panel .admin-stat-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+  .worker-cache-panel .admin-stat strong { font-size:20px; }
+  .worker-cache-footer { flex-wrap:wrap; }
+}

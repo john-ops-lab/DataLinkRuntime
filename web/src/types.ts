@@ -644,6 +644,7 @@ export interface CacheProtectSelection extends CacheKeySelection {
 }
 
 export interface CacheSnapshotItem extends CacheKeySelection {
+  version_seq?: number | null;
   cache_key: string;
   kind: "version" | "staging";
   identity: CacheSnapshotIdentity | null;
@@ -690,6 +691,9 @@ export interface CacheSnapshotSummary {
 }
 
 export interface FailedCacheGuardItem extends CacheKeySelection {
+  management_operation_id?: string | null;
+  management_operation_status?: CacheOperationStatus | null;
+  management_operation_retryable?: boolean | null;
   guard_operation_id: string;
   generation: number;
   operation_kind: "gc" | "cleanup" | "replacement";
@@ -726,6 +730,7 @@ export interface CacheAdminView {
 }
 
 export interface CacheOperation {
+  retryable?: boolean | null;
   operation_id: string;
   worker_id: number;
   kind: CacheOperationKind;

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from dlr.control.models import (
     Adapter,
+    AdapterVersion,
     Worker,
     WorkerCacheManagementChild,
     WorkerCacheManagementOperation,
@@ -22,6 +23,8 @@ from dlr.control.models import (
     WorkerCleanupRequest,
 )
 from dlr.control.schemas.cache_admin import (
+    CacheAdminFailedGuardItem,
+    CacheAdminItem,
     CacheAdminView,
     CacheCommandClaim,
     CacheCommandResult,
@@ -29,7 +32,6 @@ from dlr.control.schemas.cache_admin import (
     CacheOperationPage,
     CacheOperationResponse,
     CacheProtectSelection,
-    CacheSnapshotItem,
     CacheSnapshotUpload,
     FailedCleanupItem,
     FailedGuardItem,
@@ -609,6 +611,60 @@ def upload_snapshot(session: Session, worker_id: int, upload: CacheSnapshotUploa
     session.commit()
 
 
+def _retryable_operation_ids(
+    session: Session, operations: list[WorkerCacheManagementOperation]
+) -> set[uuid.UUID]:
+    """Read current recovery facts without altering historical failed audits."""
+
+    failed = {item.operation_id for item in operations if item.status == "failed"}
+    if not failed:
+        return set()
+    has_children: set[uuid.UUID] = set()
+    unresolved: set[uuid.UUID] = set()
+    for parent_id, generation, guard_generation, phase in session.execute(
+        select(
+            WorkerCacheManagementChild.management_operation_id,
+            WorkerCacheManagementChild.generation,
+            WorkerCacheOperation.generation,
+            WorkerCacheOperation.phase,
+        )
+        .outerjoin(
+            WorkerCacheOperation,
+            WorkerCacheOperation.operation_id == WorkerCacheManagementChild.guard_operation_id,
+        )
+        .where(WorkerCacheManagementChild.management_operation_id.in_(failed))
+    ):
+        has_children.add(parent_id)
+        if generation != guard_generation or phase not in {"completed", "aborted"}:
+            unresolved.add(parent_id)
+    retried: set[uuid.UUID] = set()
+    active: set[uuid.UUID] = set()
+    for target_id, status in session.execute(
+        select(
+            WorkerCacheManagementOperation.target_operation_id,
+            WorkerCacheManagementOperation.status,
+        ).where(
+            WorkerCacheManagementOperation.worker_id.in_({item.worker_id for item in operations}),
+            WorkerCacheManagementOperation.target_kind == "management",
+            WorkerCacheManagementOperation.target_operation_id.in_(failed),
+            WorkerCacheManagementOperation.status.in_({"pending", "running", "completed"}),
+        )
+    ):
+        if target_id is not None:
+            (retried if status == "completed" else active).add(target_id)
+    return (unresolved | (failed - has_children - retried)) - active
+
+
+def operation_response(
+    session: Session, operation: WorkerCacheManagementOperation
+) -> CacheOperationResponse:
+    return CacheOperationResponse.model_validate(operation).model_copy(
+        update={
+            "retryable": operation.operation_id in _retryable_operation_ids(session, [operation])
+        }
+    )
+
+
 def cache_view(
     session: Session, worker_id: int, *, failed_cursor: int | None = None, failed_limit: int = 50
 ) -> CacheAdminView:
@@ -679,10 +735,59 @@ def cache_view(
         if isinstance(raw_failed_guards, list)
         else []
     )
+    # A managed child must retry its parent even when that parent is outside
+    # the current history page. DISTINCT ON bounds this to one row per guard.
+    guard_parents = {
+        guard_id: (operation_id, operation_status)
+        for guard_id, operation_id, operation_status in session.execute(
+            select(
+                WorkerCacheManagementChild.guard_operation_id,
+                WorkerCacheManagementOperation.operation_id,
+                WorkerCacheManagementOperation.status,
+            )
+            .join(
+                WorkerCacheManagementOperation,
+                WorkerCacheManagementOperation.operation_id
+                == WorkerCacheManagementChild.management_operation_id,
+            )
+            .where(
+                WorkerCacheManagementOperation.worker_id == worker_id,
+                WorkerCacheManagementChild.guard_operation_id.in_(
+                    [item.guard_operation_id for item in failed_guards]
+                ),
+            )
+            .distinct(WorkerCacheManagementChild.guard_operation_id)
+            .order_by(
+                WorkerCacheManagementChild.guard_operation_id,
+                WorkerCacheManagementOperation.created_at.desc(),
+                WorkerCacheManagementOperation.operation_id.desc(),
+            )
+        )
+    }
+    retryable_parents = _retryable_operation_ids(
+        session,
+        list(
+            session.scalars(
+                select(WorkerCacheManagementOperation).where(
+                    WorkerCacheManagementOperation.operation_id.in_(
+                        [parent[0] for parent in guard_parents.values()]
+                    )
+                )
+            )
+        ),
+    )
     public_summary = dict(snapshot.summary)
     public_summary.pop("failed_guard_items", None)
     failed_guard_cursor = public_summary.pop("failed_guard_cursor", None)
     failed_guard_complete = public_summary.pop("failed_guard_complete", True)
+    version_seqs = {
+        (adapter_id, version_id): seq
+        for version_id, adapter_id, seq in session.execute(
+            select(AdapterVersion.id, AdapterVersion.adapter_id, AdapterVersion.seq).where(
+                AdapterVersion.id.in_([item.version_id for item in items])
+            )
+        )
+    }
     return CacheAdminView.model_validate(
         {
             "worker_id": worker_id,
@@ -695,9 +800,28 @@ def cache_view(
             "cursor": snapshot.cursor,
             "summary": public_summary,
             "items": [
-                CacheSnapshotItem.model_validate(item, from_attributes=True) for item in items
+                CacheAdminItem.model_validate(item, from_attributes=True).model_copy(
+                    update={"version_seq": version_seqs.get((item.adapter_id, item.version_id))}
+                )
+                for item in items
             ],
-            "failed_guard_items": failed_guards,
+            "failed_guard_items": [
+                CacheAdminFailedGuardItem(
+                    **item.model_dump(),
+                    management_operation_id=guard_parents.get(
+                        item.guard_operation_id, (None, None)
+                    )[0],
+                    management_operation_status=guard_parents.get(
+                        item.guard_operation_id, (None, None)
+                    )[1],
+                    management_operation_retryable=(
+                        guard_parents[item.guard_operation_id][0] in retryable_parents
+                        if item.guard_operation_id in guard_parents
+                        else None
+                    ),
+                )
+                for item in failed_guards
+            ],
             "failed_guard_cursor": failed_guard_cursor,
             "failed_guard_complete": failed_guard_complete,
             "failed_cleanup_items": [
@@ -750,8 +874,14 @@ def list_operations(
         )
     )
     next_cursor = str(rows[limit - 1].operation_id) if len(rows) > limit else None
+    retryable = _retryable_operation_ids(session, rows[:limit])
     return CacheOperationPage(
-        items=[CacheOperationResponse.model_validate(row) for row in rows[:limit]],
+        items=[
+            CacheOperationResponse.model_validate(row).model_copy(
+                update={"retryable": row.operation_id in retryable}
+            )
+            for row in rows[:limit]
+        ],
         next_cursor=next_cursor,
     )
 

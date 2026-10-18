@@ -117,6 +117,7 @@ class CacheOperationResponse(BaseModel):
     created_at: datetime
     claimed_at: datetime | None
     finished_at: datetime | None
+    retryable: bool | None = None
 
     @field_validator("request", mode="before")
     @classmethod
@@ -317,6 +318,20 @@ class CacheSnapshotUpload(BaseModel):
         return self
 
 
+class CacheAdminItem(CacheSnapshotItem):
+    """Read-only display metadata, separate from the strict Worker upload DTO."""
+
+    version_seq: StrictInt | None = Field(default=None, gt=0)
+
+
+class CacheAdminFailedGuardItem(FailedGuardItem):
+    """Route managed failures without changing strict Worker observations."""
+
+    management_operation_id: uuid.UUID | None = None
+    management_operation_status: CacheOperationStatus | None = None
+    management_operation_retryable: bool | None = None
+
+
 class CacheAdminView(BaseModel):
     worker_id: int
     status: Literal[
@@ -329,8 +344,8 @@ class CacheAdminView(BaseModel):
     complete: bool = False
     cursor: str | None = None
     summary: CacheSnapshotSummary | None = None
-    items: list[CacheSnapshotItem] = Field(default_factory=list)
-    failed_guard_items: list[FailedGuardItem] = Field(default_factory=list)
+    items: list[CacheAdminItem] = Field(default_factory=list)
+    failed_guard_items: list[CacheAdminFailedGuardItem] = Field(default_factory=list)
     failed_guard_cursor: str | None = None
     failed_guard_complete: bool = True
     failed_cleanup_items: list[FailedCleanupItem] = Field(default_factory=list)
