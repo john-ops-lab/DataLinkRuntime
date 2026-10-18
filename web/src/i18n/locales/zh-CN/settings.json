@@ -280,7 +280,7 @@
       "cache_operation_not_found": "缓存操作已不存在。",
       "cache_policy_unsupported": "请更新运行节点后设置。",
       "cache_policy_invalid": "自动清理设置无效。",
-      "cache_policy_write_failed": "自动清理设置未保存，请重试。"
+      "cache_policy_write_failed": "未能确认设置，请重试。"
     },
     "collectionDetails": "查看采集记录",
     "usageTitle": "当前缓存用量",

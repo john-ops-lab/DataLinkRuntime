@@ -90,6 +90,22 @@ def test_cleanup_switch_write_failure_keeps_the_actual_old_state(tmp_path, monke
     assert agent._client.snapshots[-1]["summary"]["policy"]["gc_enabled"] is False
 
 
+def test_cleanup_switch_uncertain_write_reports_the_actual_persisted_value(tmp_path, monkeypatch):
+    agent, manager, base = _agent(tmp_path)
+    writer = cache_policy._write_json
+
+    def uncertain(*args, **kwargs):
+        writer(*args, **kwargs)
+        raise CacheError("cache_lifecycle_write_failed")
+
+    monkeypatch.setattr(cache_policy, "_write_json", uncertain)
+    assert agent._execute_cache_command(7, _command("gc_enabled", True))
+    assert agent._client.reports[-1]["status"] == "failed"
+    assert effective_cache_policy(tmp_path, base).gc_enabled is True
+    assert manager.policy.gc_enabled is True
+    assert agent._client.snapshots[-1]["summary"]["policy"]["gc_enabled"] is True
+
+
 def test_pressure_switch_reaches_existing_cache_objects_without_restarting(tmp_path, monkeypatch):
     agent, manager, base = _agent(tmp_path)
     existing_cache = create_version_cache(tmp_path, policy=base)

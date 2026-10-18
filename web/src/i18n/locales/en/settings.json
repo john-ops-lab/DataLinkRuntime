@@ -280,7 +280,7 @@
       "cache_operation_not_found": "The cache operation no longer exists.",
       "cache_policy_unsupported": "Update this worker to change settings.",
       "cache_policy_invalid": "Invalid automatic cleanup settings.",
-      "cache_policy_write_failed": "Could not save cleanup settings. Try again."
+      "cache_policy_write_failed": "Could not confirm settings. Try again."
     },
     "collectionDetails": "View collection record",
     "usageTitle": "Current cache usage",
