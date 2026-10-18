@@ -612,7 +612,13 @@ def get_version(session: Session, adapter_id: int, version_id: int) -> AdapterVe
     return version
 
 
-def save_version(session: Session, adapter_id: int, data: VersionCreate) -> AdapterVersion:
+def save_version(
+    session: Session,
+    adapter_id: int,
+    data: VersionCreate,
+    *,
+    dismiss_import_review: bool = True,
+) -> AdapterVersion:
     """Create one immutable Revision and atomically advance latest_version_id."""
     adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None:
@@ -646,7 +652,7 @@ def save_version(session: Session, adapter_id: int, data: VersionCreate) -> Adap
     session.add(version)
     session.flush()
     adapter.latest_version_id = version.id
-    if adapter.configuration_notes.get("review_environment"):
+    if dismiss_import_review and adapter.configuration_notes.get("review_environment"):
         adapter.configuration_notes = {**adapter.configuration_notes, "review_environment": False}
     session.commit()
     session.refresh(version)

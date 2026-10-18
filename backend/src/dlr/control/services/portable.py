@@ -219,6 +219,7 @@ def import_adapter(
                         source_type="json",
                         json_value=package.input.json_value,
                     ),
+                    dismiss_import_review=False,
                 )
             if package.input.included and package.input.source_type == "managed_files":
                 store = LocalFileArtifactStore()
@@ -263,6 +264,7 @@ def import_adapter(
                         artifact_ids=artifact_ids,
                         retention=InputRetention(mode="system_default"),
                     ),
+                    dismiss_import_review=False,
                 )
             # Preserve the normal first-save gate; no implicit Worker selection.
             adapter_service.save_version(
@@ -273,6 +275,7 @@ def import_adapter(
                     requirements=variant.requirements,
                     runtime_config=variant.runtime_config,
                 ),
+                dismiss_import_review=False,
             )
         session.commit()
         session.refresh(adapter)

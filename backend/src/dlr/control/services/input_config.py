@@ -549,7 +549,11 @@ def _validate_managed_files_payload(
 
 
 def upsert_input_config(
-    session: Session, adapter_id: int, data: AdapterInputConfigUpsert
+    session: Session,
+    adapter_id: int,
+    data: AdapterInputConfigUpsert,
+    *,
+    dismiss_import_review: bool = True,
 ) -> AdapterInputConfig:
     """Apply one optimistic-revision InputConfig update atomically."""
     adapter = _get_task_adapter(session, adapter_id, for_update=True)
@@ -577,7 +581,7 @@ def upsert_input_config(
     _require_user_runtime_unlocked(session, adapter, schedule)
 
     _apply_input_config_update_locked(session, config, schedule, data)
-    if adapter.configuration_notes.get("review_environment"):
+    if dismiss_import_review and adapter.configuration_notes.get("review_environment"):
         adapter.configuration_notes = {**adapter.configuration_notes, "review_environment": False}
     try:
         session.commit()

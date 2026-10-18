@@ -303,6 +303,7 @@ def test_adapter_import_roundtrip_stopped_new_identity(
     result = import_adapter(api_client, value, target)
     assert result.status_code == 201, result.text
     row = result.json()
+    assert row["configuration_notes"]["review_environment"] is True
     assert row["run_mode"] == "manual" and not row["runtime_locked"]
     assert row["timeout_seconds"] == 123
     export = api_client.post(
@@ -335,6 +336,35 @@ def test_adapter_import_roundtrip_stopped_new_identity(
                 and item.response_mode == "completed"
                 for item in hooks
             )
+
+
+@pytest.mark.parametrize("source_type", ["json", "managed_files"])
+def test_import_initial_save_keeps_review_until_user_saves(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    source_type: str,
+) -> None:
+    value = package()
+    value["input"] = {"source_type": source_type, "included": False}
+    value["license"] = "fixture license"
+    result = import_adapter(api_client, value, worker(session_factory, "python"))
+    assert result.status_code == 201, result.text
+    imported = result.json()
+    notes = imported["configuration_notes"]
+    assert notes["review_environment"] is True
+    assert notes["input_required"] == source_type
+    aid = imported["id"]
+    rejected = api_client.post(f"/api/adapters/{aid}/versions", json={"code": " "})
+    assert rejected.status_code == 422
+    assert api_client.get(f"/api/adapters/{aid}").json()["configuration_notes"] == notes
+    saved = api_client.post(
+        f"/api/adapters/{aid}/versions", json={"code": "def handle(context, input): return input"}
+    )
+    assert saved.status_code == 201, saved.text
+    assert api_client.get(f"/api/adapters/{aid}").json()["configuration_notes"] == {
+        **notes,
+        "review_environment": False,
+    }
 
 
 def test_task_worker_gate_and_duplicate_import_keeps_preview_read_only(
