@@ -48,6 +48,13 @@ Control 使用独立权限受限临时目录及内存索引，不复用 Managed 
 
 ## Risks / Trade-offs
 
+### v0.4.4 四项兼容性修复
+
+- Reader 在工具边界统一转换 DocumentConversionError，错误码只来自固定白名单；parse_timeout 使用既有 ai_tool_timeout，未知内容不回显。现有 HTTPException 的稳定码行为保持。
+- scope 容量同时计入活动记录与 TTL 内关闭记录，首次受理即占位；单 Principal（跨 Adapter）最多 128 个，整体最多 512 个，既有最多 128 个活动 scope 的边界保持。已有 scope 在容量满时仍能关闭和回收，关闭记录不提前驱逐，TTL 到期归还容量。这限制单用户挤占，不宣称消除所有多用户全局竞争。
+- 首次发送先 GET 校验服务端 refs，再冻结/清空草稿；跨等待期间的编辑、附件变化和账号/Adapter 切换取消旧发送，保留最新草稿。成功发送冻结 refs；Retry/Regenerate 继续校验其原引用。
+- 不支持工具的配置不能读取 prepared 附件，请求在凭据解析和 Provider 调用前返回 ai_attachment_tools_unsupported（422），提示更换配置。无附件与旧 inline 咨询仍沿用原行为，不自动切换模型。
+
 - CPU OCR 与每次冷进程加载有成本 → 有界并发、按页读取、预装离线权重，真实样本记录延时/峰值；不把全附件解析塞进首次请求。
 - 结构提取与字体分页可能不完全准确 → 原件精确表格和真实图像并行保留，sheet映射只用真实 outline，公开 partial/unknown。
 - 模型图片能力与格式预算因endpoint不同 → 精确 resolver 与 wire payload门禁，实际 MiniMax视觉验收只证明该组合；其他协议用真实编码合同回归并明确实测范围。

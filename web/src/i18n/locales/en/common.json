@@ -505,6 +505,7 @@
     "ai_attachment_total_too_large": "The attachments exceed the total size limit: remove or compress attachments and try again",
     "ai_attachment_count_exceeded": "Too many attachments: remove some and try again",
     "ai_attachment_image_unsupported": "The current model does not support image input: switch to a model with image support before sending image attachments (DLR never OCRs images to fake vision)",
+    "ai_attachment_tools_unsupported": "The current model configuration cannot read prepared attachments: choose a model configuration with tool support before sending attachments",
     "ai_attachment_parse_failed": "The attachment could not be parsed: the file is corrupt, encrypted or in an incompatible format; export it again and upload",
     "ai_attachment_no_text": "The document has no extractable text layer (possibly a scanned file): provide a PDF / DOCX / XLS / XLSX with extractable content, or switch to a model with image / native-file support",
     "ai_attachment_unsafe_archive": "Unsafe attachment content: the archive structure or decompression ratio exceeds the allowed bounds",

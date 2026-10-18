@@ -88,3 +88,13 @@ it("does not expose malformed provider HTTP status params or raw upstream detail
     expect(message).not.toContain("PRIVATE_RAW");
   }
 });
+
+it("explains that prepared attachments require a tool-capable configuration in both locales", () => {
+  const error = new ApiError(422, "ai_attachment_tools_unsupported", "PRIVATE_RAW_BODY");
+  expect(userErrorMessage(error)).toBe(
+    "当前模型配置不支持附件读取：请更换为支持工具调用的模型配置后再发送附件（错误码：ai_attachment_tools_unsupported）",
+  );
+  expect(userErrorMessage(error, undefined, "en")).toBe(
+    "The current model configuration cannot read prepared attachments: choose a model configuration with tool support before sending attachments (Error code: ai_attachment_tools_unsupported)",
+  );
+});

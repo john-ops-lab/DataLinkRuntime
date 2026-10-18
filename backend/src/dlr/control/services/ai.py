@@ -839,13 +839,16 @@ def _adapter_for_setting(session: Session, data: AiSettingDraft) -> providers.Pr
     )
 
 
-def _validate_setting(session: Session, data: AiSettingDraft) -> providers.ProviderAdapter:
+def _validate_setting(
+    session: Session, data: AiSettingDraft, *, resolve_credentials: bool = True
+) -> providers.ProviderAdapter:
     _validate_base_url(data.base_url)
     adapter = providers.resolve_attachment_adapter(
         data, providers.resolve_output_adapter(data, _adapter_for_setting(session, data))
     )
     _validate_reasoning(data, adapter)
-    _resolve_api_key(session, data.credential_id)
+    if resolve_credentials:
+        _resolve_api_key(session, data.credential_id)
     return adapter
 
 
@@ -1949,7 +1952,14 @@ def _assist_impl(
     if setting is None:
         raise domain_error(409, "ai_not_configured", "AI model is not configured")
     draft = _setting_draft(setting)
-    provider_adapter = _validate_setting(session, draft)
+    provider_adapter = _validate_setting(session, draft, resolve_credentials=False)
+    if payload.attachment_refs and not provider_adapter.tools_supported:
+        raise domain_error(
+            422,
+            "ai_attachment_tools_unsupported",
+            "The selected model configuration does not support attachment reading tools. "
+            "Choose a configuration with tool support before sending prepared attachments.",
+        )
     api_key = _resolve_api_key(session, draft.credential_id)
     parsed_attachments: list[attachments_service.ParsedText] = []
     native_images: list[attachments_service.NativeImage] = []

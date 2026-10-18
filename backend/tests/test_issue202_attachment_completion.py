@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from dlr.control.ai import context_budget, providers, tool_audit, tools
 from dlr.control.ai.attachment_documents import DocumentConversionError
@@ -23,6 +24,7 @@ from dlr.control.services import ai
 REF = "frozen_reference_123456"
 OTHER_REF = "outside_reference_123456"
 FORGED = "I read the original workbook: the total is 20800."
+REAL_VALIDATE_SETTING = ai._validate_setting
 
 
 def final(message=FORGED, *, candidate=False, intent="consultation"):
@@ -89,7 +91,7 @@ def harness(monkeypatch):
     )
     monkeypatch.setattr(ai, "get_setting", lambda *_: object())
     monkeypatch.setattr(ai, "_setting_draft", lambda *_: draft)
-    monkeypatch.setattr(ai, "_validate_setting", lambda *_: state.adapter)
+    monkeypatch.setattr(ai, "_validate_setting", lambda *_, **__: state.adapter)
     monkeypatch.setattr(ai, "_resolve_api_key", lambda *_: None)
     monkeypatch.setattr(ai.locale_service, "get_system_locale", lambda *_: "en")
     monkeypatch.setattr(ai.settings, "ai_assist_total_timeout_seconds", 150)
@@ -525,11 +527,37 @@ def test_old_inline_and_no_attachment_consultations_are_unchanged(harness, inlin
     assert len(harness.calls) == 1 and not harness.states[0].attachment_read_required
 
 
-def test_tools_disabled_does_not_retry_or_admit_prepared_candidate(harness):
+@pytest.mark.parametrize("intent", ["consultation", "code_change"])
+def test_tools_disabled_rejects_prepared_before_credentials_or_provider(
+    harness, monkeypatch, intent
+):
     harness.adapter = replace(harness.adapter, tools_supported=False)
-    response = harness.run([final(candidate=True)])
+    # Exercise the real setting validation chain: it must not decrypt a credential
+    # before reporting that this model cannot read the prepared attachment.
+    monkeypatch.setattr(ai, "_validate_setting", REAL_VALIDATE_SETTING)
+    monkeypatch.setattr(ai, "_adapter_for_setting", lambda *_: harness.adapter)
+
+    def unexpected_credentials(*_):
+        pytest.fail("unsupported prepared requests must not resolve credentials")
+
+    monkeypatch.setattr(ai, "_resolve_api_key", unexpected_credentials)
+    with pytest.raises(HTTPException) as error:
+        harness.run([], intent=intent)
+    assert error.value.status_code == 422
+    assert error.value.detail["code"] == "ai_attachment_tools_unsupported"
+    assert harness.calls == [] and harness.reader.calls == []
+    assert not any(item["event_type"] == "provider_result" for item in harness.audits)
+
+
+@pytest.mark.parametrize("inline", [False, True])
+def test_tools_disabled_keeps_ordinary_and_inline_consultation(harness, inline):
+    harness.adapter = replace(harness.adapter, tools_supported=False)
+    response = harness.run(
+        [final("ordinary answer")], prepared=False, inline=inline, intent="consultation"
+    )
+    assert response.task_status == "answered" and response.candidate is None
+    assert response.message == "ordinary answer"
     assert len(harness.calls) == 1 and harness.calls[0]["tools"] is None
-    assert response.task_status == "incomplete" and response.candidate is None
 
 
 def test_format_correction_is_followed_by_read_gate(harness):
