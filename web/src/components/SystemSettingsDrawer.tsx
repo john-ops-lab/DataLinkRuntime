@@ -2382,6 +2382,8 @@ const SystemSettingsDrawer = forwardRef<PageLeaveGuardHandle, SystemSettingsDraw
   const copy = categoryCopy[activeCategory];
 
   function markDirty(event: ChangeEvent<HTMLElement>): void {
+    // Status controls and cache operations do not edit a saveable settings draft.
+    if (activeCategory === "system-status") return;
     const target = event.target as HTMLElement;
     if (
       target.closest("[data-testid=system-locale-select]") ||

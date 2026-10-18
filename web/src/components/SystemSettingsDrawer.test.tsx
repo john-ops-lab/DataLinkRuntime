@@ -3,17 +3,19 @@
  * 同步链路只传递元数据，Secret 真值永远不进入浏览器共享状态。
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { ApiError, api } from "../api";
 import { applySystemLocale } from "../i18n";
 import type {
+  CacheAdminView,
   Credential,
   CredentialType,
   KnowledgeSource,
   PackageSource,
   PackageSourceDefaults,
+  Worker,
 } from "../types";
 import SystemSettingsDrawer from "./SystemSettingsDrawer";
 
@@ -1066,4 +1068,46 @@ it.each(["zh-CN", "en"] as const)("links credential required errors to the corre
   fireEvent.click(screen.getByTestId("new-credential"));
   expect(screen.getByTestId("credential-name").getAttribute("aria-invalid")).toBe("false");
   expect(create).not.toHaveBeenCalled();
+});
+
+it("缓存 Portal 选择与来源表单取消不会触发系统设置离开确认", async () => {
+  await applySystemLocale("zh-CN");
+  const worker: Worker = {
+    id: 7, name: "cache-fixture", status: "online", last_heartbeat: "2026-10-18T00:00:00Z",
+    capabilities: ["javascript"], protocol_version: 3, isolation_preflight_status: "passed",
+    rabbitmq_execution_v3: true, isolation_capabilities: { cache_governance_v1: true },
+  };
+  const cache: CacheAdminView = {
+    worker_id: 7, status: "complete", sampled_at: "2026-10-18T00:00:00Z",
+    received_at: "2026-10-18T00:00:01Z", sample_id: "fixture", sequence: 1,
+    complete: true, cursor: null, summary: null,
+    items: [{ cache_key: "11-12", kind: "version", adapter_id: 11, version_id: 12,
+      identity: { language: "javascript", source_sha256: "a".repeat(64), adapter_id: 11, version_id: 12 },
+      digest: "b".repeat(64), bytes: 4096, pinned: false, rebuildability: "unknown", reasons: ["cache_rebuild_unknown"] }],
+    failed_guard_items: [], failed_guard_cursor: null, failed_guard_complete: true,
+    failed_cleanup_items: [], failed_cleanup_next_cursor: null,
+  };
+  vi.spyOn(api, "getWorkerCache").mockResolvedValue(cache);
+  vi.spyOn(api, "listWorkerCacheOperations").mockResolvedValue({ items: [], next_cursor: null });
+  const write = vi.spyOn(api, "createWorkerCacheOperation");
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const navigate = vi.fn();
+  const view = render(<SystemSettingsDrawer open category="system-status" workers={[worker]} workersLoading={false} onClose={vi.fn()} onCategoryChange={navigate} />);
+  fireEvent.click(screen.getByRole("button", { name: "缓存管理" }));
+  const panel = await screen.findByTestId("worker-cache-panel");
+  await within(panel).findByText("代码版本 12");
+  // Exercise the real Ant Design Portal: DOM outside the settings content still bubbles through its React parent.
+  expect(view.container.contains(panel)).toBe(false);
+  fireEvent.click(within(panel).getByText("更多操作", { exact: true }));
+  fireEvent.click(within(panel).getAllByRole("checkbox")[1]);
+  fireEvent.click(within(panel).getByRole("button", { name: "确认安装来源" }));
+  expect(within(panel).getByLabelText("核实说明")).toHaveProperty("value", "");
+  fireEvent.click(within(panel).getByRole("button", { name: /^取\s*消$/ }));
+  expect(within(panel).queryByLabelText("核实说明")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByTestId("worker-cache-panel")).toBeNull());
+  fireEvent.click(screen.getByRole("menuitem", { name: "文件托管" }));
+  expect(confirm).not.toHaveBeenCalled();
+  expect(navigate).toHaveBeenCalledWith("managed-input");
+  expect(write).not.toHaveBeenCalled();
 });
