@@ -413,6 +413,8 @@ def test_assist_image_native_payload_for_openai(
 ) -> None:
     adapter = create_adapter(api_client, "attach-image-native")
     configure(api_client, provider="openai")
+    # Test native wire shape independently of optional image budget trimming.
+    monkeypatch.setattr(settings, "ai_context_default_window_tokens", 65536)
     captured = captured_payload(monkeypatch)
     body = assist_body()
     body["attachments"] = [
@@ -1094,3 +1096,46 @@ def test_provider_capability_table_matches_adapter_instances() -> None:
     for name in ("deepseek", "kimi", "minimax", "custom_openai_compatible"):
         assert providers.PROVIDERS[name].images_native is False
         assert providers.PROVIDERS[name].files_native is False
+
+
+@pytest.mark.parametrize(
+    "bad_file,code",
+    [
+        (
+            attachment("broken.pdf", "application/pdf", b"%PDF-1.4 broken"),
+            "ai_attachment_parse_failed",
+        ),
+        (
+            attachment("unsupported.bin", "application/octet-stream", b"bad-file"),
+            "ai_attachment_type_unsupported",
+        ),
+    ],
+)
+def test_same_conversation_new_attachment_after_rejection(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch, bad_file: dict[str, str], code: str
+) -> None:
+    adapter = create_adapter(api_client, "issue204-recovery")
+    configure(api_client)
+    seen: list[object] = []
+
+    def request(*args: object, **kwargs: object) -> object:
+        seen.append(args[3])
+        return fake_chat_response({"message": "ASSET-TXT-7391 asset_label", "candidate": None})
+
+    monkeypatch.setattr(providers, "_request_json", request)
+    body = assist_body()
+    body["conversation_id"] = "8cb28920-09b5-445b-861b-3b20905d48e3"
+    body["attachments"] = [bad_file]
+    url = f"/api/adapters/{adapter['id']}/ai/assist"
+    rejected = api_client.post(url, json=body)
+    assert_stable_error(rejected, 422, code)
+    assert not seen
+    body["attachments"] = [attachment("good.txt", "text/plain", b"ASSET-TXT-7391 asset_label")]
+    body["message"] = "Explain the current attachment fields only"
+    recovered = api_client.post(url, json=body)
+    assert recovered.status_code == 200
+    assert recovered.json()["candidate"] is None
+    assert recovered.json()["message"] == "ASSET-TXT-7391 asset_label"
+    serialized = json.dumps(seen)
+    assert "good.txt" in serialized and "ASSET-TXT-7391" in serialized
+    assert bad_file["filename"] not in serialized and bad_file["data_base64"] not in serialized

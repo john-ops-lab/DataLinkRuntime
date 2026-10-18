@@ -1503,7 +1503,11 @@ audit_event_fields.update(
             "error_code",
             "stage",
             "reason",
+            "strategy",
+            "correction_count",
         },
+        "format_correction": audit_identity_fields
+        | {"provider_call_index", "strategy", "correction_count", "elapsed_ms"},
         "response_validation": audit_identity_fields
         | {"provider_call_index", "stage", "reason", "error_code"},
     }
@@ -1542,6 +1546,7 @@ failure_reasons = {
 
 def validate_provider_audit(record: dict[str, Any]) -> None:
     event_type = record["event_type"]
+    assert set(record) == audit_event_fields[event_type], record
     assert (
         type(record["provider_call_index"]) is int and record["provider_call_index"] > 0
     ), record
@@ -1583,6 +1588,14 @@ def validate_provider_audit(record: dict[str, Any]) -> None:
             <= record["provider_deadline_ms"]
             <= record["hard_deadline_ms"]
         ), record
+    elif event_type == "format_correction":
+        assert record["strategy"] in {"prompt_only", "json_object", "json_schema"}, (
+            record
+        )
+        assert (
+            type(record["correction_count"]) is int and record["correction_count"] == 1
+        ), record
+        assert type(record["elapsed_ms"]) is int and record["elapsed_ms"] >= 0, record
     else:
         assert record["stage"] in failure_stages | {None}, record
         assert record["reason"] in failure_reasons | {None}, record
@@ -1590,6 +1603,14 @@ def validate_provider_audit(record: dict[str, Any]) -> None:
             record
         )
         if event_type == "provider_result":
+            assert record["strategy"] in {
+                "prompt_only",
+                "json_object",
+                "json_schema",
+            }, record
+            assert type(record["correction_count"]) is int and record[
+                "correction_count"
+            ] in {0, 1}, record
             assert record["outcome"] in {"final", "tool_calls", "error"}, record
             for field in ("duration_ms", "remaining_ms"):
                 assert type(record[field]) is int and record[field] >= 0, record
@@ -1603,6 +1624,26 @@ def validate_provider_audit(record: dict[str, Any]) -> None:
                 and record["reason"] in failure_reasons
             ), record
             assert record["error_code"] == "ai_response_invalid", record
+
+
+def validate_correction_audit(records: list[dict[str, Any]]) -> None:
+    corrections: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if record["event_type"] == "format_correction":
+            request_id = record["request_id"]
+            assert request_id not in corrections, record
+            corrections[request_id] = record
+    for record in records:
+        if (
+            record["event_type"] == "provider_result"
+            and record["correction_count"] == 1
+        ):
+            correction = corrections.get(record["request_id"])
+            assert correction is not None, record
+            assert correction["provider_call_index"] == record["provider_call_index"], (
+                record
+            )
+            assert correction["strategy"] == record["strategy"], record
 
 
 audit_statuses = {
@@ -1639,7 +1680,12 @@ for audit_path in audit_files:
             "Z"
         ), record
         assert type(record["adapter_id"]) is int and record["adapter_id"] > 0, record
-        if event_type in {"provider_budget", "provider_result", "response_validation"}:
+        if event_type in {
+            "provider_budget",
+            "provider_result",
+            "response_validation",
+            "format_correction",
+        }:
             validate_provider_audit(record)
         else:
             assert type(record["round"]) is int and record["round"] >= 0, record
@@ -1686,6 +1732,7 @@ for audit_path in audit_files:
                 )
         audit_records.append(record)
 
+validate_correction_audit(audit_records)
 assert audit_records, audit_files
 assert any(record["event_type"] == "request_terminal" for record in audit_records), (
     audit_records

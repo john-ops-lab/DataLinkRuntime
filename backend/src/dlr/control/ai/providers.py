@@ -9,7 +9,7 @@ import json
 import math
 import re
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http import client as http_client
 from typing import Literal, cast
 from urllib import error as url_error
@@ -19,6 +19,7 @@ from urllib import request as url_request
 from dlr.common.config import settings
 from dlr.control.ai.diagnostics import FailureReason, FailureStage, StrictJsonError
 from dlr.control.schemas.ai import (
+    AiModelOutput,
     AiProvider,
     AiSettingDraft,
     ReasoningEffort,
@@ -29,7 +30,7 @@ from dlr.control.schemas.ai import (
 MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024
 
 JsonObject = dict[str, object]
-StructuredOutput = Literal["json_object", "prompt_only"]
+StructuredOutput = Literal["json_schema", "json_object", "prompt_only"]
 ReasoningStyle = Literal["openai_effort", "thinking", "unsupported"]
 Protocol = Literal["openai_compatible", "anthropic", "gemini"]
 
@@ -199,6 +200,70 @@ PROVIDER_DEFAULT_BASE_URLS: dict[AiProvider, str] = {
 
 def get_provider(provider: AiProvider) -> ProviderAdapter:
     return PROVIDERS[provider]
+
+
+def resolve_output_adapter(setting: AiSettingDraft, adapter: ProviderAdapter) -> ProviderAdapter:
+    """Narrow documented model/endpoint combinations, never brand capability guesses.
+
+    Custom profiles keep their explicit protocol and conservative prompt-only
+    output. Upstream rejection never selects a different model or provider.
+    """
+    hostname = url_parse.urlsplit(setting.base_url).hostname
+    if adapter.protocol != "openai_compatible":
+        return adapter
+    if (
+        setting.provider == "openai"
+        and hostname == "api.openai.com"
+        and url_parse.urlsplit(setting.base_url).path.rstrip("/") in {"", "/v1"}
+        and setting.model
+        in {
+            "gpt-4o-mini",
+            "gpt-4o-mini-2024-07-18",
+            "gpt-4o-2024-08-06",
+        }
+    ):
+        return replace(adapter, structured_output="json_schema")
+    if setting.provider == "kimi" and (
+        (
+            hostname in {"api.kimi.com", "api.kimi.ai"}
+            and url_parse.urlsplit(setting.base_url).path.rstrip("/") in {"/coding", "/coding/v1"}
+            and setting.model in {"k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"}
+        )
+        or (
+            hostname in {"api.moonshot.cn", "api.moonshot.ai"}
+            and setting.model == "kimi-thinking-preview"
+        )
+    ):
+        # Coding docs establish distinct endpoints and model IDs but do not
+        # establish response_format for this combination. Conservative mode
+        # is an explicit limitation, not a claim that upstream rejects it.
+        return replace(adapter, structured_output="prompt_only")
+    return adapter
+
+
+def code_only_output_schema() -> JsonObject:
+    """Derive a closed transport schema; local parsing still accepts legacy echoes."""
+    schema = AiModelOutput.model_json_schema()
+    definitions = schema.get("$defs", {})
+    candidate = definitions["AiCandidate"]
+    for legacy in ("requirements", "runtime_config"):
+        candidate["properties"].pop(legacy, None)
+    definitions.pop("JsonValue", None)
+
+    def close(value: object) -> None:
+        if isinstance(value, dict):
+            value.pop("default", None)
+            if value.get("type") == "object" and isinstance(value.get("properties"), dict):
+                value["additionalProperties"] = False
+                value["required"] = list(value["properties"])
+            for item in value.values():
+                close(item)
+        elif isinstance(value, list):
+            for item in value:
+                close(item)
+
+    close(schema)
+    return schema
 
 
 def custom_provider_adapter(
@@ -437,14 +502,23 @@ def build_chat_payload(
     adapter: ProviderAdapter | None = None,
 ) -> JsonObject:
     """Build one non-streaming Chat Completions request."""
-    adapter = adapter or get_provider(setting.provider)
+    adapter = resolve_output_adapter(setting, adapter or get_provider(setting.provider))
     payload: JsonObject = {
         "model": setting.model,
         "messages": messages,
         "stream": False,
     }
     _apply_reasoning(payload, setting, adapter)
-    if structured and adapter.structured_output == "json_object":
+    if structured and adapter.structured_output == "json_schema":
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "dlr_assist",
+                "strict": True,
+                "schema": code_only_output_schema(),
+            },
+        }
+    elif structured and adapter.structured_output == "json_object":
         payload["response_format"] = {"type": "json_object"}
     return payload
 

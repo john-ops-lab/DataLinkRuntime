@@ -645,6 +645,7 @@ describe("stable server error codes localize zh-CN/en", () => {
       expect(document.body.textContent).not.toContain(body);
       // 失败后附件轮次保留可重试。
       expect(screen.getByTestId("ai-retry").textContent).toBe("重试");
+      expect(screen.getByTestId("ai-recovery-hint").textContent).toContain("发送新一轮");
       // 请求载荷按 B2 契约发送（base64 只存在于请求与冻结快照）。
       expect(assistAdapter).toHaveBeenCalledTimes(1);
       const payload = attachmentPayloadOf(assistAdapter, 0);
@@ -674,6 +675,7 @@ describe("stable server error codes localize zh-CN/en", () => {
     );
     expect(document.body.textContent).not.toContain("upstream english");
     expect(screen.getByTestId("ai-retry").textContent).toBe("Retry");
+    expect(screen.getByTestId("ai-recovery-hint").textContent).toContain("send a new round");
   });
 });
 
@@ -1004,3 +1006,20 @@ describe("i18n parity and width gates", () => {
     expect(screen.getByTestId("ai-attachment-error").textContent).toContain("6 MiB");
   });
 });
+
+it.each(["incomplete", "unclassified"] as const)(
+  "shows %s business status independently of a successful response", async (taskStatus) => {
+    vi.spyOn(api, "assistAdapter").mockResolvedValue({
+      ...aiResponse("解释原因", null), task_status: taskStatus,
+    });
+    renderPanel();
+    fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "生成代码" } });
+    fireEvent.click(screen.getByTestId("ai-send"));
+    await screen.findByText("解释原因");
+    expect(screen.getByTestId("ai-task-status").textContent).toContain(
+      taskStatus === "incomplete" ? "代码任务尚未完成" : "本次未确认代码任务完成",
+    );
+    expect(screen.queryByTestId("ai-candidate")).toBeNull();
+    expect(screen.queryByTestId("ai-panel-error")).toBeNull();
+  },
+);
