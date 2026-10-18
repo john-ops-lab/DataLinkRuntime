@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import stat
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, replace
@@ -181,6 +183,7 @@ class CachePolicy:
 
 
 _AUTOMATIC_CLEANUP_FIELDS = {"gc_enabled", "pressure_gc_enabled"}
+_logger = logging.getLogger(__name__)
 
 
 def _cleanup_settings_path(runtime_root: Path) -> Path:
@@ -202,7 +205,14 @@ def _cleanup_overrides(runtime_root: Path) -> dict[str, bool]:
 
 
 def effective_cache_policy(runtime_root: Path, base: CachePolicy) -> CachePolicy:
-    overrides = _cleanup_overrides(runtime_root)
+    try:
+        overrides = _cleanup_overrides(runtime_root)
+    except (CacheError, OSError):
+        # A broken optional settings file must not stop Worker execution or
+        # mask a reservation failure. Only automatic deletion is disabled;
+        # lifecycle journals and other cache safety checks remain strict.
+        _logger.warning("Automatic cache cleanup settings unavailable; automatic cleanup disabled")
+        overrides = {name: False for name in _AUTOMATIC_CLEANUP_FIELDS}
     return replace(
         base,
         gc_enabled=overrides.get("gc_enabled", base.gc_enabled),
@@ -220,14 +230,31 @@ def save_automatic_cleanup(
         or any(type(value) is not bool for value in updates.values())
     ):
         raise CacheError("cache_policy_invalid")
+    # An explicit administrator update may repair unreadable settings. Start
+    # from the safe effective state so an unrequested switch stays disabled.
     current = effective_cache_policy(runtime_root, base)
     policy = replace(current, **updates)
     # The established lifecycle writer verifies private paths and fsyncs the
     # atomic replacement before any effective-state acknowledgement is sent.
     CacheLifecycleStore.for_runtime(runtime_root)
     try:
+        path = _cleanup_settings_path(runtime_root)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            # Read degradation does not authorize replacing an untrusted
+            # target. Only private, bounded regular files can be repaired.
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_size > 1024
+            ):
+                raise CacheError("cache_policy_write_failed")
         _write_json(
-            _cleanup_settings_path(runtime_root),
+            path,
             {"schema": 1, **{name: getattr(policy, name) for name in _AUTOMATIC_CLEANUP_FIELDS}},
             strict_sync=True,
         )

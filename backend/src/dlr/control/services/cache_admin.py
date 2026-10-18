@@ -333,9 +333,6 @@ def claim_command(session: Session, worker_id: int) -> CacheCommandClaim | None:
     if operation is None:
         session.rollback()
         return None
-    operation.status = "running"
-    operation.claim_epoch += 1
-    operation.claimed_at = func.now()
     payload = dict(operation.request_payload)
     if operation.target_kind == "management" and operation.target_operation_id is not None:
         target = session.get(WorkerCacheManagementOperation, operation.target_operation_id)
@@ -385,8 +382,17 @@ def claim_command(session: Session, worker_id: int) -> CacheCommandClaim | None:
         isinstance(retry_payload, dict) and "policy" in retry_payload.get("payload", {})
     )
     if updates_policy and worker.isolation_capabilities.get("cache_policy_control_v1") is not True:
-        session.rollback()
+        operation.status = "failed"
+        operation.error_code = "cache_policy_unsupported"
+        # A recovered claim may already have applied the policy locally. Record
+        # only the current dispatch failure, never an inferred application result.
+        operation.result = {"summary": "Worker does not support cache policy updates"}
+        operation.finished_at = func.now()
+        session.commit()
         return None
+    operation.status = "running"
+    operation.claim_epoch += 1
+    operation.claimed_at = func.now()
     session.commit()
     actor_kind = str(operation.actor.get("kind", "administrator"))
     actor_id = operation.actor.get("user_id")

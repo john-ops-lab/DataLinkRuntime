@@ -230,5 +230,8 @@ def test_cleanup_switch_api_permissions_capability_and_idempotency(
     claim = api_client.post(
         f"/api/workers/{worker_id}/cache/commands/claim", headers=WORKER_HEADERS
     )
-    assert claim.status_code == 200
-    assert claim.json()["payload"]["policy"] == {"gc_enabled": True}
+    assert claim.status_code == 204
+    terminal = api_client.post(url, json=request).json()
+    assert terminal["operation_id"] == created.json()["operation_id"]
+    assert terminal["status"] == "failed"
+    assert terminal["error_code"] == "cache_policy_unsupported"

@@ -709,34 +709,7 @@ class _VersionBuild:
         except OSError as error:
             raise cache.CacheError("cache_staging_cleanup_failed") from error
 
-    def _confirm_automatic_offline(self, identity: Mapping[str, object]) -> None:
-        key = f"{identity['adapter_id']}-{identity['version_id']}"
-        lifecycle = CacheLifecycleStore(self.cache.root)
-        try:
-            facts = lifecycle.lifecycle(key)
-            now = time.time()
-            lifecycle.confirm_rebuildability(
-                key,
-                identity=identity,
-                digest=str(facts["digest"]),
-                source_policy="verified_offline",
-                evidence_note="verified built-in package materials",
-                actor="platform",
-                valid_until=now + 86_400,
-                now=now,
-                automatic=True,
-            )
-        except cache.CacheError as error:
-            # A failed policy receipt safely leaves the entry unknown; it must
-            # not turn a successfully verified runtime into an execution miss.
-            logger.warning("automatic cache rebuild proof was not recorded (%s)", error.code)
-
-    def finish(
-        self,
-        identity: Mapping[str, object],
-        *,
-        automatic_offline_proof: bool = False,
-    ) -> Path:
+    def finish(self, identity: Mapping[str, object]) -> Path:
         primary_error: BaseException | None = None
         try:
             if self.old_identity is not None and self.old_digest is not None:
@@ -824,8 +797,6 @@ class _VersionBuild:
                 )
                 if not verified:
                     raise cache.CacheError("cache_replacement_incomplete")
-                if automatic_offline_proof:
-                    self._confirm_automatic_offline(identity)
                 return self.target
             if self.staging_root is None:
                 target = self.cache.promote(
@@ -841,8 +812,6 @@ class _VersionBuild:
                     identity=identity,
                     reservation=self.reservation,
                 )
-            if automatic_offline_proof:
-                self._confirm_automatic_offline(identity)
             return target
         except BaseException as error:
             primary_error = error
