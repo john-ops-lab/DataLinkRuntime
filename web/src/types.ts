@@ -4,6 +4,17 @@ export type AdapterLanguage = "python" | "javascript" | "java" | "typescript" | 
 export type AdapterType = "task" | "webhook";
 export type TaskRunMode = "manual" | "schedule";
 export type SystemLocale = "zh-CN" | "en";
+
+export interface CredentialUsageItem {
+  kind: "adapter_binding" | "webhook" | "ai_model" | "ai_custom_provider" | "knowledge_source" | "package_source";
+  name: string;
+  adapter_id?: number | null;
+  detail?: string | null;
+}
+
+export interface CredentialUsageResponse {
+  items: CredentialUsageItem[];
+}
 export type InputSourceType = "none" | "json" | "managed_files" | "remote_files";
 export type InputRetentionMode = "system_default" | "custom" | "manual_delete";
 

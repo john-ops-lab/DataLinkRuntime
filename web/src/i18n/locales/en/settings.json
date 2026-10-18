@@ -17,13 +17,13 @@
     "managedInput": "Managed Input"
   },
   "descriptions": {
-    "systemStatus": "Inspect the current authoritative Control, reliable-runtime, and Worker state. Future self-monitoring details belong here too.",
-    "general": "Manage deployment defaults; existing browser preferences take precedence.",
-    "credentials": "Manage credential references; Secret values are hidden.",
-    "packageSources": "Configure package sources and optional credentials.",
+    "systemStatus": "Check whether the system can accept and dispatch tasks, then inspect services and workers.",
+    "general": "Set the default language shared by the signed-in console.",
+    "credentials": "Manage connection accounts and keys. Saved sensitive values are not shown again.",
+    "packageSources": "Configure package repositories, access credentials, and built-in packages.",
     "aiModel": "Configure the model connection used by the Assistant.",
     "knowledgeSources": "Configure the read-only source and verify accessible knowledge bases.",
-    "managedInput": "Manage Managed Input retention, capacity limits and usage; deployment paths are hidden."
+    "managedInput": "Set retention periods and capacity limits for uploaded files."
   },
   "localeOptions": {
     "zh-CN": "简体中文",
@@ -31,7 +31,7 @@
   },
   "localeUpdateFailed": "Language setting was not updated. Try again.",
   "systemStatus": {
-    "snapshotHint": "This current snapshot reuses the health and Worker APIs; it does not add history or alert configuration.",
+    "snapshotHint": "System status indicates whether tasks can be accepted and dispatched. Check execution history for the outcome of a specific task.",
     "refresh": "Refresh status",
     "loading": "Checking Control status…",
     "controlUnavailable": "Control status is unreachable or returned an invalid response.",
@@ -69,7 +69,14 @@
       "unknown": "Unknown",
       "normal": "Normal",
       "abnormal": "Abnormal"
-    }
+    },
+    "servicesTitle": "Database and messaging",
+    "serviceDetails": "View check results",
+    "dispatchTitle": "Task dispatch",
+    "accepting": "Accept new tasks",
+    "pending": "Pending dispatch records",
+    "oldestWait": "Longest wait",
+    "environmentDetails": "View environment checks"
   },
   "cache": {
     "title": "{{worker}} cache",
@@ -92,18 +99,18 @@
     "complete": "Complete",
     "partial": "Partial",
     "cursor": "Continuation cursor",
-    "committed": "Committed bytes",
-    "reserved": "Reserved bytes",
+    "committed": "Used space",
+    "reserved": "Installation reservations",
     "estimatedReclaimable": "Estimated reclaimable bytes",
     "gcEnabled": "Background idle cleanup",
     "pressureGcEnabled": "Pressure cleanup",
-    "maxBytes": "Cache byte limit",
+    "maxBytes": "Cache capacity limit",
     "minIdleSeconds": "Minimum idle seconds",
     "enabled": "Enabled",
     "disabled": "Disabled",
     "reclaimableValue": "Reclaimable: {{value}}",
     "reasonCount": "Reason count: {{count}}",
-    "policyDetails": "All effective Worker cache policy values",
+    "policyDetails": "View all read-only policy parameters",
     "policyFields": {
       "gc_enabled": "Background cleanup",
       "pressure_gc_enabled": "Pressure cleanup",
@@ -271,7 +278,27 @@
       "cleanup_retry_unavailable": "The cleanup cannot be retried.",
       "cleanup_retry_active": "The cleanup already has a retry in progress.",
       "cache_operation_not_found": "The cache operation no longer exists."
-    }
+    },
+    "collectionDetails": "View collection record",
+    "usageTitle": "Current cache usage",
+    "policyTitle": "Cache cleanup rules",
+    "policyScope": "Current worker · read-only",
+    "policyPressureTitle": "Background capacity cleanup",
+    "highWaterHint": "Triggers at this usage when enabled",
+    "lowWaterHint": "Target usage for background cleanup",
+    "pressureHint": "Usage includes committed space and installation reservations. Protections and per-round limits may reduce released space.",
+    "periodicRule": "Periodic cleanup: only eligible after {{duration}} idle.",
+    "installRule": "When installation space is insufficient: idle for {{duration}}; stops when this installation has enough space.",
+    "protectionHint": "In-use, pinned, or unverified caches are protected. Rebuild evidence lasts at most 24 hours and expires when source identity changes.",
+    "sharedHint": "Shared caches are reported only and are not cleaned.",
+    "sourceDetails": "View cache source",
+    "sourceIdentity": "Adapter {{adapter}} · code version {{version}}",
+    "proofDetails": "Reinstallation conditions and verification",
+    "selectionHint": "Select an entry first",
+    "selectionColumn": "Select",
+    "durationDays": "{{value}} days",
+    "durationHours": "{{value}} hours",
+    "durationSeconds": "{{value}} seconds"
   },
   "managedInput": {
     "title": "Managed Input",
@@ -284,7 +311,7 @@
     "maxFileBytes": "Per-file size limit",
     "platformQuotaBytes": "Platform quota",
     "adapterQuotaBytes": "Adapter quota",
-    "minFreeSpaceBytes": "Storage low watermark",
+    "minFreeSpaceBytes": "Minimum free file-storage space",
     "stagedTtlSeconds": "Staged file lifetime",
     "allowManualDelete": "Allow users to retain files until deleted",
     "seconds": "seconds",
@@ -300,10 +327,10 @@
     "platformQuotaBytesUnit": "Platform quota unit",
     "adapterQuotaBytesUnit": "Adapter quota unit",
     "minFreeSpaceBytesUnit": "Storage low watermark unit",
-    "save": "Save policy",
+    "save": "Save file policy",
     "refresh": "Reload",
     "saved": "Managed Input policy saved",
-    "policyHint": "Every field is a bounded, non-empty policy. Lowering quotas does not delete existing files; background cleanup can still reduce usage.",
+    "policyHint": "Files with finite retention are cleaned up after expiry according to policy. Files in use by tasks remain protected. Lower quotas do not immediately delete existing files.",
     "quotaReductionHint": "Lowering quotas does not delete existing files; over-quota state blocks new uploads or replacements while allowing usage-reducing deletion.",
     "actualUsage": "Actual usage: {{value}}",
     "reservedUsage": "Reserved for uploads: {{value}}",
@@ -319,7 +346,11 @@
     "ready": "Managed file input is ready",
     "disabled": "Managed file input is not enabled yet",
     "staged": "Waiting to be saved",
-    "empty": "No managed files are selected"
+    "empty": "No managed files are selected",
+    "diskSpaceHint": "Further writes are rejected if uploading would leave less space than this threshold. Free space and upload again.",
+    "retentionTitle": "File retention",
+    "capacityTitle": "Upload size and total capacity",
+    "usageDetails": "View usage by adapter"
   },
   "tabs": {
     "credentials": "Credentials",
@@ -401,7 +432,27 @@
     "filterKeyword": "Filter credentials",
     "filterType": "Filter credential type",
     "filterDefault": "Default status",
-    "filterCustom": "Custom only"
+    "filterCustom": "Custom only",
+    "nameHint": "A name to identify this credential in DLR, such as “Read-only database account”.",
+    "createSecretNotice": "Keep a secure copy of the account and keys. Saved sensitive values will not be shown again.",
+    "createScope": "Creating a credential only saves these values. Select it in the relevant configuration to use it.",
+    "usage": "Used by",
+    "viewUsage": "View usage",
+    "usageTitle": "Usage of {{name}}",
+    "usageScope": "Only configurations you can view are shown. Hidden references may still exist.",
+    "usageEmpty": "This query returned no visible references. This does not mean the credential is unused across the system.",
+    "usageKinds": {
+      "adapter": "Adapter binding",
+      "adapter_binding": "Adapter binding",
+      "ai_setting": "AI model",
+      "ai_provider": "AI service",
+      "custom_ai_provider": "Custom AI service",
+      "knowledge_source": "Knowledge source",
+      "package_source": "Package repository",
+      "webhook": "Webhook authentication",
+      "ai_model": "AI model",
+      "ai_custom_provider": "Custom AI service"
+    }
   },
   "bindings": {
     "help": "The code Credential name lets the script read the bound sensitive value, for example",
@@ -409,8 +460,8 @@
     "injectedSuffix": "; all bindings are replaced on save.",
     "openSettingsHint": "To add a Credential, open System Settings → Credentials.",
     "nonAdminOpenSettingsHint": "To add a credential, ask an administrator to go to “System Settings → Credentials” and create one.",
-    "ownerRisk": "Bindings show only Credential names and fields; Secret values are never shown. Owners can change bindings, so bind only trusted Credentials.",
-    "editRisk": "This Adapter has bound Credentials. Editors can use them through code and execution, but can never read Secret values; grant Edit only to trusted users.",
+    "ownerRisk": "Only names and fields are shown. Stored passwords and keys are hidden. Bind only trusted credentials.",
+    "editRisk": "Editors can use bound credentials through tasks. Only owners and administrators can change bindings.",
     "renameHint": "After changing a code Credential name, update the references in the code too.",
     "saved": "Credential bindings saved",
     "save": "Save bindings",
@@ -427,7 +478,16 @@
     "validationSelectionRequired": "Every binding must select a Credential and field",
     "credentialMissing": "The selected Credential was deleted or is no longer available. Your draft is preserved; select another or clear it.",
     "credentialsLoadFailed": "Could not load credentials, so availability of the selected credential is unconfirmed. Your draft is preserved. Please retry.",
-    "credentialsRetry": "Reload credentials"
+    "credentialsRetry": "Reload credentials",
+    "title": "Let code use stored passwords or keys",
+    "intro": "Choose a credential and field for each name used in your code.",
+    "codeName": "Name in code",
+    "credentialLabel": "Credential to use",
+    "fieldLabel": "Field to read",
+    "readHelp": "How code reads this credential",
+    "saveBoundary": "Bindings change only after saving",
+    "saveImpact": "Newly started runs use the saved list. Removing a binding does not delete the stored credential.",
+    "unsaved": "Changes not saved"
   },
   "packageSources": {
     "kinds": {
@@ -465,11 +525,11 @@
     "refreshList": "Package source list refreshed",
     "name": "Package source name",
     "kind": "Package source type",
-    "repositoryUrl": "Index URL",
+    "repositoryUrl": "Package repository URL",
     "urlPlaceholder": "Enter index URL",
     "urlInvalid": "Enter a valid package source URL. Your input has been kept for correction.",
-    "credential": "Package source Credential",
-    "credentialPlaceholder": "Optional credential",
+    "credential": "Access credential · optional",
+    "credentialPlaceholder": "No access credential",
     "defaultCheckbox": "Set as default for this type",
     "created": "Package source created",
     "deleted": "Package source deleted",
@@ -498,7 +558,10 @@
     "timeout": "Timeout",
     "authFailed": "Reachable, authentication failed",
     "testDetailUnknown": "Check the URL, Credential and network",
-    "credentialMissing": "The selected Credential was deleted or is no longer available. Your draft is preserved; select another or clear it."
+    "credentialMissing": "The selected Credential was deleted or is no longer available. Your draft is preserved; select another or clear it.",
+    "repositoryHint": "Enter the package download repository URL, rather than the website home page.",
+    "defaultScopeTitle": "Default scope",
+    "defaultScope": "Only affects {{kind}} dependency installations that use the default source."
   },
   "knowledgeSources": {
     "description": "Configure a read-only knowledge source and verify the knowledge bases it can access. Tencent ima is supported first.",
@@ -510,12 +573,12 @@
     "endpointLabel": "Service URL",
     "endpointNotice": "Tencent ima’s official URL is used by default; custom URLs require DLR_IMA_ENDPOINT.",
     "save": "Save configuration",
-    "test": "Test connection",
+    "test": "Test saved configuration",
     "saved": "Knowledge source configuration saved",
     "testSucceeded": "Connection passed; knowledge base list refreshed.",
     "testFailed": "Connection failed. Check the credential and deployment network.",
     "knowledgeBasesTitle": "Accessible knowledge bases",
-    "noKnowledgeBases": "No knowledge bases yet. Test the connection first.",
+    "noKnowledgeBases": "Connected successfully; no accessible knowledge bases were returned.",
     "knowledgeBaseName": "Name",
     "knowledgeBaseStatus": "Status",
     "status": {
@@ -542,7 +605,13 @@
       "ks_upstream_error": "The knowledge source returned an upstream error",
       "network_error": "The Control service is unreachable",
       "unknown_error": "Knowledge source connection validation failed"
-    }
+    },
+    "endpointHelp": "View deployment address help",
+    "missingCredential": "Select an access-key credential before enabling",
+    "saveFirst": "Save the configuration before testing the saved configuration.",
+    "testScope": "Connection testing only reads the saved configuration.",
+    "createCredential": "Go to credentials to create an access-key credential",
+    "listNotLoaded": "The list has not been retrieved. Save and test the connection to view accessible knowledge bases."
   },
   "builtin": {
     "sourcesTab": "Source configuration",
@@ -558,7 +627,7 @@
     "search": "Search package, version or filename",
     "kind": "Language",
     "allKinds": "All languages",
-    "upload": "Batch upload",
+    "upload": "Upload dependency packages",
     "refresh": "Refresh",
     "package": "Package / version",
     "environment": "Environment",
@@ -610,6 +679,17 @@
     },
     "sourceName": "DLR builtin dependency source",
     "checkRecord": "Check record",
-    "goPrefix": "Go module proxy directory (individual files)"
+    "goPrefix": "Go module proxy directory (individual files)",
+    "uploadOnly": "This only stores packages. It does not install or run them.",
+    "noFilesSelected": "No files selected. Select files to start uploading.",
+    "afterUploadTitle": "After uploading, return to the built-in library",
+    "afterUpload": "Select an adapter and worker, then run an installation check. It does not run business code or fetch missing dependencies from the public internet."
+  },
+  "localeGuidance": {
+    "title": "System default language",
+    "scope": "The signed-in console shares this setting.",
+    "autoSave": "Your selection saves automatically. After saving succeeds, this console switches language. No separate save is needed.",
+    "loginTitle": "The login page remembers its own language",
+    "loginScope": "The login page uses the language remembered by this browser. Changing the system default does not clear that preference."
   }
 }

@@ -873,7 +873,7 @@ it("M5.8-006：知识库配置只保存 access_key 引用，官方地址不可�
   expect(
     Array.from(screen.getByTestId("knowledge-source-actions").querySelectorAll("button"))
       .map((button) => button.dataset.testid),
-  ).toEqual(["test-knowledge-source", "save-knowledge-source"]);
+  ).toEqual(["save-knowledge-source", "test-knowledge-source"]);
   expect(screen.getByTestId("knowledge-source-endpoint").textContent).toBe(
     "https://ima.qq.com",
   );
@@ -958,7 +958,7 @@ it("M5.8-006：知识库设置与错误状态可切换到 English", async () => 
     vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
     vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
     vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
-    vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+    vi.spyOn(api, "listCredentials").mockResolvedValue([credentialMetadata(7, "ima-access", "access_key")]);
     vi.spyOn(api, "getKnowledgeSource").mockResolvedValue({
       source_id: "ima",
       kind: "ima",
@@ -966,9 +966,9 @@ it("M5.8-006：知识库设置与错误状态可切换到 English", async () => 
       endpoint: "https://ima.qq.com",
       enabled: true,
       status: "configured",
-      credential_id: null,
-      credential_name: null,
-      credential_type: null,
+      credential_id: 7,
+      credential_name: "ima-access",
+      credential_type: "access_key",
       config_source: "environment",
       created_at: null,
       updated_at: null,

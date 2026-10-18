@@ -171,7 +171,7 @@ describe("Worker cache administration", () => {
       const checkboxes = await screen.findAllByRole("checkbox");
       fireEvent.click(checkboxes[1]);
       expect((screen.getByRole("button", { name: "预览所选项" }) as HTMLButtonElement).disabled).toBe(false);
-      expect(screen.getByText(/不能与其他采样拼接/)).toBeTruthy();
+      expect(screen.getByText(/不同批次的信息不会合并/)).toBeTruthy();
     } else {
       const [selectAll] = screen.queryAllByRole("checkbox") as HTMLInputElement[];
       expect(selectAll.disabled).toBe(true);

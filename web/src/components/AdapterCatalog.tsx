@@ -9,6 +9,7 @@ import {
   ProForm,
 } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
+import "./workbench-ux.css";
 
 import { adapterAccessLevel } from "../adapter-access";
 import { useOverlayFocus } from "../hooks/useOverlayFocus";
@@ -78,6 +79,7 @@ interface AdapterCatalogProps {
   onClone: (adapter: Adapter) => void;
   onPortable?: (adapter: Adapter, mode: "exportAdapter" | "saveTemplate") => void;
   onImport?: () => void;
+  onBrowseTemplates?: () => boolean;
   onRefresh: () => Promise<void>;
   accountPrincipal?: AccountPrincipal;
 }
@@ -219,6 +221,7 @@ export default function AdapterCatalog({
   onClone,
   onPortable,
   onImport,
+  onBrowseTemplates,
   onRefresh,
   accountPrincipal,
 }: AdapterCatalogProps) {
@@ -533,7 +536,7 @@ export default function AdapterCatalog({
       <DrawerForm<CreateAdapterValues>
         form={createForm}
         title={t("catalog.createTitle")}
-        width={360}
+        width="min(560px, calc(100vw - 16px))"
         open={creating}
         formKey={creating ? "adapter-create" : "adapter-create-closed"}
         initialValues={{
@@ -574,6 +577,10 @@ export default function AdapterCatalog({
           ],
         }}
       >
+        {onBrowseTemplates && <div className="ux-template-entry">
+          <span>{t("catalog.templateHint")}</span>
+          <Button disabled={busy} onClick={() => { if (onBrowseTemplates()) setCreating(false); }}>{t("catalog.fromTemplate")}</Button>
+        </div>}
         <ProForm.Item
           name="name"
           label={t("catalog.name")}
@@ -596,11 +603,12 @@ export default function AdapterCatalog({
         <div role="radiogroup" aria-label={t("catalog.type")}>
           <ProForm.Item name="adapterType" label={t("catalog.type")}>
             <Radio.Group
+              className="ux-create-types"
               data-testid="new-adapter-type"
               disabled={busy}
               options={[
-                { value: "task", label: t("types.taskAdapter") },
-                { value: "webhook", label: t("types.webhookAdapter") },
+                { value: "task", label: <span><strong>{t("types.taskAdapter")}</strong><small>{t("catalog.taskHelp")}</small></span> },
+                { value: "webhook", label: <span><strong>{t("types.webhookAdapter")}</strong><small>{t("catalog.webhookHelp")}</small></span> },
               ]}
             />
           </ProForm.Item>
@@ -609,6 +617,8 @@ export default function AdapterCatalog({
           <ProForm.Item name="language" label={t("catalog.languageField")}>
             <Radio.Group
               data-testid="new-adapter-language"
+              optionType="button"
+              buttonStyle="solid"
               disabled={busy}
               options={[
                 { value: "python", label: "Python" },
@@ -629,6 +639,7 @@ export default function AdapterCatalog({
             rows={3}
           />
         </ProForm.Item>
+        <p className="ux-muted">{t("catalog.createNote")}</p>
       </DrawerForm>
     </aside>
   );

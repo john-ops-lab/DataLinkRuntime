@@ -1,0 +1,27 @@
+.admin-labeled-form.settings-inline-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 20px; padding:0; background:transparent; border:0; }
+.admin-labeled-form .ant-form-item { margin-bottom:8px; min-width:0; }
+.admin-labeled-form .ant-form-item-label { padding-bottom:6px; }
+.admin-labeled-form .ant-form-item-label > label { height:auto; }
+.admin-labeled-form .ant-select { width:100%; }
+.admin-labeled-form > .admin-help, .admin-labeled-form > .ant-alert { grid-column:1 / -1; }
+.admin-help { margin:12px 0; color:var(--ant-color-text-secondary,#64748b); }
+.admin-help summary { cursor:pointer; color:var(--ant-color-primary,#1677ff); padding:6px 0; }
+.admin-help p { margin:8px 0; }
+.admin-usage-list { padding-left:20px; }
+.admin-usage-list li { padding:12px 0; }
+.admin-usage-list strong { margin-right:12px; }
+.admin-usage-list .ant-typography { display:block; margin-top:6px; }
+.settings-locale-control > .ant-alert, .settings-locale-control > .ant-card { margin-top:16px; }
+.admin-stat-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; margin:12px 0; }
+.admin-stat { padding:16px; border:1px solid var(--ant-color-border-secondary,#e5eaf2); border-radius:8px; min-width:0; }
+.admin-stat strong { display:block; font-size:24px; margin-bottom:8px; }
+.admin-stat span { color:var(--ant-color-text-secondary,#64748b); }
+.admin-policy-summary { display:grid; gap:12px; }
+.admin-policy-summary p { margin:8px 0; }
+.worker-cache-panel .ant-table-selection-column { width:84px !important; min-width:84px; white-space:nowrap; }
+.admin-worker-checks { width:100%; }
+.admin-worker-checks summary { cursor:pointer; color:var(--ant-color-primary,#1677ff); margin-bottom:8px; }
+.system-status-panel .system-status-grid { display:flex; flex-direction:column; gap:16px; }
+.managed-input-policy-form .admin-form-section { grid-column:1 / -1; padding:12px 0 0; border-top:1px solid var(--ant-color-border-secondary,#e5eaf2); }
+.managed-input-policy-form .admin-form-section:first-child { border:0; padding-top:0; }
+@media (max-width:720px) { .admin-labeled-form.settings-inline-form,.admin-stat-grid { grid-template-columns:1fr; } }

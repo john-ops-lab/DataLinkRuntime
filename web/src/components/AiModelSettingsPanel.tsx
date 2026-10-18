@@ -8,6 +8,7 @@ import {
   Form,
   Card,
   Collapse,
+  Drawer,
   Input,
   Popconfirm,
   Select,
@@ -19,6 +20,7 @@ import {
 import { ProForm } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
 
+import "./ai-account-ux.css";
 import { i18n } from "../i18n";
 
 import { ApiError, api } from "../api";
@@ -206,7 +208,8 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const [testing, setTesting] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(true);
+  const [customOpen, setCustomOpen] = useState(false);
   const reasoningEfforts = supportedReasoningEfforts(form.provider, form.reasoning_mode);
   const actionBusy = saving || refreshingModels || testing || customBusy;
   const catalogById = new Map(providerCatalog.map((provider) => [provider.id, provider]));
@@ -639,6 +642,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         submitter={false}
       >
         <div className="ai-primary-config" data-testid="ai-primary-config">
+          <details className="ux-ai-config-summary"><summary>{t("model.currentConfig")}</summary>
           <Card
             size="small"
             title={t("model.currentConfig")}
@@ -669,9 +673,13 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
                 </dd>
               </div>
             </dl>
-          </Card>
+          </Card></details>
+        <section className="ux-ai-settings-card" aria-labelledby="ai-connection-title">
+          <div className="ux-ai-settings-heading"><h3 id="ai-connection-title">{t("model.ux.connectionTitle")}</h3>
+          <Button type="link" data-testid="ai-custom-open" onClick={() => setCustomOpen(true)}>{t("model.customProviders")}</Button></div>
 
-        <ProForm.Item label={t("model.provider.label")}>
+
+        <ProForm.Item className="ux-ai-provider-field" label={t("model.provider.label")}>
           <Select<string>
             data-testid="ai-provider"
             disabled={actionBusy}
@@ -724,7 +732,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           )}
         </ProForm.Item>
 
-        <ProForm.Item label={t("model.baseUrl")}>
+        <ProForm.Item className="ux-ai-url-field" label={t("model.baseUrl")} required>
           <Input
             data-testid="ai-base-url"
             disabled={actionBusy}
@@ -738,7 +746,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           <Typography.Text type="secondary">{t("model.baseUrlHint")}</Typography.Text>
         </ProForm.Item>
 
-        <Form.Item label={t("model.credential")}
+        <Form.Item className="ux-ai-credential-field" label={t("model.credential")}
           validateStatus={credentialMissing ? "error" : undefined}
           help={credentialMissing ? t("model.credentialMissing") : undefined}>
           <Select<number>
@@ -769,6 +777,10 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           )}
         </Form.Item>
 
+          <Typography.Paragraph type="secondary">{t("model.ux.credentialPrivacy")}</Typography.Paragraph>
+        </section>
+        <section className="ux-ai-settings-card" aria-labelledby="ai-model-choice-title">
+          <h3 id="ai-model-choice-title">{t("model.ux.modelTitle")}</h3>
         <ProForm.Item label={t("model.modelId")}>
           <AutoComplete<string>
             className="ai-model-autocomplete"
@@ -797,19 +809,12 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           </Button>
           <Typography.Text type="secondary">{t("model.refreshHint")}</Typography.Text>
         </Space>
+        </section>
         </div>
 
-        <Collapse
-          ghost
-          size="small"
-          className="ai-secondary-settings"
-          collapsible={actionBusy ? "disabled" : "header"}
-          defaultActiveKey={[]}
-          items={[
-            {
-              key: "custom-providers",
-              label: t("model.customProviders"),
-              children: (
+        <Drawer title={t("model.customProviders")} width={560} open={customOpen} onClose={() => setCustomOpen(false)}>
+          {panelError !== null && <p className="settings-panel-error" role="alert" data-testid="ai-settings-error">{panelError}</p>}
+          {notice !== null && <p className="settings-panel-success" role="status" data-testid="ai-settings-notice">{notice}</p>}
                 <div className="ai-custom-providers" data-testid="ai-custom-providers">
                   <Typography.Text type="secondary">{t("model.customProvidersHint")}</Typography.Text>
                   <Space direction="vertical" size="small" className="ai-custom-provider-list">
@@ -930,11 +935,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
                       )}
                     </Space>
                   </Space>
-                </div>
-              ),
-            },
-          ]}
-        />
+                </div>        </Drawer>
 
         <Collapse
           ghost
@@ -1011,17 +1012,18 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           ]}
         />
 
-        {panelError !== null && (
+        {!customOpen && panelError !== null && (
           <p className="settings-panel-error" role="alert" data-testid="ai-settings-error">
             {panelError}
           </p>
         )}
-        {notice !== null && (
+        {!customOpen && notice !== null && (
           <p className="settings-panel-success" role="status" data-testid="ai-settings-notice">
             {notice}
           </p>
         )}
 
+        <Alert type="info" showIcon message={t("model.ux.testDraftHint")} description={t("model.ux.testBoundary")} />
         <Space>
           <Button
             data-testid="ai-test-connection"

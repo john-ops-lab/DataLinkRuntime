@@ -8,9 +8,10 @@ import { useTranslation } from "react-i18next";
 import { useLoginLocale } from "../login-locale";
 import { userErrorMessage } from "../user-message";
 import LoginShell from "./LoginShell";
+import { loginNoticeText, type LoginNotice } from "./login-notice";
 
 interface AccountLoginPageProps {
-  notice: string | null;
+  notice: LoginNotice | null;
   onSubmit: (username: string, password: string) => Promise<void>;
 }
 
@@ -23,7 +24,7 @@ export default function AccountLoginPage({ notice, onSubmit }: AccountLoginPageP
   const [locale] = useLoginLocale();
   const { i18n } = useTranslation("common");
   const t = i18n.getFixedT(locale, "common");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ cause: unknown } | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function handleSubmit(values: LoginValues): Promise<boolean> {
@@ -36,13 +37,7 @@ export default function AccountLoginPage({ notice, onSubmit }: AccountLoginPageP
       await onSubmit(values.username.trim(), values.password);
       return true;
     } catch (err) {
-      setError(
-        userErrorMessage(
-          err,
-          t("auth.accountLoginFailed"),
-          locale,
-        ),
-      );
+      setError({ cause: err });
       return false;
     } finally {
       setBusy(false);
@@ -57,12 +52,12 @@ export default function AccountLoginPage({ notice, onSubmit }: AccountLoginPageP
           <p className="login-card-subtitle">{t("auth.accountLoginSubtitle")}</p>
           {notice && (
             <p className="login-notice" data-testid="account-auth-notice">
-              {notice}
+              {loginNoticeText(notice, locale, t)}
             </p>
           )}
           {error && (
             <p className="error-banner" role="alert" data-testid="account-login-error">
-              {error}
+              {userErrorMessage(error.cause, t("auth.accountLoginFailed"), locale)}
             </p>
           )}
           <ProForm<LoginValues>

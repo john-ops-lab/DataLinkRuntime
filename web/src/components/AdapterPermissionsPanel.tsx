@@ -112,6 +112,13 @@ export default function AdapterPermissionsPanel({
       <Typography.Paragraph type="secondary">
         {t("sharing.owner", { owner: ownerLabel })}
       </Typography.Paragraph>
+      <Typography.Paragraph type="secondary">{t("sharing.managementHelp")}</Typography.Paragraph>
+      <Typography.Title level={5}>{t("sharing.scopeTitle")}</Typography.Title>
+      <div className="ux-permission-scopes">
+        <div><strong>{t("sharing.read")}</strong><p>{t("sharing.readScope")}</p></div>
+        <div><strong>{t("sharing.edit")}</strong><p>{t("sharing.editScope")}</p></div>
+      </div>
+      <Typography.Paragraph type="secondary">{t("sharing.scopeLimit")}</Typography.Paragraph>
       <Alert
         type="warning"
         showIcon

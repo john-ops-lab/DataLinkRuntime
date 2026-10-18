@@ -123,16 +123,16 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
           <Tag data-testid="adapter-read-only">{t("task.reasons.readOnly")}</Tag>
         ) : (
           <>
-            <ActionWithReason label={t("actions.save", { ns: "common" })} reason={saveBlockedReason}>
+            <ActionWithReason label={t("editor.saveContent", { ns: "common" })} reason={saveBlockedReason}>
               <Button
                 type="primary"
                 data-testid="save-version"
                 icon={<SaveOutlined aria-hidden="true" />}
-                aria-label={t("actions.save", { ns: "common" })}
+                aria-label={t("editor.saveContent", { ns: "common" })}
                 disabled={saveBlockedReason !== null}
                 onClick={props.onSave}
               >
-                {t("actions.save", { ns: "common" })}
+                {t("editor.saveContent", { ns: "common" })}
               </Button>
             </ActionWithReason>
             {scheduleMode ? (

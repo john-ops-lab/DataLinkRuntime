@@ -189,7 +189,48 @@
       "knowledgeUnavailable": "Knowledge search is unavailable for this round; ask an administrator to configure an available source"
     },
     "stopWaiting": "Stop waiting",
-    "stoppedWaiting": "Stopped waiting. Existing messages are preserved. The model service may continue until the original deadline; you can send again."
+    "stoppedWaiting": "Stopped waiting. Existing messages are preserved. The model service may continue until the original deadline; you can send again.",
+    "ux": {
+      "sendScope": "Review code, configuration and attachments to send",
+      "sentScope": "Review this round’s request scope",
+      "scopeHint": "Sending freezes current code, dependencies, ordinary configuration, recent conversation and excerpts. This preview follows the draft.",
+      "code": "Code",
+      "requirements": "Dependencies",
+      "config": "Ordinary configuration",
+      "emptyValue": "Empty",
+      "attachmentScopeHint": "Attachments follow this round’s request. Available pages do not mean the model read every page. Use credential bindings for secrets; never put them directly in code.",
+      "sendPrivacy": "Content is sent to the AI service. Do not include passwords or keys.",
+      "supportedFormats": "View supported formats",
+      "startTitle": "Where would you like to start?",
+      "exampleHint": "Examples only fill the draft. You decide when to send.",
+      "applyHint": "Review before applying, then save, test and run separately.",
+      "sessionTitle": "Conversation stays on this page only",
+      "sessionHint": "Refreshing, leaving the page, or switching account or adapter clears it. Collapsing the assistant keeps it.",
+      "roundAttachments": "This round’s attachments ({{count}})",
+      "requestSubmitted": "This round received a reply. Attachments were submitted with its frozen request.",
+      "requestUnconfirmed": "This round has no complete reply yet. Submission or reading is unconfirmed.",
+      "sentNotUnderstood": "Submitting material does not mean the model fully read or understood it. Check key data against the reply. Return to the composer to send additional material in a new question.",
+      "examples": {
+        "explain": {
+          "title": "Explain code",
+          "hint": "Understand the steps",
+          "prompt": "Explain the current code processing steps and highlight anything I should check."
+        },
+        "fields": {
+          "title": "Organize fields",
+          "hint": "Use attachments",
+          "prompt": "Use this round’s attachments to organize fields and explain missing values. If none are attached, tell me what material you need first."
+        },
+        "error": {
+          "title": "Analyze an error",
+          "hint": "Find the cause",
+          "prompt": "Analyze the error I provide against the current code and suggest a fix."
+        }
+      },
+      "frozenScopeHint": "This is the request material frozen for this round. Later edits do not change this record.",
+      "recentMessages": "Recent conversation",
+      "attachmentsLabel": "Attachments"
+    }
   },
   "model": {
     "notice": "Data scope",
@@ -210,7 +251,7 @@
       "legacyCustomNotice": "This setting uses a hidden legacy compatibility option. Choose a built-in or saved custom service to migrate."
     },
     "customOption": "Custom: {{name}}",
-    "baseUrl": "Base URL",
+    "baseUrl": "Model service URL",
     "baseUrlHint": "Enter the model service root URL; /v1 is optional.",
     "credential": "API Key Credential (optional, token type only)",
     "credentialPlaceholder": "No authentication / choose a token Credential",
@@ -263,6 +304,13 @@
     "customDeleted": "Custom model service deleted",
     "credentialMissing": "The selected Credential was deleted or is no longer available. Your draft is preserved; select another or clear it.",
     "credentialsLoadFailed": "Could not load credentials, so availability of the selected credential is unconfirmed. Your draft is preserved. Please retry.",
-    "credentialsRetry": "Reload credentials"
+    "credentialsRetry": "Reload credentials",
+    "ux": {
+      "connectionTitle": "Connection configuration",
+      "modelTitle": "Choose a model",
+      "credentialPrivacy": "Only credential names are shown; keys stay hidden. AI requests are sent to the service above.",
+      "testDraftHint": "Test the current draft without saving it.",
+      "testBoundary": "A connection test checks whether the model replies. Validate image, file and document reading capabilities for your actual use case."
+    }
   }
 }

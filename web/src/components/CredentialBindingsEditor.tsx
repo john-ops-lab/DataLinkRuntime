@@ -9,6 +9,7 @@ import { credentialFieldLabel, credentialFields } from "../credential-fields";
 import { subscribeCredentialCatalog } from "../credential-catalog";
 import type { AccountRole, AdapterAccessLevel, Credential, CredentialBinding } from "../types";
 import { userErrorMessage } from "../user-message";
+import "./workbench-ux.css";
 
 interface BindingRow {
   env_key: string;
@@ -225,11 +226,15 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
 
   return (
     <div className="binding-editor" data-testid="credential-bindings">
+      <Typography.Title level={5}>{t("bindings.title")}</Typography.Title>
+      <Typography.Paragraph type="secondary">{t("bindings.intro")}</Typography.Paragraph>
+      <details className="ux-binding-help"><summary>{t("bindings.readHelp")}</summary>
       <Typography.Paragraph type="secondary" className="binding-editor-help">
         {t("bindings.help")} {" "}
         <code>context.secrets.get(&quot;PASSWORD&quot;)</code>{t("bindings.helpSuffix")} {" "}
         <code>DLR_SECRET_{"{env_key}"}</code> {t("bindings.injectedSuffix")}
       </Typography.Paragraph>
+      </details>
       <Alert
         type="warning"
         showIcon
@@ -279,6 +284,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
          <Empty description={t("empty.noBindings", { ns: "common" })} />
       ) : (
         <div className="binding-rows">
+          <div className="ux-binding-labels" aria-hidden="true"><strong>{t("bindings.codeName")}</strong><strong>{t("bindings.credentialLabel")}</strong><strong>{t("bindings.fieldLabel")}</strong><span /></div>
           {rows.map((row, index) => {
             const credential = credentials.find((candidate) => candidate.id === row.credential_id);
             const fieldOptions =
@@ -357,6 +363,8 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
         </div>
       )}
       {canManageBindings && (
+        <>
+        <div className="ux-binding-impact"><strong>{t("bindings.saveBoundary")}</strong><p>{t("bindings.saveImpact")}</p>{dirty && <span role="status">{t("bindings.unsaved")}</span>}</div>
         <Space className="binding-actions">
           <Button
             data-testid="add-binding"
@@ -380,6 +388,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
             {t("bindings.save")}
           </Button>
         </Space>
+        </>
       )}
     </div>
   );

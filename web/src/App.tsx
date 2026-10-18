@@ -246,6 +246,8 @@ export function AdapterConsole({
 }: AdapterConsoleProps = {}) {
   const { t } = useTranslation(["common", "adapter", "runtime"]);
   const [messageApi, messageContextHolder] = message.useMessage();
+  const [modalApi, modalContextHolder] = Modal.useModal();
+  const deletingAdapterRef = useRef(false);
   const [health, setHealth] = useState<HealthStatus>("loading");
   const [healthPayload, setHealthPayload] = useState<ControlHealthPayload | null>(null);
   const [healthCheckedAt, setHealthCheckedAt] = useState<string | null>(null);
@@ -913,7 +915,7 @@ export function AdapterConsole({
   }, [dirty, selected?.adapter_type, t]);
 
   useLayoutEffect(() => setBrowserLocationBlocker((nextLocation) => {
-    if (busy) return false;
+    if (busy || deletingAdapterRef.current) return false;
     const nextRoute = appRouteFromPath(new URL(nextLocation, window.location.origin).pathname);
     const leavesWorkspace = requestedSettingsCategory === null && (
       (nextRoute.section === "adapters" && nextRoute.settingsCategory !== null)
@@ -1097,21 +1099,23 @@ export function AdapterConsole({
     }
   }
 
-  function handlePrimarySectionChange(section: PrimarySection): void {
-    if (section === activeSection && requestedSettingsCategory === null) return;
+  function handlePrimarySectionChange(section: PrimarySection): boolean {
+    if (section === activeSection && requestedSettingsCategory === null) return true;
     if (
       busy
       || systemSettingsLeaveGuardRef.current?.confirmLeave() === false
       || adapterSettingsLeaveGuardRef.current?.confirmLeave() === false
       || (activeSection === "adapters" && section === "templates" && !confirmWorkspaceLeave(true))
     ) {
-      return;
+      return false;
     }
     closePagePortals();
     if (section === "templates") {
       pushBrowserLocation(templatePath());
+      return window.location.pathname === templatePath();
     } else {
       pushBrowserLocation("/adapters");
+      return window.location.pathname === "/adapters";
     }
   }
 
@@ -1548,24 +1552,36 @@ export function AdapterConsole({
   }
 
   async function handleDelete(stopAndDelete = false) {
-    if (!selected || !selectedCanManage || busy) {
+    if (!selected || !selectedCanManage || busy || deletingAdapterRef.current) {
       return;
     }
-    const warning = dirty ? t("messages.discardWarning") : "";
-    if (
-      !window.confirm(
-        t(stopAndDelete ? "confirm.stopDeleteAdapter" : "confirm.deleteAdapter", {
-          name: selected.name,
-          warning,
-        }),
-      )
-    ) {
-      return;
-    }
+    deletingAdapterRef.current = true;
     setBusy(true);
+    const targetId = selected.id;
     try {
+      const confirmed = await modalApi.confirm({
+        title: t("settings.deleteTitle", { ns: "adapter" }),
+        width: 600,
+        closable: true,
+        okText: t(stopAndDelete ? "settings.deleteStopConfirm" : "settings.deleteConfirm", { ns: "adapter" }),
+        cancelText: t("actions.cancel"),
+        okButtonProps: { danger: true, "data-testid": "confirm-delete-adapter" },
+        content: <div className="ux-delete-summary">
+          <div><span>{t("settings.deleteTarget", { ns: "adapter" })}</span><h4>{selected.name}</h4></div>
+          <Alert type="warning" message={t("settings.deleteIrreversible", { ns: "adapter" })} />
+          <div><h4>{t("settings.deleteIncludes", { ns: "adapter" })}</h4><ul>
+            <li>{t("settings.deleteCode", { ns: "adapter" })}</li>
+            <li>{t("settings.deleteRecords", { ns: "adapter" })}</li>
+            <li>{t("settings.deleteConfig", { ns: "adapter" })}</li>
+          </ul></div>
+          <div><h4>{t("settings.deleteKeep", { ns: "adapter" })}</h4><p>{t("settings.deleteKeepHint", { ns: "adapter" })}</p></div>
+          <p>{t(stopAndDelete ? "settings.deleteWarningActive" : "settings.deleteWarningIdle", { ns: "adapter" })}</p>
+          {dirty && <Alert type="warning" message={t("messages.discardWarning")} />}
+        </div>,
+      });
+      if (!confirmed || selectedAdapterIdRef.current !== targetId) return;
       setError(null);
-      const deletion = await api.deleteAdapter(selected.id, stopAndDelete);
+      const deletion = await api.deleteAdapter(targetId, stopAndDelete);
       if (
         deletion?.detail?.code === "adapter_delete_waiting_for_worker"
       ) {
@@ -1622,6 +1638,7 @@ export function AdapterConsole({
     } catch (err) {
       setError(errorMessage(err));
     } finally {
+      deletingAdapterRef.current = false;
       setBusy(false);
     }
   }
@@ -1680,6 +1697,7 @@ export function AdapterConsole({
       ) : (
         <>
           {messageContextHolder}
+          {modalContextHolder}
           <section
             className="adapter-surface"
             data-testid="adapter-surface"
@@ -1710,6 +1728,7 @@ export function AdapterConsole({
               busy={busy}
               onSelect={handleSelectAdapter}
               onCreate={handleCreateAdapter}
+              onBrowseTemplates={() => handlePrimarySectionChange("templates")}
               versionSeqById={versionSeqById}
               workers={workers}
               onOpenSettings={handleCatalogOpenSettings}
@@ -1809,6 +1828,8 @@ export function AdapterConsole({
               />
               )}
 
+              <p className="ux-save-scope">{t("editor.saveScope")}</p>
+              {dirty && selectedCanEdit && <Alert type="warning" message={t("editor.dirtyRun")} />}
               <Tabs
                 className="workbench-tabs"
                 activeKey={activeTabKey}
@@ -1944,7 +1965,7 @@ export function AdapterConsole({
                             },
                             {
                               key: "bindings",
-                              label: <span data-testid="bindings-collapse-header">{t("labels.credentialBindings")}</span>,
+                              label: <span data-testid="bindings-collapse-header">{t("editor.bindingsSeparate")}</span>,
                               children: (
                                 <div data-testid="bindings-panel-content">
                                   <CredentialBindingsEditor
@@ -1962,6 +1983,14 @@ export function AdapterConsole({
                             },
                           ]}
                         />
+                        <div className="ux-save-regions" data-testid="save-regions">
+                          <strong>{t("editor.saveRegions")}</strong>
+                          <div className="ux-save-region-grid">
+                            <section><span>{t("editor.editContent")}</span><strong className="ux-save-state" data-dirty={dirty || selected.latest_version_id === null}>{t(!contentReady ? "editor.statusUnavailable" : dirty ? "editor.unsaved" : selected.latest_version_id === null ? "editor.noSavedContent" : "editor.saved")}</strong><small>{t("editor.saveAbove")}</small></section>
+                            {selected.adapter_type === "task" && <section><span>{t("editor.inputData")}</span><strong className="ux-save-state" data-dirty={!!taskRuntimeState.inputDirty}>{t(!taskRuntimeState.inputReady ? "editor.statusUnavailable" : taskRuntimeState.inputDirty ? "editor.unsaved" : "editor.saved")}</strong><Button type="link" onClick={() => { setActiveTabKey("runtime"); requestAnimationFrame(() => document.querySelector('[data-testid="task-input-config"]')?.scrollIntoView({ block: "start" })); }}>{t("editor.viewInput")}</Button></section>}
+                            <section><span>{t("editor.runSettings")}</span><strong className="ux-save-state" data-dirty={selected.adapter_type === "task" ? !!taskRuntimeState.settingsDirty : !!webhookRuntimeState.settingsDirty}>{t(!(selected.adapter_type === "task" ? taskRuntimeState.settingsReady : webhookRuntimeState.loaded) ? "editor.statusUnavailable" : (selected.adapter_type === "task" ? taskRuntimeState.settingsDirty : webhookRuntimeState.settingsDirty) ? "editor.unsaved" : "editor.saved")}</strong><Button type="link" onClick={() => setActiveTabKey("runtime")}>{t("editor.viewRunSettings")}</Button></section>
+                          </div>
+                        </div>
                       </div>
                     ),
                   },
@@ -2055,6 +2084,7 @@ export function AdapterConsole({
                           waitingForWebhook &&
                           liveExecution === null
                         }
+                        onViewHistory={() => setActiveTabKey("history")}
                         onViewServerLog={() => {
                           if (liveExecution !== null) {
                             setHistoryExecutionId(liveExecution.id);
@@ -2239,7 +2269,6 @@ export function AdapterConsole({
 // the M3.1 login page keeps the M2 auth contract unchanged.
 
 function TokenApp() {
-  const { t } = useTranslation("common");
   const [authed, setAuthed] = useState<boolean>(() => {
     const stored = sessionStorage.getItem(TOKEN_STORAGE_KEY);
     if (stored !== null) {
@@ -2317,7 +2346,7 @@ function TokenApp() {
     <AdapterConsole onAccountLogout={handleLogout} />
   ) : (
     <LoginPage
-      notice={noticeKey === null ? null : t(noticeKey)}
+      notice={noticeKey === null ? null : { key: noticeKey }}
       onSubmit={handleLogin}
     />
   );

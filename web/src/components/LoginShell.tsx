@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { useLoginLocale } from "../login-locale";
 import type { SystemLocale } from "../types";
+import "./ai-account-ux.css";
 
 interface LoginShellProps {
   children: ReactNode;
@@ -21,15 +22,15 @@ export default function LoginShell({ children, testId, loginSurface = true }: Lo
 
   return (
     <main className="auth-page" data-testid={testId}>
-      <div className="auth-shell">
+      <div className={`auth-shell${loginSurface ? " auth-shell-login" : ""}`}>
         <section className="auth-brand" aria-label={t("product.name")}>
           <div>
             <div className="auth-brand-logo">DLR</div>
             <div className="auth-brand-name">{t("product.name")}</div>
           </div>
           <p className="auth-brand-tagline">{t("product.headline")}</p>
-          <p className="auth-brand-sub">{t("product.intro1")}</p>
-          <p className="auth-brand-sub auth-brand-intro login-brand-intro">{t("product.intro2")}</p>
+          {!loginSurface && <p className="auth-brand-sub">{t("product.intro1")}</p>}
+          {!loginSurface && <p className="auth-brand-sub auth-brand-intro login-brand-intro">{t("product.intro2")}</p>}
           <p className="auth-brand-flow">{t("product.flow")}</p>
           <p className="auth-copyright">{t("product.copyright")}</p>
         </section>

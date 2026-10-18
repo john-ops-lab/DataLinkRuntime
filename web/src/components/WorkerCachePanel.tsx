@@ -18,8 +18,11 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type Key } from "react";
 import { useTranslation } from "react-i18next";
 
+import "./admin-ux.css";
+
 import { api, ApiError } from "../api";
 import type {
+  Adapter,
   CacheAdminView,
   CacheKeySelection,
   CacheOperation,
@@ -38,6 +41,7 @@ const POLL_LIMIT_MS = 120_000;
 
 interface WorkerCachePanelProps {
   worker: Worker;
+  adapters?: Adapter[];
   open: boolean;
   onClose: () => void;
 }
@@ -180,7 +184,7 @@ function resultReasonEntries(operation: CacheOperation): Array<[string, string[]
   return [];
 }
 
-export default function WorkerCachePanel({ worker, open, onClose }: WorkerCachePanelProps) {
+export default function WorkerCachePanel({ worker, open, onClose, adapters = [] }: WorkerCachePanelProps) {
   const { i18n, t } = useTranslation("settings");
   const locale = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
   const [view, setView] = useState<CacheAdminView | null>(null);
@@ -476,11 +480,21 @@ export default function WorkerCachePanel({ worker, open, onClose }: WorkerCacheP
     return total + (categories?.[name].reclaimable_bytes ?? 0);
   }, 0) : null;
 
+  function idleDuration(value: unknown): string {
+    const seconds = integer(value);
+    if (seconds === null) return "—";
+    if (seconds % 86400 === 0) return t("cache.durationDays", { value: seconds / 86400 });
+    if (seconds % 3600 === 0) return t("cache.durationHours", { value: seconds / 3600 });
+    return t("cache.durationSeconds", { value: seconds });
+  }
+
   const cacheColumns: TableColumnsType<CacheSnapshotItem> = [
     {
       title: t("cache.key"), key: "cache_key", render: (_, item) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text>{item.cache_key}</Typography.Text>
+          <Typography.Text strong>{adapters.find((adapter) => adapter.id === item.adapter_id)?.name ?? t("managedInput.adapterFallback", { id: item.adapter_id })}</Typography.Text>
+          <Typography.Text type="secondary">{t("cache.sourceIdentity", { adapter: item.adapter_id, version: item.version_id })}</Typography.Text>
+          <details className="admin-help"><summary>{t("cache.sourceDetails")}</summary><Typography.Text>{item.cache_key}</Typography.Text><p>{item.identity?.language ?? "—"}</p></details>
           <Tag>{t(`cache.itemKinds.${item.kind ?? "version"}`)}</Tag>
         </Space>
       ),
@@ -675,7 +689,14 @@ export default function WorkerCachePanel({ worker, open, onClose }: WorkerCacheP
         )}
         {pollTimedOut && <Alert type="warning" showIcon message={t("cache.pollStopped")} />}
 
-        <Card size="small" title={t("cache.snapshotTitle")} loading={loading && view === null}>
+        <Card size="small" title={t("cache.usageTitle")} loading={loading && view === null}>
+          <Space wrap><Tag color={status === "complete" ? "green" : "gold"}>{status ? t(`cache.states.${status}`) : "—"}</Tag><Typography.Text type="secondary">{t("cache.sampledAt")}: {formatTime(view?.sampled_at ?? null, locale)}</Typography.Text></Space>
+          <div className="admin-stat-grid">
+            <div className="admin-stat"><strong>{capacityKnown ? formatBytes(accounting?.committed_bytes) : "—"}</strong><span>{t("cache.committed")}</span></div>
+            <div className="admin-stat"><strong>{capacityKnown ? formatBytes(accounting?.reserved_bytes) : "—"}</strong><span>{t("cache.reserved")}</span></div>
+            <div className="admin-stat"><strong>{formatBytes(policy?.max_bytes)}</strong><span>{t("cache.maxBytes")}</span></div>
+          </div>
+          <details className="admin-help"><summary>{t("cache.collectionDetails")}</summary>
           <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }} items={[
             { key: "status", label: t("cache.snapshotStatus"), children: status ? t(`cache.states.${status}`) : "—" },
             { key: "sampled", label: t("cache.sampledAt"), children: formatTime(view?.sampled_at ?? null, locale) },
@@ -711,7 +732,22 @@ export default function WorkerCachePanel({ worker, open, onClose }: WorkerCacheP
               );
             })}
           </div>
-          <details className="worker-cache-policy">
+          </details>
+        </Card>
+        <details className="admin-help"><summary>{t("cache.policyTitle")}</summary>
+        <Card size="small" title={t("cache.policyTitle")} extra={<Typography.Text type="secondary">{t("cache.policyScope")}</Typography.Text>}>
+          <div className="admin-policy-summary">
+            <div><Typography.Text strong>{t("cache.policyPressureTitle")}</Typography.Text> <Tag>{formatPolicyBoolean(policy?.pressure_gc_enabled, t)}</Tag>
+              <div className="admin-stat-grid">
+                <div className="admin-stat"><strong>{finiteNumber(policy?.high_watermark_percent) ?? "—"}%</strong><span>{t("cache.highWaterHint")}</span></div>
+                <div className="admin-stat"><strong>{finiteNumber(policy?.low_watermark_percent) ?? "—"}%</strong><span>{t("cache.lowWaterHint")}</span></div>
+              </div><Typography.Text type="secondary">{t("cache.pressureHint")}</Typography.Text>
+            </div>
+            <div><Tag>{formatPolicyBoolean(policy?.gc_enabled, t)}</Tag><Typography.Text>{t("cache.periodicRule", { duration: idleDuration(policy?.idle_ttl_seconds) })}</Typography.Text></div>
+            <div><Tag>{formatPolicyBoolean(policy?.pressure_gc_enabled, t)}</Tag><Typography.Text>{t("cache.installRule", { duration: idleDuration(policy?.min_idle_seconds) })}</Typography.Text></div>
+            <Alert type="info" showIcon message={t("cache.sharedHint")} description={t("cache.protectionHint")} />
+          </div>
+          <details className="worker-cache-policy admin-help">
             <summary>{t("cache.policyDetails")}</summary>
             <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }} items={[
               { key: "gc_enabled", label: t("cache.policyFields.gc_enabled"), children: formatPolicyBoolean(policy?.gc_enabled, t) },
@@ -736,7 +772,7 @@ export default function WorkerCachePanel({ worker, open, onClose }: WorkerCacheP
               { key: "shared_cache_mode", label: t("cache.policyFields.shared_cache_mode"), children: policy?.shared_cache_mode ?? "—" },
             ]} />
           </details>
-        </Card>
+        </Card></details>
 
         <Card size="small" title={t("cache.entriesTitle")}>
           <Alert type="info" showIcon message={t("cache.previewRecheckHint")} />
@@ -749,12 +785,15 @@ export default function WorkerCachePanel({ worker, open, onClose }: WorkerCacheP
             pagination={false}
             scroll={{ x: 760 }}
             rowSelection={{
+              columnWidth: 84,
+              columnTitle: (originalNode) => <Space size={4}>{originalNode}{t("cache.selectionColumn")}</Space>,
               selectedRowKeys: selectedKeys,
               preserveSelectedRowKeys: false,
               onChange: setSelectedKeys,
               getCheckboxProps: () => ({ disabled: !mutatingAllowed }),
             }}
           />
+          <Alert type="warning" showIcon message={t("cache.protectionHint")} />
           <Space wrap className="worker-cache-actions">
             <Button disabled={selectedPairs.length === 0 || submitting || !mutatingAllowed} onClick={() => submitKeyOperation("preview")}>
               {t("cache.preview")}
@@ -769,6 +808,8 @@ export default function WorkerCachePanel({ worker, open, onClose }: WorkerCacheP
               {t("cache.unpin")}
             </Button>
           </Space>
+          {selectedItems.length === 0 && <Typography.Text type="secondary">{t("cache.selectionHint")}</Typography.Text>}
+          <details className="admin-help"><summary>{t("cache.proofDetails")}</summary>
           <Form layout="vertical" className="worker-cache-proof-form">
             <Alert
               type="warning"
@@ -813,7 +854,7 @@ export default function WorkerCachePanel({ worker, open, onClose }: WorkerCacheP
             >
               {t("cache.confirmRebuildability")}
             </Button>
-          </Form>
+          </Form></details>
         </Card>
 
         {view !== null && (view.failed_guard_items.length > 0 || view.failed_guard_complete === false) && (

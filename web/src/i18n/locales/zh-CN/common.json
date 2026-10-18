@@ -2,10 +2,10 @@
   "product": {
     "name": "DataLinkRuntime",
     "tagline": "轻量数据适配运行平台",
-    "headline": "Code your data connections.",
+    "headline": "用代码连接你的数据",
     "intro1": "把数据连接逻辑写成 Adapter（适配器），然后直接运行。",
     "intro2": "从代码编辑、依赖配置到执行、日志与历史追踪，\nDataLinkRuntime 提供一个轻量、自托管的完整运行环境。",
-    "flow": "Develop → Run → Observe",
+    "flow": "编写 → 运行 → 查看结果",
     "copyright": "© 2026 DataLinkRuntime · MIT License"
   },
   "shell": {
@@ -123,7 +123,13 @@
     "confirmBulkEnable": "确定启用选中的 {{count}} 个账号吗？",
     "confirmBulkDisable": "确定禁用选中的 {{count}} 个账号吗？所有已有 Session 将失效。",
     "bulkEnabled": "已批量启用 {{count}} 个账号",
-    "bulkDisabled": "已批量禁用 {{count}} 个账号；已有 Session 已失效。"
+    "bulkDisabled": "已批量禁用 {{count}} 个账号；已有 Session 已失效。",
+    "listTitle": "已有账号",
+    "newAccount": "新建账号",
+    "roleHelpTitle": "角色有什么区别？",
+    "adminScope": "管理系统设置、账号和全部适配器",
+    "userScope": "按本人拥有或被授予的权限使用适配器",
+    "passwordPrivacy": "密码提交后不再显示；需要调整时使用“重置密码”。"
   },
   "translation": {
     "unavailable": "暂不可用"
@@ -229,7 +235,22 @@
     "toolbarAria": "代码编辑器工具栏",
     "ariaLabel": "适配器代码编辑器",
     "maximize": "最大化代码编辑器",
-    "restore": "恢复代码编辑器布局"
+    "restore": "恢复代码编辑器布局",
+    "saveContent": "保存编辑内容",
+    "saveScope": "此按钮保存代码、代码依赖和运行参数；不会自动运行。",
+    "saveRegions": "三个区域分别保存",
+    "editContent": "编辑内容",
+    "inputData": "输入数据",
+    "runSettings": "运行设置",
+    "saved": "已保存",
+    "unsaved": "未保存",
+    "viewInput": "查看输入",
+    "viewRunSettings": "前往运行设置",
+    "saveAbove": "使用上方保存按钮",
+    "bindingsSeparate": "凭据绑定（单独保存）",
+    "dirtyRun": "代码有未保存修改，暂不能运行。请先保存编辑内容。",
+    "noSavedContent": "尚未保存",
+    "statusUnavailable": "尚未确认，请查看"
   },
   "health": {
     "loading": "控制服务检查中…",
@@ -325,8 +346,8 @@
     "versionListRefreshFailed": "刷新版本列表失败：{{error}}",
     "adapterRefreshFailed": "刷新适配器失败：{{error}}",
     "adapterSavedRefreshSummary": "适配器已保存，但{{details}}",
-    "deleteWaitingForWorker": "已请求 Worker 取消当前执行；收到 cancelled 后才会继续永久删除。",
-    "deleteWaitingTimeout": "仍未收到 Worker 的 cancelled 确认，已安全停止等待；未执行强制删除，请确认 Worker 状态后重试。",
+    "deleteWaitingForWorker": "已请求运行节点取消当前执行；收到已取消的确认后，才会继续删除。",
+    "deleteWaitingTimeout": "运行节点仍未确认执行已取消，删除已暂停。请检查节点状态后重试。",
     "discardWarning": "该适配器存在未保存的编辑器修改。",
     "deletedAdapterWarning": "删除后它会从活跃列表移除。{{warning}}"
   },

@@ -102,16 +102,16 @@ export default function WebhookWorkbenchHeader(props: Props) {
           <Tag data-testid="adapter-read-only">{t("webhook.reasons.readOnly")}</Tag>
         ) : (
           <>
-            <ActionWithReason label={t("actions.save", { ns: "common" })} reason={saveReason}>
+            <ActionWithReason label={t("editor.saveContent", { ns: "common" })} reason={saveReason}>
               <Button
                 type="primary"
                 data-testid="save-version"
                 icon={<SaveOutlined aria-hidden="true" />}
-                aria-label={t("actions.save", { ns: "common" })}
+                aria-label={t("editor.saveContent", { ns: "common" })}
                 disabled={saveReason !== null}
                 onClick={props.onSave}
               >
-                {t("actions.save", { ns: "common" })}
+                {t("editor.saveContent", { ns: "common" })}
               </Button>
             </ActionWithReason>
             <ActionWithReason label={props.runtimeState.enabled ? t("actions.stopReceiving", { ns: "common" }) : t("actions.startReceiving", { ns: "common" })} reason={receiveReason}>

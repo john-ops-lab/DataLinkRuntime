@@ -1,0 +1,258 @@
+/* Issue #212: local AI and account presentation. */
+.ux-ai-starters.ai-conversation-empty {
+  margin:0;
+  text-align:left;
+  width:100%;
+}
+.ux-ai-starters h3 {
+  margin:12px 0;
+  font-size:15px;
+  color:var(--dlr-text);
+}
+.ux-ai-model-label {
+  display:inline-block;
+  color:#1765c1;
+  background:#eef5ff;
+  border:1px solid #d9e7fb;
+  border-radius:4px;
+  padding:3px 8px;
+}
+.ux-ai-starter-grid {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:8px;
+}
+.ux-ai-starter-grid .ant-btn {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  height:auto;
+  padding:12px 10px;
+  white-space:normal;
+  text-align:left;
+}
+.ux-ai-starter-grid .ant-btn span {
+  font-size:12px;
+  color:var(--dlr-text-weak);
+}
+.ux-ai-starter-grid .ant-btn strong {
+  font-size:13px;
+  color:var(--dlr-text);
+}
+.ux-ai-send-warning {
+  background:#fff9eb;
+  border:1px solid #f5dfaf;
+  border-radius:6px;
+  padding:8px 10px;
+  font-size:12px;
+  line-height:1.6;
+}
+.ux-ai-send-warning>p,.ux-ai-session p,.ux-ai-apply-hint {
+  margin:0;
+}
+.ux-ai-send-scope summary,.ux-ai-formats summary,.ux-ai-config-summary summary,.ux-ai-round>summary {
+  cursor:pointer;
+  color:#1765c1;
+}
+.ux-ai-send-scope pre {
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  max-height:180px;
+  overflow:auto;
+  background:#f7f9fc;
+  padding:8px;
+  border:1px solid var(--dlr-border);
+  border-radius:4px;
+}
+.ux-ai-send-scope {
+  min-width:0;
+}
+.ux-ai-send-scope[open] {
+  max-height:300px;
+  overflow-y:auto;
+}
+.ux-ai-formats,.ux-ai-apply-hint,.ux-ai-session {
+  font-size:12px;
+  line-height:1.6;
+  color:var(--dlr-text-weak);
+}
+.ux-ai-formats p {
+  overflow-wrap:anywhere;
+}
+.ux-ai-session {
+  border-top:1px solid var(--dlr-border);
+  padding-top:8px;
+}
+.ux-ai-session strong {
+  color:var(--dlr-text);
+}
+.ux-ai-round {
+  display:block;
+  width:100%;
+}
+.ux-ai-round>p {
+  margin:8px 0;
+}
+.ux-ai-round-question {
+  padding:8px;
+  background:#f3f7fc;
+  border-radius:4px;
+}
+.ux-ai-round .ai-message-attachment-name {
+  margin:4px;
+}
+.ai-composer:has(.ux-ai-session) {
+  max-height:68%;
+  overflow-y:auto;
+}
+.ai-model-settings .ai-primary-config {
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+.ux-ai-config-summary {
+  order:3;
+  font-size:12px;
+}
+.ux-ai-settings-card {
+  border:1px solid var(--dlr-border);
+  border-radius:8px;
+  padding:16px;
+  min-width:0;
+  background:#fff;
+}
+.ux-ai-settings-card h3,.ux-ai-settings-heading h3 {
+  margin:0 0 12px;
+  font-size:15px;
+}
+.ux-ai-settings-heading {
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap;
+}
+.ux-ai-settings-card .ant-form-item:last-child {
+  margin-bottom:0;
+}
+.ux-user-list-heading {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:16px;
+}
+.ux-user-list-heading h3 {
+  margin:0;
+}
+.ux-role-help {
+  border:1px solid var(--dlr-border);
+  border-radius:8px;
+  padding:16px;
+  margin:16px 0;
+}
+.ux-role-help h3 {
+  margin:0 0 12px;
+  font-size:15px;
+}
+.ux-role-help dl {
+  margin:0;
+}
+.ux-role-help dl>div {
+  display:flex;
+  justify-content:space-between;
+  gap:24px;
+  padding:10px 0;
+  border-top:1px solid var(--dlr-border);
+}
+.ux-role-help dt {
+  font-weight:600;
+  flex-shrink:0;
+}
+.ux-role-help dd {
+  margin:0;
+  color:var(--dlr-text-weak);
+  text-align:right;
+}
+.auth-shell-login {
+  position:relative;
+  max-width:820px;
+  display:flex;
+  flex-direction:column;
+  align-items:stretch;
+  gap:24px;
+  padding-top:30px;
+}
+.auth-shell-login .auth-brand {
+  padding:0;
+}
+.auth-shell-login .auth-brand>div {
+  display:flex;
+  align-items:baseline;
+  gap:12px;
+}
+.auth-shell-login .auth-brand-tagline {
+  margin:14px 0 8px;
+  font-size:22px;
+}
+.auth-shell-login .auth-brand-flow {
+  margin:0;
+}
+.auth-shell-login .auth-copyright {
+  display:none;
+}
+.auth-shell-login .auth-form-column {
+  width:100%;
+}
+.auth-shell-login .auth-language-picker {
+  position:absolute;
+  top:28px;
+  right:0;
+}
+.auth-shell-login .auth-card {
+  width:100%;
+}
+@media(max-width:650px) {
+  .ux-ai-starter-grid {
+    gap:4px;
+  }
+  .ux-ai-starter-grid .ant-btn {
+    padding:10px 6px;
+  }
+  .ux-ai-starter-grid .ant-btn span {
+    display:none;
+  }
+  .auth-shell-login .auth-language-picker {
+    position:static;
+    justify-content:flex-end;
+    margin-bottom:12px;
+  }
+  .ux-role-help dl>div {
+    flex-direction:column;
+    gap:6px;
+  }
+  .ux-role-help dd {
+    text-align:left;
+  }
+}
+
+.ux-ai-settings-card[aria-labelledby="ai-connection-title"] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 16px;
+}
+.ux-ai-settings-card[aria-labelledby="ai-connection-title"] > .ux-ai-settings-heading {
+  grid-column: 1 / -1;
+  order: 0;
+}
+.ux-ai-provider-field { order: 1; }
+.ux-ai-credential-field { order: 2; }
+.ux-ai-url-field { order: 3; grid-column: 1 / -1; }
+.ux-ai-settings-card[aria-labelledby="ai-connection-title"] > .ant-typography {
+  grid-column: 1 / -1;
+  order: 4;
+  margin-bottom: 0;
+}
+@media (max-width: 650px) {
+  .ux-ai-settings-card[aria-labelledby="ai-connection-title"] { grid-template-columns: minmax(0, 1fr); }
+}

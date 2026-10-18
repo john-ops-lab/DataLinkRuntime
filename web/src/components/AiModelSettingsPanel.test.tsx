@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { ApiError, api } from "../api";
@@ -106,7 +106,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("keeps the current configuration summary in the primary flow and collapses custom services", async () => {
+it("keeps the draft summary and opens custom services separately without losing the model draft", async () => {
   mockLoad(modelSetting({
     provider: "openai",
     base_url: "https://models.example.com/v1",
@@ -122,8 +122,12 @@ it("keeps the current configuration summary in the primary flow and collapses cu
   expect(screen.getByTestId("ai-summary-model").textContent).toBe("reasoning-model");
   expect(screen.getByTestId("ai-summary-credential").textContent).toBe("未绑定凭据");
 
-  const customSection = screen.getByText("自定义模型服务").closest(".ant-collapse-item");
-  expect(customSection?.className).not.toContain("ant-collapse-item-active");
+  expect(screen.queryByTestId("ai-custom-name")).toBeNull();
+  fireEvent.change(screen.getByTestId("ai-model-input"), { target: { value: "unsaved-model" } });
+  fireEvent.click(screen.getByTestId("ai-custom-open"));
+  await screen.findByTestId("ai-custom-name");
+  fireEvent.click(document.querySelector<HTMLButtonElement>(".ant-drawer-close")!);
+  expect((screen.getByTestId("ai-model-input") as HTMLInputElement).value).toBe("unsaved-model");
 });
 
 it("preserves rapid primary-setting and custom-provider draft updates", async () => {
@@ -154,7 +158,7 @@ it("preserves rapid primary-setting and custom-provider draft updates", async ()
     />,
   );
   await screen.findByTestId("ai-model-settings-panel");
-  fireEvent.click(screen.getByText("自定义模型服务"));
+  fireEvent.click(screen.getByTestId("ai-custom-open"));
   const customName = await screen.findByTestId("ai-custom-name");
   act(() => {
     fireEvent.change(customName, {
@@ -627,4 +631,24 @@ it("submits an unconfirmed credential to authoritative backend validation and pr
   await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ credential_id: 7 })));
   await waitFor(() => expect(screen.getByTestId("ai-settings-error").textContent).toContain("credential_not_found"));
   expect((screen.getByTestId("ai-base-url") as HTMLInputElement).value).toBe("https://models.example.com/draft");
+});
+
+
+it("keeps custom-provider validation and failed-save feedback inside the open drawer", async () => {
+  mockLoad(modelSetting());
+  const create = vi.spyOn(api, "createAiCustomProvider").mockRejectedValue(new Error("fixture-provider-save-failed"));
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await screen.findByTestId("ai-model-settings-panel");
+  fireEvent.click(screen.getByTestId("ai-custom-open"));
+  const drawer = await screen.findByRole("dialog");
+  fireEvent.click(screen.getByTestId("ai-custom-save"));
+  expect(within(drawer).getByTestId("ai-settings-error").textContent).toBeTruthy();
+  expect(create).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByTestId("ai-custom-name"), { target: { value: "Fixture gateway" } });
+  fireEvent.change(screen.getByTestId("ai-custom-base-url"), { target: { value: "https://gateway.example.invalid/v1" } });
+  fireEvent.click(screen.getByTestId("ai-custom-save"));
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(within(drawer).getByTestId("ai-settings-error").textContent).toContain("AI 设置请求失败"));
+  expect(document.body.textContent).not.toContain("fixture-provider-save-failed");
+  expect((screen.getByTestId("ai-custom-name") as HTMLInputElement).value).toBe("Fixture gateway");
 });

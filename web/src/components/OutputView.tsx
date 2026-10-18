@@ -14,6 +14,8 @@ import {
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
+import "./operations-ux.css";
+
 import { classifyExecutionOutput } from "../execution-output";
 import type { Execution } from "../types";
 import { tailLogLines } from "../unified-log";
@@ -23,6 +25,7 @@ export function OutputView(props: { execution: Execution; testId?: string }) {
   const { execution } = props;
   const { t } = useTranslation(["runtime", "common"]);
   const outputKind = classifyExecutionOutput(execution);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   if (outputKind === "truncated") {
     return (
       <div className="output-view" data-testid={props.testId ?? "output-truncated"}>
@@ -55,9 +58,16 @@ export function OutputView(props: { execution: Execution; testId?: string }) {
     );
   }
   return (
-    <pre className="output-view" data-testid={props.testId ?? "output-content"} aria-label={t("output.contentLabel")}>
-      {outputKind === "json-null" ? "null" : JSON.stringify(execution.output, null, 2)}
-    </pre>
+    <section className="operations-output-card">
+      <div className="operations-output-heading"><strong>{t("output.generated")}</strong><Button onClick={() => {
+        const content = outputKind === "json-null" ? "null" : JSON.stringify(execution.output, null, 2);
+        void Promise.resolve().then(() => navigator.clipboard.writeText(content)).then(() => setCopyState("copied")).catch(() => setCopyState("failed"));
+      }}>{t("output.copy")}</Button></div>
+      {copyState !== "idle" && <span role="status">{t(`output.${copyState}`)}</span>}
+      <pre className="output-view" data-testid={props.testId ?? "output-content"} aria-label={t("output.contentLabel")}>
+        {outputKind === "json-null" ? "null" : JSON.stringify(execution.output, null, 2)}
+      </pre>
+    </section>
   );
 }
 
@@ -389,6 +399,7 @@ export function LogView(props: {
       role="region"
       aria-label={t("logs.title")}
     >
+      {mode === "history" && <p className="operations-log-timezone">{t("logs.originalTimezone")}</p>}
       <div
         className="log-toolbar"
         data-testid={props.testId ? `${props.testId}-toolbar` : "log-toolbar"}

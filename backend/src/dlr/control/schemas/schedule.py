@@ -9,6 +9,18 @@ ScheduleMisfirePolicy = Literal["coalesce_latest", "queue_every_occurrence", "sk
 ScheduleOutcome = Literal["enqueued", "coalesced", "skipped", "expired"]
 
 
+class SchedulePreviewRequest(BaseModel):
+    """Bounded, non-persisting preview of the normal five-field schedule."""
+
+    cron: str = Field(min_length=1, max_length=256)
+    timezone: str = Field(min_length=1, max_length=128)
+    count: int = Field(default=3, ge=1, le=10, strict=True)
+
+
+class SchedulePreviewResponse(BaseModel):
+    occurrences: list[datetime]
+
+
 class ScheduleOutcomeResponse(BaseModel):
     """Safe, bounded audit facts shown with the Schedule configuration."""
 

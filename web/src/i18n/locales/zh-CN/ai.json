@@ -189,7 +189,48 @@
       "knowledgeUnavailable": "本轮知识库检索不可用：请确认管理员已配置可用知识源"
     },
     "stopWaiting": "停止等待",
-    "stoppedWaiting": "已停止等待，现有消息已保留。模型服务可能继续处理，直到原请求截止时间；可以再次发送。"
+    "stoppedWaiting": "已停止等待，现有消息已保留。模型服务可能继续处理，直到原请求截止时间；可以再次发送。",
+    "ux": {
+      "sendScope": "查看将发送的代码、配置和附件",
+      "sentScope": "查看本轮请求的代码、配置和附件",
+      "scopeHint": "发送时固定当前代码、依赖、普通配置、近期对话及引用片段；此处预览随草稿更新。",
+      "code": "代码",
+      "requirements": "依赖",
+      "config": "普通配置",
+      "emptyValue": "空",
+      "attachmentScopeHint": "附件按本轮所列资料提交；可读取页不代表模型已读取全部内容。秘密应通过凭据绑定使用，请勿直接写入代码。",
+      "sendPrivacy": "发送内容会交给 AI 服务，请勿包含密码或密钥。",
+      "supportedFormats": "查看支持格式",
+      "startTitle": "想从哪里开始？",
+      "exampleHint": "点击示例只填入问题，由你确认发送。",
+      "applyHint": "建议需你确认后应用，再自行保存、测试和运行。",
+      "sessionTitle": "对话仅在本页保留",
+      "sessionHint": "刷新、离开页面或切换账号、适配器后清空；收起助手不清空。",
+      "roundAttachments": "本轮附件（{{count}}）",
+      "requestSubmitted": "本轮请求已取得回复；附件按此轮固定资料提交。",
+      "requestUnconfirmed": "本轮尚未取得完整回复，提交或读取结果尚未确认。",
+      "sentNotUnderstood": "即使资料已提交，也不代表模型已完整读取或理解。请结合回复核对关键数据；补充资料请返回输入区发送新问题。",
+      "examples": {
+        "explain": {
+          "title": "解释代码",
+          "hint": "了解处理步骤",
+          "prompt": "请解释当前代码的处理步骤，并指出需要注意的地方。"
+        },
+        "fields": {
+          "title": "整理字段",
+          "hint": "结合附件建议",
+          "prompt": "请结合本轮附件整理字段，并解释缺失项；没有附件时请先告诉我需要哪些资料。"
+        },
+        "error": {
+          "title": "分析报错",
+          "hint": "查找失败原因",
+          "prompt": "请结合我提供的报错和当前代码分析失败原因，并给出修改建议。"
+        }
+      },
+      "frozenScopeHint": "此处为本轮发送时固定的请求资料，后续编辑不会改变本轮记录。",
+      "recentMessages": "近期对话",
+      "attachmentsLabel": "附件"
+    }
   },
   "model": {
     "notice": "数据范围",
@@ -210,7 +251,7 @@
       "legacyCustomNotice": "当前配置使用已隐藏的旧兼容项；可选择内置服务或已保存的自定义服务迁移。"
     },
     "customOption": "自定义：{{name}}",
-    "baseUrl": "基础 URL",
+    "baseUrl": "模型服务地址",
     "baseUrlHint": "填写模型服务根 URL，可带或不带 /v1。",
     "credential": "API Key 凭据（可选，仅 token 类型）",
     "credentialPlaceholder": "无鉴权 / 选择 token 凭据",
@@ -263,6 +304,13 @@
     "customDeleted": "自定义模型服务已删除",
     "credentialMissing": "所选凭据已被删除或不再可用。草稿已保留，请重新选择或清空。",
     "credentialsLoadFailed": "凭据列表加载失败，暂时无法确认所选凭据是否可用。草稿已保留，请重试。",
-    "credentialsRetry": "重新加载凭据"
+    "credentialsRetry": "重新加载凭据",
+    "ux": {
+      "connectionTitle": "连接配置",
+      "modelTitle": "选择模型",
+      "credentialPrivacy": "这里只显示凭据名称，不显示密钥。AI 请求会发送到上述服务。",
+      "testDraftHint": "测试使用当前草稿，不会自动保存。",
+      "testBoundary": "连接测试只检查能否取得模型回复；图片、文件和资料读取能力仍需按实际用途验证。"
+    }
   }
 }

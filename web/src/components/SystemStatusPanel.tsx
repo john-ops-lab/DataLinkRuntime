@@ -19,14 +19,16 @@ import {
   type HealthStatus,
   type SystemStatusLevel,
 } from "../system-status";
-import type { Worker } from "../types";
+import type { Adapter, Worker } from "../types";
 import WorkerStatus from "./WorkerStatus";
+import "./admin-ux.css";
 
 interface SystemStatusPanelProps {
   level: SystemStatusLevel;
   health: HealthStatus;
   healthPayload: ControlHealthPayload | null;
   healthCheckedAt: string | null;
+  adapters?: Adapter[];
   workers: Worker[];
   workersLoading: boolean;
   workersError: string | null;
@@ -238,48 +240,31 @@ export default function SystemStatusPanel(props: SystemStatusPanelProps) {
         </Button>
       </div>
 
+      <Typography.Text type="secondary">{t("systemStatus.checkedAt")}: {props.healthCheckedAt === null ? t("systemStatus.notChecked") : formatTime(props.healthCheckedAt, locale)}</Typography.Text>
       <div className="system-status-grid">
-        <Card
-          size="small"
-          className="system-status-card"
-          title={t("systemStatus.controlTitle")}
-          extra={<Badge status={systemStatusBadgeStatus(
-            props.health === "ok"
-              ? "normal"
-              : props.health === "degraded"
-                ? "warning"
-                : props.health === "unreachable"
-                  ? "error"
-                  : "checking",
-          )} />}
-        >
-          {props.health === "loading" ? (
-            <Space role="status" aria-label={t("systemStatus.loading")}>
-              <Spin size="small" />
-              <Typography.Text type="secondary">{t("systemStatus.loading")}</Typography.Text>
-            </Space>
-          ) : props.healthPayload === null ? (
-            <Alert type="error" showIcon message={t("systemStatus.controlUnavailable")} />
-          ) : (
-            <Descriptions size="small" column={1} items={controlItems} />
-          )}
+        <Card size="small" className="system-status-card" title={t("systemStatus.servicesTitle")}>
+          {props.health === "loading" ? <Space role="status" aria-label={t("systemStatus.loading")}><Spin size="small" />{t("systemStatus.loading")}</Space>
+            : props.healthPayload === null ? <Alert type="error" showIcon message={t("systemStatus.controlUnavailable")} /> : <>
+              <Space wrap><span>{t("systemStatus.database")}: {booleanTag(props.healthPayload.database)}</span><span>{t("systemStatus.rabbitmq")}: {stateTag(rabbitmq?.status)}</span></Space>
+              <details className="admin-help" open={props.health !== "ok"}><summary>{t("systemStatus.serviceDetails")}</summary>
+                <Typography.Title level={5}>{t("systemStatus.controlTitle")}</Typography.Title>
+                <Descriptions size="small" column={1} items={controlItems} />
+                <Typography.Title level={5}>{t("systemStatus.runtimeTitle")}</Typography.Title>
+                <Descriptions size="small" column={1} items={runtimeItems} />
+              </details>
+            </>}
         </Card>
-
-        <Card size="small" className="system-status-card" title={t("systemStatus.runtimeTitle")}>
-          {props.health === "loading" ? (
-            <Space role="status" aria-label={t("systemStatus.loading")}>
-              <Spin size="small" />
-              <Typography.Text type="secondary">{t("systemStatus.loading")}</Typography.Text>
-            </Space>
-          ) : props.healthPayload === null ? (
-            <Typography.Text type="secondary">{t("systemStatus.noRuntimeFacts")}</Typography.Text>
-          ) : (
-            <Descriptions size="small" column={1} items={runtimeItems} />
-          )}
+        <Card size="small" className="system-status-card" title={t("systemStatus.dispatchTitle")}>
+          {props.healthPayload === null ? <Typography.Text type="secondary">{t("systemStatus.noRuntimeFacts")}</Typography.Text> :
+            <div className="admin-stat-grid">
+              <div className="admin-stat"><strong>{stateTag(rabbitmq?.ingress?.status)}</strong><span>{t("systemStatus.accepting")}</span></div>
+              <div className="admin-stat"><strong>{outbox?.pending_count ?? "—"}</strong><span>{t("systemStatus.pending")}</span></div>
+              <div className="admin-stat"><strong>{formatDuration(outbox?.oldest_age_seconds ?? outbox?.pending_oldest_age_seconds, t("systemStatus.seconds"))}</strong><span>{t("systemStatus.oldestWait")}</span></div>
+            </div>}
         </Card>
-
         <Card size="small" className="system-status-card system-status-workers" title={t("systemStatus.workersTitle")}>
           <WorkerStatus
+            adapters={props.adapters}
             workers={props.workers}
             loading={props.workersLoading}
             error={props.workersError}

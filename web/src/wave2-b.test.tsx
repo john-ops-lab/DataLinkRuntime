@@ -407,7 +407,7 @@ it("updates disabled-action accessible names and reasons with the locale", async
       onToggleSchedule={vi.fn()}
     />,
   );
-  expect(screen.getByLabelText("保存不可用：适配器正在运行，请先停止当前运行后再保存")).toBeTruthy();
+  expect(screen.getByLabelText("保存编辑内容不可用：适配器正在运行，请先停止当前运行后再保存")).toBeTruthy();
 
   await applySystemLocale("en");
   rerender(
@@ -426,7 +426,7 @@ it("updates disabled-action accessible names and reasons with the locale", async
     />,
   );
   expect(
-    screen.getByLabelText("Save unavailable: Stop the current run before saving"),
+    screen.getByLabelText("Save editor content unavailable: Stop the current run before saving"),
   ).toBeTruthy();
 });
 

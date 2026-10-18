@@ -235,7 +235,7 @@ describe("selection / drop / delete / clear", () => {
     fireEvent.click(removeButtons[1]);
     await waitFor(() => expect(screen.getAllByTestId("ai-attachment-item")).toHaveLength(4));
     expect(screen.queryByText("spec.pdf")).toBeNull();
-    expect(screen.getByText("photo.png")).toBeTruthy();
+    expect(screen.getByText("photo.png", { selector: ".ai-attachment-name" })).toBeTruthy();
 
     // 清空：逐个删除直至为空。
     for (const remove of [...screen.getAllByTestId("ai-attachment-remove")]) {
@@ -251,8 +251,8 @@ describe("selection / drop / delete / clear", () => {
       dataTransfer: { files: [makeFile("a.txt", "text/plain"), makeFile("b.md", "text/markdown")] },
     });
     await waitFor(() => expect(screen.getAllByTestId("ai-attachment-item")).toHaveLength(2));
-    expect(screen.getByText("a.txt")).toBeTruthy();
-    expect(screen.getByText("b.md")).toBeTruthy();
+    expect(screen.getByText("a.txt", { selector: ".ai-attachment-name" })).toBeTruthy();
+    expect(screen.getByText("b.md", { selector: ".ai-attachment-name" })).toBeTruthy();
   });
 
   it("exposes the add button, input and remove controls to keyboard users", async () => {
@@ -843,7 +843,7 @@ describe("Regenerate / retry semantics with attachments", () => {
     expect(second.attachments?.[0]?.data_base64).toBe(btoa("original-body"));
     expect(JSON.stringify(second)).not.toContain("later-body");
     // 当前 Composer 附件不被消费，仍保留。
-    expect(screen.getByText("later.txt")).toBeTruthy();
+    expect(screen.getByText("later.txt", { selector: ".ai-attachment-name" })).toBeTruthy();
     // 无重复 user 消息。
     expect(screen.getAllByTestId("ai-message-user")).toHaveLength(1);
   });

@@ -123,7 +123,7 @@ describe("SystemStatusPanel", () => {
     );
 
     expect(screen.getByText("系统异常")).toBeTruthy();
-    expect(screen.getByText("Control 状态不可达或响应无效。")).toBeTruthy();
+    expect(screen.getByText("无法连接控制服务，或服务返回的状态无效。")).toBeTruthy();
     expect(screen.getByText("network error").getAttribute("role")).toBe("alert");
   });
 });

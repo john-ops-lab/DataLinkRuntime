@@ -452,12 +452,36 @@ function valueOf(testId: string): string {
 }
 
 async function waitForCodeEditorValue(expected: string): Promise<void> {
+  const codeSummary = screen.queryByText("查看 Python 完整代码与依赖（只读）");
+  const disclosure = codeSummary?.closest("details");
+  if (disclosure !== null && disclosure !== undefined && !disclosure.open) {
+    fireEvent.click(codeSummary!);
+    expect(disclosure.open).toBe(true);
+  }
   await waitFor(() => {
     const values = screen
       .getAllByTestId("code-editor")
       .map((element) => (element as HTMLTextAreaElement).value);
     expect(values).toContain(expected);
   });
+}
+
+async function findDeleteConfirmation(): Promise<HTMLElement> {
+  const confirmButton = await screen.findByTestId("confirm-delete-adapter");
+  const dialog = confirmButton.closest<HTMLElement>('[role="dialog"]');
+  expect(dialog).not.toBeNull();
+  // rc-util uses the same "test-id" for all hooks in NODE_ENV=test. Locate
+  // this dialog via its action, then verify its own accessible-title reference.
+  const title = within(dialog!).getByText("删除适配器？", { selector: "[id]" });
+  expect(title.id).toBe(dialog!.getAttribute("aria-labelledby"));
+  expect(title.id).not.toBe("");
+  expect(dialog!.getAttribute("aria-modal")).toBe("true");
+  return dialog!;
+}
+
+async function openExecutionInput(): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByRole("tab", { name: "输入" }));
+  return screen.findByTestId("detail-input");
 }
 
 // Most tests exercise the authenticated console: seed the sessionStorage token
@@ -1481,7 +1505,7 @@ it("creates a JavaScript adapter with the language starter and Monaco mode", asy
     target: { value: "node-adapter" },
   });
   fireEvent.click(screen.getByText("JavaScript"));
-  fireEvent.click(screen.getByRole("radio", { name: "Webhook 适配器" }));
+  fireEvent.click(screen.getByRole("radio", { name: /^Webhook 适配器/ }));
   fireEvent.click(screen.getByTestId("create-adapter"));
 
   const editor = await screen.findByTestId("code-editor");
@@ -1839,7 +1863,7 @@ it("keeps Save disabled and never mixes content when switching to an adapter who
     {
       method: "GET",
       match: "/api/adapters",
-      respond: () => ({ body: [makeAdapter(), makeAdapter({ id: 2, name: "adapter-b" })] }),
+      respond: () => ({ body: [makeAdapter(), makeAdapter({ id: 2, name: "adapter-b", latest_version_id: 20 })] }),
     },
     {
       method: "GET",
@@ -1876,6 +1900,9 @@ it("keeps Save disabled and never mixes content when switching to an adapter who
   expect(valueOf("code-editor")).not.toBe(TASK_STARTER_CODE);
   const saveButton = screen.getByTestId("save-version") as HTMLButtonElement;
   expect(saveButton.disabled).toBe(true);
+  const editSaveRegion = within(screen.getByTestId("save-regions")).getByText("编辑内容").closest("section")!;
+  expect(editSaveRegion.querySelector(".ux-save-state")?.textContent).toBe("尚未确认，请查看");
+  expect(editSaveRegion.textContent).not.toContain("已保存");
   expect(saveButton.closest(".action-with-reason")?.getAttribute("title")).toContain(
     "版本内容尚未就绪",
   );
@@ -2492,8 +2519,8 @@ it("keeps Template copy disabled while a hidden Task mutation is in flight", asy
   )).toBe(true));
 
   fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
-  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
-  const copyButton = await screen.findByRole("button", { name: "复制为适配器" }) as HTMLButtonElement;
+  fireEvent.click(await screen.findByRole("link", { name: /查看用法与代码/ }));
+  const copyButton = await screen.findByRole("button", { name: "复制 Python 为适配器" }) as HTMLButtonElement;
   expect(copyButton.disabled).toBe(true);
 
   await act(async () => {
@@ -2552,7 +2579,7 @@ it("reopens the same server log after closing the live-to-history drawer", async
 
   await screen.findByTestId("live-log-view-server");
   fireEvent.click(screen.getByTestId("live-log-view-server"));
-  await screen.findByTestId("detail-input");
+  await openExecutionInput();
 
   const closeButton = document.querySelector(".ant-drawer-close");
   if (!(closeButton instanceof HTMLButtonElement)) {
@@ -2565,7 +2592,7 @@ it("reopens the same server log after closing the live-to-history drawer", async
   // The handoff request is one-shot: after the drawer closes, the same
   // execution id must be accepted again instead of React bailing on setState.
   fireEvent.click(screen.getByTestId("live-log-view-server"));
-  expect(await screen.findByTestId("detail-input")).toBeTruthy();
+  expect(await openExecutionInput()).toBeTruthy();
 });
 
 it("blocks running while unsaved edits exist and unblocks after Save (M5.5.9)", async () => {
@@ -2916,7 +2943,7 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
   expect(firstRow.getAttribute("tabindex")).toBe("0");
   firstRow.focus();
   fireEvent.keyDown(firstRow, { key: "Enter" });
-  const detailInput = await screen.findByTestId("detail-input");
+  const detailInput = await openExecutionInput();
   expect(detailInput.textContent).toContain('"k": 1');
   const firstRowText = firstRow.textContent ?? "";
   expect(firstRowText).toContain("2026");
@@ -2946,7 +2973,7 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
   secondRow.focus();
   expect(fireEvent.keyDown(secondRow, { key: " " })).toBe(false);
   await screen.findByText("执行详情");
-  expect((await screen.findByTestId("detail-input")).textContent).toContain('"k": 2');
+  expect((await openExecutionInput()).textContent).toContain('"k": 2');
 });
 
 it.each([
@@ -3027,14 +3054,14 @@ it("never shows a stale detail when executions are clicked in quick succession",
   // presenting stale details under the new Execution title.
   fireEvent.click(rows[1]);
   await screen.findByText("执行详情");
-  expect(screen.getByTestId("detail-input").textContent).toContain('"who": "B"');
+  expect((await openExecutionInput()).textContent).toContain('"who": "B"');
   fireEvent.click(rows[0]);
   expect(screen.queryByTestId("detail-input")).toBeNull();
 
   // Click B again while A is still slow: B must win even though A resolves last.
   fireEvent.click(rows[1]);
   await screen.findByText("执行详情");
-  expect(screen.getByTestId("detail-input").textContent).toContain('"who": "B"');
+  expect((await openExecutionInput()).textContent).toContain('"who": "B"');
 
   releaseA();
   // Let A's late response settle, then verify the drawer still shows B.
@@ -3177,14 +3204,11 @@ it("shows the brand area and the token card on the login page", async () => {
   await screen.findByTestId("admin-token-input");
   expect(screen.getByText("DataLinkRuntime")).toBeTruthy();
   expect(screen.getByText("欢迎登录 DLR 控制台")).toBeTruthy();
-  // M5.8-011：首页收敛为已确认的产品文案，不再堆叠功能列表。
-  expect(screen.getByText("Code your data connections.")).toBeTruthy();
-  expect(screen.getByText("把数据连接逻辑写成 Adapter（适配器），然后直接运行。")).toBeTruthy();
-  expect(document.querySelector(".login-brand-intro")?.textContent).toBe(
-    "从代码编辑、依赖配置到执行、日志与历史追踪，\nDataLinkRuntime 提供一个轻量、自托管的完整运行环境。",
-  );
-  expect(screen.getByText("Develop → Run → Observe")).toBeTruthy();
-  expect(screen.getByText("© 2026 DataLinkRuntime · MIT License")).toBeTruthy();
+  // Issue #212: the login introduction uses the selected language and a compact workflow.
+  expect(screen.getByText("用代码连接你的数据")).toBeTruthy();
+  expect(screen.getByText("编写 → 运行 → 查看结果")).toBeTruthy();
+  expect(document.querySelector(".auth-shell-login")).not.toBeNull();
+  expect(document.querySelector(".login-brand-intro")).toBeNull();
   expect(screen.queryByText(/轻量 · 连接 · 适配 · 运行/)).toBeNull();
   expect(screen.queryByText("轻量易用")).toBeNull();
   expect(screen.queryByText("多元适配")).toBeNull();
@@ -3209,7 +3233,7 @@ it("renders the console shell with catalog, workbench header and the three main 
   await selectFirstAdapter();
   expect(screen.getByTestId("workbench-header")).toBeTruthy();
   expect(screen.getByText("编辑")).toBeTruthy();
-  expect(screen.getByText("运行设置")).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "运行设置" })).toBeTruthy();
   expect(screen.getByText("执行记录")).toBeTruthy();
 });
 
@@ -3256,8 +3280,11 @@ it("edits metadata and deletes the adapter from the settings drawer", async () =
   fireEvent.click(screen.getByTestId("update-details"));
   await screen.findByRole("heading", { name: "renamed" });
 
-  vi.spyOn(window, "confirm").mockReturnValue(true);
   fireEvent.click(screen.getByTestId("delete-adapter"));
+  const deleteDialog = await findDeleteConfirmation();
+  expect(within(deleteDialog).getByText("renamed")).toBeTruthy();
+  expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/adapters/1" && init?.method === "DELETE")).toBe(false);
+  fireEvent.click(within(deleteDialog).getByTestId("confirm-delete-adapter"));
   await waitFor(() => {
     expect(
       fetchMock.mock.calls.some(
@@ -3786,7 +3813,7 @@ it("gives repeated Credential Binding controls stable row-specific accessible na
 
   render(<App />);
   await selectFirstAdapter();
-  fireEvent.click(screen.getByText("凭据绑定"));
+  fireEvent.click(screen.getByTestId("bindings-collapse-header"));
   await screen.findByRole("group", { name: "绑定 1" });
   expect(screen.getByRole("textbox", { name: "绑定 1 代码中的凭据名" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "绑定 1 凭据" })).toBeTruthy();
@@ -3841,7 +3868,7 @@ it("warns when the code-side credential name is changed", async () => {
 
   render(<App />);
   await selectFirstAdapter();
-  fireEvent.click(screen.getByText("凭据绑定"));
+  fireEvent.click(screen.getByTestId("bindings-collapse-header"));
   await screen.findByRole("group", { name: "绑定 1" });
   expect(screen.queryByTestId("binding-rename-hint")).toBeNull();
   fireEvent.change(screen.getByRole("textbox", { name: "绑定 1 代码中的凭据名" }), {
@@ -3936,8 +3963,8 @@ it("manages credentials and package sources from the system settings drawer", as
   fireEvent.click(screen.getByTestId("new-package-source"));
   expect(screen.getByRole("textbox", { name: "依赖源名称" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "依赖源类型" })).toBeTruthy();
-  expect(screen.getByRole("textbox", { name: "索引 URL" })).toBeTruthy();
-  expect(screen.getByRole("combobox", { name: "依赖源凭据" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "软件包仓库地址" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "访问凭据 · 可选" })).toBeTruthy();
 
   fireEvent.click(screen.getByTestId("test-package-source"));
   await screen.findByTestId("package-source-test-result");
@@ -6614,8 +6641,10 @@ it("shows the M5.5.13 credential guidance copy and the quiet assistant header", 
 
   // 引导文案：凭据绑定引导 + 硬编码敏感信息会随代码发送的区分，无内部术语。
   const empty = screen.getByTestId("ai-conversation-empty");
-  expect(empty.textContent).toContain("凭据绑定");
-  expect(empty.textContent).toContain("避免敏感凭据随代码发送给 AI");
+  const scope = screen.getByTestId("ai-send-scope");
+  expect(scope.textContent).toContain("当前代码");
+  expect(scope.textContent).toContain("凭据绑定");
+  expect(screen.getByText("发送内容会交给 AI 服务，请勿包含密码或密钥。")).toBeTruthy();
   expect(empty.textContent).not.toContain("工作副本");
   expect(empty.textContent).not.toContain("唯一代码快照");
   // UX-FINAL-002：底部重复提示已移除；上方空状态仍保留安全引导。
@@ -6758,7 +6787,7 @@ it("uses browser Back from a Gallery-opened detail so Back does not reopen it", 
 
   render(<App />);
   await screen.findByTestId("template-gallery");
-  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  fireEvent.click(await screen.findByRole("link", { name: /查看用法与代码/ }));
   await screen.findByTestId("template-detail");
   expect(window.location.pathname).toBe("/templates/rest-single-request");
 
@@ -6834,7 +6863,7 @@ it("copies the Variant into an unsaved ordinary Adapter editor without a Revisio
     "/api/templates/scenarios/rest-single-request/variants/python",
   ));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.click(screen.getByRole("button", { name: "复制 Python 为适配器" }));
   fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), {
     target: { value: " 生产 REST 同步 " },
   });
@@ -6846,7 +6875,7 @@ it("copies the Variant into an unsaved ordinary Adapter editor without a Revisio
   expect(screen.getByRole("tab", { name: "编辑" }).getAttribute("aria-selected")).toBe("true");
   expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(true);
 
-  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole("button", { name: "保存编辑内容" }) as HTMLButtonElement).disabled).toBe(false);
   const unload = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(unload);
   expect(unload.defaultPrevented).toBe(true);
@@ -6904,7 +6933,7 @@ it("does not let a late bootstrap Adapter list hide the newly instantiated Adapt
   render(<App />);
   await waitFor(() => expect(listCalls).toBe(1));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.click(screen.getByRole("button", { name: "复制 Python 为适配器" }));
   fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), {
     target: { value: copied.name },
   });
@@ -6963,7 +6992,7 @@ it("restores and protects copied code without depending on an empty version-hist
 
   render(<App />);
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.click(screen.getByRole("button", { name: "复制 Python 为适配器" }));
   fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), {
     target: { value: copied.name },
   });
@@ -6973,7 +7002,7 @@ it("restores and protects copied code without depending on an empty version-hist
   expect(window.location.pathname).toBe("/adapters");
   await waitForCodeEditorValue(templateVariantFixture.code);
   expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/42/versions")).toBe(false);
-  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole("button", { name: "保存编辑内容" }) as HTMLButtonElement).disabled).toBe(false);
   const unload = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(unload);
   expect(unload.defaultPrevented).toBe(true);
@@ -6990,12 +7019,12 @@ it("does not POST when the user cancels leaving a dirty Adapter for instantiatio
   await selectFirstAdapter();
   fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "do not discard" } });
   fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
-  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  fireEvent.click(await screen.findByRole("link", { name: /查看用法与代码/ }));
   await waitFor(() => expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
     "/api/templates/scenarios/rest-single-request/variants/python",
   ));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.click(screen.getByRole("button", { name: "复制 Python 为适配器" }));
   const nameInput = screen.getByRole("textbox", { name: "适配器名称" });
   fireEvent.change(nameInput, { target: { value: "保留输入" } });
   vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -7029,9 +7058,9 @@ it("does not POST when the user cancels leaving an unsaved Task input draft", as
 
   vi.spyOn(window, "confirm").mockReturnValue(true);
   fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
-  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  fireEvent.click(await screen.findByRole("link", { name: /查看用法与代码/ }));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.click(screen.getByRole("button", { name: "复制 Python 为适配器" }));
   const nameInput = screen.getByRole("textbox", { name: "适配器名称" });
   fireEvent.change(nameInput, { target: { value: "保留 Task 草稿" } });
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -7067,9 +7096,9 @@ it("does not POST when the user cancels leaving an unsaved Webhook runtime draft
   expect(beforeUnload.defaultPrevented).toBe(true);
 
   fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
-  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  fireEvent.click(await screen.findByRole("link", { name: /查看用法与代码/ }));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.click(screen.getByRole("button", { name: "复制 Python 为适配器" }));
   const nameInput = screen.getByRole("textbox", { name: "适配器名称" });
   fireEvent.change(nameInput, { target: { value: "保留 Webhook 草稿" } });
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -7864,4 +7893,47 @@ it("guards native Settings navigation from the Gallery while its hidden input dr
   expect(confirm).toHaveBeenCalledTimes(1);
   expect(valueOf("task-input-json")).toBe('"draft"');
   expect(screen.getByTestId("adapter-surface").hidden).toBe(true);
+});
+
+
+it("locks navigation during delete confirmation and cancellation preserves the workspace", async () => {
+  window.history.replaceState(null, "", "/templates");
+  window.history.pushState(null, "", "/adapters");
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const fetchMock = stubFetch(consoleWithVersionRoutes(adapter, makeVersion()));
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  fireEvent.click(await screen.findByTestId("delete-adapter"));
+  const dialog = await findDeleteConfirmation();
+  const originalPath = window.location.pathname;
+  const nativeBack = vi.fn();
+  window.addEventListener("popstate", nativeBack);
+  act(() => window.history.back());
+  await waitFor(() => expect(nativeBack).toHaveBeenCalled());
+  await waitFor(() => expect(window.location.pathname).toBe(originalPath));
+  window.removeEventListener("popstate", nativeBack);
+  expect(screen.getAllByTestId("confirm-delete-adapter")).toHaveLength(1);
+  fireEvent.click(within(dialog).getByRole("button", { name: /取.*消/ }));
+  await waitFor(() => expect(screen.queryByTestId("confirm-delete-adapter")).toBeNull());
+  expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/adapters/1" && init?.method === "DELETE")).toBe(false);
+  expect(valueOf("code-editor")).toBe(makeVersion().code);
+  expect((screen.getByTestId("delete-adapter") as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("keeps the new adapter draft when template navigation is cancelled for unsaved input", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([...consoleWithVersionRoutes(adapter, makeVersion()), readyWorkerRoute]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  fireEvent.click(await screen.findByTestId("task-input-source-json"));
+  fireEvent.change(await screen.findByTestId("task-input-json"), { target: { value: '{"keep":true}' } });
+  fireEvent.click(screen.getByTestId("show-create-form"));
+  const name = await screen.findByTestId("new-adapter-name");
+  fireEvent.change(name, { target: { value: "keep-new-draft" } });
+  vi.spyOn(window, "confirm").mockReturnValue(false);
+  fireEvent.click(screen.getByRole("button", { name: "从模板创建" }));
+  expect(window.location.pathname).not.toBe("/templates");
+  expect((screen.getByTestId("new-adapter-name") as HTMLInputElement).value).toBe("keep-new-draft");
 });

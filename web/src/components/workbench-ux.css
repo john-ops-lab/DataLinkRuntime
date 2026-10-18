@@ -1,0 +1,26 @@
+.ux-template-entry { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px; margin-bottom: 20px; background: #f0f6ff; border: 1px solid #d6e4ff; border-radius: 8px; }
+.ux-create-types { display: grid; gap: 10px; width: 100%; }
+.ux-create-types .ant-radio-wrapper { margin: 0; padding: 14px; border: 1px solid #dbe3ef; border-radius: 8px; align-items: flex-start; }
+.ux-create-types .ant-radio-wrapper-checked { border-color: #1677ff; background: #f0f6ff; }
+.ux-create-types small { display: block; margin-top: 6px; color: #596a80; line-height: 1.6; }
+.ux-muted, .ux-save-scope { color: #596a80; line-height: 1.6; }
+.ux-save-scope { margin: 8px 0 12px; }
+.ux-save-regions { padding: 16px; border: 1px solid #dbe3ef; border-radius: 8px; background: #fff; margin-top: 16px; }
+.ux-save-region-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 12px; }
+.ux-save-region-grid section { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.ux-save-region-grid .ant-btn { max-width: 100%; white-space: normal; height: auto; padding-left: 0; }
+.ux-save-state { color: #237b3b; }
+.ux-save-state[data-dirty="true"] { color: #ad6800; }
+.ux-permission-scopes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.ux-permission-scopes > div { padding: 14px; border: 1px solid #dbe3ef; border-radius: 8px; }
+.ux-permission-scopes p { margin-bottom: 0; color: #596a80; }
+.ux-binding-help { margin-bottom: 14px; }
+.ux-binding-help summary { color: #165dcc; cursor: pointer; margin-bottom: 8px; }
+.ux-binding-labels { display: grid; grid-template-columns: 1fr 1fr 1fr 70px; gap: 12px; margin: 16px 0 8px; }
+.ux-binding-impact { margin: 16px 0 12px; padding: 14px; border: 1px solid #dbe3ef; border-radius: 8px; }
+.ux-binding-impact p { color: #596a80; margin: 8px 0; }
+.ux-delete-summary { display: grid; gap: 16px; }
+.ux-delete-summary h4 { margin: 0 0 8px; }
+.ux-delete-summary ul { margin: 0; padding-left: 20px; }
+.ux-delete-summary li { margin: 8px 0; }
+@media (max-width: 760px) { .ux-save-region-grid, .ux-permission-scopes { grid-template-columns: 1fr; } .ux-template-entry { flex-wrap: wrap; } .ux-binding-labels { grid-template-columns: 1fr 1fr 1fr; font-size: 12px; } }

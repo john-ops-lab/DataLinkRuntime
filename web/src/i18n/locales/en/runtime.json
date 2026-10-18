@@ -89,18 +89,18 @@
       "scheduleStatus": "Schedule status",
       "scheduleRunning": "Schedule running",
       "disabled": "Disabled",
-      "nextRun": "Next execution: {{time}}",
-      "misfirePolicy": "Missed-point policy",
-      "coalesceLatest": "Coalesce to the latest point",
+      "nextRun": "Next planned time: {{time}}",
+      "misfirePolicy": "When execution times are missed",
+      "coalesceLatest": "Catch up the latest occurrence",
       "coalesceLatestHint": "Accept only the newest due point in one batch and record the others as coalesced.",
-      "queueEveryOccurrence": "Queue every occurrence",
+      "queueEveryOccurrence": "Queue missed occurrences in order",
       "queueEveryOccurrenceHint": "Queue due points in schedule order and keep the cursor at the first unaccepted point when capacity is full.",
-      "skipWhileBusy": "Skip while the Adapter is busy",
+      "skipWhileBusy": "Skip while busy or at capacity",
       "skipWhileBusyHint": "Skip and record a reason when Adapter or global capacity is unavailable.",
-      "catchupCount": "Maximum catch-up points",
-      "catchupAge": "Catch-up window (seconds)",
-      "policyHint": "The server validates these bounds; a failed save keeps the current draft.",
-      "recentOutcomes": "Recent schedule outcomes",
+      "catchupCount": "Maximum catch-up occurrences",
+      "catchupAge": "Catch-up time window (seconds)",
+      "policyHint": "The count limit applies when queueing occurrences. Older occurrences outside the time or count limit are not caught up. A failed save preserves your draft.",
+      "recentOutcomes": "Recent schedule occurrences",
       "noRecentOutcomes": "No schedule point outcomes have been recorded yet.",
       "outcomeEnqueued": "Enqueued",
       "outcomeCoalesced": "Coalesced",
@@ -109,7 +109,29 @@
       "save": "Save runtime configuration",
       "invalidTimeout": "Per-execution timeout must be between 1 and {{max}} seconds (maximum 24 hours).",
       "chooseWorker": "Choose a Runtime Worker first.",
-      "savedScheduleNotLoaded": "Runtime configuration was saved, but Schedule has not finished loading (or failed to load), so schedule fields were not saved. Refresh and try again."
+      "savedScheduleNotLoaded": "Runtime configuration was saved, but Schedule has not finished loading (or failed to load), so schedule fields were not saved. Refresh and try again.",
+      "frequency": "Frequency",
+      "frequency_daily": "Daily",
+      "frequency_weekly": "Weekly",
+      "frequency_hourly": "Hourly",
+      "frequency_advanced": "Advanced rule",
+      "timeOfDay": "Time",
+      "weekday": "Weekday",
+      "minuteOfHour": "Minute of each hour",
+      "previewTimes": "Preview times",
+      "currentRule": "Current draft rule: {{cron}} · {{timezone}}",
+      "previewHint": "The server computes this preview. It does not save, enable the schedule or start a task.",
+      "weekdays": {
+        "0": "Sunday",
+        "1": "Monday",
+        "2": "Tuesday",
+        "3": "Wednesday",
+        "4": "Thursday",
+        "5": "Friday",
+        "6": "Saturday"
+      },
+      "enableSchedule": "Enable schedule",
+      "disableSchedule": "Disable schedule"
     },
     "input": {
       "description": "Manual and scheduled runs share one saved Input Object.",
@@ -155,7 +177,8 @@
       "retention": {
         "systemDefault": "System default",
         "custom": "Custom duration",
-        "manualDelete": "Retain until deleted"
+        "manualDelete": "Retain until deleted",
+        "systemDefaultCurrent": "System default: currently {{seconds}} seconds"
       },
       "fileStatus": {
         "ready": "Ready",
@@ -163,7 +186,7 @@
       },
       "cloneReuploadHint": "Cloning an Adapter does not copy its input files. Upload the files again for this Adapter.",
       "examples": {
-        "title": "Read managed files",
+        "title": "Read uploaded files in code",
         "description": "This read-only example uses only the Runtime Context file API and does not change the Adapter.",
         "codeLabel": "Read-only file example",
         "copy": "Copy example",
@@ -195,7 +218,9 @@
       },
       "savedNormalized": "Saved successfully; removed {{count}} null characters (U+0000)",
       "saveSuccess": "Saved successfully",
-      "keyConflict": "Key {{key}} conflicts in object {{path}} after removing null characters. Correct the input"
+      "keyConflict": "Key {{key}} conflicts in object {{path}} after removing null characters. Correct the input",
+      "supportedFormats": "Supported file formats",
+      "formatsUnavailable": "The format list has not loaded. Refresh and try again."
     }
   },
   "webhook": {
@@ -382,7 +407,15 @@
     "inputFileName": "File name",
     "inputFileType": "Content type",
     "inputFileSize": "Size",
-    "inputFileSha256": "SHA-256"
+    "inputFileSha256": "SHA-256",
+    "summaryStarted": "Started: {{time}}",
+    "interfaceTimezone": "Summary times use {{timezone}} with a timezone label; logs retain their original text.",
+    "executionMetadata": "Execution times and runtime worker",
+    "viewProcess": "View this run’s process",
+    "inputSnapshotReadonly": "Read-only snapshot saved for this execution",
+    "inputFileDetails": "File details and checksum",
+    "openIncidentNotice": "This execution has unresolved system incidents. Review the reasons and available actions.",
+    "viewIncidents": "View incidents and actions"
   },
   "live": {
     "title": "Live logs",
@@ -390,14 +423,18 @@
     "emptyTag": "No logs",
     "waitingTitle": "Waiting for Webhook request…",
     "waitingDescription": "After a real request creates an execution, this view will follow the complete call log automatically.",
-    "emptyTitle": "No live logs",
-    "emptyDescription": "After a run starts, stdout, stderr, logger and Traceback appear here in the order they occurred.",
+    "emptyTitle": "No live logs displayed yet",
+    "emptyDescription": "Logs appear here after a task starts running.",
     "connectionLost": "Live connection lost; status may be stale",
     "connectionLostDescription": "The authoritative polling limit was reached without a terminal state. Refresh or open the execution history later.",
     "queuedDescription": "The Execution is durably queued for its target Worker; a temporarily offline Worker is not a failure.",
     "retryDescription": "The server will continue at the next attempt time recorded in the Execution.",
     "unifiedLog": "Unified log",
-    "output": "Output"
+    "output": "Output",
+    "historyPrompt": "Looking for earlier results and logs?",
+    "viewHistory": "View execution history",
+    "contentExplanation": "About these logs",
+    "contentDescription": "Program output, errors and system messages appear in order. Empty logs do not mean that no tasks are running."
   },
   "output": {
     "truncated": "Output exceeded the platform retention limit; the complete content was not saved",
@@ -405,7 +442,11 @@
     "unknownSize": "Unknown",
     "unknown": "Output information is incomplete and cannot be confirmed.",
     "empty": "No Output",
-    "contentLabel": "Execution output"
+    "contentLabel": "Execution output",
+    "generated": "Output generated",
+    "copy": "Copy output",
+    "copied": "Output copied",
+    "failed": "Copy failed. Please try again."
   },
   "logs": {
     "title": "Execution logs",
@@ -432,7 +473,8 @@
     "copySuccess": "Complete server-saved content copied",
     "copyFailed": "Copy failed; check browser clipboard permission",
     "empty": "No logs",
-    "contentLabel": "Execution log content"
+    "contentLabel": "Execution log content",
+    "originalTimezone": "Log timestamps without a timezone are shown as recorded; they are not converted to the summary timezone."
   },
   "units": {
     "seconds": "{{value}} seconds",

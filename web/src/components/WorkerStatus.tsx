@@ -9,7 +9,7 @@ import {
   REQUIRED_ISOLATION_CAPABILITIES,
   type RequiredIsolationCapability,
 } from "../system-status";
-import type { Worker } from "../types";
+import type { Adapter, Worker } from "../types";
 import WorkerCachePanel from "./WorkerCachePanel";
 
 function formatTime(value: string, locale: "zh-CN" | "en"): string {
@@ -25,14 +25,15 @@ function isolationCapabilityLabel(
 }
 
 interface WorkerStatusProps {
+  adapters?: Adapter[];
   workers: Worker[];
   loading: boolean;
   error: string | null;
   canManageCache?: boolean;
 }
 
-export default function WorkerStatus({ workers, loading, error, canManageCache = false }: WorkerStatusProps) {
-  const { i18n, t } = useTranslation("common");
+export default function WorkerStatus({ workers, loading, error, canManageCache = false, adapters }: WorkerStatusProps) {
+  const { i18n, t } = useTranslation(["common", "settings"]);
   const [cacheWorker, setCacheWorker] = useState<Worker | null>(null);
   const locale = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
   const readyCount = workers.filter(isWorkerExecutionReady).length;
@@ -82,7 +83,7 @@ export default function WorkerStatus({ workers, loading, error, canManageCache =
                       </span>
                     )}
                     description={(
-                      <div className="worker-facts">
+                      <details className="admin-worker-checks" open={!executionReady}><summary>{t("systemStatus.environmentDetails", { ns: "settings" })}</summary><div className="worker-facts">
                         <div>{t("worker.lastHeartbeat", { time: formatTime(worker.last_heartbeat, locale) })}</div>
                         {worker.isolation_preflight_at && (
                           <div>{t("worker.isolationPreflightAt", { time: formatTime(worker.isolation_preflight_at, locale) })}</div>
@@ -115,7 +116,7 @@ export default function WorkerStatus({ workers, loading, error, canManageCache =
                             );
                           })}
                         </div>
-                      </div>
+                      </div></details>
                     )}
                   />
                 </List.Item>
@@ -132,6 +133,7 @@ export default function WorkerStatus({ workers, loading, error, canManageCache =
       {cacheWorker !== null && (
         <WorkerCachePanel
           worker={cacheWorker}
+          adapters={adapters}
           open
           onClose={() => setCacheWorker(null)}
         />

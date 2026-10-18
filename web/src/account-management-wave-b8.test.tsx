@@ -326,7 +326,8 @@ it("uses the workbench baseline structure for the user management surface", asyn
 
   await screen.findByText("ordinary");
   expect(screen.getByText(/密码提交后不会再次返回或展示/)).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "创建账号" })).toBeTruthy();
+  expect(screen.getByTestId("user-create-open")).toBeTruthy();
+  expect(screen.queryByTestId("user-create-password")).toBeNull();
   const toolbar = screen.getByTestId("user-management-toolbar");
   // antd Button 会在两个汉字之间插入空格（"刷 新"），用正则匹配文本内容。
   expect(
@@ -353,6 +354,8 @@ it("creates a user with the established payload and keeps the password hidden", 
   renderUserManagement();
 
   await screen.findByText("ordinary");
+  expect(screen.queryByTestId("user-create-username")).toBeNull();
+  fireEvent.click(screen.getByTestId("user-create-open"));
   fireEvent.change(screen.getByTestId("user-create-username"), {
     target: { value: "created-user" },
   });

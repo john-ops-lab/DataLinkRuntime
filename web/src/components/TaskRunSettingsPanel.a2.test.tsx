@@ -462,3 +462,48 @@ describe("Task Input Object A2", () => {
     }));
   });
 });
+
+describe("Issue #212 schedule preview", () => {
+  it("previews the draft on the server without saving or enabling, then invalidates old results", async () => {
+    vi.spyOn(api, "getSchedule").mockResolvedValue(makeSchedule());
+    const save = vi.spyOn(api, "putSchedule");
+    const preview = vi.spyOn(api, "previewSchedule").mockResolvedValue({ occurrences: ["2026-10-19T01:00:00Z"] });
+    renderPanel(makeInputConfig(), { runMode: "schedule" });
+    await screen.findByTestId("task-schedule-cron");
+    fireEvent.click(screen.getByRole("button", { name: "每天" }));
+    expect((screen.getByTestId("task-schedule-cron") as HTMLInputElement).value).toBe("0 9 * * *");
+    fireEvent.click(screen.getByRole("button", { name: "预览执行时间" }));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith({ cron: "0 9 * * *", timezone: "Asia/Shanghai", count: 3 }));
+    await waitFor(() => expect(screen.getByTestId("task-schedule-preview").querySelectorAll("li")).toHaveLength(1));
+    expect(save).not.toHaveBeenCalled();
+    expect(screen.getByTestId("task-schedule-next-run").textContent).toContain("—");
+    fireEvent.change(screen.getByTestId("task-schedule-cron"), { target: { value: "0 10 * * *" } });
+    expect(screen.getByTestId("task-schedule-preview").querySelectorAll("li")).toHaveLength(0);
+    fireEvent.change(screen.getByTestId("task-schedule-cron"), { target: { value: "0 9 * * *" } });
+    expect(screen.getByTestId("task-schedule-preview").querySelectorAll("li")).toHaveLength(0);
+  });
+
+  it("keeps server-supported timezones readable when browser Intl cannot format them", async () => {
+    vi.spyOn(api, "getSchedule").mockResolvedValue({ ...makeSchedule(), timezone: "Factory" });
+    vi.spyOn(api, "previewSchedule").mockResolvedValue({ occurrences: ["2026-10-19T01:00:00Z"] });
+    renderPanel(makeInputConfig(), { runMode: "schedule" });
+    await screen.findByTestId("task-schedule-timezone");
+    expect((screen.getByTestId("task-schedule-timezone") as HTMLInputElement).value).toBe("Factory");
+    fireEvent.click(screen.getByRole("button", { name: "预览执行时间" }));
+    await waitFor(() => expect(screen.getByTestId("task-schedule-preview").querySelector("li")?.textContent).toBe("2026-10-19T01:00:00Z"));
+    expect(screen.getByTestId("task-schedule-next-run").textContent).toContain("下一次计划时间");
+  });
+
+  it("ignores a response that arrives after the draft timezone changed", async () => {
+    vi.spyOn(api, "getSchedule").mockResolvedValue(makeSchedule());
+    let finish!: (value: { occurrences: string[] }) => void;
+    vi.spyOn(api, "previewSchedule").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    renderPanel(makeInputConfig(), { runMode: "schedule" });
+    await screen.findByTestId("task-schedule-cron");
+    fireEvent.click(screen.getByRole("button", { name: "预览执行时间" }));
+    fireEvent.change(screen.getByTestId("task-schedule-timezone"), { target: { value: "UTC" } });
+    finish({ occurrences: ["2026-10-19T01:00:00Z"] });
+    await waitFor(() => expect(screen.getByRole("button", { name: "预览执行时间" }).className).not.toContain("ant-btn-loading"));
+    expect(screen.getByTestId("task-schedule-preview").querySelectorAll("li")).toHaveLength(0);
+  });
+});

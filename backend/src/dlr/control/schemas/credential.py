@@ -82,6 +82,26 @@ class BindingItem(BaseModel):
     field: str
 
 
+class CredentialUsageItem(BaseModel):
+    """Names and reference categories only, never URLs or credential values."""
+
+    kind: Literal[
+        "adapter_binding",
+        "webhook",
+        "ai_model",
+        "ai_custom_provider",
+        "knowledge_source",
+        "package_source",
+    ]
+    name: str
+    adapter_id: int | None = None
+    detail: str | None = None
+
+
+class CredentialUsageResponse(BaseModel):
+    items: list[CredentialUsageItem]
+
+
 class BindingsUpdate(BaseModel):
     """Request body for PUT /api/adapters/{adapter_id}/credential-bindings.
 

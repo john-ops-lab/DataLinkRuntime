@@ -126,6 +126,7 @@ interface Props {
 }
 
 export interface WebhookRuntimeState {
+  settingsDirty?: boolean;
   loaded: boolean;
   enabled: boolean;
   runtimeLocked: boolean;
@@ -350,6 +351,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   useEffect(() => {
     onRuntimeStateChange({
       loaded: !loading && saved !== null,
+      settingsDirty: dirty,
       enabled,
       runtimeLocked,
       changingState,
@@ -358,6 +360,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
     });
   }, [
     changingState,
+    dirty,
     enabled,
     loading,
     onRuntimeStateChange,

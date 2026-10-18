@@ -229,6 +229,7 @@ it("preloads complete vendor and protocol facets independently of visible pagina
   expect(listSpy.mock.calls.filter(([query]) => query.page_size === 48).map(([query]) => query.theme).sort())
     .toEqual(themes.map((theme) => theme.slug).sort());
 
+  fireEvent.click(screen.getByRole("button", { name: "更多筛选" }));
   const protocol = screen.getByRole("combobox", { name: "协议" });
   fireEvent.mouseDown(protocol.closest(".ant-select")?.querySelector(".ant-select-selector") ?? protocol);
   await waitFor(() => {
@@ -266,6 +267,7 @@ it("degrades a failed facet preload to current-page filter values", async () => 
 
   await screen.findByRole("heading", { name: "REST 单次请求" });
   await waitFor(() => expect(screen.getByTestId("template-gallery").getAttribute("aria-busy")).toBe("false"));
+  fireEvent.click(screen.getByRole("button", { name: "更多筛选" }));
   const vendor = screen.getByRole("combobox", { name: "厂商" });
   fireEvent.mouseDown(vendor.closest(".ant-select")?.querySelector(".ant-select-selector") ?? vendor);
   expect(await screen.findByRole("option", { name: "DLR" })).toBeTruthy();
@@ -374,12 +376,12 @@ describe("Scenario detail and copy", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "JavaScript" }));
     await act(async () => { await Promise.resolve(); });
-    expect((screen.getByRole("button", { name: "复制为适配器" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /^复制 (Python|JavaScript) 为适配器$/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByDisplayValue("python recipe source")).toBeNull();
 
     await act(async () => resolveJavascript?.(variant("javascript")));
     expect(await screen.findByDisplayValue("javascript recipe source")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "复制为适配器" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: /^复制 (Python|JavaScript) 为适配器$/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("distinguishes not-found from a recoverable detail failure and retries", async () => {
@@ -455,7 +457,8 @@ describe("Scenario detail and copy", () => {
       ([query]) => query.q === "REST",
     )).toBe(true));
 
-    const vendor = screen.getByRole("combobox", { name: "厂商" });
+    fireEvent.click(screen.getByRole("button", { name: "更多筛选" }));
+  const vendor = screen.getByRole("combobox", { name: "厂商" });
     fireEvent.mouseDown(document.body);
     fireEvent.mouseDown(vendor.closest(".ant-select")?.querySelector(".ant-select-selector") ?? vendor);
     let vendorOption: HTMLElement | undefined;
@@ -474,7 +477,7 @@ describe("Scenario detail and copy", () => {
       ([query]) => query.page === 2 && query.vendor === "DLR",
     )).toBe(true));
 
-    const trigger = screen.getByRole("link", { name: "查看详情" });
+    const trigger = screen.getByRole("link", { name: "查看用法与代码" });
     fireEvent.click(trigger);
     const detailMain = await screen.findByTestId("template-detail");
     expect(screen.getByTestId("template-gallery").hidden).toBe(true);
@@ -512,7 +515,7 @@ describe("Scenario detail and copy", () => {
     });
     renderDetail(onInstantiate);
     await screen.findByDisplayValue("python recipe source");
-    fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+    fireEvent.click(screen.getByRole("button", { name: /^复制 (Python|JavaScript) 为适配器$/ }));
     fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
     expect(await screen.findByText("请输入适配器名称")).toBeTruthy();
     expect(onInstantiate).not.toHaveBeenCalled();
@@ -529,7 +532,7 @@ describe("Scenario detail and copy", () => {
     const onInstantiate = vi.fn(async () => true);
     renderDetail(onInstantiate);
     await screen.findByDisplayValue("python recipe source");
-    fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+    fireEvent.click(screen.getByRole("button", { name: /^复制 (Python|JavaScript) 为适配器$/ }));
     const input = screen.getByRole("textbox", { name: "适配器名称" });
     expect(input.getAttribute("required")).not.toBeNull();
     expect(input.getAttribute("aria-required")).toBe("true");
@@ -548,7 +551,7 @@ describe("Scenario detail and copy", () => {
     const onInstantiate = vi.fn(async () => true);
     renderDetail(onInstantiate);
     await screen.findByDisplayValue("python recipe source");
-    fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+    fireEvent.click(screen.getByRole("button", { name: /^复制 (Python|JavaScript) 为适配器$/ }));
     fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), {
       target: { value: "名".repeat(129) },
     });
@@ -561,7 +564,7 @@ describe("Scenario detail and copy", () => {
     const onInstantiate = vi.fn(async () => { throw new Error("offline"); });
     renderDetail(onInstantiate);
     await screen.findByDisplayValue("python recipe source");
-    fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+    fireEvent.click(screen.getByRole("button", { name: /^复制 (Python|JavaScript) 为适配器$/ }));
     const input = screen.getByRole("textbox", { name: "适配器名称" });
     fireEvent.change(input, { target: { value: "稍后重试" } });
     fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
@@ -575,7 +578,7 @@ describe("Scenario detail and copy", () => {
     const onInstantiate = vi.fn(() => new Promise<boolean>((resolve) => { resolveRequest = resolve; }));
     renderDetail(onInstantiate);
     await screen.findByDisplayValue("python recipe source");
-    fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+    fireEvent.click(screen.getByRole("button", { name: /^复制 (Python|JavaScript) 为适配器$/ }));
     fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), { target: { value: "单飞复制" } });
     const submit = screen.getByRole("button", { name: "复制并编辑" });
     fireEvent.click(submit);
@@ -601,6 +604,6 @@ describe("Scenario detail and copy", () => {
       />,
     );
     await screen.findByDisplayValue("python recipe source");
-    expect((screen.getByRole("button", { name: "复制为适配器" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: /^复制 (Python|JavaScript) 为适配器$/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

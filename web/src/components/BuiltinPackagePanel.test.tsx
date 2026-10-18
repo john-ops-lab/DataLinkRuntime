@@ -63,7 +63,7 @@ it("requires explicit deletion confirmation and keeps failure visible", async ()
     await screen.findByRole("button", { name: `删除 ${file.filename}` }),
   );
   const dialog = await screen.findByRole("dialog");
-  expect(within(dialog).getByText(/已有 Worker 环境可能继续运行/)).toBeTruthy();
+  expect(within(dialog).getByText(/已有运行节点的安装环境可能继续使用/)).toBeTruthy();
   expect(remove).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", { name: "永久删除" }));
   await waitFor(() =>
@@ -95,7 +95,7 @@ it("uploads a selected batch and reports each result", async () => {
   const end = vi.fn();
   render(<BuiltinPackagePanel onMutationStart={start} onMutationEnd={end} />);
   await screen.findByText("offline-demo");
-  fireEvent.click(screen.getByRole("button", { name: "批量上传" }));
+  fireEvent.click(screen.getByRole("button", { name: "上传依赖安装包" }));
   const dialog = await screen.findByRole("dialog");
   const input = dialog.querySelector<HTMLInputElement>('input[type="file"]');
   expect(input).toBeTruthy();

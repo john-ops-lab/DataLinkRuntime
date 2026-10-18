@@ -2,10 +2,10 @@
   "product": {
     "name": "DataLinkRuntime",
     "tagline": "Lightweight data adapter runtime platform",
-    "headline": "Code your data connections.",
+    "headline": "Connect your data with code",
     "intro1": "Write your data connection logic as Adapters, then run them directly.",
     "intro2": "From code editing and dependency setup to execution, logs, and history tracking,\nDataLinkRuntime provides a lightweight, self-hosted, complete runtime environment.",
-    "flow": "Develop → Run → Observe",
+    "flow": "Write → Run → Inspect results",
     "copyright": "© 2026 DataLinkRuntime · MIT License"
   },
   "shell": {
@@ -123,7 +123,13 @@
     "confirmBulkEnable": "Enable the selected {{count}} users?",
     "confirmBulkDisable": "Disable the selected {{count}} users? Existing Sessions will be invalidated.",
     "bulkEnabled": "Enabled {{count}} users",
-    "bulkDisabled": "Disabled {{count}} users; existing Sessions were invalidated."
+    "bulkDisabled": "Disabled {{count}} users; existing Sessions were invalidated.",
+    "listTitle": "Existing accounts",
+    "newAccount": "New account",
+    "roleHelpTitle": "What can each role do?",
+    "adminScope": "Manage system settings, accounts and all adapters",
+    "userScope": "Use adapters you own or have permission to access",
+    "passwordPrivacy": "Passwords are hidden after submission. Use Reset password to change one."
   },
   "translation": {
     "unavailable": "Translation unavailable"
@@ -229,7 +235,22 @@
     "toolbarAria": "Code editor toolbar",
     "ariaLabel": "Adapter code editor",
     "maximize": "Maximize code editor",
-    "restore": "Restore code editor layout"
+    "restore": "Restore code editor layout",
+    "saveContent": "Save editor content",
+    "saveScope": "Saves code, dependencies and runtime parameters. It does not start a run.",
+    "saveRegions": "Three areas save separately",
+    "editContent": "Editor content",
+    "inputData": "Input data",
+    "runSettings": "Run settings",
+    "saved": "Saved",
+    "unsaved": "Unsaved",
+    "viewInput": "View input",
+    "viewRunSettings": "Go to run settings",
+    "saveAbove": "Use the save button above",
+    "bindingsSeparate": "Credential bindings (save separately)",
+    "dirtyRun": "Code has unsaved changes. Save editor content before running.",
+    "noSavedContent": "Not saved yet",
+    "statusUnavailable": "Not confirmed — open to check"
   },
   "health": {
     "loading": "Checking control service…",

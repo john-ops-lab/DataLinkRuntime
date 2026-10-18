@@ -10,13 +10,12 @@ import {
   cacheSystemLocale,
   isSystemLocale,
   readCachedSystemLocale,
-  resolveSystemLocale,
 } from "./i18n";
 import { applyLoginLocalePreference } from "./login-locale";
 import type { AccountPrincipal, SystemLocale } from "./types";
-import { userErrorMessage } from "./user-message";
 import { AdapterConsole } from "./App";
 import AccountLoginPage from "./components/AccountLoginPage";
+import type { LoginNotice } from "./components/login-notice";
 import AccountPasswordPage from "./components/AccountPasswordPage";
 import AccountUserPage from "./components/AccountUserPage";
 
@@ -26,7 +25,7 @@ export default function AccountApp() {
   const { i18n, t } = useTranslation("common");
   const [screen, setScreen] = useState<AccountScreen>("loading");
   const [principal, setPrincipal] = useState<AccountPrincipal | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<LoginNotice | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
 
   const refreshSystemLocale = useCallback(async (): Promise<SystemLocale | null> => {
@@ -53,7 +52,7 @@ export default function AccountApp() {
     );
   }, []);
 
-  const returnToLogin = useCallback((nextNotice: string | null) => {
+  const returnToLogin = useCallback((nextNotice: LoginNotice | null) => {
     setPrincipal(null);
     setProfileOpen(false);
     setNotice(nextNotice);
@@ -62,7 +61,7 @@ export default function AccountApp() {
 
   useEffect(() => {
     setAuthToken(null);
-    onUnauthorized(() => returnToLogin(i18n.t("auth.accountSessionRejected")));
+    onUnauthorized(() => returnToLogin({ key: "auth.accountSessionRejected" }));
     const systemLocalePromise = refreshSystemLocale();
 
     let cancelled = false;
@@ -80,13 +79,7 @@ export default function AccountApp() {
       } catch (error) {
         const serverLocale = await systemLocalePromise;
         if (!cancelled && (!(error instanceof ApiError) || error.status !== 401)) {
-          setNotice(
-            userErrorMessage(
-              error,
-              i18n.t("auth.accountUnavailable"),
-              resolveSystemLocale(i18n.language),
-            ),
-          );
+          setNotice({ error, fallbackKey: "auth.accountUnavailable" });
         }
         if (!cancelled) {
           await applyLoginLocalePreference(serverLocale ?? undefined);
@@ -114,7 +107,7 @@ export default function AccountApp() {
       new_password: newPassword,
     });
     await api.getAccountCsrf();
-    returnToLogin(t("auth.passwordChangedNotice"));
+    returnToLogin({ key: "auth.passwordChangedNotice" });
   }
 
   async function handleLogout() {
@@ -122,7 +115,7 @@ export default function AccountApp() {
       await api.logoutAccount();
     } finally {
       await api.getAccountCsrf().catch(() => undefined);
-      returnToLogin(t("auth.logoutNotice"));
+      returnToLogin({ key: "auth.logoutNotice" });
     }
   }
 
@@ -168,7 +161,7 @@ export default function AccountApp() {
         <AccountUserPage
           principal={principal}
           onPrincipalChange={setPrincipal}
-          onPasswordChanged={() => returnToLogin(t("users.passwordChanged"))}
+          onPasswordChanged={() => returnToLogin({ key: "users.passwordChanged" })}
           onLogout={handleLogout}
         />
       </Drawer>

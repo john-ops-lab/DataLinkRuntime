@@ -654,7 +654,7 @@ describe("Issue #127 D2 execution history", () => {
     fireEvent.click(await screen.findByTestId("history-row"));
 
     expect(await screen.findByTestId("execution-attempt-timeline")).toBeTruthy();
-    expect(screen.getByTestId("execution-attempt-1").textContent).toContain("Attempt #1");
+    expect(screen.getByTestId("execution-attempt-1").textContent).toContain("第 1 次尝试");
     expect(screen.getByTestId("execution-attempt-1").textContent).toContain("adapter_failed");
     expect(screen.getByTestId("execution-incidents").textContent).toContain("dispatch_infrastructure_error");
     expect(detailApi).toHaveBeenCalledWith(rabbitExecution.id);
@@ -670,6 +670,7 @@ describe("Issue #127 D2 execution history", () => {
     const row = await screen.findByTestId("history-row");
     fireEvent.click(row);
 
+    fireEvent.click(await screen.findByRole("tab", { name: "输入" }));
     expect(await screen.findByTestId("detail-input-none")).toBeTruthy();
     expect(screen.getByTestId("detail-input").textContent).toContain("无输入");
     expect(screen.getByTestId("detail-input").textContent).not.toContain("storage_key");
@@ -688,6 +689,7 @@ describe("Issue #127 D2 execution history", () => {
     }));
     fireEvent.click(await screen.findByTestId("history-row"));
 
+    fireEvent.click(await screen.findByRole("tab", { name: "输入" }));
     const detailInput = await screen.findByTestId("detail-input-json");
     expect(detailInput.textContent).toContain('"region": "cn-east"');
     expect(screen.getByTestId("detail-input-revision").textContent).toContain("9");
@@ -740,6 +742,7 @@ describe("Issue #127 D2 execution history", () => {
     if (!(drawer instanceof HTMLElement)) {
       throw new Error("Execution detail drawer not found");
     }
+    fireEvent.click(await within(drawer).findByRole("tab", { name: "输入" }));
     const file = await within(drawer).findByTestId("detail-input-file");
     expect(file.textContent).toContain("审计.csv");
     expect(file.textContent).toContain("text/csv");
@@ -774,6 +777,7 @@ describe("Issue #127 D2 execution history", () => {
       },
     }));
     fireEvent.click(await screen.findByTestId("history-row"));
+    fireEvent.click(await screen.findByRole("tab", { name: "Input" }));
     await waitFor(() => expect(screen.getByText("Managed files snapshot (read-only)")).toBeTruthy());
     expect(screen.getByText("No file facts were retained in this snapshot.")).toBeTruthy();
   });
@@ -876,7 +880,7 @@ describe("Issue #127 D2 execution history", () => {
     await waitFor(() => expect(detailApi).toHaveBeenCalledTimes(2));
     expect(screen.getByTestId("execution-run-id").textContent).toContain("71");
     expect(screen.getByRole("button", { name: "恢复此执行" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getByTestId("execution-incident-901").textContent).toContain("Incident 已关闭");
+    expect(screen.getByTestId("execution-incident-901").textContent).toContain("系统异常已关闭");
   });
 
   it("explains active termination as cooperative cancellation in both locales", async () => {
@@ -927,7 +931,7 @@ describe("Issue #127 D2 execution history", () => {
     fireEvent.click(await screen.findByTestId("history-row"));
 
     fireEvent.click(await screen.findByRole("button", { name: "关闭旧代事件" }));
-    expect(await screen.findByText("只忽略并关闭旧代 Incident，不会取消、重派或修改当前派发代次。")).toBeTruthy();
+    expect(await screen.findByText("只忽略并关闭旧代系统异常，不会取消、重派或修改当前派发代次。")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /确\s*认/ }));
     await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
     expect(dispose.mock.calls[0]?.[2]).toEqual({
@@ -1141,4 +1145,17 @@ describe("Issue #127 D2 execution history", () => {
       await second.promise;
     });
   });
+});
+
+it("opens results first and preserves the original historical log timestamps", async () => {
+  const rawLog = "[2026-10-15 07:59:45] [INFO] original timestamp\n";
+  renderHistory(execution({ output: { total: 31 }, stdout: rawLog }));
+  fireEvent.click(await screen.findByTestId("history-row"));
+  const outputTab = await screen.findByRole("tab", { name: "输出" });
+  expect(outputTab.getAttribute("aria-selected")).toBe("true");
+  expect((await screen.findByTestId("output-content")).textContent).toContain('"total": 31');
+  expect(screen.getByTestId("execution-result-summary").textContent).toContain("日志保留原文");
+  fireEvent.click(screen.getByRole("tab", { name: "执行日志" }));
+  expect(screen.getByTestId("detail-log").textContent).toBe(rawLog);
+  expect(screen.getByText(/日志内的时间如未注明时区/)).toBeTruthy();
 });
