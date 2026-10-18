@@ -744,6 +744,12 @@ class CachePolicyManager:
                 return CacheRoundResult("busy", 0, 0, 0, 0, self._cursor(), {})
             raise
         try:
+            # A settings command may have disabled the mode between the first
+            # check and acquiring the shared round lock.
+            if (mode == "periodic" and not self.policy.gc_enabled) or (
+                mode == "pressure" and not self.policy.pressure_gc_enabled
+            ):
+                return CacheRoundResult("disabled", 0, 0, 0, 0, self._cursor(), {})
             budget = self._budget()
             round_id = str(uuid.uuid4())
             report = self.scan(

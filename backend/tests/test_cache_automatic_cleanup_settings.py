@@ -1,6 +1,7 @@
 """Only the two administrator-controlled automatic cleanup switches."""
 
 import uuid
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -104,6 +105,37 @@ def test_cleanup_switch_uncertain_write_reports_the_actual_persisted_value(tmp_p
     assert effective_cache_policy(tmp_path, base).gc_enabled is True
     assert manager.policy.gc_enabled is True
     assert agent._client.snapshots[-1]["summary"]["policy"]["gc_enabled"] is True
+
+
+@pytest.mark.parametrize(
+    "mode,field", [("periodic", "gc_enabled"), ("pressure", "pressure_gc_enabled")]
+)
+def test_cleanup_switch_off_is_rechecked_after_acquiring_the_round_lock(
+    tmp_path, monkeypatch, mode, field
+):
+    _, manager, _ = _agent(tmp_path)
+    manager.policy = replace(manager.policy, **{field: True})
+    entry_lock = manager.lifecycle.entry_lock
+
+    class ClosedBeforeRound:
+        def __enter__(self):
+            self.lock = entry_lock("governance-round", blocking=False)
+            self.lock.__enter__()
+            manager.policy = replace(manager.policy, **{field: False})
+            return self
+
+        def __exit__(self, *args):
+            return self.lock.__exit__(*args)
+
+    monkeypatch.setattr(
+        manager.lifecycle, "entry_lock", lambda *_args, **_kwargs: ClosedBeforeRound()
+    )
+
+    def must_not_scan(**_kwargs):
+        raise AssertionError("a disabled mode must not start another automatic round")
+
+    monkeypatch.setattr(manager, "scan", must_not_scan)
+    assert manager.run_round(mode=mode).status == "disabled"
 
 
 def test_pressure_switch_reaches_existing_cache_objects_without_restarting(tmp_path, monkeypatch):
