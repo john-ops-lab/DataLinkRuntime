@@ -74,6 +74,7 @@ _STOP_RESULT_BUDGET = "tool_result_budget"
 _STOP_DEADLINE = "assist_deadline"
 _STOP_PROVIDER_FAILURE = "provider_followup_failure"
 _STOP_CONTEXT_BUDGET = "context_budget_exceeded"
+_STOP_ATTACHMENT_UNREAD = "attachment_content_unread"
 _STOP_KNOWLEDGE_UNAVAILABLE = "knowledge_unavailable"
 _STOP_KNOWLEDGE_SEQUENCE = "knowledge_sequence_incomplete"
 _STOP_KNOWLEDGE_LIST_EMPTY = "knowledge_list_empty"
@@ -102,6 +103,11 @@ class _AssistToolState:
     request_id: str
     conversation_id: str
     format_corrections: int = 0
+    attachment_read_required: bool = False
+    attachment_read_attempts: int = 0
+    successful_attachment_reads: int = 0
+    attachment_read_correction: bool = False
+    prepared_knowledge_incomplete: bool = False
     # Only the server fallback helper may mark a result safe to return after
     # the deadline. A tool stop or a provider's candidate:null is insufficient.
     server_fallback_returned: bool = False
@@ -163,6 +169,10 @@ class _AssistToolState:
     def record_execution(self, execution: tools_service.ToolExecution) -> None:
         self.total_tool_calls += 1
         self.accumulated_result_chars += execution.result_size
+        if execution.tool_name in ("read_attachment_page", "read_attachment_sheet"):
+            self.attachment_read_attempts += 1
+            if execution.status == "success":
+                self.successful_attachment_reads += 1
         if execution.status == "success":
             self.consecutive_failures = 0
         else:
@@ -588,7 +598,11 @@ _PROVIDER_ERRORS: dict[str, tuple[int, str]] = {
     ),
     "ai_provider_unreachable": (
         502,
-        "无法连接模型服务：TCP 连接或 TLS 握手失败，请检查网络连通性、防火墙与代理设置后重试",
+        "无法连接模型服务，请检查网络连通性、防火墙与代理设置后重试",
+    ),
+    "ai_provider_http_error": (
+        502,
+        "模型服务返回 HTTP 错误，请检查服务状态或请求配置",
     ),
     "ai_provider_dns_failed": (
         502,
@@ -684,7 +698,12 @@ def _raise_provider_error(error: providers.AiProviderError) -> NoReturn:
     status_code, message = _PROVIDER_ERRORS.get(error.code, (502, "The AI provider request failed"))
     if error.code == "ai_response_invalid":
         raise AiResponseInvalid(error.stage, error.reason, message) from None
-    raise domain_error(status_code, error.code, message) from None
+    params = (
+        {"http_status": error.http_status}
+        if error.code == "ai_provider_http_error" and error.http_status is not None
+        else None
+    )
+    raise domain_error(status_code, error.code, message, params) from None
 
 
 def _raise_tool_error(code: str) -> NoReturn:
@@ -820,13 +839,16 @@ def _adapter_for_setting(session: Session, data: AiSettingDraft) -> providers.Pr
     )
 
 
-def _validate_setting(session: Session, data: AiSettingDraft) -> providers.ProviderAdapter:
+def _validate_setting(
+    session: Session, data: AiSettingDraft, *, resolve_credentials: bool = True
+) -> providers.ProviderAdapter:
     _validate_base_url(data.base_url)
     adapter = providers.resolve_attachment_adapter(
         data, providers.resolve_output_adapter(data, _adapter_for_setting(session, data))
     )
     _validate_reasoning(data, adapter)
-    _resolve_api_key(session, data.credential_id)
+    if resolve_credentials:
+        _resolve_api_key(session, data.credential_id)
     return adapter
 
 
@@ -1372,6 +1394,17 @@ def _fallback_message(
     stop_reason: str,
     tool_calls: list[AiToolCallSummary],
 ) -> str:
+    if stop_reason == _STOP_ATTACHMENT_UNREAD:
+        if system_locale == "en":
+            return (
+                "No attachment content was successfully read in this request, so the task "
+                "is incomplete. The attachment directory and preparation status do not "
+                "confirm a content read. Retry or attach the files again."
+            )
+        return (
+            "本轮未成功读取附件内容，请求尚未完成。附件目录和准备状态不代表已读取内容。"
+            "请重试或重新附加文件。"
+        )
     if stop_reason == _STOP_KNOWLEDGE_UNAVAILABLE:
         if system_locale == "en":
             return (
@@ -1658,6 +1691,8 @@ def _call_provider_with_audit(
                 error_code=error.code,
                 stage=error.stage,
                 reason=error.reason,
+                transport_category=error.transport_category,
+                http_status=error.http_status,
             )
         raise
     if audit is not None:
@@ -1774,6 +1809,12 @@ def _finalize_after_tool_stop(
     Provider responses and prompts are never persisted by this path.
     """
     assert state.stop_reason is not None
+    if state.attachment_read_required and not state.successful_attachment_reads:
+        # A successful directory/list/knowledge tool is not attachment content
+        # evidence. Never ask a tools-disabled finalizer to fill this gap.
+        return _fallback_assist_response(
+            system_locale, _STOP_ATTACHMENT_UNREAD, draft, executed_tools, state=state
+        )
     successful = sum(item.status == "success" for item in executed_tools)
     if successful == 0:
         # With no usable tool result there is no evidence from which a safe
@@ -1911,7 +1952,14 @@ def _assist_impl(
     if setting is None:
         raise domain_error(409, "ai_not_configured", "AI model is not configured")
     draft = _setting_draft(setting)
-    provider_adapter = _validate_setting(session, draft)
+    provider_adapter = _validate_setting(session, draft, resolve_credentials=False)
+    if payload.attachment_refs and not provider_adapter.tools_supported:
+        raise domain_error(
+            422,
+            "ai_attachment_tools_unsupported",
+            "The selected model configuration does not support attachment reading tools. "
+            "Choose a configuration with tool support before sending prepared attachments.",
+        )
     api_key = _resolve_api_key(session, draft.credential_id)
     parsed_attachments: list[attachments_service.ParsedText] = []
     native_images: list[attachments_service.NativeImage] = []
@@ -2035,13 +2083,17 @@ def _assist_impl(
             draft,
             messages,
             tools_payload,
-            purpose="assist_initial" if state.tool_rounds == 0 else "assist_followup",
+            purpose=(
+                "assist_initial"
+                if state.tool_rounds == 0 and not state.attachment_read_correction
+                else "assist_followup"
+            ),
             adapter=provider_adapter,
         )
         _audit_provider_budget(audit, state, budget, provider_deadline)
         omitted_materials[0] += budget.omitted_materials
         if not budget.fits:
-            if not executed_tools:
+            if not executed_tools and not state.attachment_read_correction:
                 raise domain_error(
                     413, "ai_context_over_budget", "AI request context exceeds the model budget"
                 )
@@ -2076,7 +2128,7 @@ def _assist_impl(
                     error_code=error.code,
                 )
                 break
-            if executed_tools:
+            if executed_tools or state.attachment_read_correction:
                 state.stop_reason = _STOP_PROVIDER_FAILURE
                 audit.record_guard(
                     round_index=state.tool_rounds,
@@ -2111,6 +2163,41 @@ def _assist_impl(
                 omitted_materials=omitted_materials,
             )
             _reject_candidate_configuration_changes(output, payload)
+            if state.attachment_read_required and not state.successful_attachment_reads:
+                if (
+                    tools_enabled
+                    and not state.attachment_read_correction
+                    and not state.attachment_read_attempts
+                    and state.remaining_tool_seconds() > 0
+                    and state.tool_rounds < tools_service.MAX_TOOL_ROUNDS
+                    and state.total_tool_calls < tools_service.MAX_TOOL_CALLS_PER_ASSIST
+                ):
+                    # Discard ungrounded prose rather than feeding it back as
+                    # evidence. This one correction shares the original context,
+                    # tool and deadline budgets, with the same frozen reader.
+                    state.attachment_read_correction = True
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "DLR has not recorded a successful attachment content read "
+                                "in this request. Attachment directories and preparation "
+                                "status are metadata only. Before completing, call "
+                                "read_attachment_page or read_attachment_sheet using an "
+                                "original frozen attachment_ref from this request and a "
+                                "valid bounded page or range. list_attachments and other "
+                                "tools do not count as a content read. Do not claim to have "
+                                "read content or produce a Candidate without a successful "
+                                "read. This is the only attachment-read correction."
+                            ),
+                        }
+                    )
+                    continue
+                # Failed reads (including closed scopes) never earn an extra
+                # correction. Preserve their real tool records in the response.
+                state.stop_reason = _STOP_ATTACHMENT_UNREAD
+                audit.record_guard(round_index=state.tool_rounds, stop_reason=state.stop_reason)
+                break
             if knowledge_state.has_search_evidence:
                 output = AiModelOutput(
                     message=_knowledge_evidence_message(
@@ -2186,28 +2273,17 @@ def _assist_impl(
                     sort_keys=True,
                     separators=(",", ":"),
                 )
-            fingerprint = tools_service.tool_call_fingerprint(call.name, effective_arguments)
-            if not state.register_fingerprint(fingerprint):
-                execution = tools_service.rejected_tool_call(
-                    call.name, tools_service.CODE_DUPLICATE
-                )
-                audit.record_tool_attempt(
-                    round_index=state.tool_rounds,
-                    tool_name=call.name,
-                    raw_arguments=call.arguments,
-                    validated_arguments=validated_args,
-                    status="blocked",
-                    duration_ms=execution.duration_ms,
-                    result_size=execution.result_size,
-                    result_truncated=execution.result_truncated,
-                    error_code=execution.error_code,
-                    stop_reason=state.stop_reason,
-                    redact_values=audit_redact_values,
-                )
-                executed_tools.append(_tool_call_summary(execution))
-                processed_calls.append((call, execution))
-                break
-            if not knowledge_state.accepts_call(call.name, validated_args):
+            # A scoped attachment reader is an independent evidence channel.
+            # It must still pass its registered dispatcher/ref/budget checks,
+            # but neither advances nor fails the knowledge retrieval stages.
+            scoped_attachment_call = attachment_reader is not None and call.name in (
+                "list_attachments",
+                "read_attachment_page",
+                "read_attachment_sheet",
+            )
+            if not scoped_attachment_call and not knowledge_state.accepts_call(
+                call.name, validated_args
+            ):
                 execution = tools_service.rejected_tool_call(
                     call.name, tools_service.CODE_KNOWLEDGE_SEQUENCE
                 )
@@ -2233,12 +2309,38 @@ def _assist_impl(
                     knowledge_state.stop_reason = _STOP_KNOWLEDGE_SEQUENCE
                     break
                 continue
+            # A sequence-rejected call did not reach the dispatcher. Register
+            # its fingerprint only after the stage accepts it, so a corrected
+            # later retry can execute once without weakening duplicate checks
+            # for any call that actually reached the dispatcher.
+            fingerprint = tools_service.tool_call_fingerprint(call.name, effective_arguments)
+            if not state.register_fingerprint(fingerprint):
+                execution = tools_service.rejected_tool_call(
+                    call.name, tools_service.CODE_DUPLICATE
+                )
+                audit.record_tool_attempt(
+                    round_index=state.tool_rounds,
+                    tool_name=call.name,
+                    raw_arguments=call.arguments,
+                    validated_arguments=validated_args,
+                    status="blocked",
+                    duration_ms=execution.duration_ms,
+                    result_size=execution.result_size,
+                    result_truncated=execution.result_truncated,
+                    error_code=execution.error_code,
+                    stop_reason=state.stop_reason,
+                    redact_values=audit_redact_values,
+                )
+                executed_tools.append(_tool_call_summary(execution))
+                processed_calls.append((call, execution))
+                break
             execution = tools_service.execute_tool_call(
                 call.name, effective_arguments, api_key, context=tool_context
             )
             state.record_execution(execution)
-            knowledge_state.record_execution(validated_args, execution)
-            knowledge_correction_needed = False
+            if not scoped_attachment_call:
+                knowledge_state.record_execution(validated_args, execution)
+                knowledge_correction_needed = False
             if call.name in ("list_knowledge_bases", "search_knowledge", "read_knowledge"):
                 knowledge_progress_needed = True
             if knowledge_state.stop_reason is not None and state.stop_reason is None:
@@ -2315,6 +2417,15 @@ def _assist_impl(
             state.stop_reason = _STOP_DEADLINE
             audit.record_guard(round_index=state.tool_rounds, stop_reason=state.stop_reason)
 
+    state.prepared_knowledge_incomplete = (
+        state.attachment_read_required
+        and knowledge_search_enabled
+        and (
+            knowledge_state.requires_tool
+            or knowledge_state.needs_cross_base_search
+            or not knowledge_state.has_search_evidence
+        )
+    )
     if knowledge_state.requires_tool:
         knowledge_state.phase = "stopped"
         knowledge_state.stop_reason = (
@@ -2365,6 +2476,7 @@ def assist(
         now=now,
         correlation=audit.correlation,
     )
+    state.attachment_read_required = bool(payload.attachment_refs)
     try:
         response = _assist_impl(
             session, adapter_id, payload, audit, state, attachment_reader=attachment_reader
@@ -2380,7 +2492,10 @@ def assist(
         raise
     intent = payload.task_intent if payload.task_intent != "auto" else response.request_intent
     response.task_status = (
-        "candidate_ready"
+        "incomplete"
+        if (state.attachment_read_required and not state.successful_attachment_reads)
+        or state.prepared_knowledge_incomplete
+        else "candidate_ready"
         if response.candidate is not None
         else "incomplete"
         if intent == "code_change"

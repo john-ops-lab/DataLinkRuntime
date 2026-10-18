@@ -21,9 +21,10 @@ MAX_WIRE_BYTES = 96 * 1024 * 1024
 
 
 class DocumentConversionError(Exception):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, reason: str | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.reason = reason
 
 
 @dataclass(frozen=True)

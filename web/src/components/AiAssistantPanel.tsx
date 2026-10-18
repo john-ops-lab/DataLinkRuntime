@@ -67,9 +67,12 @@ import {
   type Attachment,
   type AttachmentAdapter,
   type CompleteAttachment,
+  type PendingAttachment,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 
+import type { PreparedAttachmentState } from "../prepared-attachment-session";
+import { usePreparedAttachmentSession } from "../hooks/usePreparedAttachmentSession";
 import { api, ApiError } from "../api";
 import {
   acceptStringFor,
@@ -90,6 +93,8 @@ import type {
   AiAttachment,
   AiAttachmentCapabilities,
   AiAttachmentLimits,
+  AiPreparedAttachment,
+  AiPreparedAttachmentRef,
   AiCandidate,
   AiConversationMessage,
   AiContextSnippet,
@@ -154,7 +159,16 @@ interface AssistRoundSnapshot {
   attachments: AiAttachment[];
   /** Display-only names frozen from the successful attachment snapshot. */
   attachmentNames: string[];
+  attachmentScopeId: string | null;
+  attachmentRefs: AiPreparedAttachmentRef[];
+  attachmentMetadata: AiPreparedAttachment[];
   locale: string;
+}
+
+interface ComposerControls {
+  getState: () => { text: string; attachments: readonly Attachment[] };
+  setText: (text: string) => void;
+  clearAttachments: () => Promise<void>;
 }
 
 interface VisibleMessage {
@@ -382,8 +396,8 @@ function formatAttachmentGuidanceSize(bytes: number): string {
 
 /** M5.7 Wave A: 发送按钮。点击路径由 DLR 同步启动 assist 流程（保持既有
  * “准备态先于请求可见”的生命周期回归语义），并阻止原语自带的异步 send()
- * 双路径；Enter / Ctrl/Cmd+Enter 键盘路径仍走表单提交 → External Store
- * Runtime onNew。两条路径汇聚到同一个 DLR runAssist。
+ * 双路径；Enter / Ctrl/Cmd+Enter 键盘路径走表单提交的安全发送入口。
+ * 两条路径汇聚到同一个 DLR runAssist。
  *
  * M5.7 Wave B3: the click captures the composer draft (text + attachment
  * rows) without clearing anything — DLR's send path validates and resolves
@@ -434,12 +448,7 @@ function ComposerSubmitButton(props: {
  * switch) to the panel. */
 function ComposerAttachmentsBridge(props: {
   onAttachmentsChange: (attachments: readonly Attachment[]) => void;
-  onControlsChange: (
-    controls: {
-      setText: (text: string) => void;
-      clearAttachments: () => Promise<void>;
-    } | null,
-  ) => void;
+  onControlsChange: (controls: ComposerControls | null) => void;
 }) {
   const aui = useAui();
   const attachments = useAuiState((state) => state.composer.attachments);
@@ -448,6 +457,7 @@ function ComposerAttachmentsBridge(props: {
   }, [attachments, props]);
   useEffect(() => {
     props.onControlsChange({
+      getState: () => aui.composer.getState(),
       setText: (text: string) => aui.composer.setText(text),
       clearAttachments: () => aui.composer.clearAttachments(),
     });
@@ -459,7 +469,62 @@ function ComposerAttachmentsBridge(props: {
 /** M5.7 Wave B3: one composer attachment row. Accessible name (filename),
  * category/type label, size, ready/error status and a remove button; long
  * filenames ellipsize without pushing the layout (real-browser width gate). */
-function AttachmentItem(props: { attachment: Attachment }) {
+function preparedErrorMessage(error: unknown, translate: (key: string) => string): string {
+  const keys: Record<string, string> = {
+    ai_attachment_expired: "expired", ai_attachment_scope_expired: "expired",
+    ai_attachment_converter_unavailable: "converterUnavailable",
+    ai_attachment_parse_timeout: "timeout", ai_attachment_converter_timeout: "timeout",
+    ai_attachment_conversion_timeout: "timeout", ai_attachment_pdf_encrypted: "encrypted",
+    ai_attachment_encrypted: "encrypted", ai_attachment_parse_failed: "invalid",
+  };
+  const key = error instanceof ApiError ? keys[error.code] : undefined;
+  return translate(`assistant.attachments.prepared.${key ?? "failed"}`);
+}
+
+function PreparedAttachmentDirectory(props: { metadata: AiPreparedAttachment; expired?: boolean }) {
+  const { t } = useTranslation("ai");
+  const metadata = props.metadata;
+  const knownWarnings: Record<string, string> = {
+    structure_partial: "structurePartial", printed_area_only: "printedAreaOnly",
+    formula_cache_missing: "formulaCacheMissing", ocr_unavailable: "ocrUnavailable",
+    page_render_failed: "pageRenderFailed", visual_unavailable: "visualUnavailable",
+  };
+  const available = metadata.pages.filter((page) => ["available", "ready", "blank"].includes(page.status)).length;
+  return (
+    <details className="ai-prepared-directory" style={{ flexBasis: "100%", maxWidth: "100%", maxHeight: 240, overflowY: "auto", overflowWrap: "anywhere" }} data-testid="ai-prepared-directory">
+      <summary>{t("assistant.attachments.prepared.directory", { name: metadata.filename })}</summary>
+      <p>{metadata.page_count > 0
+        ? t("assistant.attachments.prepared.pageCoverage", { count: available, total: metadata.page_count })
+        : t("assistant.attachments.prepared.originalAvailable")}</p>
+      {props.expired && <p role="alert">{t("assistant.attachments.prepared.expired")}</p>}
+      {metadata.status === "partial" && <p role="note">{t("assistant.attachments.prepared.partial")}</p>}
+      {metadata.warnings.map((warning, index) => (
+        <p key={index} role="note">{t(`assistant.attachments.prepared.warnings.${knownWarnings[warning] ?? "partial"}`)}</p>
+      ))}
+      <ul>
+        {metadata.pages.slice(0, 64).map((page) => <li key={page.page}>
+          {t("assistant.attachments.prepared.page", { page: page.page })}
+          {page.source_sheet ? ` · ${page.source_sheet}` : ""}
+          {` · ${t(`assistant.attachments.prepared.pageStatus.${["available", "ready", "blank", "failed", "omitted"].includes(page.status) ? page.status : "omitted"}`)}`}
+        </li>)}
+        {metadata.sheets.slice(0, 32).map((sheet) => <li key={sheet.name}>
+          {t("assistant.attachments.prepared.sheet", { name: sheet.name, rows: sheet.rows, columns: sheet.columns })}
+          {sheet.hidden ? ` · ${t("assistant.attachments.prepared.hiddenSheet")}` : ""}
+          {sheet.print_area ? ` · ${t("assistant.attachments.prepared.printArea", { range: sheet.print_area })}` : ""}
+          {sheet.rendered_page_start === undefined ? "" : ` · ${t("assistant.attachments.prepared.sheetPages", {
+            start: sheet.rendered_page_start, end: sheet.rendered_page_end ?? sheet.rendered_page_start,
+          })}`}
+        </li>)}
+      </ul>
+      {(metadata.pages.length > 64 || metadata.sheets.length > 32) && <p>{t("assistant.attachments.prepared.directoryLimited")}</p>}
+      <p>{t("assistant.attachments.prepared.onDemand")}</p>
+    </details>
+  );
+}
+
+function AttachmentItem(props: {
+  attachment: Attachment; prepared?: PreparedAttachmentState; onRetry?: () => void;
+}) {
   const { t } = useTranslation(["ai"]);
   const { attachment } = props;
   const classification = classifyAttachment(
@@ -484,7 +549,7 @@ function AttachmentItem(props: { attachment: Attachment }) {
       <span className="ai-attachment-meta" data-testid="ai-attachment-meta">
         {[category, size].filter(Boolean).join(" · ")}
       </span>
-      {failed ? (
+      {props.prepared === undefined && (failed ? (
         <span
           className="ai-attachment-error-message"
           role="alert"
@@ -496,7 +561,7 @@ function AttachmentItem(props: { attachment: Attachment }) {
         <span className="ai-attachment-ready" data-testid="ai-attachment-ready">
           {t("assistant.attachments.ready")}
         </span>
-      )}
+      ))}
       <Tooltip
         title={t("assistant.attachments.remove", { name: attachment.name })}
         trigger={["hover", "focus"]}
@@ -509,6 +574,17 @@ function AttachmentItem(props: { attachment: Attachment }) {
           <DeleteOutlined aria-hidden="true" />
         </AttachmentPrimitive.Remove>
       </Tooltip>
+      {props.prepared !== undefined && (
+        <div className="ai-prepared-status" style={{ flexBasis: "100%", minWidth: 0, maxWidth: "100%" }} role={props.prepared.phase === "error" || props.prepared.phase === "expired" ? "alert" : "status"}>
+          {props.prepared.phase === "preparing" ? t("assistant.attachments.prepared.preparing")
+            : props.prepared.phase === "expired" ? t("assistant.attachments.prepared.expired")
+              : props.prepared.phase === "error" ? preparedErrorMessage(props.prepared.error, t)
+                : t(props.prepared.metadata?.status === "partial"
+                  ? "assistant.attachments.prepared.partialReady" : "assistant.attachments.prepared.ready")}
+          {props.prepared.phase === "error" && <Button size="small" onClick={props.onRetry}>{t("assistant.attachments.prepared.retry")}</Button>}
+          {props.prepared.metadata !== null && <PreparedAttachmentDirectory metadata={props.prepared.metadata} />}
+        </div>
+      )}
     </div>
   );
 }
@@ -522,6 +598,9 @@ function ComposerAttachmentArea(props: {
   sending: boolean;
   limits: AiAttachmentLimits;
   supportedContentTypes: readonly string[];
+  preparedStates: Readonly<Record<string, PreparedAttachmentState>>;
+  onRetryPrepared: (id: string) => void;
+  capability: AiAttachmentCapabilities | null;
   error: string | null;
   onErrorChange: (message: string | null) => void;
   onSend: (text: string, attachments: readonly Attachment[]) => void;
@@ -584,7 +663,7 @@ function ComposerAttachmentArea(props: {
       onDropCapture={handleDrop}
     >
       <ComposerPrimitive.Attachments>
-        {({ attachment }) => <AttachmentItem attachment={attachment} />}
+        {({ attachment }) => <AttachmentItem attachment={attachment} prepared={props.preparedStates[attachment.id]} onRetry={() => props.onRetryPrepared(attachment.id)} />}
       </ComposerPrimitive.Attachments>
       <ComposerPrimitive.Input
         data-testid="ai-message-input"
@@ -602,6 +681,18 @@ function ComposerAttachmentArea(props: {
       {props.error !== null && (
         <p className="ai-attachment-panel-error" role="alert" data-testid="ai-attachment-error">
           {props.error}
+        </p>
+      )}
+      {props.capability !== null && (
+        <p className="ai-attachment-capability" role="note" data-testid="ai-attachment-capability">
+          {props.capability.prepared_attachments_enabled !== true
+            ? t("assistant.attachments.prepared.textFallback")
+            : props.capability.selected?.capability_source === "unknown" || props.capability.selected == null
+              ? t("assistant.attachments.prepared.visionUnknown")
+              : !props.capability.selected.images_native && !props.capability.selected.native_pdf
+                ? t("assistant.attachments.prepared.visionUnavailable")
+                : t(props.capability.selected.capability_source === "custom_declared"
+                  ? "assistant.attachments.prepared.visionDeclared" : "assistant.attachments.prepared.visionAvailable", { model: props.capability.selected.model })}
         </p>
       )}
       <div
@@ -767,7 +858,13 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     [i18n.language],
   );
   const [messages, setMessages] = useState<VisibleMessage[]>([]);
-  const scopeKey = `${props.accountOwnerId ?? "deployment"}.${props.adapter?.id ?? "none"}`;
+  const [pageGeneration, setPageGeneration] = useState(0);
+  const scopeKey = `${props.accountOwnerId ?? "deployment"}.${props.adapter?.id ?? "none"}.${pageGeneration}`;
+  const { session: preparedSession, states: preparedStates } = usePreparedAttachmentSession(
+    props.adapter?.id ?? 0, scopeKey, api,
+  );
+  const preparedSessionRef = useRef(preparedSession);
+  useLayoutEffect(() => { preparedSessionRef.current = preparedSession; }, [preparedSession]);
   const scopeEpoch = useRef(0);
   const latestSendScopeRef = useRef(scopeKey);
   useLayoutEffect(() => {
@@ -775,6 +872,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   }, [scopeKey]);
   const [sending, setSending] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
+  const [showRecoveryHint, setShowRecoveryHint] = useState(true);
   const [boundSecretKeys, setBoundSecretKeys] = useState<Set<string>>(new Set());
   const [bindingsLoading, setBindingsLoading] = useState(false);
   const [bindingsVerified, setBindingsVerified] = useState(false);
@@ -821,10 +919,15 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   // the wire-body cache) flows through refs below. The refs are updated in
   // effects (never during render); the adapter only reads them from event
   // handlers and async flows, so the one-render lag is irrelevant.
+  const preparedEnabledRef = useRef(false);
+  useLayoutEffect(() => { preparedEnabledRef.current = attachmentCapabilities?.prepared_attachments_enabled === true; }, [attachmentCapabilities]);
   const attachmentLimitsRef = useRef(attachmentLimits);
   const supportedContentTypesRef = useRef(supportedContentTypes);
   const translateRef = useRef<(key: string, options?: Record<string, unknown>) => string>(t);
   const composerAttachmentsRef = useRef<readonly Attachment[]>([]);
+  // Adapter mutations can precede the runtime's published attachment list
+  // (notably asynchronous removal), so fence them at the event boundary.
+  const composerAttachmentSequenceRef = useRef(0);
   const wireCacheRef = useRef(new WeakMap<object, AiAttachment>());
   // Wave B3: guards the send entry against re-entry while attachment bodies
   // are being resolved. The draft stays visible and `sending` is still false
@@ -833,11 +936,29 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   // the first await and cleared in the finally block.
   const attachmentSendInFlightRef = useRef<number | null>(null);
   const attachmentSendSequenceRef = useRef(0);
-  const composerControlsRef = useRef<{
-    setText: (text: string) => void;
-    clearAttachments: () => Promise<void>;
-  } | null>(null);
+  const composerControlsRef = useRef<ComposerControls | null>(null);
   const previousScopeRef = useRef(scopeKey);
+  useEffect(() => {
+    const onPageHide = () => {
+      // BFCache retains the React tree. Fence work before the page freezes;
+      // a released UUID must never resume when that same tree returns.
+      scopeEpoch.current += 1;
+      requestGeneration.current += 1;
+      activeRequest.current?.abort();
+      preparedSession.close();
+    };
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) setPageGeneration((generation) => generation + 1);
+    };
+    const timer = window.setInterval(() => preparedSession.checkExpired(), 1000);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
+    };
+  }, [preparedSession]);
   useEffect(() => {
     attachmentLimitsRef.current = attachmentLimits;
   }, [attachmentLimits]);
@@ -935,7 +1056,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     }
     let cancelled = false;
     void api
-      .getAiAttachmentCapabilities()
+      .getAiAttachmentCapabilities(adapterId)
       .then((capabilities) => {
         if (!cancelled) {
           setAttachmentCapabilities(capabilities);
@@ -949,7 +1070,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [adapterId, canUseAi, props.open]);
+  }, [adapterId, canUseAi, props.open, scopeKey]);
 
   // Scope changes discard temporary state and fence every in-flight result.
   useEffect(() => {
@@ -966,7 +1087,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     setCandidateDiff(null);
     setProgressStage(null);
     setPanelError(null);
+    setShowRecoveryHint(true);
     setAttachmentError(null);
+    setAttachmentCapabilities(null);
     attachmentSendInFlightRef.current = null;
     composerControlsRef.current?.setText("");
     void composerControlsRef.current?.clearAttachments();
@@ -1002,17 +1125,35 @@ async function resolveComposerAttachment(
  * effect-updated refs is irrelevant. */
   /* eslint-disable react-hooks/refs -- stable adapter; the closures read refs
      only from runtime callbacks (add/send/remove), never during render. */
-  const attachmentAdapter = useMemo<AttachmentAdapter>(
-    () =>
-      createDlrAttachmentAdapter({
-        limits: () => attachmentLimitsRef.current,
-        composerAttachments: () => composerAttachmentsRef.current,
-        supportedContentTypes: () => supportedContentTypesRef.current,
-        translate: (key, options) => translateRef.current(key, options),
-        wireCache: () => wireCacheRef.current,
-      }),
-    [],
-  );
+  const attachmentAdapter = useMemo<AttachmentAdapter>(() => {
+    const legacy = createDlrAttachmentAdapter({
+      limits: () => attachmentLimitsRef.current,
+      composerAttachments: () => composerAttachmentsRef.current,
+      supportedContentTypes: () => supportedContentTypesRef.current,
+      translate: (key, options) => translateRef.current(key, options),
+      wireCache: () => wireCacheRef.current,
+    });
+    return {
+      get accept() { return legacy.accept; },
+      async add(options) {
+        composerAttachmentSequenceRef.current += 1;
+        // This project adapter returns a Promise, not an incremental generator.
+        const row = await (legacy.add(options) as Promise<PendingAttachment>);
+        if (preparedEnabledRef.current && row.status.type !== "incomplete") {
+          void preparedSessionRef.current.prepare(row.id, () => buildWireAttachment(
+            row.name, row.contentType ?? options.file.type, options.file,
+          )).catch(() => {});
+        }
+        return row;
+      },
+      send: (attachment) => legacy.send(attachment),
+      async remove(attachment) {
+        composerAttachmentSequenceRef.current += 1;
+        preparedSessionRef.current.removeComposer(attachment.id);
+        await legacy.remove?.(attachment);
+      },
+    };
+  }, []);
   /* eslint-enable react-hooks/refs */
 
   /** M5.7 Wave B3: turn the composer's attachment rows into the B2 wire shape
@@ -1070,6 +1211,7 @@ async function resolveComposerAttachment(
     snapshot: AssistRoundSnapshot,
     replaceAssistantMessageId: number | null,
     onRequestStarted?: () => void,
+    attachmentRefsValidated = false,
   ) {
     const adapter = props.adapter;
     if (
@@ -1090,21 +1232,32 @@ async function resolveComposerAttachment(
     activeRequest.current = controller;
     setStoppedWaiting(false);
     const requestSessionEpoch = scopeEpoch.current;
+    const requestScope = scopeKey;
+    const requestIsCurrent = () => generation === requestGeneration.current
+      && requestSessionEpoch === scopeEpoch.current && requestScope === latestSendScopeRef.current;
     const requestAdapterId = snapshot.adapterId;
     // Regenerating explicitly returns to the regenerated exchange. A later
     // manual upward scroll can still pause following before the reply arrives.
     followLatestRef.current = true;
     setPanelError(null);
+    setShowRecoveryHint(true);
     setSending(true);
     setProgressStage("preparing");
+    const releaseActive = preparedSession.retainActive(snapshot.attachmentRefs);
     try {
+      if (snapshot.attachmentRefs.length > 0 && !attachmentRefsValidated) {
+        if (snapshot.attachmentScopeId !== preparedSession.scopeId) {
+          throw new ApiError(410, "ai_attachment_expired", "Upload the file again");
+        }
+        await preparedSession.validate(snapshot.attachmentRefs, controller.signal);
+      }
       // M5.5.5: stages only reflect DLR's own request lifecycle. "preparing"
       // is committed for at least one frame so the platform stage is visible
       // before the network request begins.
       await new Promise<void>((resolve) => {
         setTimeout(resolve, 0);
       });
-      if (generation !== requestGeneration.current || requestSessionEpoch !== scopeEpoch.current) {
+      if (!requestIsCurrent()) {
         return;
       }
       setProgressStage("requesting");
@@ -1135,13 +1288,16 @@ async function resolveComposerAttachment(
         // base64 per the B2 contract). Omitted entirely for attachment-free
         // rounds so those requests stay byte-compatible with Wave A/B1. The
         // bodies never enter recent_messages, the thread DOM or any log.
+        ...(snapshot.attachmentRefs.length === 0 ? {} : {
+          attachment_scope_id: snapshot.attachmentScopeId!, attachment_refs: snapshot.attachmentRefs,
+        }),
         ...(snapshot.attachments.length === 0
           ? {}
           : { attachments: snapshot.attachments }),
       }, controller.signal);
       // The component is keyed by Adapter in App, and this explicit guard also
       // prevents a late response from committing across an Adapter switch.
-      if (generation !== requestGeneration.current || requestSessionEpoch !== scopeEpoch.current) {
+      if (!requestIsCurrent()) {
         return;
       }
       setProgressStage("validating");
@@ -1216,16 +1372,20 @@ async function resolveComposerAttachment(
       // silently to the assistant message itself.
       setProgressStage(assistantMessage.candidate === null ? null : "succeeded");
     } catch (error) {
-      if (generation === requestGeneration.current && requestSessionEpoch === scopeEpoch.current) {
+      if (requestIsCurrent()) {
+        setShowRecoveryHint(!(error instanceof ApiError && error.code === "ai_attachment_tools_unsupported"));
         setPanelError(
-          attachmentServerErrorMessage(error, t("assistant.errors.requestFailed")),
+          error instanceof ApiError && error.code === "ai_attachment_expired"
+            ? t("assistant.attachments.prepared.expired")
+            : attachmentServerErrorMessage(error, t("assistant.errors.requestFailed")),
         );
         // M5.5.5: failures converge to an explicit error state; no progress
         // line lingers or keeps claiming an unfinished stage.
         setProgressStage(null);
       }
     } finally {
-      if (generation === requestGeneration.current && requestSessionEpoch === scopeEpoch.current) {
+      releaseActive();
+      if (requestIsCurrent()) {
         setSending(false);
         if (activeRequest.current === controller) activeRequest.current = null;
       }
@@ -1240,10 +1400,21 @@ async function resolveComposerAttachment(
     adapter: Adapter,
     message: string,
     attachments: AiAttachment[],
+    prepared: AiPreparedAttachment[] = [],
+    preparedRowIds: string[] = [],
   ): AssistRoundSnapshot | null {
     const runtimeConfig = parseRuntimeConfig(props.workingCopy.runtimeConfigText);
     if (runtimeConfig === null) {
+      setShowRecoveryHint(true);
       setPanelError(t("assistant.invalidRuntimeConfig"));
+      return null;
+    }
+    let attachmentRefs: AiPreparedAttachmentRef[] = [];
+    try {
+      attachmentRefs = preparedSession.freeze(preparedRowIds);
+    } catch (error) {
+      setAttachmentError(error instanceof ApiError && error.code === "ai_attachment_expired"
+        ? t("assistant.attachments.prepared.expired") : t("assistant.attachments.prepared.failed"));
       return null;
     }
     return {
@@ -1264,7 +1435,10 @@ async function resolveComposerAttachment(
       ),
       contextSnippetIds: props.contextSnippets.map(({ id }) => id),
       attachments,
-      attachmentNames: attachments.map((attachment) => attachment.filename),
+      attachmentNames: [...attachments, ...prepared].map((attachment) => attachment.filename),
+      attachmentScopeId: prepared.length > 0 ? preparedSession.scopeId : null,
+      attachmentRefs,
+      attachmentMetadata: prepared.map((metadata) => structuredClone(metadata)),
       locale: i18n.language,
     };
   }
@@ -1305,11 +1479,25 @@ async function resolveComposerAttachment(
     attachmentSendInFlightRef.current = sendToken;
     const sendEpoch = scopeEpoch.current;
     const sendScope = scopeKey;
+    const attachmentSequence = composerAttachmentSequenceRef.current;
     const sendScopeIsCurrent = () => {
       const current = latestSendScopeRef.current;
       return sendEpoch === scopeEpoch.current &&
         sendScope === current;
     };
+    const draftIsUnchanged = () => {
+      const current = composerControlsRef.current?.getState();
+      return current !== undefined && current.text === rawText
+        && attachmentSequence === composerAttachmentSequenceRef.current
+        && current.attachments.length === composerAttachments.length
+        && current.attachments.every((attachment, index) => {
+          const original = composerAttachments[index];
+          return attachment.id === original.id && attachment.file === original.file;
+        });
+    };
+    // An explicit runtime onNew may already have consumed its own draft.
+    // UI click and form submission keep ownership until validation finishes.
+    const ownsComposerDraft = draftIsUnchanged();
     try {
       // A client-rejected row must never leave the browser: block the send
       // with the row's localized message and keep the draft intact (the
@@ -1325,19 +1513,51 @@ async function resolveComposerAttachment(
       // Resolve bodies while the draft is still in the composer so any
       // failure loses nothing. Text-only sends skip the await and keep the
       // Wave A synchronous preparing-stage contract.
-      let wireAttachments: AiAttachment[];
+      let wireAttachments: AiAttachment[] = [];
+      const preparedAttachments: AiPreparedAttachment[] = [];
       try {
-        wireAttachments =
-          composerAttachments.length === 0
+        if (preparedEnabledRef.current && composerAttachments.length > 0) {
+          // A later row may discover that the server closed the old scope.
+          // Revisit surviving composer rows once so a round never mixes old
+          // metadata with the newly prepared generation. Cached current rows
+          // are reused, while historical frozen rounds remain untouched.
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            const preparationScope = preparedSession.scopeId;
+            preparedAttachments.length = 0;
+            let totalBytes = 0;
+            for (const attachment of composerAttachments) {
+              if (attachment.file === undefined) throw new Error(t("assistant.attachments.error.readFailed"));
+              totalBytes += attachment.file.size;
+              if (totalBytes > attachmentLimitsRef.current.max_total_bytes) {
+                throw new Error(attachmentAddErrorMessage("total_too_large", attachmentLimitsRef.current, translateRef.current));
+              }
+              preparedAttachments.push(await preparedSession.prepare(attachment.id, () => buildWireAttachment(
+                attachment.name, attachment.contentType ?? attachment.file!.type, attachment.file!,
+              )));
+            }
+            if (preparedSession.scopeId === preparationScope) break;
+            if (attempt === 1) throw new ApiError(410, "ai_attachment_expired", "Upload the file again");
+          }
+          // A future local timestamp cannot prove the server still owns the
+          // ref (for example after a Control restart). Validate every ref
+          // before freezing or consuming the user's text and File rows.
+          await preparedSession.validate(preparedAttachments, new AbortController().signal);
+        } else {
+          wireAttachments = composerAttachments.length === 0
             ? []
             : await resolveComposerAttachments(composerAttachments);
+        }
       } catch (error) {
-        if (!sendScopeIsCurrent()) return;
+        if (!sendScopeIsCurrent() || (ownsComposerDraft && !draftIsUnchanged())) return;
         // DLR's own rejection messages (localized total-bound / refused-row
         // errors) are plain Errors; browser file-read failures surface as
         // DOMExceptions and localize through the readFailed copy instead.
         setAttachmentError(
-          error instanceof Error &&
+          error instanceof ApiError && error.code === "ai_attachment_expired"
+            ? t("assistant.attachments.prepared.expired")
+            : error instanceof ApiError
+            ? attachmentServerErrorMessage(error, t("assistant.attachments.prepared.failed"))
+            : error instanceof Error &&
             error.message !== "" &&
             !(typeof DOMException !== "undefined" && error instanceof DOMException)
             ? error.message
@@ -1346,7 +1566,11 @@ async function resolveComposerAttachment(
         return;
       }
       if (!sendScopeIsCurrent()) return;
-      const snapshot = buildRoundSnapshot(adapter, text, wireAttachments);
+      // Preparation and server validation are asynchronous. Never consume a
+      // newer edit or attachment selection when an older send settles late.
+      if (ownsComposerDraft && !draftIsUnchanged()) return;
+      const snapshot = buildRoundSnapshot(adapter, text, wireAttachments, preparedAttachments,
+        preparedAttachments.length > 0 ? composerAttachments.map((attachment) => attachment.id) : []);
       if (snapshot === null) {
         // Invalid runtime config: the error is reported by
         // buildRoundSnapshot and the draft stays untouched.
@@ -1356,8 +1580,10 @@ async function resolveComposerAttachment(
       // Only after validation, resolution and freezing succeed, consume the
       // draft (adapter.remove is a no-op — no per-attachment browser
       // resources).
-      composerControlsRef.current?.setText("");
-      void composerControlsRef.current?.clearAttachments();
+      if (ownsComposerDraft) {
+        composerControlsRef.current?.setText("");
+        void composerControlsRef.current?.clearAttachments();
+      }
       const userMessage: VisibleMessage = {
         id: nextMessageId.current++,
         role: "user",
@@ -1373,7 +1599,7 @@ async function resolveComposerAttachment(
         for (const id of snapshot.contextSnippetIds) {
           props.onRemoveContextSnippet(id);
         }
-      });
+      }, preparedAttachments.length > 0);
     } finally {
       if (attachmentSendInFlightRef.current === sendToken) {
         attachmentSendInFlightRef.current = null;
@@ -1415,6 +1641,7 @@ async function resolveComposerAttachment(
         setCopiedMessageId((current) => (current === message.id ? null : current));
       }, 1500);
     } catch {
+      setShowRecoveryHint(true);
       setPanelError(t("assistant.copyFailed"));
     }
   }
@@ -1825,6 +2052,10 @@ async function resolveComposerAttachment(
                                 </span>
                               </Tooltip>
                             ))}
+                            {message.snapshot.attachmentMetadata.map((metadata) => (
+                              <PreparedAttachmentDirectory key={metadata.attachment_ref} metadata={metadata}
+                                expired={Object.values(preparedStates).some((state) => state.metadata?.attachment_ref === metadata.attachment_ref && state.phase === "expired")} />
+                            ))}
                           </div>
                         )}
                       <div
@@ -1970,15 +2201,23 @@ async function resolveComposerAttachment(
             )}
           </ThreadPrimitive.Viewport>
 
-          <ComposerPrimitive.Root className="ai-composer">
+          <ComposerPrimitive.Root className="ai-composer" onSubmit={(event) => {
+            // The runtime's default form send clears the composer before
+            // onNew. Use the same draft-preserving path as the click button.
+            event.preventDefault();
+            const draft = composerControlsRef.current?.getState();
+            if (draft !== undefined) void sendMessage(draft.text, draft.attachments);
+          }}>
             {stoppedWaiting && <p role="status" data-testid="ai-stopped-waiting">
               {t("assistant.stoppedWaiting")}
             </p>}
             {panelError !== null && (
               <p className="ai-panel-error" role="alert" data-testid="ai-panel-error">
                 {panelError}
-                <br />
-                <span data-testid="ai-recovery-hint">{t("assistant.recoveryHint")}</span>
+                {showRecoveryHint && <>
+                  <br />
+                  <span data-testid="ai-recovery-hint">{t("assistant.recoveryHint")}</span>
+                </>}
               </p>
             )}
             {/* M5.7 Wave B3: the composer attachment surface (dropzone, file
@@ -1996,6 +2235,9 @@ async function resolveComposerAttachment(
               sending={sending}
               limits={attachmentLimits}
               supportedContentTypes={supportedContentTypes}
+              capability={attachmentCapabilities}
+              preparedStates={preparedStates}
+              onRetryPrepared={(id) => preparedSession.retry(id)}
               error={attachmentError}
               onErrorChange={(message) => setAttachmentError(message)}
               onSend={(text, attachments) => void sendMessage(text, attachments)}

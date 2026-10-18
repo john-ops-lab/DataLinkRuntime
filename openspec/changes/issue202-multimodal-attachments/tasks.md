@@ -14,16 +14,33 @@
 - [x] 2.2 注册目录/单页/sheet-range只读工具，验证当前请求白名单、参数/范围限制、原件hash及剩余期限，拒绝路径/URL/跨范围引用。
 - [x] 2.3 实现 OpenAI-compatible/Anthropic/Gemini 实际多模态工具后续传输，验证来源关联、真实像素/文件parts与全工具call/result关系。
 - [x] 2.4 扩展每次Provider调用token/图片/PDF/wire bytes预算，验证首次、后续、最终化和纠正均经过门禁，覆盖裁剪说明和无界循环禁止。
-- [ ] 2.5 更新双语工具/能力合同并通过 AI/预算/安全/协议回归、Ruff/mypy及独立审查，提交第二批PR。
+- [x] 2.5 更新双语工具/能力合同并通过 AI/预算/安全/协议回归、Ruff/mypy及独立审查，提交第二批PR。
 
 ## 3. 界面生命周期与完整验收
 
-- [ ] 3.1 实现中英文准备/转换/读取/覆盖/错误状态及范围释放，验证刷新、重挂载、账号/Adapter切换、取消、迟到结果和TTL恢复。
-- [ ] 3.2 冻结Retry/Regenerate附件refs/hash/revision并保护composer/已冻结/进行中引用，验证删选新文件不会替换旧轮次原件；通过Web/i18n/类型/构建回归。
-- [ ] 3.3 用真实Chrome和实际视觉模型完成A1图像、A2数字PDF、A3扫描PDF、A4 XLSX、A5真正XLS、A6超预算末页/range、A7业务Candidate/Diff/Apply/Save/Run，按独立oracle保存原件hash和逐项证据。
-- [ ] 3.4 完成并发、取消/超时/内存/派生字节边界真实进程与存储核验，以及混合附件和无附件旧路径回归；记录所有缺口且不得把partial算pass。
-- [ ] 3.5 独立审查第三批变更并通过当前HEAD完整CI，在同一固定本机验收入口部署累计HEAD，保存真实镜像/SHA/schema/挂载/认证/Worker和页面结果，提交第三批PR且不自动合并。
+- [x] 3.1 实现中英文准备/转换/读取/覆盖/错误状态及范围释放，验证刷新、重挂载、账号/Adapter切换、取消、迟到结果和TTL恢复。
+- [x] 3.2 冻结Retry/Regenerate附件refs/hash/revision并保护composer/已冻结/进行中引用，验证删选新文件不会替换旧轮次原件；通过Web/i18n/类型/构建回归。
+- [x] 3.3 用真实Chrome和实际视觉模型完成A1图像、A2数字PDF、A3扫描PDF、A4 XLSX、A5真正XLS、A6超预算末页/range、A7业务Candidate/Diff/Apply/Save/Run，按独立oracle保存原件hash和逐项证据。
+- [x] 3.4 完成并发、取消/超时/内存/派生字节边界真实进程与存储核验，以及混合附件和无附件旧路径回归；记录所有缺口且不得把partial算pass。
+- [ ] 3.5 独立审查第三批变更并通过当前HEAD完整CI，在同一固定本机验收入口部署累计HEAD，保存真实镜像/SHA/schema/挂载/认证/Worker和页面结果；提交第三批PR。后续合并与发布按用户明确授权及下方四项修复交付门禁执行。
+
+真实模型和资源验证范围见 [验收记录](../../../docs/evidence/issue202-multimodal-attachments/acceptance.md)。3.5 的最终 CI/SHA/部署回执保存在本机私有交付记录中，完成交付前保持未勾选；公开仓库不保存本机入口或部署参数。
 
 ## Workflow follow-up
 
+- [x] 4.1 澄清用户授权的附件提取、引用、复述属于数据读取，保留指令权限、来源覆盖和人工执行边界；完整 inline 文本按用户要求仅返回提取内容，prepared 来源与覆盖要求保持。
+
+A16 提示词兼容性验收固定原87字节附件与原请求，对 MiniMax/Kimi 在旧、新提示词下各重复5次，并分别验证角色伪装、权限/Secret请求及代码/执行注入。冻结判据、保存所有尝试及独立审查；真实结果随当前PR更新，不因静态提示词检查或本项完成而将A16其他子项判为通过。
+
 - 用户最终确认验收后再关闭 Issue #202 或归档 OpenSpec；自动测试、Provider协议成功和本机健康不替代用户业务验收。
+
+## 5. v0.4.4 独立审查的四项修复
+
+用户已明确授权并行修复、针对性复测、更新原 PR 与固定本机验收环境、合并七个 PR 并发布 v0.4.4；排除 Issue #129。此授权不改变原 A16 FAIL 的判据或历史结果。
+
+- [x] 5.1 Reader 的 DocumentConversionError 经固定白名单转为稳定工具错误码；解析超时映射 ai_tool_timeout，未知错误保持脱敏，覆盖 list/page/sheet 与原 HTTPException 兼容行为。
+- [x] 5.2 scope 在受理时为关闭/清理预留容量，按 Principal 限制活动 scope 与未过期 tombstone 总量；验证其他用户释放、既有活动请求清理、幂等和 TTL，不提前驱逐关闭记录。
+- [ ] 5.3 首次发送在冻结和清空 composer 前校验真实服务端引用；失效保留文本和文件，校验期间编辑/新增/账号或 Adapter 切换不提交过时草稿，成功发送与 Retry/Regenerate 保持。
+- [x] 5.4 tools_supported=False 的 prepared 请求在凭据读取和 Provider 调用前以明确 422 拒绝；提供中英文更换配置提示，旧 inline 与无附件咨询保持。
+- [ ] 5.5 对最终集成提交完成交叉审查、针对性回归与完整 CI，更新固定本机验收环境并核对原资产保全，记录 Chrome/API 实测和未重跑范围。
+- [ ] 5.6 依次将 PR #205–#211 合并到 main，通过最终 main 精确 SHA 的完整 CI 后发布 v0.4.4；发布说明保留升级迁移和 A16 已知限制，不关闭 #202 或归档本 change。

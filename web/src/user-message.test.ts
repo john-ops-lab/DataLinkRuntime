@@ -66,3 +66,35 @@ it("keeps stable errors when a lightweight response has no headers", async () =>
   });
   vi.unstubAllGlobals();
 });
+
+it("distinguishes a provider HTTP response from network failure in both locales", () => {
+  expect(userErrorMessage(new ApiError(502, "ai_provider_http_error", "opaque", { http_status: 429 })))
+    .toBe("模型服务返回 HTTP 错误，请检查服务状态或请求配置 上游 HTTP 429（错误码：ai_provider_http_error）");
+  expect(userErrorMessage(
+    new ApiError(502, "ai_provider_http_error", "opaque", { http_status: 503 }), undefined, "en",
+  )).toBe("The model service returned an HTTP error. Check the service status or request configuration Upstream HTTP 503 (Error code: ai_provider_http_error)");
+  expect(userErrorMessage(
+    new ApiError(502, "ai_provider_http_error", "opaque", { http_status: 502 }), "AI request failed", "en",
+  )).toBe("AI request failed Upstream HTTP 502 (Error code: ai_provider_http_error)");
+});
+
+it("does not expose malformed provider HTTP status params or raw upstream detail", () => {
+  for (const http_status of [true, false, "PRIVATE_RAW_EXCEPTION", "502", 99, 600, 502.5, null]) {
+    const message = userErrorMessage(
+      new ApiError(502, "ai_provider_http_error", "PRIVATE_RAW_BODY_URL_HEADER", { http_status }),
+      undefined, "en",
+    );
+    expect(message).not.toContain("Upstream HTTP");
+    expect(message).not.toContain("PRIVATE_RAW");
+  }
+});
+
+it("explains that prepared attachments require a tool-capable configuration in both locales", () => {
+  const error = new ApiError(422, "ai_attachment_tools_unsupported", "PRIVATE_RAW_BODY");
+  expect(userErrorMessage(error)).toBe(
+    "当前模型配置不支持附件读取：请更换为支持工具调用的模型配置后再发送附件（错误码：ai_attachment_tools_unsupported）",
+  );
+  expect(userErrorMessage(error, undefined, "en")).toBe(
+    "The current model configuration cannot read prepared attachments: choose a model configuration with tool support before sending attachments (Error code: ai_attachment_tools_unsupported)",
+  );
+});

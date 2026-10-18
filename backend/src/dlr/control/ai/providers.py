@@ -5,6 +5,7 @@ Google Gemini use their native request/response shapes. Provider capabilities
 are declared here rather than inferred from model names or user URLs.
 """
 
+import errno
 import json
 import math
 import re
@@ -22,7 +23,14 @@ from urllib import request as url_request
 
 from dlr.common.config import settings
 from dlr.control.ai.attachment_reading import AttachmentMedia
-from dlr.control.ai.diagnostics import FailureReason, FailureStage, StrictJsonError
+from dlr.control.ai.diagnostics import (
+    FailureReason,
+    FailureStage,
+    StrictJsonError,
+    TransportFailureCategory,
+    safe_http_status,
+    safe_transport_category,
+)
 from dlr.control.schemas.ai import (
     AiModelOutput,
     AiProvider,
@@ -56,7 +64,7 @@ class NormalizedToolCall:
 
 
 class AiProviderError(Exception):
-    """Sanitized provider failure carrying only a stable public error code."""
+    """Stable code and bounded diagnostics; never store raw transport details."""
 
     def __init__(
         self,
@@ -64,6 +72,8 @@ class AiProviderError(Exception):
         *,
         stage: FailureStage | None = None,
         reason: FailureReason | None = None,
+        transport_category: TransportFailureCategory | None = None,
+        http_status: int | None = None,
     ) -> None:
         super().__init__(code)
         self.code = code
@@ -72,6 +82,16 @@ class AiProviderError(Exception):
         )
         self.reason = reason or (
             "invalid_shape" if code == "ai_response_invalid" else "transport_error"
+        )
+        default_category = {
+            "ai_provider_http_error": "http",
+            "ai_provider_dns_failed": "dns",
+            "ai_timeout": "timeout",
+            "ai_response_invalid": "protocol",
+        }.get(code, "unknown")
+        self.transport_category = safe_transport_category(transport_category or default_category)
+        self.http_status = (
+            safe_http_status(http_status) if self.transport_category == "http" else None
         )
 
 
@@ -756,6 +776,40 @@ def _is_dns_resolution_failure(error: BaseException) -> bool:
     )
 
 
+_CONNECTION_ERRNOS = frozenset(
+    {
+        errno.ECONNABORTED,
+        errno.ECONNREFUSED,
+        errno.ECONNRESET,
+        errno.EHOSTUNREACH,
+        errno.ENETDOWN,
+        errno.ENETUNREACH,
+        errno.EPIPE,
+    }
+)
+
+
+def _transport_failure_category(error: BaseException) -> TransportFailureCategory:
+    # URLError.reason is either a string or the original exception. Inspect
+    # types/errno only; arbitrary messages, URLs and headers are never retained.
+    cause = error.reason if isinstance(error, url_error.URLError) else error
+    if not isinstance(cause, BaseException):
+        return "unknown"
+    if isinstance(cause, TimeoutError):
+        return "timeout"
+    if _is_dns_resolution_failure(cause):
+        return "dns"
+    if isinstance(cause, ssl.SSLError):
+        return "tls"
+    if isinstance(cause, ConnectionError) or (
+        isinstance(cause, OSError) and cause.errno in _CONNECTION_ERRNOS
+    ):
+        return "connection"
+    if isinstance(cause, http_client.HTTPException):
+        return "protocol"
+    return "unknown"
+
+
 def encoded_payload_size(payload: JsonObject) -> int:
     return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
@@ -797,37 +851,33 @@ def _request_json(
         request = url_request.Request(url, data=data, headers=headers, method=method)
         raw = _bounded_http_read(request, max(0.0, deadline - time.monotonic()))
     except url_error.HTTPError as error:
+        status = safe_http_status(error.code)
         error.close()
-        if error.code in (401, 403):
-            raise AiProviderError("ai_auth_failed") from None
-        if error.code in (408, 504):
-            raise AiProviderError("ai_timeout") from None
-        if error.code == 404:
-            raise AiProviderError(not_found_code) from None
-        # M5.7 Wave B2: a Provider that rejects a native image payload
-        # (wrong model family, image size policy) gets its own actionable
-        # code instead of a generic transport error.
-        if image_input and error.code in (400, 422):
-            raise AiProviderError("ai_attachment_image_unsupported") from None
-        if reasoning_explicit and error.code in (400, 422):
-            raise AiProviderError("ai_reasoning_unsupported") from None
-        # A responding Provider that rejects the discovery request (missing or
-        # unsupported /v1/models) is not unreachable; the two failures get
-        # distinct actionable messages.
-        if model_discovery and error.code in (400, 405, 422):
-            raise AiProviderError("ai_models_not_supported") from None
-        raise AiProviderError("ai_provider_unreachable") from None
+        code = "ai_provider_http_error"
+        if status in (401, 403):
+            code = "ai_auth_failed"
+        elif status in (408, 504):
+            code = "ai_timeout"
+        elif status == 404:
+            code = not_found_code
+        # Retain the specialized native-image/reasoning/discovery contract,
+        # including its precedence, while recording every real HTTP status.
+        elif image_input and status in (400, 422):
+            code = "ai_attachment_image_unsupported"
+        elif reasoning_explicit and status in (400, 422):
+            code = "ai_reasoning_unsupported"
+        elif model_discovery and status in (400, 405, 422):
+            code = "ai_models_not_supported"
+        raise AiProviderError(code, transport_category="http", http_status=status) from None
     except TimeoutError:
-        raise AiProviderError("ai_timeout") from None
+        raise AiProviderError("ai_timeout", transport_category="timeout") from None
     except (url_error.URLError, http_client.HTTPException, OSError, ValueError) as error:
-        # M5.5.3: keep DNS resolution failures distinguishable from generic
-        # transport failures so deployment docs can guide the operator to the
-        # right layer (DNS vs TCP/TLS) instead of a single catch-all message.
-        if isinstance(error, url_error.URLError) and isinstance(error.reason, TimeoutError):
-            raise AiProviderError("ai_timeout") from None
-        if _is_dns_resolution_failure(error):
-            raise AiProviderError("ai_provider_dns_failed") from None
-        raise AiProviderError("ai_provider_unreachable") from None
+        category = _transport_failure_category(error)
+        code = {
+            "timeout": "ai_timeout",
+            "dns": "ai_provider_dns_failed",
+        }.get(category, "ai_provider_unreachable")
+        raise AiProviderError(code, transport_category=category) from None
     if len(raw) > MAX_PROVIDER_RESPONSE_BYTES:
         raise AiProviderError(
             "ai_response_invalid", stage="provider_json", reason="response_too_large"

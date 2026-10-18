@@ -63,3 +63,5 @@ Provider HTTP 使用绝对 monotonic 期限，同时主动 shutdown/close 已建
 工具执行后，若最终模型等待耗尽总期限，Assist 仍保留服务器生成的安全降级说明与脱敏工具摘要，candidate=null。仅服务器降级路径设置请求内私有标记，允许这一降级响应通过最终期限门禁；工具停止原因或模型返回 candidate=null 都不能放行迟到的模型正文或代码。
 
 Provider HTTP 每进程固定最多40个传输worker，与此前同步调用入口的默认并发容量相同；等待容量计入原始期限，耗尽仍返回既有ai_timeout。调用方超时会关闭已登记socket，但不提前释放worker名额，只有worker实际退出才释放，避免系统DNS阻塞时重试产生无界线程。Python无法强制终止getaddrinfo，DNS名额可能保留到系统解析返回；不引入新DNS进程或依赖。
+
+Provider 失败保留既有鉴权、模型/路径、超时、图片、推理和模型发现专门错误码；其他上游 HTTP 错误使用 `ai_provider_http_error`（Control HTTP502），公开参数仅可带安全整数 `params.http_status`。收到上游 HTTP 响应不能判为 DNS/TCP/TLS 失败。失败的 `provider_result` 审计事件新增固定 `transport_category`（`http`、`dns`、`tls`、`connection`、`timeout`、`protocol`、`unknown`），仅 HTTP 类别附带有界整数 `http_status`，专门错误码也保留实际 HTTP 状态。原有 `stage`、`reason` 和 schema version 保持兼容，成功事件形状不变；分类只依据异常类型/errno，不解析上游文字。禁止输出 URL、Key、headers、body 或原始异常，诊断不会重试或切换 Provider/模型。旧记录缺少这些字段时，不能只凭 `ai_provider_unreachable` 反推历史根因。依据 [Python HTTPError/URLError](https://docs.python.org/3.13/library/urllib.error.html) 和 [SSL 异常](https://docs.python.org/3.13/library/ssl.html#exceptions)。

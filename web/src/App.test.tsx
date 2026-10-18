@@ -4137,7 +4137,7 @@ function aiBindingsRoute(adapterId: number, envKeys: string[] = []): Route {
 function aiAttachmentCapabilitiesRoute(overrides: Partial<AiAttachmentCapabilities> = {}): Route {
   return {
     method: "GET",
-    match: "/api/ai/attachment-capabilities",
+    match: /^\/api\/(?:adapters\/\d+\/)?ai\/attachment-capabilities$/,
     respond: () => ({
       body: {
         limits: {
@@ -6211,7 +6211,7 @@ it("renders the B2 attachment capability bounds and rejects an oversized file in
 
   // Server-provided bounds render in the composer hint (1 KiB per-file).
   await screen.findByTestId("ai-attachment-hint");
-  expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("1 KiB");
+  await waitFor(() => expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("1 KiB"));
   expect(screen.getByTestId("ai-attachment-add").textContent).toBe("添加附件");
 
   // A file above the server-declared bound is rejected before any request.

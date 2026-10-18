@@ -959,6 +959,8 @@ export interface AiAssistRequest {
   base_version_id?: number | null;
   context_snippets?: AiContextSnippet[];
   attachments?: AiAttachment[];
+  attachment_scope_id?: string;
+  attachment_refs?: AiPreparedAttachmentRef[];
   knowledge_search_enabled?: boolean;
 }
 
@@ -1011,6 +1013,55 @@ export interface AiAttachment {
   data_base64: string;
 }
 
+/** A frozen attachment identity; never substitute another representation on Retry. */
+export interface AiPreparedAttachmentRef {
+  attachment_ref: string;
+  sha256: string;
+  representation_revision: string;
+}
+
+export interface AiPreparedAttachmentPage {
+  page: number;
+  status: "available" | "ready" | "blank" | "failed" | "omitted";
+  source_sheet?: string;
+  image_asset_id?: string;
+  structure_status?: string;
+}
+
+export interface AiPreparedAttachmentSheet {
+  name: string;
+  rows: number;
+  columns: number;
+  hidden: boolean;
+  print_area: string | null;
+  rendered_page_start?: number;
+  rendered_page_end?: number;
+}
+
+/** Safe directory metadata only; never server paths or attachment bytes. */
+export interface AiPreparedAttachment extends AiPreparedAttachmentRef {
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  status: "ready" | "partial";
+  page_count: number;
+  pages: AiPreparedAttachmentPage[];
+  sheets: AiPreparedAttachmentSheet[];
+  coverage: Record<string, string | number | boolean>;
+  warnings: string[];
+  expires_at: string;
+}
+
+export interface AiSelectedAttachmentCapability {
+  provider: AiProvider;
+  model: string;
+  protocol: AiProviderProtocol;
+  images_native: boolean;
+  native_pdf: boolean;
+  capability_source: "verified_model_endpoint" | "custom_declared" | "unknown";
+  max_request_bytes: number;
+}
+
 /** M5.7 Wave B2: bounded attachment limits (upload UI shows these). */
 export interface AiAttachmentLimits {
   max_attachments: number;
@@ -1035,6 +1086,8 @@ export interface AiAttachmentCapabilities {
   limits: AiAttachmentLimits;
   supported_content_types: string[];
   providers: AiProviderAttachmentCapability[];
+  prepared_attachments_enabled?: boolean;
+  selected?: AiSelectedAttachmentCapability | null;
 }
 
 export interface AiConnectionTestResult {
