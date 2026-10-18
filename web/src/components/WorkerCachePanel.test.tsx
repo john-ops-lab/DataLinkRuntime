@@ -263,11 +263,11 @@ describe("Worker cache administration", () => {
     fireEvent.click(screen.getByText("更多操作"));
     fireEvent.click(screen.getByRole("button", { name: "确认安装来源" }));
     expect(screen.getByText("平台不会自动验证。确认到期或来源身份变化后失效；手动保留仍有效。")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "记录确认" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "确认" })).toHaveProperty("disabled", true);
     fireEvent.change(screen.getByLabelText("核实说明"), {
       target: { value: "immutable source verified in the owned bundle" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "记录确认" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认" }));
 
     await waitFor(() => expect(body).not.toBeNull());
     const bodyRecord = body as Record<string, unknown> | null;

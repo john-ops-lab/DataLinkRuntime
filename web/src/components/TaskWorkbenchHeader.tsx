@@ -208,6 +208,7 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
           </>
         )}
       </div>
+      {!readOnly && <p className="ux-save-scope">{t("editor.saveScope", { ns: "common" })}</p>}
       </div>
     </header>
   );
