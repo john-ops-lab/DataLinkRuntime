@@ -1,0 +1,16 @@
+/* Keep uploaded-file surfaces inside the same input form content width. */
+.task-run-settings .managed-input-editor {
+  box-sizing: border-box;
+  max-width: 100%;
+}
+.task-run-settings .managed-input-editor > *,
+.task-run-settings .managed-input-file-list,
+.task-run-settings .managed-input-file-card,
+.task-run-settings .managed-input-progress,
+.task-run-settings .managed-input-examples {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+.task-run-settings .managed-input-file-card .ant-card-body { flex-wrap: wrap; }
+.task-run-settings .managed-input-file-actions { margin-left: auto; }

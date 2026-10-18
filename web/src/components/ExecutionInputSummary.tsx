@@ -60,7 +60,6 @@ export default function ExecutionInputSummary(props: { execution: Execution }) {
   const { t } = useTranslation("runtime");
   const snapshot = snapshotFor(props.execution);
   const sourceType = sourceTypeFor(props.execution, snapshot);
-  const revision = snapshot?.revision ?? props.execution.input_config_revision;
 
   if (sourceType === "none") {
     return (
@@ -74,11 +73,6 @@ export default function ExecutionInputSummary(props: { execution: Execution }) {
     return (
       <div data-testid="detail-input" className="execution-input-summary">
         <Typography.Text strong>{t("history.inputJson")}</Typography.Text>
-        {revision !== undefined && (
-          <Typography.Text type="secondary" data-testid="detail-input-revision">
-            {t("history.inputRevision")}: {revision}
-          </Typography.Text>
-        )}
         <pre data-testid="detail-input-json" className="output-view">
           {JSON.stringify(props.execution.input, null, 2)}
         </pre>
@@ -102,9 +96,6 @@ export default function ExecutionInputSummary(props: { execution: Execution }) {
         column={1}
         items={[
           { key: "source", label: t("history.inputSource"), children: t("history.inputSourceManagedFiles") },
-          ...(revision !== undefined
-            ? [{ key: "revision", label: t("history.inputRevision"), children: revision }]
-            : []),
         ]}
       />
       <Typography.Text strong>{t("history.inputManagedFiles")}</Typography.Text>

@@ -133,7 +133,6 @@ export default function WebhookWorkbenchHeader(props: Props) {
           </>
         )}
       </div>
-      {!readOnly && <p className="ux-save-scope">{t("editor.saveScope", { ns: "common" })}</p>}
       </div>
     </header>
   );

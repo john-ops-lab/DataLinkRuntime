@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import WORKER_TOKEN
+from dlr.control.models.adapter import Adapter
 from dlr.control.schemas.adapter import AdapterCreate, VersionCreate
 from dlr.control.services.adapter import create_adapter as service_create_adapter
 from dlr.control.services.adapter import save_version as service_save_version
@@ -390,6 +391,78 @@ def test_delete_adapter_not_found(api_client: TestClient) -> None:
 
 
 # --- Save new version -------------------------------------------------------
+
+
+def test_import_review_is_dismissed_only_after_a_successful_save(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    created = create_adapter(api_client)
+    notes = {
+        "review_environment": True,
+        "input_required": "managed_files",
+        "provenance": "fixture origin",
+        "license": "fixture license",
+    }
+    with session_factory() as session:
+        adapter = session.get(Adapter, created["id"])
+        assert adapter is not None
+        adapter.configuration_notes = notes
+        session.commit()
+
+    failed = api_client.post(f"/api/adapters/{created['id']}/versions", json={"code": " "})
+    assert failed.status_code == 422
+    assert api_client.get(f"/api/adapters/{created['id']}").json()["configuration_notes"] == notes
+
+    version = save_version(api_client, created["id"], code=STARTER_CODE + "# edited\n")
+    refreshed = api_client.get(f"/api/adapters/{created['id']}").json()
+    assert refreshed["configuration_notes"] == {**notes, "review_environment": False}
+    assert refreshed["latest_version_id"] == version["id"]
+
+
+def test_import_review_is_dismissed_by_metadata_edit_but_not_unchanged_values(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    created = create_adapter(api_client)
+    with session_factory() as session:
+        adapter = session.get(Adapter, created["id"])
+        assert adapter is not None
+        adapter.configuration_notes = {"review_environment": True, "license": "fixture license"}
+        session.commit()
+    unchanged = api_client.patch(f"/api/adapters/{created['id']}", json={"description": ""})
+    assert unchanged.status_code == 200
+    assert unchanged.json()["configuration_notes"]["review_environment"] is True
+    changed = api_client.patch(f"/api/adapters/{created['id']}", json={"description": "edited"})
+    assert changed.status_code == 200
+    assert changed.json()["configuration_notes"] == {
+        "review_environment": False,
+        "license": "fixture license",
+    }
+
+
+def test_import_review_is_dismissed_by_input_save_but_not_failed_input_save(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    created = create_adapter(api_client)
+    notes = {"review_environment": True, "input_required": "json", "license": "fixture"}
+    with session_factory() as session:
+        adapter = session.get(Adapter, created["id"])
+        assert adapter is not None
+        adapter.configuration_notes = notes
+        session.commit()
+    url = f"/api/adapters/{created['id']}/input-config"
+    failed = api_client.put(
+        url, json={"expected_revision": 99, "source_type": "json", "json_value": {}}
+    )
+    assert failed.status_code == 409
+    assert api_client.get(f"/api/adapters/{created['id']}").json()["configuration_notes"] == notes
+    saved = api_client.put(
+        url, json={"expected_revision": 1, "source_type": "json", "json_value": {"value": 1}}
+    )
+    assert saved.status_code == 200
+    assert api_client.get(f"/api/adapters/{created['id']}").json()["configuration_notes"] == {
+        **notes,
+        "review_environment": False,
+    }
 
 
 def test_save_first_version_gets_seq_1_and_becomes_latest(api_client: TestClient) -> None:

@@ -247,7 +247,7 @@
     "viewInput": "View input",
     "viewRunSettings": "Go to run settings",
     "saveAbove": "Use the save button above",
-    "bindingsSeparate": "Credential bindings (save separately)",
+    "bindingsSeparate": "Credential bindings",
     "dirtyRun": "Code has unsaved changes. Save editor content before running.",
     "noSavedContent": "Not saved yet",
     "statusUnavailable": "Not confirmed — open to check"

@@ -144,7 +144,6 @@ export default function LiveLogWorkspace(props: Props) {
           />
         </div>
       )}
-      <details className="operations-disclosure operations-log-help"><summary>{t("live.contentExplanation")}</summary><p>{t("live.contentDescription")}</p></details>
     </section>
   );
 }

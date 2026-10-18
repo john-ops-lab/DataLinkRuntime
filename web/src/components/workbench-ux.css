@@ -7,26 +7,28 @@
 .workbench-actions { flex: 0 1 auto; min-width: 0; max-width: 100%; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .workbench-actions .ux-save-scope { margin: 0; max-width: 34rem; font-size: 12px; text-align: right; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .workbench-header { flex-wrap: wrap; } .workbench-actions { width: 100%; } }
-.ux-save-regions { padding: 16px; border: 1px solid #dbe3ef; border-radius: 8px; background: #fff; margin-top: 16px; }
-.ux-save-region-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 12px; }
-.ux-save-region-grid section { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
-.ux-save-region-grid .ant-btn { max-width: 100%; white-space: normal; height: auto; padding-left: 0; }
-.ux-save-state { color: #237b3b; }
-.ux-save-state[data-dirty="true"] { color: #ad6800; }
+.editor-pane { overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
 .ux-permission-scopes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
 .ux-permission-scopes > div { padding: 14px; border: 1px solid #dbe3ef; border-radius: 8px; }
 .ux-permission-scopes p { margin-bottom: 0; color: #596a80; }
-.ux-binding-help { margin-bottom: 14px; }
+.binding-editor-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.binding-editor-toolbar > * { min-width: 0; }
+.binding-editor-toolbar > .ant-btn { flex-shrink: 0; }
+.ux-binding-help { flex: 1; }
 .ux-binding-help summary { color: #165dcc; cursor: pointer; margin-bottom: 8px; }
 .binding-editor .binding-rows { max-width: 1000px; }
 .ux-binding-labels, .binding-editor .binding-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) 70px; gap: 12px; align-items: center; }
-.ux-binding-labels { margin: 16px 0 8px; }
+.ux-binding-labels { margin: 0 0 8px; }
 .binding-editor .binding-row > * { min-width: 0; }
 .binding-readonly-value { overflow-wrap: anywhere; }
-.ux-binding-impact { margin: 16px 0 12px; padding: 14px; border: 1px solid #dbe3ef; border-radius: 8px; }
-.ux-binding-impact p { color: #596a80; margin: 8px 0; }
+.binding-editor .binding-actions { margin-top: 16px; }
+.adapter-settings-drawer .adapter-settings-form { gap: 24px; }
+.adapter-settings-drawer .adapter-settings-summary { padding: 0; border: 0; background: transparent; }
+.adapter-settings-drawer .adapter-settings-section { padding-top: 0; border-top: 0; }
+.adapter-settings-drawer [data-testid="adapter-settings-section-basic"] .ant-form-item:last-child { margin-bottom: 0; }
+.adapter-settings-drawer .adapter-danger-zone { margin-top: auto; padding: 20px 0 0; border: 0; border-top: 1px solid var(--dlr-border); border-radius: 0; background: transparent; }
 .ux-delete-summary { display: grid; gap: 16px; }
 .ux-delete-summary h4 { margin: 0 0 8px; }
 .ux-delete-summary ul { margin: 0; padding-left: 20px; }
 .ux-delete-summary li { margin: 8px 0; }
-@media (max-width: 760px) { .ux-save-region-grid, .ux-permission-scopes { grid-template-columns: 1fr; } .ux-template-entry { flex-wrap: wrap; } .ux-binding-labels { font-size: 12px; } .ux-binding-labels, .binding-editor .binding-row { gap: 6px; grid-template-columns: repeat(3, minmax(0, 1fr)) 56px; } }
+@media (max-width: 760px) { .ux-permission-scopes { grid-template-columns: 1fr; } .ux-template-entry { flex-wrap: wrap; } .ux-binding-labels { font-size: 12px; } .ux-binding-labels, .binding-editor .binding-row { gap: 6px; grid-template-columns: repeat(3, minmax(0, 1fr)) 56px; } }

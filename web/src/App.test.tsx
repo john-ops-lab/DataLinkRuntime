@@ -1668,6 +1668,53 @@ it("saves a new version with the edited content", async () => {
   expect(await screen.findByText("适配器已保存")).toBeTruthy();
 });
 
+it("dismisses an import reminder only after saving editor content successfully", async () => {
+  let adapter = makeAdapter({
+    latest_version_id: 10,
+    configuration_notes: { review_environment: true, input_required: "managed_files" },
+  });
+  const initial = makeVersion();
+  let rejectSave = true;
+  const saved = makeVersion({ id: 11, seq: 2 });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [makeReadyWorker()] }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: adapter.latest_version_id === 11 ? [saved, initial] : [initial] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: initial }) },
+    { method: "GET", match: "/api/adapters/1/versions/11", respond: () => ({ body: saved }) },
+    { method: "POST", match: "/api/adapters/1/versions", respond: () => {
+      if (rejectSave) return { status: 409, body: { detail: { code: "fixture_save_failed", message: "save failed" } } };
+      adapter = { ...adapter, latest_version_id: saved.id, configuration_notes: { ...adapter.configuration_notes, review_environment: false } };
+      return { status: 201, body: saved };
+    } },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  expect(await screen.findByTestId("import-configuration-notice")).toBeTruthy();
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "def handle(context, input):\n    return 2\n" } });
+  fireEvent.click(screen.getByTestId("save-version"));
+  await screen.findByTestId("error-banner");
+  expect(screen.getByTestId("import-configuration-notice")).toBeTruthy();
+  rejectSave = false;
+  await waitFor(() => expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByTestId("save-version"));
+  await waitFor(() => expect(screen.queryByTestId("import-configuration-notice")).toBeNull());
+});
+
+it("does not show an import reminder when no input was omitted", async () => {
+  const adapter = makeAdapter({ configuration_notes: { review_environment: true, input_required: "none" } });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  expect(screen.queryByTestId("import-configuration-notice")).toBeNull();
+});
+
 it("asks for a compatible Worker on first Save when several are available", async () => {
   let adapter = makeAdapter({ runtime_worker_id: null });
   const versions: VersionSummary[] = [];
@@ -1911,9 +1958,7 @@ it("keeps Save disabled and never mixes content when switching to an adapter who
   expect(valueOf("code-editor")).not.toBe(TASK_STARTER_CODE);
   const saveButton = screen.getByTestId("save-version") as HTMLButtonElement;
   expect(saveButton.disabled).toBe(true);
-  const editSaveRegion = within(screen.getByTestId("save-regions")).getByText("编辑内容").closest("section")!;
-  expect(editSaveRegion.querySelector(".ux-save-state")?.textContent).toBe("尚未确认，请查看");
-  expect(editSaveRegion.textContent).not.toContain("已保存");
+  expect(screen.queryByTestId("save-regions")).toBeNull();
   expect(saveButton.closest(".action-with-reason")?.getAttribute("title")).toContain(
     "版本内容尚未就绪",
   );
@@ -3831,7 +3876,7 @@ it("gives repeated Credential Binding controls stable row-specific accessible na
   expect(screen.getByRole("combobox", { name: "绑定 1 字段" })).toBeTruthy();
 
   // M5.5.7：凭据区域提供“去系统设置新建凭据”的说明与入口。
-  expect(screen.getByText("如需新增凭据，请前往「系统设置 → 凭据管理」新建。")).toBeTruthy();
+  expect(screen.getByTestId("open-settings-for-credentials").textContent).toContain("管理凭据");
   const openSettings = screen.getByTestId("open-settings-for-credentials");
   expect(openSettings).toBeTruthy();
 

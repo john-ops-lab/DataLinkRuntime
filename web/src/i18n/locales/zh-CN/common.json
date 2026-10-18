@@ -247,7 +247,7 @@
     "viewInput": "查看输入",
     "viewRunSettings": "前往运行设置",
     "saveAbove": "使用上方保存按钮",
-    "bindingsSeparate": "凭据绑定（单独保存）",
+    "bindingsSeparate": "凭据绑定",
     "dirtyRun": "代码有未保存修改，暂不能运行。请先保存编辑内容。",
     "noSavedContent": "尚未保存",
     "statusUnavailable": "尚未确认，请查看"

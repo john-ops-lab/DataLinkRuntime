@@ -87,8 +87,10 @@ function renderPanel(
     ...capabilityOverrides,
   });
   vi.spyOn(api, "listInputArtifacts").mockResolvedValue(staged);
+  const runtimeRef = createRef<TaskRunSettingsHandle>();
   render(
     <TaskRunSettingsPanel
+      ref={runtimeRef}
       adapter={adapter(adapterOverrides)}
       workers={[{
         id: 3,
@@ -107,6 +109,7 @@ function renderPanel(
       onError={onError}
     />,
   );
+  return runtimeRef;
 }
 
 function fileInput(): HTMLInputElement {
@@ -771,4 +774,40 @@ it.each([
 ])("formats the actual server default retention %s without hardcoding a day", async (seconds, duration) => {
   renderPanel(inputConfig({ source_type: "managed_files" }), {}, [], vi.fn(), { default_retention_seconds: seconds });
   await waitFor(() => expect(screen.getByTestId("managed-input-retention-mode").textContent).toContain(`使用系统默认：当前 ${duration}`));
+});
+
+it("preserves a custom retention draft on same-source selection and source round trips", async () => {
+  const config = inputConfig({ source_type: "managed_files", artifacts: [currentArtifact()], retention: { mode: "custom", seconds: 7200 } });
+  const runtimeRef = renderPanel(config);
+  const input = await screen.findByTestId("managed-input-retention-seconds") as HTMLInputElement;
+  await waitFor(() => expect(input.disabled).toBe(false));
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false);
+  fireEvent.change(input, { target: { value: "10800" } });
+  fireEvent.click(screen.getByTestId("task-input-source-managed_files"));
+  expect(input.value).toBe("10800");
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
+  fireEvent.click(screen.getByTestId("task-input-source-json"));
+  fireEvent.click(screen.getByTestId("task-input-source-managed_files"));
+  expect((screen.getByTestId("managed-input-retention-seconds") as HTMLInputElement).value).toBe("10800");
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
+  fireEvent.change(screen.getByTestId("managed-input-retention-seconds"), { target: { value: "7200" } });
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false);
+  fireEvent.click(screen.getByTestId("task-input-source-none"));
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
+  fireEvent.click(screen.getByTestId("task-input-source-managed_files"));
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false);
+});
+
+it("separates pending uploads from unchanged saved JSON while protecting them on leave", async () => {
+  const runtimeRef = renderPanel(inputConfig({ source_type: "json", json_value: { saved: true } }), {}, [artifact()]);
+  await screen.findByTestId("task-input-json");
+  await screen.findByText("待保存文件：1");
+  expect(screen.getByTestId("task-input-state").textContent).toContain("已保存");
+  expect(screen.getByTestId("task-input-state").textContent).not.toContain("未保存");
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  expect(runtimeRef.current?.confirmInputLeave()).toBe(false);
+  expect(confirm).toHaveBeenCalledWith("仍有待保存的上传文件，确定要离开吗？");
+  fireEvent.click(screen.getByTestId("task-input-source-json"));
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
 });

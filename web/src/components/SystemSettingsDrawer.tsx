@@ -1968,9 +1968,57 @@ function ManagedInputSettingsPanel(props: {
           })}
         />
       )}
-      <Card size="small" title={t("managedInput.policyTitle")} className="managed-input-policy-card">
-        <Form layout="vertical" className="managed-input-policy-form">
-          <Typography.Title level={5} className="admin-form-section">{t("managedInput.retentionTitle")}</Typography.Title>
+      <Card size="small" title={t("managedInput.usageTitle")} className="managed-input-usage-card">
+        <div className="admin-stat-grid managed-input-usage-summary" data-testid="managed-input-usage-summary">
+          <div className="admin-stat"><strong>{formatBytes(settings.usage.platform_actual_bytes)}</strong><span>{t("managedInput.actualUsageLabel")}</span></div>
+          <div className="admin-stat"><strong>{formatBytes(settings.usage.platform_reserved_bytes)}</strong><span>{t("managedInput.reservedUsageLabel")}</span></div>
+          <div className="admin-stat"><strong>{formatBytes(settings.usage.platform_total_bytes)}</strong><span>{t("managedInput.totalUsageLabel")}</span></div>
+        </div>
+        <details className="admin-help"><summary>{t("managedInput.usageDetails")}</summary>
+        <ProTable
+          rowKey="adapter_id"
+          className="managed-input-usage-table"
+          size="small"
+          search={false}
+          options={false}
+          pagination={false}
+          scroll={{ y: 280 }}
+          dataSource={settings.usage.adapters}
+          columns={[
+            {
+              title: t("managedInput.adapterColumn"),
+              dataIndex: "adapter_id",
+              render: (_value, row) => {
+                const adapter = props.adapters.find((item) => item.id === row.adapter_id);
+                const label = adapter?.name ?? t("managedInput.adapterFallback", { id: row.adapter_id });
+                return (
+                  <Button
+                    type="link"
+                    className="managed-input-adapter-link"
+                    data-testid={`managed-input-adapter-${row.adapter_id}`}
+                    onClick={() => props.onSelectAdapter?.(row.adapter_id)}
+                  >
+                    {label}
+                  </Button>
+                );
+              },
+            },
+            {
+              title: t("managedInput.usageColumn"),
+              render: (_value, row) => formatBytes(row.total_bytes),
+            },
+            {
+              title: t("managedInput.statusColumn"),
+              render: (_value, row) => row.over_quota ? <Tag color="warning">{t("managedInput.overQuotaShort")}</Tag> : <Tag color="green">{t("managedInput.withinQuota")}</Tag>,
+            },
+          ]}
+        />
+        </details>
+      </Card>
+      <Form layout="vertical" className="managed-input-policy-form managed-input-refined-form">
+        <section className="managed-policy-group" aria-label={t("managedInput.retentionTitle")}>
+          <Typography.Title level={4}>{t("managedInput.retentionTitle")}</Typography.Title>
+          <div className="managed-policy-fields">
           <Form.Item label={t("managedInput.defaultRetention")}>
             <Space.Compact block className="managed-input-unit-compact">
               <InputNumber
@@ -2079,7 +2127,7 @@ function ManagedInputSettingsPanel(props: {
               />
             </Space.Compact>
           </Form.Item>
-          <Form.Item>
+          <Form.Item label={t("managedInput.retentionOptions")}>
             <Checkbox
               data-testid="managed-input-allow-manual-delete"
               checked={draft.allow_manual_delete}
@@ -2094,8 +2142,12 @@ function ManagedInputSettingsPanel(props: {
               {t("managedInput.allowManualDelete")}
             </Checkbox>
           </Form.Item>
-          <Typography.Text type="secondary" className="admin-form-section">{t("managedInput.policyHint")}</Typography.Text>
-          <Typography.Title level={5} className="admin-form-section">{t("managedInput.capacityTitle")}</Typography.Title>
+          </div>
+          <Typography.Paragraph type="secondary" className="managed-policy-hint">{t("managedInput.policyHint")}</Typography.Paragraph>
+        </section>
+        <section className="managed-policy-group" aria-label={t("managedInput.capacityTitle")}>
+          <Typography.Title level={4}>{t("managedInput.capacityTitle")}</Typography.Title>
+          <div className="managed-policy-fields">
           <Form.Item label={t("managedInput.maxFileBytes")}>
             <Space.Compact block className="managed-input-unit-compact">
               <InputNumber
@@ -2195,8 +2247,8 @@ function ManagedInputSettingsPanel(props: {
               />
             </Space.Compact>
           </Form.Item>
-          <Typography.Text type="secondary" className="admin-form-section">{t("managedInput.quotaReductionHint")}</Typography.Text>
-          <Form.Item label={t("managedInput.minFreeSpaceBytes")}>
+          <Form.Item label={t("managedInput.minFreeSpaceBytes")}
+            extra={t("managedInput.diskSpaceHint")}>
             <Space.Compact block className="managed-input-unit-compact">
               <InputNumber
                 data-testid="managed-input-min-free-space"
@@ -2229,8 +2281,10 @@ function ManagedInputSettingsPanel(props: {
               />
             </Space.Compact>
           </Form.Item>
-          <Typography.Text type="secondary" className="admin-form-section">{t("managedInput.diskSpaceHint")}</Typography.Text>
-        </Form>
+          </div>
+          <Typography.Paragraph type="secondary" className="managed-policy-hint">{t("managedInput.quotaReductionHint")}</Typography.Paragraph>
+        </section>
+        <div className="managed-policy-savebar">
         <Button
           type="primary"
           data-testid="managed-input-settings-save"
@@ -2239,58 +2293,9 @@ function ManagedInputSettingsPanel(props: {
         >
           {t("managedInput.save")}
         </Button>
-      </Card>
-
-      <Card size="small" title={t("managedInput.usageTitle")} className="managed-input-usage-card">
-        <div className="managed-input-usage-summary" data-testid="managed-input-usage-summary">
-          <Typography.Text>{t("managedInput.actualUsage", { value: formatBytes(settings.usage.platform_actual_bytes) })}</Typography.Text>
-          <Typography.Text>{t("managedInput.reservedUsage", { value: formatBytes(settings.usage.platform_reserved_bytes) })}</Typography.Text>
-          <Typography.Text>{t("managedInput.totalUsage", { value: formatBytes(settings.usage.platform_total_bytes) })}</Typography.Text>
         </div>
-        <Typography.Text type="secondary" className="settings-field-hint">
-          {t("managedInput.quotaReductionHint")}
-        </Typography.Text>
-        <details className="admin-help"><summary>{t("managedInput.usageDetails")}</summary>
-        <ProTable
-          rowKey="adapter_id"
-          className="managed-input-usage-table"
-          size="small"
-          search={false}
-          options={false}
-          pagination={false}
-          scroll={{ y: 280 }}
-          dataSource={settings.usage.adapters}
-          columns={[
-            {
-              title: t("managedInput.adapterColumn"),
-              dataIndex: "adapter_id",
-              render: (_value, row) => {
-                const adapter = props.adapters.find((item) => item.id === row.adapter_id);
-                const label = adapter?.name ?? t("managedInput.adapterFallback", { id: row.adapter_id });
-                return (
-                  <Button
-                    type="link"
-                    className="managed-input-adapter-link"
-                    data-testid={`managed-input-adapter-${row.adapter_id}`}
-                    onClick={() => props.onSelectAdapter?.(row.adapter_id)}
-                  >
-                    {label}
-                  </Button>
-                );
-              },
-            },
-            {
-              title: t("managedInput.usageColumn"),
-              render: (_value, row) => formatBytes(row.total_bytes),
-            },
-            {
-              title: t("managedInput.statusColumn"),
-              render: (_value, row) => row.over_quota ? <Tag color="warning">{t("managedInput.overQuotaShort")}</Tag> : <Tag color="green">{t("managedInput.withinQuota")}</Tag>,
-            },
-          ]}
-        />
-        </details>
-      </Card>
+      </Form>
+
       {error !== null && <p className="settings-panel-error" role="alert">{error}</p>}
       {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
     </div>

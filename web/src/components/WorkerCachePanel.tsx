@@ -195,6 +195,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadingFailedCleanups, setLoadingFailedCleanups] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [proofOpen, setProofOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeOperation, setActiveOperation] = useState<CacheOperation | null>(null);
   const [pollStartedAt, setPollStartedAt] = useState(0);
@@ -259,6 +260,11 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
       if (cacheRequestGeneration.current === generation) setLoading(false);
     }
   }, [open, stableError, worker.id]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setProofOpen(false), 0);
+    return () => window.clearTimeout(timer);
+  }, [open, worker.id]);
 
   useEffect(() => {
     if (!open) return;
@@ -493,40 +499,38 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
       title: t("cache.key"), key: "cache_key", render: (_, item) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{adapters.find((adapter) => adapter.id === item.adapter_id)?.name ?? t("managedInput.adapterFallback", { id: item.adapter_id })}</Typography.Text>
-          <Typography.Text type="secondary">{t("cache.sourceIdentity", { adapter: item.adapter_id, version: item.version_id })}</Typography.Text>
-          <details className="admin-help"><summary>{t("cache.sourceDetails")}</summary><Typography.Text>{item.cache_key}</Typography.Text><p>{item.identity?.language ?? "—"}</p></details>
-          <Tag>{t(`cache.itemKinds.${item.kind ?? "version"}`)}</Tag>
+          <Typography.Text type="secondary">{t("cache.versionLabel", { version: item.version_id })}</Typography.Text>
+          <details className="admin-help cache-source-details">
+            <summary>{t("cache.sourceDetails")}</summary>
+            <Typography.Text>{item.cache_key}</Typography.Text>
+            <p>{item.identity?.language ?? "—"}</p>
+            <p>{t(`cache.itemKinds.${item.kind ?? "version"}`)}</p>
+            <p>{item.kind === "staging" ? t("cache.identityUnavailable") : t(`cache.rebuildability.${item.rebuildability}`)}</p>
+          </details>
         </Space>
       ),
     },
     { title: t("cache.bytes"), dataIndex: "bytes", key: "bytes", render: formatBytes },
     {
-      title: t("cache.protection"),
-      key: "protection",
-      render: (_, item) => item.kind === "staging" ? (
-        <Tag>{t("cache.identityUnavailable")}</Tag>
-      ) : (
-        <Space size={[4, 4]} wrap>
-          <Tag color={item.pinned ? "blue" : "default"}>
-            {item.pinned ? t("cache.pinned") : t("cache.unpinned")}
-          </Tag>
-          <Tag color={item.rebuildability === "confirmed" ? "green" : "gold"}>
-            {t(`cache.rebuildability.${item.rebuildability}`)}
-          </Tag>
-        </Space>
-      ),
-    },
-    {
-      title: t("cache.reasons"),
-      dataIndex: "reasons",
-      key: "reasons",
-      render: (reasons: string[]) => reasons.length === 0 ? "—" : (
-        <Space size={[4, 4]} wrap>{reasons.map((reason) => (
-          <Tag key={reason}>{t(`cache.reasonsMap.${reason}`, {
-            defaultValue: t("cache.unknownReason", { code: reason }),
-          })}</Tag>
-        ))}</Space>
-      ),
+      title: t("cache.currentRestrictions"),
+      key: "restrictions",
+      render: (_, item) => {
+        const reasons = new Set(item.reasons);
+        if (item.pinned) reasons.add("cache_pinned");
+        if (item.kind !== "staging" && item.rebuildability !== "confirmed" && !reasons.has("cache_rebuild_unavailable")) {
+          reasons.add("cache_rebuild_unknown");
+        }
+        if (reasons.has("cache_rebuild_unavailable")) reasons.delete("cache_rebuild_unknown");
+        return reasons.size === 0 ? (
+          <Typography.Text type="secondary">{t("cache.recheckBeforeCleanup")}</Typography.Text>
+        ) : (
+          <Space size={[4, 4]} wrap>{Array.from(reasons).map((reason) => (
+            <Tag key={reason}>{t(`cache.reasonsMap.${reason}`, {
+              defaultValue: t("cache.unknownReason", { code: reason }),
+            })}</Tag>
+          ))}</Space>
+        );
+      },
     },
   ];
 
@@ -775,7 +779,6 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
         </Card></details>
 
         <Card size="small" title={t("cache.entriesTitle")}>
-          <Alert type="info" showIcon message={t("cache.previewRecheckHint")} />
           <Table
             size="small"
             rowKey="cache_key"
@@ -783,7 +786,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
             dataSource={view?.items ?? []}
             columns={cacheColumns}
             pagination={false}
-            scroll={{ x: 760 }}
+            scroll={{ x: 640 }}
             rowSelection={{
               columnWidth: 84,
               columnTitle: (originalNode) => <Space size={4}>{originalNode}{t("cache.selectionColumn")}</Space>,
@@ -793,7 +796,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
               getCheckboxProps: () => ({ disabled: !mutatingAllowed }),
             }}
           />
-          <Alert type="warning" showIcon message={t("cache.protectionHint")} />
+          <Typography.Paragraph type="secondary" className="cache-safety-note">{t("cache.protectionHint")}</Typography.Paragraph>
           <Space wrap className="worker-cache-actions">
             <Button disabled={selectedPairs.length === 0 || submitting || !mutatingAllowed} onClick={() => submitKeyOperation("preview")}>
               {t("cache.preview")}
@@ -801,15 +804,24 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
             <Button danger disabled={selectedPairs.length === 0 || submitting || !mutatingAllowed} onClick={() => submitKeyOperation("clean")}>
               {t("cache.clean")}
             </Button>
+          </Space>
+          {selectedItems.length === 0 && <Typography.Text type="secondary">{t("cache.selectionHint")}</Typography.Text>}
+          <details className="admin-help cache-more-actions"><summary>{t("cache.moreActions")}</summary>
+          <Space wrap>
             <Button disabled={selectedProtectable.length === 0 || selectedProtectable.length !== selectedItems.length || submitting || !mutatingAllowed} onClick={() => submitPin(true)}>
               {t("cache.pin")}
             </Button>
             <Button disabled={selectedProtectable.length === 0 || selectedProtectable.length !== selectedItems.length || submitting || !mutatingAllowed} onClick={() => submitPin(false)}>
               {t("cache.unpin")}
             </Button>
+            <Button
+              aria-expanded={proofOpen}
+              aria-controls={`cache-source-confirmation-${worker.id}`}
+              disabled={selectedProtectable.length === 0 || selectedProtectable.length !== selectedItems.length || submitting || !mutatingAllowed}
+              onClick={() => setProofOpen((current) => !current)}
+            >{t("cache.proofDetails")}</Button>
           </Space>
-          {selectedItems.length === 0 && <Typography.Text type="secondary">{t("cache.selectionHint")}</Typography.Text>}
-          <details className="admin-help"><summary>{t("cache.proofDetails")}</summary>
+          {proofOpen && <section id={`cache-source-confirmation-${worker.id}`} aria-label={t("cache.proofDetails")}>
           <Form layout="vertical" className="worker-cache-proof-form">
             <Alert
               type="warning"
@@ -817,7 +829,8 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
               message={t("cache.proofCommitmentTitle")}
               description={t("cache.proofCommitmentDescription")}
             />
-            <Form.Item label={t("cache.sourcePolicy")} htmlFor="cache-source-policy">
+            <Form.Item label={t("cache.sourcePolicy")} htmlFor="cache-source-policy"
+              extra={t(proof.sourcePolicy === "verified_offline" ? "cache.proofOfflineHint" : "cache.proofOnlineHint")}>
               <Select
                 id="cache-source-policy"
                 value={proof.sourcePolicy}
@@ -847,6 +860,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
                 onChange={(hours) => setProof((current) => ({ ...current, hours: hours ?? 1 }))}
               />
             </Form.Item>
+            <Space className="cache-proof-actions" wrap>
             <Button
               type="primary"
               disabled={selectedProtectable.length === 0 || selectedProtectable.length !== selectedItems.length || !proof.note.trim() || submitting || !mutatingAllowed}
@@ -854,7 +868,10 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
             >
               {t("cache.confirmRebuildability")}
             </Button>
-          </Form></details>
+            <Button disabled={submitting} onClick={() => setProofOpen(false)}>{t("cache.cancel")}</Button>
+            </Space>
+          </Form></section>}
+          </details>
         </Card>
 
         {view !== null && (view.failed_guard_items.length > 0 || view.failed_guard_complete === false) && (

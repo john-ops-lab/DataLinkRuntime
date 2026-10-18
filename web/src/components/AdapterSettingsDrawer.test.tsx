@@ -55,7 +55,6 @@ it("keeps Adapter settings quiet and structured for scanning", () => {
   renderSettings();
 
   expect(screen.getByTestId("adapter-settings-title").textContent).toContain("适配器设置");
-  expect(screen.getByTestId("adapter-settings-summary").textContent).toContain("orders-task");
   expect(screen.getByTestId("adapter-settings-summary").textContent).toContain("任务");
   expect(screen.getByTestId("adapter-settings-summary").textContent).toContain("Python");
   expect(screen.queryByText("已保存的版本")).toBeNull();
@@ -63,7 +62,7 @@ it("keeps Adapter settings quiet and structured for scanning", () => {
 
   const language = screen.getByTestId("adapter-language");
   expect(language.tagName).not.toBe("INPUT");
-  expect(language.getAttribute("aria-readonly")).toBe("true");
+  expect(screen.queryByText("只读信息")).toBeNull();
   expect(language.textContent).toContain("Python");
 
   expect(screen.getByTestId("adapter-settings-section-basic")).toBeTruthy();

@@ -545,3 +545,40 @@ it("keeps a nonstandard schedule in advanced mode with its original value editab
   fireEvent.change(input, { target: { value: "*/11 2-7 * * 1,4" } });
   expect((input as HTMLInputElement).value).toBe("*/11 2-7 * * 1,4");
 });
+
+it.each([
+  [{ one: 1, nested: { a: true, b: [null, 2] } }, '{"nested":{"b":[null,2],"a":true},"one":1}'],
+  [[1, 2, { x: false }], '[ 1, 2, { "x": false } ]'],
+  [null, ' \n null \n'],
+  [false, ' false '],
+] as const)("compares saved JSON semantically and still tracks actual source/value changes (%j)", async (saved, equivalent) => {
+  const runtimeRef = renderPanel(makeInputConfig({ source_type: "json", json_value: saved }));
+  const input = await screen.findByTestId("task-input-json");
+  await waitFor(() => expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false));
+  fireEvent.click(screen.getByTestId("task-input-source-json"));
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false);
+  fireEvent.change(input, { target: { value: equivalent } });
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false);
+  fireEvent.change(input, { target: { value: '{' } });
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
+  fireEvent.change(input, { target: { value: '"changed value"' } });
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
+  fireEvent.change(input, { target: { value: equivalent } });
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false);
+  fireEvent.click(screen.getByTestId("task-input-source-none"));
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
+  fireEvent.click(screen.getByTestId("task-input-source-json"));
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false);
+});
+
+it("keeps NUL edits dirty until the explicit normalization save completes", async () => {
+  const saved = makeInputConfig({ source_type: "json", json_value: { text: "AB" } });
+  const put = vi.spyOn(api, "putInputConfig").mockResolvedValue({ ...saved, revision: 5 });
+  const runtimeRef = renderPanel(saved);
+  const input = await screen.findByTestId("task-input-json");
+  fireEvent.change(input, { target: { value: JSON.stringify({ text: "A\u0000B" }) } });
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
+  fireEvent.click(screen.getByTestId("save-task-input"));
+  await waitFor(() => expect(put).toHaveBeenCalledWith(7, expect.objectContaining({ source_type: "json", json_value: { text: "AB" }, original_json_size_bytes: expect.any(Number) })));
+  await waitFor(() => expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false));
+});

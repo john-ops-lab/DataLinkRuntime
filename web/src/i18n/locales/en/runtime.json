@@ -164,6 +164,7 @@
       "managedFilesTitle": "Input files",
       "managedFilesHint": "Uploads stay staged until saved; choose up to {{max}} files. Saved files are used for runs.",
       "managedFilesEmpty": "No managed files selected.",
+      "pendingUploads": "Pending uploads: {{count}}",
       "stagedLeaveWarning": "Managed files are still staged and unsaved. Leave this page?",
       "overflowStaged": "{{count}} staged file(s) exceed the {{max}}-file selection limit. They will not be saved in this revision, but you can still delete them.",
       "fileCount": "{{count}}/{{max}} files",

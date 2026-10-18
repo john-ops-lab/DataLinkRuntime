@@ -31,6 +31,7 @@ import type {
 import { JsonInputKeyConflict, normalizeJsonInput } from "../json-input-normalization";
 import { userErrorMessage } from "../user-message";
 import "./operations-ux.css";
+import "./input-ux-followup.css";
 
 import ManagedInputExamples from "./ManagedInputExamples";
 
@@ -136,6 +137,28 @@ function parseJson(text: string): { ok: true; value: unknown } | { ok: false } {
   } catch {
     return { ok: false };
   }
+}
+
+/** Compare JSON values without treating object key order or indentation as edits.
+ * Do not normalize NULs here: those changes still require the explicit save path.
+ */
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((value, index) => sameJsonValue(value, right[index]));
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = Object.keys(leftRecord);
+  return keys.length === Object.keys(rightRecord).length
+    && keys.every((key) => Object.hasOwn(rightRecord, key) && sameJsonValue(leftRecord[key], rightRecord[key]));
+}
+
+function jsonDraftMatchesSaved(text: string, saved: unknown): boolean {
+  const parsed = parseJson(text);
+  return parsed.ok && sameJsonValue(parsed.value, saved);
 }
 
 type InputErrorTranslationKey = "revisionConflict" | "sourceNotAvailable" | "notInitialized" | "managedFilesEmpty";
@@ -1064,7 +1087,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
 
   const inputDirty = inputConfig !== null && (
     inputSourceDraft !== inputConfig.source_type ||
-    (inputSourceDraft === "json" && inputJsonDraft !== formatJson(inputConfig.json_value)) ||
+    (inputSourceDraft === "json" && !jsonDraftMatchesSaved(inputJsonDraft, inputConfig.json_value)) ||
     (inputSourceDraft === "managed_files" && (
       !sameIds(managedArtifactIds(managedFilesDraft), inputConfig.artifacts.map((artifact) => artifact.id)) ||
       retentionDraft.mode !== inputConfig.retention.mode ||
@@ -1218,16 +1241,13 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   ];
 
   function selectInputSource(sourceType: InputSourceType, disabledReason: string | null): void {
-    if (disabledReason !== null) {
+    if (disabledReason !== null || sourceType === inputSourceDraft) {
       return;
     }
     inputEditEpoch.current += 1;
     setInputSourceDraft(sourceType);
     if (sourceType === "managed_files") {
       setManagedFilesDraft((current) => mergeManagedFileDrafts(current, stagedArtifacts));
-      setRetentionDraft(inputConfig?.source_type === "managed_files"
-        ? inputConfig.retention
-        : { mode: "system_default", seconds: null });
     }
     setInputValidationError(null);
     onError(null);
@@ -1594,6 +1614,9 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             <Tag color={inputDirty ? "gold" : "green"}>
               {inputDirty ? t("task.input.draft") : t("task.input.saved")}
             </Tag>
+            {stagedArtifacts.length > 0 && inputSourceDraft !== "managed_files" && (
+              <Tag color="gold">{t("task.input.pendingUploads", { count: stagedArtifacts.length })}</Tag>
+            )}
           </div>
         </div>
 
@@ -1996,7 +2019,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             >
               {t("task.input.save")}
             </Button>
-            {inputDirty && <Typography.Text type="warning">{t("task.input.unsavedHint")}</Typography.Text>}
           </div>
         </Form>
       </section>

@@ -1256,10 +1256,16 @@ export function AdapterConsole({
       initialAdapterDrafts.current.delete(saveTarget.id);
       // The immutable version exists as soon as POST succeeds: acknowledge it locally
       // right away so a follow-up refresh failure cannot be mistaken for a failed save
-      // (which would invite retrying into a duplicate immutable version). Only
-      // latest_version_id is derived from the response; Adapter.updated_at stays
-      // the server-owned value until a real Adapter refresh succeeds.
-      const optimistic: Adapter = { ...saveTarget, latest_version_id: saved.id };
+      // (which would invite retrying into a duplicate immutable version). The
+      // successful save also dismisses the import reminder. Adapter.updated_at
+      // stays server-owned until a real Adapter refresh succeeds.
+      const optimistic: Adapter = {
+        ...saveTarget,
+        latest_version_id: saved.id,
+        ...(saveTarget.configuration_notes?.review_environment && {
+          configuration_notes: { ...saveTarget.configuration_notes, review_environment: false },
+        }),
+      };
       if (!mutation.acceptAdapter(optimistic)) return;
       setVersions((current) => [saved, ...current]);
       // The new immutable version is the latest one: keep the cached catalog
@@ -1717,10 +1723,13 @@ export function AdapterConsole({
               )}
             </div>
 
-            {selected?.configuration_notes?.review_environment && <Alert type="info" showIcon
-              message={t("configurationNotes", { ns: "portable",
-                input: t(`inputType.${selected.configuration_notes.input_required || "none"}`, { ns: "portable" }),
-              })} />}
+            {selected?.configuration_notes?.review_environment
+              && ["managed_files", "json"].includes(String(selected.configuration_notes.input_required))
+              && <Alert type="info" showIcon data-testid="import-configuration-notice"
+                message={t(selected.configuration_notes.input_required === "managed_files"
+                  ? "configurationFilesMissing" : "configurationJsonMissing", { ns: "portable" })}
+                action={<Button size="small" onClick={() => setActiveTabKey("runtime")}>{t("editor.viewInput")}</Button>}
+              />}
             <div className="console-body">
             {activeSection === "adapters" && <AdapterCatalog
               adapters={adapters}
@@ -1982,14 +1991,6 @@ export function AdapterConsole({
                             },
                           ]}
                         />
-                        <div className="ux-save-regions" data-testid="save-regions">
-                          <strong>{t("editor.saveRegions")}</strong>
-                          <div className="ux-save-region-grid">
-                            <section><span>{t("editor.editContent")}</span><strong className="ux-save-state" data-dirty={dirty || selected.latest_version_id === null}>{t(!contentReady ? "editor.statusUnavailable" : dirty ? "editor.unsaved" : selected.latest_version_id === null ? "editor.noSavedContent" : "editor.saved")}</strong><small>{t("editor.saveAbove")}</small></section>
-                            {selected.adapter_type === "task" && <section><span>{t("editor.inputData")}</span><strong className="ux-save-state" data-dirty={!!taskRuntimeState.inputDirty}>{t(!taskRuntimeState.inputReady ? "editor.statusUnavailable" : taskRuntimeState.inputDirty ? "editor.unsaved" : "editor.saved")}</strong><Button type="link" onClick={() => { setActiveTabKey("runtime"); requestAnimationFrame(() => document.querySelector('[data-testid="task-input-config"]')?.scrollIntoView({ block: "start" })); }}>{t("editor.viewInput")}</Button></section>}
-                            <section><span>{t("editor.runSettings")}</span><strong className="ux-save-state" data-dirty={selected.adapter_type === "task" ? !!taskRuntimeState.settingsDirty : !!webhookRuntimeState.settingsDirty}>{t(!(selected.adapter_type === "task" ? taskRuntimeState.settingsReady : webhookRuntimeState.loaded) ? "editor.statusUnavailable" : (selected.adapter_type === "task" ? taskRuntimeState.settingsDirty : webhookRuntimeState.settingsDirty) ? "editor.unsaved" : "editor.saved")}</strong><Button type="link" onClick={() => setActiveTabKey("runtime")}>{t("editor.viewRunSettings")}</Button></section>
-                          </div>
-                        </div>
                       </div>
                     ),
                   },

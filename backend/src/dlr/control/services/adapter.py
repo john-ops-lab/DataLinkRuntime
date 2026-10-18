@@ -282,6 +282,9 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     _require_not_archived(adapter)
+    metadata_changed = (data.name is not None and data.name != adapter.name) or (
+        data.description is not None and data.description != adapter.description
+    )
 
     runtime_worker_changed = (
         "runtime_worker_id" in data.model_fields_set
@@ -332,6 +335,8 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
         adapter.name = data.name
     if data.description is not None:
         adapter.description = data.description
+    if metadata_changed and adapter.configuration_notes.get("review_environment"):
+        adapter.configuration_notes = {**adapter.configuration_notes, "review_environment": False}
 
     try:
         session.commit()
@@ -641,6 +646,8 @@ def save_version(session: Session, adapter_id: int, data: VersionCreate) -> Adap
     session.add(version)
     session.flush()
     adapter.latest_version_id = version.id
+    if adapter.configuration_notes.get("review_environment"):
+        adapter.configuration_notes = {**adapter.configuration_notes, "review_environment": False}
     session.commit()
     session.refresh(version)
     return version

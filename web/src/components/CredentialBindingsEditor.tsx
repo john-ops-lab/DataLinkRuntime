@@ -226,33 +226,29 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
 
   return (
     <div className="binding-editor" data-testid="credential-bindings">
-      <Typography.Title level={5}>{t("bindings.title")}</Typography.Title>
-      <Typography.Paragraph type="secondary">{t("bindings.intro")}</Typography.Paragraph>
+      <div className="binding-editor-toolbar">
       <details className="ux-binding-help"><summary>{t("bindings.readHelp")}</summary>
       <Typography.Paragraph type="secondary" className="binding-editor-help">
         {t("bindings.help")} {" "}
         <code>context.secrets.get(&quot;PASSWORD&quot;)</code>{t("bindings.helpSuffix")} {" "}
         <code>DLR_SECRET_{"{env_key}"}</code> {t("bindings.injectedSuffix")}
       </Typography.Paragraph>
-      </details>
       <Alert
         type="warning"
         showIcon
         data-testid="credential-binding-risk"
         message={t(canManageBindings ? "bindings.ownerRisk" : "bindings.editRisk")}
       />
+      </details>
       {isPlatformAdmin && props.onOpenSettings !== undefined ? (
-        <Typography.Paragraph type="secondary" className="binding-editor-help">
-          {t("bindings.openSettingsHint")}
           <Button
             size="small"
             type="link"
             data-testid="open-settings-for-credentials"
             onClick={props.onOpenSettings}
           >
-            {t("actions.openSettings", { ns: "common" })}
+            {t("bindings.manageCredentials")}
           </Button>
-        </Typography.Paragraph>
       ) : !isPlatformAdmin ? (
         <Typography.Paragraph
           type="secondary"
@@ -262,6 +258,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
           {t("bindings.nonAdminOpenSettingsHint")}
         </Typography.Paragraph>
       ) : null}
+      </div>
       {envKeyRenamed && (
         <Alert
           type="warning"
@@ -364,7 +361,6 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
       )}
       {canManageBindings && (
         <>
-        <div className="ux-binding-impact"><strong>{t("bindings.saveBoundary")}</strong><p>{t("bindings.saveImpact")}</p>{dirty && <span role="status">{t("bindings.unsaved")}</span>}</div>
         <Space className="binding-actions">
           <Button
             data-testid="add-binding"
@@ -387,6 +383,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
           >
             {t("bindings.save")}
           </Button>
+          {dirty && <Typography.Text type="secondary" role="status">{t("bindings.unsaved")}</Typography.Text>}
         </Space>
         </>
       )}

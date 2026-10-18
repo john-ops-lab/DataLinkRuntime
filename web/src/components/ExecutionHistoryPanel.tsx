@@ -585,6 +585,21 @@ export default function ExecutionHistoryPanel(props: {
       ? selectedSummary
       : (items.find((item) => item.id === requestedExecutionId) ?? null);
   const visibleDetail = detail?.id === requestedExecutionId ? detail : null;
+  const processAvailable = visibleDetail !== null && reliableDetail?.execution_id === visibleDetail.id;
+
+  function showExecutionProcess() {
+    const target = processRef.current;
+    if (!processAvailable || target === null || visibleDetail === null) return;
+    const executionId = visibleDetail.id;
+    target.open = true;
+    // Wait for the expanded content to participate in layout. Focus must not
+    // start another scroll that competes with scrolling the drawer to the section.
+    window.requestAnimationFrame(() => {
+      if (requestedExecutionIdRef.current !== executionId || processRef.current !== target || !target.isConnected) return;
+      target.querySelector("summary")?.focus({ preventScroll: true });
+      target.scrollIntoView({ block: "start", behavior: "auto" });
+    });
+  }
 
   return (
     <div className="history-panel">
@@ -735,8 +750,7 @@ export default function ExecutionHistoryPanel(props: {
               <strong><Tag color={statusColor(visibleDetail.status)}>{statusLabel(visibleDetail.status)}</Tag></strong>
               <span>{formatDuration(visibleDetail.duration_ms, (key, options) => t(key, options))}</span>
               <p>{t("history.summaryStarted", { time: formatTime(visibleDetail.started_at, locale) })} · {triggerLabel(visibleDetail.trigger, (key, options) => t(key, options))}</p>
-              <small>{t("history.interfaceTimezone", { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })}</small>
-              <Button type="link" disabled={reliableDetail === null} onClick={() => { if (processRef.current) { processRef.current.open = true; processRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" }); processRef.current.querySelector("summary")?.focus(); } }}>{t("history.viewProcess")}</Button>
+              <Button type="link" disabled={!processAvailable} aria-controls={processAvailable ? `execution-process-${visibleDetail.id}` : undefined} onClick={showExecutionProcess}>{t("history.viewProcess")}</Button>
             </div>
             {reliableDetail?.incidents.some((incident) => incident.status === "open") && <Alert type="warning" showIcon message={t("history.openIncidentNotice")} action={<Button size="small" onClick={() => { incidentsRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }); incidentsRef.current?.focus(); }}>{t("history.viewIncidents")}</Button>} />}
             <ExecutionFileSummary execution={visibleDetail} onViewDetails={() => setDetailTab("input")} />
@@ -845,9 +859,8 @@ export default function ExecutionHistoryPanel(props: {
                 </div>
                 {reliableDetail !== null && (
                   <>
-                    <details ref={processRef} className="reliable-runtime-section operations-disclosure" data-testid="execution-attempt-timeline">
-                      <summary>{t("history.viewProcess")}</summary>
-                      <div className="reliable-runtime-section-title">{t("history.attemptTimeline")}</div>
+                    <details key={visibleDetail.id} id={`execution-process-${visibleDetail.id}`} ref={processRef} className="reliable-runtime-section operations-disclosure" data-testid="execution-attempt-timeline">
+                      <summary>{t("history.attemptTimeline")}</summary>
                       {reliableDetail.attempts.length === 0 ? (
                         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("history.noAttempts")} />
                       ) : (

@@ -89,6 +89,8 @@ function renderWorkspace(overrides: Partial<Parameters<typeof LiveLogWorkspace>[
 
 it("renders the unified log tab without an internal Execution #N", () => {
   renderWorkspace();
+  expect(screen.queryByText("日志内容说明")).toBeNull();
+  expect(document.querySelector(".operations-log-help")).toBeNull();
 
   expect(screen.getByTestId("live-log-workspace").textContent).toContain("实时日志");
   expect(screen.getByTestId("live-log").textContent).toContain("任务开始");

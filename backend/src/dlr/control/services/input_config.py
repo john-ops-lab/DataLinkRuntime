@@ -577,6 +577,8 @@ def upsert_input_config(
     _require_user_runtime_unlocked(session, adapter, schedule)
 
     _apply_input_config_update_locked(session, config, schedule, data)
+    if adapter.configuration_notes.get("review_environment"):
+        adapter.configuration_notes = {**adapter.configuration_notes, "review_environment": False}
     try:
         session.commit()
     except IntegrityError:

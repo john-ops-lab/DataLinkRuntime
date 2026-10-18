@@ -692,7 +692,8 @@ describe("Issue #127 D2 execution history", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "输入" }));
     const detailInput = await screen.findByTestId("detail-input-json");
     expect(detailInput.textContent).toContain('"region": "cn-east"');
-    expect(screen.getByTestId("detail-input-revision").textContent).toContain("9");
+    expect(screen.queryByTestId("detail-input-revision")).toBeNull();
+    expect(screen.getByTestId("detail-input").textContent).not.toContain("输入修订号");
     expect(screen.queryByRole("button", { name: /再次运行|rerun/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /复用|reuse/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /恢复配置|restore configuration/i })).toBeNull();
@@ -1154,8 +1155,68 @@ it("opens results first and preserves the original historical log timestamps", a
   const outputTab = await screen.findByRole("tab", { name: "输出" });
   expect(outputTab.getAttribute("aria-selected")).toBe("true");
   expect((await screen.findByTestId("output-content")).textContent).toContain('"total": 31');
-  expect(screen.getByTestId("execution-result-summary").textContent).toContain("日志保留原文");
+  expect(screen.getByTestId("execution-result-summary").textContent).not.toContain("摘要按");
   fireEvent.click(screen.getByRole("tab", { name: "执行日志" }));
   expect(screen.getByTestId("detail-log").textContent).toBe(rawLog);
   expect(screen.getByText(/日志内的时间如未注明时区/)).toBeTruthy();
+});
+
+it("opens and reveals the process after layout without a competing focus scroll", async () => {
+  renderHistory(execution());
+  fireEvent.click(await screen.findByTestId("history-row"));
+  const process = await screen.findByTestId("execution-attempt-timeline") as HTMLDetailsElement;
+  const heading = process.querySelector("summary")!;
+  const scroll = vi.fn(() => expect(process.open).toBe(true));
+  Object.defineProperty(process, "scrollIntoView", { configurable: true, value: scroll });
+  const focus = vi.spyOn(heading, "focus");
+  let frame: FrameRequestCallback | undefined;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { frame = callback; return 1; });
+  const button = screen.getByRole("button", { name: "查看本次运行过程" });
+  expect(screen.getAllByText("查看本次运行过程")).toHaveLength(1);
+  expect(button.getAttribute("aria-controls")).toBe(process.id);
+  expect(process.open).toBe(false);
+  fireEvent.click(button);
+  expect(process.open).toBe(true);
+  expect(scroll).not.toHaveBeenCalled();
+  act(() => frame?.(0));
+  expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  expect(document.activeElement).toBe(heading);
+  expect(scroll).toHaveBeenCalledWith({ block: "start", behavior: "auto" });
+  process.open = false;
+  button.focus();
+  // Native button keyboard activation dispatches a click with detail=0.
+  fireEvent.click(button, { detail: 0 });
+  act(() => frame?.(0));
+  expect(process.open).toBe(true);
+  expect(scroll).toHaveBeenCalledTimes(2);
+});
+
+it("does not scroll an old record after a switch and keeps the new process collapsed", async () => {
+  mockTwoExecutionEpochs();
+  render(<ExecutionHistoryPanel adapterId={41} />);
+  const rows = await screen.findAllByTestId("history-row");
+  fireEvent.click(rows[0]);
+  const oldProcess = await screen.findByTestId("execution-attempt-timeline") as HTMLDetailsElement;
+  const scroll = vi.fn();
+  Object.defineProperty(oldProcess, "scrollIntoView", { configurable: true, value: scroll });
+  let frame: FrameRequestCallback | undefined;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { frame = callback; return 1; });
+  fireEvent.click(screen.getByRole("button", { name: "查看本次运行过程" }));
+  const oldFrame = frame;
+  fireEvent.click(rows[1]);
+  await waitFor(() => expect(screen.getByTestId("execution-attempt-timeline").id).toBe("execution-process-72"));
+  act(() => oldFrame?.(0));
+  expect(scroll).not.toHaveBeenCalled();
+  expect((screen.getByTestId("execution-attempt-timeline") as HTMLDetailsElement).open).toBe(false);
+});
+
+it("keeps process navigation disabled when reliable detail fails", async () => {
+  vi.mocked(api.getReliableExecutionDetail).mockRejectedValue(new ApiError(503, "network_error", "unavailable"));
+  renderHistory(execution());
+  fireEvent.click(await screen.findByTestId("history-row"));
+  await screen.findByTestId("execution-reliable-detail-error");
+  const button = screen.getByRole("button", { name: "查看本次运行过程" }) as HTMLButtonElement;
+  expect(button.disabled).toBe(true);
+  expect(button.getAttribute("aria-controls")).toBeNull();
+  expect(screen.queryByTestId("execution-attempt-timeline")).toBeNull();
 });

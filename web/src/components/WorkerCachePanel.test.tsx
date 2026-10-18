@@ -207,9 +207,10 @@ describe("Worker cache administration", () => {
 
     await screen.findByText("11-12");
     const checkboxes = screen.getAllByRole("checkbox");
-    expect((screen.getByRole("button", { name: "固定所选项" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByText("更多操作"));
+    expect((screen.getByRole("button", { name: "手动保留" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(checkboxes[1]);
-    fireEvent.click(screen.getByRole("button", { name: "固定所选项" }));
+    fireEvent.click(screen.getByRole("button", { name: "手动保留" }));
 
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]).toMatchObject({
@@ -223,6 +224,24 @@ describe("Worker cache administration", () => {
       }],
     });
     expect(posts[0].idempotency_key).toEqual(expect.any(String));
+  });
+
+  it("merges duplicate restrictions and never treats empty reasons as cleanup permission", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("/cache?")
+      ? response({ ...cacheView(), items: [{ ...item, pinned: true, reasons: ["cache_pinned", "cache_pinned"] }, { ...item, cache_key: "11-13", version_id: 13, rebuildability: "confirmed", reasons: [] }, { ...item, cache_key: "11-14", version_id: 14, reasons: ["cache_rebuild_unavailable", "cache_rebuild_unknown"] }] })
+      : response({ items: [], next_cursor: null })));
+    renderPanel();
+    await screen.findByText("代码版本 12");
+    const row = screen.getByText("代码版本 12").closest("tr")!;
+    expect(row.querySelectorAll(".ant-tag")).toHaveLength(2);
+    expect(row.textContent).toContain("手动保留");
+    expect(row.textContent).toContain("尚未确认能重新安装");
+    expect(screen.getByText("清理时重新检查")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "清理所选项" })).toHaveProperty("disabled", true);
+    expect(row.querySelector("details")).toHaveProperty("open", false);
+    const unavailableRow = screen.getByText("代码版本 14").closest("tr")!;
+    expect(unavailableRow.querySelectorAll(".ant-tag")).toHaveLength(1);
+    expect(unavailableRow.textContent).toContain("安装来源暂不可用");
   });
 
   it("keeps rebuild proof distinct from pinning and bounds its expiry", async () => {
@@ -240,10 +259,15 @@ describe("Worker cache administration", () => {
 
     await screen.findByText("11-12");
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
-    fireEvent.change(screen.getByLabelText("重建证据说明"), {
+    expect(screen.queryByLabelText("核实说明")).toBeNull();
+    fireEvent.click(screen.getByText("更多操作"));
+    fireEvent.click(screen.getByRole("button", { name: "确认安装来源" }));
+    expect(screen.getByText("平台不会自动验证。确认到期或来源身份变化后失效；手动保留仍有效。")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "记录确认" })).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("核实说明"), {
       target: { value: "immutable source verified in the owned bundle" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "确认所选项可重建" }));
+    fireEvent.click(screen.getByRole("button", { name: "记录确认" }));
 
     await waitFor(() => expect(body).not.toBeNull());
     const bodyRecord = body as Record<string, unknown> | null;
@@ -258,6 +282,35 @@ describe("Worker cache administration", () => {
     const validFor = new Date(String(proof.valid_until)).getTime() - Date.now();
     expect(validFor).toBeGreaterThan(0);
     expect(validFor).toBeLessThanOrEqual(60 * 60 * 1_000);
+  });
+
+  it("closes source confirmation across panel and worker changes without submitting or discarding its draft", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => init?.method === "POST" ? response({}, 400) : String(input).includes("/cache?")
+      ? response(cacheView()) : response({ items: [], next_cursor: null }));
+    vi.stubGlobal("fetch", fetcher);
+    const panel = (open: boolean, id = worker.id) => <DlrDesignSystemProvider><WorkerCachePanel worker={{ ...worker, id }} open={open} onClose={() => undefined} /></DlrDesignSystemProvider>;
+    const view = render(panel(true));
+    await screen.findByText("11-12");
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getByText("更多操作"));
+    fireEvent.click(screen.getByRole("button", { name: "确认安装来源" }));
+    fireEvent.change(screen.getByLabelText("核实说明"), { target: { value: "verified materials" } });
+    fireEvent.click(screen.getByRole("button", { name: /^取\s*消$/ }));
+    expect(screen.queryByLabelText("核实说明")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "确认安装来源" }));
+    expect(screen.getByLabelText("核实说明")).toHaveProperty("value", "verified materials");
+    view.rerender(panel(false));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    view.rerender(panel(true));
+    await screen.findByText("11-12");
+    await waitFor(() => expect(screen.queryByLabelText("核实说明")).toBeNull());
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getByText("更多操作"));
+    fireEvent.click(screen.getByRole("button", { name: "确认安装来源" }));
+    expect(screen.getByLabelText("核实说明")).toHaveProperty("value", "verified materials");
+    view.rerender(panel(true, worker.id + 1));
+    await waitFor(() => expect(screen.queryByLabelText("核实说明")).toBeNull());
+    expect(fetcher.mock.calls.every((call) => call[1]?.method !== "POST")).toBe(true);
   });
 
   it("reuses the idempotency key after an uncertain duplicate submit", async () => {
@@ -276,7 +329,8 @@ describe("Worker cache administration", () => {
 
     await screen.findByText("11-12");
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
-    const pin = screen.getByRole("button", { name: "固定所选项" });
+    fireEvent.click(screen.getByText("更多操作"));
+    const pin = screen.getByRole("button", { name: "手动保留" });
     fireEvent.click(pin);
     await waitFor(() => expect(keys).toHaveLength(1));
     await waitFor(() => expect((pin as HTMLButtonElement).disabled).toBe(false));
@@ -301,10 +355,11 @@ describe("Worker cache administration", () => {
 
     await screen.findByText("11-12");
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
-    fireEvent.click(screen.getByRole("button", { name: "固定所选项" }));
+    fireEvent.click(screen.getByText("更多操作"));
+    fireEvent.click(screen.getByRole("button", { name: "手动保留" }));
     await waitFor(() => expect(bodies).toHaveLength(1));
-    await waitFor(() => expect((screen.getByRole("button", { name: "取消固定" }) as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(screen.getByRole("button", { name: "取消固定" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "取消保留" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "取消保留" }));
     await waitFor(() => expect(bodies).toHaveLength(2));
 
     expect(bodies[0].protect[0].pinned).toBe(true);
@@ -333,7 +388,8 @@ describe("Worker cache administration", () => {
 
     await screen.findByText("11-12");
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
-    fireEvent.click(screen.getByRole("button", { name: "固定所选项" }));
+    fireEvent.click(screen.getByText("更多操作"));
+    fireEvent.click(screen.getByRole("button", { name: "手动保留" }));
 
     expect(await screen.findByText(/所选键在观测后发生变化/)).toBeTruthy();
     expect(document.body.textContent).not.toContain("raw backend text");

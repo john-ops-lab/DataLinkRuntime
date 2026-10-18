@@ -77,5 +77,7 @@
   "migrationWorker": "Runtime worker: select a target worker that supports the chosen language.",
   "migrationCredentials": "If credentials are required, bind them again in the target environment.",
   "migrationStopped": "Schedules and Webhook reception are disabled after import. Check configuration before enabling.",
-  "runtimeParametersReadonly": "Runtime parameters (read-only)"
+  "runtimeParametersReadonly": "Runtime parameters (read-only)",
+  "configurationFilesMissing": "Input files were not imported.",
+  "configurationJsonMissing": "JSON input was not imported."
 }

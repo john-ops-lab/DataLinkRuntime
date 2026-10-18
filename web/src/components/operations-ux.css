@@ -10,7 +10,6 @@
 .operations-log-timezone { padding: 10px 12px; margin: 0; background: var(--ant-color-fill-quaternary, #f6f8fb); color: var(--ant-color-text-secondary, #52657c); font-size: 13px; }
 .operations-live-empty { min-height: 340px; justify-content: center; text-align: center; }
 .operations-history-entry { margin-top: 28px; border-top: 1px solid var(--ant-color-border-secondary, #e5eaf0); padding-top: 20px; }
-.operations-log-help { flex: none; }
 .managed-input-examples { padding: 12px 16px; border: 1px solid var(--ant-color-border-secondary, #e5eaf0); border-radius: 8px; }
 .managed-input-examples-content { width: 100%; padding-top: 12px; }
 .operations-preset-row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -41,3 +40,4 @@
 .execution-history-drawer .execution-detail-tabs .ant-tabs-tabpane { height: auto; }
 .execution-history-drawer .execution-detail .output-view { flex: none; max-height: clamp(120px, 46vh, 420px); overflow: auto; }
 .execution-history-drawer .history-log-pane:not(.log-pane-maximized) { flex: none; height: clamp(240px, 48vh, 440px); }
+.execution-history-drawer [data-testid="execution-attempt-timeline"] { scroll-margin-block-start: 16px; }

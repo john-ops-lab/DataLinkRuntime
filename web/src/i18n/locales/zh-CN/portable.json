@@ -77,5 +77,7 @@
   "migrationWorker": "运行节点：选择目标环境中支持所选语言的节点。",
   "migrationCredentials": "如用到凭据：在目标环境重新绑定。",
   "migrationStopped": "导入后定时默认停用，Webhook 默认停止接收；检查配置后再启用。",
-  "runtimeParametersReadonly": "运行参数（只读）"
+  "runtimeParametersReadonly": "运行参数（只读）",
+  "configurationFilesMissing": "输入文件未导入。",
+  "configurationJsonMissing": "JSON 输入未导入。"
 }

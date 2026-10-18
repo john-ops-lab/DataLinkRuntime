@@ -164,6 +164,7 @@
       "managedFilesTitle": "输入文件",
       "managedFilesHint": "上传后文件会先进入待保存状态，最多 {{max}} 个；保存后才会用于运行。",
       "managedFilesEmpty": "尚未选择输入文件。",
+      "pendingUploads": "待保存文件：{{count}}",
       "stagedLeaveWarning": "仍有待保存的上传文件，确定要离开吗？",
       "overflowStaged": "还有 {{count}} 个待保存文件超出 {{max}} 个选择上限；它们不会随本次保存提交，但仍可删除。",
       "fileCount": "{{count}}/{{max}} 个文件",
