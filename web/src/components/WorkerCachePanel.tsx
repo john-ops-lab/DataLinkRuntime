@@ -675,6 +675,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
       : <Typography.Text type="secondary">{item.route}</Typography.Text> },
   ];
 
+  const reviewBytes = cleanReview?.items.reduce((total, item) => total + item.bytes, 0);
   const footer = <div className="worker-cache-footer">
     <Typography.Text type="secondary">{t(uncertainClean !== null ? "cache.pendingSelection" : "cache.cleanSelection", { count: uncertainClean?.items.length ?? cleanTargets.length })}</Typography.Text>
     <Button type="primary" danger disabled={!mutatingAllowed || busy || (uncertainClean === null && cleanTargets.length === 0)} loading={submitting}
@@ -763,7 +764,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
       cancelText={t("cache.cancel")} okButtonProps={{ danger: true, disabled: busy || !mutatingAllowed }}
       onOk={() => void confirmClean()} onCancel={() => setCleanReview(null)} destroyOnHidden>
       <p>{t("cache.cleanScope", { count: cleanReview?.items.length ?? 0,
-        bytes: formatBytes(cleanReview?.items.reduce((total, item) => total + item.bytes, 0)) })}</p>
+        bytes: formatBytes(reviewBytes) })}</p>
       <ul className="cache-confirm-targets">{cleanReview?.items.map((item) => <li key={item.cache_key}>{targetName(item)}</li>)}</ul>
       <Typography.Text type="secondary">{t("cache.cleanConfirmDescription")}</Typography.Text>
     </Modal>
