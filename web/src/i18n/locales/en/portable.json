@@ -15,7 +15,7 @@
   "galleryWarning": "Templates are visible to users with access to this deployment’s gallery.",
   "file": "Choose a DLR ZIP package (up to 16 MiB)",
   "includeJson": "Explicitly include saved JSON input",
-  "includeFiles": "Explicitly include selected managed input files",
+  "includeFiles": "Include saved input files",
   "previewNote": "Choose a file to review and adjust its contents, then import. Duplicate names receive a numbered suffix.",
   "name": "Name",
   "description": "Description",
@@ -43,7 +43,7 @@
   "versionConflict": "The template changed. Close and reopen the latest version.",
   "tooLarge": "Package or attachments exceed limits (16 MiB ZIP, 32 MiB expanded, up to 9 attachments).",
   "workerError": "The target Worker is missing or does not support this language. Select again.",
-  "filesUnavailable": "Managed input files or storage are unavailable in the target environment. Configure them first.",
+  "filesUnavailable": "Uploaded file support or storage is unavailable in the target environment. Configure it before importing.",
   "saveFirst": "Save an adapter version before exporting.",
   "invalidPackage": "Invalid package, unsupported format or wrong object type. Choose the correct adapter/template ZIP.",
   "source": {
@@ -54,7 +54,7 @@
   "inputType": {
     "none": "None",
     "json": "JSON",
-    "managed_files": "Managed files",
+    "managed_files": "Uploaded files",
     "remote_files": "Remote files"
   },
   "configurationNotes": "This adapter was imported or copied from a template. Check its configuration before running. Input omitted during import: {{input}}.",

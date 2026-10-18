@@ -295,7 +295,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                   }))
                 : [];
             return (
-              <Space
+              <div
                 key={index}
                 className="binding-row"
                 data-testid="binding-row"
@@ -318,7 +318,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                       onOpenChange={(open) => { if (open) void refreshCredentials(); }}
                       aria-label={t("bindings.credential", { index: index + 1 })}
                       placeholder={t("bindings.credentialPlaceholder")}
-                      style={{ minWidth: 160 }}
+                      style={{ width: "100%", minWidth: 0 }}
                       value={row.credential_id ?? undefined}
                       disabled={props.disabled || saving}
                       options={credentials.map((candidate) => ({
@@ -331,7 +331,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                       data-testid="binding-field"
                       aria-label={t("bindings.field", { index: index + 1 })}
                       placeholder={t("bindings.fieldPlaceholder")}
-                      style={{ minWidth: 120 }}
+                      style={{ width: "100%", minWidth: 0 }}
                       value={row.field !== "" ? row.field : undefined}
                       disabled={props.disabled || saving || fieldOptions.length === 0}
                       options={fieldOptions}
@@ -353,11 +353,11 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                       {row.credential_name ?? `#${row.credential_id ?? "?"}`}
                     </span>
                     <span className="binding-readonly-value" data-testid="binding-field-readonly">
-                      {row.field}
+                      {credentialFieldLabel(row.field)}
                     </span>
                   </>
                 )}
-              </Space>
+              </div>
             );
           })}
         </div>

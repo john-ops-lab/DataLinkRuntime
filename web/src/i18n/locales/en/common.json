@@ -67,7 +67,7 @@
   },
   "users": {
     "title": "User management",
-    "subtitle": "Manage account roles and lifecycle. Passwords are never returned or displayed after submission.",
+    "subtitle": "Create accounts, set roles, and enable or disable accounts. Passwords are never returned or displayed after submission.",
     "loadFailed": "User list could not be loaded",
     "createTitle": "Create account",
     "username": "Username",
@@ -237,7 +237,7 @@
     "maximize": "Maximize code editor",
     "restore": "Restore code editor layout",
     "saveContent": "Save editor content",
-    "saveScope": "Saves code, dependencies and runtime parameters. It does not start a run.",
+    "saveScope": "“Save editor content” saves code, dependencies and runtime parameters without running.",
     "saveRegions": "Three areas save separately",
     "editContent": "Editor content",
     "inputData": "Input data",

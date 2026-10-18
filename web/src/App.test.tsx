@@ -769,7 +769,7 @@ it("blocks the top Schedule enable action until changed runtime settings are sav
   const enable = screen.getByTestId("header-task-schedule-toggle") as HTMLButtonElement;
   expect(enable.disabled).toBe(true);
   expect(enable.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
-    "运行设置有未保存修改，请先保存运行配置。",
+    "运行设置有未保存修改，请先保存运行设置。",
   );
   expect(fetchMock.mock.calls.some(([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT")).toBe(false);
 
@@ -1000,7 +1000,7 @@ it("skips the Schedule PUT while Schedule is still loading or failed to load (M5
     ),
   ).toBe(false);
   await screen.findByText(
-    "运行配置已保存；但 Schedule 尚未加载完成（或加载失败），定时字段未保存，请刷新后重试。",
+    "运行设置已保存；定时设置尚未加载完成或加载失败，因此定时设置未保存。请刷新后重试。",
   );
 });
 
@@ -1093,7 +1093,7 @@ it("locks Task editing while Schedule is enabled and unlocks after disable", asy
   await waitFor(() => expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true));
   // M5.5.9：运行中只保留低干扰提示；不再展示大块黄色说明、复制引导或修订号。
   expect(screen.getByTestId("task-active-execution").textContent).toContain(
-    "适配器正在运行，编辑与运行配置已锁定。",
+    "适配器正在运行，编辑与运行设置已锁定。",
   );
   expect(document.body.textContent).not.toContain("如需升级，请复制为新的适配器");
   expect(screen.queryByTestId("header-clone-adapter")).toBeNull();
@@ -1113,7 +1113,7 @@ it("locks Task editing while Schedule is enabled and unlocks after disable", asy
   }
   expect(within(cloneDialog).getByText("执行历史不会复制；新适配器创建后保持停止，不会自动运行。")).toBeTruthy();
   expect(within(cloneDialog).getByTestId("clone-input-note").textContent).toContain(
-    "托管文件本体不会复制",
+    "输入文件不会复制",
   );
   expect((within(cloneDialog).getByTestId("clone-adapter-name") as HTMLInputElement).value).toBe("adapter-a-copy");
   fireEvent.click(within(cloneDialog).getByRole("button", { name: /取\s*消/ }));
@@ -4853,10 +4853,10 @@ it("configures one AI model with manual Model ID, refresh, test, and default rea
 
   expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain("数据范围");
   expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain(
-    "Secret 不会发送",
+    "通过凭据绑定保存的密码或密钥不会随代码提交",
   );
-  fireEvent.click(screen.getByText("推理设置：跟随模型默认"));
-  expect(screen.getByTestId("ai-reasoning-mode").textContent).toContain("跟随模型默认");
+  fireEvent.click(screen.getByText("推理设置：使用模型默认设置"));
+  expect(screen.getByTestId("ai-reasoning-mode").textContent).toContain("使用模型默认设置");
   expect(screen.queryByTestId("ai-reasoning-effort")).toBeNull();
 
   fireEvent.change(screen.getByTestId("ai-base-url"), {
@@ -6153,8 +6153,8 @@ it("shows DLR lifecycle stage progress and converges on success without reasonin
   });
   fireEvent.click(screen.getByTestId("ai-send"));
 
-  // 阶段 1：点击后先展示“正在准备当前代码上下文”。
-  expect(screen.getByTestId("ai-progress-stage").textContent).toBe("正在准备当前代码上下文…");
+  // 阶段 1：点击后先展示“正在整理代码和所选资料”。
+  expect(screen.getByTestId("ai-progress-stage").textContent).toBe("正在整理代码和所选资料…");
   // 阶段 2：请求挂起期间展示“正在请求 AI 模型”。
   await screen.findByText("正在请求 AI 模型…");
   expect(screen.queryByTestId("ai-progress-done")).toBeNull();
@@ -6167,13 +6167,13 @@ it("shows DLR lifecycle stage progress and converges on success without reasonin
   await screen.findByText("正在校验返回结果…");
   expect(screen.queryByTestId("ai-candidate-summary")).toBeNull();
 
-  // 阶段 4：校验完成 → 收敛到成功态“已生成修改，等待查看 Diff”+ Candidate。
+  // 阶段 4：校验完成 → 收敛到成功态“已生成修改，请查看差异”+ Candidate。
   await act(async () => {
     resolveBindings?.([]);
     await pendingBindings;
   });
   await screen.findByTestId("ai-candidate-summary");
-  expect(screen.getByTestId("ai-progress-done").textContent).toBe("已生成修改，等待查看 Diff");
+  expect(screen.getByTestId("ai-progress-done").textContent).toBe("已生成修改，请查看差异");
   expect(screen.queryByTestId("ai-progress-stage")).toBeNull();
   // Provider hidden reasoning 永远不进入对话渲染。
   expect(document.body.textContent).not.toContain("reasoning");
@@ -6449,7 +6449,7 @@ it("keeps the Candidate Diff open with its reason when Apply is blocked by the r
     (screen.getByTestId("diff-apply-candidate") as HTMLButtonElement)
       .closest(".action-with-reason")
       ?.getAttribute("aria-label"),
-  ).toContain("适配器正在运行，不能应用候选修改");
+  ).toContain("适配器正在运行，不能应用建议修改");
   expect(screen.getByTestId("version-diff")).toBeTruthy();
   fireEvent.click(screen.getByTestId("diff-close"));
   await waitFor(() => expect(screen.queryByTestId("version-diff")).toBeNull());

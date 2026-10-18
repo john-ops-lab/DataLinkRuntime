@@ -748,7 +748,7 @@ describe("Issue #127 D2 execution history", () => {
     expect(file.textContent).toContain("text/csv");
     expect(file.textContent).toContain("128");
     expect(file.textContent).toContain("b".repeat(64));
-    expect(within(drawer).getByText("托管文件快照（只读）")).toBeTruthy();
+    expect(within(drawer).getByText("输入文件快照（只读）")).toBeTruthy();
     expect(drawer.textContent).not.toContain("9001");
     expect(drawer.textContent).not.toContain("private-storage-key");
     expect(drawer.textContent).not.toContain("/private/control/path");
@@ -778,7 +778,7 @@ describe("Issue #127 D2 execution history", () => {
     }));
     fireEvent.click(await screen.findByTestId("history-row"));
     fireEvent.click(await screen.findByRole("tab", { name: "Input" }));
-    await waitFor(() => expect(screen.getByText("Managed files snapshot (read-only)")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Input file snapshot (read-only)")).toBeTruthy());
     expect(screen.getByText("No file facts were retained in this snapshot.")).toBeTruthy();
   });
 

@@ -50,8 +50,8 @@
     "recipe": "Code",
     "requirements": "Dependencies",
     "prepare": "Before you start",
-    "prepareTask": "Prepare the required input data, target system addresses and credentials. Check this template’s instructions for specific requirements.",
-    "prepareWebhook": "Prepare the incoming request and connected systems. Follow the template instructions to configure credentials and processing rules.",
+    "prepareTask": "Follow this template’s instructions to prepare input data and configuration. System addresses or credentials are needed only when the template requires them.",
+    "prepareWebhook": "Prepare the incoming request and processing rules as described by the template. Configure addresses and credentials only when connecting to other systems.",
     "nextSteps": "Next, enter a name. After copying, check the configuration and save code and input before running or enabling. Copying does not start a run.",
     "chooseLanguage": "Which language do you want to view and copy?",
     "copyLanguage": "Copy {{language}} as adapter",
@@ -61,7 +61,8 @@
     "exampleRule": "Example rule: rename name to 姓名. Configure this mapping after copying.",
     "exampleInput": "One input item",
     "exampleOutput": "One output record",
-    "exampleDisclaimer": "This illustrates one field change, not complete output from the default rules. Full results also include count, partial status and checkpoint information."
+    "exampleDisclaimer": "This illustrates one field change, not complete output from the default rules. Full results also include count, partial status and checkpoint information.",
+    "prepareJsonMapping": "Prepare JSON data, then configure the processing rules at the start of the copied code."
   },
   "copy": {
     "title": "Copy as Adapter",

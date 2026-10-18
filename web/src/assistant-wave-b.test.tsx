@@ -315,3 +315,17 @@ it("Issue 212 attachment records keep this round’s frozen scope after later ed
   expect(within(record).getByTestId("ai-round-scope").textContent).not.toContain("new code for later round");
   expect(record.textContent).toContain("不代表模型已完整读取或理解");
 });
+
+
+it("Issue 212 keeps model limits available on demand without crowding the empty composer", async () => {
+  renderPanel();
+  const disclosure = await screen.findByTestId("ai-attachment-limits");
+  expect(disclosure.getAttribute("open")).toBeNull();
+  const capability = await screen.findByTestId("ai-attachment-capability");
+  expect(disclosure.contains(capability)).toBe(true);
+  expect(disclosure.contains(screen.getByTestId("ai-attachment-hint"))).toBe(true);
+  fireEvent.click(within(disclosure).getByText("支持的附件格式与模型限制"));
+  expect(disclosure.getAttribute("open")).not.toBeNull();
+  expect(screen.getByTestId("ai-message-input")).toBeTruthy();
+  expect(screen.getByTestId("ai-send-scope")).toBeTruthy();
+});

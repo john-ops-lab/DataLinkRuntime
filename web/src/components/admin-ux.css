@@ -21,7 +21,8 @@
 .worker-cache-panel .ant-table-selection-column { width:84px !important; min-width:84px; white-space:nowrap; }
 .admin-worker-checks { width:100%; }
 .admin-worker-checks summary { cursor:pointer; color:var(--ant-color-primary,#1677ff); margin-bottom:8px; }
-.system-status-panel .system-status-grid { display:flex; flex-direction:column; gap:16px; }
+.system-status-panel { max-width:1280px; }
+.system-status-panel .system-status-grid { display:flex; flex-direction:column; align-items:stretch; gap:16px; }
 .managed-input-policy-form .admin-form-section { grid-column:1 / -1; padding:12px 0 0; border-top:1px solid var(--ant-color-border-secondary,#e5eaf2); }
 .managed-input-policy-form .admin-form-section:first-child { border:0; padding-top:0; }
 @media (max-width:720px) { .admin-labeled-form.settings-inline-form,.admin-stat-grid { grid-template-columns:1fr; } }

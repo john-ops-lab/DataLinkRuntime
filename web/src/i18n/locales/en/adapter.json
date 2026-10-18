@@ -1,21 +1,21 @@
 {
   "namespace": "Adapter",
   "input": {
-    "objectTitle": "Input Object",
+    "objectTitle": "Input data",
     "sources": {
       "none": {
-        "title": "No input",
-        "description": "Passes no additional data to the Task.",
+        "title": "No input needed",
+        "description": "No extra data is supplied.",
         "status": "Default"
       },
       "json": {
-        "title": "JSON",
+        "title": "JSON data",
         "description": "Save any JSON top-level value: object, array, string, number, boolean or null.",
         "status": "Configurable"
       },
       "managedFiles": {
-        "title": "Managed files",
-        "description": "File input managed by the platform lifecycle.",
+        "title": "Upload files",
+        "description": "Files for the task to read at runtime.",
         "status": "Available",
         "disabled": "Not enabled yet"
       },
@@ -119,7 +119,7 @@
     "save": "Save",
     "saveChanges": "Save changes",
     "unsavedClose": "Settings have unsaved changes. Close and discard them?",
-    "readOnlyAccess": "This is a read-only share: code, dependencies, configuration, logs and history can be viewed, but writes, runs, AI and lifecycle actions are unavailable.",
+    "readOnlyAccess": "This share is read-only. You can view code, dependencies, configuration, logs and history, but cannot edit, save, run, use AI, change permissions or delete the adapter.",
     "editAccess": "This is an editable share: editing, saving, running and trigger configuration are allowed, but deleting the Adapter and managing sharing permissions are unavailable.",
     "archivedMessage": "Deleted Adapter is view-only",
     "archivedDescription": "This Adapter has been removed from the active list.",
@@ -182,7 +182,7 @@
     "ok": "Clone",
     "description": "The current code, dependencies, runtime configuration (including the per-execution timeout), Credential references and Runtime Worker will be copied.",
     "historyNote": "Execution history is not copied; the new Adapter remains stopped and will not run automatically.",
-    "inputNote": "Input configuration is copied, but managed file bytes are not. Upload and save them again in the new Adapter.",
+    "inputNote": "Input configuration is copied, but input files are not. Upload and save them again in the new adapter.",
     "name": "New Adapter name"
   },
   "save": {

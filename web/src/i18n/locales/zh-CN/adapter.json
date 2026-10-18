@@ -1,21 +1,21 @@
 {
   "namespace": "适配器",
   "input": {
-    "objectTitle": "输入对象",
+    "objectTitle": "输入数据",
     "sources": {
       "none": {
-        "title": "无输入",
-        "description": "不向任务传入额外数据。",
+        "title": "不需要输入",
+        "description": "不传入额外数据。",
         "status": "默认"
       },
       "json": {
-        "title": "JSON",
+        "title": "JSON 数据",
         "description": "保存一个 JSON 顶层值：对象、数组、字符串、数字、布尔值或 null。",
         "status": "可配置"
       },
       "managedFiles": {
-        "title": "托管文件",
-        "description": "由平台生命周期管理的文件输入。",
+        "title": "上传文件",
+        "description": "供任务运行时读取。",
         "status": "可用",
         "disabled": "尚未启用"
       },
@@ -119,7 +119,7 @@
     "save": "保存",
     "saveChanges": "保存更改",
     "unsavedClose": "设置中有未保存的修改，确定关闭并放弃吗？",
-    "readOnlyAccess": "这是只读共享：仅可查看代码、依赖、配置、日志和历史，不能写入、运行、调用 AI 或管理生命周期。",
+    "readOnlyAccess": "这是只读共享：可查看代码、依赖、配置、日志和历史，不能编辑或保存、运行、调用 AI、修改权限或删除适配器。",
     "editAccess": "这是可编辑共享：可以编辑、保存、运行和配置触发器，但不能删除适配器或管理共享权限。",
     "archivedMessage": "已删除适配器仅支持查看",
     "archivedDescription": "该适配器已从活跃列表移除。",
@@ -182,7 +182,7 @@
     "ok": "复制",
     "description": "将复制当前代码、依赖、运行配置（含单次执行超时）、凭据引用和运行节点。",
     "historyNote": "执行历史不会复制；新适配器创建后保持停止，不会自动运行。",
-    "inputNote": "输入配置会复制，但托管文件本体不会复制；请在新适配器中重新上传并保存。",
+    "inputNote": "输入配置会复制，输入文件不会复制；请在新适配器中重新上传并保存。",
     "name": "新适配器名称"
   },
   "save": {

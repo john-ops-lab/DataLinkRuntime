@@ -1562,7 +1562,7 @@ export function AdapterConsole({
       const confirmed = await modalApi.confirm({
         title: t("settings.deleteTitle", { ns: "adapter" }),
         width: 600,
-        closable: true,
+        closable: { "aria-label": t("actions.close") },
         okText: t(stopAndDelete ? "settings.deleteStopConfirm" : "settings.deleteConfirm", { ns: "adapter" }),
         cancelText: t("actions.cancel"),
         okButtonProps: { danger: true, "data-testid": "confirm-delete-adapter" },
@@ -1828,7 +1828,6 @@ export function AdapterConsole({
               />
               )}
 
-              <p className="ux-save-scope">{t("editor.saveScope")}</p>
               {dirty && selectedCanEdit && <Alert type="warning" message={t("editor.dirtyRun")} />}
               <Tabs
                 className="workbench-tabs"

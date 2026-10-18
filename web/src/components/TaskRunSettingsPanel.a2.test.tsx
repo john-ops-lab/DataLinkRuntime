@@ -292,7 +292,7 @@ describe("Task Input Object A2", () => {
     await waitFor(() => expect(screen.getByTestId("task-input-state").textContent).toContain("草稿"));
     expect((screen.getByTestId("task-input-json") as HTMLTextAreaElement).value).toBe('{"draft":true}');
     expect(screen.queryByTestId("task-input-revision")).toBeNull();
-    expect(document.body.textContent).toContain("输入对象已被其他页面更新");
+    expect(document.body.textContent).toContain("输入数据已被其他页面更新");
   });
 
   it("blocks save and imperative run when InputConfig loading fails", async () => {
@@ -308,14 +308,14 @@ describe("Task Input Object A2", () => {
     expect(screen.queryByTestId("task-input-revision")).toBeNull();
     runtimeRef.current?.runOnce();
 
-    await waitFor(() => expect(onError).toHaveBeenLastCalledWith("输入对象加载失败，请刷新后重试。"));
+    await waitFor(() => expect(onError).toHaveBeenLastCalledWith("输入数据加载失败，请刷新后重试。"));
     expect(put).not.toHaveBeenCalled();
     expect(createExecution).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["managed_files_empty", "托管文件为空，请先准备文件后再运行。", "none", null, "托管文件为空"],
-    ["input_source_not_available", "该输入对象来源尚未启用。", "json", { recovered: true }, "来源尚未启用"],
+    ["managed_files_empty", "上传文件为空，请先准备文件后再运行。", "none", null, "上传文件为空"],
+    ["input_source_not_available", "该输入数据来源尚未启用。", "json", { recovered: true }, "来源尚未启用"],
   ] as const)("recovers invalid managed_files (%s) through %s and only runs after save", async (invalidReason, blockedReason, sourceType, jsonValue, invalidMessage) => {
     const put = vi.spyOn(api, "putInputConfig").mockImplementation(async (_adapterId, payload) =>
       makeInputConfig({

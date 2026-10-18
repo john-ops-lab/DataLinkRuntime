@@ -707,49 +707,52 @@ function ComposerAttachmentArea(props: {
           {props.error}
         </p>
       )}
-      {props.capability !== null && (
-        <p className="ai-attachment-capability" role="note" data-testid="ai-attachment-capability">
-          {props.capability.prepared_attachments_enabled !== true
-            ? t("assistant.attachments.prepared.textFallback")
-            : props.capability.selected?.capability_source === "unknown" || props.capability.selected == null
-              ? t("assistant.attachments.prepared.visionUnknown")
-              : !props.capability.selected.images_native && !props.capability.selected.native_pdf
-                ? t("assistant.attachments.prepared.visionUnavailable")
-                : t(props.capability.selected.capability_source === "custom_declared"
-                  ? "assistant.attachments.prepared.visionDeclared" : "assistant.attachments.prepared.visionAvailable", { model: props.capability.selected.model })}
-        </p>
-      )}
-      <div
-        className="ai-composer-guidance"
-        data-testid="ai-composer-guidance"
-        role="note"
-        aria-label={t("assistant.attachments.guidance", {
-          count: props.limits.max_attachments,
-          size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
-        })}
-      >
-        <span
-          className="ai-attachment-hint"
-          data-testid="ai-attachment-hint"
+      <details className="ux-ai-formats" data-testid="ai-attachment-limits">
+        <summary>{t("assistant.ux.supportedFormats")}</summary>
+        <div
+          className="ai-composer-guidance"
+          data-testid="ai-composer-guidance"
+          role="note"
           aria-label={t("assistant.attachments.guidance", {
             count: props.limits.max_attachments,
             size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
           })}
-          title={t("assistant.attachments.guidance", {
-            count: props.limits.max_attachments,
-            size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
-          })}
         >
-          {t("assistant.attachments.guidanceLead", {
-            count: props.limits.max_attachments,
-            size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
-          })}
-          <strong className="ai-attachment-privacy" data-testid="ai-attachment-privacy">
-            {t("assistant.attachments.guidancePrivacy")}
-          </strong>
-        </span>
-      </div>
-      <details className="ux-ai-formats"><summary>{t("assistant.ux.supportedFormats")}</summary><p>{props.supportedContentTypes.join(", ")}</p></details>
+          <span
+            className="ai-attachment-hint"
+            data-testid="ai-attachment-hint"
+            aria-label={t("assistant.attachments.guidance", {
+              count: props.limits.max_attachments,
+              size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
+            })}
+            title={t("assistant.attachments.guidance", {
+              count: props.limits.max_attachments,
+              size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
+            })}
+          >
+            {t("assistant.attachments.guidanceLead", {
+              count: props.limits.max_attachments,
+              size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
+            })}
+            <strong className="ai-attachment-privacy" data-testid="ai-attachment-privacy">
+              {t("assistant.attachments.guidancePrivacy")}
+            </strong>
+          </span>
+        </div>
+        <p>{acceptStringFor(props.supportedContentTypes)}</p>
+        {props.capability !== null && (
+          <p className="ai-attachment-capability" role="note" data-testid="ai-attachment-capability">
+            {props.capability.prepared_attachments_enabled !== true
+              ? t("assistant.attachments.prepared.textFallback")
+              : props.capability.selected?.capability_source === "unknown" || props.capability.selected == null
+                ? t("assistant.attachments.prepared.visionUnknown")
+                : !props.capability.selected.images_native && !props.capability.selected.native_pdf
+                  ? t("assistant.attachments.prepared.visionUnavailable")
+                  : t(props.capability.selected.capability_source === "custom_declared"
+                    ? "assistant.attachments.prepared.visionDeclared" : "assistant.attachments.prepared.visionAvailable", { model: props.capability.selected.model })}
+          </p>
+        )}
+      </details>
       <div className="ux-ai-send-warning">
         <p>{t("assistant.ux.sendPrivacy")}</p>
         <SendScopeDetails workingCopy={props.workingCopy} snippets={props.snippets} recentMessages={props.recentMessages} attachmentNames={draftAttachments.map((attachment) => attachment.name)} />

@@ -10,6 +10,8 @@ import {
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
+import "./workbench-ux.css";
+
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, Worker } from "../types";
 import ActionWithReason from "./ActionWithReason";
@@ -103,6 +105,7 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
           </p>
         )}
       </div>
+      <div className="workbench-actions">
       <div
         className="workbench-controls"
         data-testid="workbench-toolbar"
@@ -204,6 +207,8 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
             )}
           </>
         )}
+      </div>
+      {!readOnly && <p className="ux-save-scope">{t("editor.saveScope", { ns: "common" })}</p>}
       </div>
     </header>
   );

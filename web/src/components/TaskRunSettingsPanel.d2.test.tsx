@@ -161,7 +161,7 @@ describe("Issue #127 D2 managed input examples", () => {
     expect(screen.getByTestId("managed-input-example-copy-wrapper").getAttribute("tabindex")).toBe("0");
     await waitFor(() => {
       expect(onRuntimeStateChange.mock.calls.at(-1)?.[0]?.scheduleEnableBlockedReason).toContain(
-        "托管文件为空",
+        "上传文件为空",
       );
     });
 

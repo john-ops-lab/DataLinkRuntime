@@ -15,7 +15,7 @@
   "galleryWarning": "模板对当前部署中可访问模板广场的用户可见。",
   "file": "选择 DLR ZIP 包（最大 16 MiB）",
   "includeJson": "明确携带已保存的 JSON 输入",
-  "includeFiles": "明确携带已选择的托管输入文件",
+  "includeFiles": "同时携带已保存的输入文件",
   "previewNote": "选择文件后可检查并调整内容，确认后导入。同名时自动添加数字后缀。",
   "name": "名称",
   "description": "说明",
@@ -43,7 +43,7 @@
   "versionConflict": "模板已被修改，请关闭后重新打开最新版本。",
   "tooLarge": "包或附件超过容量限制（ZIP 最大 16 MiB、展开最大 32 MiB、附件最多 9 个）。",
   "workerError": "目标运行节点不存在或不支持此语言，请重新选择。",
-  "filesUnavailable": "目标环境的托管输入文件能力或存储不可用，请先完成配置。",
+  "filesUnavailable": "目标环境的上传文件功能或存储不可用，请先完成配置。",
   "saveFirst": "适配器尚未保存，请先保存一个版本。",
   "invalidPackage": "包无效、格式不受支持或对象类型不匹配。请选择正确的适配器／模板 ZIP 包。",
   "source": {
@@ -54,7 +54,7 @@
   "inputType": {
     "none": "无",
     "json": "JSON",
-    "managed_files": "托管文件",
+    "managed_files": "上传文件",
     "remote_files": "远程文件"
   },
   "configurationNotes": "此适配器来自导入或模板，运行前请核对目标环境的配置。导入时未携带的输入：{{input}}。",

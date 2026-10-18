@@ -214,7 +214,7 @@ describe("Issue #127 D1 managed input editor", () => {
     fireEvent.change(fileInput(), {
       target: { files: [new File(["ninth"], "ninth.txt", { type: "text/plain" })] },
     });
-    await waitFor(() => expect(onError).toHaveBeenLastCalledWith("托管文件最多只能选择 8 个。"));
+    await waitFor(() => expect(onError).toHaveBeenLastCalledWith("上传文件最多只能选择 8 个。"));
     expect(upload).not.toHaveBeenCalled();
 
   });
@@ -761,4 +761,14 @@ describe("Issue #127 D1 managed input editor", () => {
     expect(panelRef.current?.confirmLeave()).toBe(false);
     expect(confirm).toHaveBeenCalledTimes(1);
   });
+});
+
+it.each([
+  [86400, "1 天"],
+  [7200, "2 小时"],
+  [900, "15 分钟"],
+  [65, "1 分钟 5 秒"],
+])("formats the actual server default retention %s without hardcoding a day", async (seconds, duration) => {
+  renderPanel(inputConfig({ source_type: "managed_files" }), {}, [], vi.fn(), { default_retention_seconds: seconds });
+  await waitFor(() => expect(screen.getByTestId("managed-input-retention-mode").textContent).toContain(`使用系统默认：当前 ${duration}`));
 });

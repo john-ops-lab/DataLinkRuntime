@@ -803,8 +803,9 @@ function TemplateDetail({
         </div>
       </header>
 
+      <div className="template-detail-layout">
       <section className="operations-template-guidance">
-        <h2>{t("detail.prepare")}</h2><p>{t(detail.adapter_type === "webhook" ? "detail.prepareWebhook" : "detail.prepareTask")}</p>
+        <h2>{t("detail.prepare")}</h2><p>{t(detail.slug === "json-mapping-cleaning" && (detail.source ?? "system") === "system" ? "detail.prepareJsonMapping" : detail.adapter_type === "webhook" ? "detail.prepareWebhook" : "detail.prepareTask")}</p>
         <p>{t("detail.nextSteps")}</p>
       </section>
       {detail.slug === "json-mapping-cleaning" && (detail.source ?? "system") === "system" && <section aria-label={t("detail.exampleTitle")}>
@@ -812,7 +813,6 @@ function TemplateDetail({
         <div className="operations-template-example"><div><strong>{t("detail.exampleInput")}</strong><pre>{'{ "name": "张三" }'}</pre></div><div><strong>{t("detail.exampleOutput")}</strong><pre>{'{ "姓名": "张三" }'}</pre></div></div>
         <p>{t("detail.exampleDisclaimer")}</p>
       </section>}
-      <div className="template-detail-layout">
         {localized(detail.summary).trim() && <div className="template-detail-overview">
           <details className="template-detail-panel operations-disclosure">
             <summary>{t("detail.purpose")}</summary>

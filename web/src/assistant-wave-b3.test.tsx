@@ -18,7 +18,7 @@
  * keep the Wave A/B1 contracts unchanged.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StrictMode, type ComponentProps } from "react";
 
@@ -282,12 +282,16 @@ describe("selection / drop / delete / clear", () => {
 
 describe("Issue #117 Batch 6: one-line attachment guidance", () => {
   it.each(["zh-CN", "en"] as const)(
-    "keeps the complete %s limits and privacy guidance in one visible row while attachment behavior stays stable",
+    "keeps the complete %s limits and privacy guidance in the expandable format details while attachment behavior stays stable",
     async (locale) => {
       vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("回复", null));
       await applySystemLocale(locale);
       renderPanel();
 
+      const limits = await screen.findByTestId("ai-attachment-limits");
+      expect(limits.getAttribute("open")).toBeNull();
+      fireEvent.click(within(limits).getByText(locale === "zh-CN" ? "支持的附件格式与模型限制" : "Supported attachment formats and model limits"));
+      expect(limits.getAttribute("open")).not.toBeNull();
       const guidance = await screen.findByTestId("ai-composer-guidance");
       const hint = screen.getByTestId("ai-attachment-hint");
       const privacy = screen.getByTestId("ai-attachment-privacy");
@@ -1037,7 +1041,7 @@ it.each(["incomplete", "unclassified"] as const)(
     fireEvent.click(screen.getByTestId("ai-send"));
     await screen.findByText("解释原因");
     expect(screen.getByTestId("ai-task-status").textContent).toContain(
-      taskStatus === "incomplete" ? "代码任务尚未完成" : "本次未确认代码任务完成",
+      taskStatus === "incomplete" ? "本次尚未生成可查看的代码修改" : "尚未确认代码修改是否完成",
     );
     expect(screen.queryByTestId("ai-candidate")).toBeNull();
     expect(screen.queryByTestId("ai-panel-error")).toBeNull();

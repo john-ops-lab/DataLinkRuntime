@@ -189,7 +189,7 @@ it("sends the click path synchronously into the preparing stage and clears the c
   fireEvent.change(input, { target: { value: "点击发送" } });
   fireEvent.click(screen.getByTestId("ai-send"));
   // 点击路径同步进入“准备”阶段（既有生命周期回归语义），输入框已清空。
-  expect(screen.getByTestId("ai-progress-stage").textContent).toBe("正在准备当前代码上下文…");
+  expect(screen.getByTestId("ai-progress-stage").textContent).toBe("正在整理代码和所选资料…");
   expect(input.value).toBe("");
   await screen.findByText("回复完成");
   expect(screen.queryByTestId("ai-progress-stage")).toBeNull();

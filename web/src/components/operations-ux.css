@@ -29,3 +29,15 @@
 .operations-execution-files { padding: 14px 18px; border: 1px solid var(--ant-color-border-secondary, #e5eaf0); border-radius: 8px; }
 .operations-execution-files .ant-btn { width: fit-content; padding-inline: 0; }
 .template-filter-bar[hidden] { display: none; }
+
+/* Execution details scroll as a document; a results tab must not shrink below
+   its content and overlap the diagnostic sections that follow it. */
+.execution-history-drawer .ant-drawer-body { display: block; }
+.execution-history-drawer .execution-detail { flex: none; min-height: min-content; }
+.execution-history-drawer .execution-detail > * { flex-shrink: 0; }
+.execution-history-drawer .execution-detail-tabs { flex: 0 0 auto; overflow: visible; }
+.execution-history-drawer .execution-detail-tabs > .ant-tabs-content-holder { display: block; flex: 0 0 auto; }
+.execution-history-drawer .execution-detail-tabs .ant-tabs-content,
+.execution-history-drawer .execution-detail-tabs .ant-tabs-tabpane { height: auto; }
+.execution-history-drawer .execution-detail .output-view { flex: none; max-height: clamp(120px, 46vh, 420px); overflow: auto; }
+.execution-history-drawer .history-log-pane:not(.log-pane-maximized) { flex: none; height: clamp(240px, 48vh, 440px); }

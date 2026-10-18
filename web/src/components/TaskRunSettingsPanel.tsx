@@ -34,6 +34,19 @@ import "./operations-ux.css";
 
 import ManagedInputExamples from "./ManagedInputExamples";
 
+/** Preserve the server value; choose readable units without rounding expiry. */
+function formatRetentionDuration(seconds: number | undefined, translate: (key: string, options?: Record<string, unknown>) => string): string {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return "—";
+  let remaining = seconds;
+  const parts: string[] = [];
+  for (const [unit, scale] of [["days", 86400], ["hours", 3600], ["minutes", 60], ["seconds", 1]] as const) {
+    const count = Math.floor(remaining / scale);
+    if (count > 0 || (unit === "seconds" && parts.length === 0)) parts.push(translate(`task.input.retentionDuration.${unit}`, { count }));
+    remaining %= scale;
+  }
+  return parts.join(" ");
+}
+
 export interface TaskRuntimeState {
   inputDirty?: boolean;
   inputReady?: boolean;
@@ -1879,7 +1892,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                     value={retentionDraft.mode}
                     disabled={inputEditingLocked || !managedFilesEnabled}
                     options={[
-                      { value: "system_default", label: t("task.input.retention.systemDefaultCurrent", { seconds: managedCapability?.default_retention_seconds ?? "—" }) },
+                      { value: "system_default", label: t("task.input.retention.systemDefaultCurrent", { duration: formatRetentionDuration(managedCapability?.default_retention_seconds, (key, options) => t(key, options)) }) },
                       { value: "custom", label: t("task.input.retention.custom") },
                       {
                         value: "manual_delete",

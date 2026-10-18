@@ -106,7 +106,7 @@
       "outcomeCoalesced": "Coalesced",
       "outcomeSkipped": "Skipped",
       "outcomeExpired": "Expired",
-      "save": "Save runtime configuration",
+      "save": "Save run settings",
       "invalidTimeout": "Per-execution timeout must be between 1 and {{max}} seconds (maximum 24 hours).",
       "chooseWorker": "Choose a Runtime Worker first.",
       "savedScheduleNotLoaded": "Runtime configuration was saved, but Schedule has not finished loading (or failed to load), so schedule fields were not saved. Refresh and try again.",
@@ -134,15 +134,15 @@
       "disableSchedule": "Disable schedule"
     },
     "input": {
-      "description": "Manual and scheduled runs share one saved Input Object.",
-      "sourceGroup": "Input Object source",
+      "description": "Prepare the same saved input for manual and scheduled runs.",
+      "sourceGroup": "What does this run need?",
       "loading": "Loading the Input Object. Please wait.",
       "loadFailed": "The Input Object could not be loaded. Refresh and try again.",
       "draft": "Draft",
       "saved": "Saved",
       "revisionUnknown": "Revision: unknown",
       "revision": "Saved Revision {{value}}",
-      "save": "Save Input Object",
+      "save": "Save input",
       "saveBeforeRun": "Save the Input Object before running or enabling the schedule.",
       "invalidConfig": "The current Input Object cannot run. Fix the configuration and try again.",
       "locked": "The Input Object is locked while a run is active or the schedule is enabled.",
@@ -156,7 +156,7 @@
       "managedFilesLoading": "Checking Managed Input capability. Please wait.",
       "capabilityLoadFailed": "Managed Input policy could not be loaded. Retention controls are disabled; refresh to retry.",
       "stagedListLoadFailed": "The staged file list could not be loaded. Existing policy and draft values remain available; refresh the list to retry.",
-      "managedFilesTitle": "Managed files",
+      "managedFilesTitle": "Input files",
       "managedFilesHint": "Uploads stay staged until saved; choose up to {{max}} files. Saved files are used for runs.",
       "managedFilesEmpty": "No managed files selected.",
       "stagedLeaveWarning": "Managed files are still staged and unsaved. Leave this page?",
@@ -171,14 +171,14 @@
       "uploadedAt": "Uploaded: {{time}}",
       "expiresNever": "Retained until deleted (still governed)",
       "expiresAt": "Expires: {{time}}",
-      "retentionLabel": "Retention",
+      "retentionLabel": "File retention period",
       "seconds": "seconds",
-      "retentionHint": "The server calculates system and custom expiry; permanent retention remains governed by administrators.",
+      "retentionHint": "The actual expiry is available after saving. Files retained until deleted have no expiry and can still be removed manually.",
       "retention": {
         "systemDefault": "System default",
         "custom": "Custom duration",
         "manualDelete": "Retain until deleted",
-        "systemDefaultCurrent": "System default: currently {{seconds}} seconds"
+        "systemDefaultCurrent": "System default: currently {{duration}}"
       },
       "fileStatus": {
         "ready": "Ready",
@@ -220,7 +220,17 @@
       "saveSuccess": "Saved successfully",
       "keyConflict": "Key {{key}} conflicts in object {{path}} after removing null characters. Correct the input",
       "supportedFormats": "Supported file formats",
-      "formatsUnavailable": "The format list has not loaded. Refresh and try again."
+      "formatsUnavailable": "The format list has not loaded. Refresh and try again.",
+      "retentionDuration": {
+        "days_one": "{{count}} day",
+        "days_other": "{{count}} days",
+        "hours_one": "{{count}} hour",
+        "hours_other": "{{count}} hours",
+        "minutes_one": "{{count}} minute",
+        "minutes_other": "{{count}} minutes",
+        "seconds_one": "{{count}} second",
+        "seconds_other": "{{count}} seconds"
+      }
     }
   },
   "webhook": {
@@ -395,13 +405,13 @@
     "replayExpired": "The original input hold expired; Replay is unavailable (dead_letter_input_expired).",
     "inputNone": "No input",
     "inputJson": "JSON input (read-only)",
-    "inputManagedFiles": "Managed files snapshot (read-only)",
+    "inputManagedFiles": "Input file snapshot (read-only)",
     "inputRemoteFiles": "Remote files are not available for this execution.",
     "inputSource": "Source",
     "inputRevision": "Input revision",
     "inputSourceNone": "None",
     "inputSourceJson": "JSON",
-    "inputSourceManagedFiles": "Managed files",
+    "inputSourceManagedFiles": "Uploaded files",
     "inputSourceRemoteFiles": "Remote files",
     "inputFilesEmpty": "No file facts were retained in this snapshot.",
     "inputFileName": "File name",

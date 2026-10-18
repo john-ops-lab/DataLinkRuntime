@@ -316,7 +316,7 @@ it("keeps disabled reasons visible for the blocked Candidate Apply (machine-read
   const applyButton = await screen.findByTestId("diff-apply-candidate");
   expect((applyButton as HTMLButtonElement).disabled).toBe(true);
   const wrapper = applyButton.closest(".action-with-reason");
-  expect(wrapper?.getAttribute("data-disabled-reason")).toBe("适配器已删除，候选修改只能查看，不能应用");
+  expect(wrapper?.getAttribute("data-disabled-reason")).toBe("适配器已删除，建议修改只能查看，不能应用");
 });
 
 // --- redaction: attachment bodies / Secret truth never reach the DOM ---------

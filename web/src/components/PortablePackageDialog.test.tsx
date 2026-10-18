@@ -89,12 +89,12 @@ it("exports the saved runtime parameters unchanged without a confirmation step",
       .checked,
   ).toBe(false);
   expect(
-    (screen.getByLabelText("明确携带已选择的托管输入文件") as HTMLInputElement)
+    (screen.getByLabelText("同时携带已保存的输入文件") as HTMLInputElement)
       .checked,
   ).toBe(false);
   expect(screen.queryByLabelText("可复用运行参数（JSON 对象）")).toBeNull();
   expect((screen.getByLabelText("明确携带已保存的 JSON 输入") as HTMLInputElement).disabled).toBe(true);
-  expect((screen.getByLabelText("明确携带已选择的托管输入文件") as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByLabelText("同时携带已保存的输入文件") as HTMLInputElement).disabled).toBe(true);
   expect(screen.getByTestId("portable-migration-checklist").textContent).toContain("在目标环境重新绑定");
   expect(preview).toHaveBeenCalledWith(17, {
     as_template: false,

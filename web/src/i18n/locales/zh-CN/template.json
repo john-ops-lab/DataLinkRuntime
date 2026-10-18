@@ -50,8 +50,8 @@
     "recipe": "代码",
     "requirements": "依赖",
     "prepare": "开始前准备",
-    "prepareTask": "准备任务需要的数据、目标系统地址及所需凭据；按下方模板说明检查具体要求。",
-    "prepareWebhook": "准备调用方发送的请求和需要访问的系统；按模板说明配置凭据及处理规则。",
+    "prepareTask": "按下方模板说明准备输入数据与必要配置。只有模板要求时，才需要系统地址或凭据。",
+    "prepareWebhook": "按模板说明准备调用方请求与处理规则；如需连接其他系统，再配置相应地址和凭据。",
     "nextSteps": "下一步填写名称；复制后检查配置、保存代码与输入，再运行或启用。复制不会自动运行。",
     "chooseLanguage": "查看并复制哪种语言？",
     "copyLanguage": "复制 {{language}} 为适配器",
@@ -61,7 +61,8 @@
     "exampleRule": "示例规则：把 name 改为“姓名”；需在复制后调整映射规则。",
     "exampleInput": "输入中的一条数据",
     "exampleOutput": "输出中的一条记录",
-    "exampleDisclaimer": "仅示意字段变化，不是默认规则的完整运行输出。完整结果还包含记录数量、部分返回状态和检查点。"
+    "exampleDisclaimer": "仅示意字段变化，不是默认规则的完整运行输出。完整结果还包含记录数量、部分返回状态和检查点。",
+    "prepareJsonMapping": "准备 JSON 数据，复制后在代码开头设置处理规则。"
   },
   "copy": {
     "title": "复制为适配器",
