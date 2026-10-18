@@ -471,15 +471,16 @@ describe("Issue #212 schedule preview", () => {
     renderPanel(makeInputConfig(), { runMode: "schedule" });
     await screen.findByTestId("task-schedule-cron");
     fireEvent.click(screen.getByRole("button", { name: "每天" }));
-    expect((screen.getByTestId("task-schedule-cron") as HTMLInputElement).value).toBe("0 9 * * *");
+    expect(screen.queryByTestId("task-schedule-cron")).toBeNull();
+    expect(screen.getByTestId("task-schedule-preview").textContent).toContain("每天 09:00 · Asia/Shanghai");
     fireEvent.click(screen.getByRole("button", { name: "预览执行时间" }));
     await waitFor(() => expect(preview).toHaveBeenCalledWith({ cron: "0 9 * * *", timezone: "Asia/Shanghai", count: 3 }));
     await waitFor(() => expect(screen.getByTestId("task-schedule-preview").querySelectorAll("li")).toHaveLength(1));
     expect(save).not.toHaveBeenCalled();
     expect(screen.getByTestId("task-schedule-next-run").textContent).toContain("—");
-    fireEvent.change(screen.getByTestId("task-schedule-cron"), { target: { value: "0 10 * * *" } });
+    fireEvent.change(screen.getByLabelText("时间"), { target: { value: "10:00" } });
     expect(screen.getByTestId("task-schedule-preview").querySelectorAll("li")).toHaveLength(0);
-    fireEvent.change(screen.getByTestId("task-schedule-cron"), { target: { value: "0 9 * * *" } });
+    fireEvent.change(screen.getByLabelText("时间"), { target: { value: "09:00" } });
     expect(screen.getByTestId("task-schedule-preview").querySelectorAll("li")).toHaveLength(0);
   });
 
@@ -506,4 +507,41 @@ describe("Issue #212 schedule preview", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "预览执行时间" }).className).not.toContain("ant-btn-loading"));
     expect(screen.getByTestId("task-schedule-preview").querySelectorAll("li")).toHaveLength(0);
   });
+});
+
+it.each([
+  ["zh-CN", "05 08 * * *", "每天", "高级规则", "每天 08:05"],
+  ["zh-CN", "25 16 * * 3", "每周", "高级规则", "每星期三 16:25"],
+  ["zh-CN", "17 * * * *", "每小时", "高级规则", "每小时第 17 分钟"],
+  ["en", "05 08 * * *", "Daily", "Advanced rule", "Daily at 08:05"],
+  ["en", "25 16 * * 3", "Weekly", "Advanced rule", "Every Wednesday at 16:25"],
+  ["en", "17 * * * *", "Hourly", "Advanced rule", "Every hour at minute 17"],
+] as const)("keeps %s common rule %s readable and preserves its exact Cron through advanced mode", async (locale, originalCron, commonMode, advancedMode, summary) => {
+  await applyUiLocale(locale);
+  vi.spyOn(api, "getSchedule").mockResolvedValue({ ...makeSchedule(), cron: originalCron });
+  const preview = vi.spyOn(api, "previewSchedule").mockResolvedValue({ occurrences: [] });
+  const save = vi.spyOn(api, "putSchedule");
+  renderPanel(makeInputConfig(), { runMode: "schedule" });
+  await screen.findByTestId("task-schedule-timezone");
+  expect(screen.queryByTestId("task-schedule-cron")).toBeNull();
+  expect(screen.getByTestId("task-schedule-preview").textContent).toContain(`${summary} · Asia/Shanghai`);
+  expect(screen.getByTestId("task-schedule-preview").textContent).not.toContain(originalCron);
+  fireEvent.click(screen.getByRole("button", { name: advancedMode }));
+  expect((screen.getByTestId("task-schedule-cron") as HTMLInputElement).value).toBe(originalCron);
+  fireEvent.click(screen.getByRole("button", { name: commonMode }));
+  expect(screen.queryByTestId("task-schedule-cron")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: locale === "zh-CN" ? "预览执行时间" : "Preview times" }));
+  await waitFor(() => expect(preview).toHaveBeenCalledWith({ cron: originalCron, timezone: "Asia/Shanghai", count: 3 }));
+  expect(save).not.toHaveBeenCalled();
+});
+
+it("keeps a nonstandard schedule in advanced mode with its original value editable", async () => {
+  const originalCron = "*/13 2-7 * * 1,4";
+  vi.spyOn(api, "getSchedule").mockResolvedValue({ ...makeSchedule(), cron: originalCron });
+  renderPanel(makeInputConfig(), { runMode: "schedule" });
+  const input = await screen.findByTestId("task-schedule-cron");
+  expect((input as HTMLInputElement).value).toBe(originalCron);
+  expect(screen.getByTestId("task-schedule-preview").textContent).toContain(originalCron);
+  fireEvent.change(input, { target: { value: "*/11 2-7 * * 1,4" } });
+  expect((input as HTMLInputElement).value).toBe("*/11 2-7 * * 1,4");
 });

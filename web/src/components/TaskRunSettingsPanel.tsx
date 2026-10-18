@@ -1299,10 +1299,17 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   const scheduleVisible = runMode === "schedule";
   const cronParts = cron.trim().split(/\s+/);
   const simpleTime = cronParts.length === 5 && /^\d+$/.test(cronParts[0]) && /^\d+$/.test(cronParts[1]) && Number(cronParts[0]) < 60 && Number(cronParts[1]) < 24;
-  const schedulePreset = advancedSchedule ? "advanced"
-    : simpleTime && cronParts.slice(2).join(" ") === "* * *" ? "daily"
+  const inferredSchedulePreset = simpleTime && cronParts.slice(2).join(" ") === "* * *" ? "daily"
     : simpleTime && cronParts[2] === "*" && cronParts[3] === "*" && /^[0-6]$/.test(cronParts[4]) ? "weekly"
     : /^\d+$/.test(cronParts[0] ?? "") && Number(cronParts[0]) < 60 && cronParts.slice(1).join(" ") === "* * * *" ? "hourly" : "advanced";
+  const schedulePreset = advancedSchedule ? "advanced" : inferredSchedulePreset;
+  const readableScheduleRule = t(`task.settings.rule_${schedulePreset}`, {
+    time: simpleTime ? `${cronParts[1].padStart(2, "0")}:${cronParts[0].padStart(2, "0")}` : "",
+    weekday: schedulePreset === "weekly" ? t(`task.settings.weekdays.${cronParts[4]}`) : "",
+    minute: Number(cronParts[0]),
+    timezone,
+    cron,
+  });
   function changeScheduleCron(value: string) {
     previewGeneration.current += 1;
     setPreviewLoading(false);
@@ -1423,7 +1430,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               <div className="operations-preset-row" role="group" aria-label={t("task.settings.frequency")}>
                 {(["daily", "weekly", "hourly", "advanced"] as const).map((preset) => <Button key={preset} autoInsertSpace={false} type={schedulePreset === preset ? "primary" : "default"} disabled={readOnly || scheduleFieldsLocked} onClick={() => {
                   setAdvancedSchedule(preset === "advanced");
-                  if (preset !== "advanced") changeScheduleCron(preset === "daily" ? "0 9 * * *" : preset === "weekly" ? "0 9 * * 1" : "0 * * * *");
+                  if (preset !== "advanced" && preset !== inferredSchedulePreset) changeScheduleCron(preset === "daily" ? "0 9 * * *" : preset === "weekly" ? "0 9 * * 1" : "0 * * * *");
                 }}>{t(`task.settings.frequency_${preset}`)}</Button>)}
               </div>
               {(schedulePreset === "daily" || schedulePreset === "weekly") && <label className="settings-field"><span>{t("task.settings.timeOfDay")}</span><Input type="time" aria-label={t("task.settings.timeOfDay")} value={`${cronParts[1].padStart(2, "0")}:${cronParts[0].padStart(2, "0")}`} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => {
@@ -1432,16 +1439,17 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               }} /></label>}
               {schedulePreset === "weekly" && <label className="settings-field"><span>{t("task.settings.weekday")}</span><Select aria-label={t("task.settings.weekday")} value={cronParts[4]} disabled={readOnly || scheduleFieldsLocked} options={Array.from({ length: 7 }, (_, day) => ({ value: String(day), label: t(`task.settings.weekdays.${day}`) }))} onChange={(day) => changeScheduleCron(`${cronParts[0]} ${cronParts[1]} * * ${day}`)} /></label>}
               {schedulePreset === "hourly" && <label className="settings-field"><span>{t("task.settings.minuteOfHour")}</span><InputNumber aria-label={t("task.settings.minuteOfHour")} min={0} max={59} precision={0} value={Number(cronParts[0])} disabled={readOnly || scheduleFieldsLocked} onChange={(minute) => changeScheduleCron(`${minute ?? 0} * * * *`)} /></label>}
-              <label className="settings-field">
+              {schedulePreset === "advanced" && <label className="settings-field">
                 <span className="settings-field-label">{t("task.settings.cron")}</span>
                 <Input data-testid="task-schedule-cron" value={cron} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { setAdvancedSchedule(true); changeScheduleCron(event.target.value); }} />
-              </label>
+              </label>}
               <label className="settings-field">
                 <span className="settings-field-label">{t("task.settings.timezone")}</span>
+                <small>{t("task.settings.timezoneHint")}</small>
                 <Input data-testid="task-schedule-timezone" value={timezone} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { scheduleEditEpoch.current += 1; setTimezone(event.target.value); setScheduleTouched(true); }} />
               </label>
               <div className="operations-schedule-preview" data-testid="task-schedule-preview">
-                <strong>{t("task.settings.currentRule", { cron, timezone })}</strong>
+                <strong>{readableScheduleRule}</strong>
                 <p>{t("task.settings.previewHint")}</p>
                 <Button loading={previewLoading} disabled={loadingSchedule || !cron.trim() || !timezone.trim()} onClick={() => void previewScheduleTimes()}>{t("task.settings.previewTimes")}</Button>
                 {schedulePreview?.cron === cron && schedulePreview.timezone === timezone && <ol>{schedulePreview.occurrences.map((time) => <li key={time}>{formatPreviewTime(time, timezone, locale)}</li>)}</ol>}

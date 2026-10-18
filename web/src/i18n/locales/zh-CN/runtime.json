@@ -9,7 +9,7 @@
     "failed": "失败",
     "timeout": "超时",
     "cancelled": "已取消",
-    "dead_letter": "死信",
+    "dead_letter": "执行失败",
     "expired": "已过期"
   },
   "dependencies": {
@@ -85,7 +85,7 @@
       "lockedDescription": "定时启用或执行活跃期间，不能修改代码、运行节点、运行方式、单次执行超时、Cron、依赖、运行参数或凭据。",
       "scheduleTitle": "定时运行",
       "cron": "Cron（5 字段）",
-      "timezone": "时区（IANA）",
+      "timezone": "时区",
       "scheduleStatus": "定时状态",
       "scheduleRunning": "定时运行中",
       "disabled": "已停用",
@@ -131,7 +131,12 @@
         "6": "星期六"
       },
       "enableSchedule": "启用定时",
-      "disableSchedule": "停用定时"
+      "disableSchedule": "停用定时",
+      "timezoneHint": "例如 Asia/Shanghai；也可填写其他有效时区。",
+      "rule_daily": "每天 {{time}} · {{timezone}}",
+      "rule_weekly": "每{{weekday}} {{time}} · {{timezone}}",
+      "rule_hourly": "每小时第 {{minute}} 分钟 · {{timezone}}",
+      "rule_advanced": "当前填写规则：{{cron}} · {{timezone}}"
     },
     "input": {
       "description": "为手动运行和定时运行准备同一份输入。",
@@ -398,11 +403,11 @@
       "incident_materials_unavailable": "冻结材料不可用",
       "outbox_backlog_full": "Outbox 容量已满"
     },
-    "replay": "Replay",
-    "replayCreated": "已创建 Replay 执行 {{id}}",
-    "openReplay": "打开 Replay",
-    "replayUnavailable": "Replay 当前不可用",
-    "replayExpired": "原输入保留已到期，不能 Replay（dead_letter_input_expired）。",
+    "replay": "按原记录重新运行",
+    "replayCreated": "已创建新的运行记录 {{id}}",
+    "openReplay": "查看新运行",
+    "replayUnavailable": "暂时无法按原记录重新运行",
+    "replayExpired": "本次输入已过期，无法按原记录重新运行。请重新准备输入后运行。",
     "inputNone": "无输入",
     "inputJson": "JSON 输入（只读）",
     "inputManagedFiles": "输入文件快照（只读）",

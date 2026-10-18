@@ -172,9 +172,9 @@ it("renders a successful tool call with name, status, args and result summary", 
 
   const card = screen.getByTestId("ai-tool-call");
   expect(card.getAttribute("role")).toBe("status");
-  expect(card.getAttribute("aria-label")).toContain("dlr_docs_list");
+  expect(card.getAttribute("aria-label")).toContain("查看平台文档目录");
   expect(card.getAttribute("aria-label")).toContain("成功");
-  expect(screen.getByTestId("ai-tool-name").textContent).toBe("dlr_docs_list");
+  expect(screen.getByTestId("ai-tool-name").textContent).toBe("查看平台文档目录");
   expect(screen.getByTestId("ai-tool-status").textContent).toBe("成功");
   expect(screen.getByTestId("ai-tool-args").textContent).toContain("参数");
   expect(screen.getByTestId("ai-tool-result").textContent).toContain("dlr-docs:v1");
@@ -194,7 +194,7 @@ it("renders a failed tool call with the stable error code and no raw content", a
   const card = screen.getByTestId("ai-tool-call");
   expect(card.classList.contains("ai-tool-call-error")).toBe(true);
   expect(card.getAttribute("aria-label")).toContain("失败");
-  expect(screen.getByTestId("ai-tool-name").textContent).toBe("not_registered_tool");
+  expect(screen.getByTestId("ai-tool-name").textContent).toBe("处理步骤");
   expect(screen.getByTestId("ai-tool-status").textContent).toBe("失败");
   expect(screen.getByTestId("ai-tool-error-code").textContent).toContain("ai_tool_unknown");
   // The failed result shows only the stable rejection label — the sanitized
@@ -241,7 +241,7 @@ it("localizes the Tool UI zh-CN / en with instant switching", async () => {
     successCard?.querySelector('[data-testid="ai-tool-status"]')?.textContent,
   ).toBe("Success");
   expect(successCard?.querySelector('[data-testid="ai-tool-name"]')?.textContent).toBe(
-    "dlr_docs_list",
+    "Browse platform documentation",
   );
   const errorCard = screen
     .getAllByTestId("ai-tool-call")
@@ -308,7 +308,7 @@ it("regenerate replaces the whole round (tools + text + candidate) and reuses th
   renderPanel();
   await sendQuestion("原问题");
   await screen.findByText("旧回复：查了文档。");
-  expect(screen.getByTestId("ai-tool-name").textContent).toBe("dlr_docs_search");
+  expect(screen.getByTestId("ai-tool-name").textContent).toBe("搜索平台文档");
 
   fireEvent.click(screen.getByTestId("ai-regenerate"));
   await screen.findByText("新回复：重新查了文档。");
@@ -323,7 +323,7 @@ it("regenerate replaces the whole round (tools + text + candidate) and reuses th
   // The old tool card was replaced by the new one (no duplicate, no branch).
   const toolCards = screen.getAllByTestId("ai-tool-call");
   expect(toolCards).toHaveLength(1);
-  expect(screen.getByTestId("ai-tool-name").textContent).toBe("dlr_docs_list");
+  expect(screen.getByTestId("ai-tool-name").textContent).toBe("查看平台文档目录");
   expect(screen.getByText("新回复：重新查了文档。")).toBeTruthy();
   expect(screen.queryByText("旧回复：查了文档。")).toBeNull();
 });
@@ -444,4 +444,31 @@ it("ignores a missing tool_calls field (backward-compatible response shape)", as
   await sendQuestion("旧形状");
   await screen.findByText("旧形状回答。");
   expect(screen.queryByTestId("ai-tool-call")).toBeNull();
+});
+
+it("keeps processing records collapsed, opens original bounded details, and preserves unknown failure feedback", async () => {
+  const { rerender } = render(<DlrToolCallUI {...partProps({
+    toolName: "read_attachment_page", argsText: '{"page":1}', result: '{"text":"values: 108"}',
+  })} />);
+  const record = screen.getByTestId("ai-tool-record") as HTMLDetailsElement;
+  expect(record.open).toBe(false);
+  expect(screen.getByTestId("ai-tool-name").textContent).toBe("读取附件内容");
+  expect(screen.getByTestId("ai-tool-status").textContent).toBe("成功");
+  expect(record.contains(screen.getByTestId("ai-tool-raw-name"))).toBe(true);
+  expect(record.contains(screen.getByTestId("ai-tool-args"))).toBe(true);
+  expect(record.contains(screen.getByTestId("ai-tool-result"))).toBe(true);
+  fireEvent.click(screen.getByText("查看处理记录"));
+  expect(record.open).toBe(true);
+  expect(screen.getByTestId("ai-tool-raw-name").textContent).toContain("read_attachment_page");
+  expect(screen.getByTestId("ai-tool-args").textContent).toContain('{"page":1}');
+  expect(screen.getByTestId("ai-tool-result").textContent).toContain('{"text":"values: 108"}');
+  rerender(<DlrToolCallUI {...partProps({ toolName: "search_knowledge.unexpected", result: '{"ok":false,"error_code":"ai_tool_unknown"}' })} />);
+  expect(screen.getByTestId("ai-tool-name").textContent).toBe("处理步骤");
+  expect(screen.getByTestId("ai-tool-status").textContent).toBe("失败");
+  expect(screen.getByTestId("ai-tool-raw-name").textContent).toContain("search_knowledge.unexpected");
+  expect(record.contains(screen.getByTestId("ai-tool-error-code"))).toBe(true);
+  await applySystemLocale("en");
+  await waitFor(() => expect(screen.getByTestId("ai-tool-name").textContent).toBe("Processing step"));
+  expect(screen.getByTestId("ai-tool-status").textContent).toBe("Failed");
+  expect(screen.getByText("View processing record")).toBeTruthy();
 });

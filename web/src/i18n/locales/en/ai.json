@@ -127,8 +127,16 @@
       }
     },
     "tools": {
-      "unknownName": "Unknown tool",
+      "unknownName": "Processing step",
+      "recordLabel": "View processing record",
+      "nameLabel": "Tool name",
       "names": {
+        "list_attachments": "Check this round’s attachments",
+        "read_attachment_page": "Read attachment content",
+        "read_attachment_sheet": "Read attachment table",
+        "dlr_docs_list": "Browse platform documentation",
+        "dlr_docs_search": "Search platform documentation",
+        "dlr_docs_read": "Read platform documentation",
         "list_knowledge_bases": "List knowledge bases",
         "search_knowledge": "Search knowledge",
         "read_knowledge": "Read knowledge item"

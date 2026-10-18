@@ -9,7 +9,7 @@
     "failed": "Failed",
     "timeout": "Timed out",
     "cancelled": "Cancelled",
-    "dead_letter": "Dead letter",
+    "dead_letter": "Failed",
     "expired": "Expired"
   },
   "dependencies": {
@@ -85,7 +85,7 @@
       "lockedDescription": "While a schedule or execution is active, code, Runtime Worker, run mode, per-execution timeout, Cron, dependencies, runtime parameters and Credentials cannot be changed.",
       "scheduleTitle": "Schedule configuration",
       "cron": "Cron (5 fields)",
-      "timezone": "Timezone (IANA)",
+      "timezone": "Timezone",
       "scheduleStatus": "Schedule status",
       "scheduleRunning": "Schedule running",
       "disabled": "Disabled",
@@ -131,7 +131,12 @@
         "6": "Saturday"
       },
       "enableSchedule": "Enable schedule",
-      "disableSchedule": "Disable schedule"
+      "disableSchedule": "Disable schedule",
+      "timezoneHint": "For example, Asia/Shanghai. Other valid timezones are accepted.",
+      "rule_daily": "Daily at {{time}} · {{timezone}}",
+      "rule_weekly": "Every {{weekday}} at {{time}} · {{timezone}}",
+      "rule_hourly": "Every hour at minute {{minute}} · {{timezone}}",
+      "rule_advanced": "Current draft rule: {{cron}} · {{timezone}}"
     },
     "input": {
       "description": "Prepare the same saved input for manual and scheduled runs.",
@@ -398,11 +403,11 @@
       "incident_materials_unavailable": "Frozen materials are unavailable",
       "outbox_backlog_full": "Outbox backlog is full"
     },
-    "replay": "Replay",
-    "replayCreated": "Replay execution {{id}} was created",
-    "openReplay": "Open Replay",
-    "replayUnavailable": "Replay is currently unavailable",
-    "replayExpired": "The original input hold expired; Replay is unavailable (dead_letter_input_expired).",
+    "replay": "Run again from this record",
+    "replayCreated": "New run {{id}} created",
+    "openReplay": "View new run",
+    "replayUnavailable": "Cannot run again from this record right now",
+    "replayExpired": "The input for this run has expired. Prepare new input before running again.",
     "inputNone": "No input",
     "inputJson": "JSON input (read-only)",
     "inputManagedFiles": "Input file snapshot (read-only)",

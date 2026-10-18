@@ -451,6 +451,15 @@ function valueOf(testId: string): string {
   return (screen.getByTestId(testId) as HTMLInputElement).value;
 }
 
+/** Inspect/edit raw Cron through the v3 advanced-rule disclosure. */
+async function openAdvancedScheduleCron(): Promise<HTMLElement> {
+  await screen.findByTestId("task-schedule-timezone");
+  if (screen.queryByTestId("task-schedule-cron") === null) {
+    fireEvent.click(screen.getByRole("button", { name: "高级规则" }));
+  }
+  return screen.findByTestId("task-schedule-cron");
+}
+
 async function waitForCodeEditorValue(expected: string): Promise<void> {
   const codeSummary = screen.queryByText("查看 Python 完整代码与依赖（只读）");
   const disclosure = codeSummary?.closest("details");
@@ -632,7 +641,7 @@ it("persists the Task run mode and reveals Schedule settings", async () => {
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
   fireEvent.click(await screen.findByLabelText("定时运行"));
   // M5.5.11：选择“定时运行”后立即呈现 Cron / Timezone / Input / 定时状态。
-  await screen.findByTestId("task-schedule-cron");
+  await openAdvancedScheduleCron();
   fireEvent.click(screen.getByTestId("save-task-runtime"));
 
   await screen.findByTestId("task-schedule-next-run");
@@ -700,6 +709,7 @@ it("loads an existing disabled Schedule before saving a manual-to-schedule switc
 
   // 初始 manual 模式没有加载 Schedule；切换表单态后必须先读取并展示
   // 已存在的停用配置，不能把 null 当成“确认未配置”。
+  await openAdvancedScheduleCron();
   await waitFor(() => expect(valueOf("task-schedule-cron")).toBe("0 9 * * *"));
   expect(valueOf("task-schedule-timezone")).toBe("UTC");
   expect(screen.getByTestId("task-input-config")).toBeTruthy();
@@ -763,7 +773,7 @@ it("blocks the top Schedule enable action until changed runtime settings are sav
   render(<App />);
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
-  await screen.findByTestId("task-schedule-cron");
+  await openAdvancedScheduleCron();
 
   fireEvent.change(screen.getByTestId("task-schedule-cron"), { target: { value: "0 * * * *" } });
   const enable = screen.getByTestId("header-task-schedule-toggle") as HTMLButtonElement;
@@ -815,7 +825,7 @@ it("switches manual/schedule fields immediately and keeps run-once out of run se
 
   // 选择“定时运行”后立即显示 Cron / Timezone / 输入对象 / 定时状态。
   fireEvent.click(screen.getByLabelText("定时运行"));
-  await screen.findByTestId("task-schedule-cron");
+  await openAdvancedScheduleCron();
   expect(screen.getByTestId("task-schedule-timezone")).toBeTruthy();
   expect(screen.getByTestId("task-input-config")).toBeTruthy();
   expect(screen.getByTestId("task-schedule-next-run")).toBeTruthy();
@@ -927,6 +937,7 @@ it("saves the timeout only without overwriting an existing Schedule (M5.5.11)", 
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
 
   // 等真实 Schedule 加载完成（表单值 = 线上值）。
+  await openAdvancedScheduleCron();
   await waitFor(() => expect(valueOf("task-schedule-cron")).toBe("0 9 * * *"));
   // 只修改超时，不改定时字段。
   fireEvent.click(screen.getByLabelText("10 分钟"));
@@ -1029,7 +1040,7 @@ it("locks the run config save and timeout while Schedule is enabled (M5.5.11)", 
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
 
-  await screen.findByTestId("task-schedule-cron");
+  await openAdvancedScheduleCron();
   expect((screen.getByTestId("save-task-runtime") as HTMLButtonElement).disabled).toBe(true);
   expect(
     (screen.getByTestId("task-timeout-preset").querySelector("input") as HTMLInputElement).disabled,
@@ -7466,7 +7477,7 @@ it("keeps a dirty Schedule draft across a paired focus refresh and stops with th
   render(<App />);
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
-  const cron = await screen.findByTestId("task-schedule-cron");
+  const cron = await openAdvancedScheduleCron();
   fireEvent.change(cron, { target: { value: "15 10 * * *" } });
 
   currentSchedule = {
@@ -7535,7 +7546,7 @@ it("accepts the Task Adapter save segment while preserving a later-failing Sched
   render(<App />);
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
-  fireEvent.change(await screen.findByTestId("task-schedule-cron"), {
+  fireEvent.change(await openAdvancedScheduleCron(), {
     target: { value: "15 10 * * *" },
   });
   fireEvent.click(screen.getByRole("radio", { name: "10 分钟" }));
@@ -7544,6 +7555,7 @@ it("accepts the Task Adapter save segment while preserving a later-failing Sched
   await screen.findByTestId("error-banner");
 
   window.dispatchEvent(new Event("focus"));
+  await openAdvancedScheduleCron();
   await waitFor(() => expect(valueOf("task-schedule-cron")).toBe("15 10 * * *"));
   expect(
     screen.getByTestId("task-timeout-preset").querySelector(".ant-radio-wrapper-checked")?.textContent,
@@ -7715,7 +7727,7 @@ it("lets reverted-clean Task runtime fields follow the next authority baseline",
     screen.getByTestId("task-timeout-preset").querySelector(".ant-radio-wrapper-checked")?.textContent,
   ).toContain("10 分钟"));
   expect(screen.getByTestId("task-runtime-worker").textContent).toContain("worker-two");
-  expect(await screen.findByTestId("task-schedule-cron")).toBeTruthy();
+  expect(await openAdvancedScheduleCron()).toBeTruthy();
 });
 
 it("keeps a genuinely dirty Task timeout when external authority saves the same or another value", async () => {

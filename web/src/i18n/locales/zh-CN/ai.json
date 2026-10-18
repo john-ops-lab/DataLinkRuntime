@@ -127,8 +127,16 @@
       }
     },
     "tools": {
-      "unknownName": "未知工具",
+      "unknownName": "处理步骤",
+      "recordLabel": "查看处理记录",
+      "nameLabel": "工具名称",
       "names": {
+        "list_attachments": "查看本轮附件",
+        "read_attachment_page": "读取附件内容",
+        "read_attachment_sheet": "读取附件表格",
+        "dlr_docs_list": "查看平台文档目录",
+        "dlr_docs_search": "搜索平台文档",
+        "dlr_docs_read": "读取平台文档",
         "list_knowledge_bases": "列出知识库",
         "search_knowledge": "搜索知识",
         "read_knowledge": "读取知识条目"
