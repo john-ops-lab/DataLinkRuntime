@@ -526,6 +526,7 @@ export interface AdapterInputConfig {
   revision: number;
   source_type: InputSourceType;
   json_value: unknown;
+  removed_null_characters?: number;
   retention: InputRetention;
   artifacts: InputArtifactSummary[];
   valid_for_run: boolean;
@@ -541,6 +542,7 @@ export type AdapterInputConfigDraft =
       expected_revision: number;
       source_type: "json";
       json_value: unknown;
+      original_json_size_bytes?: number;
     }
   | {
       expected_revision: number;

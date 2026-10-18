@@ -206,6 +206,54 @@ describe("Task Input Object A2", () => {
     expect(screen.queryByTestId("task-input-revision")).toBeNull();
   });
 
+  it.each(["zh-CN", "en"])("normalizes JSON and uses server actual value with %s feedback", async (locale) => {
+    applyUiLocale(locale as "zh-CN" | "en");
+    const put = vi.spyOn(api, "putInputConfig").mockResolvedValue(makeInputConfig({
+      revision: 5, source_type: "json", json_value: { server: "actual" }, removed_null_characters: 1,
+    }));
+    renderPanel(makeInputConfig({ source_type: "json", json_value: {} }));
+    const input = await screen.findByTestId("task-input-json");
+    await waitFor(() => expect((screen.getByTestId("save-task-input") as HTMLButtonElement).disabled).toBe(false));
+    const raw = JSON.stringify({ "__proto__\u0000": "A\u0000B", literal: "\\u0000" });
+    fireEvent.change(input, { target: { value: raw } });
+    fireEvent.click(screen.getByTestId("save-task-input"));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(put.mock.calls[0]?.[1]).toEqual({
+      expected_revision: 4, source_type: "json",
+      json_value: JSON.parse('{"__proto__":"AB","literal":"\\\\u0000"}'),
+      original_json_size_bytes: new TextEncoder().encode(raw).byteLength,
+    });
+    expect((await screen.findByTestId("task-input-save-feedback")).textContent).toContain("3");
+    expect(JSON.parse((input as HTMLTextAreaElement).value)).toEqual({ server: "actual" });
+  });
+
+  it("rejects normalized key conflicts without sending or changing the draft", async () => {
+    const put = vi.spyOn(api, "putInputConfig");
+    renderPanel(makeInputConfig({ source_type: "json", json_value: {} }));
+    const input = await screen.findByTestId("task-input-json");
+    await waitFor(() => expect((screen.getByTestId("save-task-input") as HTMLButtonElement).disabled).toBe(false));
+    const raw = JSON.stringify({ nested: [{ "a\u0000b": 1, ab: 2 }] });
+    fireEvent.change(input, { target: { value: raw } });
+    fireEvent.click(screen.getByTestId("save-task-input"));
+    expect(put).not.toHaveBeenCalled();
+    expect((input as HTMLTextAreaElement).value).toBe(raw);
+    expect(screen.getByText(/nested\/0/)).toBeTruthy();
+  });
+
+  it("preserves newer JSON draft when a save resolves late", async () => {
+    let resolve: (value: AdapterInputConfig) => void = () => {};
+    vi.spyOn(api, "putInputConfig").mockImplementation(() => new Promise((done) => { resolve = done; }));
+    renderPanel(makeInputConfig({ source_type: "json", json_value: {} }));
+    const input = await screen.findByTestId("task-input-json");
+    await waitFor(() => expect((screen.getByTestId("save-task-input") as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(input, { target: { value: JSON.stringify("A\u0000B") } });
+    fireEvent.click(screen.getByTestId("save-task-input"));
+    fireEvent.change(input, { target: { value: '"new draft"' } });
+    resolve(makeInputConfig({ revision: 5, source_type: "json", json_value: "AB" }));
+    await screen.findByTestId("task-input-save-feedback");
+    expect((input as HTMLTextAreaElement).value).toBe('"new draft"');
+  });
+
   it("saves none without a JSON field and keeps all four source cards focusable", async () => {
     const put = vi.spyOn(api, "putInputConfig").mockResolvedValue(
       makeInputConfig({ revision: 5, source_type: "none" }),

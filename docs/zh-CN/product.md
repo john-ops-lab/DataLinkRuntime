@@ -232,3 +232,12 @@ Task / Webhook 创建
   测试版本回退使用对应版本的干净环境，不把 schema downgrade 当作恢复方案。
 - 当前安装、宿主准备与故障处理见 [Sandbox 部署说明](issue130-sandbox-deployment.md)。
   [旧迁移说明](issue130-reliable-runtime-migrations.md) 仅保留为历史记录，不是新安装步骤。
+
+
+### Task JSON 输入保存中的空字符
+
+保存 JSON 输入时，DLR 先解析 JSON，再递归移除字符串值和对象键中的真实 U+0000，页面反馈移除数量并显示服务端实际保存值。字面文本 `\\u0000`、换行、Tab、其他 Unicode 和 JSON 类型保持不变。清理后的键名若重名，保存返回可定位冲突，用户草稿保留，当前输入与 revision 不变。
+
+直接 InputConfig API、兼容 Schedule 写入与 Adapter 导入共享此规则；当前输入和 Schedule 兼容镜像在原事务中保持一致。`PUT /api/adapters/{id}/input-config` 返回 `removed_null_characters`，`GET` 默认为 0；计数不持久化。JSON 请求可选携带非负整数 `original_json_size_bytes`，用于前端预清理前的紧凑 UTF-8 大小声明。声明只能提高服务端检查量；未声明时仍按实际入参大小检查，声明不能放宽大小限制。仅 JSON 分支允许该字段。
+
+这项处理只发生在 Task 输入保存边界，不修改 JSONB 列、不清洗历史数据，也不改变 Webhook、代码、凭据、日志或执行输出。
