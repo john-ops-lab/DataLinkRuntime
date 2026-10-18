@@ -1,5 +1,7 @@
-import { Descriptions, Empty, List, Typography } from "antd";
+import { Button, Descriptions, Empty, List, Typography } from "antd";
 import { useTranslation } from "react-i18next";
+
+import "./operations-ux.css";
 
 import type {
   Execution,
@@ -58,7 +60,6 @@ export default function ExecutionInputSummary(props: { execution: Execution }) {
   const { t } = useTranslation("runtime");
   const snapshot = snapshotFor(props.execution);
   const sourceType = sourceTypeFor(props.execution, snapshot);
-  const revision = snapshot?.revision ?? props.execution.input_config_revision;
 
   if (sourceType === "none") {
     return (
@@ -72,11 +73,6 @@ export default function ExecutionInputSummary(props: { execution: Execution }) {
     return (
       <div data-testid="detail-input" className="execution-input-summary">
         <Typography.Text strong>{t("history.inputJson")}</Typography.Text>
-        {revision !== undefined && (
-          <Typography.Text type="secondary" data-testid="detail-input-revision">
-            {t("history.inputRevision")}: {revision}
-          </Typography.Text>
-        )}
         <pre data-testid="detail-input-json" className="output-view">
           {JSON.stringify(props.execution.input, null, 2)}
         </pre>
@@ -100,9 +96,6 @@ export default function ExecutionInputSummary(props: { execution: Execution }) {
         column={1}
         items={[
           { key: "source", label: t("history.inputSource"), children: t("history.inputSourceManagedFiles") },
-          ...(revision !== undefined
-            ? [{ key: "revision", label: t("history.inputRevision"), children: revision }]
-            : []),
         ]}
       />
       <Typography.Text strong>{t("history.inputManagedFiles")}</Typography.Text>
@@ -116,6 +109,10 @@ export default function ExecutionInputSummary(props: { execution: Execution }) {
           dataSource={artifacts}
           renderItem={(artifact) => (
             <List.Item data-testid="detail-input-file">
+              <div className="operations-file-snapshot">
+              <Typography.Text strong>{artifact.original_filename}</Typography.Text>
+              <Typography.Text type="secondary">{(artifact.size_bytes / 1024).toFixed(1)} KiB · {t("history.inputSnapshotReadonly")}</Typography.Text>
+              <details className="operations-disclosure"><summary>{t("history.inputFileDetails")}</summary>
               <Descriptions
                 size="small"
                 column={1}
@@ -126,10 +123,23 @@ export default function ExecutionInputSummary(props: { execution: Execution }) {
                   { key: "sha", label: t("history.inputFileSha256"), children: artifact.sha256 },
                 ]}
               />
+              </details></div>
             </List.Item>
           )}
         />
       )}
     </div>
   );
+}
+
+/** Compact execution-time file facts; full snapshot remains in the input tab. */
+export function ExecutionFileSummary(props: { execution: Execution; onViewDetails: () => void }) {
+  const { t } = useTranslation("runtime");
+  const snapshot = snapshotFor(props.execution);
+  if (snapshot?.source_type !== "managed_files" || snapshot.artifacts.length === 0) return null;
+  return <section className="operations-file-snapshot operations-execution-files" aria-label={t("history.inputManagedFiles")}>
+    {snapshot.artifacts.map((file) => <div key={file.ordinal}><strong>{file.original_filename}</strong> · {(file.size_bytes / 1024).toFixed(1)} KiB</div>)}
+    <small>{t("history.inputSnapshotReadonly")}</small>
+    <Button type="link" onClick={props.onViewDetails}>{t("history.inputFileDetails")}</Button>
+  </section>;
 }

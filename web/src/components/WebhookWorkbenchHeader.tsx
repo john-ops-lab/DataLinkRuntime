@@ -9,6 +9,8 @@ import {
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
+import "./workbench-ux.css";
+
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, Worker } from "../types";
 import ActionWithReason from "./ActionWithReason";
@@ -16,6 +18,7 @@ import type { WebhookRuntimeState } from "./WebhookTriggerPanel";
 
 interface Props {
   adapter: Adapter;
+  dirty: boolean;
   runtimeWorker: Worker | null;
   runtimeState: WebhookRuntimeState;
   busy: boolean;
@@ -41,7 +44,9 @@ export default function WebhookWorkbenchHeader(props: Props) {
         ? t("webhook.reasons.contentNotReady")
         : props.busy
           ? t("webhook.reasons.busy")
-          : null;
+          : !props.dirty && props.adapter.latest_version_id !== null
+            ? t("editor.noChanges", { ns: "common" })
+            : null;
   const receiveReason = props.runtimeState.enabled
     ? null
     : !props.runtimeState.loaded
@@ -82,6 +87,7 @@ export default function WebhookWorkbenchHeader(props: Props) {
           </p>
         )}
       </div>
+      <div className="workbench-actions">
       <div
         className="workbench-controls"
         data-testid="workbench-toolbar"
@@ -102,16 +108,16 @@ export default function WebhookWorkbenchHeader(props: Props) {
           <Tag data-testid="adapter-read-only">{t("webhook.reasons.readOnly")}</Tag>
         ) : (
           <>
-            <ActionWithReason label={t("actions.save", { ns: "common" })} reason={saveReason}>
+            <ActionWithReason label={t("editor.saveContent", { ns: "common" })} reason={saveReason}>
               <Button
                 type="primary"
                 data-testid="save-version"
                 icon={<SaveOutlined aria-hidden="true" />}
-                aria-label={t("actions.save", { ns: "common" })}
+                aria-label={t("editor.saveContent", { ns: "common" })}
                 disabled={saveReason !== null}
                 onClick={props.onSave}
               >
-                {t("actions.save", { ns: "common" })}
+                {t("editor.saveContent", { ns: "common" })}
               </Button>
             </ActionWithReason>
             <ActionWithReason label={props.runtimeState.enabled ? t("actions.stopReceiving", { ns: "common" }) : t("actions.startReceiving", { ns: "common" })} reason={receiveReason}>
@@ -129,6 +135,7 @@ export default function WebhookWorkbenchHeader(props: Props) {
             </ActionWithReason>
           </>
         )}
+      </div>
       </div>
     </header>
   );

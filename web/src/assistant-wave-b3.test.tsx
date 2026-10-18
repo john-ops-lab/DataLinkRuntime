@@ -18,7 +18,7 @@
  * keep the Wave A/B1 contracts unchanged.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StrictMode, type ComponentProps } from "react";
 
@@ -235,7 +235,7 @@ describe("selection / drop / delete / clear", () => {
     fireEvent.click(removeButtons[1]);
     await waitFor(() => expect(screen.getAllByTestId("ai-attachment-item")).toHaveLength(4));
     expect(screen.queryByText("spec.pdf")).toBeNull();
-    expect(screen.getByText("photo.png")).toBeTruthy();
+    expect(screen.getByText("photo.png", { selector: ".ai-attachment-name" })).toBeTruthy();
 
     // 清空：逐个删除直至为空。
     for (const remove of [...screen.getAllByTestId("ai-attachment-remove")]) {
@@ -251,8 +251,8 @@ describe("selection / drop / delete / clear", () => {
       dataTransfer: { files: [makeFile("a.txt", "text/plain"), makeFile("b.md", "text/markdown")] },
     });
     await waitFor(() => expect(screen.getAllByTestId("ai-attachment-item")).toHaveLength(2));
-    expect(screen.getByText("a.txt")).toBeTruthy();
-    expect(screen.getByText("b.md")).toBeTruthy();
+    expect(screen.getByText("a.txt", { selector: ".ai-attachment-name" })).toBeTruthy();
+    expect(screen.getByText("b.md", { selector: ".ai-attachment-name" })).toBeTruthy();
   });
 
   it("exposes the add button, input and remove controls to keyboard users", async () => {
@@ -282,12 +282,16 @@ describe("selection / drop / delete / clear", () => {
 
 describe("Issue #117 Batch 6: one-line attachment guidance", () => {
   it.each(["zh-CN", "en"] as const)(
-    "keeps the complete %s limits and privacy guidance in one visible row while attachment behavior stays stable",
+    "keeps the complete %s limits and privacy guidance in the expandable format details while attachment behavior stays stable",
     async (locale) => {
       vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("回复", null));
       await applySystemLocale(locale);
       renderPanel();
 
+      const limits = await screen.findByTestId("ai-attachment-limits");
+      expect(limits.getAttribute("open")).toBeNull();
+      fireEvent.click(within(limits).getByText(locale === "zh-CN" ? "支持的附件格式与模型限制" : "Supported attachment formats and model limits"));
+      expect(limits.getAttribute("open")).not.toBeNull();
       const guidance = await screen.findByTestId("ai-composer-guidance");
       const hint = screen.getByTestId("ai-attachment-hint");
       const privacy = screen.getByTestId("ai-attachment-privacy");
@@ -843,7 +847,7 @@ describe("Regenerate / retry semantics with attachments", () => {
     expect(second.attachments?.[0]?.data_base64).toBe(btoa("original-body"));
     expect(JSON.stringify(second)).not.toContain("later-body");
     // 当前 Composer 附件不被消费，仍保留。
-    expect(screen.getByText("later.txt")).toBeTruthy();
+    expect(screen.getByText("later.txt", { selector: ".ai-attachment-name" })).toBeTruthy();
     // 无重复 user 消息。
     expect(screen.getAllByTestId("ai-message-user")).toHaveLength(1);
   });
@@ -1037,7 +1041,7 @@ it.each(["incomplete", "unclassified"] as const)(
     fireEvent.click(screen.getByTestId("ai-send"));
     await screen.findByText("解释原因");
     expect(screen.getByTestId("ai-task-status").textContent).toContain(
-      taskStatus === "incomplete" ? "代码任务尚未完成" : "本次未确认代码任务完成",
+      taskStatus === "incomplete" ? "本次尚未生成可查看的代码修改" : "尚未确认代码修改是否完成",
     );
     expect(screen.queryByTestId("ai-candidate")).toBeNull();
     expect(screen.queryByTestId("ai-panel-error")).toBeNull();

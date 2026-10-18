@@ -12,6 +12,7 @@ import { api } from "../api";
 import { resolveSystemLocale } from "../i18n";
 import type { AccountRole, AccountUser } from "../types";
 import { userErrorMessage } from "../user-message";
+import "./ai-account-ux.css";
 
 interface UserManagementDrawerProps {
   open: boolean;
@@ -50,6 +51,7 @@ export default function UserManagementDrawer({
 }: UserManagementDrawerProps) {
   const { i18n, t } = useTranslation("common");
   const [users, setUsers] = useState<AccountUser[]>([]);
+  const [createOpen, setCreateOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<CreateForm>(emptyCreateForm);
@@ -322,70 +324,12 @@ export default function UserManagementDrawer({
     >
       <div className="settings-panel user-management-panel">
         <Typography.Paragraph type="secondary">{t("users.subtitle")}</Typography.Paragraph>
-        {error !== null && <p className="settings-panel-error" role="alert">{error}</p>}
-        {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
-        <section className="user-create-section" aria-labelledby="user-create-title">
-          <h3 id="user-create-title" className="settings-section-title">{t("users.createTitle")}</h3>
-          <ProForm<CreateForm>
-            key={`${open}-${notice === null}`}
-            className="wave-c-form"
-            layout="vertical"
-            initialValues={form}
-            submitter={{
-              render: () => [
-                <Button
-                  key="submit"
-                  type="primary"
-                  htmlType="submit"
-                  data-testid="user-create-submit"
-                  loading={busy}
-                  disabled={busy}
-                >
-                  {t("users.create")}
-                </Button>,
-              ],
-            }}
-            onValuesChange={(_, values) => setForm(values)}
-            onFinish={handleCreate}
-          >
-            <ProForm.Item
-              name="username"
-              label={t("users.username")}
-              rules={[{ required: true, whitespace: true }]}
-            >
-              <Input
-                aria-label={t("users.username")}
-                data-testid="user-create-username"
-                placeholder={t("users.username")}
-                disabled={busy}
-              />
-            </ProForm.Item>
-            <ProForm.Item
-              name="password"
-              label={t("users.password")}
-              rules={[{ required: true }]}
-            >
-              <Input.Password
-                aria-label={t("users.password")}
-                data-testid="user-create-password"
-                placeholder={t("users.password")}
-                autoComplete="new-password"
-                disabled={busy}
-              />
-            </ProForm.Item>
-            <ProForm.Item name="role" label={t("users.roleTitle")}>
-              <Select<AccountRole>
-                aria-label={t("users.roleTitle")}
-                data-testid="user-create-role"
-                disabled={busy}
-                options={[
-                  { value: "admin", label: t("users.role.admin") },
-                  { value: "user", label: t("users.role.user") },
-                ]}
-              />
-            </ProForm.Item>
-          </ProForm>
-        </section>
+        {!createOpen && error !== null && <p className="settings-panel-error" role="alert">{error}</p>}
+        {!createOpen && notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
+        <div className="ux-user-list-heading">
+          <h3 className="settings-section-title">{t("users.listTitle")}</h3>
+          <Button type="primary" data-testid="user-create-open" onClick={() => setCreateOpen(true)}>{t("users.newAccount")}</Button>
+        </div>
         <Form<UserFilters>
           className="wave-c-query-filter user-filter-form"
           data-testid="user-filter-form"
@@ -464,11 +408,85 @@ export default function UserManagementDrawer({
             selectedRowKeys: selectedUserIds,
             onChange: (keys) => setSelectedUserIds(keys.map((key) => Number(key))),
           }}
-          pagination={{ pageSize: 8, showSizeChanger: true }}
+          pagination={{ defaultPageSize: 10, showSizeChanger: true }}
           locale={{ emptyText: t("users.empty") }}
           scroll={{ x: 620 }}
         />
+        <section className="ux-role-help" aria-labelledby="user-role-help-title">
+          <h3 id="user-role-help-title">{t("users.roleHelpTitle")}</h3>
+          <dl><div><dt>{t("users.role.admin")}</dt><dd>{t("users.adminScope")}</dd></div>
+          <div><dt>{t("users.role.user")}</dt><dd>{t("users.userScope")}</dd></div></dl>
+        </section>
+        <Typography.Paragraph type="secondary">{t("users.passwordPrivacy")}</Typography.Paragraph>
       </div>
+      <Drawer title={t("users.createTitle")} width={480} open={createOpen} onClose={() => setCreateOpen(false)} destroyOnHidden>
+        {error !== null && <p className="settings-panel-error" role="alert">{error}</p>}
+        {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
+        <section className="user-create-section" aria-labelledby="user-create-title">
+          <h3 id="user-create-title" className="settings-section-title">{t("users.createTitle")}</h3>
+          <ProForm<CreateForm>
+            key={`${open}-${notice === null}`}
+            className="wave-c-form"
+            layout="vertical"
+            initialValues={form}
+            submitter={{
+              render: () => [
+                <Button
+                  key="submit"
+                  type="primary"
+                  htmlType="submit"
+                  data-testid="user-create-submit"
+                  loading={busy}
+                  disabled={busy}
+                >
+                  {t("users.create")}
+                </Button>,
+              ],
+            }}
+            onValuesChange={(_, values) => setForm(values)}
+            onFinish={handleCreate}
+          >
+            <ProForm.Item
+              name="username"
+              label={t("users.username")}
+              rules={[{ required: true, whitespace: true }]}
+            >
+              <Input
+                aria-label={t("users.username")}
+                data-testid="user-create-username"
+                placeholder={t("users.username")}
+                disabled={busy}
+              />
+            </ProForm.Item>
+            <ProForm.Item
+              name="password"
+              label={t("users.password")}
+              rules={[{ required: true }]}
+            >
+              <Input.Password
+                aria-label={t("users.password")}
+                data-testid="user-create-password"
+                placeholder={t("users.password")}
+                autoComplete="new-password"
+                disabled={busy}
+              />
+            </ProForm.Item>
+            <ProForm.Item name="role" label={t("users.roleTitle")}>
+              <Select<AccountRole>
+                aria-label={t("users.roleTitle")}
+                data-testid="user-create-role"
+                disabled={busy}
+                options={[
+                  { value: "admin", label: t("users.role.admin") },
+                  { value: "user", label: t("users.role.user") },
+                ]}
+              />
+            </ProForm.Item>
+          </ProForm>
+        </section>
+        <Typography.Paragraph type="secondary">{t("users.role.admin")}: {t("users.adminScope")}</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">{t("users.role.user")}: {t("users.userScope")}</Typography.Paragraph>
+      </Drawer>
       <ModalForm<ResetForm>
         title={resetTarget === null ? t("users.resetPassword") : t("users.resetTitle", { username: resetTarget.username })}
         open={resetTarget !== null}

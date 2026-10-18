@@ -42,7 +42,9 @@ from dlr.worker.cache_lifecycle import (
 from dlr.worker.cache_policy import (
     CachePolicy,
     create_version_cache,
+    effective_cache_policy,
     register_pressure_handler,
+    save_automatic_cleanup,
 )
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
@@ -119,7 +121,9 @@ class WorkerConfig:
         self.protocol_version = PROTOCOL_VERSION
         self.heartbeat_seconds = float(os.environ.get("DLR_WORKER_HEARTBEAT_SECONDS", "10"))
         self.runtime_root = Path(os.environ.get("DLR_RUNTIME_ROOT", "/var/lib/dlr/runtime"))
-        self.cache_policy = CachePolicy.from_environment()
+        self.cache_policy = effective_cache_policy(
+            self.runtime_root, CachePolicy.from_environment()
+        )
         self.workspace_cleanup_journal_root = Path(
             os.environ.get(
                 "DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT",
@@ -382,6 +386,7 @@ class Agent:
         # This additive capability describes the cache protocol implementation,
         # independently of whether sandbox isolation was available at startup.
         self._config.isolation_capabilities["cache_governance_v1"] = True
+        self._config.isolation_capabilities["cache_policy_control_v1"] = True
         backoff = 1.0
         while not self._stop.is_set():
             try:
@@ -686,6 +691,13 @@ class Agent:
         if lifecycle is None:
             return
         manager = self._cache_policy_manager
+        if manager is not None:
+            # Also reconcile a write whose acknowledgement was interrupted.
+            policy = effective_cache_policy(manager.runtime_root, manager.policy)
+            manager.policy = policy
+            manager.cache.policy = policy
+            if getattr(self, "_config", None) is not None:
+                self._config.cache_policy = policy
         report = (
             manager.management_snapshot()
             if manager is not None
@@ -747,6 +759,15 @@ class Agent:
         lifecycle = self._cache_lifecycle
         if manager is None or lifecycle is None:
             raise CacheError("cache_owner_unconfirmed")
+        if kind == "protect" and "policy" in payload:
+            with lifecycle.entry_lock("governance-round", blocking=False):
+                policy = save_automatic_cleanup(
+                    self._config.runtime_root, manager.policy, payload["policy"]
+                )
+                manager.policy = policy
+                manager.cache.policy = policy
+                self._config.cache_policy = policy
+            return {"policy": {name: getattr(policy, name) for name in payload["policy"]}}
         if kind == "preview":
             preview_keys = frozenset(
                 f"{item['adapter_id']}-{item['version_id']}" for item in payload["keys"]
@@ -1129,6 +1150,11 @@ class Agent:
                     management_id,
                     operation_ids=release_ids,
                 )
+        if str(command["kind"]) != "preview" and receipt["status"] in {"completed", "failed"}:
+            # The durable receipt prevents replaying the mutation if either
+            # snapshot publication or the terminal acknowledgement is lost.
+            # Publish the resulting observation before the UI sees completion.
+            self._report_cache_snapshot(worker_id)
         self._client.report_cache_command(
             worker_id,
             str(operation_id),

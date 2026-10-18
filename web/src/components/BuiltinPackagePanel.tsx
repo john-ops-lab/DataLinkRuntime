@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Button,
+  Card,
   Input,
   InputNumber,
   Modal,
@@ -591,6 +592,7 @@ export default function BuiltinPackagePanel({
           size="middle"
           className="builtin-upload-form"
         >
+          <Typography.Text strong>{t("builtin.kind")}</Typography.Text>
           <Select
             aria-label={t("builtin.kind")}
             value={uploadKind}
@@ -615,14 +617,16 @@ export default function BuiltinPackagePanel({
               </Upload>
             </>
           )}
-          <Upload {...uploadProps}>
+          <div className="builtin-upload-drop-area"><Upload {...uploadProps}>
             <Button
               disabled={busy}
               icon={<UploadOutlined aria-hidden="true" />}
             >
               {t("builtin.chooseFiles")}
             </Button>
-          </Upload>
+          </Upload></div>
+          <Alert type="info" showIcon message={files.length === 0 ? t("builtin.noFilesSelected") : t("builtin.uploadOnly")} description={files.length === 0 ? t("builtin.uploadOnly") : undefined} />
+          <Card size="small" title={t("builtin.afterUploadTitle")}><Typography.Text type="secondary">{t("builtin.afterUpload")}</Typography.Text></Card>
           <div role="status">
             {uploadResults.map((result, index) => (
               <p key={index}>{result}</p>

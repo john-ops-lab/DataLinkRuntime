@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from dlr.worker.cache import CacheError
+from dlr.worker.cache import CacheError, CacheScanBudget
 
 SCHEMA_VERSION = 1
 _STATE_DIR = ".dlr-cache-lifecycle"
@@ -913,6 +913,13 @@ class CacheLifecycleStore:
             value = self.lifecycle(key)
             if value["identity"] != dict(identity) or value["digest"] != digest:
                 raise CacheError("cache_identity_conflict")
+            previous_proof = value.get("rebuild_proof")
+            if (
+                automatic
+                and isinstance(previous_proof, dict)
+                and previous_proof.get("automatic") is not True
+            ):
+                return value
             updated = dict(value)
             updated["rebuildability"] = "confirmed"
             updated["rebuild_proof"] = {
@@ -926,14 +933,22 @@ class CacheLifecycleStore:
                 "automatic": automatic,
                 "source_scope": source_scope,
             }
-            updated["source_unavailable"] = None
+            # Current local verification cannot erase a separately observed
+            # source failure, or replace an administrator's explicit promise.
+            if not automatic:
+                updated["source_unavailable"] = None
             updated["policy_revision"] = int(value["policy_revision"]) + 1
             _write_json(self.lifecycle_root / f"{_safe_key(key)}.json", updated, strict_sync=True)
             cleared_scopes: list[str] = []
-            if source_scope is not None:
+            if source_scope is not None and not automatic:
                 cleared_scopes.append(source_scope)
             language = identity.get("language")
-            if source_policy == "managed_online" and isinstance(language, str) and language:
+            if (
+                not automatic
+                and source_policy == "managed_online"
+                and isinstance(language, str)
+                and language
+            ):
                 normalized = language.strip().lower()
                 global_digest = hashlib.sha256(f"{normalized}\0unconfigured".encode()).hexdigest()
                 cleared_scopes.append(f"{normalized}:{global_digest}")
@@ -1133,6 +1148,7 @@ class CacheLifecycleStore:
         offline_protection: bool,
         offline_mode: bool,
         now: float | None = None,
+        budget: CacheScanBudget | None = None,
     ) -> str | None:
         timestamp = time.time() if now is None else now
         value = self.lifecycle(key)
@@ -1147,6 +1163,27 @@ class CacheLifecycleStore:
             return "cache_rebuild_unknown"
         if float(proof["valid_until"]) <= timestamp:
             return "cache_rebuild_unknown"
+        if proof.get("automatic") is True:
+            from dlr.worker.cache_rebuild import verify_receipt
+
+            try:
+                verified = verify_receipt(
+                    self.cache_root, key, identity=identity, digest=digest, budget=budget
+                )
+            except CacheError as error:
+                if error.code == "cache_scan_budget_exhausted":
+                    raise
+                return "cache_rebuild_unknown"
+            except (OSError, ValueError, TypeError):
+                return "cache_rebuild_unknown"
+            # Existing short-lived automatic proofs retain their original
+            # semantics; only receipts actually recorded by the new path are
+            # revalidated here, including the final guarded rename checks.
+            if verified is False or (
+                verified is None
+                and proof.get("evidence_note") == "verified local rebuild materials"
+            ):
+                return "cache_rebuild_unknown"
         unavailable = value["source_unavailable"]
         if (
             isinstance(unavailable, dict)

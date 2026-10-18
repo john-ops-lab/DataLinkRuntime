@@ -451,13 +451,46 @@ function valueOf(testId: string): string {
   return (screen.getByTestId(testId) as HTMLInputElement).value;
 }
 
+/** Inspect/edit raw Cron through the v3 advanced-rule disclosure. */
+async function openAdvancedScheduleCron(): Promise<HTMLElement> {
+  await screen.findByTestId("task-schedule-timezone");
+  if (screen.queryByTestId("task-schedule-cron") === null) {
+    fireEvent.click(screen.getByRole("button", { name: "高级规则" }));
+  }
+  return screen.findByTestId("task-schedule-cron");
+}
+
 async function waitForCodeEditorValue(expected: string): Promise<void> {
+  const codeSummary = screen.queryByText("查看 Python 完整代码与依赖（只读）");
+  const disclosure = codeSummary?.closest("details");
+  if (disclosure !== null && disclosure !== undefined && !disclosure.open) {
+    fireEvent.click(codeSummary!);
+    expect(disclosure.open).toBe(true);
+  }
   await waitFor(() => {
     const values = screen
       .getAllByTestId("code-editor")
       .map((element) => (element as HTMLTextAreaElement).value);
     expect(values).toContain(expected);
   });
+}
+
+async function findDeleteConfirmation(): Promise<HTMLElement> {
+  const confirmButton = await screen.findByTestId("confirm-delete-adapter");
+  const dialog = confirmButton.closest<HTMLElement>('[role="dialog"]');
+  expect(dialog).not.toBeNull();
+  // rc-util uses the same "test-id" for all hooks in NODE_ENV=test. Locate
+  // this dialog via its action, then verify its own accessible-title reference.
+  const title = within(dialog!).getByText("删除适配器？", { selector: "[id]" });
+  expect(title.id).toBe(dialog!.getAttribute("aria-labelledby"));
+  expect(title.id).not.toBe("");
+  expect(dialog!.getAttribute("aria-modal")).toBe("true");
+  return dialog!;
+}
+
+async function openExecutionInput(): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByRole("tab", { name: "输入" }));
+  return screen.findByTestId("detail-input");
 }
 
 // Most tests exercise the authenticated console: seed the sessionStorage token
@@ -608,7 +641,7 @@ it("persists the Task run mode and reveals Schedule settings", async () => {
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
   fireEvent.click(await screen.findByLabelText("定时运行"));
   // M5.5.11：选择“定时运行”后立即呈现 Cron / Timezone / Input / 定时状态。
-  await screen.findByTestId("task-schedule-cron");
+  await openAdvancedScheduleCron();
   fireEvent.click(screen.getByTestId("save-task-runtime"));
 
   await screen.findByTestId("task-schedule-next-run");
@@ -676,6 +709,7 @@ it("loads an existing disabled Schedule before saving a manual-to-schedule switc
 
   // 初始 manual 模式没有加载 Schedule；切换表单态后必须先读取并展示
   // 已存在的停用配置，不能把 null 当成“确认未配置”。
+  await openAdvancedScheduleCron();
   await waitFor(() => expect(valueOf("task-schedule-cron")).toBe("0 9 * * *"));
   expect(valueOf("task-schedule-timezone")).toBe("UTC");
   expect(screen.getByTestId("task-input-config")).toBeTruthy();
@@ -739,13 +773,13 @@ it("blocks the top Schedule enable action until changed runtime settings are sav
   render(<App />);
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
-  await screen.findByTestId("task-schedule-cron");
+  await openAdvancedScheduleCron();
 
   fireEvent.change(screen.getByTestId("task-schedule-cron"), { target: { value: "0 * * * *" } });
   const enable = screen.getByTestId("header-task-schedule-toggle") as HTMLButtonElement;
   expect(enable.disabled).toBe(true);
   expect(enable.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
-    "运行设置有未保存修改，请先保存运行配置。",
+    "运行设置有未保存修改，请先保存运行设置。",
   );
   expect(fetchMock.mock.calls.some(([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT")).toBe(false);
 
@@ -791,7 +825,7 @@ it("switches manual/schedule fields immediately and keeps run-once out of run se
 
   // 选择“定时运行”后立即显示 Cron / Timezone / 输入对象 / 定时状态。
   fireEvent.click(screen.getByLabelText("定时运行"));
-  await screen.findByTestId("task-schedule-cron");
+  await openAdvancedScheduleCron();
   expect(screen.getByTestId("task-schedule-timezone")).toBeTruthy();
   expect(screen.getByTestId("task-input-config")).toBeTruthy();
   expect(screen.getByTestId("task-schedule-next-run")).toBeTruthy();
@@ -903,6 +937,7 @@ it("saves the timeout only without overwriting an existing Schedule (M5.5.11)", 
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
 
   // 等真实 Schedule 加载完成（表单值 = 线上值）。
+  await openAdvancedScheduleCron();
   await waitFor(() => expect(valueOf("task-schedule-cron")).toBe("0 9 * * *"));
   // 只修改超时，不改定时字段。
   fireEvent.click(screen.getByLabelText("10 分钟"));
@@ -976,7 +1011,7 @@ it("skips the Schedule PUT while Schedule is still loading or failed to load (M5
     ),
   ).toBe(false);
   await screen.findByText(
-    "运行配置已保存；但 Schedule 尚未加载完成（或加载失败），定时字段未保存，请刷新后重试。",
+    "运行设置已保存；定时设置尚未加载完成或加载失败，因此定时设置未保存。请刷新后重试。",
   );
 });
 
@@ -1005,7 +1040,7 @@ it("locks the run config save and timeout while Schedule is enabled (M5.5.11)", 
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
 
-  await screen.findByTestId("task-schedule-cron");
+  await openAdvancedScheduleCron();
   expect((screen.getByTestId("save-task-runtime") as HTMLButtonElement).disabled).toBe(true);
   expect(
     (screen.getByTestId("task-timeout-preset").querySelector("input") as HTMLInputElement).disabled,
@@ -1069,7 +1104,7 @@ it("locks Task editing while Schedule is enabled and unlocks after disable", asy
   await waitFor(() => expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true));
   // M5.5.9：运行中只保留低干扰提示；不再展示大块黄色说明、复制引导或修订号。
   expect(screen.getByTestId("task-active-execution").textContent).toContain(
-    "适配器正在运行，编辑与运行配置已锁定。",
+    "适配器正在运行，编辑与运行设置已锁定。",
   );
   expect(document.body.textContent).not.toContain("如需升级，请复制为新的适配器");
   expect(screen.queryByTestId("header-clone-adapter")).toBeNull();
@@ -1089,7 +1124,7 @@ it("locks Task editing while Schedule is enabled and unlocks after disable", asy
   }
   expect(within(cloneDialog).getByText("执行历史不会复制；新适配器创建后保持停止，不会自动运行。")).toBeTruthy();
   expect(within(cloneDialog).getByTestId("clone-input-note").textContent).toContain(
-    "托管文件本体不会复制",
+    "输入文件不会复制",
   );
   expect((within(cloneDialog).getByTestId("clone-adapter-name") as HTMLInputElement).value).toBe("adapter-a-copy");
   fireEvent.click(within(cloneDialog).getByRole("button", { name: /取\s*消/ }));
@@ -1481,7 +1516,7 @@ it("creates a JavaScript adapter with the language starter and Monaco mode", asy
     target: { value: "node-adapter" },
   });
   fireEvent.click(screen.getByText("JavaScript"));
-  fireEvent.click(screen.getByRole("radio", { name: "Webhook 适配器" }));
+  fireEvent.click(screen.getByRole("radio", { name: /^Webhook 适配器/ }));
   fireEvent.click(screen.getByTestId("create-adapter"));
 
   const editor = await screen.findByTestId("code-editor");
@@ -1631,6 +1666,53 @@ it("saves a new version with the edited content", async () => {
     runtime_config: {},
   });
   expect(await screen.findByText("适配器已保存")).toBeTruthy();
+});
+
+it("dismisses an import reminder only after saving editor content successfully", async () => {
+  let adapter = makeAdapter({
+    latest_version_id: 10,
+    configuration_notes: { review_environment: true, input_required: "managed_files" },
+  });
+  const initial = makeVersion();
+  let rejectSave = true;
+  const saved = makeVersion({ id: 11, seq: 2 });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [makeReadyWorker()] }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: adapter.latest_version_id === 11 ? [saved, initial] : [initial] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: initial }) },
+    { method: "GET", match: "/api/adapters/1/versions/11", respond: () => ({ body: saved }) },
+    { method: "POST", match: "/api/adapters/1/versions", respond: () => {
+      if (rejectSave) return { status: 409, body: { detail: { code: "fixture_save_failed", message: "save failed" } } };
+      adapter = { ...adapter, latest_version_id: saved.id, configuration_notes: { ...adapter.configuration_notes, review_environment: false } };
+      return { status: 201, body: saved };
+    } },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  expect(await screen.findByTestId("import-configuration-notice")).toBeTruthy();
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "def handle(context, input):\n    return 2\n" } });
+  fireEvent.click(screen.getByTestId("save-version"));
+  await screen.findByTestId("error-banner");
+  expect(screen.getByTestId("import-configuration-notice")).toBeTruthy();
+  rejectSave = false;
+  await waitFor(() => expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByTestId("save-version"));
+  await waitFor(() => expect(screen.queryByTestId("import-configuration-notice")).toBeNull());
+});
+
+it("does not show an import reminder when no input was omitted", async () => {
+  const adapter = makeAdapter({ configuration_notes: { review_environment: true, input_required: "none" } });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  expect(screen.queryByTestId("import-configuration-notice")).toBeNull();
 });
 
 it("asks for a compatible Worker on first Save when several are available", async () => {
@@ -1839,7 +1921,7 @@ it("keeps Save disabled and never mixes content when switching to an adapter who
     {
       method: "GET",
       match: "/api/adapters",
-      respond: () => ({ body: [makeAdapter(), makeAdapter({ id: 2, name: "adapter-b" })] }),
+      respond: () => ({ body: [makeAdapter(), makeAdapter({ id: 2, name: "adapter-b", latest_version_id: 20 })] }),
     },
     {
       method: "GET",
@@ -1876,6 +1958,7 @@ it("keeps Save disabled and never mixes content when switching to an adapter who
   expect(valueOf("code-editor")).not.toBe(TASK_STARTER_CODE);
   const saveButton = screen.getByTestId("save-version") as HTMLButtonElement;
   expect(saveButton.disabled).toBe(true);
+  expect(screen.queryByTestId("save-regions")).toBeNull();
   expect(saveButton.closest(".action-with-reason")?.getAttribute("title")).toContain(
     "版本内容尚未就绪",
   );
@@ -1954,6 +2037,7 @@ it("ignores out-of-order content loads when switching adapters rapidly", async (
 // --- Review regressions: Save acknowledgement --------------------------------
 
 it("acknowledges a successful Save locally even when the follow-up refresh fails", async () => {
+  let savedVersion = false;
   stubFetch([
     healthRoute({ status: "ok", database: true }),
     {
@@ -1982,6 +2066,7 @@ it("acknowledges a successful Save locally even when the follow-up refresh fails
       match: "/api/adapters/1/versions",
       respond: (body) => {
         const payload = JSON.parse(body ?? "{}") as { code: string };
+        savedVersion = true;
         return { status: 201, body: makeVersion({ code: payload.code }) };
       },
     },
@@ -1989,7 +2074,7 @@ it("acknowledges a successful Save locally even when the follow-up refresh fails
       // Best-effort Adapter refresh after Save succeeds.
       method: "GET",
       match: "/api/adapters/1",
-      respond: () => ({ body: makeAdapter({ latest_version_id: 10 }) }),
+      respond: () => ({ body: makeAdapter({ latest_version_id: savedVersion ? 10 : null }) }),
     },
   ]);
   render(<App />);
@@ -2492,8 +2577,8 @@ it("keeps Template copy disabled while a hidden Task mutation is in flight", asy
   )).toBe(true));
 
   fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
-  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
-  const copyButton = await screen.findByRole("button", { name: "复制为适配器" }) as HTMLButtonElement;
+  fireEvent.click(await screen.findByRole("link", { name: /查看用法与代码/ }));
+  const copyButton = await screen.findByRole("button", { name: "复制 Python 为适配器" }) as HTMLButtonElement;
   expect(copyButton.disabled).toBe(true);
 
   await act(async () => {
@@ -2552,7 +2637,7 @@ it("reopens the same server log after closing the live-to-history drawer", async
 
   await screen.findByTestId("live-log-view-server");
   fireEvent.click(screen.getByTestId("live-log-view-server"));
-  await screen.findByTestId("detail-input");
+  await openExecutionInput();
 
   const closeButton = document.querySelector(".ant-drawer-close");
   if (!(closeButton instanceof HTMLButtonElement)) {
@@ -2565,7 +2650,7 @@ it("reopens the same server log after closing the live-to-history drawer", async
   // The handoff request is one-shot: after the drawer closes, the same
   // execution id must be accepted again instead of React bailing on setState.
   fireEvent.click(screen.getByTestId("live-log-view-server"));
-  expect(await screen.findByTestId("detail-input")).toBeTruthy();
+  expect(await openExecutionInput()).toBeTruthy();
 });
 
 it("blocks running while unsaved edits exist and unblocks after Save (M5.5.9)", async () => {
@@ -2594,10 +2679,9 @@ it("blocks running while unsaved edits exist and unblocks after Save (M5.5.9)", 
   render(<App />);
   await selectFirstAdapter();
 
-  // 等待内容加载完成（save 可用），避免加载完成时覆盖编辑快照。
-  await waitFor(() =>
-    expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(false),
-  );
+  // 等待代码加载完成；已有版本且无修改时保存保持禁用。
+  await waitFor(() => expect(valueOf("code-editor")).toBe(STARTER_CODE));
+  expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(true);
   // Clearing the disabled reason removes the Tooltip wrapper and replaces the
   // button. Query the current node on each retry, never a detached old button.
   await waitFor(() =>
@@ -2763,7 +2847,7 @@ it("keeps Schedule disablement separate from cancelling the current Execution", 
   expect(lockedEnable.textContent).toBe("启用定时");
   expect(lockedEnable.disabled).toBe(true);
   expect(lockedEnable.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
-    "当前执行仍在运行，请等待终态或停止当前执行后再启用定时",
+    "当前执行仍在运行，请等待执行结束，或请求停止并确认结束后再启用定时",
   );
   fireEvent.click(lockedEnable);
   expect(onToggleSchedule).toHaveBeenCalledOnce();
@@ -2916,7 +3000,7 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
   expect(firstRow.getAttribute("tabindex")).toBe("0");
   firstRow.focus();
   fireEvent.keyDown(firstRow, { key: "Enter" });
-  const detailInput = await screen.findByTestId("detail-input");
+  const detailInput = await openExecutionInput();
   expect(detailInput.textContent).toContain('"k": 1');
   const firstRowText = firstRow.textContent ?? "";
   expect(firstRowText).toContain("2026");
@@ -2946,7 +3030,7 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
   secondRow.focus();
   expect(fireEvent.keyDown(secondRow, { key: " " })).toBe(false);
   await screen.findByText("执行详情");
-  expect((await screen.findByTestId("detail-input")).textContent).toContain('"k": 2');
+  expect((await openExecutionInput()).textContent).toContain('"k": 2');
 });
 
 it.each([
@@ -3027,14 +3111,14 @@ it("never shows a stale detail when executions are clicked in quick succession",
   // presenting stale details under the new Execution title.
   fireEvent.click(rows[1]);
   await screen.findByText("执行详情");
-  expect(screen.getByTestId("detail-input").textContent).toContain('"who": "B"');
+  expect((await openExecutionInput()).textContent).toContain('"who": "B"');
   fireEvent.click(rows[0]);
   expect(screen.queryByTestId("detail-input")).toBeNull();
 
   // Click B again while A is still slow: B must win even though A resolves last.
   fireEvent.click(rows[1]);
   await screen.findByText("执行详情");
-  expect(screen.getByTestId("detail-input").textContent).toContain('"who": "B"');
+  expect((await openExecutionInput()).textContent).toContain('"who": "B"');
 
   releaseA();
   // Let A's late response settle, then verify the drawer still shows B.
@@ -3177,14 +3261,11 @@ it("shows the brand area and the token card on the login page", async () => {
   await screen.findByTestId("admin-token-input");
   expect(screen.getByText("DataLinkRuntime")).toBeTruthy();
   expect(screen.getByText("欢迎登录 DLR 控制台")).toBeTruthy();
-  // M5.8-011：首页收敛为已确认的产品文案，不再堆叠功能列表。
-  expect(screen.getByText("Code your data connections.")).toBeTruthy();
-  expect(screen.getByText("把数据连接逻辑写成 Adapter（适配器），然后直接运行。")).toBeTruthy();
-  expect(document.querySelector(".login-brand-intro")?.textContent).toBe(
-    "从代码编辑、依赖配置到执行、日志与历史追踪，\nDataLinkRuntime 提供一个轻量、自托管的完整运行环境。",
-  );
-  expect(screen.getByText("Develop → Run → Observe")).toBeTruthy();
-  expect(screen.getByText("© 2026 DataLinkRuntime · MIT License")).toBeTruthy();
+  // Issue #212: the login introduction uses the selected language and a compact workflow.
+  expect(screen.getByText("用代码连接你的数据")).toBeTruthy();
+  expect(screen.getByText("编写 → 运行 → 查看结果")).toBeTruthy();
+  expect(document.querySelector(".auth-shell-login")).not.toBeNull();
+  expect(document.querySelector(".login-brand-intro")).toBeNull();
   expect(screen.queryByText(/轻量 · 连接 · 适配 · 运行/)).toBeNull();
   expect(screen.queryByText("轻量易用")).toBeNull();
   expect(screen.queryByText("多元适配")).toBeNull();
@@ -3209,7 +3290,7 @@ it("renders the console shell with catalog, workbench header and the three main 
   await selectFirstAdapter();
   expect(screen.getByTestId("workbench-header")).toBeTruthy();
   expect(screen.getByText("编辑")).toBeTruthy();
-  expect(screen.getByText("运行设置")).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "运行设置" })).toBeTruthy();
   expect(screen.getByText("执行记录")).toBeTruthy();
 });
 
@@ -3256,8 +3337,11 @@ it("edits metadata and deletes the adapter from the settings drawer", async () =
   fireEvent.click(screen.getByTestId("update-details"));
   await screen.findByRole("heading", { name: "renamed" });
 
-  vi.spyOn(window, "confirm").mockReturnValue(true);
   fireEvent.click(screen.getByTestId("delete-adapter"));
+  const deleteDialog = await findDeleteConfirmation();
+  expect(within(deleteDialog).getByText("renamed")).toBeTruthy();
+  expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/adapters/1" && init?.method === "DELETE")).toBe(false);
+  fireEvent.click(within(deleteDialog).getByTestId("confirm-delete-adapter"));
   await waitFor(() => {
     expect(
       fetchMock.mock.calls.some(
@@ -3786,14 +3870,14 @@ it("gives repeated Credential Binding controls stable row-specific accessible na
 
   render(<App />);
   await selectFirstAdapter();
-  fireEvent.click(screen.getByText("凭据绑定"));
+  fireEvent.click(screen.getByTestId("bindings-collapse-header"));
   await screen.findByRole("group", { name: "绑定 1" });
   expect(screen.getByRole("textbox", { name: "绑定 1 代码中的凭据名" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "绑定 1 凭据" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "绑定 1 字段" })).toBeTruthy();
 
   // M5.5.7：凭据区域提供“去系统设置新建凭据”的说明与入口。
-  expect(screen.getByText("如需新增凭据，请前往「系统设置 → 凭据管理」新建。")).toBeTruthy();
+  expect(screen.getByTestId("open-settings-for-credentials").textContent).toContain("管理凭据");
   const openSettings = screen.getByTestId("open-settings-for-credentials");
   expect(openSettings).toBeTruthy();
 
@@ -3841,7 +3925,7 @@ it("warns when the code-side credential name is changed", async () => {
 
   render(<App />);
   await selectFirstAdapter();
-  fireEvent.click(screen.getByText("凭据绑定"));
+  fireEvent.click(screen.getByTestId("bindings-collapse-header"));
   await screen.findByRole("group", { name: "绑定 1" });
   expect(screen.queryByTestId("binding-rename-hint")).toBeNull();
   fireEvent.change(screen.getByRole("textbox", { name: "绑定 1 代码中的凭据名" }), {
@@ -3936,8 +4020,8 @@ it("manages credentials and package sources from the system settings drawer", as
   fireEvent.click(screen.getByTestId("new-package-source"));
   expect(screen.getByRole("textbox", { name: "依赖源名称" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "依赖源类型" })).toBeTruthy();
-  expect(screen.getByRole("textbox", { name: "索引 URL" })).toBeTruthy();
-  expect(screen.getByRole("combobox", { name: "依赖源凭据" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "软件包仓库地址" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "访问凭据 · 可选" })).toBeTruthy();
 
   fireEvent.click(screen.getByTestId("test-package-source"));
   await screen.findByTestId("package-source-test-result");
@@ -4826,10 +4910,10 @@ it("configures one AI model with manual Model ID, refresh, test, and default rea
 
   expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain("数据范围");
   expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain(
-    "Secret 不会发送",
+    "通过凭据绑定保存的密码或密钥不会随代码提交",
   );
-  fireEvent.click(screen.getByText("推理设置：跟随模型默认"));
-  expect(screen.getByTestId("ai-reasoning-mode").textContent).toContain("跟随模型默认");
+  fireEvent.click(screen.getByText("推理设置：使用模型默认设置"));
+  expect(screen.getByTestId("ai-reasoning-mode").textContent).toContain("使用模型默认设置");
   expect(screen.queryByTestId("ai-reasoning-effort")).toBeNull();
 
   fireEvent.change(screen.getByTestId("ai-base-url"), {
@@ -5500,7 +5584,7 @@ it("stops receiving without unlocking an active call or exposing the Token", asy
   expect(screen.getByTestId("webhook-path-locked")).toBeDefined();
   await waitFor(() =>
     expect(screen.getByTestId("webhook-active-execution").textContent).toContain(
-      "当前调用仍在执行，运行配置已锁定",
+      "当前调用仍在执行，运行设置已锁定",
     ),
   );
 });
@@ -5724,7 +5808,7 @@ it("keeps the true stopped state with an actionable error when cancel fails", as
   expect(screen.getByTestId("webhook-path-locked").textContent).toContain("a8f3c9d2");
   await waitFor(() =>
     expect(screen.getByTestId("webhook-active-execution").textContent).toContain(
-      "当前调用仍在执行，运行配置已锁定",
+      "当前调用仍在执行，运行设置已锁定",
     ),
   );
 });
@@ -5839,6 +5923,7 @@ it("keeps Webhook receive disabled until the active call reaches a terminal stat
   };
   const { rerender } = render(
     <WebhookWorkbenchHeader
+      dirty={false}
       {...commonProps}
       runtimeState={{ loaded: true, enabled: true, runtimeLocked: true, changingState: false, startBlockedReason: null, mutationInFlight: false }}
     />,
@@ -5847,6 +5932,7 @@ it("keeps Webhook receive disabled until the active call reaches a terminal stat
 
   rerender(
     <WebhookWorkbenchHeader
+      dirty={false}
       {...commonProps}
       runtimeState={{ loaded: true, enabled: false, runtimeLocked: true, changingState: false, startBlockedReason: null, mutationInFlight: false }}
     />,
@@ -5855,11 +5941,12 @@ it("keeps Webhook receive disabled until the active call reaches a terminal stat
   expect(lockedStart.textContent).toBe("开启接收");
   expect(lockedStart.disabled).toBe(true);
   expect(lockedStart.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
-    "已有调用仍在运行，请等待其进入终态后再开启接收或修改运行配置",
+    "已有调用仍在运行，请等待调用结束后再开启接收或修改运行设置",
   );
 
   rerender(
     <WebhookWorkbenchHeader
+      dirty={false}
       {...commonProps}
       adapter={{ ...adapter, runtime_locked: false, running_execution_id: null }}
       runtimeState={{ loaded: true, enabled: false, runtimeLocked: false, changingState: false, startBlockedReason: null, mutationInFlight: false }}
@@ -6126,8 +6213,8 @@ it("shows DLR lifecycle stage progress and converges on success without reasonin
   });
   fireEvent.click(screen.getByTestId("ai-send"));
 
-  // 阶段 1：点击后先展示“正在准备当前代码上下文”。
-  expect(screen.getByTestId("ai-progress-stage").textContent).toBe("正在准备当前代码上下文…");
+  // 阶段 1：点击后先展示“正在整理代码和所选资料”。
+  expect(screen.getByTestId("ai-progress-stage").textContent).toBe("正在整理代码和所选资料…");
   // 阶段 2：请求挂起期间展示“正在请求 AI 模型”。
   await screen.findByText("正在请求 AI 模型…");
   expect(screen.queryByTestId("ai-progress-done")).toBeNull();
@@ -6140,13 +6227,13 @@ it("shows DLR lifecycle stage progress and converges on success without reasonin
   await screen.findByText("正在校验返回结果…");
   expect(screen.queryByTestId("ai-candidate-summary")).toBeNull();
 
-  // 阶段 4：校验完成 → 收敛到成功态“已生成修改，等待查看 Diff”+ Candidate。
+  // 阶段 4：校验完成 → 收敛到成功态“已生成修改，请查看差异”+ Candidate。
   await act(async () => {
     resolveBindings?.([]);
     await pendingBindings;
   });
   await screen.findByTestId("ai-candidate-summary");
-  expect(screen.getByTestId("ai-progress-done").textContent).toBe("已生成修改，等待查看 Diff");
+  expect(screen.getByTestId("ai-progress-done").textContent).toBe("已生成修改，请查看差异");
   expect(screen.queryByTestId("ai-progress-stage")).toBeNull();
   // Provider hidden reasoning 永远不进入对话渲染。
   expect(document.body.textContent).not.toContain("reasoning");
@@ -6422,7 +6509,7 @@ it("keeps the Candidate Diff open with its reason when Apply is blocked by the r
     (screen.getByTestId("diff-apply-candidate") as HTMLButtonElement)
       .closest(".action-with-reason")
       ?.getAttribute("aria-label"),
-  ).toContain("适配器正在运行，不能应用候选修改");
+  ).toContain("适配器正在运行，不能应用建议修改");
   expect(screen.getByTestId("version-diff")).toBeTruthy();
   fireEvent.click(screen.getByTestId("diff-close"));
   await waitFor(() => expect(screen.queryByTestId("version-diff")).toBeNull());
@@ -6614,8 +6701,10 @@ it("shows the M5.5.13 credential guidance copy and the quiet assistant header", 
 
   // 引导文案：凭据绑定引导 + 硬编码敏感信息会随代码发送的区分，无内部术语。
   const empty = screen.getByTestId("ai-conversation-empty");
-  expect(empty.textContent).toContain("凭据绑定");
-  expect(empty.textContent).toContain("避免敏感凭据随代码发送给 AI");
+  const scope = screen.getByTestId("ai-send-scope");
+  expect(scope.textContent).toContain("当前代码");
+  expect(scope.textContent).toContain("凭据绑定");
+  expect(screen.getByText("发送内容会交给 AI 服务，请勿包含密码或密钥。")).toBeTruthy();
   expect(empty.textContent).not.toContain("工作副本");
   expect(empty.textContent).not.toContain("唯一代码快照");
   // UX-FINAL-002：底部重复提示已移除；上方空状态仍保留安全引导。
@@ -6758,7 +6847,7 @@ it("uses browser Back from a Gallery-opened detail so Back does not reopen it", 
 
   render(<App />);
   await screen.findByTestId("template-gallery");
-  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  fireEvent.click(await screen.findByRole("link", { name: /查看用法与代码/ }));
   await screen.findByTestId("template-detail");
   expect(window.location.pathname).toBe("/templates/rest-single-request");
 
@@ -6834,7 +6923,7 @@ it("copies the Variant into an unsaved ordinary Adapter editor without a Revisio
     "/api/templates/scenarios/rest-single-request/variants/python",
   ));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.click(screen.getByRole("button", { name: "复制 Python 为适配器" }));
   fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), {
     target: { value: " 生产 REST 同步 " },
   });
@@ -6846,7 +6935,7 @@ it("copies the Variant into an unsaved ordinary Adapter editor without a Revisio
   expect(screen.getByRole("tab", { name: "编辑" }).getAttribute("aria-selected")).toBe("true");
   expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(true);
 
-  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole("button", { name: "保存代码" }) as HTMLButtonElement).disabled).toBe(false);
   const unload = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(unload);
   expect(unload.defaultPrevented).toBe(true);
@@ -6904,7 +6993,7 @@ it("does not let a late bootstrap Adapter list hide the newly instantiated Adapt
   render(<App />);
   await waitFor(() => expect(listCalls).toBe(1));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.click(screen.getByRole("button", { name: "复制 Python 为适配器" }));
   fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), {
     target: { value: copied.name },
   });
@@ -6963,7 +7052,7 @@ it("restores and protects copied code without depending on an empty version-hist
 
   render(<App />);
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.click(screen.getByRole("button", { name: "复制 Python 为适配器" }));
   fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), {
     target: { value: copied.name },
   });
@@ -6973,7 +7062,7 @@ it("restores and protects copied code without depending on an empty version-hist
   expect(window.location.pathname).toBe("/adapters");
   await waitForCodeEditorValue(templateVariantFixture.code);
   expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/42/versions")).toBe(false);
-  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole("button", { name: "保存代码" }) as HTMLButtonElement).disabled).toBe(false);
   const unload = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(unload);
   expect(unload.defaultPrevented).toBe(true);
@@ -6990,12 +7079,12 @@ it("does not POST when the user cancels leaving a dirty Adapter for instantiatio
   await selectFirstAdapter();
   fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "do not discard" } });
   fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
-  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  fireEvent.click(await screen.findByRole("link", { name: /查看用法与代码/ }));
   await waitFor(() => expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
     "/api/templates/scenarios/rest-single-request/variants/python",
   ));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.click(screen.getByRole("button", { name: "复制 Python 为适配器" }));
   const nameInput = screen.getByRole("textbox", { name: "适配器名称" });
   fireEvent.change(nameInput, { target: { value: "保留输入" } });
   vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -7029,9 +7118,9 @@ it("does not POST when the user cancels leaving an unsaved Task input draft", as
 
   vi.spyOn(window, "confirm").mockReturnValue(true);
   fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
-  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  fireEvent.click(await screen.findByRole("link", { name: /查看用法与代码/ }));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.click(screen.getByRole("button", { name: "复制 Python 为适配器" }));
   const nameInput = screen.getByRole("textbox", { name: "适配器名称" });
   fireEvent.change(nameInput, { target: { value: "保留 Task 草稿" } });
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -7067,9 +7156,9 @@ it("does not POST when the user cancels leaving an unsaved Webhook runtime draft
   expect(beforeUnload.defaultPrevented).toBe(true);
 
   fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
-  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  fireEvent.click(await screen.findByRole("link", { name: /查看用法与代码/ }));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.click(screen.getByRole("button", { name: "复制 Python 为适配器" }));
   const nameInput = screen.getByRole("textbox", { name: "适配器名称" });
   fireEvent.change(nameInput, { target: { value: "保留 Webhook 草稿" } });
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -7437,7 +7526,7 @@ it("keeps a dirty Schedule draft across a paired focus refresh and stops with th
   render(<App />);
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
-  const cron = await screen.findByTestId("task-schedule-cron");
+  const cron = await openAdvancedScheduleCron();
   fireEvent.change(cron, { target: { value: "15 10 * * *" } });
 
   currentSchedule = {
@@ -7506,7 +7595,7 @@ it("accepts the Task Adapter save segment while preserving a later-failing Sched
   render(<App />);
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
-  fireEvent.change(await screen.findByTestId("task-schedule-cron"), {
+  fireEvent.change(await openAdvancedScheduleCron(), {
     target: { value: "15 10 * * *" },
   });
   fireEvent.click(screen.getByRole("radio", { name: "10 分钟" }));
@@ -7515,6 +7604,7 @@ it("accepts the Task Adapter save segment while preserving a later-failing Sched
   await screen.findByTestId("error-banner");
 
   window.dispatchEvent(new Event("focus"));
+  await openAdvancedScheduleCron();
   await waitFor(() => expect(valueOf("task-schedule-cron")).toBe("15 10 * * *"));
   expect(
     screen.getByTestId("task-timeout-preset").querySelector(".ant-radio-wrapper-checked")?.textContent,
@@ -7686,7 +7776,7 @@ it("lets reverted-clean Task runtime fields follow the next authority baseline",
     screen.getByTestId("task-timeout-preset").querySelector(".ant-radio-wrapper-checked")?.textContent,
   ).toContain("10 分钟"));
   expect(screen.getByTestId("task-runtime-worker").textContent).toContain("worker-two");
-  expect(await screen.findByTestId("task-schedule-cron")).toBeTruthy();
+  expect(await openAdvancedScheduleCron()).toBeTruthy();
 });
 
 it("keeps a genuinely dirty Task timeout when external authority saves the same or another value", async () => {
@@ -7864,4 +7954,128 @@ it("guards native Settings navigation from the Gallery while its hidden input dr
   expect(confirm).toHaveBeenCalledTimes(1);
   expect(valueOf("task-input-json")).toBe('"draft"');
   expect(screen.getByTestId("adapter-surface").hidden).toBe(true);
+});
+
+
+it("locks navigation during delete confirmation and cancellation preserves the workspace", async () => {
+  window.history.replaceState(null, "", "/templates");
+  window.history.pushState(null, "", "/adapters");
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const fetchMock = stubFetch(consoleWithVersionRoutes(adapter, makeVersion()));
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  fireEvent.click(await screen.findByTestId("delete-adapter"));
+  const dialog = await findDeleteConfirmation();
+  const originalPath = window.location.pathname;
+  const nativeBack = vi.fn();
+  window.addEventListener("popstate", nativeBack);
+  act(() => window.history.back());
+  await waitFor(() => expect(nativeBack).toHaveBeenCalled());
+  await waitFor(() => expect(window.location.pathname).toBe(originalPath));
+  window.removeEventListener("popstate", nativeBack);
+  expect(screen.getAllByTestId("confirm-delete-adapter")).toHaveLength(1);
+  fireEvent.click(within(dialog).getByRole("button", { name: /取.*消/ }));
+  await waitFor(() => expect(screen.queryByTestId("confirm-delete-adapter")).toBeNull());
+  expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/adapters/1" && init?.method === "DELETE")).toBe(false);
+  expect(valueOf("code-editor")).toBe(makeVersion().code);
+  expect((screen.getByTestId("delete-adapter") as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("keeps the new adapter draft when template navigation is cancelled for unsaved input", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([...consoleWithVersionRoutes(adapter, makeVersion()), readyWorkerRoute]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  fireEvent.click(await screen.findByTestId("task-input-source-json"));
+  fireEvent.change(await screen.findByTestId("task-input-json"), { target: { value: '{"keep":true}' } });
+  fireEvent.click(screen.getByTestId("show-create-form"));
+  const name = await screen.findByTestId("new-adapter-name");
+  fireEvent.change(name, { target: { value: "keep-new-draft" } });
+  vi.spyOn(window, "confirm").mockReturnValue(false);
+  fireEvent.click(screen.getByRole("button", { name: "从模板创建" }));
+  expect(window.location.pathname).not.toBe("/templates");
+  expect((screen.getByTestId("new-adapter-name") as HTMLInputElement).value).toBe("keep-new-draft");
+});
+
+it.each(["task", "webhook"] as const)("only saves changed code and dependencies for %s, then blocks duplicate versions", async (adapterType) => {
+  let adapter = makeAdapter({ adapter_type: adapterType, latest_version_id: 10 });
+  let version = makeVersion({ runtime_config: { inherited: true } });
+  const originalCode = version.code;
+  const savedBodies: unknown[] = [];
+  let rejectSave = true;
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }), readyWorkerRoute,
+    { method: "GET", match: "/api/adapters/1/webhook", respond: () => ({ body: makeWebhook() }) },
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [version] }) },
+    { method: "GET", match: /\/api\/adapters\/1\/versions\/\d+$/, respond: () => ({ body: version }) },
+    { method: "POST", match: "/api/adapters/1/versions", respond: (body) => {
+      if (rejectSave) return { status: 409, body: { detail: { code: "fixture_save_failed", message: "save failed" } } };
+      const payload = JSON.parse(body ?? "{}");
+      savedBodies.push(payload);
+      version = makeVersion({ id: 11, seq: 2, ...payload });
+      adapter = { ...adapter, latest_version_id: version.id };
+      return { status: 201, body: version };
+    } },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  const save = () => screen.getByRole("button", { name: "保存代码" }) as HTMLButtonElement;
+  expect(save().disabled).toBe(true);
+  expect(document.querySelector(".ux-save-scope")).toBeNull();
+  fireEvent.click(save());
+  expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/versions") && init?.method === "POST")).toHaveLength(0);
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: originalCode + "\n# edit" } });
+  expect(save().disabled).toBe(false);
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: originalCode } });
+  expect(save().disabled).toBe(true);
+  fireEvent.click(screen.getByTestId("requirements-collapse-header"));
+  const dependencies = await screen.findByTestId("requirements-input");
+  fireEvent.change(dependencies, { target: { value: "requests==2.32.0" } });
+  expect(save().disabled).toBe(false);
+  fireEvent.change(dependencies, { target: { value: "" } });
+  expect(save().disabled).toBe(true);
+  fireEvent.change(dependencies, { target: { value: "requests==2.32.0" } });
+  fireEvent.click(save());
+  await screen.findByTestId("error-banner");
+  await waitFor(() => expect(save().disabled).toBe(false));
+  expect(valueOf("requirements-input")).toBe("requests==2.32.0");
+  rejectSave = false;
+  fireEvent.click(save());
+  await screen.findByText("适配器已保存");
+  await waitFor(() => expect(save().disabled).toBe(true));
+  expect(savedBodies).toEqual([{ code: originalCode, requirements: "requests==2.32.0", runtime_config: { inherited: true } }]);
+  fireEvent.click(save());
+  expect(savedBodies).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([, init]) => ["PATCH", "PUT"].includes(init?.method ?? ""))).toHaveLength(0);
+});
+
+it.each(["task", "webhook"] as const)("allows the first unsaved starter version for %s without typing, then disables save", async (adapterType) => {
+  let adapter = makeAdapter({ adapter_type: adapterType });
+  const versions: VersionDetail[] = [];
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }), readyWorkerRoute,
+    { method: "GET", match: "/api/adapters/1/webhook", respond: () => ({ body: makeWebhook() }) },
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: versions }) },
+    { method: "POST", match: "/api/adapters/1/versions", respond: (body) => {
+      const saved = makeVersion(JSON.parse(body ?? "{}"));
+      versions.push(saved);
+      adapter = { ...adapter, latest_version_id: saved.id };
+      return { status: 201, body: saved };
+    } },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  const save = () => screen.getByRole("button", { name: "保存代码" }) as HTMLButtonElement;
+  expect(save().disabled).toBe(false);
+  fireEvent.click(save());
+  await screen.findByText("适配器已保存");
+  await waitFor(() => expect(save().disabled).toBe(true));
+  fireEvent.click(save());
+  expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/versions") && init?.method === "POST")).toHaveLength(1);
 });

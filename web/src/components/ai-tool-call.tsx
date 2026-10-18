@@ -22,6 +22,11 @@ import type { ToolCallMessagePartProps } from "@assistant-ui/react";
  * this is a defensive render clamp so a hostile payload can never blow the
  * layout even if a future server version misbehaves. */
 const DISPLAY_MAX_CHARS = 600;
+const DISPLAY_NAME_TOOLS = new Set([
+  "list_attachments", "read_attachment_page", "read_attachment_sheet",
+  "dlr_docs_list", "dlr_docs_search", "dlr_docs_read",
+  "list_knowledge_bases", "search_knowledge", "read_knowledge",
+]);
 
 function clampDisplay(value: string): string {
   if (value.length <= DISPLAY_MAX_CHARS) {
@@ -71,10 +76,11 @@ export function DlrToolCallUI(props: ToolCallMessagePartProps) {
   const calling = isCalling(props);
   const failed = !calling && isErrorState(props);
   const rawName = clampDisplay(props.toolName || t("assistant.tools.unknownName"));
-  // M5.7 Wave C2: knowledge tools get a localized display name; unknown
-  // tools (and the C1 docs tools) fall back to the raw registered name.
+  // Keep protocol identifiers in the optional record, not the task summary.
   const toolName = clampDisplay(
-    t(`assistant.tools.names.${rawName}`, { defaultValue: rawName }),
+    DISPLAY_NAME_TOOLS.has(rawName)
+      ? t(`assistant.tools.names.${rawName}`)
+      : t("assistant.tools.unknownName"),
   );
   const argsText = clampDisplay(props.argsText ?? "");
   const resultText = clampDisplay(
@@ -104,21 +110,27 @@ export function DlrToolCallUI(props: ToolCallMessagePartProps) {
       <span className="ai-tool-status" data-testid="ai-tool-status">
         {statusLabel}
       </span>
-      {argsText !== "" && (
-        <span className="ai-tool-args" data-testid="ai-tool-args">
-          {t("assistant.tools.argsLabel")}: {argsText}
-        </span>
-      )}
-      {!calling && (
-        <span className="ai-tool-result" data-testid="ai-tool-result">
-          {t("assistant.tools.resultLabel")}: {failed ? t("assistant.tools.rejected") : resultText}
-        </span>
-      )}
-      {errorCode !== null && (
-        <span className="ai-tool-error-code" data-testid="ai-tool-error-code">
-          {t("assistant.tools.errorLabel", { code: errorCode })}
-        </span>
-      )}
+      <details data-testid="ai-tool-record">
+        <summary>{t("assistant.tools.recordLabel")}</summary>
+        <div className="ai-tool-args" data-testid="ai-tool-raw-name">
+          {t("assistant.tools.nameLabel")}: {rawName}
+        </div>
+        {argsText !== "" && (
+          <div className="ai-tool-args" data-testid="ai-tool-args">
+            {t("assistant.tools.argsLabel")}: {argsText}
+          </div>
+        )}
+        {!calling && (
+          <div className="ai-tool-result" data-testid="ai-tool-result">
+            {t("assistant.tools.resultLabel")}: {failed ? t("assistant.tools.rejected") : resultText}
+          </div>
+        )}
+        {errorCode !== null && (
+          <div className="ai-tool-error-code" data-testid="ai-tool-error-code">
+            {t("assistant.tools.errorLabel", { code: errorCode })}
+          </div>
+        )}
+      </details>
     </div>
   );
 }

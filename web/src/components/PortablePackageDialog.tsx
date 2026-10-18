@@ -11,6 +11,8 @@ import {
   type InputRef,
 } from "antd";
 import { useTranslation } from "react-i18next";
+import "./operations-ux.css";
+
 import { ApiError, api } from "../api";
 import { currentSystemLocale } from "../i18n";
 import { useOverlayFocus } from "../hooks/useOverlayFocus";
@@ -341,6 +343,7 @@ export default function PortablePackageDialog({
             {(!template || exporting) && (
               <Alert showIcon type="warning" message={t("sensitiveWarning")} />
             )}
+            {exporting && <p className="operations-template-guidance">{t("savedOnly")}</p>}
             {hasUnsavedChanges && (
               <Alert showIcon type="warning" message={t("unsavedWarning")} />
             )}
@@ -450,8 +453,8 @@ export default function PortablePackageDialog({
                     </>
                   )}
                 </section>
-                <section className="portable-page-section">
-                  <h3>{t("contentSettings")}</h3>
+                <details className="portable-page-section operations-disclosure" open={!exporting}>
+                  <summary>{t(exporting ? "viewReadonly" : "contentSettings")}</summary>
                   <Tabs
                     items={value.variants.map((variant, index) => ({
                       key: variant.language,
@@ -487,11 +490,12 @@ export default function PortablePackageDialog({
                               }
                             />
                           </label>
+                          <details className="operations-disclosure"><summary>{t("runtimeParametersReadonly")}</summary><pre>{json(variant.runtime_config)}</pre></details>
                         </div>
                       ),
                     }))}
                   />
-                </section>
+                </details>
                 {!template && (
                   <details>
                     <summary>{t("runtimeSettings")}</summary>
@@ -511,7 +515,7 @@ export default function PortablePackageDialog({
                       <div className="portable-optional-content">
                         <Checkbox
                           checked={includeJson}
-                          disabled={busy}
+                          disabled={busy || value.input.source_type !== "json"}
                           onChange={(event) =>
                             void changeIncludedInput(
                               "json",
@@ -521,9 +525,10 @@ export default function PortablePackageDialog({
                         >
                           {t("includeJson")}
                         </Checkbox>
+                        {value.input.source_type !== "json" && <small>{t("inputNotApplicable")}</small>}
                         <Checkbox
                           checked={includeFiles}
-                          disabled={busy}
+                          disabled={busy || value.input.source_type !== "managed_files"}
                           onChange={(event) =>
                             void changeIncludedInput(
                               "files",
@@ -533,13 +538,14 @@ export default function PortablePackageDialog({
                         >
                           {t("includeFiles")}
                         </Checkbox>
+                        {value.input.source_type !== "managed_files" && <small>{t("inputNotApplicable")}</small>}
                       </div>
                     )}
                     <p>
                       {value.input.included
                         ? t("inputIncluded")
                         : t("inputOmitted")}{" "}
-                      · {value.input.source_type}
+                      · {t(`inputType.${value.input.source_type}`, { defaultValue: value.input.source_type })}
                     </p>
                     {value.input.included &&
                       value.input.source_type === "json" && (
@@ -569,6 +575,13 @@ export default function PortablePackageDialog({
                     </ul>
                   </section>
                 )}
+                {exporting && <section className="operations-migration" data-testid="portable-migration-checklist">
+                  <h3>{t("migrationTitle")}</h3>
+                  <ul>
+                    {!template && value.adapter_type === "task" && <li>{t(value.input.included ? "migrationInputIncluded" : value.input.source_type === "managed_files" ? "migrationFilesMissing" : value.input.source_type === "json" ? "migrationJsonMissing" : "migrationNoInput")}</li>}
+                    <li>{t("migrationWorker")}</li><li>{t("migrationCredentials")}</li>
+                  </ul><p>{t("migrationStopped")}</p>
+                </section>}
                 {(value.license || value.provenance) && (
                   <details>
                     <summary>{t("attribution")}</summary>

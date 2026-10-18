@@ -9,6 +9,7 @@ import { credentialFieldLabel, credentialFields } from "../credential-fields";
 import { subscribeCredentialCatalog } from "../credential-catalog";
 import type { AccountRole, AdapterAccessLevel, Credential, CredentialBinding } from "../types";
 import { userErrorMessage } from "../user-message";
+import "./workbench-ux.css";
 
 interface BindingRow {
   env_key: string;
@@ -225,6 +226,8 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
 
   return (
     <div className="binding-editor" data-testid="credential-bindings">
+      <div className="binding-editor-toolbar">
+      <details className="ux-binding-help"><summary>{t("bindings.readHelp")}</summary>
       <Typography.Paragraph type="secondary" className="binding-editor-help">
         {t("bindings.help")} {" "}
         <code>context.secrets.get(&quot;PASSWORD&quot;)</code>{t("bindings.helpSuffix")} {" "}
@@ -236,18 +239,16 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
         data-testid="credential-binding-risk"
         message={t(canManageBindings ? "bindings.ownerRisk" : "bindings.editRisk")}
       />
+      </details>
       {isPlatformAdmin && props.onOpenSettings !== undefined ? (
-        <Typography.Paragraph type="secondary" className="binding-editor-help">
-          {t("bindings.openSettingsHint")}
           <Button
             size="small"
             type="link"
             data-testid="open-settings-for-credentials"
             onClick={props.onOpenSettings}
           >
-            {t("actions.openSettings", { ns: "common" })}
+            {t("bindings.manageCredentials")}
           </Button>
-        </Typography.Paragraph>
       ) : !isPlatformAdmin ? (
         <Typography.Paragraph
           type="secondary"
@@ -257,6 +258,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
           {t("bindings.nonAdminOpenSettingsHint")}
         </Typography.Paragraph>
       ) : null}
+      </div>
       {envKeyRenamed && (
         <Alert
           type="warning"
@@ -279,6 +281,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
          <Empty description={t("empty.noBindings", { ns: "common" })} />
       ) : (
         <div className="binding-rows">
+          <div className="ux-binding-labels" aria-hidden="true"><strong>{t("bindings.codeName")}</strong><strong>{t("bindings.credentialLabel")}</strong><strong>{t("bindings.fieldLabel")}</strong><span /></div>
           {rows.map((row, index) => {
             const credential = credentials.find((candidate) => candidate.id === row.credential_id);
             const fieldOptions =
@@ -289,7 +292,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                   }))
                 : [];
             return (
-              <Space
+              <div
                 key={index}
                 className="binding-row"
                 data-testid="binding-row"
@@ -312,7 +315,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                       onOpenChange={(open) => { if (open) void refreshCredentials(); }}
                       aria-label={t("bindings.credential", { index: index + 1 })}
                       placeholder={t("bindings.credentialPlaceholder")}
-                      style={{ minWidth: 160 }}
+                      style={{ width: "100%", minWidth: 0 }}
                       value={row.credential_id ?? undefined}
                       disabled={props.disabled || saving}
                       options={credentials.map((candidate) => ({
@@ -325,7 +328,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                       data-testid="binding-field"
                       aria-label={t("bindings.field", { index: index + 1 })}
                       placeholder={t("bindings.fieldPlaceholder")}
-                      style={{ minWidth: 120 }}
+                      style={{ width: "100%", minWidth: 0 }}
                       value={row.field !== "" ? row.field : undefined}
                       disabled={props.disabled || saving || fieldOptions.length === 0}
                       options={fieldOptions}
@@ -347,16 +350,17 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                       {row.credential_name ?? `#${row.credential_id ?? "?"}`}
                     </span>
                     <span className="binding-readonly-value" data-testid="binding-field-readonly">
-                      {row.field}
+                      {credentialFieldLabel(row.field)}
                     </span>
                   </>
                 )}
-              </Space>
+              </div>
             );
           })}
         </div>
       )}
       {canManageBindings && (
+        <>
         <Space className="binding-actions">
           <Button
             data-testid="add-binding"
@@ -379,7 +383,9 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
           >
             {t("bindings.save")}
           </Button>
+          {dirty && <Typography.Text type="secondary" role="status">{t("bindings.unsaved")}</Typography.Text>}
         </Space>
+        </>
       )}
     </div>
   );

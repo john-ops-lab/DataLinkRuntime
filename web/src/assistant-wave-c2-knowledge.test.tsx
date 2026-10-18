@@ -208,7 +208,7 @@ it("switches knowledge tool display names to en instantly", async () => {
   ]);
 });
 
-it("keeps the raw registered name for tools without a display mapping", () => {
+it("maps documentation names and uses a general label for unknown tools", () => {
   const { rerender } = render(
     <div>
       <DlrToolCallUI
@@ -216,7 +216,7 @@ it("keeps the raw registered name for tools without a display mapping", () => {
       />
     </div>,
   );
-  expect(screen.getByTestId("ai-tool-name").textContent).toBe("dlr_docs_list");
+  expect(screen.getByTestId("ai-tool-name").textContent).toBe("查看平台文档目录");
   rerender(
     <div>
       <DlrToolCallUI
@@ -224,7 +224,7 @@ it("keeps the raw registered name for tools without a display mapping", () => {
       />
     </div>,
   );
-  expect(screen.getByTestId("ai-tool-name").textContent).toBe("unknown_tool");
+  expect(screen.getByTestId("ai-tool-name").textContent).toBe("处理步骤");
 });
 
 it("keeps zh-CN / en display-name key parity", () => {

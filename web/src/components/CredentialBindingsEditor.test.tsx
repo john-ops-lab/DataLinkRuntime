@@ -59,8 +59,8 @@ it("keeps the authenticated platform admin hint and keyboard-reachable settings 
   renderEditor({ platformRole: "admin", accessLevel: "owner" });
 
   const settingsButton = await screen.findByTestId("open-settings-for-credentials");
-  expect(settingsButton.textContent).toContain("打开系统设置");
-  expect(screen.getByText("如需新增凭据，请前往「系统设置 → 凭据管理」新建。")).toBeTruthy();
+  expect(settingsButton.textContent).toContain("管理凭据");
+  expect(screen.queryByText("如需新增凭据，请前往「系统设置 → 凭据管理」新建。")).toBeNull();
   expect(screen.queryByTestId("credential-binding-role-hint")).toBeNull();
 
   (settingsButton as HTMLButtonElement).focus();
@@ -72,7 +72,7 @@ it("uses platform role rather than Adapter ownership for a non-admin owner", asy
   renderEditor({ platformRole: "user", accessLevel: "owner" });
 
   const hint = await screen.findByTestId("credential-binding-role-hint");
-  expect(hint.textContent).toBe("如需新增凭据，请联系管理员前往「系统设置 → 凭据管理」新建。");
+  expect(hint.textContent).toBe("新增凭据请联系管理员。");
   expect(screen.queryByTestId("open-settings-for-credentials")).toBeNull();
   // Adapter-owner binding controls remain available; only the global settings
   // entry is role-gated.
@@ -86,7 +86,7 @@ it("keeps read-only non-owner metadata access while hiding binding writes and se
   renderEditor({ platformRole: "user", accessLevel: "read", disabled: true });
 
   const hint = await screen.findByTestId("credential-binding-role-hint");
-  expect(hint.textContent).toBe("如需新增凭据，请联系管理员前往「系统设置 → 凭据管理」新建。");
+  expect(hint.textContent).toBe("新增凭据请联系管理员。");
   expect(screen.queryByTestId("open-settings-for-credentials")).toBeNull();
   expect(screen.getByTestId("binding-credential-readonly").textContent).toBe("fixture-credential");
   expect(screen.queryByTestId("add-binding")).toBeNull();
@@ -101,20 +101,20 @@ it("renders the exact English non-admin copy and preserves the admin entry seman
 
   const hint = await screen.findByTestId("credential-binding-role-hint");
   expect(hint.textContent).toBe(
-    "To add a credential, ask an administrator to go to “System Settings → Credentials” and create one.",
+    "Ask an administrator to add credentials.",
   );
   expect(screen.queryByTestId("open-settings-for-credentials")).toBeNull();
 
   await applySystemLocale(DEFAULT_SYSTEM_LOCALE);
-  expect(await screen.findByText("如需新增凭据，请联系管理员前往「系统设置 → 凭据管理」新建。")).toBeTruthy();
+  expect(await screen.findByText("新增凭据请联系管理员。")).toBeTruthy();
 });
 
 it("keeps the role-hint resource key exact, parity-complete and out of component source", () => {
   const zhHint = resources["zh-CN"].settings.bindings.nonAdminOpenSettingsHint;
   const enHint = resources.en.settings.bindings.nonAdminOpenSettingsHint;
-  expect(zhHint).toBe("如需新增凭据，请联系管理员前往「系统设置 → 凭据管理」新建。");
+  expect(zhHint).toBe("新增凭据请联系管理员。");
   expect(enHint).toBe(
-    "To add a credential, ask an administrator to go to “System Settings → Credentials” and create one.",
+    "Ask an administrator to add credentials.",
   );
   expect(Object.keys(resources["zh-CN"].settings.bindings).sort()).toEqual(
     Object.keys(resources.en.settings.bindings).sort(),

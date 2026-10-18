@@ -292,7 +292,7 @@ describe("Task Input Object A2", () => {
     await waitFor(() => expect(screen.getByTestId("task-input-state").textContent).toContain("草稿"));
     expect((screen.getByTestId("task-input-json") as HTMLTextAreaElement).value).toBe('{"draft":true}');
     expect(screen.queryByTestId("task-input-revision")).toBeNull();
-    expect(document.body.textContent).toContain("输入对象已被其他页面更新");
+    expect(document.body.textContent).toContain("输入数据已被其他页面更新");
   });
 
   it("blocks save and imperative run when InputConfig loading fails", async () => {
@@ -308,14 +308,14 @@ describe("Task Input Object A2", () => {
     expect(screen.queryByTestId("task-input-revision")).toBeNull();
     runtimeRef.current?.runOnce();
 
-    await waitFor(() => expect(onError).toHaveBeenLastCalledWith("输入对象加载失败，请刷新后重试。"));
+    await waitFor(() => expect(onError).toHaveBeenLastCalledWith("输入数据加载失败，请刷新后重试。"));
     expect(put).not.toHaveBeenCalled();
     expect(createExecution).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["managed_files_empty", "托管文件为空，请先准备文件后再运行。", "none", null, "托管文件为空"],
-    ["input_source_not_available", "该输入对象来源尚未启用。", "json", { recovered: true }, "来源尚未启用"],
+    ["managed_files_empty", "上传文件为空，请先准备文件后再运行。", "none", null, "上传文件为空"],
+    ["input_source_not_available", "该输入数据来源尚未启用。", "json", { recovered: true }, "来源尚未启用"],
   ] as const)("recovers invalid managed_files (%s) through %s and only runs after save", async (invalidReason, blockedReason, sourceType, jsonValue, invalidMessage) => {
     const put = vi.spyOn(api, "putInputConfig").mockImplementation(async (_adapterId, payload) =>
       makeInputConfig({
@@ -461,4 +461,124 @@ describe("Task Input Object A2", () => {
       body: "{}",
     }));
   });
+});
+
+describe("Issue #212 schedule preview", () => {
+  it("previews the draft on the server without saving or enabling, then invalidates old results", async () => {
+    vi.spyOn(api, "getSchedule").mockResolvedValue(makeSchedule());
+    const save = vi.spyOn(api, "putSchedule");
+    const preview = vi.spyOn(api, "previewSchedule").mockResolvedValue({ occurrences: ["2026-10-19T01:00:00Z"] });
+    renderPanel(makeInputConfig(), { runMode: "schedule" });
+    await screen.findByTestId("task-schedule-cron");
+    fireEvent.click(screen.getByRole("button", { name: "每天" }));
+    expect(screen.queryByTestId("task-schedule-cron")).toBeNull();
+    expect(screen.getByTestId("task-schedule-preview").textContent).toContain("每天 09:00 · Asia/Shanghai");
+    fireEvent.click(screen.getByRole("button", { name: "预览执行时间" }));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith({ cron: "0 9 * * *", timezone: "Asia/Shanghai", count: 3 }));
+    await waitFor(() => expect(screen.getByTestId("task-schedule-preview").querySelectorAll("li")).toHaveLength(1));
+    expect(save).not.toHaveBeenCalled();
+    expect(screen.getByTestId("task-schedule-next-run").textContent).toContain("—");
+    fireEvent.change(screen.getByLabelText("时间"), { target: { value: "10:00" } });
+    expect(screen.getByTestId("task-schedule-preview").querySelectorAll("li")).toHaveLength(0);
+    fireEvent.change(screen.getByLabelText("时间"), { target: { value: "09:00" } });
+    expect(screen.getByTestId("task-schedule-preview").querySelectorAll("li")).toHaveLength(0);
+  });
+
+  it("keeps server-supported timezones readable when browser Intl cannot format them", async () => {
+    vi.spyOn(api, "getSchedule").mockResolvedValue({ ...makeSchedule(), timezone: "Factory" });
+    vi.spyOn(api, "previewSchedule").mockResolvedValue({ occurrences: ["2026-10-19T01:00:00Z"] });
+    renderPanel(makeInputConfig(), { runMode: "schedule" });
+    await screen.findByTestId("task-schedule-timezone");
+    expect((screen.getByTestId("task-schedule-timezone") as HTMLInputElement).value).toBe("Factory");
+    fireEvent.click(screen.getByRole("button", { name: "预览执行时间" }));
+    await waitFor(() => expect(screen.getByTestId("task-schedule-preview").querySelector("li")?.textContent).toBe("2026-10-19T01:00:00Z"));
+    expect(screen.getByTestId("task-schedule-next-run").textContent).toContain("下一次计划时间");
+  });
+
+  it("ignores a response that arrives after the draft timezone changed", async () => {
+    vi.spyOn(api, "getSchedule").mockResolvedValue(makeSchedule());
+    let finish!: (value: { occurrences: string[] }) => void;
+    vi.spyOn(api, "previewSchedule").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    renderPanel(makeInputConfig(), { runMode: "schedule" });
+    await screen.findByTestId("task-schedule-cron");
+    fireEvent.click(screen.getByRole("button", { name: "预览执行时间" }));
+    fireEvent.change(screen.getByTestId("task-schedule-timezone"), { target: { value: "UTC" } });
+    finish({ occurrences: ["2026-10-19T01:00:00Z"] });
+    await waitFor(() => expect(screen.getByRole("button", { name: "预览执行时间" }).className).not.toContain("ant-btn-loading"));
+    expect(screen.getByTestId("task-schedule-preview").querySelectorAll("li")).toHaveLength(0);
+  });
+});
+
+it.each([
+  ["zh-CN", "05 08 * * *", "每天", "高级规则", "每天 08:05"],
+  ["zh-CN", "25 16 * * 3", "每周", "高级规则", "每星期三 16:25"],
+  ["zh-CN", "17 * * * *", "每小时", "高级规则", "每小时第 17 分钟"],
+  ["en", "05 08 * * *", "Daily", "Advanced rule", "Daily at 08:05"],
+  ["en", "25 16 * * 3", "Weekly", "Advanced rule", "Every Wednesday at 16:25"],
+  ["en", "17 * * * *", "Hourly", "Advanced rule", "Every hour at minute 17"],
+] as const)("keeps %s common rule %s readable and preserves its exact Cron through advanced mode", async (locale, originalCron, commonMode, advancedMode, summary) => {
+  await applyUiLocale(locale);
+  vi.spyOn(api, "getSchedule").mockResolvedValue({ ...makeSchedule(), cron: originalCron });
+  const preview = vi.spyOn(api, "previewSchedule").mockResolvedValue({ occurrences: [] });
+  const save = vi.spyOn(api, "putSchedule");
+  renderPanel(makeInputConfig(), { runMode: "schedule" });
+  await screen.findByTestId("task-schedule-timezone");
+  expect(screen.queryByTestId("task-schedule-cron")).toBeNull();
+  expect(screen.getByTestId("task-schedule-preview").textContent).toContain(`${summary} · Asia/Shanghai`);
+  expect(screen.getByTestId("task-schedule-preview").textContent).not.toContain(originalCron);
+  fireEvent.click(screen.getByRole("button", { name: advancedMode }));
+  expect((screen.getByTestId("task-schedule-cron") as HTMLInputElement).value).toBe(originalCron);
+  fireEvent.click(screen.getByRole("button", { name: commonMode }));
+  expect(screen.queryByTestId("task-schedule-cron")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: locale === "zh-CN" ? "预览执行时间" : "Preview times" }));
+  await waitFor(() => expect(preview).toHaveBeenCalledWith({ cron: originalCron, timezone: "Asia/Shanghai", count: 3 }));
+  expect(save).not.toHaveBeenCalled();
+});
+
+it("keeps a nonstandard schedule in advanced mode with its original value editable", async () => {
+  const originalCron = "*/13 2-7 * * 1,4";
+  vi.spyOn(api, "getSchedule").mockResolvedValue({ ...makeSchedule(), cron: originalCron });
+  renderPanel(makeInputConfig(), { runMode: "schedule" });
+  const input = await screen.findByTestId("task-schedule-cron");
+  expect((input as HTMLInputElement).value).toBe(originalCron);
+  expect(screen.getByTestId("task-schedule-preview").textContent).toContain(originalCron);
+  fireEvent.change(input, { target: { value: "*/11 2-7 * * 1,4" } });
+  expect((input as HTMLInputElement).value).toBe("*/11 2-7 * * 1,4");
+});
+
+it.each([
+  [{ one: 1, nested: { a: true, b: [null, 2] } }, '{"nested":{"b":[null,2],"a":true},"one":1}'],
+  [[1, 2, { x: false }], '[ 1, 2, { "x": false } ]'],
+  [null, ' \n null \n'],
+  [false, ' false '],
+] as const)("compares saved JSON semantically and still tracks actual source/value changes (%j)", async (saved, equivalent) => {
+  const runtimeRef = renderPanel(makeInputConfig({ source_type: "json", json_value: saved }));
+  const input = await screen.findByTestId("task-input-json");
+  await waitFor(() => expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false));
+  fireEvent.click(screen.getByTestId("task-input-source-json"));
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false);
+  fireEvent.change(input, { target: { value: equivalent } });
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false);
+  fireEvent.change(input, { target: { value: '{' } });
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
+  fireEvent.change(input, { target: { value: '"changed value"' } });
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
+  fireEvent.change(input, { target: { value: equivalent } });
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false);
+  fireEvent.click(screen.getByTestId("task-input-source-none"));
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
+  fireEvent.click(screen.getByTestId("task-input-source-json"));
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false);
+});
+
+it("keeps NUL edits dirty until the explicit normalization save completes", async () => {
+  const saved = makeInputConfig({ source_type: "json", json_value: { text: "AB" } });
+  const put = vi.spyOn(api, "putInputConfig").mockResolvedValue({ ...saved, revision: 5 });
+  const runtimeRef = renderPanel(saved);
+  const input = await screen.findByTestId("task-input-json");
+  fireEvent.change(input, { target: { value: JSON.stringify({ text: "A\u0000B" }) } });
+  expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(true);
+  fireEvent.click(screen.getByTestId("save-task-input"));
+  await waitFor(() => expect(put).toHaveBeenCalledWith(7, expect.objectContaining({ source_type: "json", json_value: { text: "AB" }, original_json_size_bytes: expect.any(Number) })));
+  await waitFor(() => expect(runtimeRef.current?.hasUnsavedInputChanges()).toBe(false));
 });

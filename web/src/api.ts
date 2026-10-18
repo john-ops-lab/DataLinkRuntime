@@ -40,6 +40,7 @@ import type {
   Credential,
   CredentialBinding,
   CredentialType,
+  CredentialUsageResponse,
   Execution,
   ExecutionHistoryPage,
   IncidentDispositionAction,
@@ -422,6 +423,9 @@ export const api = {
 
   // --- M5.2: Schedule Trigger -------------------------------------------------
 
+  previewSchedule: (payload: { cron: string; timezone: string; count?: number }): Promise<{ occurrences: string[] }> =>
+    request("/api/schedules/preview", { method: "POST", body: JSON.stringify(payload) }),
+
   /** Singleton Schedule config; throws ApiError schedule_not_configured (404) before configuration. */
   getSchedule: (adapterId: number): Promise<AdapterSchedule> =>
     request(`/api/adapters/${adapterId}/schedule`),
@@ -585,6 +589,9 @@ export const api = {
   // --- M3.2: Secret Store credentials and bindings ---------------------------
 
   listCredentials: (): Promise<Credential[]> => request("/api/credentials"),
+
+  getCredentialUsage: (credentialId: number): Promise<CredentialUsageResponse> =>
+    request(`/api/credentials/${credentialId}/usage`),
 
   createCredential: (payload: {
     name: string;

@@ -10,6 +10,8 @@ import {
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
+import "./workbench-ux.css";
+
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, Worker } from "../types";
 import ActionWithReason from "./ActionWithReason";
@@ -57,7 +59,9 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
         ? t("task.reasons.contentNotReady")
         : props.busy
           ? t("task.reasons.busy")
-          : null;
+          : !props.dirty && props.adapter.latest_version_id !== null
+            ? t("editor.noChanges", { ns: "common" })
+            : null;
   // M5.5.9：存在未保存修改时不得直接运行，先保存。
   const runBlockedReason = props.dirty
     ? t("task.reasons.dirtyRun")
@@ -103,6 +107,7 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
           </p>
         )}
       </div>
+      <div className="workbench-actions">
       <div
         className="workbench-controls"
         data-testid="workbench-toolbar"
@@ -123,16 +128,16 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
           <Tag data-testid="adapter-read-only">{t("task.reasons.readOnly")}</Tag>
         ) : (
           <>
-            <ActionWithReason label={t("actions.save", { ns: "common" })} reason={saveBlockedReason}>
+            <ActionWithReason label={t("editor.saveContent", { ns: "common" })} reason={saveBlockedReason}>
               <Button
                 type="primary"
                 data-testid="save-version"
                 icon={<SaveOutlined aria-hidden="true" />}
-                aria-label={t("actions.save", { ns: "common" })}
+                aria-label={t("editor.saveContent", { ns: "common" })}
                 disabled={saveBlockedReason !== null}
                 onClick={props.onSave}
               >
-                {t("actions.save", { ns: "common" })}
+                {t("editor.saveContent", { ns: "common" })}
               </Button>
             </ActionWithReason>
             {scheduleMode ? (
@@ -204,6 +209,7 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
             )}
           </>
         )}
+      </div>
       </div>
     </header>
   );

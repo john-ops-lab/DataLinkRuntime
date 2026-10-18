@@ -6,6 +6,8 @@ import { DownOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { useTranslation } from "react-i18next";
 
+import "./operations-ux.css";
+
 import { api, ApiError } from "../api";
 import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
 import { isTerminal, statusColor, statusLabel } from "../status";
@@ -20,7 +22,7 @@ import type {
 } from "../types";
 import { unifiedLogContent } from "../unified-log";
 import { userErrorMessage } from "../user-message";
-import ExecutionInputSummary from "./ExecutionInputSummary";
+import ExecutionInputSummary, { ExecutionFileSummary } from "./ExecutionInputSummary";
 import { LogView, OutputView } from "./OutputView";
 
 const PAGE_SIZE = 50;
@@ -68,7 +70,7 @@ function formatTime(value: string | null, locale: "zh-CN" | "en"): string {
     return "—";
   }
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(locale === "en" ? "en-US" : "zh-CN");
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(locale === "en" ? "en-US" : "zh-CN", { timeZoneName: "short" });
 }
 
 function formatDuration(
@@ -172,6 +174,7 @@ export default function ExecutionHistoryPanel(props: {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [detailTab, setDetailTab] = useState("output");
   const [requestedExecutionId, setRequestedExecutionId] = useState<number | null>(null);
   const [selectedSummary, setSelectedSummary] = useState<ExecutionSummary | null>(null);
   const [reliableDetail, setReliableDetail] = useState<ReliableExecutionDetail | null>(null);
@@ -194,6 +197,8 @@ export default function ExecutionHistoryPanel(props: {
   // Only the newest detail request may commit UI state: rapid clicks (A slow,
   // B fast) must never let a stale A response overwrite the B detail.
   const detailRequestRef = useRef(0);
+  const processRef = useRef<HTMLDetailsElement>(null);
+  const incidentsRef = useRef<HTMLDivElement>(null);
   const componentGenerationRef = useRef(0);
   const componentMountedRef = useRef(false);
   // 详情抽屉的日志与收敛行为与测试运行面板共享同一 hook。
@@ -273,6 +278,7 @@ export default function ExecutionHistoryPanel(props: {
     setRequestedExecutionId(executionId);
     setSelectedSummary(summary);
     setDrawerOpen(true);
+    setDetailTab("output");
     setDetailLoading(true);
     setReliableDetail(null);
     setReliableDetailError(null);
@@ -579,6 +585,21 @@ export default function ExecutionHistoryPanel(props: {
       ? selectedSummary
       : (items.find((item) => item.id === requestedExecutionId) ?? null);
   const visibleDetail = detail?.id === requestedExecutionId ? detail : null;
+  const processAvailable = visibleDetail !== null && reliableDetail?.execution_id === visibleDetail.id;
+
+  function showExecutionProcess() {
+    const target = processRef.current;
+    if (!processAvailable || target === null || visibleDetail === null) return;
+    const executionId = visibleDetail.id;
+    target.open = true;
+    // Wait for the expanded content to participate in layout. Focus must not
+    // start another scroll that competes with scrolling the drawer to the section.
+    window.requestAnimationFrame(() => {
+      if (requestedExecutionIdRef.current !== executionId || processRef.current !== target || !target.isConnected) return;
+      target.querySelector("summary")?.focus({ preventScroll: true });
+      target.scrollIntoView({ block: "start", behavior: "auto" });
+    });
+  }
 
   return (
     <div className="history-panel">
@@ -725,11 +746,51 @@ export default function ExecutionHistoryPanel(props: {
                 )}
               />
             )}
+            <div className="operations-result-summary" data-status={visibleDetail.status} data-testid="execution-result-summary">
+              <strong><Tag color={statusColor(visibleDetail.status)}>{statusLabel(visibleDetail.status)}</Tag></strong>
+              <span>{formatDuration(visibleDetail.duration_ms, (key, options) => t(key, options))}</span>
+              <p>{t("history.summaryStarted", { time: formatTime(visibleDetail.started_at, locale) })} · {triggerLabel(visibleDetail.trigger, (key, options) => t(key, options))}</p>
+              <Button type="link" disabled={!processAvailable} aria-controls={processAvailable ? `execution-process-${visibleDetail.id}` : undefined} onClick={showExecutionProcess}>{t("history.viewProcess")}</Button>
+            </div>
+            {reliableDetail?.incidents.some((incident) => incident.status === "open") && <Alert type="warning" showIcon message={t("history.openIncidentNotice")} action={<Button size="small" onClick={() => { incidentsRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }); incidentsRef.current?.focus(); }}>{t("history.viewIncidents")}</Button>} />}
+            <ExecutionFileSummary execution={visibleDetail} onViewDetails={() => setDetailTab("input")} />
+            <Tabs
+              className="execution-detail-tabs"
+              activeKey={detailTab}
+              onChange={setDetailTab}
+              key={visibleDetail.id}
+              size="small"
+              items={[
+                { key: "output", label: t("labels.output", { ns: "common" }), children: <OutputView execution={visibleDetail} /> },
+                {
+                  key: "input",
+                  label: t("labels.input", { ns: "common" }),
+                  children: <ExecutionInputSummary execution={visibleDetail} />,
+                },
+                {
+                  // M5.5.10：stdout/stderr 视图统一为一个按实际顺序的执行日志。
+                  key: "log",
+                  label: t("labels.executionLog", { ns: "common" }),
+                  children: (
+                    <LogView
+                      testId="detail-log"
+                      content={unifiedLogContent(visibleDetail.stdout, visibleDetail.stderr, visibleDetail.error)}
+                      truncated={visibleDetail.stdout_truncated || visibleDetail.stderr_truncated}
+                      downloadFileName={`execution-${visibleDetail.id}`}
+                      mode="history"
+                      followControls={false}
+                      allowDownload
+                    />
+                  ),
+                },
+              ]}
+            />
+            <details className="operations-disclosure">
+              <summary>{t("history.executionMetadata")}</summary>
             <Descriptions
               size="small"
               column={{ xs: 1, sm: 2 }}
               items={[
-                { key: "status", label: t("labels.status", { ns: "common" }), children: <Tag color={statusColor(visibleDetail.status)}>{statusLabel(visibleDetail.status)}</Tag> },
                 {
                   key: "worker",
                   label: t("labels.runtimeWorker", { ns: "common" }),
@@ -768,7 +829,7 @@ export default function ExecutionHistoryPanel(props: {
                       children: "",
                     }]
                   : []),
-                ...((visibleDetail.last_error_code ?? visibleDetail.error_code)
+                ...((visibleDetail.last_error_code ?? visibleDetail.error_code) && (visibleDetail.last_error_code ?? visibleDetail.error_code) !== "execution_succeeded"
                   ? [{
                       key: "stable-error",
                       label: t("history.stableError", { code: visibleDetail.last_error_code ?? visibleDetail.error_code }),
@@ -780,6 +841,7 @@ export default function ExecutionHistoryPanel(props: {
                 { key: "duration", label: t("labels.duration", { ns: "common" }), children: formatDuration(visibleDetail.duration_ms, (key, options) => t(key, options)) },
               ]}
             />
+            </details>
             <Space direction="vertical" size="small" className="execution-detail-runtime-facts">
               <div className="reliable-runtime-facts" data-testid="execution-reliable-runtime-facts">
                 <div className="reliable-runtime-section">
@@ -797,8 +859,8 @@ export default function ExecutionHistoryPanel(props: {
                 </div>
                 {reliableDetail !== null && (
                   <>
-                    <div className="reliable-runtime-section" data-testid="execution-attempt-timeline">
-                      <div className="reliable-runtime-section-title">{t("history.attemptTimeline")}</div>
+                    <details key={visibleDetail.id} id={`execution-process-${visibleDetail.id}`} ref={processRef} className="reliable-runtime-section operations-disclosure" data-testid="execution-attempt-timeline">
+                      <summary>{t("history.attemptTimeline")}</summary>
                       {reliableDetail.attempts.length === 0 ? (
                         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("history.noAttempts")} />
                       ) : (
@@ -817,7 +879,7 @@ export default function ExecutionHistoryPanel(props: {
                                 <div className="execution-version-debug">
                                   {t("history.attemptClaimedAt", { time: formatTime(attempt.claimed_at, locale) })}
                                 </div>
-                                {attempt.error_code !== null && (
+                                {attempt.error_code !== null && attempt.error_code !== "execution_succeeded" && (
                                   <div className="execution-version-debug">
                                     {t("history.attemptError", { code: attempt.error_code })}
                                   </div>
@@ -827,8 +889,8 @@ export default function ExecutionHistoryPanel(props: {
                           }))}
                         />
                       )}
-                    </div>
-                    <div className="reliable-runtime-section" data-testid="execution-incidents">
+                    </details>
+                    <div ref={incidentsRef} tabIndex={-1} className="reliable-runtime-section" data-testid="execution-incidents">
                       <div className="reliable-runtime-section-title">{t("history.incidents")}</div>
                       {reliableDetail.incidents.length === 0 ? (
                         <div className="execution-version-debug">{t("history.noIncidents")}</div>
@@ -1037,34 +1099,7 @@ export default function ExecutionHistoryPanel(props: {
             <div className="execution-version-debug" data-testid="execution-run-id">
               {t("history.runId", { id: visibleDetail.id })}
             </div>
-            <Tabs
-              className="execution-detail-tabs"
-              size="small"
-              items={[
-                {
-                  key: "input",
-                  label: t("labels.input", { ns: "common" }),
-                  children: <ExecutionInputSummary execution={visibleDetail} />,
-                },
-                { key: "output", label: t("labels.output", { ns: "common" }), children: <OutputView execution={visibleDetail} /> },
-                {
-                  // M5.5.10：stdout/stderr 视图统一为一个按实际顺序的执行日志。
-                  key: "log",
-                  label: t("labels.executionLog", { ns: "common" }),
-                  children: (
-                    <LogView
-                      testId="detail-log"
-                      content={unifiedLogContent(visibleDetail.stdout, visibleDetail.stderr, visibleDetail.error)}
-                      truncated={visibleDetail.stdout_truncated || visibleDetail.stderr_truncated}
-                      downloadFileName={`execution-${visibleDetail.id}`}
-                      mode="history"
-                      followControls={false}
-                      allowDownload
-                    />
-                  ),
-                },
-              ]}
-            />
+
           </div>
         )}
       </Drawer>

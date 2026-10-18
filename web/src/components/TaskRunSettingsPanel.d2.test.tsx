@@ -154,14 +154,14 @@ describe("Issue #127 D2 managed input examples", () => {
     expect(await screen.findByTestId("managed-input-clone-notice")).toBeTruthy();
     expect(api.listInputArtifacts).toHaveBeenCalledWith(41);
     expect(screen.getByTestId("managed-input-clone-notice").textContent).toContain(
-      "复制 Adapter 不会复制原 Adapter 的输入文件，请重新上传。",
+      "复制适配器不会复制原适配器的输入文件，请重新上传。",
     );
     const copy = screen.getByTestId("managed-input-example-copy") as HTMLButtonElement;
     expect(copy.disabled).toBe(true);
     expect(screen.getByTestId("managed-input-example-copy-wrapper").getAttribute("tabindex")).toBe("0");
     await waitFor(() => {
       expect(onRuntimeStateChange.mock.calls.at(-1)?.[0]?.scheduleEnableBlockedReason).toContain(
-        "托管文件为空",
+        "上传文件为空",
       );
     });
 

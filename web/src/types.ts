@@ -4,6 +4,17 @@ export type AdapterLanguage = "python" | "javascript" | "java" | "typescript" | 
 export type AdapterType = "task" | "webhook";
 export type TaskRunMode = "manual" | "schedule";
 export type SystemLocale = "zh-CN" | "en";
+
+export interface CredentialUsageItem {
+  kind: "adapter_binding" | "webhook" | "ai_model" | "ai_custom_provider" | "knowledge_source" | "package_source";
+  name: string;
+  adapter_id?: number | null;
+  detail?: string | null;
+}
+
+export interface CredentialUsageResponse {
+  items: CredentialUsageItem[];
+}
 export type InputSourceType = "none" | "json" | "managed_files" | "remote_files";
 export type InputRetentionMode = "system_default" | "custom" | "manual_delete";
 
@@ -633,6 +644,7 @@ export interface CacheProtectSelection extends CacheKeySelection {
 }
 
 export interface CacheSnapshotItem extends CacheKeySelection {
+  version_seq?: number | null;
   cache_key: string;
   kind: "version" | "staging";
   identity: CacheSnapshotIdentity | null;
@@ -679,6 +691,9 @@ export interface CacheSnapshotSummary {
 }
 
 export interface FailedCacheGuardItem extends CacheKeySelection {
+  management_operation_id?: string | null;
+  management_operation_status?: CacheOperationStatus | null;
+  management_operation_retryable?: boolean | null;
   guard_operation_id: string;
   generation: number;
   operation_kind: "gc" | "cleanup" | "replacement";
@@ -715,6 +730,8 @@ export interface CacheAdminView {
 }
 
 export interface CacheOperation {
+  request?: { policy?: CacheAutomaticCleanupUpdate };
+  retryable?: boolean | null;
   operation_id: string;
   worker_id: number;
   kind: CacheOperationKind;
@@ -735,9 +752,15 @@ export interface CacheOperationPage {
   next_cursor: string | null;
 }
 
+export interface CacheAutomaticCleanupUpdate {
+  gc_enabled?: boolean;
+  pressure_gc_enabled?: boolean;
+}
+
 export type CacheOperationCreate =
   | { kind: "preview" | "clean"; idempotency_key: string; keys: CacheKeySelection[] }
   | { kind: "protect"; idempotency_key: string; protect: CacheProtectSelection[] }
+  | { kind: "protect"; idempotency_key: string; policy: CacheAutomaticCleanupUpdate }
   | {
       kind: "retry";
       idempotency_key: string;

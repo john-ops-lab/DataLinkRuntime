@@ -22,6 +22,8 @@ import {
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
+import "./operations-ux.css";
+
 import { ApiError, api } from "../api";
 import { currentSystemLocale } from "../i18n";
 import type {
@@ -84,7 +86,7 @@ function TemplateCard({
           </div>
           <Tag bordered={false}>{t(`type.${scenario.adapter_type}`)}</Tag>
         </div>
-        <p className="template-card-summary">{localized(scenario.summary)}</p>
+        <p className="template-card-summary">{localized(scenario.summary).split(/(?<=[。！？])\s*|(?<=[.!?])\s+|\n/)[0]}</p>
         <div className="template-card-tags" aria-label={t("card.languageSummary")}>
           {scenario.protocols.slice(0, 2).map((protocol) => (
             <Tag key={protocol}>{protocol}</Tag>
@@ -146,6 +148,7 @@ function GalleryList({
   const [queryInput, setQueryInput] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [filters, setFilters] = useState<GalleryFilters>({});
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
   const [pageByTheme, setPageByTheme] = useState<Record<string, number>>({});
   const [scenarios, setScenarios] = useState<TemplateScenarioSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -326,7 +329,8 @@ function GalleryList({
 
   const galleryPanelContent = (
     <>
-      <section className="template-filter-bar" aria-label={t("filters.groupAria")}>
+      <div className="operations-preset-row"><Button aria-expanded={filtersExpanded} onClick={() => setFiltersExpanded((value) => !value)}>{t("filters.more")}</Button>{Object.values(filters).filter(Boolean).length > 0 && <Tag>{t("filters.active", { count: Object.values(filters).filter(Boolean).length })}</Tag>}</div>
+      <section hidden={!filtersExpanded} className="template-filter-bar" aria-label={t("filters.groupAria")}>
         {filterItems.map((item) => (
           <label key={item.key} className="template-filter">
             <span>{item.label}</span>
@@ -418,6 +422,7 @@ function GalleryList({
       </span>
       <header className="template-gallery-hero">
         <Typography.Title level={1}>{t("gallery.title")}</Typography.Title>
+        <p>{t("gallery.description")}</p>
         <Button autoInsertSpace={false} onClick={onImport}>{t("import", { ns: "portable" })}</Button>
         <Input
           size="large"
@@ -790,22 +795,33 @@ function TemplateDetail({
         <div className="template-detail-actions">
           <Button type="primary" icon={<CopyOutlined aria-hidden="true" />}
             disabled={busy || variantLoading || variantError || variant === null}
-            onClick={() => setCopyOpen(true)}>{t("detail.copy")}</Button>
+            onClick={() => setCopyOpen(true)}>{t("detail.copyLanguage", { language: t(`language.${language}`) })}</Button>
           {detail.can_manage && <Button disabled={busy} onClick={() => onPortable({ mode: "editTemplate", slug: detail.slug, expectedVersion: detail.template_version })}>{t("editTemplate", { ns: "portable" })}</Button>}
           <Button disabled={busy} onClick={() => onPortable({ mode: "exportTemplate", slug: detail.slug })}>{t("exportTemplate", { ns: "portable" })}</Button>
+          <span>{t("detail.exportLanguages")}</span>
           {detail.can_manage && <Button danger type="text" disabled={busy} onClick={() => onDelete(detail)}>{t("deleteTemplate", { ns: "portable" })}</Button>}
         </div>
       </header>
 
       <div className="template-detail-layout">
+      <section className="operations-template-guidance">
+        <h2>{t("detail.prepare")}</h2><p>{t(detail.slug === "json-mapping-cleaning" && (detail.source ?? "system") === "system" ? "detail.prepareJsonMapping" : detail.adapter_type === "webhook" ? "detail.prepareWebhook" : "detail.prepareTask")}</p>
+        <p>{t("detail.nextSteps")}</p>
+      </section>
+      {detail.slug === "json-mapping-cleaning" && (detail.source ?? "system") === "system" && <section aria-label={t("detail.exampleTitle")}>
+        <h2>{t("detail.exampleTitle")}</h2><p>{t("detail.exampleRule")}</p>
+        <div className="operations-template-example"><div><strong>{t("detail.exampleInput")}</strong><pre>{'{ "name": "张三" }'}</pre></div><div><strong>{t("detail.exampleOutput")}</strong><pre>{'{ "姓名": "张三" }'}</pre></div></div>
+        <p>{t("detail.exampleDisclaimer")}</p>
+      </section>}
         {localized(detail.summary).trim() && <div className="template-detail-overview">
-          <section className="template-detail-panel">
-            <h2>{t("detail.purpose")}</h2>
+          <details className="template-detail-panel operations-disclosure">
+            <summary>{t("detail.purpose")}</summary>
             <p>{localized(detail.summary)}</p>
-          </section>
+          </details>
         </div>}
 
         <section className="template-recipe-panel">
+          <h2>{t("detail.chooseLanguage")}</h2>
           <Tabs
             className="template-language-tabs"
             activeKey={language}
@@ -819,7 +835,7 @@ function TemplateDetail({
             items={detail.variants.filter((item) => item.available).map(({ language: item }) => ({
               key: item,
               label: t(`language.${item}`),
-              children: item === language ? recipePanelContent : null,
+              children: item === language ? <details className="operations-disclosure" key={item}><summary>{t("detail.viewCode", { language: t(`language.${item}`) })}</summary>{recipePanelContent}</details> : null,
             }))}
           />
         </section>

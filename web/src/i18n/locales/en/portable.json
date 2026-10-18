@@ -10,12 +10,12 @@
   "download": "Export ZIP",
   "deleteTemplate": "Delete template",
   "deleteWarning": "Delete this template? Existing adapters will remain unchanged.",
-  "sensitiveWarning": "Check code, ordinary parameters and selected inputs for customer information. Credentials, tokens and source bindings are excluded, but not all secrets can be detected automatically.",
+  "sensitiveWarning": "Check code, runtime parameters and selected input for sensitive information. Saved credentials and source-environment bindings are excluded; secrets written directly in code or parameters are not automatically removed.",
   "unsavedWarning": "There are unsaved changes. This uses the latest saved configuration snapshot and does not save your edits.",
   "galleryWarning": "Templates are visible to users with access to this deployment’s gallery.",
   "file": "Choose a DLR ZIP package (up to 16 MiB)",
   "includeJson": "Explicitly include saved JSON input",
-  "includeFiles": "Explicitly include selected managed input files",
+  "includeFiles": "Include saved input files",
   "previewNote": "Choose a file to review and adjust its contents, then import. Duplicate names receive a numbered suffix.",
   "name": "Name",
   "description": "Description",
@@ -43,7 +43,7 @@
   "versionConflict": "The template changed. Close and reopen the latest version.",
   "tooLarge": "Package or attachments exceed limits (16 MiB ZIP, 32 MiB expanded, up to 9 attachments).",
   "workerError": "The target Worker is missing or does not support this language. Select again.",
-  "filesUnavailable": "Managed input files or storage are unavailable in the target environment. Configure them first.",
+  "filesUnavailable": "Uploaded file support or storage is unavailable in the target environment. Configure it before importing.",
   "saveFirst": "Save an adapter version before exporting.",
   "invalidPackage": "Invalid package, unsupported format or wrong object type. Choose the correct adapter/template ZIP.",
   "source": {
@@ -54,7 +54,7 @@
   "inputType": {
     "none": "None",
     "json": "JSON",
-    "managed_files": "Managed files",
+    "managed_files": "Uploaded files",
     "remote_files": "Remote files"
   },
   "configurationNotes": "This adapter was imported or copied from a template. Check its configuration before running. Input omitted during import: {{input}}.",
@@ -65,5 +65,19 @@
   "contentSettings": "Code and dependencies",
   "attribution": "Source and license",
   "import": "Import",
-  "save": "Save"
+  "save": "Save",
+  "savedOnly": "Uses the most recently saved configuration. Export does not save your current edits.",
+  "viewReadonly": "View code and dependencies (read-only)",
+  "inputNotApplicable": "Not applicable to the current input type",
+  "migrationTitle": "What remains after importing into a new environment?",
+  "migrationInputIncluded": "Input included: check the data and files recreated in the target environment.",
+  "migrationFilesMissing": "Files omitted: upload them again and save input in the target environment.",
+  "migrationJsonMissing": "JSON omitted: enter and save input in the target environment.",
+  "migrationNoInput": "No extra input is currently supplied. Check the target environment’s requirements.",
+  "migrationWorker": "Runtime worker: select a target worker that supports the chosen language.",
+  "migrationCredentials": "If credentials are required, bind them again in the target environment.",
+  "migrationStopped": "Schedules and Webhook reception are disabled after import. Check configuration before enabling.",
+  "runtimeParametersReadonly": "Runtime parameters (read-only)",
+  "configurationFilesMissing": "Input files were not imported.",
+  "configurationJsonMissing": "JSON input was not imported."
 }

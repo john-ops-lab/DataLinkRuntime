@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import stat
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from dlr.worker.cache import CacheError, CacheReservation, VerifiedVersionCache
+from dlr.worker.cache_lifecycle import CacheLifecycleStore, _read_bounded_json, _write_json
 
 
 def _boolean(environ: Mapping[str, str], name: str, default: bool) -> bool:
@@ -179,6 +182,87 @@ class CachePolicy:
         return asdict(self)
 
 
+_AUTOMATIC_CLEANUP_FIELDS = {"gc_enabled", "pressure_gc_enabled"}
+_logger = logging.getLogger(__name__)
+
+
+def _cleanup_settings_path(runtime_root: Path) -> Path:
+    return Path(runtime_root) / "version-cache" / ".dlr-cache-lifecycle" / "automatic-cleanup.json"
+
+
+def _cleanup_overrides(runtime_root: Path) -> dict[str, bool]:
+    value = _read_bounded_json(_cleanup_settings_path(runtime_root), max_bytes=1024)
+    if value is None:
+        return {}
+    if (
+        type(value.get("schema")) is not int
+        or value.get("schema") != 1
+        or set(value) - {"schema"} != _AUTOMATIC_CLEANUP_FIELDS
+        or any(type(value[name]) is not bool for name in _AUTOMATIC_CLEANUP_FIELDS)
+    ):
+        raise CacheError("cache_policy_invalid")
+    return {name: value[name] for name in _AUTOMATIC_CLEANUP_FIELDS}
+
+
+def effective_cache_policy(runtime_root: Path, base: CachePolicy) -> CachePolicy:
+    try:
+        overrides = _cleanup_overrides(runtime_root)
+    except (CacheError, OSError):
+        # A broken optional settings file must not stop Worker execution or
+        # mask a reservation failure. Only automatic deletion is disabled;
+        # lifecycle journals and other cache safety checks remain strict.
+        _logger.warning("Automatic cache cleanup settings unavailable; automatic cleanup disabled")
+        overrides = {name: False for name in _AUTOMATIC_CLEANUP_FIELDS}
+    return replace(
+        base,
+        gc_enabled=overrides.get("gc_enabled", base.gc_enabled),
+        pressure_gc_enabled=overrides.get("pressure_gc_enabled", base.pressure_gc_enabled),
+    )
+
+
+def save_automatic_cleanup(
+    runtime_root: Path, base: CachePolicy, updates: Mapping[str, Any]
+) -> CachePolicy:
+    """Caller holds the governance round lock; persist only the two switches."""
+    if (
+        not updates
+        or set(updates) - _AUTOMATIC_CLEANUP_FIELDS
+        or any(type(value) is not bool for value in updates.values())
+    ):
+        raise CacheError("cache_policy_invalid")
+    # An explicit administrator update may repair unreadable settings. Start
+    # from the safe effective state so an unrequested switch stays disabled.
+    current = effective_cache_policy(runtime_root, base)
+    policy = replace(current, **updates)
+    # The established lifecycle writer verifies private paths and fsyncs the
+    # atomic replacement before any effective-state acknowledgement is sent.
+    CacheLifecycleStore.for_runtime(runtime_root)
+    try:
+        path = _cleanup_settings_path(runtime_root)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            # Read degradation does not authorize replacing an untrusted
+            # target. Only private, bounded regular files can be repaired.
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_size > 1024
+            ):
+                raise CacheError("cache_policy_write_failed")
+        _write_json(
+            path,
+            {"schema": 1, **{name: getattr(policy, name) for name in _AUTOMATIC_CLEANUP_FIELDS}},
+            strict_sync=True,
+        )
+    except (CacheError, OSError) as error:
+        raise CacheError("cache_policy_write_failed") from error
+    return policy
+
+
 PressureHandler = Callable[[int], bool]
 _pressure_handlers: dict[str, PressureHandler] = {}
 _handlers_lock = threading.Lock()
@@ -229,7 +313,10 @@ class GovernedVersionCache(VerifiedVersionCache):
         try:
             return super().reserve(amount, ttl_seconds=ttl_seconds)
         except CacheError as error:
-            if error.code != "cache_low_watermark" or not self.policy.pressure_gc_enabled:
+            if (
+                error.code != "cache_low_watermark"
+                or not effective_cache_policy(self.root.parent, self.policy).pressure_gc_enabled
+            ):
                 raise
         with _handlers_lock:
             handler = _pressure_handlers.get(_root_key(self.root))
@@ -246,5 +333,6 @@ class GovernedVersionCache(VerifiedVersionCache):
 def create_version_cache(
     runtime_root: Path, *, policy: CachePolicy | None = None
 ) -> GovernedVersionCache:
-    effective = CachePolicy.from_environment() if policy is None else policy
+    base = CachePolicy.from_environment() if policy is None else policy
+    effective = effective_cache_policy(runtime_root, base)
     return GovernedVersionCache(Path(runtime_root) / "version-cache", policy=effective)

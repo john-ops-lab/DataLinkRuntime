@@ -5,6 +5,7 @@ stable 404 ``schedule_not_configured`` before configuration; PUT creates or
 fully replaces the Schedule.
 """
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -13,15 +14,46 @@ from sqlalchemy.orm import Session
 
 from dlr.control import db
 from dlr.control.models import AdapterSchedule, ScheduleDispatchOutcome
-from dlr.control.schemas.schedule import ScheduleOutcomeResponse, ScheduleResponse, ScheduleUpsert
+from dlr.control.schemas.schedule import (
+    ScheduleOutcomeResponse,
+    SchedulePreviewRequest,
+    SchedulePreviewResponse,
+    ScheduleResponse,
+    ScheduleUpsert,
+)
 from dlr.control.security import Principal, require_business_principal, require_principal
 from dlr.control.services import adapter_access
 from dlr.control.services import schedule as schedule_service
+from dlr.control.services.adapter import domain_error
 
 router = APIRouter(dependencies=[Depends(require_business_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
+
+
+@router.post("/api/schedules/preview", response_model=SchedulePreviewResponse)
+def preview_schedule(payload: SchedulePreviewRequest) -> SchedulePreviewResponse:
+    """Use scheduler arithmetic without reading or changing any Adapter state."""
+    try:
+        cron = schedule_service.validate_cron(payload.cron)
+    except ValueError as exc:
+        raise domain_error(422, "schedule_invalid_cron", str(exc)) from None
+    try:
+        timezone = schedule_service.validate_timezone(payload.timezone)
+    except ValueError as exc:
+        raise domain_error(422, "schedule_invalid_timezone", str(exc)) from None
+    cursor = datetime.now(UTC)
+    occurrences: list[datetime] = []
+    try:
+        for _ in range(payload.count):
+            cursor = schedule_service.next_run_after(cron, timezone, cursor)
+            occurrences.append(cursor)
+    except (ValueError, OverflowError):
+        raise domain_error(
+            422, "schedule_invalid_cron", "No future occurrence within the supported range"
+        ) from None
+    return SchedulePreviewResponse(occurrences=occurrences)
 
 
 def _schedule_response(session: Session, schedule: AdapterSchedule) -> ScheduleResponse:

@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { classifyExecutionOutput } from "../execution-output";
 import { applySystemLocale, DEFAULT_SYSTEM_LOCALE } from "../i18n";
@@ -215,4 +215,14 @@ describe("OutputView", () => {
     expect(historical).toEqual(before);
     expect(Object.isFrozen(historical)).toBe(true);
   });
+});
+
+ it("copies the complete output including file metadata without changing the execution", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  const value = execution({ output: { total: 31, files: [{ sha256: "full-checksum" }] } });
+  render(<OutputView execution={value} />);
+  fireEvent.click(screen.getByRole("button", { name: "复制输出" }));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith(JSON.stringify(value.output, null, 2)));
+  expect(screen.getByRole("status").textContent).toContain("输出已复制");
 });

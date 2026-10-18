@@ -51,3 +51,6 @@
 .builtin-upload-form .ant-select {
   min-width: 180px;
 }
+
+.builtin-upload-drop-area { padding:28px 20px; border:1px dashed #b8cbee; border-radius:8px; background:var(--ant-color-fill-quaternary,#f8fbff); text-align:center; }
+.builtin-upload-form > .ant-alert, .builtin-upload-form > .ant-card { width:100%; }

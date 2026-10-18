@@ -1,14 +1,15 @@
 {
   "gallery": {
     "title": "模板广场",
-    "searchPlaceholder": "搜索模板名称、厂商或标签",
+    "searchPlaceholder": "搜索你想做的事，例如“Excel 转 JSON”",
     "searchAria": "搜索模板",
     "resultCount": "共 {{count}} 个场景",
     "loading": "正在加载模板…",
     "emptyTitle": "没有匹配的模板",
     "emptyDescription": "调整搜索条件或筛选项后重试。",
     "loadFailed": "模板列表加载失败",
-    "retry": "重新加载"
+    "retry": "重新加载",
+    "description": "选择模板，复制后按说明配置。"
   },
   "filters": {
     "groupAria": "模板筛选",
@@ -17,10 +18,12 @@
     "protocol": "协议",
     "language": "开发语言",
     "loading": "正在加载筛选项…",
-    "all": "全部"
+    "all": "全部",
+    "more": "更多筛选",
+    "active": "已选择 {{count}} 项筛选"
   },
   "card": {
-    "view": "查看详情",
+    "view": "查看用法与代码",
     "languageSummary": "支持的语言"
   },
   "type": {
@@ -43,9 +46,23 @@
     "variantFailed": "该语言模板加载失败",
     "notFound": "没有找到这个模板",
     "retry": "重试",
-    "purpose": "说明",
+    "purpose": "处理规则与完整说明",
     "recipe": "代码",
-    "requirements": "依赖"
+    "requirements": "依赖",
+    "prepare": "开始前准备",
+    "prepareTask": "按下方模板说明准备输入数据与必要配置。只有模板要求时，才需要系统地址或凭据。",
+    "prepareWebhook": "按模板说明准备调用方请求与处理规则；如需连接其他系统，再配置相应地址和凭据。",
+    "nextSteps": "下一步填写名称；复制后检查配置、保存代码与输入，再运行或启用。复制不会自动运行。",
+    "chooseLanguage": "查看并复制哪种语言？",
+    "copyLanguage": "复制 {{language}} 为适配器",
+    "viewCode": "查看 {{language}} 完整代码与依赖（只读）",
+    "exportLanguages": "导出包含全部语言",
+    "exampleTitle": "字段变化示例",
+    "exampleRule": "示例规则：把 name 改为“姓名”；需在复制后调整映射规则。",
+    "exampleInput": "输入中的一条数据",
+    "exampleOutput": "输出中的一条记录",
+    "exampleDisclaimer": "仅示意字段变化，不是默认规则的完整运行输出。完整结果还包含记录数量、部分返回状态和检查点。",
+    "prepareJsonMapping": "准备 JSON 数据，复制后在代码开头设置处理规则。"
   },
   "copy": {
     "title": "复制为适配器",

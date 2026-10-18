@@ -159,7 +159,7 @@ describe("Issue #127 D1 Managed Input system settings", () => {
       staged_ttl_seconds: 3_600,
     });
     await screen.findByText("文件托管策略已保存");
-    expect(screen.getByText(/后台清理/)).toBeTruthy();
+    expect(screen.getByText(/按规则自动清理/)).toBeTruthy();
   });
 
   it("keeps integer payloads when units change and converts later edits in the selected units", async () => {

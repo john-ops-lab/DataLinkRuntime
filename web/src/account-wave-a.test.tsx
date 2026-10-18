@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import App from "./App";
+import AccountLoginPage from "./components/AccountLoginPage";
 import { setAuthToken } from "./api";
 import { applySystemLocale } from "./i18n";
 import { LOGIN_LOCALE_STORAGE_KEY } from "./login-locale";
@@ -198,4 +199,16 @@ it("shows the current Principal on the protected account console and logs out", 
   fireEvent.click(await screen.findByRole("menuitem", { name: /退出登录|Log out/ }));
   await screen.findByTestId("account-username-input");
   expect(screen.getByTestId("account-auth-notice").textContent).toContain("已退出登录");
+});
+
+
+it("Issue 212 translates an existing session notice when the login language changes", async () => {
+  render(<AccountLoginPage notice={{ key: "auth.accountSessionRejected" }} onSubmit={vi.fn()} />);
+  expect(screen.getByTestId("account-auth-notice").textContent).toContain("账号会话已失效");
+  const select = screen.getByTestId("login-locale-select");
+  fireEvent.mouseDown(select.querySelector(".ant-select-selector") ?? select);
+  fireEvent.click(await screen.findByText("English"));
+  await waitFor(() => expect(screen.getByTestId("account-auth-notice").textContent).toContain("expired"));
+  expect(screen.getByRole("heading", { name: "Account login" })).toBeTruthy();
+  expect(screen.getByTestId("account-password-input").getAttribute("placeholder")).toBe("Enter password");
 });

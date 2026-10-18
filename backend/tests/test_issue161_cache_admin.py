@@ -6,20 +6,24 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import WORKER_TOKEN
 from dlr.control.models import (
+    AdapterVersion,
     WorkerCacheManagementChild,
     WorkerCacheManagementOperation,
     WorkerCacheOperation,
     WorkerCacheSnapshot,
+    WorkerCacheSnapshotItem,
     WorkerCleanupRequest,
 )
-from dlr.control.schemas.cache_admin import CacheOperationCreate
+from dlr.control.schemas.cache_admin import CacheOperationCreate, CacheSnapshotUpload
 from dlr.control.security import SUPERADMIN_PRINCIPAL
 from dlr.control.services import cache_admin as cache_admin_service
 from dlr.worker.agent import Agent
@@ -38,8 +42,23 @@ WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
 class _CommandClient:
     def __init__(self) -> None:
         self.reports: list[dict[str, object]] = []
+        self.snapshots: list[dict[str, object]] = []
+        self.events: list[str] = []
+        self.snapshot_failures = 0
+        self.ack_failures = 0
+
+    def report_cache_snapshot(self, _worker_id: int, payload) -> None:
+        self.events.append("snapshot")
+        if self.snapshot_failures:
+            self.snapshot_failures -= 1
+            raise ControlUnavailableError("snapshot publication unavailable")
+        self.snapshots.append(payload)
 
     def report_cache_command(self, _worker_id: int, _operation_id: str, **payload) -> None:
+        self.events.append("command")
+        if self.ack_failures:
+            self.ack_failures -= 1
+            raise ControlUnavailableError("terminal acknowledgement unavailable")
         self.reports.append(payload)
 
 
@@ -249,6 +268,227 @@ def test_snapshot_is_bounded_fresh_and_admin_only(
     )
     assert stale_operation.status_code == 409
     assert stale_operation.json()["detail"]["code"] == "cache_snapshot_unavailable"
+
+
+def test_cache_display_sequence_is_read_only_and_separate_from_worker_upload(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch,
+) -> None:
+    worker, adapter, version_id = _fixture(api_client, session_factory, monkeypatch, "display-seq")
+    worker_id = int(worker["id"])
+    adapter_id = int(adapter["id"])
+    with session_factory.begin() as session:
+        version = session.get(AdapterVersion, version_id)
+        assert version is not None
+        version.seq = 7
+    _upload(api_client, worker_id, adapter_id, version_id)
+    view = api_client.get(f"/api/workers/{worker_id}/cache")
+    assert view.status_code == 200
+    item = view.json()["items"][0]
+    assert item["version_seq"] == 7
+    assert item["version_id"] == version_id
+    assert item["cache_key"] == f"{adapter_id}-{version_id}"
+    with session_factory() as session:
+        assert session.scalar(select(WorkerCacheManagementOperation)) is None
+        assert session.get(AdapterVersion, version_id).seq == 7
+    # A display-only field must never enter the strict Worker upload protocol.
+    upload = {
+        "sample_id": str(uuid.uuid4()),
+        "sequence": 2,
+        "sampled_at": datetime.now(UTC),
+        "state": "complete",
+        "complete": True,
+        "summary": _summary(),
+        "items": [item],
+    }
+    with pytest.raises(ValidationError, match="version_seq"):
+        CacheSnapshotUpload.model_validate(upload)
+    del item["version_seq"]
+    assert CacheSnapshotUpload.model_validate(upload).items[0].version_id == version_id
+
+
+def test_cache_display_sequence_does_not_label_unrelated_or_removed_versions(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch,
+) -> None:
+    worker, adapter, version_id = _fixture(api_client, session_factory, monkeypatch, "missing-seq")
+    worker_id = int(worker["id"])
+    adapter_id = int(adapter["id"])
+    _upload(api_client, worker_id, adapter_id, version_id)
+    with session_factory.begin() as session:
+        item = session.get(WorkerCacheSnapshotItem, (worker_id, f"{adapter_id}-{version_id}"))
+        assert item is not None
+        # A stale observation must not borrow another adapter's save sequence.
+        item.adapter_id = adapter_id + 1
+    view = api_client.get(f"/api/workers/{worker_id}/cache")
+    assert view.status_code == 200
+    assert view.json()["items"][0]["version_seq"] is None
+    with session_factory.begin() as session:
+        item = session.get(WorkerCacheSnapshotItem, (worker_id, f"{adapter_id}-{version_id}"))
+        assert item is not None
+        item.adapter_id = adapter_id
+        item.version_id = version_id + 10_000
+    assert (
+        api_client.get(f"/api/workers/{worker_id}/cache").json()["items"][0]["version_seq"] is None
+    )
+
+
+@pytest.mark.parametrize("parent_status", ["failed", "running"])
+def test_failed_guard_view_routes_managed_child_beyond_history_page(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch,
+    parent_status: str,
+) -> None:
+    worker, adapter, version_id = _fixture(api_client, session_factory, monkeypatch, "parent-view")
+    worker_id, adapter_id = int(worker["id"]), int(adapter["id"])
+    _upload(api_client, worker_id, adapter_id, version_id)
+    guard_id, parent_id, newer_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    observed = {
+        "guard_operation_id": str(guard_id),
+        "generation": 1,
+        "adapter_id": adapter_id,
+        "version_id": version_id,
+        "operation_kind": "gc",
+        "local_phase": "failed",
+        "resume_phase": "recorded",
+        "failure_count": 3,
+        "error_code": "cache_cleanup_failed",
+        "sampled_at": datetime.now(UTC).isoformat(),
+    }
+    with session_factory.begin() as session:
+        session.add(
+            WorkerCacheOperation(
+                operation_id=guard_id,
+                worker_id=worker_id,
+                adapter_id=adapter_id,
+                version_id=version_id,
+                generation=1,
+                phase="acquired",
+                operation_kind="gc",
+            )
+        )
+        for operation_id, status, created_at in [
+            (parent_id, parent_status, datetime.now(UTC) - timedelta(minutes=5)),
+            (newer_id, "completed", datetime.now(UTC)),
+        ]:
+            session.add(
+                WorkerCacheManagementOperation(
+                    operation_id=operation_id,
+                    worker_id=worker_id,
+                    kind="clean",
+                    status=status,
+                    idempotency_key=str(operation_id),
+                    request_hash="a" * 64,
+                    request_payload={
+                        "kind": "clean",
+                        "keys": [{"adapter_id": adapter_id, "version_id": version_id}],
+                    },
+                    actor={"kind": "administrator"},
+                    created_at=created_at,
+                )
+            )
+        session.flush()
+        session.add(
+            WorkerCacheManagementChild(
+                management_operation_id=parent_id,
+                guard_operation_id=guard_id,
+                generation=1,
+            )
+        )
+        snapshot = session.get(WorkerCacheSnapshot, worker_id)
+        assert snapshot is not None
+        snapshot.summary = {**snapshot.summary, "failed_guard_items": [observed]}
+    history = api_client.get(f"/api/workers/{worker_id}/cache/operations?limit=1").json()
+    assert history["items"][0]["operation_id"] == str(newer_id)
+    item = api_client.get(f"/api/workers/{worker_id}/cache").json()["failed_guard_items"][0]
+    assert item["management_operation_id"] == str(parent_id)
+    assert item["management_operation_status"] == parent_status
+    assert item["management_operation_retryable"] is (parent_status == "failed")
+    # Read metadata is not accepted as a new Worker protocol field.
+    with pytest.raises(ValidationError, match="management_operation"):
+        CacheSnapshotUpload.model_validate(
+            {
+                "sample_id": str(uuid.uuid4()),
+                "sequence": 2,
+                "sampled_at": datetime.now(UTC),
+                "state": "complete",
+                "complete": True,
+                "summary": _summary(),
+                "failed_guard_items": [item],
+            }
+        )
+    assert (
+        CacheSnapshotUpload.model_validate(
+            {
+                "sample_id": str(uuid.uuid4()),
+                "sequence": 2,
+                "sampled_at": datetime.now(UTC),
+                "state": "complete",
+                "complete": True,
+                "summary": _summary(),
+                "failed_guard_items": [observed],
+            }
+        )
+        .failed_guard_items[0]
+        .guard_operation_id
+        == guard_id
+    )
+
+
+@pytest.mark.parametrize("retry_status", ["completed", "running", "failed"])
+def test_retryability_uses_current_recovery_beyond_history_page_without_changing_audit(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch,
+    retry_status: str,
+) -> None:
+    worker, adapter, version_id = _fixture(
+        api_client, session_factory, monkeypatch, "retry-display"
+    )
+    worker_id, adapter_id = int(worker["id"]), int(adapter["id"])
+    parent_id, retry_id = uuid.uuid4(), uuid.uuid4()
+    with session_factory.begin() as session:
+        parent = WorkerCacheManagementOperation(
+            operation_id=parent_id,
+            worker_id=worker_id,
+            kind="clean",
+            status="failed",
+            idempotency_key=str(parent_id),
+            request_hash="a" * 64,
+            request_payload={
+                "kind": "clean",
+                "keys": [{"adapter_id": adapter_id, "version_id": version_id}],
+            },
+            actor={"kind": "administrator"},
+            created_at=datetime.now(UTC) - timedelta(minutes=5),
+        )
+        session.add(parent)
+        session.flush()
+        session.add(
+            WorkerCacheManagementOperation(
+                operation_id=retry_id,
+                worker_id=worker_id,
+                kind="retry",
+                status=retry_status,
+                idempotency_key=str(retry_id),
+                request_hash="b" * 64,
+                request_payload={"kind": "retry", "management_operation_id": str(parent_id)},
+                target_kind="management",
+                target_operation_id=parent_id,
+                actor={"kind": "administrator"},
+                created_at=datetime.now(UTC),
+            )
+        )
+    history = api_client.get(f"/api/workers/{worker_id}/cache/operations?limit=1").json()
+    assert history["items"][0]["operation_id"] == str(retry_id)
+    view = api_client.get(f"/api/workers/{worker_id}/cache/operations/{parent_id}").json()
+    assert view["status"] == "failed"
+    assert view["retryable"] is (retry_status == "failed")
+    with session_factory() as session:
+        assert session.get(WorkerCacheManagementOperation, parent_id).status == "failed"
 
 
 def test_two_transactions_allow_only_one_active_operation(
@@ -496,6 +736,14 @@ def test_management_retry_rejects_children_already_resolved(
             )
         )
 
+    view = api_client.get(f"/api/workers/{worker_id}/cache/operations/{parent_id}").json()
+    assert view["status"] == "failed"
+    assert view["retryable"] is False
+    history = api_client.get(f"/api/workers/{worker_id}/cache/operations").json()["items"]
+    assert (
+        next(item for item in history if item["operation_id"] == str(parent_id))["retryable"]
+        is False
+    )
     response = api_client.post(
         f"/api/workers/{worker_id}/cache/operations",
         json={
@@ -659,6 +907,8 @@ def test_mixed_children_second_retry_succeeds_and_counts_actuals_once(tmp_path: 
     first = agent._client.reports[-1]
     assert first["status"] == "failed"
     assert first["result"]["deleted"] == 1
+    assert agent._client.events == ["snapshot", "command"]
+    assert [item["cache_key"] for item in agent._client.snapshots[-1]["items"]] == ["11-14"]
     children = first["result"]["child_operations"]
 
     first_retry_id = uuid.uuid4()
@@ -701,6 +951,8 @@ def test_mixed_children_second_retry_succeeds_and_counts_actuals_once(tmp_path: 
     assert completed["result"]["freed_bytes"] >= 8192
     assert not cache.entry_path("11-13").exists()
     assert not cache.entry_path("11-14").exists()
+    assert agent._client.snapshots[-1]["items"] == []
+    assert agent._client.events == ["snapshot", "command"] * 3
 
 
 def test_cleanup_retry_reuses_request_and_one_failure_stops(
@@ -940,3 +1192,112 @@ def test_local_command_receipt_replays_after_restart_without_repeating_side_effe
     command["claim_epoch"] = 2
     assert restarted._execute_cache_command(7, command)
     assert [report["claim_epoch"] for report in client.reports] == [1, 2]
+    assert client.snapshots == []  # Read-only previews do not trigger another observation.
+
+
+def _protect_local_command(identity, digest) -> dict[str, object]:
+    return {
+        "operation_id": str(uuid.uuid4()),
+        "claim_epoch": 1,
+        "request_hash": "b" * 64,
+        "kind": "protect",
+        "payload": {
+            "protect": [
+                {
+                    "adapter_id": 11,
+                    "version_id": 13,
+                    "identity": identity,
+                    "digest": digest,
+                    "pinned": True,
+                }
+            ]
+        },
+        "actor": "admin",
+    }
+
+
+def test_mutating_terminal_command_publishes_resulting_snapshot_before_completion(
+    tmp_path: Path,
+) -> None:
+    cache, lifecycle, manager = policy_manager(
+        tmp_path, replace(CachePolicy(), max_bytes=1_048_576, disk_reserve_bytes=0)
+    )
+    identity, digest = policy_ready(cache, lifecycle)
+    agent = _local_agent(lifecycle, manager)
+    assert agent._execute_cache_command(7, _protect_local_command(identity, digest))
+    assert agent._client.events == ["snapshot", "command"]
+    assert agent._client.snapshots[-1]["items"][0]["pinned"] is True
+    assert agent._client.reports[-1]["status"] == "completed"
+
+
+@pytest.mark.parametrize("transport_failure", ["snapshot", "ack"])
+def test_terminal_replay_refreshes_snapshot_and_reuses_receipt_after_transport_failure(
+    tmp_path: Path, monkeypatch, transport_failure: str
+) -> None:
+    cache, lifecycle, manager = policy_manager(
+        tmp_path, replace(CachePolicy(), max_bytes=1_048_576, disk_reserve_bytes=0)
+    )
+    identity, digest = policy_ready(cache, lifecycle)
+    first = _local_agent(lifecycle, manager)
+    client = first._client
+    command = _protect_local_command(identity, digest)
+    if transport_failure == "snapshot":
+        client.snapshot_failures = 1
+    else:
+        client.ack_failures = 1
+    with pytest.raises(ControlUnavailableError):
+        first._execute_cache_command(7, command)
+    after_mutation = lifecycle.lifecycle("11-13")
+    assert after_mutation["pinned"] is True
+    receipt_path = first._command_receipt_path(uuid.UUID(str(command["operation_id"])))
+    receipt_before = receipt_path.read_bytes()
+    assert client.reports == []
+    restarted = _local_agent(lifecycle, manager)
+    restarted._client = client
+    monkeypatch.setattr(
+        restarted,
+        "_run_cache_command",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("mutation repeated")),
+    )
+    command["claim_epoch"] = 2
+    assert restarted._execute_cache_command(7, command)
+    assert receipt_path.read_bytes() == receipt_before
+    assert lifecycle.lifecycle("11-13")["policy_revision"] == after_mutation["policy_revision"]
+    assert client.reports[-1]["claim_epoch"] == 2
+    assert client.snapshots[-1]["items"][0]["pinned"] is True
+    expected = (
+        ["snapshot", "snapshot", "command"]
+        if transport_failure == "snapshot"
+        else ["snapshot", "command", "snapshot", "command"]
+    )
+    assert client.events == expected
+
+
+def test_clean_terminal_snapshot_has_no_deleted_entries(tmp_path: Path) -> None:
+    cache, lifecycle, manager = policy_manager(
+        tmp_path,
+        replace(CachePolicy(), max_bytes=1_048_576, disk_reserve_bytes=0, min_idle_seconds=0),
+    )
+    identity, digest = policy_ready(cache, lifecycle)
+    lifecycle.confirm_rebuildability(
+        "11-13",
+        identity=identity,
+        digest=digest,
+        source_policy="verified_offline",
+        evidence_note="owned temporary test cache",
+        actor="admin",
+        valid_until=datetime.now(UTC).timestamp() + 300,
+    )
+    agent = _local_agent(lifecycle, manager)
+    command = {
+        "operation_id": str(uuid.uuid4()),
+        "claim_epoch": 1,
+        "request_hash": "c" * 64,
+        "kind": "clean",
+        "payload": {"keys": [{"adapter_id": 11, "version_id": 13}]},
+        "actor": "admin",
+    }
+    assert agent._execute_cache_command(7, command)
+    assert agent._client.events == ["snapshot", "command"]
+    assert agent._client.snapshots[-1]["items"] == []
+    assert agent._client.reports[-1]["result"]["deleted"] == 1

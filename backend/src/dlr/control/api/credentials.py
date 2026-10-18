@@ -18,6 +18,7 @@ from dlr.control.schemas.credential import (
     CredentialCreate,
     CredentialResponse,
     CredentialUpdate,
+    CredentialUsageResponse,
 )
 from dlr.control.security import (
     Principal,
@@ -25,7 +26,7 @@ from dlr.control.security import (
     require_business_principal,
     require_principal,
 )
-from dlr.control.services import adapter_access
+from dlr.control.services import adapter_access, credential_usage
 from dlr.control.services import secrets as secrets_service
 
 router = APIRouter(dependencies=[Depends(require_admin_principal)])
@@ -49,6 +50,11 @@ def create_credential(payload: CredentialCreate, session: DbSession) -> Credenti
 @router.get("/api/credentials/{credential_id}", response_model=CredentialResponse)
 def get_credential(credential_id: int, session: DbSession) -> CredentialResponse:
     return CredentialResponse.model_validate(secrets_service.get_credential(session, credential_id))
+
+
+@router.get("/api/credentials/{credential_id}/usage", response_model=CredentialUsageResponse)
+def get_credential_usage(credential_id: int, session: DbSession) -> CredentialUsageResponse:
+    return credential_usage.get_usage(session, credential_id)
 
 
 @router.patch("/api/credentials/{credential_id}", response_model=CredentialResponse)

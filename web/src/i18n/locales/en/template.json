@@ -1,14 +1,15 @@
 {
   "gallery": {
     "title": "Template Gallery",
-    "searchPlaceholder": "Search by template, vendor, or tag",
+    "searchPlaceholder": "Search for what you want to do, such as “Excel to JSON”",
     "searchAria": "Search templates",
     "resultCount": "{{count}} scenarios",
     "loading": "Loading templates…",
     "emptyTitle": "No matching templates",
     "emptyDescription": "Try changing the search or filters.",
     "loadFailed": "Template list could not be loaded",
-    "retry": "Reload"
+    "retry": "Reload",
+    "description": "Choose a template, then copy it and follow its setup instructions."
   },
   "filters": {
     "groupAria": "Template filters",
@@ -17,10 +18,12 @@
     "protocol": "Protocol",
     "language": "Language",
     "loading": "Loading filter options…",
-    "all": "All"
+    "all": "All",
+    "more": "More filters",
+    "active": "{{count}} active filters"
   },
   "card": {
-    "view": "View details",
+    "view": "View usage and code",
     "languageSummary": "Available languages"
   },
   "type": {
@@ -43,9 +46,23 @@
     "variantFailed": "This language variant could not be loaded",
     "notFound": "Template not found",
     "retry": "Retry",
-    "purpose": "Description",
+    "purpose": "Rules and complete instructions",
     "recipe": "Code",
-    "requirements": "Dependencies"
+    "requirements": "Dependencies",
+    "prepare": "Before you start",
+    "prepareTask": "Follow this template’s instructions to prepare input data and configuration. System addresses or credentials are needed only when the template requires them.",
+    "prepareWebhook": "Prepare the incoming request and processing rules as described by the template. Configure addresses and credentials only when connecting to other systems.",
+    "nextSteps": "Next, enter a name. After copying, check the configuration and save code and input before running or enabling. Copying does not start a run.",
+    "chooseLanguage": "Which language do you want to view and copy?",
+    "copyLanguage": "Copy {{language}} as adapter",
+    "viewCode": "View complete {{language}} code and dependencies (read-only)",
+    "exportLanguages": "Export includes all languages",
+    "exampleTitle": "Field transformation example",
+    "exampleRule": "Example rule: rename name to 姓名. Configure this mapping after copying.",
+    "exampleInput": "One input item",
+    "exampleOutput": "One output record",
+    "exampleDisclaimer": "This illustrates one field change, not complete output from the default rules. Full results also include count, partial status and checkpoint information.",
+    "prepareJsonMapping": "Prepare JSON data, then configure the processing rules at the start of the copied code."
   },
   "copy": {
     "title": "Copy as Adapter",

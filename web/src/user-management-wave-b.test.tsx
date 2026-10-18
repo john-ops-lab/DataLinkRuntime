@@ -77,6 +77,8 @@ it("renders bilingual user management and never displays a submitted password", 
 
   render(<UserManagementDrawer open onClose={() => undefined} />);
   await screen.findByText("User management");
+  expect(screen.queryByTestId("user-create-password")).toBeNull();
+  fireEvent.click(screen.getByTestId("user-create-open"));
   expect(screen.getByTestId("user-create-password")).toBeTruthy();
   expect(screen.queryByText(/scrypt|password_hash/i)).toBeNull();
 

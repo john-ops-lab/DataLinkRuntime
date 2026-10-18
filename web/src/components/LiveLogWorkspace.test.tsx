@@ -89,6 +89,8 @@ function renderWorkspace(overrides: Partial<Parameters<typeof LiveLogWorkspace>[
 
 it("renders the unified log tab without an internal Execution #N", () => {
   renderWorkspace();
+  expect(screen.queryByText("日志内容说明")).toBeNull();
+  expect(document.querySelector(".operations-log-help")).toBeNull();
 
   expect(screen.getByTestId("live-log-workspace").textContent).toContain("实时日志");
   expect(screen.getByTestId("live-log").textContent).toContain("任务开始");
@@ -107,7 +109,7 @@ it("shows a queued Execution as waiting for its fixed Worker rather than failed"
     }),
   });
 
-  expect(screen.getByTestId("live-queued-notice").textContent).toContain("等待目标 Worker");
+  expect(screen.getByTestId("live-queued-notice").textContent).toContain("等待目标运行节点");
   expect(screen.getByTestId("live-queued-notice").textContent).toContain("暂时离线不会被视为失败");
 });
 
@@ -383,7 +385,7 @@ it("shows the Webhook waiting state without inventing an Execution", () => {
 
 it("shows an idle placeholder when nothing has run yet", () => {
   renderWorkspace({ execution: null, liveStdout: "", waitingForWebhook: false });
-  expect(screen.getByTestId("live-log-workspace").textContent).toContain("暂无实时日志");
+  expect(screen.getByTestId("live-log-workspace").textContent).toContain("暂未显示实时日志");
 });
 
 // --- M5.5.13：实时日志选区 → AI 上下文（只使用浏览器可见的已脱敏文本） ------
@@ -718,4 +720,12 @@ it("preserves live bottom-follow, paused content and dark terminal state across 
   expect(styles).toMatch(
     /\.terminal-view\s*\{[^}]*background\s*:\s*#111827[^}]*color\s*:\s*#d1d5db/s,
   );
+});
+
+it("offers history from the empty live workspace without claiming no task is running", () => {
+  const onViewHistory = vi.fn();
+  renderWorkspace({ execution: null, onViewHistory });
+  fireEvent.click(screen.getByRole("button", { name: "查看执行记录" }));
+  expect(onViewHistory).toHaveBeenCalledOnce();
+  expect(screen.getByText("暂未显示实时日志")).toBeTruthy();
 });

@@ -6,8 +6,10 @@
  * 前缀；不再有覆盖编辑页与运行设置的底部浮层，也不显示内部 Execution #N。
  */
 
-import { Alert, Tabs, Tag } from "antd";
+import { Alert, Button, Tabs, Tag } from "antd";
 import { useTranslation } from "react-i18next";
+
+import "./operations-ux.css";
 
 import { isTerminal, statusColor, statusLabel } from "../status";
 import type { AiContextSnippet, Execution } from "../types";
@@ -27,6 +29,8 @@ interface Props {
   onAddContext?: (snippet: AiContextSnippet) => void;
   /** Switch to the history drawer for the server-saved Execution content. */
   onViewServerLog?: () => void;
+  /** Navigate to execution history, including when no current execution is selected. */
+  onViewHistory?: () => void;
 }
 
 export default function LiveLogWorkspace(props: Props) {
@@ -70,10 +74,14 @@ export default function LiveLogWorkspace(props: Props) {
           </div>
         </div>
       ) : execution === null ? (
-        <div className="live-log-waiting" role="status">
+        <div className="live-log-waiting operations-live-empty" role="status">
           <div>
             <strong>{t("live.emptyTitle")}</strong>
             <p>{t("live.emptyDescription")}</p>
+            <div className="operations-history-entry">
+              <p>{t("live.historyPrompt")}</p>
+              {props.onViewHistory && <Button type="primary" onClick={props.onViewHistory}>{t("live.viewHistory")}</Button>}
+            </div>
           </div>
         </div>
       ) : (

@@ -246,6 +246,8 @@ export function AdapterConsole({
 }: AdapterConsoleProps = {}) {
   const { t } = useTranslation(["common", "adapter", "runtime"]);
   const [messageApi, messageContextHolder] = message.useMessage();
+  const [modalApi, modalContextHolder] = Modal.useModal();
+  const deletingAdapterRef = useRef(false);
   const [health, setHealth] = useState<HealthStatus>("loading");
   const [healthPayload, setHealthPayload] = useState<ControlHealthPayload | null>(null);
   const [healthCheckedAt, setHealthCheckedAt] = useState<string | null>(null);
@@ -509,6 +511,7 @@ export function AdapterConsole({
     snapshot.code !== baseline.code ||
     snapshot.requirements !== baseline.requirements ||
     snapshot.runtimeConfigText !== baseline.runtimeConfigText;
+  const versionNeedsSave = dirty || selected?.latest_version_id === null;
   const selectedAdapterId = selected?.id ?? null;
   useLayoutEffect(() => {
     selectedAdapterIdRef.current = selectedAdapterId;
@@ -913,7 +916,7 @@ export function AdapterConsole({
   }, [dirty, selected?.adapter_type, t]);
 
   useLayoutEffect(() => setBrowserLocationBlocker((nextLocation) => {
-    if (busy) return false;
+    if (busy || deletingAdapterRef.current) return false;
     const nextRoute = appRouteFromPath(new URL(nextLocation, window.location.origin).pathname);
     const leavesWorkspace = requestedSettingsCategory === null && (
       (nextRoute.section === "adapters" && nextRoute.settingsCategory !== null)
@@ -1097,21 +1100,23 @@ export function AdapterConsole({
     }
   }
 
-  function handlePrimarySectionChange(section: PrimarySection): void {
-    if (section === activeSection && requestedSettingsCategory === null) return;
+  function handlePrimarySectionChange(section: PrimarySection): boolean {
+    if (section === activeSection && requestedSettingsCategory === null) return true;
     if (
       busy
       || systemSettingsLeaveGuardRef.current?.confirmLeave() === false
       || adapterSettingsLeaveGuardRef.current?.confirmLeave() === false
       || (activeSection === "adapters" && section === "templates" && !confirmWorkspaceLeave(true))
     ) {
-      return;
+      return false;
     }
     closePagePortals();
     if (section === "templates") {
       pushBrowserLocation(templatePath());
+      return window.location.pathname === templatePath();
     } else {
       pushBrowserLocation("/adapters");
+      return window.location.pathname === "/adapters";
     }
   }
 
@@ -1218,7 +1223,7 @@ export function AdapterConsole({
   }
 
   async function persistVersion(runtimeWorkerId?: number) {
-    if (!selected || !selectedCanEdit || busy || !contentReady || selectedRuntimeLocked) {
+    if (!selected || !selectedCanEdit || busy || !contentReady || selectedRuntimeLocked || !versionNeedsSave) {
       return;
     }
     const runtimeConfig = parseRuntimeConfig(snapshot.runtimeConfigText);
@@ -1252,10 +1257,16 @@ export function AdapterConsole({
       initialAdapterDrafts.current.delete(saveTarget.id);
       // The immutable version exists as soon as POST succeeds: acknowledge it locally
       // right away so a follow-up refresh failure cannot be mistaken for a failed save
-      // (which would invite retrying into a duplicate immutable version). Only
-      // latest_version_id is derived from the response; Adapter.updated_at stays
-      // the server-owned value until a real Adapter refresh succeeds.
-      const optimistic: Adapter = { ...saveTarget, latest_version_id: saved.id };
+      // (which would invite retrying into a duplicate immutable version). The
+      // successful save also dismisses the import reminder. Adapter.updated_at
+      // stays server-owned until a real Adapter refresh succeeds.
+      const optimistic: Adapter = {
+        ...saveTarget,
+        latest_version_id: saved.id,
+        ...(saveTarget.configuration_notes?.review_environment && {
+          configuration_notes: { ...saveTarget.configuration_notes, review_environment: false },
+        }),
+      };
       if (!mutation.acceptAdapter(optimistic)) return;
       setVersions((current) => [saved, ...current]);
       // The new immutable version is the latest one: keep the cached catalog
@@ -1304,7 +1315,7 @@ export function AdapterConsole({
   }
 
   function handleSaveVersion() {
-    if (!selected || !selectedCanEdit || busy || !contentReady || selectedRuntimeLocked) {
+    if (!selected || !selectedCanEdit || busy || !contentReady || selectedRuntimeLocked || !versionNeedsSave) {
       return;
     }
     if (parseRuntimeConfig(snapshot.runtimeConfigText) === null) {
@@ -1548,24 +1559,36 @@ export function AdapterConsole({
   }
 
   async function handleDelete(stopAndDelete = false) {
-    if (!selected || !selectedCanManage || busy) {
+    if (!selected || !selectedCanManage || busy || deletingAdapterRef.current) {
       return;
     }
-    const warning = dirty ? t("messages.discardWarning") : "";
-    if (
-      !window.confirm(
-        t(stopAndDelete ? "confirm.stopDeleteAdapter" : "confirm.deleteAdapter", {
-          name: selected.name,
-          warning,
-        }),
-      )
-    ) {
-      return;
-    }
+    deletingAdapterRef.current = true;
     setBusy(true);
+    const targetId = selected.id;
     try {
+      const confirmed = await modalApi.confirm({
+        title: t("settings.deleteTitle", { ns: "adapter" }),
+        width: 600,
+        closable: { "aria-label": t("actions.close") },
+        okText: t(stopAndDelete ? "settings.deleteStopConfirm" : "settings.deleteConfirm", { ns: "adapter" }),
+        cancelText: t("actions.cancel"),
+        okButtonProps: { danger: true, "data-testid": "confirm-delete-adapter" },
+        content: <div className="ux-delete-summary">
+          <div><span>{t("settings.deleteTarget", { ns: "adapter" })}</span><h4>{selected.name}</h4></div>
+          <Alert type="warning" message={t("settings.deleteIrreversible", { ns: "adapter" })} />
+          <div><h4>{t("settings.deleteIncludes", { ns: "adapter" })}</h4><ul>
+            <li>{t("settings.deleteCode", { ns: "adapter" })}</li>
+            <li>{t("settings.deleteRecords", { ns: "adapter" })}</li>
+            <li>{t("settings.deleteConfig", { ns: "adapter" })}</li>
+          </ul></div>
+          <div><h4>{t("settings.deleteKeep", { ns: "adapter" })}</h4><p>{t("settings.deleteKeepHint", { ns: "adapter" })}</p></div>
+          <p>{t(stopAndDelete ? "settings.deleteWarningActive" : "settings.deleteWarningIdle", { ns: "adapter" })}</p>
+          {dirty && <Alert type="warning" message={t("messages.discardWarning")} />}
+        </div>,
+      });
+      if (!confirmed || selectedAdapterIdRef.current !== targetId) return;
       setError(null);
-      const deletion = await api.deleteAdapter(selected.id, stopAndDelete);
+      const deletion = await api.deleteAdapter(targetId, stopAndDelete);
       if (
         deletion?.detail?.code === "adapter_delete_waiting_for_worker"
       ) {
@@ -1622,6 +1645,7 @@ export function AdapterConsole({
     } catch (err) {
       setError(errorMessage(err));
     } finally {
+      deletingAdapterRef.current = false;
       setBusy(false);
     }
   }
@@ -1680,6 +1704,7 @@ export function AdapterConsole({
       ) : (
         <>
           {messageContextHolder}
+          {modalContextHolder}
           <section
             className="adapter-surface"
             data-testid="adapter-surface"
@@ -1699,10 +1724,13 @@ export function AdapterConsole({
               )}
             </div>
 
-            {selected?.configuration_notes?.review_environment && <Alert type="info" showIcon
-              message={t("configurationNotes", { ns: "portable",
-                input: t(`inputType.${selected.configuration_notes.input_required || "none"}`, { ns: "portable" }),
-              })} />}
+            {selected?.configuration_notes?.review_environment
+              && ["managed_files", "json"].includes(String(selected.configuration_notes.input_required))
+              && <Alert type="info" showIcon data-testid="import-configuration-notice"
+                message={t(selected.configuration_notes.input_required === "managed_files"
+                  ? "configurationFilesMissing" : "configurationJsonMissing", { ns: "portable" })}
+                action={<Button size="small" onClick={() => setActiveTabKey("runtime")}>{t("editor.viewInput")}</Button>}
+              />}
             <div className="console-body">
             {activeSection === "adapters" && <AdapterCatalog
               adapters={adapters}
@@ -1710,6 +1738,7 @@ export function AdapterConsole({
               busy={busy}
               onSelect={handleSelectAdapter}
               onCreate={handleCreateAdapter}
+              onBrowseTemplates={() => handlePrimarySectionChange("templates")}
               versionSeqById={versionSeqById}
               workers={workers}
               onOpenSettings={handleCatalogOpenSettings}
@@ -1798,6 +1827,7 @@ export function AdapterConsole({
               ) : (
               <WebhookWorkbenchHeader
                 adapter={selected}
+                dirty={dirty}
                 runtimeWorker={selectedRuntimeWorker}
                 runtimeState={webhookRuntimeState}
                 busy={busy}
@@ -1809,6 +1839,7 @@ export function AdapterConsole({
               />
               )}
 
+              {dirty && selectedCanEdit && <Alert type="warning" message={t("editor.dirtyRun")} />}
               <Tabs
                 className="workbench-tabs"
                 activeKey={activeTabKey}
@@ -1944,7 +1975,7 @@ export function AdapterConsole({
                             },
                             {
                               key: "bindings",
-                              label: <span data-testid="bindings-collapse-header">{t("labels.credentialBindings")}</span>,
+                              label: <span data-testid="bindings-collapse-header">{t("editor.bindingsSeparate")}</span>,
                               children: (
                                 <div data-testid="bindings-panel-content">
                                   <CredentialBindingsEditor
@@ -2055,6 +2086,7 @@ export function AdapterConsole({
                           waitingForWebhook &&
                           liveExecution === null
                         }
+                        onViewHistory={() => setActiveTabKey("history")}
                         onViewServerLog={() => {
                           if (liveExecution !== null) {
                             setHistoryExecutionId(liveExecution.id);
@@ -2239,7 +2271,6 @@ export function AdapterConsole({
 // the M3.1 login page keeps the M2 auth contract unchanged.
 
 function TokenApp() {
-  const { t } = useTranslation("common");
   const [authed, setAuthed] = useState<boolean>(() => {
     const stored = sessionStorage.getItem(TOKEN_STORAGE_KEY);
     if (stored !== null) {
@@ -2317,7 +2348,7 @@ function TokenApp() {
     <AdapterConsole onAccountLogout={handleLogout} />
   ) : (
     <LoginPage
-      notice={noticeKey === null ? null : t(noticeKey)}
+      notice={noticeKey === null ? null : { key: noticeKey }}
       onSubmit={handleLogin}
     />
   );

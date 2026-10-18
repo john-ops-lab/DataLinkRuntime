@@ -105,7 +105,7 @@ it.each([
 );
 
 it("dependency note explains install timing, System Settings source and empty behavior", () => {
-  expect(DEPENDENCY_NOTE).toContain("Worker 执行前会安装这些依赖");
+  expect(DEPENDENCY_NOTE).toContain("运行节点执行前会安装这些依赖");
   expect(DEPENDENCY_NOTE).toContain("系统设置");
   expect(DEPENDENCY_NOTE).toContain("不填写则平台不会额外检查依赖是否齐全");
 });

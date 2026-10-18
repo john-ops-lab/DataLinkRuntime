@@ -21,6 +21,7 @@ import {
   Input,
   InputNumber,
   Menu,
+  Modal,
   Popover,
   Select,
   Space,
@@ -49,6 +50,8 @@ import {
 } from "@ant-design/pro-components";
 import type { ProColumns } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
+
+import "./admin-ux.css";
 
 import { ApiError, api } from "../api";
 import {
@@ -139,6 +142,11 @@ function CredentialsPanel(props: {
   const { t } = useTranslation(["settings", "common"]);
   const { onError, onSaved, onMutationStart, onMutationEnd } = props;
   const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [usageCredential, setUsageCredential] = useState<Credential | null>(null);
+  const [usage, setUsage] = useState<Awaited<ReturnType<typeof api.getCredentialUsage>> | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const usageGeneration = useRef(0);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
   const restoreFocus = useOverlayFocus(formOpen, '[data-testid="new-credential"], a[href="/adapters"]');
@@ -177,6 +185,22 @@ function CredentialsPanel(props: {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 挂载时拉取凭据列表的初始加载是有意的异步同步
     void load();
   }, [load]);
+
+  async function showUsage(credential: Credential) {
+    const generation = ++usageGeneration.current;
+    setUsageCredential(credential);
+    setUsage(null);
+    setUsageError(null);
+    setUsageLoading(true);
+    try {
+      const result = await api.getCredentialUsage(credential.id);
+      if (generation === usageGeneration.current) setUsage(result);
+    } catch (error) {
+      if (generation === usageGeneration.current) setUsageError(errorMessage(error));
+    } finally {
+      if (generation === usageGeneration.current) setUsageLoading(false);
+    }
+  }
 
   function openCreate() {
     setFieldErrors({});
@@ -449,12 +473,12 @@ function CredentialsPanel(props: {
         onFinish={handleSubmit}
       >
         <div
-          className="settings-inline-form"
+          className="settings-inline-form admin-labeled-form"
           data-settings-subform="true"
           data-testid="credential-form"
         >
           <div className="credential-form-field">
-            <Form.Item name="name" noStyle>
+            <Form.Item name="name" label={t("credentials.name")} required>
               <Input
                 data-testid="credential-name"
                 aria-label={t("credentials.name")}
@@ -466,11 +490,12 @@ function CredentialsPanel(props: {
                 placeholder={t("labels.name", { ns: "common" })}
               />
             </Form.Item>
+            <Typography.Text type="secondary">{t("credentials.nameHint")}</Typography.Text>
             {fieldErrors.name !== undefined && (
               <p id={`${fieldErrorId}-name`} className="settings-panel-error" role="alert">{fieldErrors.name}</p>
             )}
           </div>
-          <Form.Item name="type" noStyle>
+          <Form.Item name="type" label={t("credentials.type")} required extra={t(`credentialGuide.items.${form.type}.scenarios`)}>
             <Select<CredentialType>
               data-testid="credential-type"
               aria-label={t("credentials.type")}
@@ -487,7 +512,7 @@ function CredentialsPanel(props: {
           </Form.Item>
           {formFieldKeys.map((key) => (
             <div key={key} className="credential-form-field">
-              <Form.Item name={["fields", key]} noStyle>
+              <Form.Item name={["fields", key]} label={credentialFieldLabel(key)} required>
                 <Input.Password
                   data-testid={`credential-field-${key}`}
                   aria-label={t("credentials.fieldAria", { field: key })}
@@ -505,6 +530,11 @@ function CredentialsPanel(props: {
               )}
             </div>
           ))}
+          <details className="admin-help"><summary>{t("credentialGuide.title")}</summary>
+            <p>{t(`credentialGuide.items.${form.type}.scenarios`)}</p>
+            <p>{t(`credentialGuide.items.${form.type}.fields`)}</p>
+          </details>
+          {form.editingId === null && <Alert type="warning" showIcon message={t("credentials.createSecretNotice")} description={t("credentials.createScope")} />}
           {form.editingId !== null && (
             <Typography.Text type="secondary">
               {t("credentials.updateHint")}
@@ -513,6 +543,21 @@ function CredentialsPanel(props: {
         </div>
       </ModalForm>
 
+      <Modal open={usageCredential !== null} title={t("credentials.usageTitle", { name: usageCredential?.name })} footer={null}
+        onCancel={() => { ++usageGeneration.current; setUsageCredential(null); }} destroyOnHidden>
+        <p>{t("credentials.usageScope")}</p>
+        {usageLoading ? (
+          <Spin />
+        ) : usageError !== null ? (
+          <Alert type="error" showIcon message={usageError} />
+        ) : usage !== null && (
+          usage.items.length === 0 ? <Empty description={t("credentials.usageEmpty")} /> :
+          <ul className="admin-usage-list">{usage.items.map((item, index) => <li key={`${item.kind}-${index}`}>
+            <strong>{item.name}</strong><Tag>{t(`credentials.usageKinds.${item.kind}`, { defaultValue: item.kind })}</Tag>
+            {item.detail && <Typography.Text type="secondary">{item.detail}</Typography.Text>}
+          </li>)}</ul>
+        )}
+      </Modal>
       {loading ? (
         <Spin />
       ) : credentials.length === 0 ? (
@@ -550,6 +595,12 @@ function CredentialsPanel(props: {
               render: (type) => credentialTypeLabel(String(type)),
             },
             {
+              title: t("credentials.usage"),
+              key: "usage",
+              width: 160,
+              render: (_, credential) => <Button type="link" onClick={() => void showUsage(credential)}>{t("credentials.viewUsage")}</Button>,
+            },
+            {
               title: t("credentials.tableActions"),
               width: 112,
               align: "right",
@@ -582,6 +633,7 @@ function CredentialsPanel(props: {
           ]}
         />
       )}
+      <Typography.Text type="secondary">{t("credentials.usageScope")}</Typography.Text>
     </div>
   );
 }
@@ -1181,7 +1233,7 @@ function PackageSourcesPanel(props: {
               type="primary"
               data-testid="submit-package-source"
               loading={submitting}
-              disabled={credentialMissing}
+              disabled={credentialMissing || !form.name.trim() || !form.index_url.trim()}
               onClick={submitterProps.submit}
             >
               {t("actions.create", { ns: "common" })}
@@ -1217,18 +1269,18 @@ function PackageSourcesPanel(props: {
         onFinish={handleSubmit}
       >
         <div
-          className="settings-inline-form"
+          className="settings-inline-form admin-labeled-form"
           data-settings-subform="true"
           data-testid="package-source-form"
         >
-          <Form.Item name="name" noStyle>
+          <Form.Item name="name" label={t("packageSources.name")} required>
             <Input
               data-testid="package-source-name"
               aria-label={t("packageSources.name")}
               placeholder={t("labels.name", { ns: "common" })}
             />
           </Form.Item>
-          <Form.Item name="kind" noStyle>
+          <Form.Item name="kind" label={t("packageSources.kind")}>
             <Select<PackageSourceKind>
               data-testid="package-source-kind"
               aria-label={t("packageSources.kind")}
@@ -1238,6 +1290,7 @@ function PackageSourcesPanel(props: {
           </Form.Item>
           <Form.Item
             name="index_url"
+            label={t("packageSources.repositoryUrl")} required extra={t("packageSources.repositoryHint")}
             style={{ flex: "1 1 220px", minWidth: 220, marginBottom: 0 }}
           >
             <Input
@@ -1246,12 +1299,12 @@ function PackageSourcesPanel(props: {
               placeholder={t("packageSources.urlPlaceholder")}
             />
           </Form.Item>
-          <Form.Item name="is_default" valuePropName="checked" noStyle>
+          <Form.Item name="is_default" valuePropName="checked" label={t("packageSources.defaultScopeTitle")} extra={t("packageSources.defaultScope", { kind: kindLabel(form.kind) })}>
             <Checkbox data-testid="package-source-default">
               {t("packageSources.defaultCheckbox")}
             </Checkbox>
           </Form.Item>
-          <Form.Item name="credential_id"
+          <Form.Item name="credential_id" label={t("packageSources.credential")}
             validateStatus={credentialMissing ? "error" : undefined}
             help={credentialMissing ? t("packageSources.credentialMissing") : undefined}>
             <Select<number>
@@ -1313,6 +1366,7 @@ type KnowledgeSourceDisplayStatus =
 
 function KnowledgeSourcesPanel(props: {
   active: boolean;
+  onCreateCredential?: () => void;
   onError: (message: string) => void;
   onSaved?: () => void;
 } & MutationTrackingProps) {
@@ -1383,8 +1437,12 @@ function KnowledgeSourcesPanel(props: {
     });
   }, [active, fail]);
 
+  const missingCredential = form.enabled && !credentials.some((item) => item.id === form.credential_id && item.type === "access_key");
+  const draftChanged = source !== null && (form.enabled !== source.enabled || form.credential_id !== source.credential_id);
+  const canTest = source !== null && source.enabled && source.credential_id !== null && !draftChanged && !missingCredential;
+
   async function handleSave(): Promise<boolean> {
-    if (saving || source === null) {
+    if (saving || testing || source === null || missingCredential) {
       return false;
     }
     onMutationStart?.();
@@ -1414,12 +1472,14 @@ function KnowledgeSourcesPanel(props: {
   }
 
   async function handleTest() {
-    if (testing || source === null || !form.enabled) {
+    if (testing || saving || !canTest) {
       return;
     }
     setTesting(true);
     setPanelError(null);
     setNotice(null);
+    // A fresh check must not present a previous list as the current result if it fails.
+    setKnowledgeBases([]);
     try {
       const result = await api.testKnowledgeSource("ima");
       setTestStatus(result.status);
@@ -1469,9 +1529,10 @@ function KnowledgeSourcesPanel(props: {
             <Typography.Text type="secondary">
               {t("knowledgeSources.endpointLabel")}: <code data-testid="knowledge-source-endpoint">{source.endpoint}</code>
             </Typography.Text>
-            <Typography.Text type="secondary">{t("knowledgeSources.endpointNotice")}</Typography.Text>
+            <details className="admin-help"><summary>{t("knowledgeSources.endpointHelp")}</summary><p>{t("knowledgeSources.endpointNotice")}</p></details>
           </div>
 
+          {missingCredential && <Alert type="warning" showIcon message={t("knowledgeSources.missingCredential")} description={t("knowledgeSources.saveFirst")} />}
           <ProForm<KnowledgeSourceFormState>
             className="settings-inline-form knowledge-source-form wave-c-form"
             data-testid="knowledge-source-form"
@@ -1483,22 +1544,25 @@ function KnowledgeSourcesPanel(props: {
               <Checkbox
                 data-testid="knowledge-source-enabled"
                 checked={form.enabled}
+                disabled={saving || testing}
                 onChange={(event) => {
                   props.onDirty?.();
                   setForm((current) => ({ ...current, enabled: event.target.checked }));
                   setTestStatus(null);
                   setTestErrorCode(null);
+                  setKnowledgeBases([]);
                 }}
               >
                 {t("knowledgeSources.enabled")}
               </Checkbox>
             </ProForm.Item>
-            <ProForm.Item label={t("knowledgeSources.credential")}>
+            <ProForm.Item label={t("knowledgeSources.credential")} required={form.enabled}>
               <Select<number>
                 data-testid="knowledge-source-credential"
                 aria-label={t("knowledgeSources.credential")}
                 placeholder={t("knowledgeSources.credentialPlaceholder")}
                 allowClear
+                disabled={saving || testing}
                 style={{ minWidth: 260 }}
                 value={form.credential_id ?? undefined}
                 options={credentials
@@ -1509,10 +1573,12 @@ function KnowledgeSourcesPanel(props: {
                   setForm((current) => ({ ...current, credential_id: value ?? null }));
                   setTestStatus(null);
                   setTestErrorCode(null);
+                  setKnowledgeBases([]);
                 }}
               />
             </ProForm.Item>
           </ProForm>
+          <Button type="link" onClick={props.onCreateCredential}>{t("knowledgeSources.createCredential")}</Button>
 
           <div
             className="knowledge-source-actions"
@@ -1520,22 +1586,13 @@ function KnowledgeSourcesPanel(props: {
             role="toolbar"
             aria-label={t("knowledgeSources.actions")}
           >
-            <Button
-              data-testid="test-knowledge-source"
-              loading={testing}
-              disabled={!form.enabled || testing}
-              onClick={() => void handleTest()}
-            >
-              {t("knowledgeSources.test")}
-            </Button>
-            <Button
-              type="primary"
-              data-testid="save-knowledge-source"
-              loading={saving}
-              onClick={() => void handleSave()}
-            >
+            <Button type="primary" data-testid="save-knowledge-source" loading={saving} disabled={missingCredential || testing} onClick={() => void handleSave()}>
               {t("knowledgeSources.save")}
             </Button>
+            <Button data-testid="test-knowledge-source" loading={testing} disabled={!canTest || saving || testing} onClick={() => void handleTest()}>
+              {t("knowledgeSources.test")}
+            </Button>
+            <Typography.Text type="secondary">{t(missingCredential ? "knowledgeSources.missingCredential" : draftChanged ? "knowledgeSources.saveFirst" : "knowledgeSources.testScope")}</Typography.Text>
           </div>
 
           <Typography.Text type="secondary">{t("knowledgeSources.credentialNotice")}</Typography.Text>
@@ -1550,7 +1607,7 @@ function KnowledgeSourcesPanel(props: {
           <div className="knowledge-source-bases" data-testid="knowledge-source-bases">
             <Typography.Title level={5}>{t("knowledgeSources.knowledgeBasesTitle")}</Typography.Title>
             {knowledgeBases.length === 0 ? (
-              <Typography.Text type="secondary">{t("knowledgeSources.noKnowledgeBases")}</Typography.Text>
+              <Typography.Text type="secondary">{t(testStatus === "connected" ? "knowledgeSources.noKnowledgeBases" : "knowledgeSources.listNotLoaded")}</Typography.Text>
             ) : (
               <ProTable<KnowledgeBase>
                 rowKey="id"
@@ -1635,6 +1692,8 @@ function SystemLocaleControl(props: MutationTrackingProps) {
 
   return (
     <div className="settings-locale-control" data-testid="system-locale-control">
+      <Typography.Title level={4}>{t("localeGuidance.title")}</Typography.Title>
+      <Typography.Paragraph type="secondary">{t("localeGuidance.scope")}</Typography.Paragraph>
       <ProForm className="settings-locale-form" layout="vertical" submitter={false}>
         <ProForm.Item label={t("language")}>
           <Select
@@ -1655,6 +1714,8 @@ function SystemLocaleControl(props: MutationTrackingProps) {
           />
         </ProForm.Item>
       </ProForm>
+      <Alert type="info" showIcon message={t("localeGuidance.autoSave")} />
+      <Card size="small" title={t("localeGuidance.loginTitle")}><Typography.Text type="secondary">{t("localeGuidance.loginScope")}</Typography.Text></Card>
       {error !== null && <p className="settings-panel-error" role="alert">{error}</p>}
     </div>
   );
@@ -1907,8 +1968,57 @@ function ManagedInputSettingsPanel(props: {
           })}
         />
       )}
-      <Card size="small" title={t("managedInput.policyTitle")} className="managed-input-policy-card">
-        <Form layout="vertical" className="managed-input-policy-form">
+      <Card size="small" title={t("managedInput.usageTitle")} className="managed-input-usage-card">
+        <div className="admin-stat-grid managed-input-usage-summary" data-testid="managed-input-usage-summary">
+          <div className="admin-stat"><strong>{formatBytes(settings.usage.platform_actual_bytes)}</strong><span>{t("managedInput.actualUsageLabel")}</span></div>
+          <div className="admin-stat"><strong>{formatBytes(settings.usage.platform_reserved_bytes)}</strong><span>{t("managedInput.reservedUsageLabel")}</span></div>
+          <div className="admin-stat"><strong>{formatBytes(settings.usage.platform_total_bytes)}</strong><span>{t("managedInput.totalUsageLabel")}</span></div>
+        </div>
+        <details className="admin-help"><summary>{t("managedInput.usageDetails")}</summary>
+        <ProTable
+          rowKey="adapter_id"
+          className="managed-input-usage-table"
+          size="small"
+          search={false}
+          options={false}
+          pagination={false}
+          scroll={{ y: 280 }}
+          dataSource={settings.usage.adapters}
+          columns={[
+            {
+              title: t("managedInput.adapterColumn"),
+              dataIndex: "adapter_id",
+              render: (_value, row) => {
+                const adapter = props.adapters.find((item) => item.id === row.adapter_id);
+                const label = adapter?.name ?? t("managedInput.adapterFallback", { id: row.adapter_id });
+                return (
+                  <Button
+                    type="link"
+                    className="managed-input-adapter-link"
+                    data-testid={`managed-input-adapter-${row.adapter_id}`}
+                    onClick={() => props.onSelectAdapter?.(row.adapter_id)}
+                  >
+                    {label}
+                  </Button>
+                );
+              },
+            },
+            {
+              title: t("managedInput.usageColumn"),
+              render: (_value, row) => formatBytes(row.total_bytes),
+            },
+            {
+              title: t("managedInput.statusColumn"),
+              render: (_value, row) => row.over_quota ? <Tag color="warning">{t("managedInput.overQuotaShort")}</Tag> : <Tag color="green">{t("managedInput.withinQuota")}</Tag>,
+            },
+          ]}
+        />
+        </details>
+      </Card>
+      <Form layout="vertical" className="managed-input-policy-form managed-input-refined-form">
+        <section className="managed-policy-group" aria-label={t("managedInput.retentionTitle")}>
+          <Typography.Title level={4}>{t("managedInput.retentionTitle")}</Typography.Title>
+          <div className="managed-policy-fields">
           <Form.Item label={t("managedInput.defaultRetention")}>
             <Space.Compact block className="managed-input-unit-compact">
               <InputNumber
@@ -1981,6 +2091,63 @@ function ManagedInputSettingsPanel(props: {
               />
             </Space.Compact>
           </Form.Item>
+          <Form.Item label={t("managedInput.stagedTtlSeconds")}>
+            <Space.Compact block className="managed-input-unit-compact">
+              <InputNumber
+                data-testid="managed-input-staged-ttl"
+                min={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.staged_ttl_seconds.min,
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.staged_ttl_seconds],
+                )}
+                max={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.staged_ttl_seconds.max,
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.staged_ttl_seconds],
+                )}
+                precision={2}
+                value={managedInputDisplayValue(
+                  draft.staged_ttl_seconds,
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.staged_ttl_seconds],
+                )}
+                onChange={(value) => updateScaledNumber(
+                  "staged_ttl_seconds",
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.staged_ttl_seconds],
+                  value,
+                )}
+              />
+              <Select<ManagedInputTimeUnit>
+                className="managed-input-unit-select"
+                aria-label={t("managedInput.stagedTtlUnit")}
+                data-testid="managed-input-staged-ttl-unit"
+                value={timeUnits.staged_ttl_seconds}
+                options={timeUnitOptions}
+                onChange={(value) => setTimeUnits((current) => ({
+                  ...current,
+                  staged_ttl_seconds: value,
+                }))}
+              />
+            </Space.Compact>
+          </Form.Item>
+          <Form.Item label={t("managedInput.retentionOptions")}>
+            <Checkbox
+              data-testid="managed-input-allow-manual-delete"
+              checked={draft.allow_manual_delete}
+              onChange={(event) => {
+                props.onDirty?.();
+                setDraft((current) => current === null ? current : {
+                  ...current,
+                  allow_manual_delete: event.target.checked,
+                });
+              }}
+            >
+              {t("managedInput.allowManualDelete")}
+            </Checkbox>
+          </Form.Item>
+          </div>
+          <Typography.Paragraph type="secondary" className="managed-policy-hint">{t("managedInput.policyHint")}</Typography.Paragraph>
+        </section>
+        <section className="managed-policy-group" aria-label={t("managedInput.capacityTitle")}>
+          <Typography.Title level={4}>{t("managedInput.capacityTitle")}</Typography.Title>
+          <div className="managed-policy-fields">
           <Form.Item label={t("managedInput.maxFileBytes")}>
             <Space.Compact block className="managed-input-unit-compact">
               <InputNumber
@@ -2080,7 +2247,8 @@ function ManagedInputSettingsPanel(props: {
               />
             </Space.Compact>
           </Form.Item>
-          <Form.Item label={t("managedInput.minFreeSpaceBytes")}>
+          <Form.Item label={t("managedInput.minFreeSpaceBytes")}
+            extra={t("managedInput.diskSpaceHint")}>
             <Space.Compact block className="managed-input-unit-compact">
               <InputNumber
                 data-testid="managed-input-min-free-space"
@@ -2113,61 +2281,10 @@ function ManagedInputSettingsPanel(props: {
               />
             </Space.Compact>
           </Form.Item>
-          <Form.Item label={t("managedInput.stagedTtlSeconds")}>
-            <Space.Compact block className="managed-input-unit-compact">
-              <InputNumber
-                data-testid="managed-input-staged-ttl"
-                min={managedInputDisplayValue(
-                  MANAGED_INPUT_POLICY_LIMITS.staged_ttl_seconds.min,
-                  MANAGED_INPUT_TIME_FACTORS[timeUnits.staged_ttl_seconds],
-                )}
-                max={managedInputDisplayValue(
-                  MANAGED_INPUT_POLICY_LIMITS.staged_ttl_seconds.max,
-                  MANAGED_INPUT_TIME_FACTORS[timeUnits.staged_ttl_seconds],
-                )}
-                precision={2}
-                value={managedInputDisplayValue(
-                  draft.staged_ttl_seconds,
-                  MANAGED_INPUT_TIME_FACTORS[timeUnits.staged_ttl_seconds],
-                )}
-                onChange={(value) => updateScaledNumber(
-                  "staged_ttl_seconds",
-                  MANAGED_INPUT_TIME_FACTORS[timeUnits.staged_ttl_seconds],
-                  value,
-                )}
-              />
-              <Select<ManagedInputTimeUnit>
-                className="managed-input-unit-select"
-                aria-label={t("managedInput.stagedTtlUnit")}
-                data-testid="managed-input-staged-ttl-unit"
-                value={timeUnits.staged_ttl_seconds}
-                options={timeUnitOptions}
-                onChange={(value) => setTimeUnits((current) => ({
-                  ...current,
-                  staged_ttl_seconds: value,
-                }))}
-              />
-            </Space.Compact>
-          </Form.Item>
-          <Form.Item>
-            <Checkbox
-              data-testid="managed-input-allow-manual-delete"
-              checked={draft.allow_manual_delete}
-              onChange={(event) => {
-                props.onDirty?.();
-                setDraft((current) => current === null ? current : {
-                  ...current,
-                  allow_manual_delete: event.target.checked,
-                });
-              }}
-            >
-              {t("managedInput.allowManualDelete")}
-            </Checkbox>
-          </Form.Item>
-        </Form>
-        <Typography.Text type="secondary" className="settings-field-hint">
-          {t("managedInput.policyHint")}
-        </Typography.Text>
+          </div>
+          <Typography.Paragraph type="secondary" className="managed-policy-hint">{t("managedInput.quotaReductionHint")}</Typography.Paragraph>
+        </section>
+        <div className="managed-policy-savebar">
         <Button
           type="primary"
           data-testid="managed-input-settings-save"
@@ -2176,56 +2293,9 @@ function ManagedInputSettingsPanel(props: {
         >
           {t("managedInput.save")}
         </Button>
-      </Card>
-
-      <Card size="small" title={t("managedInput.usageTitle")} className="managed-input-usage-card">
-        <div className="managed-input-usage-summary" data-testid="managed-input-usage-summary">
-          <Typography.Text>{t("managedInput.actualUsage", { value: formatBytes(settings.usage.platform_actual_bytes) })}</Typography.Text>
-          <Typography.Text>{t("managedInput.reservedUsage", { value: formatBytes(settings.usage.platform_reserved_bytes) })}</Typography.Text>
-          <Typography.Text>{t("managedInput.totalUsage", { value: formatBytes(settings.usage.platform_total_bytes) })}</Typography.Text>
         </div>
-        <Typography.Text type="secondary" className="settings-field-hint">
-          {t("managedInput.quotaReductionHint")}
-        </Typography.Text>
-        <ProTable
-          rowKey="adapter_id"
-          className="managed-input-usage-table"
-          size="small"
-          search={false}
-          options={false}
-          pagination={false}
-          scroll={{ y: 280 }}
-          dataSource={settings.usage.adapters}
-          columns={[
-            {
-              title: t("managedInput.adapterColumn"),
-              dataIndex: "adapter_id",
-              render: (_value, row) => {
-                const adapter = props.adapters.find((item) => item.id === row.adapter_id);
-                const label = adapter?.name ?? t("managedInput.adapterFallback", { id: row.adapter_id });
-                return (
-                  <Button
-                    type="link"
-                    className="managed-input-adapter-link"
-                    data-testid={`managed-input-adapter-${row.adapter_id}`}
-                    onClick={() => props.onSelectAdapter?.(row.adapter_id)}
-                  >
-                    {label}
-                  </Button>
-                );
-              },
-            },
-            {
-              title: t("managedInput.usageColumn"),
-              render: (_value, row) => formatBytes(row.total_bytes),
-            },
-            {
-              title: t("managedInput.statusColumn"),
-              render: (_value, row) => row.over_quota ? <Tag color="warning">{t("managedInput.overQuotaShort")}</Tag> : <Tag color="green">{t("managedInput.withinQuota")}</Tag>,
-            },
-          ]}
-        />
-      </Card>
+      </Form>
+
       {error !== null && <p className="settings-panel-error" role="alert">{error}</p>}
       {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
     </div>
@@ -2312,6 +2382,8 @@ const SystemSettingsDrawer = forwardRef<PageLeaveGuardHandle, SystemSettingsDraw
   const copy = categoryCopy[activeCategory];
 
   function markDirty(event: ChangeEvent<HTMLElement>): void {
+    // Status controls and cache operations do not edit a saveable settings draft.
+    if (activeCategory === "system-status") return;
     const target = event.target as HTMLElement;
     if (
       target.closest("[data-testid=system-locale-select]") ||
@@ -2374,6 +2446,7 @@ const SystemSettingsDrawer = forwardRef<PageLeaveGuardHandle, SystemSettingsDraw
             )}
             {activeCategory === "system-status" && (
               <SystemStatusPanel
+                adapters={props.adapters}
                 level={props.systemStatusLevel ?? "checking"}
                 health={props.healthStatus ?? "loading"}
                 healthPayload={props.healthPayload ?? null}
@@ -2423,6 +2496,7 @@ const SystemSettingsDrawer = forwardRef<PageLeaveGuardHandle, SystemSettingsDraw
             )}
             {activeCategory === "knowledge-sources" && (
               <KnowledgeSourcesPanel
+                onCreateCredential={() => selectCategory("credentials")}
                 active
                 onError={keepErrorInline}
                 onSaved={() => setDirty(false)}

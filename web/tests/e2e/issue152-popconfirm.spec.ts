@@ -242,7 +242,7 @@ async function openIncidentHistory(page: Page) {
 }
 
 async function tabToButton(page: Page, name: RegExp, limit = 12) {
-  const button = page.getByRole("button", { name });
+  const button = page.locator(".ant-popconfirm:visible").getByRole("button", { name });
   const visited: string[] = [];
   for (let index = 0; index < limit; index += 1) {
     await page.keyboard.press("Tab");
@@ -268,13 +268,13 @@ test("real Ant Design recover Popconfirm cancels without writing and confirms ex
   await expect(page.getByText("确认恢复此执行？")).toBeVisible();
   await expect(page.getByText("将按冻结的版本、输入、目标和资源快照继续原执行。")).toBeVisible();
   expect(dispositionRequests).toHaveLength(0);
-  await page.getByRole("button", { name: /取\s*消/ }).click();
+  await page.locator(".ant-popconfirm:visible").getByRole("button", { name: /^取\s*消$/ }).click();
   await expect(page.getByText("确认恢复此执行？")).toBeHidden();
   expect(dispositionRequests).toHaveLength(0);
 
   await page.getByRole("button", { name: "恢复此执行" }).click();
   await expect(page.getByText("确认恢复此执行？")).toBeVisible();
-  await page.getByRole("button", { name: /确\s*认/ }).click();
+  await page.locator(".ant-popconfirm:visible").getByRole("button", { name: /^确\s*认$/ }).click();
   await expect.poll(() => dispositionRequests.length).toBe(1);
   expect(dispositionRequests[0]?.body).toEqual({
     action: "recover",
@@ -293,7 +293,7 @@ test("real Ant Design terminate Popconfirm submits exactly once", async ({ page 
   await expect(page.getByText("确认终结此执行？")).toBeVisible();
   await expect(page.getByText("将按当前状态机终结或请求取消原执行。")).toBeVisible();
   expect(dispositionRequests).toHaveLength(0);
-  await page.getByRole("button", { name: /确\s*认/ }).click();
+  await page.locator(".ant-popconfirm:visible").getByRole("button", { name: /^确\s*认$/ }).click();
   await expect.poll(() => dispositionRequests.length).toBe(1);
   expect(dispositionRequests[0]?.body).toEqual({
     action: "terminate",
@@ -312,7 +312,7 @@ test("recover Popconfirm keeps cancel and confirm inside the Drawer keyboard cyc
   await recover.focus();
   await page.keyboard.press("Enter");
   await expect(page.getByText("确认恢复此执行？")).toBeVisible();
-  await tabToButton(page, /取\s*消/);
+  await tabToButton(page, /^取\s*消$/);
   await page.keyboard.press("Enter");
   await expect(page.getByText("确认恢复此执行？")).toBeHidden();
   expect(dispositionRequests).toHaveLength(0);
@@ -320,7 +320,7 @@ test("recover Popconfirm keeps cancel and confirm inside the Drawer keyboard cyc
   await recover.focus();
   await page.keyboard.press("Enter");
   await expect(page.getByText("确认恢复此执行？")).toBeVisible();
-  await tabToButton(page, /确\s*认/);
+  await tabToButton(page, /^确\s*认$/);
   await page.keyboard.press("Enter");
   await expect.poll(() => dispositionRequests.length).toBe(1);
   expect(dispositionRequests[0]?.body).toEqual({
@@ -339,7 +339,7 @@ test("terminate Popconfirm confirm stays inside the Drawer keyboard cycle", asyn
   await terminate.focus();
   await page.keyboard.press("Enter");
   await expect(page.getByText("确认终结此执行？")).toBeVisible();
-  await tabToButton(page, /确\s*认/);
+  await tabToButton(page, /^确\s*认$/);
   await page.keyboard.press("Enter");
   await expect.poll(() => dispositionRequests.length).toBe(1);
   expect(dispositionRequests[0]?.body).toEqual({
@@ -454,14 +454,16 @@ async function markerIsFullyVisible(page: Page) {
     range.setStart(text, offset);
     range.setEnd(text, offset + marker.length);
     const markerRect = range.getBoundingClientRect();
-    if (markerRect.top < 0 || markerRect.bottom > window.innerHeight) return false;
+    if (markerRect.top < 0 || markerRect.bottom > window.innerHeight
+      || markerRect.left < 0 || markerRect.right > window.innerWidth) return false;
 
-    let ancestor = element.parentElement;
+    let ancestor: Element | null = element;
     while (ancestor !== null) {
       const overflowY = getComputedStyle(ancestor).overflowY;
       if (["auto", "scroll", "hidden", "clip"].includes(overflowY)) {
         const ancestorRect = ancestor.getBoundingClientRect();
-        if (markerRect.top < ancestorRect.top || markerRect.bottom > ancestorRect.bottom) return false;
+        if (markerRect.top < ancestorRect.top || markerRect.bottom > ancestorRect.bottom
+          || markerRect.left < ancestorRect.left || markerRect.right > ancestorRect.right) return false;
       }
       ancestor = ancestor.parentElement;
     }
@@ -483,23 +485,37 @@ for (const viewport of [{ width: 1306, height: 768 }, { width: 390, height: 844 
     const outputTab = page.getByRole("dialog").getByRole("tab", { name: "输出", exact: true });
     const bodyBox = await drawerBody.boundingBox();
     expect(bodyBox).not.toBeNull();
-    await page.mouse.move(bodyBox!.x + bodyBox!.width / 2, bodyBox!.y + bodyBox!.height / 2);
-    for (let index = 0; index < 4; index += 1) await page.mouse.wheel(0, 1200);
-    await expect.poll(() => drawerBody.evaluate((body) => body.scrollTop)).toBeGreaterThan(0);
+    // v3 opens on output. A wheel over the results can scroll its bounded
+    // container before the Drawer; neither scroll owner is required to move first.
+    await expect(outputTab).toHaveAttribute("aria-selected", "true");
     await expect(outputTab).toBeInViewport();
-    await outputTab.click();
 
     const output = page.getByTestId("output-content");
     await expect(output).toContainText(outputEndMarker);
     expect(await markerIsFullyVisible(page)).toBe(false);
-    const outputBox = await output.boundingBox();
-    expect(outputBox).not.toBeNull();
-    const wheelY = Math.min(
-      bodyBox!.y + bodyBox!.height - 24,
-      Math.max(bodyBox!.y + 24, outputBox!.y + 24),
-    );
-    await page.mouse.move(bodyBox!.x + bodyBox!.width / 2, wheelY);
-    for (let index = 0; index < 8; index += 1) await page.mouse.wheel(0, 2400);
+    // Stop as soon as the marker is fully visible: scrolling beyond the
+    // inner output end chains to the Drawer and can move that marker offscreen.
+    for (let index = 0; index < 24 && !await markerIsFullyVisible(page); index += 1) {
+      const outputBox = await output.boundingBox();
+      expect(outputBox).not.toBeNull();
+      const visibleTop = Math.max(0, bodyBox!.y) + 12;
+      const visibleBottom = Math.min(viewport.height, bodyBox!.y + bodyBox!.height) - 12;
+      if (outputBox!.y < visibleTop || outputBox!.y + outputBox!.height > visibleBottom) {
+        const before = await drawerBody.evaluate((body) => body.scrollTop);
+        // The Drawer padding is outside the output's scrollable box.
+        await page.mouse.move(bodyBox!.x + 8, (visibleTop + visibleBottom) / 2);
+        const delta = outputBox!.y < visibleTop
+          ? outputBox!.y - visibleTop
+          : outputBox!.y + outputBox!.height - visibleBottom;
+        await page.mouse.wheel(0, delta);
+        await expect.poll(() => drawerBody.evaluate((body) => body.scrollTop)).not.toBe(before);
+      } else {
+        const before = await output.evaluate((element) => element.scrollTop);
+        await page.mouse.move(outputBox!.x + outputBox!.width / 2, outputBox!.y + outputBox!.height / 2);
+        await page.mouse.wheel(0, 1200);
+        await expect.poll(() => output.evaluate((element) => element.scrollTop)).toBeGreaterThan(before);
+      }
+    }
     await expect.poll(() => markerIsFullyVisible(page)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath("output-end-visible.png") });
 

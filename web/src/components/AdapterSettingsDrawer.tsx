@@ -10,7 +10,6 @@ import {
   Space,
   Tag,
   Tooltip,
-  Typography,
 } from "antd";
 import {
   ArrowLeftOutlined,
@@ -177,19 +176,16 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props & { 
           onFinishFailed={() => setFormValid(false)}
         >
           <div className="adapter-settings-summary" data-testid="adapter-settings-summary">
-            <div className="adapter-settings-summary-main">
-              <Typography.Text strong>{props.name || adapter.name}</Typography.Text>
               <div className="adapter-settings-summary-tags">
                 <Tag>{t(`types.${adapter.adapter_type}`)}</Tag>
-                <Tag>{LANGUAGE_LABELS[adapter.language]}</Tag>
+                <Tag data-testid="adapter-language" aria-label={`${t("settings.language")}: ${LANGUAGE_LABELS[adapter.language]}`}>
+                  {LANGUAGE_LABELS[adapter.language]}
+                </Tag>
                 {adapter.runtime_locked === true && <Tag color="processing">{t("settings.active")}</Tag>}
               </div>
-            </div>
-            <Typography.Text type="secondary">{t("settings.summary")}</Typography.Text>
           </div>
 
           <section className="adapter-settings-section" data-testid="adapter-settings-section-basic">
-            <h3 className="adapter-settings-section-title">{t("settings.basicInfo")}</h3>
             <Form.Item
               name="name"
               label={t("settings.name")}
@@ -201,18 +197,6 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props & { 
               ]}
             >
               <Input data-testid="adapter-name" disabled={props.busy || archived || !canEdit} />
-            </Form.Item>
-            <Form.Item label={t("settings.language")}>
-              <div
-                className="adapter-readonly-field"
-                data-testid="adapter-language"
-                aria-label={`${t("settings.language")}: ${LANGUAGE_LABELS[adapter.language]}`}
-                aria-readonly="true"
-                role="status"
-              >
-                <Tag>{LANGUAGE_LABELS[adapter.language]}</Tag>
-                <Typography.Text type="secondary">{t("settings.readOnly")}</Typography.Text>
-              </div>
             </Form.Item>
             <Form.Item name="description" label={t("settings.description")}>
               <Input.TextArea
@@ -243,20 +227,6 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props & { 
 
           {canManage && !archived && (
             <section className="adapter-settings-section" data-testid="adapter-settings-section-permissions">
-              <h3 className="adapter-settings-section-title">{t("settings.permissionsSection")}</h3>
-              <Typography.Text type="secondary" className="adapter-settings-section-summary">
-                {t("settings.accessSummary", {
-                  level: t(
-                    accessLevel === "owner"
-                      ? "access.mine"
-                      : accessLevel === "edit"
-                        ? "access.sharedEdit"
-                        : accessLevel === "read"
-                          ? "access.sharedRead"
-                          : "access.adminAll",
-                  ),
-                })}
-              </Typography.Text>
               <Button
                 icon={<TeamOutlined />}
                 data-testid="open-adapter-permissions"
@@ -271,7 +241,6 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props & { 
           {!archived && (
             <>
               <section className="adapter-settings-section" data-testid="adapter-settings-section-more">
-                <h3 className="adapter-settings-section-title">{t("settings.moreActions")}</h3>
                 <Space wrap className="settings-lifecycle-actions">
                   {canEdit && (
                     <Button
@@ -289,15 +258,6 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props & { 
 
               {canManage && (
                 <section className="adapter-settings-section adapter-danger-zone" data-testid="adapter-danger-zone">
-                  <h3 className="adapter-settings-section-title">{t("settings.dangerZone")}</h3>
-                  <div className="adapter-danger-zone-copy">
-                    <Typography.Text>{t("settings.deleteDescription")}</Typography.Text>
-                    <Typography.Paragraph type="secondary">
-                      {adapter.runtime_locked === true
-                        ? t("settings.deleteWarningActive")
-                        : t("settings.deleteWarningIdle")}
-                    </Typography.Paragraph>
-                  </div>
                   <ActionWithReason
                     label={
                       adapter.runtime_locked === true
@@ -323,9 +283,6 @@ const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props & { 
                         : t("settings.delete")}
                     </Button>
                   </ActionWithReason>
-                  <Typography.Paragraph className="settings-danger-hint">
-                    <Tag color="error">{t("settings.irreversible")}</Tag> {t("settings.dangerHint")}
-                  </Typography.Paragraph>
                 </section>
               )}
             </>

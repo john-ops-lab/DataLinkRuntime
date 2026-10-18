@@ -11,7 +11,7 @@ it("labels every current Execution state in Chinese", () => {
   expect(statusLabel("failed")).toBe("失败");
   expect(statusLabel("timeout")).toBe("超时");
   expect(statusLabel("cancelled")).toBe("已取消");
-  expect(statusLabel("dead_letter")).toBe("死信");
+  expect(statusLabel("dead_letter")).toBe("执行失败");
   expect(statusLabel("expired")).toBe("已过期");
 });
 

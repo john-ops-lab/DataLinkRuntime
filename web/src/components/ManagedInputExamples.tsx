@@ -1,7 +1,9 @@
 import { useState } from "react";
-import { Button, Card, Space, Tag, Tooltip, Typography } from "antd";
+import { Button, Space, Tag, Tooltip, Typography } from "antd";
 import { CopyOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
+
+import "./operations-ux.css";
 
 import { managedInputExample } from "../managed-input-examples";
 import type { AdapterLanguage } from "../types";
@@ -43,12 +45,11 @@ export default function ManagedInputExamples(props: {
   );
 
   return (
-    <Card
-      size="small"
+    <details
       className="managed-input-examples"
       data-testid="managed-input-examples"
-      title={t("task.input.examples.title")}
     >
+      <summary>{t("task.input.examples.title")}</summary>
       <Space direction="vertical" size="small" className="managed-input-examples-content">
         <Typography.Text type="secondary">{t("task.input.examples.description")}</Typography.Text>
         <Tag data-testid="managed-input-example-language">
@@ -87,6 +88,6 @@ export default function ManagedInputExamples(props: {
           </Typography.Text>
         )}
       </Space>
-    </Card>
+    </details>
   );
 }

@@ -284,3 +284,48 @@ it("M5.8-010 keeps Candidate Diff to code even when the Candidate contains non-c
   expect(screen.getByTestId("diff-editor").getAttribute("data-original")).toBe(workingCopy.code);
   expect(screen.getByTestId("diff-editor").getAttribute("data-modified")).toBe(candidate.code);
 });
+
+it("Issue 212 examples only fill the composer and the nearby scope follows the current draft", async () => {
+  const assist = vi.spyOn(api, "assistAdapter");
+  const panel = renderPanel();
+  expect((screen.getByTestId("ai-send") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByTestId("ai-example-explain"));
+  expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toContain("解释当前代码");
+  expect(assist).not.toHaveBeenCalled();
+  expect(screen.queryByTestId("ai-message-user")).toBeNull();
+  expect(screen.getByTestId("ai-session-notice").textContent).toContain("收起助手不清空");
+  expect(screen.getByTestId("ai-send-scope").textContent).toContain(workingCopy.code);
+  panel.rerender({ workingCopy: { ...workingCopy, code: "print('changed draft')" } });
+  expect(screen.getByTestId("ai-send-scope").textContent).toContain("print('changed draft')");
+  expect(assist).not.toHaveBeenCalled();
+});
+
+it("Issue 212 attachment records keep this round’s frozen scope after later edits", async () => {
+  vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("Check the values", null));
+  const panel = renderPanel();
+  fireEvent.change(screen.getByTestId("ai-attachment-input"), { target: { files: [makeFile("round-one.txt")] } });
+  await screen.findByTestId("ai-attachment-item");
+  await sendQuestion("first question");
+  await screen.findByTestId("ai-message-assistant");
+  panel.rerender({ workingCopy: { ...workingCopy, code: "new code for later round" } });
+  const record = screen.getByTestId("ai-message-attachments");
+  expect(record.textContent).toContain("first question");
+  expect(record.textContent).toContain("round-one.txt");
+  expect(within(record).getByTestId("ai-round-scope").textContent).toContain(workingCopy.code);
+  expect(within(record).getByTestId("ai-round-scope").textContent).not.toContain("new code for later round");
+  expect(record.textContent).toContain("不代表模型已完整读取或理解");
+});
+
+
+it("Issue 212 keeps model limits available on demand without crowding the empty composer", async () => {
+  renderPanel();
+  const disclosure = await screen.findByTestId("ai-attachment-limits");
+  expect(disclosure.getAttribute("open")).toBeNull();
+  const capability = await screen.findByTestId("ai-attachment-capability");
+  expect(disclosure.contains(capability)).toBe(true);
+  expect(disclosure.contains(screen.getByTestId("ai-attachment-hint"))).toBe(true);
+  fireEvent.click(within(disclosure).getByText("支持的附件格式与模型限制"));
+  expect(disclosure.getAttribute("open")).not.toBeNull();
+  expect(screen.getByTestId("ai-message-input")).toBeTruthy();
+  expect(screen.getByTestId("ai-send-scope")).toBeTruthy();
+});

@@ -774,7 +774,7 @@ def test_rabbit_skip_while_busy_input_invalid_consumes_cursor_without_execution(
             .where(AdapterInputConfig.adapter_id == adapter["id"])
             .values(source_type="remote_files", json_value=null())
         )
-    due = BASE - timedelta(minutes=1)
+    due = BASE.replace(minute=0, second=0, microsecond=0)
     set_cursor(session_factory, adapter["id"], due)
     expected_due = latest_due_point("0 * * * *", "UTC", due, BASE)
 

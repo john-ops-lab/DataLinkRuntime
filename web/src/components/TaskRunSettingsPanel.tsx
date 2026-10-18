@@ -30,9 +30,29 @@ import type {
 } from "../types";
 import { JsonInputKeyConflict, normalizeJsonInput } from "../json-input-normalization";
 import { userErrorMessage } from "../user-message";
+import "./operations-ux.css";
+import "./input-ux-followup.css";
+
 import ManagedInputExamples from "./ManagedInputExamples";
 
+/** Preserve the server value; choose readable units without rounding expiry. */
+function formatRetentionDuration(seconds: number | undefined, translate: (key: string, options?: Record<string, unknown>) => string): string {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return "—";
+  let remaining = seconds;
+  const parts: string[] = [];
+  for (const [unit, scale] of [["days", 86400], ["hours", 3600], ["minutes", 60], ["seconds", 1]] as const) {
+    const count = Math.floor(remaining / scale);
+    if (count > 0 || (unit === "seconds" && parts.length === 0)) parts.push(translate(`task.input.retentionDuration.${unit}`, { count }));
+    remaining %= scale;
+  }
+  return parts.join(" ");
+}
+
 export interface TaskRuntimeState {
+  inputDirty?: boolean;
+  inputReady?: boolean;
+  settingsReady?: boolean;
+  settingsDirty?: boolean;
   scheduleEnabled: boolean;
   loading: boolean;
   activeExecution: boolean;
@@ -92,6 +112,18 @@ function errorMessage(error: unknown): string {
   return userErrorMessage(error);
 }
 
+/** Python ZoneInfo accepts some names that a browser's Intl does not know.
+ * Keep a successful server preview readable using its timezone-qualified ISO value. */
+function formatPreviewTime(time: string, timezone: string, locale: "zh-CN" | "en"): string {
+  try {
+    return new Date(time).toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
+      timeZone: timezone, timeZoneName: "short",
+    });
+  } catch {
+    return time;
+  }
+}
+
 function formatJson(value: unknown): string {
   return JSON.stringify(value, null, 2) ?? "null";
 }
@@ -105,6 +137,28 @@ function parseJson(text: string): { ok: true; value: unknown } | { ok: false } {
   } catch {
     return { ok: false };
   }
+}
+
+/** Compare JSON values without treating object key order or indentation as edits.
+ * Do not normalize NULs here: those changes still require the explicit save path.
+ */
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((value, index) => sameJsonValue(value, right[index]));
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = Object.keys(leftRecord);
+  return keys.length === Object.keys(rightRecord).length
+    && keys.every((key) => Object.hasOwn(rightRecord, key) && sameJsonValue(leftRecord[key], rightRecord[key]));
+}
+
+function jsonDraftMatchesSaved(text: string, saved: unknown): boolean {
+  const parsed = parseJson(text);
+  return parsed.ok && sameJsonValue(parsed.value, saved);
 }
 
 type InputErrorTranslationKey = "revisionConflict" | "sourceNotAvailable" | "notInitialized" | "managedFilesEmpty";
@@ -268,7 +322,40 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }));
   const [schedule, setSchedule] = useState<AdapterSchedule | null>(null);
   const [cron, setCron] = useState("*/5 * * * *");
+  const [advancedSchedule, setAdvancedSchedule] = useState(false);
+  const [schedulePreview, setSchedulePreview] = useState<{ cron: string; timezone: string; occurrences: string[] } | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewGeneration = useRef(0);
+  const previewDraft = useRef({ cron, timezone: "" });
   const [timezone, setTimezone] = useState("Asia/Shanghai");
+  useEffect(() => {
+    previewDraft.current = { cron, timezone };
+    previewGeneration.current += 1;
+    setPreviewLoading(false);
+    setPreviewError(null);
+    setSchedulePreview(null);
+  }, [cron, timezone]);
+  useEffect(() => () => { previewGeneration.current += 1; }, []);
+
+  async function previewScheduleTimes(): Promise<void> {
+    const generation = ++previewGeneration.current;
+    const draft = { cron, timezone };
+    setPreviewLoading(true);
+    setPreviewError(null);
+    setSchedulePreview(null);
+    try {
+      const result = await api.previewSchedule({ ...draft, count: 3 });
+      if (generation === previewGeneration.current && previewDraft.current.cron === draft.cron && previewDraft.current.timezone === draft.timezone) {
+        setSchedulePreview({ ...draft, occurrences: result.occurrences });
+      }
+    } catch (error) {
+      if (generation === previewGeneration.current) setPreviewError(userErrorMessage(error));
+    } finally {
+      if (generation === previewGeneration.current) setPreviewLoading(false);
+    }
+  }
+
   const [misfirePolicy, setMisfirePolicy] = useState<ScheduleMisfirePolicy>(DEFAULT_SCHEDULE_MISFIRE_POLICY);
   const [maxCatchupCount, setMaxCatchupCount] = useState(DEFAULT_SCHEDULE_CATCHUP_COUNT);
   const [maxCatchupAgeSeconds, setMaxCatchupAgeSeconds] = useState(DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
@@ -1000,7 +1087,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
 
   const inputDirty = inputConfig !== null && (
     inputSourceDraft !== inputConfig.source_type ||
-    (inputSourceDraft === "json" && inputJsonDraft !== formatJson(inputConfig.json_value)) ||
+    (inputSourceDraft === "json" && !jsonDraftMatchesSaved(inputJsonDraft, inputConfig.json_value)) ||
     (inputSourceDraft === "managed_files" && (
       !sameIds(managedArtifactIds(managedFilesDraft), inputConfig.artifacts.map((artifact) => artifact.id)) ||
       retentionDraft.mode !== inputConfig.retention.mode ||
@@ -1154,16 +1241,13 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   ];
 
   function selectInputSource(sourceType: InputSourceType, disabledReason: string | null): void {
-    if (disabledReason !== null) {
+    if (disabledReason !== null || sourceType === inputSourceDraft) {
       return;
     }
     inputEditEpoch.current += 1;
     setInputSourceDraft(sourceType);
     if (sourceType === "managed_files") {
       setManagedFilesDraft((current) => mergeManagedFileDrafts(current, stagedArtifacts));
-      setRetentionDraft(inputConfig?.source_type === "managed_files"
-        ? inputConfig.retention
-        : { mode: "system_default", seconds: null });
     }
     setInputValidationError(null);
     onError(null);
@@ -1178,6 +1262,10 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       || uploadProgress.length > 0
       || deletingArtifactId !== null;
     onRuntimeStateChange({
+      inputDirty: inputDirty || stagedArtifacts.length > 0,
+      inputReady: !loadingInput && !inputLoadFailed && inputConfig !== null,
+      settingsReady: !loadingSchedule && !scheduleLoadFailed,
+      settingsDirty: runtimeConfigDirty,
       scheduleEnabled,
       loading: loadingInput || loadingSchedule || savingRuntime || savingInput || savingSchedule || submitting || cancelling,
       activeExecution,
@@ -1194,6 +1282,12 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     loadingInput,
     loadingSchedule,
     onRuntimeStateChange,
+    inputDirty,
+    inputConfig,
+    inputLoadFailed,
+    scheduleLoadFailed,
+    runtimeConfigDirty,
+    stagedArtifacts.length,
     runBlockedReason,
     savingInput,
     savingRuntime,
@@ -1223,6 +1317,28 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }));
 
   const scheduleVisible = runMode === "schedule";
+  const cronParts = cron.trim().split(/\s+/);
+  const simpleTime = cronParts.length === 5 && /^\d+$/.test(cronParts[0]) && /^\d+$/.test(cronParts[1]) && Number(cronParts[0]) < 60 && Number(cronParts[1]) < 24;
+  const inferredSchedulePreset = simpleTime && cronParts.slice(2).join(" ") === "* * *" ? "daily"
+    : simpleTime && cronParts[2] === "*" && cronParts[3] === "*" && /^[0-6]$/.test(cronParts[4]) ? "weekly"
+    : /^\d+$/.test(cronParts[0] ?? "") && Number(cronParts[0]) < 60 && cronParts.slice(1).join(" ") === "* * * *" ? "hourly" : "advanced";
+  const schedulePreset = advancedSchedule ? "advanced" : inferredSchedulePreset;
+  const readableScheduleRule = t(`task.settings.rule_${schedulePreset}`, {
+    time: simpleTime ? `${cronParts[1].padStart(2, "0")}:${cronParts[0].padStart(2, "0")}` : "",
+    weekday: schedulePreset === "weekly" ? t(`task.settings.weekdays.${cronParts[4]}`) : "",
+    minute: Number(cronParts[0]),
+    timezone,
+    cron,
+  });
+  function changeScheduleCron(value: string) {
+    previewGeneration.current += 1;
+    setPreviewLoading(false);
+    setPreviewError(null);
+    scheduleEditEpoch.current += 1;
+    setCron(value);
+    setScheduleTouched(true);
+  }
+
 
   return (
     <div className="task-run-settings" data-testid="task-run-settings">
@@ -1331,14 +1447,34 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
           <Typography.Title level={5}>{t("task.settings.scheduleTitle")}</Typography.Title>
           {loadingSchedule ? <Spin /> : (
             <Space direction="vertical" size="middle" className="schedule-form">
-              <label className="settings-field">
+              <div className="operations-preset-row" role="group" aria-label={t("task.settings.frequency")}>
+                {(["daily", "weekly", "hourly", "advanced"] as const).map((preset) => <Button key={preset} autoInsertSpace={false} type={schedulePreset === preset ? "primary" : "default"} disabled={readOnly || scheduleFieldsLocked} onClick={() => {
+                  setAdvancedSchedule(preset === "advanced");
+                  if (preset !== "advanced" && preset !== inferredSchedulePreset) changeScheduleCron(preset === "daily" ? "0 9 * * *" : preset === "weekly" ? "0 9 * * 1" : "0 * * * *");
+                }}>{t(`task.settings.frequency_${preset}`)}</Button>)}
+              </div>
+              {(schedulePreset === "daily" || schedulePreset === "weekly") && <label className="settings-field"><span>{t("task.settings.timeOfDay")}</span><Input type="time" aria-label={t("task.settings.timeOfDay")} value={`${cronParts[1].padStart(2, "0")}:${cronParts[0].padStart(2, "0")}`} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => {
+                const [hour, minute] = event.target.value.split(":");
+                if (hour && minute) changeScheduleCron(`${Number(minute)} ${Number(hour)} * * ${schedulePreset === "weekly" ? cronParts[4] : "*"}`);
+              }} /></label>}
+              {schedulePreset === "weekly" && <label className="settings-field"><span>{t("task.settings.weekday")}</span><Select aria-label={t("task.settings.weekday")} value={cronParts[4]} disabled={readOnly || scheduleFieldsLocked} options={Array.from({ length: 7 }, (_, day) => ({ value: String(day), label: t(`task.settings.weekdays.${day}`) }))} onChange={(day) => changeScheduleCron(`${cronParts[0]} ${cronParts[1]} * * ${day}`)} /></label>}
+              {schedulePreset === "hourly" && <label className="settings-field"><span>{t("task.settings.minuteOfHour")}</span><InputNumber aria-label={t("task.settings.minuteOfHour")} min={0} max={59} precision={0} value={Number(cronParts[0])} disabled={readOnly || scheduleFieldsLocked} onChange={(minute) => changeScheduleCron(`${minute ?? 0} * * * *`)} /></label>}
+              {schedulePreset === "advanced" && <label className="settings-field">
                 <span className="settings-field-label">{t("task.settings.cron")}</span>
-                <Input data-testid="task-schedule-cron" value={cron} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { scheduleEditEpoch.current += 1; setCron(event.target.value); setScheduleTouched(true); }} />
-              </label>
+                <Input data-testid="task-schedule-cron" value={cron} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { setAdvancedSchedule(true); changeScheduleCron(event.target.value); }} />
+              </label>}
               <label className="settings-field">
                 <span className="settings-field-label">{t("task.settings.timezone")}</span>
+                <small>{t("task.settings.timezoneHint")}</small>
                 <Input data-testid="task-schedule-timezone" value={timezone} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { scheduleEditEpoch.current += 1; setTimezone(event.target.value); setScheduleTouched(true); }} />
               </label>
+              <div className="operations-schedule-preview" data-testid="task-schedule-preview">
+                <strong>{readableScheduleRule}</strong>
+                <p>{t("task.settings.previewHint")}</p>
+                <Button loading={previewLoading} disabled={loadingSchedule || !cron.trim() || !timezone.trim()} onClick={() => void previewScheduleTimes()}>{t("task.settings.previewTimes")}</Button>
+                {schedulePreview?.cron === cron && schedulePreview.timezone === timezone && <ol>{schedulePreview.occurrences.map((time) => <li key={time}>{formatPreviewTime(time, timezone, locale)}</li>)}</ol>}
+                {previewError && <Alert type="error" showIcon message={previewError} />}
+              </div>
               <label className="settings-field">
                 <span className="settings-field-label">{t("task.settings.misfirePolicy")}</span>
                 <Select
@@ -1379,6 +1515,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                   ]}
                 />
               </label>
+              <Typography.Text type="secondary">{t(`task.settings.${misfirePolicy === "coalesce_latest" ? "coalesceLatestHint" : misfirePolicy === "queue_every_occurrence" ? "queueEveryOccurrenceHint" : "skipWhileBusyHint"}`)}</Typography.Text>
               <div className="settings-field schedule-catchup-fields">
                 <label>
                   <span className="settings-field-label">{t("task.settings.catchupCount")}</span>
@@ -1424,10 +1561,11 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                   <Tag color={scheduleEnabled ? "green" : "default"}>{scheduleEnabled ? t("task.settings.scheduleRunning") : t("task.settings.disabled")}</Tag>
                   <span data-testid="task-schedule-next-run">{t("task.settings.nextRun", { time: formatTime(schedule?.next_run_at ?? null, locale) })}</span>
                   <Button size="small" onClick={() => void requestRuntimeRefresh("explicit")}>{t("actions.refresh", { ns: "common" })}</Button>
+                  <Tooltip title={!scheduleEnabled ? scheduleEnableBlockedReason : undefined}><span className="action-with-reason"><Button size="small" loading={savingSchedule} disabled={readOnly || savingSchedule || (!scheduleEnabled && scheduleEnableBlockedReason !== null)} onClick={() => void saveSchedule(!scheduleEnabled)}>{t(scheduleEnabled ? "task.settings.disableSchedule" : "task.settings.enableSchedule")}</Button></span></Tooltip>
                 </Space>
               </div>
-              <div className="settings-field" data-testid="task-schedule-outcomes">
-                <span className="settings-field-label">{t("task.settings.recentOutcomes")}</span>
+              <details className="settings-field operations-disclosure" data-testid="task-schedule-outcomes">
+                <summary>{t("task.settings.recentOutcomes")}</summary>
                 {schedule?.recent_outcomes && schedule.recent_outcomes.length > 0 ? (
                   <Space direction="vertical" size="small">
                     {schedule.recent_outcomes.slice(0, 5).map((outcome) => (
@@ -1449,11 +1587,22 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 ) : (
                   <Typography.Text type="secondary">{t("task.settings.noRecentOutcomes")}</Typography.Text>
                 )}
-              </div>
+              </details>
             </Space>
           )}
         </section>
       )}
+
+      <Button
+        type="primary"
+        className="task-run-config-save"
+        data-testid="save-task-runtime"
+        loading={savingRuntime}
+        disabled={readOnly || runtimeLocked || workerId === null}
+        onClick={() => void saveRunConfig()}
+      >
+        {t("task.settings.save")}
+      </Button>
 
       <section className="task-input-config" data-testid="task-input-config">
         <div className="task-input-heading">
@@ -1465,6 +1614,9 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             <Tag color={inputDirty ? "gold" : "green"}>
               {inputDirty ? t("task.input.draft") : t("task.input.saved")}
             </Tag>
+            {stagedArtifacts.length > 0 && inputSourceDraft !== "managed_files" && (
+              <Tag color="gold">{t("task.input.pendingUploads", { count: stagedArtifacts.length })}</Tag>
+            )}
           </div>
         </div>
 
@@ -1759,6 +1911,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 />
               )}
 
+              <details className="operations-disclosure"><summary>{t("task.input.supportedFormats")}</summary><p>{managedFileAccept || t("task.input.formatsUnavailable")}</p></details>
               <Form.Item label={t("task.input.retentionLabel")} className="managed-input-retention-item"
                 validateStatus={retentionInvalid ? "error" : undefined}
                 help={retentionInvalid ? t("task.input.errors.retentionIntegerRange", {
@@ -1770,7 +1923,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                     value={retentionDraft.mode}
                     disabled={inputEditingLocked || !managedFilesEnabled}
                     options={[
-                      { value: "system_default", label: t("task.input.retention.systemDefault") },
+                      { value: "system_default", label: t("task.input.retention.systemDefaultCurrent", { duration: formatRetentionDuration(managedCapability?.default_retention_seconds, (key, options) => t(key, options)) }) },
                       { value: "custom", label: t("task.input.retention.custom") },
                       {
                         value: "manual_delete",
@@ -1866,21 +2019,11 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             >
               {t("task.input.save")}
             </Button>
-            {inputDirty && <Typography.Text type="warning">{t("task.input.unsavedHint")}</Typography.Text>}
           </div>
         </Form>
       </section>
 
-      <Button
-        type="primary"
-        className="task-run-config-save"
-        data-testid="save-task-runtime"
-        loading={savingRuntime}
-        disabled={readOnly || runtimeLocked || workerId === null}
-        onClick={() => void saveRunConfig()}
-      >
-        {t("task.settings.save")}
-      </Button>
+
     </div>
   );
 });

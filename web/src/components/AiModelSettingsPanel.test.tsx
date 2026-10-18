@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { ApiError, api } from "../api";
@@ -106,7 +106,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("keeps the current configuration summary in the primary flow and collapses custom services", async () => {
+it("keeps the draft summary and opens custom services separately without losing the model draft", async () => {
   mockLoad(modelSetting({
     provider: "openai",
     base_url: "https://models.example.com/v1",
@@ -122,8 +122,12 @@ it("keeps the current configuration summary in the primary flow and collapses cu
   expect(screen.getByTestId("ai-summary-model").textContent).toBe("reasoning-model");
   expect(screen.getByTestId("ai-summary-credential").textContent).toBe("未绑定凭据");
 
-  const customSection = screen.getByText("自定义模型服务").closest(".ant-collapse-item");
-  expect(customSection?.className).not.toContain("ant-collapse-item-active");
+  expect(screen.queryByTestId("ai-custom-name")).toBeNull();
+  fireEvent.change(screen.getByTestId("ai-model-input"), { target: { value: "unsaved-model" } });
+  fireEvent.click(screen.getByTestId("ai-custom-open"));
+  await screen.findByTestId("ai-custom-name");
+  fireEvent.click(document.querySelector<HTMLButtonElement>(".ant-drawer-close")!);
+  expect((screen.getByTestId("ai-model-input") as HTMLInputElement).value).toBe("unsaved-model");
 });
 
 it("preserves rapid primary-setting and custom-provider draft updates", async () => {
@@ -154,7 +158,7 @@ it("preserves rapid primary-setting and custom-provider draft updates", async ()
     />,
   );
   await screen.findByTestId("ai-model-settings-panel");
-  fireEvent.click(screen.getByText("自定义模型服务"));
+  fireEvent.click(screen.getByTestId("ai-custom-open"));
   const customName = await screen.findByTestId("ai-custom-name");
   act(() => {
     fireEvent.change(customName, {
@@ -269,7 +273,7 @@ it("shows Provider-specific effort options and clears stale values on Provider o
     "请选择推理强度",
   );
   await chooseOption("ai-reasoning-effort", "high");
-  await chooseOption("ai-reasoning-mode", "跟随模型默认");
+  await chooseOption("ai-reasoning-mode", "使用模型默认设置");
   expect(screen.queryByTestId("ai-reasoning-effort")).toBeNull();
 
   await chooseOption("ai-reasoning-mode", "开启推理");
@@ -382,7 +386,7 @@ it("requires an explicit OpenAI effort and sends only the selected or default pa
   fireEvent.change(screen.getByTestId("ai-model-input"), {
     target: { value: "reasoning-model" },
   });
-  fireEvent.click(screen.getByText("推理设置：跟随模型默认"));
+  fireEvent.click(screen.getByText("推理设置：使用模型默认设置"));
   await chooseOption("ai-reasoning-mode", "开启推理");
 
   fireEvent.click(screen.getByTestId("ai-save-settings"));
@@ -399,7 +403,7 @@ it("requires an explicit OpenAI effort and sends only the selected or default pa
   // M5.6 Wave 4 E: the success sentence is DLR-owned and localized in the
   // bundle; the server compatibility message is never interpolated verbatim.
   expect((await screen.findByTestId("ai-settings-notice")).textContent).toBe(
-    "连接测试通过，模型返回可解析响应。",
+    "连接测试通过，已收到模型回复。",
   );
   expect(testSetting).toHaveBeenLastCalledWith({
     provider: "openai",
@@ -421,7 +425,7 @@ it("requires an explicit OpenAI effort and sends only the selected or default pa
     reasoning_effort: "xhigh",
   });
 
-  await chooseOption("ai-reasoning-mode", "跟随模型默认");
+  await chooseOption("ai-reasoning-mode", "使用模型默认设置");
   expect(screen.queryByTestId("ai-reasoning-effort")).toBeNull();
   fireEvent.click(screen.getByTestId("ai-save-settings"));
   await waitFor(() => expect(updateSetting).toHaveBeenCalledTimes(2));
@@ -479,7 +483,7 @@ it("刷新失败后仍可手工输入模型 ID，错误主信息中文且可行�
 
   const error = screen.getByTestId("ai-settings-error");
   expect(error.textContent).toContain("无法连接模型服务");
-  expect(error.textContent).toContain("仍可手动输入模型 ID");
+  expect(error.textContent).toContain("仍可手动输入模型名称");
   expect(error.textContent).toContain("错误码：ai_provider_unreachable");
 
   // 刷新失败不锁定输入：Model ID 仍可手工填写。
@@ -499,7 +503,7 @@ it("刷新成功但列表为空时给出可行动提示", async () => {
   await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
 
   expect(screen.getByTestId("ai-settings-notice").textContent).toBe(
-    "未发现模型；仍可手动输入模型 ID。",
+    "未发现模型；仍可手动输入模型名称。",
   );
 });
 
@@ -627,4 +631,24 @@ it("submits an unconfirmed credential to authoritative backend validation and pr
   await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ credential_id: 7 })));
   await waitFor(() => expect(screen.getByTestId("ai-settings-error").textContent).toContain("credential_not_found"));
   expect((screen.getByTestId("ai-base-url") as HTMLInputElement).value).toBe("https://models.example.com/draft");
+});
+
+
+it("keeps custom-provider validation and failed-save feedback inside the open drawer", async () => {
+  mockLoad(modelSetting());
+  const create = vi.spyOn(api, "createAiCustomProvider").mockRejectedValue(new Error("fixture-provider-save-failed"));
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await screen.findByTestId("ai-model-settings-panel");
+  fireEvent.click(screen.getByTestId("ai-custom-open"));
+  const drawer = await screen.findByRole("dialog");
+  fireEvent.click(screen.getByTestId("ai-custom-save"));
+  expect(within(drawer).getByTestId("ai-settings-error").textContent).toBeTruthy();
+  expect(create).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByTestId("ai-custom-name"), { target: { value: "Fixture gateway" } });
+  fireEvent.change(screen.getByTestId("ai-custom-base-url"), { target: { value: "https://gateway.example.invalid/v1" } });
+  fireEvent.click(screen.getByTestId("ai-custom-save"));
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(within(drawer).getByTestId("ai-settings-error").textContent).toContain("AI 设置请求失败"));
+  expect(document.body.textContent).not.toContain("fixture-provider-save-failed");
+  expect((screen.getByTestId("ai-custom-name") as HTMLInputElement).value).toBe("Fixture gateway");
 });

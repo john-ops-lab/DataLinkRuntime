@@ -767,6 +767,7 @@ class CacheDeletionManager:
                     offline_protection=self.offline_protection,
                     offline_mode=self.offline_mode,
                     now=self.clock(),
+                    budget=budget.scan,
                 )
             )
             if (
@@ -1169,6 +1170,7 @@ class CacheDeletionManager:
                             offline_protection=self.offline_protection,
                             offline_mode=self.offline_mode,
                             now=self.clock(),
+                            budget=budget.scan,
                         )
                     )
                     if (
@@ -1207,6 +1209,7 @@ class CacheDeletionManager:
                                 offline_protection=self.offline_protection,
                                 offline_mode=self.offline_mode,
                                 now=self.clock(),
+                                budget=budget.scan,
                             )
                         )
                         if (
@@ -1257,6 +1260,7 @@ class CacheDeletionManager:
                 record["updated_at"] = self.clock()
                 _write_record(path, record)
             if record["phase"] == "receipt_pending":
+                self._retire_deleted_instance(record)
                 response = self.client.finish_cache_guard(
                     self.worker_id,
                     operation_id,
@@ -1312,6 +1316,49 @@ class CacheDeletionManager:
             return DeletionResult(
                 operation_id, str(record["phase"]), reason=str(record["last_error"])
             )
+
+    def _retire_deleted_instance(self, record: Mapping[str, Any]) -> None:
+        """Retire the exact empty instance while its deletion guard is still held.
+
+        Its durable receipt-pending record remains the recovery authority until
+        Control acknowledges completion. A subsequent successful promotion
+        must initialize its own lifecycle facts, because
+        rebuilding the same immutable source may produce a different tree hash.
+        """
+
+        if record["operation_kind"] == "replacement":
+            return
+        key = cache_key(int(record["adapter_id"]), int(record["version_id"]))
+        if record["key"] != key or record["phase"] != "receipt_pending":
+            raise CacheError("cache_cleanup_unknown")
+        if os.path.lexists(self.cache.entry_path(key)) or os.path.lexists(
+            _trash_path(self.lifecycle, uuid.UUID(str(record["operation_id"])))
+        ):
+            raise CacheError("cache_cleanup_unknown")
+        sidecar = self.lifecycle.lifecycle_root / f"{key}.json"
+        if os.path.lexists(sidecar):
+            facts = self.lifecycle.lifecycle(key)
+            proof = facts.get("rebuild_proof")
+            if (
+                facts["identity"] != record["identity"]
+                or facts["digest"] != record["digest"]
+                or facts["pinned"] is not False
+                or (
+                    isinstance(proof, dict)
+                    and proof.get("automatic") is not True
+                    and float(proof["confirmed_at"]) > float(record["created_at"])
+                )
+            ):
+                raise CacheError("cache_identity_conflict")
+        from dlr.worker.cache_rebuild import _receipt_path
+
+        try:
+            _receipt_path(self.cache.root, key).unlink(missing_ok=True)
+            sidecar.unlink(missing_ok=True)
+            _sync_directory(self.lifecycle.lifecycle_root, strict=True)
+            _sync_directory(self.lifecycle.state_root, strict=True)
+        except OSError as error:
+            raise CacheError("cache_lifecycle_write_failed") from error
 
     def _abort_orphan(
         self,
