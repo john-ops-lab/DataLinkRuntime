@@ -45,6 +45,8 @@ from dlr.control.schemas.ai import AiAttachment, AiAttachmentReference, AiPrepar
 from dlr.control.security import Principal
 
 MAX_SCOPES = 128
+MAX_TRACKED_SCOPES = MAX_SCOPES * 4
+MAX_SCOPES_PER_OWNER = MAX_SCOPES
 MAX_METADATA_BYTES = 512 * 1024
 MAX_ACTIVE_OPERATIONS = 2
 MAX_PENDING_OPERATIONS = 4
@@ -189,6 +191,20 @@ class AiAttachmentStore:
 
     def _scope(self, owner: Owner, adapter_id: int, scope_id: UUID | str) -> Scope:
         return owner, adapter_id, str(scope_id)
+
+    def _check_scope_capacity_locked(self, scope: Scope) -> None:
+        # An admitted active scope already owns its future close slot. Counting
+        # the union avoids charging pins/closed records twice and lets release
+        # finish even when every slot is occupied. Unknown closes use the same
+        # owner quota, so changing Adapter/page IDs cannot fill the global pool.
+        tracked = self._closed_scopes.keys() | {record.scope for record in self._records.values()}
+        if scope in tracked:
+            return
+        if (
+            len(tracked) >= MAX_TRACKED_SCOPES
+            or sum(selected[0] == scope[0] for selected in tracked) >= MAX_SCOPES_PER_OWNER
+        ):
+            raise _error("ai_attachment_store_full")
 
     def _delete_locked(self, record: _Record) -> None:
         if record.pins or record.preparing or record.jobs:
@@ -468,6 +484,7 @@ class AiAttachmentStore:
             scopes = {record.scope for record in self._records.values()}
             if scope not in scopes and len(scopes) >= MAX_SCOPES:
                 raise _error("ai_attachment_store_full")
+            self._check_scope_capacity_locked(scope)
             selected = [
                 record
                 for record in self._records.values()
@@ -545,8 +562,7 @@ class AiAttachmentStore:
         self.sweep()
         with self._lock:
             if reference is None:
-                if len(self._closed_scopes) >= MAX_SCOPES * 4 and scope not in self._closed_scopes:
-                    raise _error("ai_attachment_store_full")
+                self._check_scope_capacity_locked(scope)
                 self._closed_scopes[scope] = time.monotonic() + self.ttl
             for record in list(self._records.values()):
                 if record.scope == scope and (
