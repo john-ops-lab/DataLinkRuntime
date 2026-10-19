@@ -199,13 +199,10 @@
     "stopWaiting": "停止等待",
     "stoppedWaiting": "已停止等待，现有消息已保留。模型服务可能继续处理，直到原请求截止时间；可以再次发送。",
     "ux": {
-      "sendScope": "查看发送内容",
       "sentScope": "查看本轮提交的代码、配置和附件",
-      "scopeHint": "将发送当前代码、依赖、普通配置、最近的对话和你添加的片段。以下预览随当前编辑内容更新。",
       "code": "代码",
       "requirements": "依赖",
       "config": "普通配置",
-      "currentMessage": "本次问题",
       "emptyValue": "空",
       "attachmentScopeHint": "附件按本轮所列资料提交；可读取页不代表模型已读取全部内容。秘密应通过凭据绑定使用，请勿直接写入代码。",
       "sendPrivacy": "发送内容会交给 AI 服务，请勿包含密码或密钥。",

@@ -2,17 +2,13 @@
 
 ## Purpose
 
-为管理员提供以对话和代码审查为中心的 AI 助手工作区，使附件、输入和发送操作清晰可见，并允许按需检查发送内容及操作说明，同时保持现有临时对话与人工应用的产品边界。
+为管理员提供以对话和代码审查为中心的 AI 助手工作区，使附件、输入和发送操作清晰可见，并允许按需查看操作说明，同时保持现有临时对话与人工应用的产品边界。
 
 ## ADDED Requirements
 
-### Requirement: Compact composer and on-demand details
+### Requirement: Compact composer and on-demand help
 
-AI 助手 SHALL 在输入工具栏仅显示附件与发送（等待时为停止等待），通过顶部更多菜单提供查看发送内容和使用说明。帮助与预览 SHALL 在独立浮层呈现，不改变对话和输入区尺寸。发送内容预览 SHALL 跟随当前问题、代码、配置、片段、近期对话与待发送附件，且不暴露凭据真值。
-
-#### Scenario: Review current outgoing contents
-- **WHEN** 用户在更多菜单选择查看发送内容并修改当前编辑草稿或附件
-- **THEN** 预览反映当前待发送内容，关闭后返回更多按钮，输入草稿不丢失且不触发请求
+AI 助手 SHALL 在输入工具栏仅显示附件与发送（等待时为停止等待），顶部更多菜单 SHALL 仅提供使用说明，不提供查看发送内容入口或对应预览弹窗。帮助 SHALL 在独立浮层呈现，不改变对话和输入区尺寸。
 
 #### Scenario: Read help
 - **WHEN** 用户打开使用说明
@@ -20,7 +16,7 @@ AI 助手 SHALL 在输入工具栏仅显示附件与发送（等待时为停止�
 
 ### Requirement: Responsive readable assistant
 
-AI 助手 SHALL 在中英文 1280、1440、1920 宽度的普通、最大化及恢复状态保持可阅读可操作。侧栏 SHALL 为代码编辑保留主要空间，最大化 SHALL 限制对话与输入的阅读宽度。模型及临时对话状态 SHALL 在非空对话中保持可见。长输入与附件 SHALL 独立限高滚动，不挤走发送工具栏。
+AI 助手 SHALL 在中英文 1280、1440、1920 宽度的普通、最大化及恢复状态保持可阅读可操作。侧栏 SHALL 为代码编辑保留主要空间，最大化 SHALL 限制对话与输入的阅读宽度。模型及临时对话状态 SHALL 在非空对话中保持可见。长输入与附件 SHALL 独立限高滚动，不挤走发送工具栏。输入文字与对话正文 SHALL 使用相同字体、字号和行高。
 
 #### Scenario: Keep primary operations visible
 - **WHEN** 用户添加多个附件、输入长文本、打开更多或详情并切换最大化

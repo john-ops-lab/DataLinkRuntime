@@ -36,9 +36,9 @@ vi.mock("@monaco-editor/react", () => ({
   },
 }));
 
-async function openDetails(view: "scope" | "help") {
+async function openDetails() {
   fireEvent.click(screen.getByTestId("ai-more"));
-  fireEvent.click(await screen.findByRole("menuitem", { name: view === "scope" ? /查看发送内容|Review outgoing content/ : /使用说明|Usage guide/ }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: /使用说明|Usage guide/ }));
 }
 async function closeDetails() {
   fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /close|关闭/i }));
@@ -266,7 +266,7 @@ it("M5.8-002 does not consume snippets when a reliable snapshot cannot be formed
 it.each(["zh-CN", "en"] as const)("M5.8-009 keeps the %s attachment hint and safety copy aligned", async (locale) => {
   await applySystemLocale(locale);
   renderPanel();
-  await openDetails("help");
+  await openDetails();
   const hint = await screen.findByTestId("ai-attachment-hint");
   const privacy = screen.getByTestId("ai-attachment-privacy");
 
@@ -298,7 +298,7 @@ it("M5.8-010 keeps Candidate Diff to code even when the Candidate contains non-c
   expect(screen.getByTestId("diff-editor").getAttribute("data-modified")).toBe(candidate.code);
 });
 
-it("Issue 212 examples only fill the composer and the nearby scope follows the current draft", async () => {
+it("Issue 212 examples only fill the composer and opening help preserves the draft", async () => {
   const assist = vi.spyOn(api, "assistAdapter");
   const panel = renderPanel();
   expect((screen.getByTestId("ai-send") as HTMLButtonElement).disabled).toBe(true);
@@ -306,13 +306,11 @@ it("Issue 212 examples only fill the composer and the nearby scope follows the c
   expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toContain("解释当前代码");
   expect(assist).not.toHaveBeenCalled();
   expect(screen.queryByTestId("ai-message-user")).toBeNull();
-  await openDetails("help");
+  await openDetails();
   expect(screen.getByTestId("ai-session-notice").textContent).toContain("收起助手不清空");
   await closeDetails();
-  await openDetails("scope");
-  expect(screen.getByTestId("ai-send-scope").textContent).toContain(workingCopy.code);
   panel.rerender({ workingCopy: { ...workingCopy, code: "print('changed draft')" } });
-  expect(screen.getByTestId("ai-send-scope").textContent).toContain("print('changed draft')");
+  expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toContain("解释当前代码");
   expect(assist).not.toHaveBeenCalled();
 });
 
@@ -338,7 +336,7 @@ it("Issue 215 keeps limits in the usage dialog and only two composer actions", a
   expect(screen.queryByTestId("ai-attachment-limits")).toBeNull();
   expect(screen.queryByTestId("ai-send-scope")).toBeNull();
   expect(within(screen.getByTestId("ai-composer-actions")).getAllByRole("button")).toHaveLength(2);
-  await openDetails("help");
+  await openDetails();
   const help = await screen.findByTestId("ai-help");
   expect(within(help).getByTestId("ai-attachment-capability")).toBeTruthy();
   expect(within(help).getByTestId("ai-attachment-hint").textContent).toContain("6MB");
@@ -347,19 +345,19 @@ it("Issue 215 keeps limits in the usage dialog and only two composer actions", a
   expect(document.activeElement).toBe(screen.getByTestId("ai-more"));
 });
 
-it.each(["zh-CN", "en"] as const)("Issue 215 previews the live %s draft and files without sending", async (locale) => {
+it.each(["zh-CN", "en"] as const)("Issue 215 keeps only help in the %s menu and preserves draft and files", async (locale) => {
   await applySystemLocale(locale);
   const assist = vi.spyOn(api, "assistAdapter");
-  const panel = renderPanel();
+  renderPanel();
   fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "unsent question" } });
   fireEvent.change(screen.getByTestId("ai-attachment-input"), { target: { files: [makeFile("draft.txt")] } });
   await screen.findByTestId("ai-attachment-item");
-  await openDetails("scope");
-  const scope = await screen.findByTestId("ai-send-scope");
-  expect(scope.textContent).toContain("draft.txt");
-  expect(scope.textContent).toContain("unsent question");
-  panel.rerender({ workingCopy: { ...workingCopy, code: "updated code" } });
-  expect(scope.textContent).toContain("updated code");
+  fireEvent.click(screen.getByTestId("ai-more"));
+  expect(await screen.findAllByRole("menuitem")).toHaveLength(1);
+  expect(screen.queryByRole("menuitem", { name: /查看发送内容|Review outgoing content/ })).toBeNull();
+  fireEvent.click(screen.getByRole("menuitem", { name: /使用说明|Usage guide/ }));
+  expect(await screen.findByTestId("ai-help")).toBeTruthy();
+  expect(screen.queryByTestId("ai-send-scope")).toBeNull();
   await closeDetails();
   expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe("unsent question");
   expect(screen.getByTestId("ai-attachment-name").textContent).toBe("draft.txt");

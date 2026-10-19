@@ -77,10 +77,10 @@ for (const locale of ["zh-CN", "en"]) for (const width of [1280, 1440, 1920]) {
     expect(await page.getByTestId("ai-message-input").evaluate((e) => e.scrollHeight > e.clientHeight)).toBe(true);
 
     await page.getByTestId("ai-more").click();
-    await page.getByRole("menuitem", { name: locale === "en" ? "Review outgoing content" : "查看发送内容" }).click();
-    await expect(page.getByTestId("ai-send-scope")).toContainText("order-requirements.txt");
-    await expect(page.getByTestId("ai-send-scope")).toContainText(code.trim());
-    await expect(page.getByTestId("ai-send-scope")).toContainText(draft.trim());
+    await expect(page.getByRole("menuitem")).toHaveCount(1);
+    await expect(page.getByRole("menuitem", { name: /Review outgoing content|查看发送内容/ })).toHaveCount(0);
+    await page.getByRole("menuitem", { name: locale === "en" ? "Usage guide" : "使用说明" }).click();
+    await expect(page.getByTestId("ai-help")).toBeVisible();
     await page.getByRole("dialog").getByRole("button", { name: /Close|关闭/i }).first().press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByTestId("ai-more")).toBeFocused();
@@ -104,6 +104,15 @@ for (const locale of ["zh-CN", "en"]) for (const width of [1280, 1440, 1920]) {
     await page.getByTestId("ai-send").click();
     await expect(page.getByTestId("ai-candidate")).toBeVisible();
     await expect(page.getByTestId("ai-current-model")).toBeVisible();
+    const inputFont = await page.getByTestId("ai-message-input").evaluate((e) => {
+      const style = getComputedStyle(e);
+      return { size: style.fontSize, family: style.fontFamily, lineHeight: style.lineHeight };
+    });
+    const replyFont = await page.locator(".ai-message-assistant .ai-markdown").evaluate((e) => {
+      const style = getComputedStyle(e);
+      return { size: style.fontSize, family: style.fontFamily, lineHeight: style.lineHeight };
+    });
+    expect(inputFont).toEqual(replyFont);
     await page.getByTestId("ai-preview-code").click();
     await expect(page.getByTestId("ai-code-preview")).toHaveText(candidateCode);
     await page.getByRole("dialog").getByRole("button", { name: /Close|关闭/i }).first().press("Escape");

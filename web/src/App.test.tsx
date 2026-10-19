@@ -6693,7 +6693,7 @@ it("adds masked live-log selections to the AI context alongside code and sends b
   getSelectionSpy.mockRestore();
 });
 
-it("shows the M5.5.13 credential guidance copy and the quiet assistant header", async () => {
+it("shows the assistant privacy guidance and the quiet assistant header", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
@@ -6703,13 +6703,12 @@ it("shows the M5.5.13 credential guidance copy and the quiet assistant header", 
   await selectFirstAdapter();
   await openAiAssistant();
 
-  // 引导文案：凭据绑定引导 + 硬编码敏感信息会随代码发送的区分，无内部术语。
+  // 保留简短隐私提示与使用说明，不显示已删除的发送内容预览。
   const empty = screen.getByTestId("ai-conversation-empty");
   fireEvent.click(screen.getByTestId("ai-more"));
-  fireEvent.click(await screen.findByRole("menuitem", { name: "查看发送内容" }));
-  const scope = await screen.findByTestId("ai-send-scope");
-  expect(scope.textContent).toContain("当前代码");
-  expect(scope.textContent).toContain("凭据绑定");
+  fireEvent.click(await screen.findByRole("menuitem", { name: "使用说明" }));
+  expect((await screen.findByTestId("ai-help")).textContent).toContain("请勿包含密码或密钥");
+  expect(screen.queryByTestId("ai-send-scope")).toBeNull();
   expect(screen.getByText("请勿发送密码或密钥。")).toBeTruthy();
   expect(empty.textContent).not.toContain("工作副本");
   expect(empty.textContent).not.toContain("唯一代码快照");
