@@ -21,3 +21,7 @@
 #### Scenario: Translate preserved explanatory comments
 - **WHEN** 修复或重新生成的原代码包含与当前系统语言相反的有效说明注释
 - **THEN** 保留说明原意并译成当前系统语言，保持编译指令及技术标识不变，并核对注释声明与实际运算符及库行为一致
+
+#### Scenario: Localize copied comments during a small edit
+- **WHEN** 用户仅要求一处业务改动，而当前完整代码中已有与系统语言相反的说明注释或文档字符串
+- **THEN** 完整候选中的复制注释同样视为本次输出，其说明按当前系统语言本地化；该要求优先于注释文字的最小改动，但不授权改变无关业务逻辑或数据字面量

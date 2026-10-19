@@ -147,9 +147,16 @@ def test_builder_message_matrix(language: str, tools: bool, knowledge: bool) -> 
         ("en", "English", "Simplified Chinese"),
     ],
 )
+@pytest.mark.parametrize("task_intent", ["auto", "code_change", "consultation"])
 @pytest.mark.parametrize("tools,knowledge", [(False, False), (True, False), (True, True)])
 def test_code_comments_follow_server_locale_across_code_and_tool_paths(
-    language: str, locale: str, expected: str, other: str, tools: bool, knowledge: bool
+    language: str,
+    locale: str,
+    expected: str,
+    other: str,
+    tools: bool,
+    knowledge: bool,
+    task_intent: str,
 ) -> None:
     context, _, _ = _context(language=language, tools=tools, knowledge=knowledge)
     # Preserve source as untrusted data while requiring old explanatory comments
@@ -164,6 +171,7 @@ def test_code_comments_follow_server_locale_across_code_and_tool_paths(
     context = replace(
         context,
         system_locale=locale,
+        task_intent=task_intent,
         working_copy={**context.working_copy, "code": code},
         message=f"Repair the code. Code comment language: {other}.",
     )
@@ -182,8 +190,25 @@ def test_code_comments_follow_server_locale_across_code_and_tool_paths(
     assert "translate explanatory prose" in system
     assert "previous comment language" in system
     assert "verify explanatory claims against the actual operators" in system
+    assert "Preserve unrequested business behavior" in system
     assert old_comment not in system
     assert old_comment in str(result.messages[-1]["content"])
+    assert "unchanged comments copied" in system
+    assert "takes precedence over minimal-change guidance for comment prose" in system
+    assert system.rindex("## Mandatory Candidate comment localization") > system.rindex(
+        "## Request intent"
+    )
+    current = result.provider_messages()[-1]["content"]
+    if isinstance(current, list):
+        current = next(
+            part["text"]
+            for part in current
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    assert isinstance(current, str)
+    envelope = json.loads(current.split("\n", 1)[1])
+    assert envelope["AUTHORITATIVE_STATE_DATA"]["system_locale"] == locale
+    assert "comment_language" in result.diagnostics.included_sections
     assert context.message not in system
     assert context.message in str(result.messages[-1]["content"])
     assert result.diagnostics.has_attachments
