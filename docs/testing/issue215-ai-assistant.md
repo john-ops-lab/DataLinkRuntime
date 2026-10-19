@@ -15,7 +15,7 @@ npm --prefix web ci
 npm --prefix web run lint
 npm --prefix web run build
 npm --prefix web run test -- src/assistant-wave-b.test.tsx src/assistant-wave-b3.test.tsx src/assistant-wave-c2-knowledge.test.tsx --maxWorkers=1 --minWorkers=1
-npm --prefix web run test -- src/App.test.tsx -t 'renders the B2 attachment capability bounds|shows the M5.5.13 credential guidance' --maxWorkers=1 --minWorkers=1
+npm --prefix web run test -- src/App.test.tsx -t 'renders the B2 attachment capability bounds|shows the assistant privacy guidance and the quiet assistant header' --maxWorkers=1 --minWorkers=1
 DLR_B6_OUTPUT_DIR=../../test-results/issue215-legacy npm --prefix web run test:browser -- issue215-ai-assistant.spec.ts issue117-b6-ai.spec.ts
 uv run --frozen --project backend ruff check backend/src/dlr/control/ai/prompt_builder.py backend/tests/test_ai_prompt_builder.py
 uv run --frozen --project backend ruff format --check backend/src/dlr/control/ai/prompt_builder.py backend/tests/test_ai_prompt_builder.py
