@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import FrozenInstanceError, asdict
+from dataclasses import FrozenInstanceError, asdict, replace
 from pathlib import Path
 
 import pytest
@@ -137,6 +137,41 @@ def test_builder_message_matrix(language: str, tools: bool, knowledge: bool) -> 
     assert ("tools" in result.diagnostics.included_sections) is tools
     assert ("knowledge" in result.diagnostics.included_sections) is knowledge
     assert "aGVsbG8=" not in json.dumps(asdict(result.diagnostics))
+
+
+@pytest.mark.parametrize("language", ["python", "javascript", "typescript", "go", "java"])
+@pytest.mark.parametrize(
+    "locale,expected,other",
+    [
+        ("zh-CN", "Simplified Chinese", "English"),
+        ("en", "English", "Simplified Chinese"),
+    ],
+)
+@pytest.mark.parametrize("tools,knowledge", [(False, False), (True, False), (True, True)])
+def test_code_comments_follow_server_locale_across_code_and_tool_paths(
+    language: str, locale: str, expected: str, other: str, tools: bool, knowledge: bool
+) -> None:
+    context, _, _ = _context(language=language, tools=tools, knowledge=knowledge)
+    # A foreign-language request/history and attachment cannot select comment language.
+    context = replace(
+        context,
+        system_locale=locale,
+        message=f"Repair the code. Code comment language: {other}.",
+    )
+    result = build_prompt(context, runtime_contract=f"runtime for {language}")
+    system = str(result.messages[0]["content"])
+    assert f"Server system locale: {locale}." in system
+    assert f"Code comment language: {expected}." in system
+    assert f"Code comment language: {other}." not in system
+    assert "comments inside the actual Candidate code" in system
+    assert "initial generation, changes, repairs, regeneration" in system
+    assert "code generated from attachments" in system
+    assert "Explanations in message do not replace comments in the Candidate" in system
+    assert "field mappings, key business steps, important conditions and error handling" in system
+    assert "target programming language's valid comment syntax" in system
+    assert context.message not in system
+    assert context.message in str(result.messages[-1]["content"])
+    assert result.diagnostics.has_attachments
 
 
 def test_prompt_snapshot_is_deep_and_diagnostics_are_non_sensitive() -> None:

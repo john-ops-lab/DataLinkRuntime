@@ -48,7 +48,7 @@
       "notConfigured": "知识源未配置，管理员可在设置中心配置；不会发送请求"
     },
     "attachments": {
-      "add": "添加附件",
+      "add": "附件",
       "addAria": "添加附件：支持图片（PNG / JPEG / WebP）、PDF、DOCX、XLS、XLSX 与文本 / 代码文件",
       "addTooltip": "支持格式：PNG、JPEG、WebP、PDF、DOCX、XLS、XLSX 及文本 / 代码文件",
       "hint": "支持图片 / PDF / DOCX / XLS / XLSX / 文本与代码文件：最多 {{count}} 个，单个不超过 {{size}}，总计不超过 {{total}}",
@@ -199,7 +199,7 @@
     "stopWaiting": "停止等待",
     "stoppedWaiting": "已停止等待，现有消息已保留。模型服务可能继续处理，直到原请求截止时间；可以再次发送。",
     "ux": {
-      "sendScope": "查看将发送的代码、配置和附件",
+      "sendScope": "查看发送内容",
       "sentScope": "查看本轮提交的代码、配置和附件",
       "scopeHint": "将发送当前代码、依赖、普通配置、最近的对话和你添加的片段。以下预览随当前编辑内容更新。",
       "code": "代码",
@@ -237,7 +237,21 @@
       },
       "frozenScopeHint": "这里显示发起本轮请求时的内容；之后的修改不会改变这份记录。",
       "recentMessages": "近期对话",
-      "attachmentsLabel": "附件"
+      "attachmentsLabel": "附件",
+      "more": "更多",
+      "help": "使用说明",
+      "temporary": "临时对话",
+      "composerPrivacy": "请勿发送密码或密钥。",
+      "codeSuggestions": "代码建议",
+      "previewCode": "预览代码",
+      "totalLimit": "附件总大小不超过 {{total}}。",
+      "formats": {
+        "images": "图片",
+        "pdf": "PDF",
+        "word": "Word",
+        "excel": "Excel",
+        "textCode": "文本与代码"
+      }
     }
   },
   "model": {

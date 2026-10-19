@@ -48,7 +48,7 @@
       "notConfigured": "The knowledge source is not configured; an administrator can configure it in Settings"
     },
     "attachments": {
-      "add": "Attach files",
+      "add": "Attach",
       "addAria": "Attach files: images (PNG / JPEG / WebP), PDF, DOCX, XLS, XLSX and text / code files",
       "addTooltip": "Supported formats: PNG, JPEG, WebP, PDF, DOCX, XLS, XLSX and text / code files",
       "hint": "Images / PDF / DOCX / XLS / XLSX / text and code files: up to {{count}}, {{size}} each, {{total}} total",
@@ -199,7 +199,7 @@
     "stopWaiting": "Stop waiting",
     "stoppedWaiting": "Stopped waiting. Existing messages are preserved. The model service may continue until the original deadline; you can send again.",
     "ux": {
-      "sendScope": "Review code, configuration and attachments to send",
+      "sendScope": "Review outgoing content",
       "sentScope": "Review code, configuration and attachments submitted with this round",
       "scopeHint": "Your current code, dependencies, ordinary configuration, recent conversation and selected excerpts will be sent. This preview follows your current edits.",
       "code": "Code",
@@ -237,7 +237,21 @@
       },
       "frozenScopeHint": "These are the contents used when this round was sent. Later edits do not change this record.",
       "recentMessages": "Recent conversation",
-      "attachmentsLabel": "Attachments"
+      "attachmentsLabel": "Attachments",
+      "more": "More",
+      "help": "Usage guide",
+      "temporary": "Temporary chat",
+      "composerPrivacy": "Do not send passwords or keys.",
+      "codeSuggestions": "Code suggestions",
+      "previewCode": "Preview code",
+      "totalLimit": "Attachments combined: up to {{total}}.",
+      "formats": {
+        "images": "Images",
+        "pdf": "PDF",
+        "word": "Word",
+        "excel": "Excel",
+        "textCode": "Text and code"
+      }
     }
   },
   "model": {

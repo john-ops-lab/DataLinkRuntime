@@ -1308,7 +1308,7 @@ body {
 
 .ai-assistant-expanded {
   flex: 0 0 auto;
-  width: clamp(600px, 32vw, 640px);
+  width: clamp(400px, 30vw, 440px);
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -3559,7 +3559,7 @@ body {
   }
 
   .ai-assistant-expanded {
-    width: 600px;
+    width: 400px;
   }
 
   .workbench-controls {

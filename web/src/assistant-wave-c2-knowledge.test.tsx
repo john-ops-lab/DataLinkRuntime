@@ -240,15 +240,8 @@ it("keeps knowledge search disabled while the feature is in development", async 
     .mockResolvedValue(aiResponse("普通回答。", []));
   renderPanel();
 
-  const toggle = screen.getByRole("switch", { name: "知识库检索" });
-  expect((toggle as HTMLButtonElement).disabled).toBe(true);
-  expect(toggle.getAttribute("aria-checked")).toBe("false");
+  expect(screen.queryByRole("switch", { name: "知识库检索" })).toBeNull();
   expect(capabilitySpy).not.toHaveBeenCalled();
-
-  const control = screen.getByText("知识库检索").closest(".ai-knowledge-search-control");
-  expect(control).not.toBeNull();
-  fireEvent.mouseOver(control as HTMLElement);
-  expect((await screen.findByText("开发中")).textContent).toBe("开发中");
 
   await sendQuestion("普通问题");
   await screen.findByText("普通回答。");

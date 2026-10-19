@@ -122,7 +122,15 @@ def build_prompt(
     sections.extend(
         [
             f"Server system locale: {context.system_locale}. "
-            "Keep identifiers and protocol names exact.",
+            "Keep identifiers and protocol names exact. "
+            + (
+                "Code comment language: English. Write all explanatory "
+                "code comments in English, even if USER_REQUEST is in another language."
+                if context.system_locale.lower().startswith("en")
+                else "Code comment language: Simplified Chinese. Write all "
+                "explanatory code comments in Simplified Chinese, even if USER_REQUEST "
+                "is in another language."
+            ),
             "Return exactly one strict JSON object, without Markdown, wrapper, code fence, patch, "
             + ("" if context.tools_enabled else "tool call, ")
             + "or reasoning. Output Schema:\n"

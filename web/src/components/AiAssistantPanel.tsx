@@ -35,8 +35,8 @@
  * Issue #166 keeps visible messages and frozen requests in memory only.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, Spin, Switch, Tooltip } from "antd";
+import { type ComponentProps, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Button, Dropdown, Modal, Spin, Tooltip } from "antd";
 import {
   CheckOutlined,
   CloseOutlined,
@@ -45,6 +45,9 @@ import {
   DiffOutlined,
   FullscreenExitOutlined,
   FullscreenOutlined,
+  FileSearchOutlined,
+  MoreOutlined,
+  QuestionCircleOutlined,
   MessageOutlined,
   PaperClipOutlined,
   ReloadOutlined,
@@ -590,12 +593,11 @@ function AttachmentItem(props: {
   );
 }
 
-function SendScopeDetails({ workingCopy, snippets, recentMessages, attachmentNames, sent = false }: {
+function SendScopeContent({ workingCopy, snippets, recentMessages, attachmentNames, sent = false }: {
   workingCopy: AiWorkingCopy; snippets: readonly AiContextSnippet[]; recentMessages: readonly AiConversationMessage[]; attachmentNames: readonly string[]; sent?: boolean;
 }) {
   const { t } = useTranslation("ai");
-  return <details className="ux-ai-send-scope" data-testid={sent ? "ai-round-scope" : "ai-send-scope"}>
-    <summary>{t(sent ? "assistant.ux.sentScope" : "assistant.ux.sendScope")}</summary>
+  return <div className="ux-ai-scope-content">
     <p>{t(sent ? "assistant.ux.frozenScopeHint" : "assistant.ux.scopeHint")}</p>
     <strong>{t("assistant.ux.code")}</strong><pre>{workingCopy.code || t("assistant.ux.emptyValue")}</pre>
     <strong>{t("assistant.ux.requirements")}</strong><pre>{workingCopy.requirements || t("assistant.ux.emptyValue")}</pre>
@@ -606,7 +608,100 @@ function SendScopeDetails({ workingCopy, snippets, recentMessages, attachmentNam
     <strong>{t("assistant.ux.attachmentsLabel")}</strong>
     {attachmentNames.length === 0 ? <p>{t("assistant.ux.emptyValue")}</p> : <ul>{attachmentNames.map((name, index) => <li key={index}>{name}</li>)}</ul>}
     <p>{t("assistant.ux.attachmentScopeHint")}</p>
+  </div>;
+}
+
+function SendScopeDetails(props: ComponentProps<typeof SendScopeContent>) {
+  const { t } = useTranslation("ai");
+  return <details className="ux-ai-send-scope" data-testid="ai-round-scope">
+    <summary>{t("assistant.ux.sentScope")}</summary>
+    <SendScopeContent {...props} />
   </details>;
+}
+
+function AttachmentHelp(props: {
+  limits: AiAttachmentLimits;
+  supportedContentTypes: readonly string[];
+  capability: AiAttachmentCapabilities | null;
+}) {
+  const { t } = useTranslation("ai");
+  const formats = new Set<string>();
+  for (const type of props.supportedContentTypes) {
+    if (type.startsWith("image/")) formats.add("images");
+    else if (type === "application/pdf") formats.add("pdf");
+    else if (type.includes("wordprocessingml")) formats.add("word");
+    else if (type.includes("spreadsheetml") || type === "application/vnd.ms-excel") formats.add("excel");
+    else formats.add("textCode");
+  }
+  const selected = props.capability?.selected;
+  return <section data-testid="ai-attachment-limits">
+    <h3>{t("assistant.ux.supportedFormats")}</h3>
+    <p>{[...formats].map((format) => t(`assistant.ux.formats.${format}`)).join(" · ")}</p>
+    <div data-testid="ai-composer-guidance" role="note" aria-label={t("assistant.attachments.guidance", {
+      count: props.limits.max_attachments, size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
+    })}>
+      <span data-testid="ai-attachment-hint" aria-label={t("assistant.attachments.guidance", {
+        count: props.limits.max_attachments, size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
+      })} title={t("assistant.attachments.guidance", {
+        count: props.limits.max_attachments, size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
+      })}>
+        {t("assistant.attachments.guidanceLead", {
+          count: props.limits.max_attachments, size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
+        })}
+        <strong data-testid="ai-attachment-privacy">{t("assistant.attachments.guidancePrivacy")}</strong>
+      </span>
+    </div>
+    <p>{t("assistant.ux.totalLimit", { total: formatAttachmentGuidanceSize(props.limits.max_total_bytes) })}</p>
+    {props.capability !== null && <p role="note" data-testid="ai-attachment-capability">
+      {props.capability.prepared_attachments_enabled !== true
+        ? t("assistant.attachments.prepared.textFallback")
+        : selected?.capability_source === "unknown" || selected == null
+          ? t("assistant.attachments.prepared.visionUnknown")
+          : !selected.images_native && !selected.native_pdf
+            ? t("assistant.attachments.prepared.visionUnavailable")
+            : t(selected.capability_source === "custom_declared"
+              ? "assistant.attachments.prepared.visionDeclared" : "assistant.attachments.prepared.visionAvailable", { model: selected.model })}
+    </p>}
+  </section>;
+}
+
+// Stay inside the existing Composer runtime to preview its live attachments;
+// opening a dialog must not freeze a new round or consume the draft.
+function AssistantDetails(props: {
+  view: "scope" | "help" | null;
+  onClose: () => void;
+  afterClose: () => void;
+  workingCopy: AiWorkingCopy;
+  snippets: readonly AiContextSnippet[];
+  recentMessages: readonly AiConversationMessage[];
+  limits: AiAttachmentLimits;
+  supportedContentTypes: readonly string[];
+  capability: AiAttachmentCapabilities | null;
+}) {
+  const { t } = useTranslation("ai");
+  const attachments = useAuiState((state) => state.composer.attachments);
+  return <Modal
+    open={props.view !== null}
+    title={t(props.view === "scope" ? "assistant.ux.sendScope" : "assistant.ux.help")}
+    onCancel={props.onClose}
+    afterClose={props.afterClose}
+    focusTriggerAfterClose={false}
+    footer={null}
+    width={720}
+    className="ai-details-modal"
+    destroyOnHidden
+  >
+    {props.view === "scope" && <div data-testid="ai-send-scope">
+      <SendScopeContent workingCopy={props.workingCopy} snippets={props.snippets}
+        recentMessages={props.recentMessages} attachmentNames={attachments.map((attachment) => attachment.name)} />
+    </div>}
+    {props.view === "help" && <div className="ux-ai-help" data-testid="ai-help">
+      <AttachmentHelp limits={props.limits} supportedContentTypes={props.supportedContentTypes} capability={props.capability} />
+      <section data-testid="ai-session-notice"><h3>{t("assistant.ux.sessionTitle")}</h3><p>{t("assistant.ux.sessionHint")}</p></section>
+      <section><h3>{t("assistant.ux.codeSuggestions")}</h3><p>{t("assistant.ux.applyHint")}</p></section>
+      <p>{t("assistant.ux.sendPrivacy")}</p>
+    </div>}
+  </Modal>;
 }
 
 /** M5.7 Wave B3: the composer attachment surface — drag & drop zone, file
@@ -620,17 +715,12 @@ function ComposerAttachmentArea(props: {
   supportedContentTypes: readonly string[];
   preparedStates: Readonly<Record<string, PreparedAttachmentState>>;
   onRetryPrepared: (id: string) => void;
-  capability: AiAttachmentCapabilities | null;
   error: string | null;
   onErrorChange: (message: string | null) => void;
   onSend: (text: string, attachments: readonly Attachment[]) => void;
-  workingCopy: AiWorkingCopy;
-  snippets: readonly AiContextSnippet[];
-  recentMessages: readonly AiConversationMessage[];
 }) {
   const { t } = useTranslation(["ai"]);
   const aui = useAui();
-  const draftAttachments = useAuiState((state) => state.composer.attachments);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function addFiles(files: readonly File[]) {
@@ -686,9 +776,11 @@ function ComposerAttachmentArea(props: {
       disabled={props.disabled}
       onDropCapture={handleDrop}
     >
+      <div className="ai-composer-attachments">
       <ComposerPrimitive.Attachments>
         {({ attachment }) => <AttachmentItem attachment={attachment} prepared={props.preparedStates[attachment.id]} onRetry={() => props.onRetryPrepared(attachment.id)} />}
       </ComposerPrimitive.Attachments>
+      </div>
       <ComposerPrimitive.Input
         data-testid="ai-message-input"
         autoFocus
@@ -707,73 +799,12 @@ function ComposerAttachmentArea(props: {
           {props.error}
         </p>
       )}
-      <details className="ux-ai-formats" data-testid="ai-attachment-limits">
-        <summary>{t("assistant.ux.supportedFormats")}</summary>
-        <div
-          className="ai-composer-guidance"
-          data-testid="ai-composer-guidance"
-          role="note"
-          aria-label={t("assistant.attachments.guidance", {
-            count: props.limits.max_attachments,
-            size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
-          })}
-        >
-          <span
-            className="ai-attachment-hint"
-            data-testid="ai-attachment-hint"
-            aria-label={t("assistant.attachments.guidance", {
-              count: props.limits.max_attachments,
-              size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
-            })}
-            title={t("assistant.attachments.guidance", {
-              count: props.limits.max_attachments,
-              size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
-            })}
-          >
-            {t("assistant.attachments.guidanceLead", {
-              count: props.limits.max_attachments,
-              size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
-            })}
-            <strong className="ai-attachment-privacy" data-testid="ai-attachment-privacy">
-              {t("assistant.attachments.guidancePrivacy")}
-            </strong>
-          </span>
-        </div>
-        <p>{acceptStringFor(props.supportedContentTypes)}</p>
-        {props.capability !== null && (
-          <p className="ai-attachment-capability" role="note" data-testid="ai-attachment-capability">
-            {props.capability.prepared_attachments_enabled !== true
-              ? t("assistant.attachments.prepared.textFallback")
-              : props.capability.selected?.capability_source === "unknown" || props.capability.selected == null
-                ? t("assistant.attachments.prepared.visionUnknown")
-                : !props.capability.selected.images_native && !props.capability.selected.native_pdf
-                  ? t("assistant.attachments.prepared.visionUnavailable")
-                  : t(props.capability.selected.capability_source === "custom_declared"
-                    ? "assistant.attachments.prepared.visionDeclared" : "assistant.attachments.prepared.visionAvailable", { model: props.capability.selected.model })}
-          </p>
-        )}
-      </details>
-      <div className="ux-ai-send-warning">
-        <p>{t("assistant.ux.sendPrivacy")}</p>
-        <SendScopeDetails workingCopy={props.workingCopy} snippets={props.snippets} recentMessages={props.recentMessages} attachmentNames={draftAttachments.map((attachment) => attachment.name)} />
-      </div>
       <div
         className="ai-composer-actions"
         data-testid="ai-composer-actions"
         role="toolbar"
         aria-label={t("assistant.composerActions")}
       >
-        <Tooltip title={t("assistant.knowledgeSearch.developing")} trigger={["hover", "focus"]}>
-          <span className="ai-knowledge-search-control">
-            <Switch
-              size="small"
-              checked={false}
-              disabled
-              aria-label={t("assistant.knowledgeSearch.label")}
-            />
-            <span>{t("assistant.knowledgeSearch.label")}</span>
-          </span>
-        </Tooltip>
         <Tooltip title={t("assistant.attachments.addTooltip")} trigger={["hover", "focus"]}>
           <Button
             size="small"
@@ -911,6 +942,10 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [candidateDiff, setCandidateDiff] = useState<CandidateDiffState | null>(null);
   const [progressStage, setProgressStage] = useState<ProgressStage | null>(null);
   const [maximized, setMaximized] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [detailsView, setDetailsView] = useState<"scope" | "help" | null>(null);
+  const [previewMessageId, setPreviewMessageId] = useState<number | null>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
   // Request correlation only: one UUID per mounted Adapter session, held in
   // React memory and deliberately never written to browser storage.
@@ -1002,7 +1037,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   }, [t]);
 
   useEffect(() => {
-    if (!maximized) {
+    if (!maximized || detailsView !== null || previewMessageId !== null || moreOpen) {
       return;
     }
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1014,7 +1049,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [maximized]);
+  }, [maximized, detailsView, previewMessageId, moreOpen]);
 
   useEffect(() => {
     if (wasMaximizedRef.current && !maximized) {
@@ -1115,6 +1150,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     setStoppedWaiting(false);
     setConversationId(crypto.randomUUID());
     setMessages([]);
+    setDetailsView(null);
+    setMoreOpen(false);
+    setPreviewMessageId(null);
     setSending(false);
     setCandidateDiff(null);
     setProgressStage(null);
@@ -1904,6 +1942,12 @@ async function resolveComposerAttachment(
           <div className="ai-assistant-header">
             <div>
               <strong>{t("assistant.title")}</strong>
+              <div className="ux-ai-header-meta">
+                {attachmentCapabilities?.selected?.model && <span className="ux-ai-model-label" data-testid="ai-current-model" title={attachmentCapabilities.selected.model}>{attachmentCapabilities.selected.model}</span>}
+                <Tooltip title={t("assistant.ux.sessionHint")} trigger={["hover", "focus"]}>
+                  <span className="ux-ai-session-badge" tabIndex={0}>{t("assistant.ux.temporary")}</span>
+                </Tooltip>
+              </div>
 
             </div>
             <div
@@ -1931,6 +1975,32 @@ async function resolveComposerAttachment(
                   }
                 />
               </Tooltip>
+              <Dropdown
+                trigger={["click"]}
+                placement="bottomRight"
+                autoFocus
+                open={moreOpen}
+                onOpenChange={setMoreOpen}
+                menu={{
+                  items: [
+                    { key: "scope", icon: <FileSearchOutlined aria-hidden="true" />, label: t("assistant.ux.sendScope") },
+                    { key: "help", icon: <QuestionCircleOutlined aria-hidden="true" />, label: t("assistant.ux.help") },
+                  ],
+                  onClick: ({ key }) => {
+                    setMoreOpen(false);
+                    setDetailsView(key === "scope" ? "scope" : "help");
+                  },
+                }}
+              >
+                <Button ref={moreButtonRef} type="text" data-testid="ai-more"
+                  aria-label={t("assistant.ux.more")} aria-haspopup="menu" aria-expanded={moreOpen}
+                  icon={<MoreOutlined aria-hidden="true" />}
+                  onKeyDown={(event) => {
+                    if (event.key === "ArrowDown") { event.preventDefault(); setMoreOpen(true); }
+                  }}>
+                  {t("assistant.ux.more")}
+                </Button>
+              </Dropdown>
               <Tooltip title={t("assistant.close")} trigger={["hover", "focus"]}>
                 <Button
                   type="text"
@@ -2018,7 +2088,6 @@ async function resolveComposerAttachment(
           >
             {messages.length === 0 ? (
               <section className="ai-conversation-empty ux-ai-starters" data-testid="ai-conversation-empty">
-                {attachmentCapabilities?.selected?.model && <span className="ux-ai-model-label">{attachmentCapabilities.selected.model}</span>}
                 <h3>{t("assistant.ux.startTitle")}</h3>
                 <div className="ux-ai-starter-grid">{["explain", "fields", "error"].map((example) => <Button key={example}
                   data-testid={`ai-example-${example}`} disabled={composerDisabled}
@@ -2224,6 +2293,8 @@ async function resolveComposerAttachment(
                             >
                               {stale ? t("actions.viewCurrentChanges", { ns: "common" }) : t("actions.viewChanges", { ns: "common" })}
                             </Button>
+                            <Button size="small" data-testid="ai-preview-code"
+                              onClick={() => setPreviewMessageId(message.id)}>{t("assistant.ux.previewCode")}</Button>
                           </div>
                         </div>
                       )}
@@ -2277,20 +2348,19 @@ async function resolveComposerAttachment(
             <ComposerAttachmentArea
               disabled={composerDisabled}
               sending={sending}
-              workingCopy={props.workingCopy}
-              snippets={props.contextSnippets}
-              recentMessages={recentVisibleMessages(messages)}
               limits={attachmentLimits}
               supportedContentTypes={supportedContentTypes}
-              capability={attachmentCapabilities}
               preparedStates={preparedStates}
               onRetryPrepared={(id) => preparedSession.retry(id)}
               error={attachmentError}
               onErrorChange={(message) => setAttachmentError(message)}
               onSend={(text, attachments) => void sendMessage(text, attachments)}
             />
-            <p className="ux-ai-apply-hint">{t("assistant.ux.applyHint")}</p>
-            <div className="ux-ai-session" role="note" data-testid="ai-session-notice"><strong>{t("assistant.ux.sessionTitle")}</strong><p>{t("assistant.ux.sessionHint")}</p></div>
+            <p className="ux-ai-composer-privacy">{t("assistant.ux.composerPrivacy")}</p>
+            <AssistantDetails view={detailsView} onClose={() => setDetailsView(null)}
+              afterClose={() => moreButtonRef.current?.focus()}
+              workingCopy={props.workingCopy} snippets={props.contextSnippets} recentMessages={recentVisibleMessages(messages)}
+              limits={attachmentLimits} supportedContentTypes={supportedContentTypes} capability={attachmentCapabilities} />
           </ComposerPrimitive.Root>
         </ThreadPrimitive.Root>
       </AssistantRuntimeProvider>
@@ -2392,6 +2462,10 @@ async function resolveComposerAttachment(
           applyAction={diffApplyAction}
         />
       )}
+      <Modal open={props.open && previewMessageId !== null} title={t("assistant.ux.previewCode")}
+        onCancel={() => setPreviewMessageId(null)} footer={null} width={880} className="ai-details-modal" destroyOnHidden>
+        <pre className="ux-ai-code-preview" data-testid="ai-code-preview">{messages.find((message) => message.id === previewMessageId)?.candidate?.value.code ?? ""}</pre>
+      </Modal>
       {props.open ? expandedPanel : collapsedEntry}
     </>
   );

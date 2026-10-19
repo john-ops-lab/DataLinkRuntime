@@ -175,6 +175,9 @@ async function installFixture(
       await fulfillJson(route, { status: "ok", database: true });
       return;
     }
+    if (path.endsWith("/input-config") && method === "GET") return fulfillJson(route, { adapter_id: 1, revision: 1, source_type: "none", json_value: null, retention: { mode: "system_default", seconds: null }, artifacts: [], valid_for_run: true, invalid_reason: null });
+    if (path === "/api/system/managed-input-capability" && method === "GET") return fulfillJson(route, { managed_files_enabled: false, ready: false, default_retention_seconds: 86400, max_custom_retention_seconds: 2592000, allow_manual_delete: true, allowed_extensions: [".txt"] });
+    if (path.endsWith("/schedule") && method === "GET") return fulfillJson(route, { adapter_id: 1, enabled: false, cron: "*/5 * * * *", timezone: "UTC", input: null, next_run_at: null, updated_at: "2026-01-01T00:00:00Z" });
     if (path === "/api/workers" && method === "GET") {
       await fulfillJson(route, [worker]);
       return;
@@ -208,7 +211,7 @@ async function installFixture(
       await fulfillJson(route, []);
       return;
     }
-    if (path === "/api/ai/attachment-capabilities" && method === "GET") {
+    if (path.endsWith("/ai/attachment-capabilities") && method === "GET") {
       await fulfillJson(route, attachmentCapabilities);
       return;
     }
@@ -329,44 +332,20 @@ async function runCase(page: Page, locale: Locale, width: number) {
   await page.getByTestId("adapter-item").first().click();
   await expect(page.getByTestId("editor-main")).toBeVisible();
   await page.getByTestId("open-ai-assistant").click();
+  // Issue #215 moves complete help into More; it no longer occupies the composer.
+  await expect(page.getByTestId("ai-composer-guidance")).toHaveCount(0);
+  await page.getByTestId("ai-more").click();
+  await page.getByRole("menuitem", { name: locale === "zh-CN" ? "使用说明" : "Usage guide" }).click();
   await expect(page.getByTestId("ai-composer-guidance")).toBeVisible();
-
   const guidance = await readGuidance(page);
-  expect(guidance.line_count).toBe(1);
-  expect(guidance.flex_wrap).toBe("nowrap");
-  expect(guidance.hint_white_space).toBe("nowrap");
-  expect(guidance.privacy_white_space).toBe("nowrap");
-  expect(guidance.hint_client_width).toBeGreaterThan(0);
-  expect(guidance.privacy_client_width).toBeGreaterThan(0);
-  expect(guidance.hint_scroll_width).toBeLessThanOrEqual(guidance.client_width);
-  expect(guidance.hint_scroll_width).toBeLessThanOrEqual(guidance.hint_client_width);
-  expect(guidance.privacy_scroll_width).toBeLessThanOrEqual(guidance.client_width);
-  expect(guidance.privacy_scroll_width).toBeLessThanOrEqual(guidance.privacy_client_width);
   expect(guidance.scroll_width).toBeLessThanOrEqual(guidance.client_width);
-  if (width > 1180) {
-    expect(guidance.content_scroll_width).toBeLessThan(guidance.client_width);
-    expect(guidance.content_margin).toBeGreaterThanOrEqual(1.5);
-  }
-  await expect(page.getByTestId("ai-composer-guidance").locator("br")).toHaveCount(0);
-  await expect(page.getByTestId("ai-composer-guidance").locator(":scope > div, :scope > p")).toHaveCount(0);
   expect(guidance.text).toContain(locale === "zh-CN" ? "最多上传8个附件" : "Upload up to 8 attachments");
-  expect(guidance.text).toContain(locale === "zh-CN" ? "请勿上传敏感信息" : "do not upload sensitive information");
-  expect(guidance.hint_text).toContain(locale === "zh-CN" ? "单附件最大6MB" : "6MB per attachment");
-  expect(guidance.privacy_text).toContain(
-    locale === "zh-CN" ? "请勿上传敏感信息。" : "do not upload sensitive information.",
-  );
-  expect(guidance.hint_aria_label).toContain(
-    locale === "zh-CN" ? "最多上传8个附件" : "Upload up to 8 attachments",
-  );
-  expect(guidance.guidance_aria_label).toContain(
-    locale === "zh-CN" ? "请勿上传敏感信息" : "do not upload sensitive information",
-  );
-  expect(guidance.privacy_aria_label).toContain(
-    locale === "zh-CN" ? "请勿上传敏感信息" : "do not upload sensitive information",
-  );
-  expect(guidance.privacy_aria_label).toContain(
-    locale === "zh-CN" ? "请勿上传敏感信息" : "do not upload sensitive information",
-  );
+  expect(guidance.hint_text).toContain("6MB");
+  expect(guidance.privacy_text).toBe(locale === "zh-CN" ? "请勿上传敏感信息。" : "Do not upload sensitive information.");
+  await expect(page.getByTestId("ai-help")).not.toContainText("application/");
+  await page.getByRole("dialog").getByRole("button", { name: /Close|关闭/i }).first().press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByTestId("ai-more")).toBeFocused();
 
   await page.getByTestId("ai-attachment-input").setInputFiles({
     name: "picker.txt",

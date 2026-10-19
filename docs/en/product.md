@@ -207,6 +207,8 @@ run state.
 
 AI conversation text is held only in the current page memory for debugging the current Adapter Working Copy. Closing and reopening the same panel keeps temporary messages; refreshing, remounting, or changing account/Adapter clears messages and Candidates. Saved conversations and historical restoration are unavailable. Each turn includes bounded recent messages; attachments, snippets and tools keep their request boundaries. Retry and regeneration reuse the frozen round request. Candidate changes still require explicit Diff review and Apply, without automatic save or execution.
 
+The composer keeps only attachment and send actions. **More → Review outgoing content** previews the current code, dependencies, ordinary configuration, excerpts, recent messages and draft attachments. **More → Usage guide** explains attachment limits and model capabilities, temporary chat and manual review. Details open independently without squeezing the composer. Code proposals support a read-only preview; Apply still requires Diff review. By default, all generated, modified, repaired, regenerated and attachment-driven code proposals must contain sufficient comments in the server-configured system language (Chinese or English), regardless of the request language.
+
 ## 11. Security Principles
 
 - Adapter code must not hard-code passwords, Tokens or private keys;

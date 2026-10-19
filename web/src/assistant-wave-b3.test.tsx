@@ -51,6 +51,19 @@ vi.mock("@monaco-editor/react", () => ({
   },
 }));
 
+async function waitForCapabilities() {
+  await act(async () => { await Promise.allSettled(vi.mocked(api.getAiAttachmentCapabilities).mock.results.map((result) => result.value)); });
+}
+async function openHelp() {
+  fireEvent.click(screen.getByTestId("ai-more"));
+  fireEvent.click(await screen.findByRole("menuitem", { name: /使用说明|Usage guide/ }));
+  await screen.findByTestId("ai-help");
+}
+async function closeHelp() {
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /close|关闭/i }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+}
+
 function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
   return {
     id: 1,
@@ -288,10 +301,8 @@ describe("Issue #117 Batch 6: one-line attachment guidance", () => {
       await applySystemLocale(locale);
       renderPanel();
 
-      const limits = await screen.findByTestId("ai-attachment-limits");
-      expect(limits.getAttribute("open")).toBeNull();
-      fireEvent.click(within(limits).getByText(locale === "zh-CN" ? "支持的附件格式与模型限制" : "Supported attachment formats and model limits"));
-      expect(limits.getAttribute("open")).not.toBeNull();
+      expect(screen.queryByTestId("ai-attachment-limits")).toBeNull();
+      await openHelp();
       const guidance = await screen.findByTestId("ai-composer-guidance");
       const hint = screen.getByTestId("ai-attachment-hint");
       const privacy = screen.getByTestId("ai-attachment-privacy");
@@ -309,6 +320,8 @@ describe("Issue #117 Batch 6: one-line attachment guidance", () => {
       expect(guidance.getAttribute("aria-label")).toBe(expected);
       expect(guidance.querySelector("br")).toBeNull();
       expect(guidance.querySelectorAll(":scope > div, :scope > p")).toHaveLength(0);
+
+      await closeHelp();
 
       // Valid picker upload still adds one row.
       fireEvent.change(screen.getByTestId("ai-attachment-input"), {
@@ -399,7 +412,7 @@ describe("client-side bounds mirror the B2 contract", () => {
     });
     vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("回复", null));
     renderPanel();
-    await screen.findByTestId("ai-attachment-hint");
+    await waitForCapabilities();
 
     // text/plain is still accepted...
     fireEvent.drop(screen.getByTestId("ai-attachment-dropzone"), {
@@ -975,14 +988,15 @@ describe("i18n parity and width gates", () => {
     vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("回复", null));
     renderPanel();
     await addFiles(makeFile("a.txt", "text/plain"));
-    expect(screen.getByTestId("ai-attachment-add").textContent).toBe("添加附件");
+    expect(screen.getByTestId("ai-attachment-add").textContent).toBe("附件");
     expect(screen.getByTestId("ai-attachment-ready").textContent).toBe("已就绪");
+    await openHelp();
     expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("最多上传8个附件");
     expect(screen.getByTestId("ai-attachment-privacy").textContent).toContain("敏感信息");
 
     await applySystemLocale("en");
     await waitFor(() => {
-      expect(screen.getByTestId("ai-attachment-add").textContent).toBe("Attach files");
+      expect(screen.getByTestId("ai-attachment-add").textContent).toBe("Attach");
     });
     expect(screen.getByTestId("ai-attachment-ready").textContent).toBe("Ready");
     expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("Upload up to 8");
@@ -1022,7 +1036,9 @@ describe("i18n parity and width gates", () => {
 
     // 端点失败后仍按权威默认上限工作：合法文件可添加，超限文件被拒。
     await addFiles(makeFile("ok.txt", "text/plain"));
+    await openHelp();
     expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("6MB");
+    await closeHelp();
     fireEvent.change(screen.getByTestId("ai-attachment-input"), {
       target: { files: [makeBigFile("big.txt", "text/plain", 6 * 1024 * 1024 + 1)] },
     });
@@ -1076,7 +1092,7 @@ describe("Issue #202 prepared attachment integration", () => {
     const get = vi.mocked(api.getPreparedAiAttachment).mockReturnValueOnce(pending);
     const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("validated-reply", null));
     renderPanel();
-    await screen.findByTestId("ai-attachment-capability");
+    await waitForCapabilities();
     await addFiles(makeFile("业务.pdf", "application/pdf", "same-file-body"));
     await screen.findByTestId("ai-prepared-directory");
     const input = screen.getByTestId("ai-message-input") as HTMLTextAreaElement;
@@ -1116,7 +1132,7 @@ describe("Issue #202 prepared attachment integration", () => {
     const get = vi.mocked(api.getPreparedAiAttachment).mockReturnValueOnce(pending);
     const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("must-not-send", null));
     renderPanel();
-    await screen.findByTestId("ai-attachment-capability");
+    await waitForCapabilities();
     await addFiles(makeFile("业务.pdf", "application/pdf"));
     await screen.findByTestId("ai-prepared-directory");
     const input = screen.getByTestId("ai-message-input") as HTMLTextAreaElement;
@@ -1145,7 +1161,7 @@ describe("Issue #202 prepared attachment integration", () => {
     const get = vi.mocked(api.getPreparedAiAttachment).mockReturnValueOnce(pending);
     const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("must-not-send", null));
     const panel = renderPanel({ accountOwnerId: 1 });
-    await screen.findByTestId("ai-attachment-capability");
+    await waitForCapabilities();
     await addFiles(makeFile("业务.pdf", "application/pdf"));
     await screen.findByTestId("ai-prepared-directory");
     fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "old draft" } });
@@ -1169,7 +1185,7 @@ describe("Issue #202 prepared attachment integration", () => {
     const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(original);
     const get = vi.mocked(api.getPreparedAiAttachment);
     const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("server-valid-reply", null));
-    renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    renderPanel(); await waitForCapabilities();
     await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
     fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "preserved draft" } });
     now = Date.parse(original.expires_at) + 1_000;
@@ -1201,7 +1217,7 @@ describe("Issue #202 prepared attachment integration", () => {
     const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(original);
     const get = vi.mocked(api.getPreparedAiAttachment).mockResolvedValue(original);
     const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("renewed-reply", null));
-    renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    renderPanel(); await waitForCapabilities();
     await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
     now += 20_000;
     fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "original round" } });
@@ -1210,6 +1226,7 @@ describe("Issue #202 prepared attachment integration", () => {
     now = Date.parse(original.expires_at) + 1_000;
     expect(now).toBeLessThan(Date.parse(renewed.expires_at));
     get.mockResolvedValue(renewed);
+    await waitFor(() => expect((screen.getByTestId("ai-regenerate") as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByTestId("ai-regenerate"));
     await waitFor(() => expect(assist).toHaveBeenCalledTimes(2));
     expect(assist.mock.calls[1]?.[1].attachment_refs).toEqual(assist.mock.calls[0]?.[1].attachment_refs);
@@ -1224,7 +1241,7 @@ describe("Issue #202 prepared attachment integration", () => {
     const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(preparedMetadata());
     const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("prepared-reply", null));
     renderPanel();
-    await screen.findByTestId("ai-attachment-capability");
+    await waitForCapabilities();
     await addFiles(makeFile("业务.pdf", "application/pdf", "prepared-body-sentinel"));
     await screen.findByTestId("ai-prepared-directory");
     expect(document.body.textContent).toContain("Revenue");
@@ -1251,7 +1268,7 @@ describe("Issue #202 prepared attachment integration", () => {
       .mockResolvedValueOnce(preparedMetadata({ attachment_ref: "new-prepared-ref-id", sha256: "b".repeat(64), filename: "new.pdf" }));
     const assist = vi.spyOn(api, "assistAdapter").mockRejectedValueOnce(new ApiError(502, "ai_request_failed", "fixture failure"))
       .mockResolvedValueOnce(aiResponse("frozen-retry-reply", null));
-    const panel = renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    const panel = renderPanel(); await waitForCapabilities();
     await addFiles(makeFile("业务.pdf", "application/pdf"));
     await screen.findByTestId("ai-prepared-directory");
     fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "original round" } });
@@ -1274,7 +1291,7 @@ describe("Issue #202 prepared attachment integration", () => {
     enablePrepared();
     let resolve: (value: AiPreparedAttachment) => void = () => {};
     const prepare = vi.spyOn(api, "prepareAiAttachment").mockImplementation(() => new Promise((done) => { resolve = done; }));
-    const panel = renderPanel({ accountOwnerId: 1 }); await screen.findByTestId("ai-attachment-capability");
+    const panel = renderPanel({ accountOwnerId: 1 }); await waitForCapabilities();
     await addFiles(makeFile("业务.pdf", "application/pdf"));
     await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
     const scope = prepare.mock.calls[0]?.[1];
@@ -1295,7 +1312,7 @@ describe("Issue #202 prepared attachment integration", () => {
       workingCopy, contentReady: true, busy: false, contextSnippets: [], theme: "vs-dark",
       onOpen: vi.fn(), onClose: vi.fn(), onApply: vi.fn(), onRemoveContextSnippet: vi.fn(), onClearContextSnippets: vi.fn() };
     const view = render(<StrictMode><AiAssistantPanel {...props} /></StrictMode>);
-    await screen.findByTestId("ai-attachment-capability"); await addFiles(makeFile("业务.pdf", "application/pdf"));
+    await waitForCapabilities(); await addFiles(makeFile("业务.pdf", "application/pdf"));
     await screen.findByTestId("ai-prepared-directory");
     expect(prepare).toHaveBeenCalledOnce();
     expect(api.releaseAiAttachmentScope).not.toHaveBeenCalled();
@@ -1309,7 +1326,7 @@ it("reports expired frozen references without replacing them during Regenerate",
   enablePrepared();
   const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(preparedMetadata());
   const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("first-prepared-reply", null));
-  renderPanel(); await screen.findByTestId("ai-attachment-capability");
+  renderPanel(); await waitForCapabilities();
   await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
   fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "original file" } });
   fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("first-prepared-reply");
@@ -1331,7 +1348,7 @@ it("recovers same-page reupload after a closed scope while preserving the draft,
   const assist = vi.spyOn(api, "assistAdapter")
     .mockResolvedValueOnce(aiResponse("original closed-scope answer", makeCandidate({ summary: "original Candidate stays" })))
     .mockResolvedValueOnce(aiResponse("new scope answer", null));
-  renderPanel(); await screen.findByTestId("ai-attachment-capability");
+  renderPanel(); await waitForCapabilities();
   await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
   fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "original round" } });
   fireEvent.click(screen.getByTestId("ai-send")); await screen.findByText("original closed-scope answer");
@@ -1382,7 +1399,7 @@ describe("Issue #211 BFCache lifecycle", () => {
     await applySystemLocale(locale); enablePrepared();
     const prepare = vi.spyOn(api, "prepareAiAttachment").mockResolvedValue(preparedMetadata());
     const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("old-bfcache-reply", null));
-    renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    renderPanel(); await waitForCapabilities();
     await addFiles(makeFile("业务.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
     const originalScope = prepare.mock.calls[0]?.[1];
     fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "old frozen round" } });
@@ -1401,7 +1418,7 @@ describe("Issue #211 BFCache lifecycle", () => {
       expect(screen.queryByTestId("ai-attachment-item")).toBeNull();
       expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe("");
     });
-    await screen.findByTestId("ai-attachment-capability");
+    await waitForCapabilities();
     await addFiles(makeFile("restored.pdf", "application/pdf")); await screen.findByTestId("ai-prepared-directory");
     const restoredScope = prepare.mock.calls.at(-1)?.[1];
     expect(restoredScope).not.toBe(originalScope);
@@ -1418,7 +1435,7 @@ describe("Issue #211 BFCache lifecycle", () => {
     let resolve!: (response: AiAssistResponse) => void;
     const assist = vi.spyOn(api, "assistAdapter").mockImplementationOnce(() => new Promise((done) => { resolve = done; }))
       .mockResolvedValue(aiResponse("new-bfcache-reply", null));
-    renderPanel(); await screen.findByTestId("ai-attachment-capability");
+    renderPanel(); await waitForCapabilities();
     fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "late old request" } });
     fireEvent.click(screen.getByTestId("ai-send")); await waitFor(() => expect(assist).toHaveBeenCalledOnce());
     const signal = assist.mock.calls[0]?.[2];
@@ -1450,7 +1467,7 @@ it("prepares a normal multi-file selection sequentially against a single convers
     } finally { converting = false; }
   });
   const assist = vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("batch-ready-reply", null));
-  renderPanel(); await screen.findByTestId("ai-attachment-capability");
+  renderPanel(); await waitForCapabilities();
   await addFiles(makeFile("chart.png", "image/png", "small-image"), makeFile("context.txt", "text/plain", "tiny-context"));
   await waitFor(() => expect(prepare).toHaveBeenCalledOnce());
   expect(screen.getAllByTestId("ai-attachment-item")).toHaveLength(2);

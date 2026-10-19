@@ -6296,10 +6296,14 @@ it("renders the B2 attachment capability bounds and rejects an oversized file in
   await selectFirstAdapter();
   await openAiAssistant();
 
-  // Server-provided bounds render in the composer hint (1 KiB per-file).
+  // Complete server-provided limits are available from More without crowding the composer.
+  fireEvent.click(screen.getByTestId("ai-more"));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "使用说明" }));
   await screen.findByTestId("ai-attachment-hint");
   await waitFor(() => expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("1 KiB"));
-  expect(screen.getByTestId("ai-attachment-add").textContent).toBe("添加附件");
+  expect(screen.getByTestId("ai-attachment-add").textContent).toBe("附件");
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Close|关闭/i }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
   // A file above the server-declared bound is rejected before any request.
   const oversized = new File([new Uint8Array(2048)], "notes.txt", { type: "text/plain" });
@@ -6701,10 +6705,12 @@ it("shows the M5.5.13 credential guidance copy and the quiet assistant header", 
 
   // 引导文案：凭据绑定引导 + 硬编码敏感信息会随代码发送的区分，无内部术语。
   const empty = screen.getByTestId("ai-conversation-empty");
-  const scope = screen.getByTestId("ai-send-scope");
+  fireEvent.click(screen.getByTestId("ai-more"));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "查看发送内容" }));
+  const scope = await screen.findByTestId("ai-send-scope");
   expect(scope.textContent).toContain("当前代码");
   expect(scope.textContent).toContain("凭据绑定");
-  expect(screen.getByText("发送内容会交给 AI 服务，请勿包含密码或密钥。")).toBeTruthy();
+  expect(screen.getByText("请勿发送密码或密钥。")).toBeTruthy();
   expect(empty.textContent).not.toContain("工作副本");
   expect(empty.textContent).not.toContain("唯一代码快照");
   // UX-FINAL-002：底部重复提示已移除；上方空状态仍保留安全引导。
