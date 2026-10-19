@@ -2447,6 +2447,8 @@ async function resolveComposerAttachment(
     return null;
   }
 
+  const previewCode = messages.find((message) => message.id === previewMessageId)?.candidate?.value.code ?? "";
+
   return (
     <>
       {onCandidateDiffChange === undefined && (
@@ -2466,7 +2468,7 @@ async function resolveComposerAttachment(
       )}
       <Modal open={props.open && previewMessageId !== null} title={t("assistant.ux.previewCode")}
         onCancel={() => setPreviewMessageId(null)} footer={null} width={880} className="ai-details-modal" destroyOnHidden>
-        <pre className="ux-ai-code-preview" data-testid="ai-code-preview">{messages.find((message) => message.id === previewMessageId)?.candidate?.value.code ?? ""}</pre>
+        <pre className="ux-ai-code-preview" data-testid="ai-code-preview">{previewCode}</pre>
       </Modal>
       {props.open ? expandedPanel : collapsedEntry}
     </>
