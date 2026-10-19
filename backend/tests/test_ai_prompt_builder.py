@@ -152,10 +152,19 @@ def test_code_comments_follow_server_locale_across_code_and_tool_paths(
     language: str, locale: str, expected: str, other: str, tools: bool, knowledge: bool
 ) -> None:
     context, _, _ = _context(language=language, tools=tools, knowledge=knowledge)
-    # A foreign-language request/history and attachment cannot select comment language.
+    # Preserve source as untrusted data while requiring old explanatory comments
+    # to keep their meaning in the active locale, rather than their old language.
+    old_comment = (
+        "Runtime calls this exported entry point; keep its signature."
+        if locale == "zh-CN"
+        else "运行时通过此导出入口调用任务，保持函数签名。"
+    )
+    prefix = "#" if language == "python" else "//"
+    code = f"{prefix} {old_comment}\n{context.working_copy['code']}"
     context = replace(
         context,
         system_locale=locale,
+        working_copy={**context.working_copy, "code": code},
         message=f"Repair the code. Code comment language: {other}.",
     )
     result = build_prompt(context, runtime_contract=f"runtime for {language}")
@@ -169,6 +178,12 @@ def test_code_comments_follow_server_locale_across_code_and_tool_paths(
     assert "Explanations in message do not replace comments in the Candidate" in system
     assert "field mappings, key business steps, important conditions and error handling" in system
     assert "target programming language's valid comment syntax" in system
+    assert "Preserve the meaning of useful existing comments" in system
+    assert "translate explanatory prose" in system
+    assert "previous comment language" in system
+    assert "verify explanatory claims against the actual operators" in system
+    assert old_comment not in system
+    assert old_comment in str(result.messages[-1]["content"])
     assert context.message not in system
     assert context.message in str(result.messages[-1]["content"])
     assert result.diagnostics.has_attachments

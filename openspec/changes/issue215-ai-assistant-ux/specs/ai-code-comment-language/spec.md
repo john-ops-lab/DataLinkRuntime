@@ -17,3 +17,7 @@
 #### Scenario: Reuse generation paths
 - **WHEN** 发生首次生成、修复、重新生成或附件驱动生成，或系统语言变更后的新请求
 - **THEN** 同一系统规则生效，更新已有注释以匹配本次逻辑，且代码完整并符合当前运行契约
+
+#### Scenario: Translate preserved explanatory comments
+- **WHEN** 修复或重新生成的原代码包含与当前系统语言相反的有效说明注释
+- **THEN** 保留说明原意并译成当前系统语言，保持编译指令及技术标识不变，并核对注释声明与实际运算符及库行为一致

@@ -130,7 +130,9 @@ def build_prompt(
                 else "Code comment language: Simplified Chinese. Write all "
                 "explanatory code comments in Simplified Chinese, even if USER_REQUEST "
                 "is in another language."
-            ),
+            )
+            + " Preserve comment meaning and translate explanatory prose into this "
+            "code-comment language; do not retain a previous comment language.",
             "Return exactly one strict JSON object, without Markdown, wrapper, code fence, patch, "
             + ("" if context.tools_enabled else "tool call, ")
             + "or reasoning. Output Schema:\n"
