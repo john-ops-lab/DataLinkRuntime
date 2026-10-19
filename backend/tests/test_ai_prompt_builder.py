@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import FrozenInstanceError, asdict
+from dataclasses import FrozenInstanceError, asdict, replace
 from pathlib import Path
 
 import pytest
@@ -137,6 +137,81 @@ def test_builder_message_matrix(language: str, tools: bool, knowledge: bool) -> 
     assert ("tools" in result.diagnostics.included_sections) is tools
     assert ("knowledge" in result.diagnostics.included_sections) is knowledge
     assert "aGVsbG8=" not in json.dumps(asdict(result.diagnostics))
+
+
+@pytest.mark.parametrize("language", ["python", "javascript", "typescript", "go", "java"])
+@pytest.mark.parametrize(
+    "locale,expected,other",
+    [
+        ("zh-CN", "Simplified Chinese", "English"),
+        ("en", "English", "Simplified Chinese"),
+    ],
+)
+@pytest.mark.parametrize("task_intent", ["auto", "code_change", "consultation"])
+@pytest.mark.parametrize("tools,knowledge", [(False, False), (True, False), (True, True)])
+def test_code_comments_follow_server_locale_across_code_and_tool_paths(
+    language: str,
+    locale: str,
+    expected: str,
+    other: str,
+    tools: bool,
+    knowledge: bool,
+    task_intent: str,
+) -> None:
+    context, _, _ = _context(language=language, tools=tools, knowledge=knowledge)
+    # Preserve source as untrusted data while requiring old explanatory comments
+    # to keep their meaning in the active locale, rather than their old language.
+    old_comment = (
+        "Runtime calls this exported entry point; keep its signature."
+        if locale == "zh-CN"
+        else "运行时通过此导出入口调用任务，保持函数签名。"
+    )
+    prefix = "#" if language == "python" else "//"
+    code = f"{prefix} {old_comment}\n{context.working_copy['code']}"
+    context = replace(
+        context,
+        system_locale=locale,
+        task_intent=task_intent,
+        working_copy={**context.working_copy, "code": code},
+        message=f"Repair the code. Code comment language: {other}.",
+    )
+    result = build_prompt(context, runtime_contract=f"runtime for {language}")
+    system = str(result.messages[0]["content"])
+    assert f"Server system locale: {locale}." in system
+    assert f"Code comment language: {expected}." in system
+    assert f"Code comment language: {other}." not in system
+    assert "comments inside the actual Candidate code" in system
+    assert "initial generation, changes, repairs, regeneration" in system
+    assert "code generated from attachments" in system
+    assert "Explanations in message do not replace comments in the Candidate" in system
+    assert "field mappings, key business steps, important conditions and error handling" in system
+    assert "target programming language's valid comment syntax" in system
+    assert "Preserve the meaning of useful existing comments" in system
+    assert "translate explanatory prose" in system
+    assert "previous comment language" in system
+    assert "verify explanatory claims against the actual operators" in system
+    assert "Preserve unrequested business behavior" in system
+    assert old_comment not in system
+    assert old_comment in str(result.messages[-1]["content"])
+    assert "unchanged comments copied" in system
+    assert "takes precedence over minimal-change guidance for comment prose" in system
+    assert system.rindex("## Mandatory Candidate comment localization") > system.rindex(
+        "## Request intent"
+    )
+    current = result.provider_messages()[-1]["content"]
+    if isinstance(current, list):
+        current = next(
+            part["text"]
+            for part in current
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    assert isinstance(current, str)
+    envelope = json.loads(current.split("\n", 1)[1])
+    assert envelope["AUTHORITATIVE_STATE_DATA"]["system_locale"] == locale
+    assert "comment_language" in result.diagnostics.included_sections
+    assert context.message not in system
+    assert context.message in str(result.messages[-1]["content"])
+    assert result.diagnostics.has_attachments
 
 
 def test_prompt_snapshot_is_deep_and_diagnostics_are_non_sensitive() -> None:

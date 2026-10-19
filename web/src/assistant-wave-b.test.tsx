@@ -9,7 +9,7 @@
  * - Candidate Diff stays code-only, matching the Wave A Apply boundary.
  */
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 
@@ -35,6 +35,17 @@ vi.mock("@monaco-editor/react", () => ({
     init: () => Promise.resolve({ editor: { setTheme: () => undefined } }),
   },
 }));
+
+async function openDetails() {
+  fireEvent.click(screen.getByTestId("ai-help-button"));
+}
+async function closeDetails() {
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /close|关闭/i }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+}
+async function waitForCapabilities() {
+  await act(async () => { await Promise.allSettled(vi.mocked(api.getAiAttachmentCapabilities).mock.results.map((result) => result.value)); });
+}
 
 function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
   return {
@@ -143,7 +154,7 @@ it("M5.8-001 maximizes and restores in place without losing draft, snippets, att
       { id: 7, source: "code", text: "return input", start_line: 2, end_line: 2 },
     ],
   });
-  await screen.findByTestId("ai-attachment-hint");
+  await waitForCapabilities();
 
   fireEvent.change(screen.getByTestId("ai-attachment-input"), {
     target: { files: [makeFile("notes.txt")] },
@@ -254,6 +265,7 @@ it("M5.8-002 does not consume snippets when a reliable snapshot cannot be formed
 it.each(["zh-CN", "en"] as const)("M5.8-009 keeps the %s attachment hint and safety copy aligned", async (locale) => {
   await applySystemLocale(locale);
   renderPanel();
+  await openDetails();
   const hint = await screen.findByTestId("ai-attachment-hint");
   const privacy = screen.getByTestId("ai-attachment-privacy");
 
@@ -285,7 +297,7 @@ it("M5.8-010 keeps Candidate Diff to code even when the Candidate contains non-c
   expect(screen.getByTestId("diff-editor").getAttribute("data-modified")).toBe(candidate.code);
 });
 
-it("Issue 212 examples only fill the composer and the nearby scope follows the current draft", async () => {
+it("Issue 212 examples only fill the composer and opening help preserves the draft", async () => {
   const assist = vi.spyOn(api, "assistAdapter");
   const panel = renderPanel();
   expect((screen.getByTestId("ai-send") as HTMLButtonElement).disabled).toBe(true);
@@ -293,10 +305,11 @@ it("Issue 212 examples only fill the composer and the nearby scope follows the c
   expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toContain("解释当前代码");
   expect(assist).not.toHaveBeenCalled();
   expect(screen.queryByTestId("ai-message-user")).toBeNull();
+  await openDetails();
   expect(screen.getByTestId("ai-session-notice").textContent).toContain("收起助手不清空");
-  expect(screen.getByTestId("ai-send-scope").textContent).toContain(workingCopy.code);
+  await closeDetails();
   panel.rerender({ workingCopy: { ...workingCopy, code: "print('changed draft')" } });
-  expect(screen.getByTestId("ai-send-scope").textContent).toContain("print('changed draft')");
+  expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toContain("解释当前代码");
   expect(assist).not.toHaveBeenCalled();
 });
 
@@ -317,15 +330,54 @@ it("Issue 212 attachment records keep this round’s frozen scope after later ed
 });
 
 
-it("Issue 212 keeps model limits available on demand without crowding the empty composer", async () => {
+it("Issue 215 keeps limits in the usage dialog and only two composer actions", async () => {
   renderPanel();
-  const disclosure = await screen.findByTestId("ai-attachment-limits");
-  expect(disclosure.getAttribute("open")).toBeNull();
-  const capability = await screen.findByTestId("ai-attachment-capability");
-  expect(disclosure.contains(capability)).toBe(true);
-  expect(disclosure.contains(screen.getByTestId("ai-attachment-hint"))).toBe(true);
-  fireEvent.click(within(disclosure).getByText("支持的附件格式与模型限制"));
-  expect(disclosure.getAttribute("open")).not.toBeNull();
-  expect(screen.getByTestId("ai-message-input")).toBeTruthy();
-  expect(screen.getByTestId("ai-send-scope")).toBeTruthy();
+  expect(screen.queryByTestId("ai-attachment-limits")).toBeNull();
+  expect(screen.queryByTestId("ai-send-scope")).toBeNull();
+  expect(within(screen.getByTestId("ai-composer-actions")).getAllByRole("button")).toHaveLength(2);
+  await openDetails();
+  const help = await screen.findByTestId("ai-help");
+  expect(within(help).getByTestId("ai-attachment-capability")).toBeTruthy();
+  expect(within(help).getByTestId("ai-attachment-hint").textContent).toContain("6MB");
+  expect(help.textContent).not.toContain("application/");
+  await closeDetails();
+  expect(document.activeElement).toBe(screen.getByTestId("ai-help-button"));
+});
+
+it.each(["zh-CN", "en"] as const)("Issue 215 opens help directly from the %s header and preserves draft and files", async (locale) => {
+  await applySystemLocale(locale);
+  const assist = vi.spyOn(api, "assistAdapter");
+  renderPanel();
+  fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "unsent question" } });
+  fireEvent.change(screen.getByTestId("ai-attachment-input"), { target: { files: [makeFile("draft.txt")] } });
+  await screen.findByTestId("ai-attachment-item");
+  fireEvent.click(screen.getByTestId("ai-help-button"));
+  expect(await screen.findByTestId("ai-help")).toBeTruthy();
+  expect(screen.queryByTestId("ai-send-scope")).toBeNull();
+  await closeDetails();
+  expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe("unsent question");
+  expect(screen.getByTestId("ai-attachment-name").textContent).toBe("draft.txt");
+  expect(assist).not.toHaveBeenCalled();
+});
+
+it("Issue 215 closes help with Escape before restoring maximized layout", async () => {
+  renderPanel();
+  fireEvent.click(screen.getByTestId("maximize-ai-assistant"));
+  fireEvent.click(screen.getByTestId("ai-help-button"));
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape", keyCode: 27 });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(screen.getByTestId("ai-assistant-panel").getAttribute("data-layout")).toBe("maximized");
+  expect(document.activeElement).toBe(screen.getByTestId("ai-help-button"));
+});
+
+it("Issue 215 code preview is read-only and keeps Diff as the Apply surface", async () => {
+  vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("候选说明", candidate));
+  const onApply = vi.fn();
+  renderPanel({ onApply });
+  await sendQuestion("修改代码");
+  await screen.findByTestId("ai-candidate-summary");
+  fireEvent.click(screen.getByTestId("ai-preview-code"));
+  expect((await screen.findByTestId("ai-code-preview")).textContent).toBe(candidate.code);
+  expect(within(screen.getByRole("dialog")).queryByText("应用")).toBeNull();
+  expect(onApply).not.toHaveBeenCalled();
 });

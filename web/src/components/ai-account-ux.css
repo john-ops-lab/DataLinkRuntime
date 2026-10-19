@@ -39,18 +39,7 @@
   font-size:13px;
   color:var(--dlr-text);
 }
-.ux-ai-send-warning {
-  background:#fff9eb;
-  border:1px solid #f5dfaf;
-  border-radius:6px;
-  padding:8px 10px;
-  font-size:12px;
-  line-height:1.6;
-}
-.ux-ai-send-warning>p,.ux-ai-session p,.ux-ai-apply-hint {
-  margin:0;
-}
-.ux-ai-send-scope summary,.ux-ai-formats summary,.ux-ai-config-summary summary,.ux-ai-round>summary {
+.ux-ai-send-scope summary,.ux-ai-config-summary summary,.ux-ai-round>summary {
   cursor:pointer;
   color:#1765c1;
 }
@@ -71,21 +60,6 @@
   max-height:300px;
   overflow-y:auto;
 }
-.ux-ai-formats,.ux-ai-apply-hint,.ux-ai-session {
-  font-size:12px;
-  line-height:1.6;
-  color:var(--dlr-text-weak);
-}
-.ux-ai-formats p {
-  overflow-wrap:anywhere;
-}
-.ux-ai-session {
-  border-top:1px solid var(--dlr-border);
-  padding-top:8px;
-}
-.ux-ai-session strong {
-  color:var(--dlr-text);
-}
 .ux-ai-round {
   display:block;
   width:100%;
@@ -101,9 +75,150 @@
 .ux-ai-round .ai-message-attachment-name {
   margin:4px;
 }
-.ai-composer:has(.ux-ai-session) {
-  max-height:68%;
+/* Issue #215: details never participate in the composer layout. */
+.ux-ai-header-meta {
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:6px;
+  margin-top:6px;
+  min-width:0;
+}
+.ux-ai-header-meta .ux-ai-model-label {
+  max-width:180px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  padding:0;
+  border:0;
+  background:transparent;
+  font-size:12px;
+}
+.ux-ai-session-badge {
+  color:var(--dlr-text-weak);
+  background:#f0f2f5;
+  padding:2px 6px;
+  border-radius:4px;
+  font-size:11px;
+}
+.ai-assistant-expanded .ai-assistant-context {
+  flex-direction:row;
+  align-items:baseline;
+  flex-wrap:wrap;
+  gap:6px;
+}
+.ai-assistant-expanded .ai-assistant-context strong {
+  overflow-wrap:anywhere;
+}
+.ai-assistant-expanded .ux-ai-starter-grid {
+  grid-template-columns:1fr;
+}
+.ai-assistant-expanded .ux-ai-starter-grid .ant-btn {
+  flex-direction:row;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  padding:9px 10px;
+}
+.ai-assistant-expanded.ai-assistant-maximized .ux-ai-starter-grid {
+  grid-template-columns:repeat(3,minmax(0,1fr));
+}
+.ai-assistant-expanded.ai-assistant-maximized .ux-ai-starter-grid .ant-btn {
+  flex-direction:column;
+  align-items:flex-start;
+}
+.ai-assistant-maximized .ai-conversation,
+.ai-assistant-maximized .ai-composer {
+  box-sizing:border-box;
+  width:100%;
+  max-width:904px;
+  align-self:center;
+}
+.ai-assistant-expanded .ai-composer {
+  min-height:0;
+  max-height:65%;
+  overflow:hidden;
+  gap:6px;
+}
+.ai-assistant-expanded .ai-composer-dropzone {
+  min-height:0;
+  flex:1 1 auto;
+  padding:0;
+}
+.ai-composer-attachments {
+  flex:0 1 auto;
+  min-height:0;
+  max-height:min(18vh,140px);
   overflow-y:auto;
+  overscroll-behavior:contain;
+}
+.ai-composer-attachments:empty {
+  display:none;
+}
+.ai-assistant-expanded .ai-composer textarea {
+  min-height:64px;
+  max-height:min(20vh,160px) !important;
+  overflow-y:auto !important;
+}
+.ai-assistant-expanded .ai-composer-actions {
+  flex-wrap:nowrap;
+  padding-top:4px;
+}
+.ai-assistant-expanded .ai-composer-actions .ant-btn,
+.ai-assistant-expanded .ai-composer-send {
+  height:32px;
+  flex-shrink:0;
+  font-size:13px;
+}
+.ux-ai-composer-privacy {
+  margin:0;
+  font-size:11px;
+  line-height:1.5;
+  color:var(--dlr-text-weak);
+}
+.ai-details-modal .ant-modal-body {
+  max-height:65vh;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+}
+.ai-details-modal pre {
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  padding:12px;
+  background:#f5f7fa;
+  border:1px solid var(--dlr-border);
+  border-radius:6px;
+}
+.ux-ai-help section + section {
+  border-top:1px solid var(--dlr-border);
+  margin-top:16px;
+  padding-top:12px;
+}
+.ux-ai-help h3 {
+  font-size:14px;
+  margin:0 0 8px;
+}
+.ux-ai-help p {
+  margin:6px 0;
+  line-height:1.65;
+}
+.ai-assistant-expanded .ai-candidate {
+  padding:12px;
+  border:1px solid #d9e7fb;
+  border-radius:6px;
+  background:#f8fbff;
+}
+.ai-assistant-expanded .ai-candidate-actions .ant-btn {
+  height:30px;
+}
+.ai-assistant-expanded .ai-panel-error {
+  max-height:80px;
+  overflow-y:auto;
+}
+@media (max-width:700px) {
+  .ai-assistant-expanded.ai-assistant-maximized .ux-ai-starter-grid {
+    grid-template-columns:1fr;
+  }
 }
 .ai-model-settings .ai-primary-config {
   display:flex;

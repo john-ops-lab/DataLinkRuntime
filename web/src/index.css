@@ -1308,7 +1308,7 @@ body {
 
 .ai-assistant-expanded {
   flex: 0 0 auto;
-  width: clamp(600px, 32vw, 640px);
+  width: clamp(400px, 30vw, 440px);
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -1590,8 +1590,6 @@ body {
 
 .ai-markdown {
   margin: 4px 0 0;
-  font-size: 0.8rem;
-  line-height: 1.55;
   overflow-wrap: break-word;
   min-width: 0;
   max-width: 100%;
@@ -1847,6 +1845,13 @@ body {
   border: 1px solid var(--dlr-border-strong);
   border-radius: 5px;
   font: inherit;
+}
+
+/* Keep composing and reading text at the same size and line spacing. */
+.ai-markdown,
+.ai-composer textarea {
+  font-size: 0.8rem;
+  line-height: 1.55;
 }
 
 .ai-composer textarea:disabled {
@@ -3559,7 +3564,7 @@ body {
   }
 
   .ai-assistant-expanded {
-    width: 600px;
+    width: 400px;
   }
 
   .workbench-controls {

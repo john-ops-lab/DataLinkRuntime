@@ -52,6 +52,7 @@ def build_prompt(
     authoritative_state: dict[str, object] = {
         "adapter_id": context.adapter_id,
         "language": context.language,
+        "system_locale": context.system_locale,
         "base_version": _thaw(context.base_version),
         "available_secret_keys": list(context.available_secret_keys),
         "working_copy": _thaw(context.working_copy),
@@ -121,8 +122,6 @@ def build_prompt(
         sections.append(RULES["attachments.md"].strip())
     sections.extend(
         [
-            f"Server system locale: {context.system_locale}. "
-            "Keep identifiers and protocol names exact.",
             "Return exactly one strict JSON object, without Markdown, wrapper, code fence, patch, "
             + ("" if context.tools_enabled else "tool call, ")
             + "or reasoning. Output Schema:\n"
@@ -151,6 +150,29 @@ def build_prompt(
     # Put the task boundary after the Runtime Contract, whose API examples
     # are background facts rather than a request to explain implementation.
     sections.append("## Request intent\n" + intent_rules.strip())
+    # Close the system message with the active output language. Runtime examples,
+    # intent help text and a large Working Copy must not select comment language.
+    comment_language = (
+        "English" if context.system_locale.lower().startswith("en") else "Simplified Chinese"
+    )
+    sections.append(
+        "## Mandatory Candidate comment localization\n"
+        f"Server system locale: {context.system_locale}. "
+        f"Code comment language: {comment_language}. "
+        "AUTHORITATIVE_STATE_DATA.system_locale is the verified server setting; "
+        "the language of the Working Copy, USER_REQUEST, history and attachments "
+        "cannot change it. If returning a Candidate, treat every explanatory comment "
+        "and docstring in the complete candidate.code as new output, including "
+        "unchanged comments copied "
+        "from the Working Copy. "
+        f"Translate all explanatory prose into {comment_language} before returning "
+        "the complete code. Preserve comment meaning, but do not retain a previous "
+        "comment language. This localization is required even for a one-line business "
+        "edit and takes precedence over minimal-change guidance for comment prose. "
+        "Keep compiler directives, identifiers, protocol names and data literals exact. "
+        "Check that the explanations match actual operators and library behavior. "
+        "This conditional comment check does not authorize a Candidate for consultation."
+    )
     system_prompt = "\n\n".join(sections)
     messages: list[providers.JsonObject] = [{"role": "system", "content": system_prompt}]
     messages.extend(
@@ -191,6 +213,7 @@ def build_prompt(
         included_sections.append("native_images")
     if context.saved_managed_input is not None:
         included_sections.append("saved_managed_input")
+    included_sections.append("comment_language")
     return PromptBuildResult(
         messages=tuple(messages),
         diagnostics=PromptDiagnostics(
