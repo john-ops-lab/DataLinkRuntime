@@ -322,6 +322,10 @@ async function runCase(page: Page, locale: Locale, width: number) {
   });
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
+  // Login locale is a browser preference, independent of the system locale.
+  await page.addInitScript((loginLocale) => {
+    window.localStorage.setItem("dlr-login-locale", loginLocale);
+  }, locale);
   await page.goto("/");
   await expect(page.getByRole("heading", {
     name: locale === "zh-CN" ? "欢迎登录 DLR 控制台" : "Welcome to the DLR Console",
