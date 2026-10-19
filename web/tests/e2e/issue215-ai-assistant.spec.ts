@@ -76,22 +76,18 @@ for (const locale of ["zh-CN", "en"]) for (const width of [1280, 1440, 1920]) {
     expect(sendBefore!.y + sendBefore!.height).toBeLessThan(900);
     expect(await page.getByTestId("ai-message-input").evaluate((e) => e.scrollHeight > e.clientHeight)).toBe(true);
 
-    await page.getByTestId("ai-more").click();
-    await expect(page.getByRole("menuitem")).toHaveCount(1);
-    await expect(page.getByRole("menuitem", { name: /Review outgoing content|查看发送内容/ })).toHaveCount(0);
-    await page.getByRole("menuitem", { name: locale === "en" ? "Usage guide" : "使用说明" }).click();
+    await page.getByTestId("ai-help-button").click();
     await expect(page.getByTestId("ai-help")).toBeVisible();
     await page.getByRole("dialog").getByRole("button", { name: /Close|关闭/i }).first().press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
-    await expect(page.getByTestId("ai-more")).toBeFocused();
+    await expect(page.getByTestId("ai-help-button")).toBeFocused();
     await expect(page.getByTestId("ai-message-input")).toHaveValue(draft);
     expect(await page.getByTestId("ai-send").boundingBox()).toEqual(sendBefore);
     expect(assists).toHaveLength(0);
 
     await page.getByTestId("maximize-ai-assistant").click();
-    await page.getByTestId("ai-more").focus();
-    await page.getByTestId("ai-more").press("ArrowDown");
-    await page.getByRole("menuitem", { name: locale === "en" ? "Usage guide" : "使用说明" }).click();
+    await page.getByTestId("ai-help-button").focus();
+    await page.getByTestId("ai-help-button").press("Enter");
     await expect(page.getByTestId("ai-help")).not.toContainText("application/");
     await expect(page.getByTestId("ai-attachment-limits")).toContainText("Excel");
     await page.getByRole("dialog").getByRole("button", { name: /Close|关闭/i }).first().press("Escape");

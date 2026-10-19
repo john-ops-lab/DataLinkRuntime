@@ -336,10 +336,9 @@ async function runCase(page: Page, locale: Locale, width: number) {
   await page.getByTestId("adapter-item").first().click();
   await expect(page.getByTestId("editor-main")).toBeVisible();
   await page.getByTestId("open-ai-assistant").click();
-  // Issue #215 moves complete help into More; it no longer occupies the composer.
+  // Issue #215 opens complete help from the header; it no longer occupies the composer.
   await expect(page.getByTestId("ai-composer-guidance")).toHaveCount(0);
-  await page.getByTestId("ai-more").click();
-  await page.getByRole("menuitem", { name: locale === "zh-CN" ? "使用说明" : "Usage guide" }).click();
+  await page.getByTestId("ai-help-button").click();
   await expect(page.getByTestId("ai-composer-guidance")).toBeVisible();
   const guidance = await readGuidance(page);
   expect(guidance.scroll_width).toBeLessThanOrEqual(guidance.client_width);
@@ -349,7 +348,7 @@ async function runCase(page: Page, locale: Locale, width: number) {
   await expect(page.getByTestId("ai-help")).not.toContainText("application/");
   await page.getByRole("dialog").getByRole("button", { name: /Close|关闭/i }).first().press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByTestId("ai-more")).toBeFocused();
+  await expect(page.getByTestId("ai-help-button")).toBeFocused();
 
   await page.getByTestId("ai-attachment-input").setInputFiles({
     name: "picker.txt",

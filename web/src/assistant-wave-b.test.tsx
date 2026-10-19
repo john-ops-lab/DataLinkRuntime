@@ -37,8 +37,7 @@ vi.mock("@monaco-editor/react", () => ({
 }));
 
 async function openDetails() {
-  fireEvent.click(screen.getByTestId("ai-more"));
-  fireEvent.click(await screen.findByRole("menuitem", { name: /使用说明|Usage guide/ }));
+  fireEvent.click(screen.getByTestId("ai-help-button"));
 }
 async function closeDetails() {
   fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /close|关闭/i }));
@@ -342,20 +341,17 @@ it("Issue 215 keeps limits in the usage dialog and only two composer actions", a
   expect(within(help).getByTestId("ai-attachment-hint").textContent).toContain("6MB");
   expect(help.textContent).not.toContain("application/");
   await closeDetails();
-  expect(document.activeElement).toBe(screen.getByTestId("ai-more"));
+  expect(document.activeElement).toBe(screen.getByTestId("ai-help-button"));
 });
 
-it.each(["zh-CN", "en"] as const)("Issue 215 keeps only help in the %s menu and preserves draft and files", async (locale) => {
+it.each(["zh-CN", "en"] as const)("Issue 215 opens help directly from the %s header and preserves draft and files", async (locale) => {
   await applySystemLocale(locale);
   const assist = vi.spyOn(api, "assistAdapter");
   renderPanel();
   fireEvent.change(screen.getByTestId("ai-message-input"), { target: { value: "unsent question" } });
   fireEvent.change(screen.getByTestId("ai-attachment-input"), { target: { files: [makeFile("draft.txt")] } });
   await screen.findByTestId("ai-attachment-item");
-  fireEvent.click(screen.getByTestId("ai-more"));
-  expect(await screen.findAllByRole("menuitem")).toHaveLength(1);
-  expect(screen.queryByRole("menuitem", { name: /查看发送内容|Review outgoing content/ })).toBeNull();
-  fireEvent.click(screen.getByRole("menuitem", { name: /使用说明|Usage guide/ }));
+  fireEvent.click(screen.getByTestId("ai-help-button"));
   expect(await screen.findByTestId("ai-help")).toBeTruthy();
   expect(screen.queryByTestId("ai-send-scope")).toBeNull();
   await closeDetails();
@@ -367,12 +363,11 @@ it.each(["zh-CN", "en"] as const)("Issue 215 keeps only help in the %s menu and 
 it("Issue 215 closes help with Escape before restoring maximized layout", async () => {
   renderPanel();
   fireEvent.click(screen.getByTestId("maximize-ai-assistant"));
-  fireEvent.keyDown(screen.getByTestId("ai-more"), { key: "ArrowDown" });
-  fireEvent.click(await screen.findByRole("menuitem", { name: "使用说明" }));
+  fireEvent.click(screen.getByTestId("ai-help-button"));
   fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape", keyCode: 27 });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(screen.getByTestId("ai-assistant-panel").getAttribute("data-layout")).toBe("maximized");
-  expect(document.activeElement).toBe(screen.getByTestId("ai-more"));
+  expect(document.activeElement).toBe(screen.getByTestId("ai-help-button"));
 });
 
 it("Issue 215 code preview is read-only and keeps Diff as the Apply surface", async () => {

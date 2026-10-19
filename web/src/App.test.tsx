@@ -6296,9 +6296,8 @@ it("renders the B2 attachment capability bounds and rejects an oversized file in
   await selectFirstAdapter();
   await openAiAssistant();
 
-  // Complete server-provided limits are available from More without crowding the composer.
-  fireEvent.click(screen.getByTestId("ai-more"));
-  fireEvent.click(await screen.findByRole("menuitem", { name: "使用说明" }));
+  // Complete server-provided limits are available from the header usage guide without crowding the composer.
+  fireEvent.click(screen.getByTestId("ai-help-button"));
   await screen.findByTestId("ai-attachment-hint");
   await waitFor(() => expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("1 KiB"));
   expect(screen.getByTestId("ai-attachment-add").textContent).toBe("附件");
@@ -6705,8 +6704,7 @@ it("shows the assistant privacy guidance and the quiet assistant header", async 
 
   // 保留简短隐私提示与使用说明，不显示已删除的发送内容预览。
   const empty = screen.getByTestId("ai-conversation-empty");
-  fireEvent.click(screen.getByTestId("ai-more"));
-  fireEvent.click(await screen.findByRole("menuitem", { name: "使用说明" }));
+  fireEvent.click(screen.getByTestId("ai-help-button"));
   expect((await screen.findByTestId("ai-help")).textContent).toContain("请勿包含密码或密钥");
   expect(screen.queryByTestId("ai-send-scope")).toBeNull();
   expect(screen.getByText("请勿发送密码或密钥。")).toBeTruthy();

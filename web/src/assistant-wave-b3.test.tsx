@@ -55,8 +55,7 @@ async function waitForCapabilities() {
   await act(async () => { await Promise.allSettled(vi.mocked(api.getAiAttachmentCapabilities).mock.results.map((result) => result.value)); });
 }
 async function openHelp() {
-  fireEvent.click(screen.getByTestId("ai-more"));
-  fireEvent.click(await screen.findByRole("menuitem", { name: /使用说明|Usage guide/ }));
+  fireEvent.click(screen.getByTestId("ai-help-button"));
   await screen.findByTestId("ai-help");
 }
 async function closeHelp() {

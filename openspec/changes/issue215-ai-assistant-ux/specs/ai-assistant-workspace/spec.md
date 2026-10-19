@@ -8,7 +8,7 @@
 
 ### Requirement: Compact composer and on-demand help
 
-AI 助手 SHALL 在输入工具栏仅显示附件与发送（等待时为停止等待），顶部更多菜单 SHALL 仅提供使用说明，不提供查看发送内容入口或对应预览弹窗。帮助 SHALL 在独立浮层呈现，不改变对话和输入区尺寸。
+AI 助手 SHALL 在输入工具栏仅显示附件与发送（等待时为停止等待），顶部 SHALL 直接提供使用说明按钮，不设更多菜单，不提供查看发送内容入口或对应预览弹窗。帮助 SHALL 在独立浮层呈现，不改变对话和输入区尺寸。
 
 #### Scenario: Read help
 - **WHEN** 用户打开使用说明
@@ -19,7 +19,7 @@ AI 助手 SHALL 在输入工具栏仅显示附件与发送（等待时为停止�
 AI 助手 SHALL 在中英文 1280、1440、1920 宽度的普通、最大化及恢复状态保持可阅读可操作。侧栏 SHALL 为代码编辑保留主要空间，最大化 SHALL 限制对话与输入的阅读宽度。模型及临时对话状态 SHALL 在非空对话中保持可见。长输入与附件 SHALL 独立限高滚动，不挤走发送工具栏。输入文字与对话正文 SHALL 使用相同字体、字号和行高。
 
 #### Scenario: Keep primary operations visible
-- **WHEN** 用户添加多个附件、输入长文本、打开更多或详情并切换最大化
+- **WHEN** 用户添加多个附件、输入长文本、打开使用说明或详情并切换最大化
 - **THEN** 发送操作保持可见，关闭详情后仍保留原始草稿、附件和消息
 
 ### Requirement: Preserve review and temporary conversation

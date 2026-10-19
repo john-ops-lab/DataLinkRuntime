@@ -36,7 +36,7 @@
  */
 
 import { type ComponentProps, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, Dropdown, Modal, Spin, Tooltip } from "antd";
+import { Button, Modal, Spin, Tooltip } from "antd";
 import {
   CheckOutlined,
   CloseOutlined,
@@ -45,7 +45,6 @@ import {
   DiffOutlined,
   FullscreenExitOutlined,
   FullscreenOutlined,
-  MoreOutlined,
   QuestionCircleOutlined,
   MessageOutlined,
   PaperClipOutlined,
@@ -931,10 +930,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [candidateDiff, setCandidateDiff] = useState<CandidateDiffState | null>(null);
   const [progressStage, setProgressStage] = useState<ProgressStage | null>(null);
   const [maximized, setMaximized] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [previewMessageId, setPreviewMessageId] = useState<number | null>(null);
-  const moreButtonRef = useRef<HTMLButtonElement>(null);
+  const helpButtonRef = useRef<HTMLButtonElement>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
   // Request correlation only: one UUID per mounted Adapter session, held in
   // React memory and deliberately never written to browser storage.
@@ -1026,7 +1024,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   }, [t]);
 
   useEffect(() => {
-    if (!maximized || helpOpen || previewMessageId !== null || moreOpen) {
+    if (!maximized || helpOpen || previewMessageId !== null) {
       return;
     }
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1038,7 +1036,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [maximized, helpOpen, previewMessageId, moreOpen]);
+  }, [maximized, helpOpen, previewMessageId]);
 
   useEffect(() => {
     if (wasMaximizedRef.current && !maximized) {
@@ -1140,7 +1138,6 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     setConversationId(crypto.randomUUID());
     setMessages([]);
     setHelpOpen(false);
-    setMoreOpen(false);
     setPreviewMessageId(null);
     setSending(false);
     setCandidateDiff(null);
@@ -1964,31 +1961,17 @@ async function resolveComposerAttachment(
                   }
                 />
               </Tooltip>
-              <Dropdown
-                trigger={["click"]}
-                placement="bottomRight"
-                autoFocus
-                open={moreOpen}
-                onOpenChange={setMoreOpen}
-                menu={{
-                  items: [
-                    { key: "help", icon: <QuestionCircleOutlined aria-hidden="true" />, label: t("assistant.ux.help") },
-                  ],
-                  onClick: () => {
-                    setMoreOpen(false);
-                    setHelpOpen(true);
-                  },
-                }}
+              <Button
+                ref={helpButtonRef}
+                type="text"
+                data-testid="ai-help-button"
+                aria-label={t("assistant.ux.help")}
+                aria-haspopup="dialog"
+                icon={<QuestionCircleOutlined aria-hidden="true" />}
+                onClick={() => setHelpOpen(true)}
               >
-                <Button ref={moreButtonRef} type="text" data-testid="ai-more"
-                  aria-label={t("assistant.ux.more")} aria-haspopup="menu" aria-expanded={moreOpen}
-                  icon={<MoreOutlined aria-hidden="true" />}
-                  onKeyDown={(event) => {
-                    if (event.key === "ArrowDown") { event.preventDefault(); setMoreOpen(true); }
-                  }}>
-                  {t("assistant.ux.more")}
-                </Button>
-              </Dropdown>
+                {t("assistant.ux.help")}
+              </Button>
               <Tooltip title={t("assistant.close")} trigger={["hover", "focus"]}>
                 <Button
                   type="text"
@@ -2346,7 +2329,7 @@ async function resolveComposerAttachment(
             />
             <p className="ux-ai-composer-privacy">{t("assistant.ux.composerPrivacy")}</p>
             <AssistantHelpDialog open={helpOpen} onClose={() => setHelpOpen(false)}
-              afterClose={() => moreButtonRef.current?.focus()}
+              afterClose={() => helpButtonRef.current?.focus()}
               limits={attachmentLimits} supportedContentTypes={supportedContentTypes} capability={attachmentCapabilities} />
           </ComposerPrimitive.Root>
         </ThreadPrimitive.Root>
