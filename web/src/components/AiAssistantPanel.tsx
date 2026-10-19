@@ -680,6 +680,7 @@ function AssistantDetails(props: {
 }) {
   const { t } = useTranslation("ai");
   const attachments = useAuiState((state) => state.composer.attachments);
+  const draftText = useAuiState((state) => state.composer.text);
   return <Modal
     open={props.view !== null}
     title={t(props.view === "scope" ? "assistant.ux.sendScope" : "assistant.ux.help")}
@@ -692,6 +693,7 @@ function AssistantDetails(props: {
     destroyOnHidden
   >
     {props.view === "scope" && <div data-testid="ai-send-scope">
+      <strong>{t("assistant.ux.currentMessage")}</strong><pre>{draftText || t("assistant.ux.emptyValue")}</pre>
       <SendScopeContent workingCopy={props.workingCopy} snippets={props.snippets}
         recentMessages={props.recentMessages} attachmentNames={attachments.map((attachment) => attachment.name)} />
     </div>}

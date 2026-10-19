@@ -357,6 +357,7 @@ it.each(["zh-CN", "en"] as const)("Issue 215 previews the live %s draft and file
   await openDetails("scope");
   const scope = await screen.findByTestId("ai-send-scope");
   expect(scope.textContent).toContain("draft.txt");
+  expect(scope.textContent).toContain("unsent question");
   panel.rerender({ workingCopy: { ...workingCopy, code: "updated code" } });
   expect(scope.textContent).toContain("updated code");
   await closeDetails();

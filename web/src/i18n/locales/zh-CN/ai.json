@@ -205,6 +205,7 @@
       "code": "代码",
       "requirements": "依赖",
       "config": "普通配置",
+      "currentMessage": "本次问题",
       "emptyValue": "空",
       "attachmentScopeHint": "附件按本轮所列资料提交；可读取页不代表模型已读取全部内容。秘密应通过凭据绑定使用，请勿直接写入代码。",
       "sendPrivacy": "发送内容会交给 AI 服务，请勿包含密码或密钥。",

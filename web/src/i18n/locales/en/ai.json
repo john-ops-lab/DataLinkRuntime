@@ -205,6 +205,7 @@
       "code": "Code",
       "requirements": "Dependencies",
       "config": "Ordinary configuration",
+      "currentMessage": "Current message",
       "emptyValue": "Empty",
       "attachmentScopeHint": "Attachments follow this round’s request. Available pages do not mean the model read every page. Use credential bindings for secrets; never put them directly in code.",
       "sendPrivacy": "Content is sent to the AI service. Do not include passwords or keys.",

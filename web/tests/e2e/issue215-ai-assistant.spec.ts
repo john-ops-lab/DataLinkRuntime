@@ -80,6 +80,7 @@ for (const locale of ["zh-CN", "en"]) for (const width of [1280, 1440, 1920]) {
     await page.getByRole("menuitem", { name: locale === "en" ? "Review outgoing content" : "查看发送内容" }).click();
     await expect(page.getByTestId("ai-send-scope")).toContainText("order-requirements.txt");
     await expect(page.getByTestId("ai-send-scope")).toContainText(code.trim());
+    await expect(page.getByTestId("ai-send-scope")).toContainText(draft.trim());
     await page.getByRole("dialog").getByRole("button", { name: /Close|关闭/i }).first().press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByTestId("ai-more")).toBeFocused();
