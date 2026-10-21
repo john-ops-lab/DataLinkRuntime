@@ -1,6 +1,6 @@
 # Proposal
 
-跟踪 Issue：[\#213](https://github.com/john-ops-lab/DataLinkRuntime/issues/213)。维护者于 2026-10-21 授权启动实现；当前执行 B0，首个 PR 提交隔离实验、公开 API 映射、技术与维护收益结论供 review。完整迁移按 B0–B5 门槛推进。
+跟踪 Issue：[\#213](https://github.com/john-ops-lab/DataLinkRuntime/issues/213)。维护者于 2026-10-21 授权在 [PR #217](https://github.com/john-ops-lab/DataLinkRuntime/pull/217) 连续完成 B0–B5，全部完成后集中 review。当前先修复 B0 兼容缺口和 CI 失败；每批保留独立提交和验证证据，依序通过技术、兼容与维护收益门槛。首批隔离实验及暂停结论保留为历史证据，不视为后续门槛已通过。
 
 ## Why
 
