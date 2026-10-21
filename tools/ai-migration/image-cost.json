@@ -1,0 +1,32 @@
+{
+  "schema": "dlr-issue213-dependency-image-cost-v1",
+  "base_sha": "5fc95945b894fbc07aae7fc873aac91a2e26fabc",
+  "method": "Same python:3.13-slim base, offline hash-verified Linux wheels from exact locks, --no-dev exported requirements, identical backend src via PYTHONPATH; dependency measurement images, not release images.",
+  "images": {
+    "baseline": {
+      "image_id": "sha256:b2c46032212ca9a004d939a54eb7dba62c359314b3dd50063abffa33485b6139",
+      "bytes": 116052679,
+      "architecture": "arm64",
+      "import": {
+        "routes": 116,
+        "openapi_sha256": "aa97398505a4cbd26050a18b2c265df1007bb276953c6a3dcff5fca4cccef2f4"
+      }
+    },
+    "candidate": {
+      "image_id": "sha256:4af3d6fd485837c7a627b4518afbd3359f7ba71327f6ad995e365ec46d57aa97",
+      "bytes": 134001357,
+      "architecture": "arm64",
+      "import": {
+        "routes": 116,
+        "openapi_sha256": "aa97398505a4cbd26050a18b2c265df1007bb276953c6a3dcff5fca4cccef2f4"
+      }
+    }
+  },
+  "increment_bytes": 17948678,
+  "requirements_sha256": {
+    "baseline": "8d7b65c697722c61c3eb5b5cc7745aff187e5fca0b266d2fc4467005b8cb8e98",
+    "candidate": "02ef4977e59875f44198648baae087abb1251fedf74654e1fd7dace7c9ce24e6"
+  },
+  "candidate_lock_sha256": "156d5194ffe8dc239e192a414e8c0f51b8de4f90d819288f20d7034e41c34a46",
+  "dockerfile_sha256": "524ba8d13d6c163d1d4e717df7ceb2f1fd9a8035edd64db18d8c584af8d9a804"
+}

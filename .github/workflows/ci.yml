@@ -8,6 +8,22 @@ on:
 jobs:
   ai-migration-b0:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: probe
+          POSTGRES_PASSWORD: probe
+          POSTGRES_DB: probe
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U probe"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      B0_TEST_DATABASE_URL: postgresql+psycopg://probe:probe@localhost:5432/probe
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -19,7 +35,7 @@ jobs:
         run: |
           uv run --project tools/ai-migration --frozen ruff check tools/ai-migration
           uv run --project tools/ai-migration --frozen ruff format --check tools/ai-migration
-          uv run --project tools/ai-migration --frozen mypy --config-file tools/ai-migration/pyproject.toml tools/ai-migration/probe_support.py tools/ai-migration/guards.py tools/ai-migration/control_probe.py tools/ai-migration/snapshot.py
+          uv run --project tools/ai-migration --frozen mypy --config-file tools/ai-migration/pyproject.toml tools/ai-migration/probe_support.py tools/ai-migration/guards.py tools/ai-migration/control_probe.py tools/ai-migration/snapshot.py tools/ai-migration/dispatch_model.py tools/ai-migration/owned_work.py tools/ai-migration/final_probe.py
       - name: Run compatibility observations (includes documented gaps)
         run: uv run --project tools/ai-migration --frozen pytest tools/ai-migration/tests -q
 

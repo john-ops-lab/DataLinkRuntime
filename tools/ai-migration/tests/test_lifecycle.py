@@ -17,6 +17,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import RunContext
 
 from guards import GuardedTransport, Rejected, cause_is
+from owned_work import OwnedTransport
 from probe_support import (
     FINAL_TEXT,
     PROTOCOLS,
@@ -37,7 +38,10 @@ async def wait_set(event: threading.Event, limit: float = 2) -> None:
         await asyncio.sleep(0.005)
 
 
-def test_cross_loop_clients_share_40_permits_with_existing_catalog_path() -> None:
+@pytest.mark.parametrize("transport_class", [GuardedTransport, OwnedTransport])
+def test_cross_loop_clients_share_40_permits_with_existing_catalog_path(
+    transport_class: type[GuardedTransport | OwnedTransport],
+) -> None:
     permits = providers._TRANSPORT_PERMITS
     borrowed = 0
     release = threading.Event()
@@ -66,7 +70,7 @@ def test_cross_loop_clients_share_40_permits_with_existing_catalog_path() -> Non
 
             def run(protocol: Protocol) -> None:
                 async def request() -> None:
-                    async with model(protocol, script.url, transport=GuardedTransport()) as sdk:
+                    async with model(protocol, script.url, transport=transport_class()) as sdk:
                         result = await Agent(sdk, output_type=PromptedOutput(Final), retries=0).run(
                             "Synthetic input"
                         )
@@ -86,7 +90,7 @@ def test_cross_loop_clients_share_40_permits_with_existing_catalog_path() -> Non
                     async with model(
                         "openai",
                         script.url,
-                        transport=GuardedTransport(capacity_timeout=0.03),
+                        transport=transport_class(capacity_timeout=0.03),
                     ) as sdk:
                         with pytest.raises(Exception) as caught:
                             await Agent(sdk, retries=0).run("Must not reach HTTP")
