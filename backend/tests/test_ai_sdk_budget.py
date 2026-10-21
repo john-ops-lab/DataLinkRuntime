@@ -13,8 +13,10 @@ from pydantic_ai.messages import (
     BinaryContent,
     ModelRequest,
     ModelResponse,
+    SystemPromptPart,
     TextPart,
     ThinkingPart,
+    ToolAvailabilityDeltaPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -25,8 +27,9 @@ from pydantic_ai.tools import ToolDefinition
 from ai_runtime_support import Protocol, response, server
 from dlr.common.config import settings
 from dlr.control.ai import context_budget, tool_audit
-from dlr.control.ai.runtime.pydantic_ai.messages import budget_view
+from dlr.control.ai.runtime.pydantic_ai.messages import budget_view, prepare_messages
 from dlr.control.ai.runtime.pydantic_ai.models import model_client, output_type
+from test_ai import assist_body, configure, create_adapter, create_credential
 from test_ai_sdk_contract import snapshot
 from test_issue202_model_reading import media
 
@@ -41,6 +44,113 @@ TOOLS = [
         },
     }
 ]
+
+
+def test_history_trim_removes_only_the_merged_request_part_and_preserves_metadata():
+    current = context_budget.REQUEST_PREFIX + json.dumps(
+        {"USER_REQUEST": "keep current", "AUTHORITATIVE_STATE_DATA": {"code": "keep code"}}
+    )
+    system = SystemPromptPart("keep system")
+    availability = ToolAvailabilityDeltaPart(tools_added=[])
+    merged = ModelRequest(
+        parts=[system, UserPromptPart("old-history " * 10_000), availability],
+        metadata={"retained_metadata": {"value": "unchanged"}},
+    )
+    history = [
+        merged,
+        ModelResponse(parts=[TextPart("old reply")]),
+        ModelRequest(parts=[UserPromptPart(current)]),
+    ]
+    original = deepcopy(history)
+    prepared, budget = prepare_messages(
+        history, snapshot("openai", "https://fixture.invalid"), None, {}, purpose="assist_initial"
+    )
+    assert budget.fits and budget.diagnostics.omitted_history_messages == 2
+    assert len(prepared) == 2
+    assert isinstance(prepared[0], ModelRequest)
+    assert prepared[0].parts == [system, availability]
+    assert prepared[0].metadata == merged.metadata and prepared[0].timestamp == merged.timestamp
+    assert prepared[1] == history[2]
+    view, _ = budget_view(prepared, {})
+    assert budget.diagnostics.estimated_after_tokens == context_budget.estimate_tokens(view, None)
+    assert history == original
+
+
+@pytest.mark.parametrize("protocol", ("openai", "anthropic", "google"))
+@pytest.mark.parametrize("stop_with_duplicate", (False, True))
+def test_trimmed_history_stays_absent_from_native_followup_and_finalization(
+    api_client, monkeypatch, protocol: Protocol, stop_with_duplicate: bool
+):
+    emitted = []
+    monkeypatch.setattr(tool_audit, "_emit_record", emitted.append)
+    calls = 0
+
+    def respond(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1 or (stop_with_duplicate and calls == 2):
+            return response(protocol, calls=[("dlr_docs_list", f"budget-call-{calls}", "{}")])
+        return response(protocol)
+
+    credential = create_credential(
+        api_client, name="budget-contract", credential_type="token", fields={"token": CANARY}
+    )
+    adapter = create_adapter(api_client, f"native-budget-{protocol}-{stop_with_duplicate}")
+    body = assist_body(code="KEEP_CURRENT_WORKING_COPY_213")
+    body["task_intent"] = "consultation"
+    body["recent_messages"] = [
+        {"role": "user", "content": "REMOVED_OLD_HISTORY_213 " * 3_000},
+        {"role": "assistant", "content": "REMOVED_OLD_REPLY_213"},
+    ]
+    with server(responder=respond) as script:
+        configure(
+            api_client,
+            provider="gemini" if protocol == "google" else protocol,
+            base_url=script.url,
+            model="budget-contract-model",
+            credential_id=credential["id"],
+        )
+        result = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+        assert result.status_code == 200, result.text
+        assert result.json()["candidate"] is None
+        budgets = [item for item in emitted if item["event_type"] == "provider_budget"]
+        assert len(script.requests) == len(budgets) == (3 if stop_with_duplicate else 2)
+        assert budgets[0]["omitted_history_messages"] == 2
+        assert all(item["omitted_history_messages"] == 0 for item in budgets[1:])
+
+        def text_values(value):
+            if isinstance(value, str):
+                yield value
+            elif isinstance(value, dict):
+                for item in value.values():
+                    yield from text_values(item)
+            elif isinstance(value, list):
+                for item in value:
+                    yield from text_values(item)
+
+        for request, budget in zip(script.requests, budgets, strict=True):
+            assert b"REMOVED_OLD_HISTORY_213" not in request.body
+            assert b"REMOVED_OLD_REPLY_213" not in request.body
+            envelopes = [
+                json.loads(text[len(context_budget.REQUEST_PREFIX) :])
+                for text in text_values(request.json())
+                if text.startswith(context_budget.REQUEST_PREFIX)
+            ]
+            assert len(envelopes) == 1
+            assert envelopes[0]["AUTHORITATIVE_STATE_DATA"]["working_copy"] == body["working_copy"]
+            assert envelopes[0]["USER_REQUEST"] == body["message"]
+            assert budget["payload_bytes"] == len(request.body) <= budget["max_payload_bytes"]
+            assert budget["estimated_payload_bytes"] >= len(request.body)
+            assert budget["estimated_after_tokens"] <= budget["window_tokens"]
+        assert budgets[-1]["purpose"] == (
+            "assist_finalization" if stop_with_duplicate else "assist_followup"
+        )
+        summaries = result.json()["tool_calls"]
+        assert len(summaries) == (2 if stop_with_duplicate else 1)
+        assert summaries[0]["status"] == "success"
+        if stop_with_duplicate:
+            assert summaries[1]["error_code"] == "ai_tool_duplicate"
+    assert CANARY not in json.dumps(emitted)
 
 
 @pytest.mark.parametrize("protocol", ("openai", "anthropic", "google"))

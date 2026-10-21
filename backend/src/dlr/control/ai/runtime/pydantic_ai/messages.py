@@ -178,6 +178,12 @@ def prepare_messages(
             parts = []
             for index, part in enumerate(message.parts):
                 row = updates.get((id(message), index))
+                if row is None and isinstance(
+                    part, SystemPromptPart | UserPromptPart | ToolReturnPart | RetryPromptPart
+                ):
+                    # The Agent may merge system and user parts in one request.
+                    # A retained sibling must not restore a removed history row.
+                    continue
                 if row is not None and isinstance(part, UserPromptPart):
                     part = replace(part, content=user_content(row["content"]))
                 parts.append(part)
