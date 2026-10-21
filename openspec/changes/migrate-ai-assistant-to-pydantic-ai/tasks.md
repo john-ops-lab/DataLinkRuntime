@@ -1,6 +1,6 @@
 # Tasks
 
-当前完成 B0–B1；共 13/46 项。B0 代表性门槛与精确提交 CI 通过；B1 的共享策略、配置/Catalog、运行接口和资源准备通过相称验证，见 [B0 报告](../../../docs/testing/issue213-pydantic-b0.md)与 [B1 报告](../../../docs/testing/issue213-pydantic-b1.md)。维护者已于 2026-10-21 明确授权在 PR #217 连续完成 B0–B5，全部完成后集中 review。按 B0→B1→B2→B3→B4→B5 推进；每批保留独立 SHA、证据和停止条件，技术与收益门槛通过后继续下一批。同步 OpenSpec 后执行项目校验，行为变化另立规格。
+当前完成 B0–B2；共 21/46 项。B0 代表性门槛与精确提交 CI 通过；B1 的共享策略、配置/Catalog、运行接口和资源准备通过相称验证，见 [B0 报告](../../../docs/testing/issue213-pydantic-b0.md)、[B1 报告](../../../docs/testing/issue213-pydantic-b1.md)与 [B2 报告](../../../docs/testing/issue213-pydantic-b2.md)。维护者已于 2026-10-21 明确授权在 PR #217 连续完成 B0–B5，全部完成后集中 review。按 B0→B1→B2→B3→B4→B5 推进；每批保留独立 SHA、证据和停止条件，技术与收益门槛通过后继续下一批。同步 OpenSpec 后执行项目校验，行为变化另立规格。
 
 ## 1. B0：先验证公开接口与维护收益
 
@@ -23,14 +23,14 @@
 
 ## 3. B2：三协议与设置/传输契约
 
-- [ ] 3.1 引入B0通过的精确依赖和锁，仅接入目录导入运行依赖；干净构建/非AI启动通过，记录体积和升级影响。
-- [ ] 3.2 实现OpenAI Chat Completions/profile映射，覆盖MiniMax、Kimi平台/Code、Ollama和自定义URL合同。
-- [ ] 3.3 接入Anthropic及continuation，验证签名、工具结果、媒体和私有推理不泄露。
-- [ ] 3.4 接入Gemini，验证端点/鉴权、多模态parts、工具关联、错误映射和原设置语义。
-- [ ] 3.5 接入三输出策略及正确阶段原始检查；实际wire不增加输出工具，strict失败在coercion之前拒绝，Prompt/schema不冲突。
-- [ ] 3.6 接入公开传输守卫/client生命周期；验证body上限、禁重定向、DNS/连接分类、总时限、同进程共享40及第41请求行为。
-- [ ] 3.7 保留Catalog/连接测试并纳入原容量边界；关闭SDK隐式重试/内容追踪，模拟429/5xx/超时并核实际HTTP请求与安全错误。
-- [ ] 3.8 更新各Provider配置/合成/在线状态及G02/G05证据；相关测试/类型/风格通过，不把未在线验收写成全量支持。
+- [x] 3.1 引入B0通过的精确依赖和锁，仅接入目录导入运行依赖；干净构建/非AI启动通过，记录体积和升级影响。
+- [x] 3.2 实现OpenAI Chat Completions/profile映射，覆盖MiniMax、Kimi平台/Code、Ollama和自定义URL合同。
+- [x] 3.3 接入Anthropic及continuation，验证签名、工具结果、媒体和私有推理不泄露。
+- [x] 3.4 接入Gemini，验证端点/鉴权、多模态parts、工具关联、错误映射和原设置语义。
+- [x] 3.5 接入三输出策略及正确阶段原始检查；实际wire不增加输出工具，strict失败在coercion之前拒绝，Prompt/schema不冲突。
+- [x] 3.6 接入公开传输守卫/client生命周期；验证body上限、禁重定向、DNS/连接分类、总时限、同进程共享40及第41请求行为。
+- [x] 3.7 保留Catalog/连接测试并纳入原容量边界；关闭SDK隐式重试/内容追踪，模拟429/5xx/超时并核实际HTTP请求与安全错误。
+- [x] 3.8 更新各Provider配置/合成/在线状态及G02/G05证据；相关测试/类型/风格通过，不把未在线验收写成全量支持。
 
 ## 4. B3：Agent循环与领域策略
 
