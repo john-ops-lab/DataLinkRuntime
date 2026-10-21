@@ -1,6 +1,6 @@
 # Compatibility
 
-以开工时冻结的实施 SHA 为最终基线，保留初始设计和本次审查 SHA 的差异记录。以下均是分批需提供证据的要求；本批仅形成 [B0 观察](../../../docs/testing/issue213-pydantic-b0.md)，尚未完成此兼容清单的验收。
+以开工时冻结的实施 SHA 为最终基线，保留初始设计和本次审查 SHA 的差异记录。以下保持条件已按本轮覆盖与证据复用规则完成分批验收，当前结果见 [B4](../../../docs/testing/issue213-pydantic-b4.md) 与 [B5](../../../docs/testing/issue213-pydantic-b5.md)。原模型首败、事实质量限制及 Anthropic/Gemini 在线未验分别保留，不把兼容验收写成全部模型答案正确。
 
 | ID | 功能/边界 | 必须保持及验收重点 |
 |---|---|---|

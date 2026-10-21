@@ -1,6 +1,6 @@
 # Proposal
 
-跟踪 Issue：[\#213](https://github.com/john-ops-lab/DataLinkRuntime/issues/213)。维护者于 2026-10-21 授权在 [PR #217](https://github.com/john-ops-lab/DataLinkRuntime/pull/217) 连续完成 B0–B5，全部完成后集中 review。B0–B4 已完成逐批技术、兼容与维护收益退出审查，B5 实际删除和本地回归已完成，最终精确 HEAD CI、部署与页面烟测继续执行。每批 SHA、首败和范围分别保留，详见 [B4](../../../docs/testing/issue213-pydantic-b4.md)、[B5](../../../docs/testing/issue213-pydantic-b5.md)。
+跟踪 Issue：[\#213](https://github.com/john-ops-lab/DataLinkRuntime/issues/213)。维护者于 2026-10-21 授权在 [PR #217](https://github.com/john-ops-lab/DataLinkRuntime/pull/217) 连续完成 B0–B5，全部完成后集中 review。B0–B5 的实施、兼容与维护收益确认已完成。B5 修正源码的精确 CI、原环境部署和定向页面/模型/Worker 补验已通过；最后文档提交的精确 CI/部署身份在 PR 与 Issue 中同步，维护者 review 另记。每批 SHA、首败和范围分别保留，详见 [B4](../../../docs/testing/issue213-pydantic-b4.md)、[B5](../../../docs/testing/issue213-pydantic-b5.md)。
 
 ## Why
 
