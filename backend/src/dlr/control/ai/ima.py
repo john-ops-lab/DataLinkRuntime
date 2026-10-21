@@ -62,9 +62,11 @@ import logging
 import re
 import socket
 import time
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from http import client as http_client
+from types import MappingProxyType
 from typing import Any
 from urllib import error as url_error
 from urllib import parse as url_parse
@@ -309,13 +311,14 @@ class TencentImaKnowledgeSource(KnowledgeSource):
     """
 
     endpoint: str
-    auth: dict[str, str]
+    auth: Mapping[str, str] = field(repr=False)
     timeout_seconds: float
     allowed_hosts: frozenset[str] = DEFAULT_OFFICIAL_HOSTS
     allow_http: bool = False
     _source_prefix: str = "ima:v1"
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "auth", MappingProxyType(dict(self.auth)))
         object.__setattr__(
             self,
             "endpoint",

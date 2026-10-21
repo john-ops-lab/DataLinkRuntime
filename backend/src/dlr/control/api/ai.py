@@ -1,5 +1,6 @@
 """Admin-only M4 AI model setting, discovery, test and assist endpoints."""
 
+from contextlib import AbstractContextManager
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from dlr.control import db
 from dlr.control.ai import attachments
+from dlr.control.ai.attachment_reading import ScopedAttachmentReader
 from dlr.control.ai.attachment_store import get_attachment_store, principal_owner
 from dlr.control.schemas.ai import (
     AiAssistRequest,
@@ -133,6 +135,12 @@ def assist_adapter(
     session: DbSession,
 ) -> AiAssistResponse:
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    bind = session.get_bind().engine
+
+    def check_edit_permission() -> None:
+        with Session(bind=bind) as acl_session:
+            adapter_access.require_adapter_access(acl_session, adapter_id, principal, "edit")
+
     if payload.attachment_refs:
         assert payload.attachment_scope_id is not None  # Enforced by the request schema.
         try:
@@ -144,23 +152,32 @@ def assist_adapter(
                 status_code=attachments.ATTACHMENT_ERROR_STATUS.get(error.code, 422),
                 detail={"code": error.code, "message": "AI attachment is invalid"},
             ) from None
-        bind = session.get_bind()
+        store = get_attachment_store()
+        owner = principal_owner(principal)
+        scope = payload.attachment_scope_id
+        references = tuple(reference.model_copy(deep=True) for reference in payload.attachment_refs)
 
-        def check_edit_permission() -> None:
-            # Tool callbacks may run on another thread. A fresh session also
-            # observes revocation, archival and ownership changes during Assist.
-            with Session(bind=bind) as acl_session:
-                adapter_access.require_adapter_access(acl_session, adapter_id, principal, "edit")
+        def reader_factory() -> AbstractContextManager[ScopedAttachmentReader]:
+            return store.reader(
+                owner,
+                adapter_id,
+                scope,
+                list(references),
+                inline_bytes=inline_bytes,
+                permission_check=check_edit_permission,
+            )
 
-        with get_attachment_store().reader(
-            principal_owner(principal),
-            adapter_id,
-            payload.attachment_scope_id,
-            payload.attachment_refs,
-            inline_bytes=inline_bytes,
-            permission_check=check_edit_permission,
-        ) as reader:
-            result = ai_service.assist(session, adapter_id, payload, attachment_reader=reader)
+        with reader_factory() as reader:
+            result = ai_service.assist(
+                session,
+                adapter_id,
+                payload,
+                attachment_reader=reader,
+                reader_factory=reader_factory,
+                permission_check=check_edit_permission,
+            )
             check_edit_permission()
             return result
-    return ai_service.assist(session, adapter_id, payload)
+    result = ai_service.assist(session, adapter_id, payload, permission_check=check_edit_permission)
+    check_edit_permission()
+    return result

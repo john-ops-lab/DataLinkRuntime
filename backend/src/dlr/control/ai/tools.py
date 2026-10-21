@@ -120,8 +120,9 @@ class ToolSpec:
 class ToolExecutionContext:
     """M5.7 Wave C2: per-execution context handed to knowledge handlers.
 
-    ``session`` is the request's DB session (used to resolve DLR Credential
-    rows inside the Secret Store for the read-only knowledge sources).
+    ``session`` is a short Session owned by the actual execution thread.
+    Assist can inject a frozen source factory so one request retains its
+    configuration and credentials while current ACL is checked independently.
     ``secret_values`` collects the resolved credential truth of every source
     touched by the current assist; the sanitizer redacts each value by
     string replacement from every summary/result/model/log path.
@@ -136,6 +137,9 @@ class ToolExecutionContext:
     attachment_deadline: float | None = None
     images_native: bool = False
     native_pdf: bool = False
+    source_factory: Callable[[str], knowledge.KnowledgeSource] | None = field(
+        default=None, repr=False
+    )
 
 
 # Execution is strictly sequential (MAX_TOOL_CONCURRENCY is fixed at 1), so

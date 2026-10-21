@@ -170,10 +170,20 @@ def test_assist_pins_only_its_frozen_resource_and_always_releases_pin(
     body = frozen_body(prepare_body["scope_id"], ready)
     calls = []
 
-    def assist(session, adapter_id, request, *, attachment_reader):
+    def assist(
+        session, adapter_id, request, *, attachment_reader, reader_factory, permission_check
+    ):
         calls.append(adapter_id)
         record = store._records[ready["attachment_ref"]]
         assert record.pins == 1
+        with reader_factory() as owned_reader:
+            assert record.pins == 2
+            owned_identity = owned_reader.overview()["attachments"][0]
+            outer_identity = attachment_reader.overview()["attachments"][0]
+            for key in ("attachment_ref", "sha256", "representation_revision"):
+                assert owned_identity[key] == outer_identity[key] == ready[key]
+        assert record.pins == 1
+        permission_check()
         assert attachment_reader.overview()["attachments"][0]["sha256"] == ready["sha256"]
         page = attachment_reader.read_page(ready["attachment_ref"], 3, "both", timeout_seconds=2)
         assert page.data["page"] == 3 and page.media[0].page == 3
@@ -216,7 +226,9 @@ def test_assist_observes_real_acl_revocation_even_on_cached_read(
     prepare_body = payload()
     ready = account_write(editor, "POST", path + "/attachments", json=prepare_body).json()
 
-    def assist(session, adapter_id, request, *, attachment_reader):
+    def assist(
+        session, adapter_id, request, *, attachment_reader, reader_factory, permission_check
+    ):
         attachment_reader.read_page(ready["attachment_ref"], 3, "both", timeout_seconds=2)
         assert grant(owner, adapter_id, editor_id, "read").status_code == 200
         # This is a cache hit, and must still query the changed database ACL.

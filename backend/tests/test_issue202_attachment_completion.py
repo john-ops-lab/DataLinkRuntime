@@ -6,6 +6,7 @@ import copy
 import json
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 from uuid import uuid4
@@ -100,6 +101,13 @@ def harness(monkeypatch):
         ai.knowledge_source_service_config, "knowledge_search_capability", lambda *_: (True, None)
     )
     monkeypatch.setattr(ai.knowledge_service, "redact_values_for", lambda *_: ())
+    # These pure domain trajectories use no database. The production resource
+    # factory is verified separately against real PostgreSQL and Reader pins.
+    monkeypatch.setattr(
+        ai,
+        "_tool_resources",
+        lambda _session, context, **_kwargs: SimpleNamespace(open=lambda: nullcontext(context)),
+    )
 
     def knowledge_result(name, result):
         def handler(*args):
