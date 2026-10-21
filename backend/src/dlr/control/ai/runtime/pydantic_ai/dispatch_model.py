@@ -72,7 +72,10 @@ class DispatchModel(WrapperModel):
                             # Only a protocol-valid echo is sent for a rejected
                             # native argument shape. The dispatcher already saw
                             # the original bytes and recorded the real failure.
-                            parsed = json.loads(safe)
+                            try:
+                                parsed = json.loads(safe)
+                            except (ValueError, RecursionError, TypeError):
+                                parsed = None
                             if not isinstance(parsed, dict):
                                 if signed:
                                     raise AiResponseInvalid("provider_envelope", "invalid_shape")

@@ -176,7 +176,7 @@ def test_media_is_encoded_by_real_sdk(protocol: Protocol) -> None:
         assert b"image/png" in encoded
 
 
-def test_cancelled_loop_keeps_real_transport_permit_until_physical_body_end() -> None:
+def test_cancelled_loop_closes_real_socket_before_returning_its_permit() -> None:
     wait = threading.Event()
     reply = response("openai")
     reply.wait = wait
@@ -201,12 +201,11 @@ def test_cancelled_loop_keeps_real_transport_permit_until_physical_body_end() ->
                     await task
 
         asyncio.run(cancel())
-        assert not permits.acquire(blocking=False)
-        assert not transport.closed.is_set()
-        wait.set()
         assert transport.closed.wait(2)
+        assert not wait.is_set()
         assert permits.acquire(blocking=False)
         permits.release()
+        wait.set()
 
 
 def test_raw_request_and_response_bounds() -> None:
@@ -390,6 +389,23 @@ def test_forty_physical_sdk_requests_share_capacity_with_catalog_beyond_loop_clo
     permits = threading.BoundedSemaphore(40)
     monkeypatch.setattr(providers, "_TRANSPORT_PERMITS", permits)
     release = threading.Event()
+    cleanup_entered = threading.Event()
+    cleanup_count = 0
+    cleanup_lock = threading.Lock()
+    original_finish = OwnedTransport.finish
+
+    def slow_cleanup(transport: OwnedTransport) -> None:
+        nonlocal cleanup_count
+        with cleanup_lock:
+            cleanup_count += 1
+            if cleanup_count == 40:
+                cleanup_entered.set()
+        # Real TCP work has been cancelled; inject delayed physical cleanup
+        # to prove loop closure still cannot return its capacity prematurely.
+        assert release.wait(10)
+        original_finish(transport)
+
+    monkeypatch.setattr(OwnedTransport, "finish", slow_cleanup)
     replies = [response("openai") for _ in range(40)]
     for reply in replies:
         reply.wait = release
@@ -441,6 +457,7 @@ def test_forty_physical_sdk_requests_share_capacity_with_catalog_beyond_loop_clo
 
         try:
             asyncio.run(scenario())
+            assert cleanup_entered.wait(2), cleanup_count
             assert len(NETWORK_WORK.active) == 40
             assert not permits.acquire(blocking=False)
             assert all(not client.transport.closed.is_set() for client in clients)

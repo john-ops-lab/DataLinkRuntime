@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -128,13 +129,22 @@ class OwnedTransport(httpx2.AsyncBaseTransport):
         self.active = 0
         self.closing = False
         self.closed = threading.Event()
+        self.socket_lock = threading.Lock()
+        self.sockets: list[socket.socket] = []
 
     def finish(self) -> None:
         with self.lock:
             self.active -= 1
             if self.closing and self.active == 0:
-                self.inner.close()
-                self.closed.set()
+                self.close_idle()
+
+    def close_idle(self) -> None:
+        self.inner.close()
+        with self.socket_lock:
+            for sock in self.sockets:
+                sock.close()
+            self.sockets.clear()
+        self.closed.set()
 
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         deadline = self.hard_deadline
@@ -166,8 +176,48 @@ class OwnedTransport(httpx2.AsyncBaseTransport):
             # The SDK's beta namespace adds this routing flag even for stable
             # Messages. Preserve DLR's stable endpoint on custom gateways.
             url = url.copy_remove_param("beta")
+        scope = providers._TransportScope()
+        with self.socket_lock:
+            self.sockets = [sock for sock in self.sockets if sock.fileno() >= 0]
+            for sock in self.sockets:
+                scope.register(sock)
+
+        def trace(event: str, info: dict[str, object]) -> None:
+            # Public HTTPX trace return values expose the public NetworkStream.
+            # Duplicate TCP before TLS can detach its original Python socket.
+            # Shutdown of this separate handle also wakes physical recv/poll;
+            # the physical worker retains ownership of its own socket close.
+            if event != "connection.connect_tcp.complete":
+                return
+            stream = info.get("return_value")
+            get_info = getattr(stream, "get_extra_info", None)
+            sock = get_info("socket") if callable(get_info) else None
+            if isinstance(sock, socket.socket):
+                guard: socket.socket | None = None
+                try:
+                    guard = sock.dup()
+                    # A late DNS/connect completion belongs only to its
+                    # original request and is cancelled before publication.
+                    scope.register(guard)
+                except BaseException:
+                    if guard is not None:
+                        guard.close()
+                    # The pool has not yet taken ownership of this stream
+                    # when its connect-complete callback raises.
+                    close_stream = getattr(stream, "close", None)
+                    if callable(close_stream):
+                        close_stream()
+                    raise
+                with self.socket_lock:
+                    self.sockets = [entry for entry in self.sockets if entry.fileno() >= 0]
+                    self.sockets.append(guard)
+
         physical = httpx2.Request(
-            request.method, url, headers=headers, content=body, extensions=request.extensions
+            request.method,
+            url,
+            headers=headers,
+            content=body,
+            extensions={**request.extensions, "trace": trace},
         )
 
         def read() -> httpx2.Response:
@@ -225,11 +275,14 @@ class OwnedTransport(httpx2.AsyncBaseTransport):
             async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
                 return await self.owner.result(future)
         except TimeoutError:
+            scope.cancel()
             raise AiProviderError("ai_timeout") from None
+        except BaseException:
+            scope.cancel()
+            raise
 
     async def aclose(self) -> None:
         with self.lock:
             self.closing = True
             if self.active == 0 and not self.closed.is_set():
-                self.inner.close()
-                self.closed.set()
+                self.close_idle()

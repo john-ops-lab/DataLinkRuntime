@@ -50,6 +50,15 @@ B3 基于 B2 `d3ceaa23f3f8f9de4ebb2a3cd96087fb44bf5713`，实现 `PydanticAiRunt
 5. 运行中停用/登出/降权首轮仍返回 200；改为用新 Session 重新解析当前身份及权限，分别返回原 401/404 语义。
 6. 纯领域 harness 跟随共享 preparation seam，提供无数据库的资源 fixture；实际线程 Session/Reader 所有权由独立 PostgreSQL/真实 store 用例验证，没有生产空 Session 后备。
 
+### B4 独立审查发现的修复
+
+进入真实验收前的只读审查发现两项缺口，均先建立真实失败用例再修复：
+
+- Anthropic/Gemini 的超长原生工具参数被原策略拒绝并计数后，构造安全回送时仍可能解析截断 JSON 并抛出异常。现在仅为被拒绝的 unsigned native 参数回送合法空对象；原 dispatcher 仍收到完整原参数并记一次真实失败，handler 不执行。signed 内容改写仍先拒绝。两个真实 SDK 往返用例验证了后续响应及实际预算。
+- 响应头持续慢滴时，逐次读取 timeout 不能保证总时限内结束物理读取。公开 trace 在 TCP 完成时取得独立 socket 副本，取消时 shutdown 副本，原物理连接由 worker 关闭；这也覆盖 TLS detach 后的握手阻塞，并避免跨线程直接 close 原句柄。keepalive 保留取消句柄；旧 DNS/connect 晚到只归属原请求，不能替换新收尾连接，登记失败时由 worker 显式关闭尚未交给连接池的 stream。
+
+原慢滴、长参数和晚到连接 FD 首败保留在私有记录。新增真实网络合同覆盖慢响应头、慢正文、keepalive、TLS timeout/cancel、晚到 DNS 与新请求并存；检查 physical Future、所有许可及保留强引用的原 socket FD。40 请求用例还在实际清理阶段注入阻塞，证明即使调用 loop 已关闭，40 个许可也要等真实清理完成才归还。没有通过延长生产 deadline、放宽预算或提前释放许可使测试通过。
+
 ## G01–G06 实现级证据与继续条件
 
 | 项 | 当前证据与结论 |

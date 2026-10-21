@@ -230,3 +230,60 @@ def test_text_with_tool_calls_cannot_complete_before_followup(
         assert result.json()["message"] == "Contract answer"
         assert len(script.requests) == 2
         assert len(result.json()["tool_calls"]) == 1
+
+
+@pytest.mark.parametrize("protocol", ["anthropic", "google"])
+def test_rejected_long_native_arguments_keep_valid_followup_and_real_budget(
+    api_client: Any, monkeypatch: pytest.MonkeyPatch, protocol: Protocol
+) -> None:
+    from dataclasses import replace
+
+    from dlr.control.ai import tools
+
+    states = []
+    launched = []
+    prepare = ai._prepare_assist
+
+    def trace(*args: Any, **kwargs: Any) -> Any:
+        context = prepare(*args, **kwargs)
+        states.append(context.state)
+        return context
+
+    def never(arguments: Any) -> Any:
+        launched.append(arguments)
+        return {}
+
+    monkeypatch.setattr(ai, "_prepare_assist", trace)
+    monkeypatch.setitem(
+        tools._TOOLS, "dlr_docs_search", replace(tools._TOOLS["dlr_docs_search"], handler=never)
+    )
+    raw = json.dumps({"query": "x" * 5000})
+    with server(
+        response(protocol, calls=[("dlr_docs_search", "long-native", raw)]), response(protocol)
+    ) as script:
+        result = request(api_client, script, protocol)
+        assert result.status_code == 200, result.text
+        assert result.json()["message"] == "Contract answer"
+        summaries = result.json()["tool_calls"]
+        assert len(summaries) == 1
+        assert summaries[0]["error_code"] == "ai_tool_args_invalid"
+        assert states[0].total_tool_calls == states[0].tool_rounds == 1
+        assert not launched
+        assert len(script.requests) == 2
+        body = script.requests[1].json()
+        if protocol == "anthropic":
+            echoed = next(
+                part
+                for message in body["messages"]
+                for part in message["content"]
+                if isinstance(part, dict) and part.get("type") == "tool_use"
+            )
+            assert echoed["input"] == {}
+        else:
+            echoed = next(
+                part["functionCall"]
+                for message in body["contents"]
+                for part in message["parts"]
+                if "functionCall" in part
+            )
+            assert echoed["args"] == {}
