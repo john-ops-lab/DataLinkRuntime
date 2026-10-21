@@ -9,6 +9,7 @@ from dataclasses import replace
 
 import pytest
 
+import ai_sdk_fixtures
 from dlr.control.ai import context_budget, providers, tools
 from dlr.control.ai.attachment_reading import AttachmentMedia, AttachmentReadResult
 from dlr.control.schemas.ai import AiSettingDraft
@@ -90,14 +91,14 @@ def test_custom_file_declaration_does_not_authorize_native_pdf() -> None:
     adapter = providers.resolve_attachment_adapter(setting, custom)
     assert adapter.images_native and adapter.files_native and not adapter.native_pdf
     assert adapter.capability_source == "custom_declared"
-    with pytest.raises(providers.AiProviderError) as error:
-        providers._build_protocol_payload(
-            setting,
-            [{"role": "user", "content": providers.media_content_parts((media(pdf=True),))}],
-            structured=True,
-            adapter=adapter,
-        )
-    assert error.value.code == "ai_attachment_type_unsupported"
+    reader = Reader()
+    failure = tools.execute_tool_call(
+        "read_attachment_page",
+        '{"attachment_ref":"ref-1","page":3,"view":"pdf"}',
+        None,
+        context=tool_context(reader, native_pdf=adapter.native_pdf),
+    )
+    assert failure.error_code == "ai_attachment_type_unsupported" and not reader.calls
 
 
 @pytest.mark.parametrize(
@@ -115,28 +116,12 @@ def test_tool_media_is_transmitted_as_true_parts(provider, url, model, pdf) -> N
         setting, providers.resolve_attachment_adapter(setting, providers.get_provider(provider))
     )
     item = media(pdf=pdf)
-    result, supplement = providers.tool_result_messages(
-        "call-1", "read_attachment_page", '{"page":3}', (item,), adapter
+    history = ai_sdk_fixtures.media_history(setting, '{"page":3}', (item,), adapter=adapter)
+    wire = ai_sdk_fixtures.sdk_request(
+        setting, [], structured=True, adapter=adapter, history=history
     )
-    messages = [
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {"name": "read_attachment_page", "arguments": "{}"},
-                }
-            ],
-        },
-        result,
-    ]
-    if supplement is not None:
-        messages.append(supplement)
-    payload = providers._build_protocol_payload(setting, messages, structured=True, adapter=adapter)
+    payload = wire.json()
     serialized = json.dumps(payload)
-    assert item.data_base64 in serialized
     assert (
         "dlr_media" not in serialized and "attachment_ref" in serialized and "call-1" in serialized
     )
@@ -144,19 +129,27 @@ def test_tool_media_is_transmitted_as_true_parts(provider, url, model, pdf) -> N
         assert payload["messages"][1]["role"] == "tool"
         assert item.data_base64 not in payload["messages"][1]["content"]
         assert payload["messages"][2]["content"][1]["type"] == ("file" if pdf else "image_url")
+        assert item.data_base64 in serialized
     elif provider == "anthropic":
-        assert supplement is None
         block = payload["messages"][1]["content"][0]
         assert block["type"] == "tool_result" and block["tool_use_id"] == "call-1"
         assert block["content"][-1]["type"] == ("document" if pdf else "image")
+        assert item.data_base64 in serialized
     else:
-        assert (
-            payload["contents"][1]["parts"][0]["functionResponse"]["name"] == "read_attachment_page"
-        )
-        assert payload["contents"][2]["parts"][1]["inlineData"]["mimeType"] == item.content_type
-    assert providers.assist_payload_size(setting, messages, None, adapter=adapter) == len(
-        json.dumps(payload, ensure_ascii=False).encode()
-    )
+        responses = [
+            p["functionResponse"]
+            for m in payload["contents"]
+            for p in m["parts"]
+            if "functionResponse" in p
+        ]
+        assert len(responses) == 1 and responses[0]["name"] == "read_attachment_page"
+        binaries = [
+            p["inlineData"] for m in payload["contents"] for p in m["parts"] if "inlineData" in p
+        ]
+        assert len(binaries) == 1
+        assert binaries[0].get("mimeType", binaries[0].get("mime_type")) == item.content_type
+        assert base64.urlsafe_b64decode(binaries[0]["data"]) == base64.b64decode(item.data_base64)
+    assert len(wire.body) > item.size_bytes
 
 
 class Reader:
@@ -258,46 +251,52 @@ def test_budget_includes_schema_media_and_exact_bytes_and_keeps_tool_group() -> 
     adapter = providers.resolve_output_adapter(
         draft, providers.resolve_attachment_adapter(draft, providers.get_provider("openai"))
     )
-    result, supplement = providers.tool_result_messages(
-        "call-1", "read_attachment_page", "page 3", (media(),), adapter
-    )
+    from pydantic_ai.messages import ModelRequest, ToolCallPart, ToolReturnPart, UserPromptPart
+
+    from dlr.control.ai.provider_config import ProviderSnapshot
+    from dlr.control.ai.runtime.pydantic_ai.messages import budget_view, prepare_messages
+
+    item = media()
+    media_by_hash = {item.sha256: item}
     messages = [
-        {
-            "role": "user",
-            "content": context_budget.REQUEST_PREFIX + '{"USER_REQUEST":"read page 3"}',
-        },
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {"name": "read_attachment_page", "arguments": "{}"},
-                }
-            ],
-        },
-        result,
-        supplement,
+        ModelRequest(
+            parts=[UserPromptPart(context_budget.REQUEST_PREFIX + '{"USER_REQUEST":"read page 3"}')]
+        ),
+        *ai_sdk_fixtures.media_history(draft, "page 3", (item,), adapter=adapter),
     ]
     original_length = len(messages)
-    budget = context_budget.prepare_call(draft, messages, None, adapter=adapter)
+    snapshot = ProviderSnapshot.create(draft, adapter, None)
+    prepared, budget = prepare_messages(
+        messages, snapshot, None, media_by_hash, purpose="assist_followup"
+    )
     assert budget.fits and budget.diagnostics.schema_tokens > 0
-    assert budget.diagnostics.image_count == 1
-    assert budget.diagnostics.pdf_page_count == 0
-    assert budget.diagnostics.media_bytes == media().size_bytes
-    assert budget.diagnostics.payload_bytes == 0  # No SDK request exists at this boundary.
+    assert budget.diagnostics.image_count == 1 and budget.diagnostics.pdf_page_count == 0
+    assert (
+        budget.diagnostics.media_bytes == item.size_bytes and budget.diagnostics.payload_bytes == 0
+    )
+    view = budget_view(prepared, media_by_hash)[0]
     assert budget.diagnostics.estimated_payload_bytes == context_budget.estimated_payload_bytes(
-        draft, messages, None
+        draft, view, None
     )
     assert (
-        context_budget.estimate_tokens(messages, None, adapter=adapter)
+        context_budget.estimate_tokens(view, None, adapter=adapter)
         > context_budget.IMAGE_RESERVE_TOKENS
     )
-    rejected = context_budget.prepare_call(
-        draft, messages, None, adapter=replace(adapter, max_request_bytes=128)
+    wire = ai_sdk_fixtures.sdk_request(draft, [], adapter=adapter, history=prepared)
+    assert budget.diagnostics.estimated_payload_bytes >= len(wire.body)
+    rejected_snapshot = ProviderSnapshot.create(
+        draft, replace(adapter, max_request_bytes=128), None
     )
-    assert not rejected.fits and len(messages) == original_length
+    untouched, rejected = prepare_messages(
+        messages, rejected_snapshot, None, media_by_hash, purpose="assist_followup"
+    )
+    assert not rejected.fits and len(messages) == len(untouched) == original_length
+    calls = [p for m in untouched for p in m.parts if isinstance(p, ToolCallPart)]
+    returns = [p for m in untouched for p in m.parts if isinstance(p, ToolReturnPart)]
+    assert (
+        len(calls) == len(returns) == 1
+        and calls[0].tool_call_id == returns[0].tool_call_id == "call-1"
+    )
 
 
 def test_cold_page_reader_has_30s_without_extending_other_tools(monkeypatch) -> None:
@@ -373,13 +372,14 @@ def test_service_reader_hook_and_selected_capability(
     captured = []
     timeouts = []
     hard_deadlines = []
-    original_budget = ai._audit_provider_budget
+    original_prepare = ai._prepare_assist
 
-    def audit_budget(audit, state, budget, deadline, actual_payload_bytes):
-        hard_deadlines.append(state.hard_deadline)
-        return original_budget(audit, state, budget, deadline, actual_payload_bytes)
+    def prepare(*args, **kwargs):
+        context = original_prepare(*args, **kwargs)
+        hard_deadlines.append(context.state.hard_deadline)
+        return context
 
-    monkeypatch.setattr(ai, "_audit_provider_budget", audit_budget)
+    monkeypatch.setattr(ai, "_prepare_assist", prepare)
 
     def request(*args, **kwargs):
         payload = args[3]

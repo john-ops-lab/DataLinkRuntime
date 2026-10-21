@@ -7,15 +7,9 @@ from typing import Any
 import pytest
 
 from ai_runtime_support import Protocol, Reply, response, server
-from dlr.common.config import Settings, settings
 from dlr.control.ai import tool_audit
 from dlr.control.services import ai
 from test_ai import assist_body, configure, create_adapter, valid_output
-
-
-@pytest.fixture(autouse=True)
-def pydantic_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "ai_assist_runtime", "pydantic_ai")
 
 
 def request(
@@ -122,19 +116,20 @@ def test_duplicate_stops_partial_batch_without_unexecuted_tool_records(api_clien
         assert len([item for item in final["messages"] if item["role"] == "tool"]) == 2
 
 
+@pytest.mark.parametrize("protocol", ["openai", "anthropic", "google"])
 @pytest.mark.parametrize(
     "first", ["invalid first response canary", '{"message":3,"candidate":null}']
 )
 def test_one_format_correction_disables_tools_and_omits_invalid_text(
-    api_client: Any, first: str, monkeypatch: pytest.MonkeyPatch
+    api_client: Any, first: str, monkeypatch: pytest.MonkeyPatch, protocol: Protocol
 ) -> None:
     from dlr.control.ai import tool_audit
     from test_issue207_smoke_audit_contract import _contract
 
     events: list[dict[str, Any]] = []
     monkeypatch.setattr(tool_audit, "_emit_record", events.append)
-    with server(response("openai", first), response("openai")) as script:
-        result = request(api_client, script)
+    with server(response(protocol, first), response(protocol)) as script:
+        result = request(api_client, script, protocol)
         assert result.status_code == 200, result.text
         assert len(script.requests) == 2
         assert "tools" not in script.requests[1].json()
@@ -174,20 +169,12 @@ def test_legacy_configuration_echo_keeps_original_field_presence(api_client: Any
         assert len(script.requests) == 1
 
 
-def test_provider_failure_does_not_fall_back_to_legacy(api_client: Any) -> None:
+def test_provider_failure_issues_no_second_request(api_client: Any) -> None:
     with server(Reply(b"upstream secret", 503)) as script:
         result = request(api_client, script)
         assert result.status_code == 502, result.text
         assert result.json()["detail"]["code"] == "ai_provider_http_error"
         assert len(script.requests) == 1
-
-
-def test_deployment_runtime_rejects_unknown_value(monkeypatch: pytest.MonkeyPatch) -> None:
-    from pydantic import ValidationError
-
-    monkeypatch.setenv("DLR_AI_RUNTIME", "silently-fallback")
-    with pytest.raises(ValidationError):
-        Settings()
 
 
 @pytest.mark.parametrize("protocol", ["anthropic", "google"])
@@ -300,3 +287,26 @@ def test_rejected_long_native_arguments_keep_valid_followup_and_real_budget(
                 if "functionCall" in part
             )
             assert echoed["args"] == {}
+
+
+@pytest.mark.parametrize("protocol", ["openai", "anthropic", "google"])
+@pytest.mark.parametrize("valid_final", [True, False])
+def test_stopped_run_gets_one_tool_free_finalization_on_all_protocols(
+    api_client: Any, protocol: Protocol, valid_final: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(tool_audit, "_emit_record", events.append)
+    calls = [("dlr_docs_list", "one", "{}"), ("dlr_docs_list", "duplicate", "{}")]
+    final = response(protocol) if valid_final else response(protocol, "invalid stopped final")
+    with server(response(protocol, calls=calls), final) as script:
+        result = request(api_client, script, protocol)
+        assert result.status_code == 200, result.text
+        body = result.json()
+        assert body["candidate"] is None
+        assert len(body["tool_calls"]) == 2
+        assert body["tool_calls"][0]["status"] == "success"
+        assert body["tool_calls"][1]["error_code"] == "ai_tool_duplicate"
+        assert len(script.requests) == 2
+        assert not script.requests[1].json().get("tools")
+        assert b"only format correction" not in script.requests[1].body
+    assert not [event for event in events if event["event_type"] == "format_correction"]

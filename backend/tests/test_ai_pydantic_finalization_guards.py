@@ -28,15 +28,13 @@ from dlr.control.ai.runtime.resources import ToolResourceFactory
 from dlr.control.schemas.ai import AiAssistRequest, AiSettingDraft, AiToolCallSummary
 
 
-@pytest.mark.parametrize("runtime", ["legacy", "pydantic_ai"])
 def test_format_correction_total_timeout_keeps_provider_error(
-    api_client: Any, monkeypatch: Any, runtime: str
+    api_client: Any, monkeypatch: Any
 ) -> None:
     from ai_runtime_support import response, server
     from test_ai import valid_output
     from test_ai_pydantic_runtime import request
 
-    monkeypatch.setattr(settings, "ai_assist_runtime", runtime)
     monkeypatch.setattr(settings, "ai_assist_total_timeout_seconds", 2)
     monkeypatch.setattr(policy, "_FINALIZATION_RESERVE_SECONDS", 0)
     late = response("openai", json.dumps(valid_output()))

@@ -55,8 +55,8 @@ def inspect_envelope(raw: bytes, protocol: Protocol) -> object:
         raise AiProviderError(
             "ai_response_invalid", stage="provider_json", reason="json_value_invalid"
         ) from None
-    # During coexistence this is the shared, strict envelope contract. It
-    # validates raw field types; the SDK alone creates conversation messages.
+    # Validate raw field types before SDK coercion. The SDK alone creates
+    # conversation messages; no transport encoding or model loop lives here.
     provider: AiProvider = (
         "anthropic" if protocol == "anthropic" else "gemini" if protocol == "gemini" else "openai"
     )

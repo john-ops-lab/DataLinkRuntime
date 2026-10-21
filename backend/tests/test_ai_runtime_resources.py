@@ -14,7 +14,6 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ai_runtime_support import response, server
-from dlr.common.config import settings
 from dlr.control.ai import tools
 from dlr.control.ai.attachment_store import principal_owner
 from dlr.control.api import ai as ai_api
@@ -27,11 +26,6 @@ from test_ai import assist_body, configure, create_adapter
 from test_issue202_attachment_api import payload
 from test_issue202_attachment_api import resources as resources
 from test_issue202_attachment_store import PNG
-
-
-@pytest.fixture(autouse=True)
-def new_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "ai_assist_runtime", "pydantic_ai")
 
 
 def test_sdk_tool_constructs_and_closes_postgres_session_on_execution_thread(

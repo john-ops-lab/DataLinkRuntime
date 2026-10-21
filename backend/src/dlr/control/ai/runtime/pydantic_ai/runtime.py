@@ -194,8 +194,6 @@ async def correct_format(
 
 class PydanticAiRuntime:
     def execute(self, prepared: PreparedAssist, resources: RuntimeResources) -> RuntimeOutcome:
-        if resources.execution is None:
-            raise ValueError("Pydantic AI runtime requires prepared execution resources")
         try:
             return asyncio.run(self.run_async(prepared, resources.execution))
         except UnexpectedModelBehavior:

@@ -1,7 +1,5 @@
 """Model discovery and draft connection testing, separate from Assist iteration."""
 
-from urllib import parse as url_parse
-
 from dlr.control.ai.provider_config import (
     AiProviderError,
     JsonObject,
@@ -16,36 +14,49 @@ def chat(
     api_key: str | None,
     messages: list[JsonObject],
     *,
-    structured: bool,
     image_input: bool = False,
     adapter: ProviderAdapter | None = None,
 ) -> str:
-    from dlr.control.ai import providers
+    """One tools-free SDK request for a draft; never enters the Assist Agent."""
+    import asyncio
+    import time
+
+    from pydantic_ai.messages import TextPart, ToolCallPart
+    from pydantic_ai.models import ModelRequestParameters
+
+    from dlr.common.config import settings
+    from dlr.control.ai.provider_config import ProviderSnapshot, validate_reasoning
+    from dlr.control.ai.runtime.pydantic_ai.messages import initial_messages
+    from dlr.control.ai.runtime.pydantic_ai.models import model_client
 
     adapter = adapter or get_provider(setting.provider)
-    payload = providers._build_protocol_payload(
-        setting, messages, structured=structured, adapter=adapter
-    )
-    endpoint = (
-        providers._endpoint(setting.base_url, "/v1/messages")
-        if adapter.protocol == "anthropic"
-        else providers._endpoint(
-            setting.base_url,
-            f"/v1beta/models/{url_parse.quote(setting.model, safe='')}:generateContent",
-        )
-        if adapter.protocol == "gemini"
-        else providers._endpoint(setting.base_url, "/v1/chat/completions")
-    )
-    response = providers._request_json(
-        "POST",
-        endpoint,
-        providers._protocol_headers(adapter, api_key),
-        payload,
-        not_found_code="ai_model_not_found",
-        reasoning_explicit=setting.reasoning_mode != "default",
-        image_input=image_input,
-    )
-    return providers.extract_final_text(setting.provider, response, adapter)
+    validate_reasoning(adapter, setting.reasoning_mode, setting.reasoning_effort)
+    snapshot = ProviderSnapshot.create(setting, adapter, api_key)
+    deadline = time.monotonic() + settings.ai_provider_timeout_seconds
+
+    async def request() -> str:
+        async with model_client(snapshot, deadline) as client:
+            answer = await client.model.request(
+                initial_messages(messages),
+                client.settings,
+                ModelRequestParameters(output_mode="text", function_tools=[], output_tools=[]),
+            )
+            if any(isinstance(part, ToolCallPart) for part in answer.parts):
+                raise AiProviderError("ai_response_invalid")
+            return "".join(part.content for part in answer.parts if isinstance(part, TextPart))
+
+    try:
+        return asyncio.run(request())
+    except AiProviderError as error:
+        # Some draft tests ask for an explicit image capability error even
+        # without image parts. Keep that public 400/422 mapping unchanged.
+        if image_input and error.http_status in (400, 422):
+            raise AiProviderError(
+                "ai_attachment_image_unsupported",
+                transport_category="http",
+                http_status=error.http_status,
+            ) from None
+        raise
 
 
 def normalize_models(response: object) -> list[str]:

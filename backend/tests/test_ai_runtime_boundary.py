@@ -20,7 +20,7 @@ from dlr.control.services import secrets as secrets_service
 from test_ai import assist_body, configure, create_adapter, create_credential, fake_chat_response
 
 
-def test_legacy_tool_uses_its_own_execution_thread_session_and_closes_it(
+def test_tool_uses_its_own_execution_thread_session_and_closes_it(
     api_client: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -29,7 +29,7 @@ def test_legacy_tool_uses_its_own_execution_thread_session_and_closes_it(
     observed: list[tuple[int, int]] = []
     owned: list[Any] = []
     route_sessions: list[Session] = []
-    original_impl = ai._assist_impl
+    original_impl = ai._prepare_assist
 
     def traced(session: Session, *args: Any, **kwargs: Any) -> Any:
         route_sessions.append(session)
@@ -77,7 +77,7 @@ def test_legacy_tool_uses_its_own_execution_thread_session_and_closes_it(
             fake_chat_response({"message": "Consultation complete", "candidate": None}),
         ]
     )
-    monkeypatch.setattr(ai, "_assist_impl", traced)
+    monkeypatch.setattr(ai, "_prepare_assist", traced)
     monkeypatch.setattr(ai, "Session", TrackedSession)
     monkeypatch.setitem(
         tools_service._TOOLS,

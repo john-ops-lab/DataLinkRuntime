@@ -11,6 +11,7 @@ from urllib import error as url_error
 import pytest
 from fastapi import HTTPException
 
+import ai_sdk_fixtures
 from dlr.control.ai import providers, tool_audit
 from dlr.control.ai.diagnostics import safe_http_status
 from dlr.control.schemas.ai import AiSettingDraft
@@ -185,26 +186,25 @@ def test_actual_http_failure_reaches_correlated_provider_audit_once(monkeypatch,
         )
         pytest.fail("HTTP failure unexpectedly succeeded")
 
-    monkeypatch.setattr(providers, "chat_assist", chat)
+    monkeypatch.setattr(ai_sdk_fixtures, "round_reply", chat)
     records = []
     monkeypatch.setattr(tool_audit, "_emit_record", records.append)
     trail = tool_audit.AiToolAuditTrail(tool_audit.new_request_correlation(None), 1)
     state = ai._AssistToolState.create(30, correlation=trail.correlation)
     with pytest.raises(providers.AiProviderError) as caught:
-        ai._call_provider_with_audit(
+        ai_sdk_fixtures.request_once(
             AiSettingDraft(
                 provider="minimax", model="MiniMax-M3", base_url="https://api.minimax.cn"
             ),
             PRIVATE,
             [{"role": "user", "content": PRIVATE}],
-            tools=None,
-            provider_adapter=providers.get_provider("minimax"),
-            timeout_seconds=30,
             state=state,
             audit=trail,
         )
-    assert len(read_calls) == len(records) == 1
-    record = records[0]
+    results = [r for r in records if r["event_type"] == "provider_result"]
+    assert len(read_calls) == len(results) == 1
+    assert len([r for r in records if r["event_type"] == "provider_budget"]) == 1
+    record = results[0]
     assert record["event_type"] == "provider_result" and record["outcome"] == "error"
     assert record["transport_category"] == "http" and record["http_status"] == status
     assert record["error_code"] == caught.value.code
@@ -302,32 +302,17 @@ def test_real_socket_http_error_is_classified_audited_once_and_closed(monkeypatc
     records = []
     monkeypatch.setattr(tool_audit, "_emit_record", records.append)
 
-    def chat(*args, **kwargs):
-        providers._request_json(
-            "POST",
-            f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
-            {"Authorization": PRIVATE},
-            {"private_prompt": PRIVATE},
-            not_found_code="ai_model_not_found",
-            timeout_seconds=2,
-        )
-        pytest.fail("HTTP failure unexpectedly succeeded")
-
-    monkeypatch.setattr(providers, "chat_assist", chat)
     trail = tool_audit.AiToolAuditTrail(tool_audit.new_request_correlation(None), 1)
     try:
         with pytest.raises(providers.AiProviderError) as caught:
-            ai._call_provider_with_audit(
+            ai_sdk_fixtures.request_once(
                 AiSettingDraft(
                     provider="minimax",
                     model="MiniMax-M3",
                     base_url=f"http://127.0.0.1:{server.server_port}",
                 ),
                 PRIVATE,
-                [],
-                tools=None,
-                provider_adapter=providers.get_provider("minimax"),
-                timeout_seconds=3,
+                [{"role": "user", "content": "original request"}],
                 state=ai._AssistToolState.create(3),
                 audit=trail,
             )
@@ -337,8 +322,10 @@ def test_real_socket_http_error_is_classified_audited_once_and_closed(monkeypatc
         assert caught.value.transport_category == "http" and caught.value.http_status == status
         assert peer_closed.wait(1), "Client did not close the actual failed HTTP connection"
         assert requests == ["/v1/chat/completions"]
-        assert len(records) == 1 and records[0]["transport_category"] == "http"
-        assert records[0]["http_status"] == status
+        results = [r for r in records if r["event_type"] == "provider_result"]
+        assert len(results) == 1 and results[0]["transport_category"] == "http"
+        assert results[0]["http_status"] == status
+        assert len([r for r in records if r["event_type"] == "provider_budget"]) == 1
         assert PRIVATE not in json.dumps(records) and PRIVATE not in str(caught.value)
     finally:
         server.shutdown()

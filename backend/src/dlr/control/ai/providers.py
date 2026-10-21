@@ -1,27 +1,23 @@
-"""Legacy Assist codecs and bounded transport during runtime migration.
+"""Strict provider envelopes, model discovery and bounded discovery transport.
 
-Configuration/capabilities and Catalog operations live in their own modules;
-compatibility exports keep existing callers stable until the old runtime exits.
+Official SDKs own Assist and connection-test serialization and iteration.
 """
 
 import errno
 import json
 import math
-import re
 import socket
 import ssl
 import threading
 import time
 from contextlib import suppress
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from http import client as http_client
 from typing import Any, cast
 from urllib import error as url_error
-from urllib import parse as url_parse
 from urllib import request as url_request
 
 from dlr.common.config import settings
-from dlr.control.ai.attachment_reading import AttachmentMedia
 from dlr.control.ai.diagnostics import (
     StrictJsonError,
     TransportFailureCategory,
@@ -91,7 +87,6 @@ from dlr.control.ai.provider_config import (
 )
 from dlr.control.schemas.ai import (
     AiProvider,
-    AiSettingDraft,
     contains_unicode_surrogate,
 )
 
@@ -108,7 +103,6 @@ class NormalizedToolCall:
     id: str
     name: str
     arguments: str
-    anthropic_blocks: tuple[JsonObject, ...] = field(default=(), repr=False, compare=False)
 
 
 class _NoRedirectHandler(url_request.HTTPRedirectHandler):
@@ -303,86 +297,6 @@ PROVIDER_DEFAULT_BASE_URLS: dict[AiProvider, str] = {
 # from each official model page; retired 4/4.1/3.x IDs are intentionally absent.
 
 
-def media_content_parts(media: tuple[AttachmentMedia, ...]) -> list[JsonObject]:
-    """A provider-neutral internal part. Body bytes never join text results."""
-    return [{"type": "dlr_media", "media": item} for item in media]
-
-
-def _media_part(item: JsonObject, adapter: ProviderAdapter, protocol: Protocol) -> JsonObject:
-    media = item.get("media")
-    if not isinstance(media, AttachmentMedia):
-        raise AiProviderError("ai_response_invalid", stage="provider_envelope")
-    if media.content_type == "application/pdf":
-        if not adapter.native_pdf:
-            raise AiProviderError("ai_attachment_type_unsupported")
-        if protocol == "anthropic":
-            return {
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": media.content_type,
-                    "data": media.data_base64,
-                },
-            }
-        if protocol == "gemini":
-            return {"inlineData": {"mimeType": media.content_type, "data": media.data_base64}}
-        return {
-            "type": "file",
-            "file": {
-                "filename": "attachment.pdf",
-                "file_data": f"data:application/pdf;base64,{media.data_base64}",
-            },
-        }
-    if not adapter.images_native:
-        raise AiProviderError("ai_attachment_image_unsupported")
-    if protocol == "anthropic":
-        return {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": media.content_type,
-                "data": media.data_base64,
-            },
-        }
-    if protocol == "gemini":
-        return {"inlineData": {"mimeType": media.content_type, "data": media.data_base64}}
-    return {
-        "type": "image_url",
-        "image_url": {
-            "url": f"data:{media.content_type};base64,{media.data_base64}",
-            "detail": "default" if adapter.provider == "minimax" else "auto",
-        },
-    }
-
-
-def tool_result_messages(
-    call_id: str,
-    name: str,
-    content: str,
-    media: tuple[AttachmentMedia, ...],
-    adapter: ProviderAdapter,
-) -> tuple[JsonObject, JsonObject | None]:
-    """Keep all call/results complete before supplementary visual user messages."""
-    tool: JsonObject = {"role": "tool", "tool_call_id": call_id, "name": name, "content": content}
-    if adapter.protocol == "openai_compatible":
-        tool.pop("name")
-    if not media:
-        return tool, None
-    provenance = json.dumps(
-        {"tool_call_id": call_id, "sources": [item.source() for item in media]},
-        ensure_ascii=False,
-        sort_keys=True,
-    )
-    parts: list[JsonObject] = [
-        {"type": "text", "text": "DLR_ATTACHMENT_TOOL_MATERIAL_V1\n" + provenance},
-        *media_content_parts(media),
-    ]
-    if adapter.multimodal_tool_results:
-        tool["content"] = [{"type": "text", "text": content}, *parts]
-        return tool, None
-    return tool, {"role": "user", "content": parts}
-
-
 def _endpoint(base_url: str, path: str) -> str:
     """Append one normalized OpenAI endpoint path to a provider root."""
     root = normalize_base_url(base_url)
@@ -483,23 +397,6 @@ def _transport_failure_category(error: BaseException) -> TransportFailureCategor
     return "unknown"
 
 
-def encoded_payload_size(payload: JsonObject) -> int:
-    return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-
-
-def assist_payload_size(
-    setting: AiSettingDraft,
-    messages: list[JsonObject],
-    tools: list[JsonObject] | None,
-    *,
-    adapter: ProviderAdapter | None = None,
-) -> int:
-    adapter = adapter or resolve_attachment_adapter(setting, get_provider(setting.provider))
-    return encoded_payload_size(
-        _build_protocol_payload(setting, messages, structured=True, adapter=adapter, tools=tools)
-    )
-
-
 def _request_json(
     method: str,
     url: str,
@@ -582,343 +479,6 @@ def _request_json(
         ) from None
 
 
-def _apply_reasoning(
-    payload: JsonObject, setting: AiSettingDraft, adapter: ProviderAdapter | None = None
-) -> None:
-    adapter = adapter or get_provider(setting.provider)
-    validate_reasoning(adapter, setting.reasoning_mode, setting.reasoning_effort)
-    if adapter.split_reasoning:
-        # Output separation only; this does not enable or disable reasoning.
-        payload["reasoning_split"] = True
-    if setting.reasoning_mode == "default":
-        return
-    if adapter.reasoning_style == "openai_effort":
-        # validate_reasoning requires an explicit supported effort here.
-        payload["reasoning_effort"] = setting.reasoning_effort
-    elif adapter.reasoning_style == "thinking":
-        payload["thinking"] = {"type": setting.reasoning_mode}
-        if setting.reasoning_effort is not None:
-            payload["reasoning_effort"] = setting.reasoning_effort
-
-
-def build_chat_payload(
-    setting: AiSettingDraft,
-    messages: list[JsonObject],
-    *,
-    structured: bool,
-    adapter: ProviderAdapter | None = None,
-) -> JsonObject:
-    """Build one non-streaming Chat Completions request."""
-    adapter = resolve_output_adapter(setting, adapter or get_provider(setting.provider))
-    payload: JsonObject = {
-        "model": setting.model,
-        "messages": messages,
-        "stream": False,
-    }
-    transport_messages: list[JsonObject] = []
-    for message in messages:
-        content = message.get("content")
-        if isinstance(content, list):
-            converted = [
-                _media_part(item, adapter, "openai_compatible")
-                if isinstance(item, dict) and item.get("type") == "dlr_media"
-                else item
-                for item in content
-            ]
-            transport_message = {**message, "content": converted}
-            if message.get("role") == "tool":
-                transport_message.pop("name", None)
-            transport_messages.append(transport_message)
-        else:
-            transport_message = dict(message)
-            if message.get("role") == "tool":
-                transport_message.pop("name", None)
-            transport_messages.append(transport_message)
-    payload["messages"] = transport_messages
-    _apply_reasoning(payload, setting, adapter)
-    if structured and adapter.structured_output == "json_schema":
-        payload["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "dlr_assist",
-                "strict": True,
-                "schema": code_only_output_schema(),
-            },
-        }
-    elif structured and adapter.structured_output == "json_object":
-        payload["response_format"] = {"type": "json_object"}
-    return payload
-
-
-def _content_text(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-        return "".join(parts)
-    return ""
-
-
-def _anthropic_content(content: object, adapter: ProviderAdapter | None = None) -> object:
-    """Translate visible content; Assist supplies its resolved capability adapter."""
-    adapter = adapter or get_provider("anthropic")
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    blocks: list[dict[str, object]] = []
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") == "dlr_media":
-            blocks.append(_media_part(item, adapter, "anthropic"))
-        elif item.get("type") == "text" and isinstance(item.get("text"), str):
-            blocks.append({"type": "text", "text": item["text"]})
-        elif item.get("type") == "image_url":
-            image_url = item.get("image_url")
-            if isinstance(image_url, dict) and isinstance(image_url.get("url"), str):
-                match = re.match(r"data:([^;]+);base64,(.+)", image_url["url"])
-                if match:
-                    blocks.append(
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": match.group(1),
-                                "data": match.group(2),
-                            },
-                        }
-                    )
-    return blocks or ""
-
-
-def _gemini_parts(content: object, adapter: ProviderAdapter | None = None) -> list[JsonObject]:
-    adapter = adapter or get_provider("gemini")
-    if isinstance(content, str):
-        return [{"text": content}]
-    if not isinstance(content, list):
-        return []
-    parts: list[JsonObject] = []
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") == "dlr_media":
-            parts.append(_media_part(item, adapter, "gemini"))
-        elif item.get("type") == "text" and isinstance(item.get("text"), str):
-            parts.append({"text": item["text"]})
-        elif item.get("type") == "image_url":
-            image_url = item.get("image_url")
-            if isinstance(image_url, dict) and isinstance(image_url.get("url"), str):
-                match = re.match(r"data:([^;]+);base64,(.+)", image_url["url"])
-                if match:
-                    parts.append(
-                        {
-                            "inlineData": {
-                                "mimeType": match.group(1),
-                                "data": match.group(2),
-                            }
-                        }
-                    )
-    return parts
-
-
-def _anthropic_messages(
-    messages: list[JsonObject], adapter: ProviderAdapter | None = None
-) -> tuple[str | None, list[JsonObject]]:
-    adapter = adapter or get_provider("anthropic")
-    system_parts: list[str] = []
-    result: list[JsonObject] = []
-    for message in messages:
-        role = message.get("role")
-        if role == "system":
-            text = _content_text(message.get("content"))
-            if text:
-                system_parts.append(text)
-            continue
-        if role == "tool":
-            result.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": message.get("tool_call_id", "unknown"),
-                            "content": _anthropic_content(message.get("content"), adapter),
-                        }
-                    ],
-                }
-            )
-            continue
-        continuation = message.get("_anthropic_continuation")
-        if role == "assistant" and isinstance(continuation, list):
-            result.append({"role": "assistant", "content": continuation})
-            continue
-        role_name = "assistant" if role == "assistant" else "user"
-        blocks: object = _anthropic_content(message.get("content"), adapter)
-        raw_calls = message.get("tool_calls")
-        if isinstance(raw_calls, list):
-            call_blocks = blocks if isinstance(blocks, list) else []
-            for call in raw_calls:
-                if not isinstance(call, dict):
-                    continue
-                function = call.get("function")
-                if not isinstance(function, dict):
-                    continue
-                try:
-                    arguments = load_json_strict(function.get("arguments", "{}"))
-                except (ValueError, RecursionError, TypeError):
-                    arguments = {}
-                call_blocks.append(
-                    {
-                        "type": "tool_use",
-                        "id": call.get("id", "unknown"),
-                        "name": function.get("name", ""),
-                        "input": arguments,
-                    }
-                )
-            blocks = call_blocks
-        result.append({"role": role_name, "content": blocks})
-    return ("\n".join(system_parts) or None), result
-
-
-def _gemini_contents(
-    messages: list[JsonObject], adapter: ProviderAdapter | None = None
-) -> tuple[JsonObject | None, list[JsonObject]]:
-    adapter = adapter or get_provider("gemini")
-    system_parts: list[JsonObject] = []
-    result: list[JsonObject] = []
-    tool_names: dict[str, str] = {}
-    for message in messages:
-        role = message.get("role")
-        if role == "system":
-            system_parts.extend(_gemini_parts(message.get("content"), adapter))
-            continue
-        if role == "tool":
-            tool_call_id = message.get("tool_call_id")
-            tool_name = message.get("name")
-            if not isinstance(tool_name, str):
-                tool_name = tool_names.get(str(tool_call_id), str(tool_call_id))
-            result.append(
-                {
-                    "role": "user",
-                    "parts": [
-                        {
-                            "functionResponse": {
-                                "name": tool_name,
-                                "response": {"content": _content_text(message.get("content"))},
-                            }
-                        }
-                    ],
-                }
-            )
-            continue
-        role_name = "model" if role == "assistant" else "user"
-        parts = _gemini_parts(message.get("content"), adapter)
-        raw_calls = message.get("tool_calls")
-        if isinstance(raw_calls, list):
-            for call in raw_calls:
-                if not isinstance(call, dict):
-                    continue
-                function = call.get("function")
-                if not isinstance(function, dict):
-                    continue
-                call_id = call.get("id")
-                call_name = function.get("name")
-                if isinstance(call_id, str) and isinstance(call_name, str):
-                    tool_names[call_id] = call_name
-                try:
-                    arguments = load_json_strict(function.get("arguments", "{}"))
-                except (ValueError, RecursionError, TypeError):
-                    arguments = {}
-                parts.append(
-                    {
-                        "functionCall": {
-                            "name": function.get("name", ""),
-                            "args": arguments,
-                        }
-                    }
-                )
-        result.append({"role": role_name, "parts": parts})
-    system: JsonObject | None = {"parts": system_parts} if system_parts else None
-    return system, result
-
-
-def _anthropic_tools(tools: list[JsonObject]) -> list[JsonObject]:
-    converted: list[JsonObject] = []
-    for tool in tools:
-        function = tool.get("function")
-        if isinstance(function, dict):
-            converted.append(
-                {
-                    "name": function.get("name"),
-                    "description": function.get("description", ""),
-                    "input_schema": function.get("parameters", {"type": "object"}),
-                }
-            )
-    return converted
-
-
-def _gemini_tools(tools: list[JsonObject]) -> list[JsonObject]:
-    declarations: list[JsonObject] = []
-    for tool in tools:
-        function = tool.get("function")
-        if isinstance(function, dict):
-            declarations.append(
-                {
-                    "name": function.get("name"),
-                    "description": function.get("description", ""),
-                    "parameters": function.get("parameters", {"type": "object"}),
-                }
-            )
-    return [{"functionDeclarations": declarations}]
-
-
-def _build_protocol_payload(
-    setting: AiSettingDraft,
-    messages: list[JsonObject],
-    *,
-    structured: bool,
-    adapter: ProviderAdapter,
-    tools: list[JsonObject] | None = None,
-) -> JsonObject:
-    if adapter.protocol == "openai_compatible":
-        payload = build_chat_payload(setting, messages, structured=structured, adapter=adapter)
-        if tools is not None:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-            if adapter.split_reasoning:
-                # MiniMax requires the full assistant reasoning to be passed
-                # back between tool rounds. Keeping it inside ``content`` is
-                # the provider's documented OpenAI-native compatibility path
-                # and lets the common message loop preserve it unchanged.
-                payload["reasoning_split"] = False
-        return payload
-    if adapter.protocol == "anthropic":
-        anthropic_system, converted = _anthropic_messages(messages, adapter)
-        anthropic_payload: JsonObject = {
-            "model": setting.model,
-            "messages": converted,
-            "max_tokens": 4096,
-        }
-        if anthropic_system is not None:
-            anthropic_payload["system"] = anthropic_system
-        if tools is not None:
-            anthropic_payload["tools"] = _anthropic_tools(tools)
-        return anthropic_payload
-    gemini_system, converted = _gemini_contents(messages, adapter)
-    gemini_payload: JsonObject = {"contents": converted}
-    if gemini_system is not None:
-        gemini_payload["systemInstruction"] = gemini_system
-    if structured:
-        gemini_payload["generationConfig"] = {"responseMimeType": "application/json"}
-    if tools is not None:
-        gemini_payload["tools"] = _gemini_tools(tools)
-    return gemini_payload
-
-
 def _strip_thinking_container(content: str) -> str:
     """Remove one or more complete leading ``<think>`` containers only."""
     final = content.strip()
@@ -970,9 +530,6 @@ def _extract_anthropic_round(
         else:
             raise AiProviderError("ai_response_invalid")
     if tool_calls:
-        # Private request-local carrier: exact content/order/signatures, never UI/audit.
-        blocks = tuple(response["content"])
-        tool_calls[0] = replace(tool_calls[0], anthropic_blocks=blocks)
         return ("".join(text_parts) or None), tool_calls
     if response.get("stop_reason") not in (None, "end_turn"):
         raise AiProviderError("ai_response_invalid", reason="incomplete_completion")
@@ -1022,43 +579,6 @@ def _extract_gemini_round(
     if candidate.get("finishReason") not in (None, "STOP"):
         raise AiProviderError("ai_response_invalid", reason="incomplete_completion")
     return _strip_thinking_container("".join(text_parts)), None
-
-
-def extract_final_text(
-    provider: AiProvider, response: object, adapter: ProviderAdapter | None = None
-) -> str:
-    """Normalize one provider fixture into final text only.
-
-    ``reasoning_content`` and ``reasoning_details`` are intentionally never
-    read, returned or persisted. All supported providers use the normalized
-    Chat Completions ``choices[0].message.content`` for their final answer.
-    """
-    adapter = adapter or get_provider(provider)
-    if adapter.protocol != "openai_compatible":
-        final, tool_calls = (
-            _extract_anthropic_round(response)
-            if adapter.protocol == "anthropic"
-            else _extract_gemini_round(response)
-        )
-        if tool_calls is not None or final is None:
-            raise AiProviderError("ai_response_invalid")
-        return final
-    get_provider(provider)  # validates and documents the selected thin adapter
-    if not isinstance(response, dict):
-        raise AiProviderError("ai_response_invalid")
-    choices = response.get("choices")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        raise AiProviderError("ai_response_invalid")
-    choice = choices[0]
-    if choice.get("finish_reason") != "stop":
-        raise AiProviderError("ai_response_invalid", reason="incomplete_completion")
-    message = choice.get("message")
-    if not isinstance(message, dict):
-        raise AiProviderError("ai_response_invalid")
-    content = message.get("content")
-    if not isinstance(content, str):
-        raise AiProviderError("ai_response_invalid")
-    return _strip_thinking_container(content)
 
 
 def extract_round(
@@ -1121,65 +641,3 @@ def extract_round(
     if not isinstance(content, str):
         raise AiProviderError("ai_response_invalid")
     return _strip_thinking_container(content), None
-
-
-def chat_assist(
-    setting: AiSettingDraft,
-    api_key: str | None,
-    messages: list[JsonObject],
-    *,
-    tools: list[JsonObject] | None = None,
-    image_input: bool = False,
-    adapter: ProviderAdapter | None = None,
-    timeout_seconds: float | None = None,
-    hard_deadline: float | None = None,
-) -> tuple[str | None, list[NormalizedToolCall] | None]:
-    """One non-streaming assist round; returns (final_content, tool_calls).
-
-    M5.7 Wave C1: the whitelisted read-only ``tools`` definitions join the
-    payload only when the Provider capability table explicitly supports them
-    (``tools_supported``); otherwise the payload is byte-identical to the
-    pre-C1 assist protocol and the provider cannot call any tool. The final
-    answer is still expected as strict JSON through the same chain.
-    """
-    call_deadline = time.monotonic() + (
-        timeout_seconds if timeout_seconds is not None else settings.ai_provider_timeout_seconds
-    )
-    if hard_deadline is not None:
-        call_deadline = min(call_deadline, hard_deadline)
-    adapter = resolve_attachment_adapter(setting, adapter or get_provider(setting.provider))
-    if tools is not None and not adapter.tools_supported:  # capability guard, never assumed
-        raise AiProviderError("ai_tool_unsupported")
-    payload = _build_protocol_payload(
-        setting, messages, structured=True, adapter=adapter, tools=tools
-    )
-    if encoded_payload_size(payload) > adapter.max_request_bytes:
-        raise AiProviderError("ai_context_over_budget")
-    endpoint = (
-        _endpoint(setting.base_url, "/v1/messages")
-        if adapter.protocol == "anthropic"
-        else (
-            _endpoint(
-                setting.base_url,
-                f"/v1beta/models/{url_parse.quote(setting.model, safe='')}:generateContent",
-            )
-            if adapter.protocol == "gemini"
-            else _endpoint(setting.base_url, "/v1/chat/completions")
-        )
-    )
-    remaining = call_deadline - time.monotonic()
-    if remaining <= 0:
-        raise AiProviderError("ai_timeout")
-    response = _request_json(
-        "POST",
-        endpoint,
-        _protocol_headers(adapter, api_key),
-        payload,
-        not_found_code="ai_model_not_found",
-        reasoning_explicit=setting.reasoning_mode != "default",
-        image_input=image_input,
-        timeout_seconds=remaining,
-    )
-    if time.monotonic() >= call_deadline:
-        raise AiProviderError("ai_timeout")
-    return extract_round(setting.provider, response, adapter)

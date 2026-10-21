@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+import ai_sdk_fixtures
 from conftest import WORKER_TOKEN
 from dlr.common.config import Settings, settings
 from dlr.control.ai import providers, tool_audit
@@ -303,7 +304,7 @@ def test_provider_fixtures_normalize_final_text_without_reasoning(
     provider: Any, message_extras: dict[str, object], content: str
 ) -> None:
     response = fake_chat_response(content, **message_extras)
-    assert providers.extract_final_text(provider, response) == "FINAL"
+    assert ai_sdk_fixtures.sdk_final_text(provider, response) == "FINAL"
 
 
 @pytest.mark.parametrize(
@@ -315,7 +316,7 @@ def test_provider_fixtures_normalize_final_text_without_reasoning(
 )
 def test_provider_rejects_ambiguous_or_missing_final_answer(response: object) -> None:
     with pytest.raises(providers.AiProviderError) as error:
-        providers.extract_final_text("deepseek", response)
+        ai_sdk_fixtures.sdk_final_text("deepseek", response)
     assert error.value.code == "ai_response_invalid"
 
 
@@ -325,14 +326,14 @@ def test_provider_rejects_length_truncated_even_when_content_is_valid_json() -> 
     assert isinstance(choices, list) and isinstance(choices[0], dict)
     choices[0]["finish_reason"] = "length"
     with pytest.raises(providers.AiProviderError) as error:
-        providers.extract_final_text("openai", response)
+        ai_sdk_fixtures.sdk_final_text("openai", response)
     assert error.value.code == "ai_response_invalid"
 
 
 @pytest.mark.parametrize("provider", list(providers.PROVIDERS))
 def test_reasoning_default_sends_no_enable_disable_override(provider: Any) -> None:
     draft = AiSettingDraft(**setting_payload(provider=provider))
-    payload = providers.build_chat_payload(
+    payload = ai_sdk_fixtures.sdk_payload(
         draft, [{"role": "user", "content": "hello"}], structured=True
     )
     assert "thinking" not in payload
@@ -370,7 +371,7 @@ def test_openai_compatible_endpoint_normalization_is_shared_for_chat_and_models(
     monkeypatch.setattr(providers, "_request_json", fake_request)
     draft = AiSettingDraft(**setting_payload(provider="minimax", base_url=base_url))
     assert providers.normalize_base_url(base_url) == "https://minimax.example.com"
-    assert providers.chat(draft, None, [{"role": "user", "content": "OK"}], structured=False)
+    assert providers.chat(draft, None, [{"role": "user", "content": "OK"}])
     assert providers.fetch_models("minimax", base_url, None) == ["model"]
     assert calls == [
         ("POST", "https://minimax.example.com/v1/chat/completions"),
@@ -383,7 +384,7 @@ def test_openai_sends_only_supported_explicit_efforts(effort: Any) -> None:
     draft = AiSettingDraft(
         **setting_payload(provider="openai", reasoning_mode="enabled", reasoning_effort=effort)
     )
-    payload = providers.build_chat_payload(draft, [], structured=False)
+    payload = ai_sdk_fixtures.sdk_payload(draft, [], structured=False)
     assert payload["reasoning_effort"] == effort
     assert "thinking" not in payload
 
@@ -394,7 +395,7 @@ def test_openai_rejects_enabled_without_supported_explicit_effort(effort: Any) -
         **setting_payload(provider="openai", reasoning_mode="enabled", reasoning_effort=effort)
     )
     with pytest.raises(providers.AiProviderError) as error:
-        providers.build_chat_payload(draft, [], structured=False)
+        ai_sdk_fixtures.sdk_payload(draft, [], structured=False)
     assert error.value.code == "ai_reasoning_unsupported"
 
 
@@ -403,19 +404,19 @@ def test_deepseek_sends_thinking_and_supported_effort_together(effort: Any) -> N
     draft = AiSettingDraft(
         **setting_payload(provider="deepseek", reasoning_mode="enabled", reasoning_effort=effort)
     )
-    payload = providers.build_chat_payload(draft, [], structured=False)
+    payload = ai_sdk_fixtures.sdk_payload(draft, [], structured=False)
     assert payload["thinking"] == {"type": "enabled"}
     assert payload["reasoning_effort"] == effort
 
 
 def test_thinking_providers_map_explicit_mode_without_inventing_effort() -> None:
     deepseek = AiSettingDraft(**setting_payload(provider="deepseek", reasoning_mode="disabled"))
-    assert providers.build_chat_payload(deepseek, [], structured=False)["thinking"] == {
+    assert ai_sdk_fixtures.sdk_payload(deepseek, [], structured=False)["thinking"] == {
         "type": "disabled"
     }
 
     kimi = AiSettingDraft(**setting_payload(provider="kimi", reasoning_mode="enabled"))
-    kimi_payload = providers.build_chat_payload(kimi, [], structured=False)
+    kimi_payload = ai_sdk_fixtures.sdk_payload(kimi, [], structured=False)
     assert kimi_payload["thinking"] == {"type": "enabled"}
     assert "reasoning_effort" not in kimi_payload
 
@@ -440,20 +441,20 @@ def test_provider_reasoning_capabilities_reject_unsupported_choices(
         **setting_payload(provider=provider, reasoning_mode=mode, reasoning_effort=effort)
     )
     with pytest.raises(providers.AiProviderError) as error:
-        providers.build_chat_payload(draft, [], structured=False)
+        ai_sdk_fixtures.sdk_payload(draft, [], structured=False)
     assert error.value.code == "ai_reasoning_unsupported"
 
 
 def test_openai_uses_json_mode_not_an_invalid_strict_runtime_config_schema() -> None:
     draft = AiSettingDraft(**setting_payload(provider="openai"))
-    payload = providers.build_chat_payload(draft, [], structured=True)
+    payload = ai_sdk_fixtures.sdk_payload(draft, [], structured=True)
     assert payload["response_format"] == {"type": "json_object"}
     assert "json_schema" not in json.dumps(payload["response_format"])
 
 
 def test_kimi_uses_supported_json_mode() -> None:
     draft = AiSettingDraft(**setting_payload(provider="kimi"))
-    payload = providers.build_chat_payload(draft, [], structured=True)
+    payload = ai_sdk_fixtures.sdk_payload(draft, [], structured=True)
     assert payload["response_format"] == {"type": "json_object"}
 
 
@@ -643,9 +644,18 @@ def test_provider_http_rejects_invalid_remaining_timeout(
     assert called is False
 
 
-def test_chat_assist_passes_remaining_timeout_to_provider_request(
+def test_sdk_request_passes_remaining_timeout_to_provider_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import asyncio
+    import time
+
+    from pydantic_ai.models import ModelRequestParameters
+
+    from dlr.control.ai.provider_config import ProviderSnapshot
+    from dlr.control.ai.runtime.pydantic_ai.messages import initial_messages
+    from dlr.control.ai.runtime.pydantic_ai.models import model_client
+
     captured: dict[str, object] = {}
 
     def fake_request(*_: object, **kwargs: object) -> object:
@@ -654,14 +664,19 @@ def test_chat_assist_passes_remaining_timeout_to_provider_request(
 
     monkeypatch.setattr(providers, "_request_json", fake_request)
     draft = AiSettingDraft(**setting_payload())
-    content, tool_calls = providers.chat_assist(
-        draft,
-        None,
-        [],
-        timeout_seconds=7.25,
-    )
-    assert content is not None
-    assert tool_calls is None
+    snapshot = ProviderSnapshot.create(draft, providers.get_provider(draft.provider), None)
+
+    async def invoke() -> None:
+        async with model_client(snapshot, time.monotonic() + 7.25) as client:
+            answer = await client.model.request(
+                initial_messages([{"role": "user", "content": "hello"}]),
+                client.settings,
+                ModelRequestParameters(output_mode="text", function_tools=[], output_tools=[]),
+            )
+            assert answer.text is not None
+            assert not answer.tool_calls
+
+    asyncio.run(invoke())
     assert 7.0 < captured["timeout_seconds"] <= 7.25
 
 
@@ -927,6 +942,7 @@ def test_connection_test_and_models_refresh_are_independent(
 ) -> None:
     """A Provider without a usable /v1/models still passes Test Connection."""
     configure(api_client)
+    monkeypatch.setattr(ai_sdk_fixtures, "round_reply", lambda *args, **kwargs: ("OK", None))
     monkeypatch.setattr(
         providers,
         "_NO_REDIRECT_OPENER",
@@ -2034,10 +2050,9 @@ def test_assist_provider_failures_have_stable_sanitized_codes(
     def fake_chat_assist(*_: object, **__: object) -> tuple[str | None, list[object] | None]:
         raise providers.AiProviderError(code)
 
-    # M5.7 Wave C1: the assist protocol now runs through chat_assist; the
-    # behavioral contract (stable sanitized codes, no secret reflection)
-    # stays identical.
-    monkeypatch.setattr(providers, "chat_assist", fake_chat_assist)
+    # Inject one SDK HTTP failure while retaining the stable sanitized-code
+    # contract and the assertion that secrets never reach the response.
+    monkeypatch.setattr(ai_sdk_fixtures, "round_reply", fake_chat_assist)
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
     assert response.status_code == status_code
     assert response.json()["detail"]["code"] == code
@@ -2168,7 +2183,7 @@ def test_retired_ai_turn_fields_are_rejected_before_provider_call(
     def forbidden(*args: object, **kwargs: object) -> None:
         pytest.fail("Obsolete durable request must not call the Provider")
 
-    monkeypatch.setattr(providers, "chat_assist", forbidden)
+    monkeypatch.setattr(ai_sdk_fixtures, "round_reply", forbidden)
     adapter = create_adapter(api_client, "obsolete-ai-client")
     body = assist_body()
     body[field] = value

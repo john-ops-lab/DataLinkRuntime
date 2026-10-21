@@ -3,6 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+import ai_sdk_fixtures
 from dlr.control.ai import providers
 from dlr.control.schemas.ai import AiCustomProviderDraft, AiSettingDraft
 from test_ai import configure, setting_payload
@@ -50,12 +51,24 @@ def test_gemini_model_discovery_maps_native_names_and_strips_prefix(
 
 def test_minimax_tool_payload_uses_native_thinking_compatibility() -> None:
     setting = AiSettingDraft.model_validate(setting_payload(provider="minimax"))
-    payload = providers._build_protocol_payload(
+    payload = ai_sdk_fixtures.sdk_payload(
         setting,
         [{"role": "user", "content": "search knowledge"}],
         structured=True,
         adapter=providers.get_provider("minimax"),
-        tools=[{"type": "function", "function": {"name": "search_knowledge"}}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_knowledge",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        ],
     )
 
     assert payload["tool_choice"] == "auto"
@@ -74,32 +87,35 @@ def test_custom_provider_draft_defaults_tool_support_on() -> None:
 
 
 def test_protocol_adapters_preserve_native_message_shapes_and_tool_rounds() -> None:
-    anthropic_system, anthropic_messages = providers._anthropic_messages(
-        [
-            {"role": "system", "content": "system contract"},
-            {"role": "user", "content": "inspect this"},
-            {
-                "role": "assistant",
-                "content": [{"type": "text", "text": "I will inspect it."}],
-                "tool_calls": [
-                    {
-                        "id": "call-1",
-                        "function": {
-                            "name": "dlr_docs_search",
-                            "arguments": '{"query":"contract"}',
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call-1",
-                "content": '{"matches":[]}',
-            },
-        ]
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        SystemPromptPart,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
     )
-    assert anthropic_system == "system contract"
-    assert anthropic_messages[1] == {
+
+    history = [
+        ModelRequest(parts=[SystemPromptPart("system contract"), UserPromptPart("inspect this")]),
+        ModelResponse(
+            parts=[
+                TextPart("I will inspect it."),
+                ToolCallPart("dlr_docs_search", {"query": "contract"}, "call-1"),
+            ]
+        ),
+        ModelRequest(parts=[ToolReturnPart("dlr_docs_search", '{"matches":[]}', "call-1")]),
+    ]
+    anthropic = ai_sdk_fixtures.sdk_payload(
+        AiSettingDraft(
+            provider="anthropic", model="claude-sonnet-4", base_url="https://fixture.invalid"
+        ),
+        [],
+        history=history,
+    )
+    assert anthropic["system"] == "system contract"
+    assert anthropic["messages"][1] == {
         "role": "assistant",
         "content": [
             {"type": "text", "text": "I will inspect it."},
@@ -111,53 +127,39 @@ def test_protocol_adapters_preserve_native_message_shapes_and_tool_rounds() -> N
             },
         ],
     }
-    assert anthropic_messages[2]["content"] == [
+    assert anthropic["messages"][2]["content"] == [
         {
             "type": "tool_result",
             "tool_use_id": "call-1",
-            "content": '{"matches":[]}',
+            "content": [{"type": "text", "text": '{"matches":[]}'}],
+            "is_error": False,
         }
     ]
 
-    gemini_system, gemini_messages = providers._gemini_contents(
-        [
-            {"role": "system", "content": "system contract"},
-            {"role": "user", "content": "inspect this"},
-            {
-                "role": "assistant",
-                "content": "I will inspect it.",
-                "tool_calls": [
-                    {
-                        "id": "call-1",
-                        "function": {
-                            "name": "dlr_docs_search",
-                            "arguments": '{"query":"contract"}',
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call-1",
-                "content": '{"matches":[]}',
-            },
-        ]
+    gemini = ai_sdk_fixtures.sdk_payload(
+        AiSettingDraft(
+            provider="gemini", model="gemini-2.5-pro", base_url="https://fixture.invalid"
+        ),
+        [],
+        history=history,
     )
-    assert gemini_system == {"parts": [{"text": "system contract"}]}
-    assert gemini_messages[1] == {
-        "role": "model",
-        "parts": [
-            {"text": "I will inspect it."},
-            {"functionCall": {"name": "dlr_docs_search", "args": {"query": "contract"}}},
-        ],
+    assert gemini["systemInstruction"] == {"parts": [{"text": "system contract"}], "role": "user"}
+    model_parts = gemini["contents"][1]["parts"]
+    assert gemini["contents"][1]["role"] == "model"
+    assert model_parts[0] == {"text": "I will inspect it."}
+    assert model_parts[1]["functionCall"] == {
+        "id": "call-1",
+        "name": "dlr_docs_search",
+        "args": {"query": "contract"},
     }
-    assert gemini_messages[2] == {
+    assert gemini["contents"][2] == {
         "role": "user",
         "parts": [
             {
                 "functionResponse": {
+                    "id": "call-1",
                     "name": "dlr_docs_search",
-                    "response": {"content": '{"matches":[]}'},
+                    "response": {"return_value": '{"matches":[]}'},
                 }
             }
         ],

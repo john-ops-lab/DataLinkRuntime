@@ -7,6 +7,7 @@ from dataclasses import asdict
 import pytest
 from fastapi.testclient import TestClient
 
+import ai_sdk_fixtures
 from dlr.common.config import settings
 from dlr.control.ai import context_budget, providers
 from dlr.control.schemas.ai import AiAssistRequest, AiSettingDraft, AiToolCallSummary
@@ -184,11 +185,11 @@ def test_finalization_overflow_skips_provider(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(settings, "ai_context_default_window_tokens", 8192)
     monkeypatch.setattr(ai_service.time, "monotonic", lambda: 20.0)
     monkeypatch.setattr(
-        providers, "chat_assist", lambda *args, **kwargs: pytest.fail("Provider called")
+        ai_sdk_fixtures, "round_reply", lambda *args, **kwargs: pytest.fail("Provider called")
     )
     state = ai_service._AssistToolState.create(150.0, now=10.0)
     state.stop_reason = ai_service._STOP_CALL_BUDGET
-    result = ai_service._finalize_after_tool_stop(
+    result = ai_sdk_fixtures.finalize(
         state=state,
         system_locale="en",
         draft=_draft(),
@@ -215,10 +216,10 @@ def test_finalization_recomputes_timeout_after_budget_check(
         observed.append(kwargs["timeout_seconds"])
         return '{"message":"done","candidate":null}', None
 
-    monkeypatch.setattr(providers, "chat_assist", fake_chat)
+    monkeypatch.setattr(ai_sdk_fixtures, "round_reply", fake_chat)
     state = ai_service._AssistToolState.create(150.0, now=10.0)
     state.stop_reason = ai_service._STOP_CALL_BUDGET
-    ai_service._finalize_after_tool_stop(
+    ai_sdk_fixtures.finalize(
         state=state,
         system_locale="en",
         draft=_draft(),
@@ -239,7 +240,7 @@ def test_initial_required_overflow_never_calls_provider(
     configure(api_client)
     monkeypatch.setattr(settings, "ai_context_default_window_tokens", 8192)
     monkeypatch.setattr(
-        providers, "chat_assist", lambda *args, **kwargs: pytest.fail("Provider called")
+        ai_sdk_fixtures, "round_reply", lambda *args, **kwargs: pytest.fail("Provider called")
     )
     response = api_client.post(
         f"/api/adapters/{adapter['id']}/ai/assist",

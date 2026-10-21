@@ -1,13 +1,8 @@
 """DLR-owned immutable request data and restricted runtime resources."""
 
-from collections.abc import Callable
-from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from sqlalchemy.orm import Session
-
-from dlr.control.ai.attachment_reading import ScopedAttachmentReader
 from dlr.control.ai.policy import _AssistToolState
 from dlr.control.ai.provider_config import JsonObject, ProviderSnapshot
 from dlr.control.ai.runtime.resources import ToolResourceFactory
@@ -36,15 +31,7 @@ class PreparedAssist:
 
 @dataclass(frozen=True)
 class RuntimeResources:
-    # The legacy callback stays on the request thread. Session/Reader factories
-    # are the only database/file access supplied to execution-thread tools.
-    legacy_execute: Callable[[PreparedAssist], AiAssistResponse] = field(repr=False)
-    session_factory: Callable[[], Session] | None = field(default=None, repr=False)
-    reader_factory: Callable[[], AbstractContextManager[ScopedAttachmentReader]] | None = field(
-        default=None, repr=False
-    )
-    permission_check: Callable[[], object] | None = field(default=None, repr=False)
-    execution: "AssistExecution | None" = field(default=None, repr=False)
+    execution: "AssistExecution" = field(repr=False)
 
 
 @dataclass(frozen=True)

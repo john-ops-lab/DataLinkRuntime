@@ -1,5 +1,7 @@
 # Design
 
+当前实施到 B5：B4 确认周期与独立退出审查已通过，旧实现及过渡选择已经删除。最终验证状态见 [B5 记录](../../../docs/testing/issue213-pydantic-b5.md)。下文的迁移期规则保留其适用阶段，当前生产结构只保留新运行器。
+
 ## Context
 
 AI 入口目前为同步 FastAPI 路由。原基线中 `services/ai.py` 约 2,507 行、`ai/providers.py` 约 1,621 行、`ai/tools.py` 约 1,170 行，同时承担通用编排和 DLR 特有规则，不能按文件整体删除。行数仅用于定位维护负担，不作为节省比例、迁移完成或收益达标的唯一指标。
@@ -38,11 +40,9 @@ PowerContext 参考实现主要展示有界结构化推理；不能直接证明 
 flowchart TD
     UI[现有 AI 面板与冻结请求] --> API[现有 API：权限与附件范围]
     API --> Service[DLR 应用服务：准备上下文和最终校验]
-    Service --> Runtime[AssistRuntime：请求开始时选择一次]
-    Runtime --> Legacy[LegacyRuntime：迁移期保留]
+    Service --> Runtime[AssistRuntime：单一正式实现]
     Runtime --> PA[PydanticAiRuntime：Agent 与模型 SDK]
-    Policy[DLR 策略：预算、严格校验、证据、脱敏] --> Legacy
-    Policy --> PA
+    Policy[DLR 策略：预算、严格校验、证据、脱敏] --> PA
     PA --> Tools[DLR 白名单工具桥接]
     Tools --> Data[现有文档、知识库、附件 Reader]
     PA --> Models[用户选定的模型端点]
@@ -201,9 +201,9 @@ Python 不能强杀同步线程。Agent 取消、HTTP 返回超时或 loop 结�
 
 按最少必要字段映射已有 HTTP/错误码/stage/reason，不直接展示 SDK 异常 str()。默认不启用 Logfire 内容上传或会记录内容的全局 instrumentation，不持久化 all_messages()。现有审计保留关联 ID、运行器、模型、逻辑回合/实际网络次数、分阶段工具事实、耗时、尺寸、状态及错误类别；新内部标签不改变公共契约。原始用户内容、密钥、私有推理/continuation 不进入日志或仓库。
 
-### D10. 一个部署级开关，不做失败后的双引擎自动重跑
+### D10. 迁移期部署开关及最终删除
 
-拟新增 `DLR_AI_RUNTIME=legacy|pydantic_ai`，初始默认 legacy，非法值启动失败，不放进模型设置表或普通用户菜单。
+B1–B4 使用 `DLR_AI_RUNTIME=legacy|pydantic_ai`，初始默认 legacy，非法值启动失败，不放进模型设置表或普通用户菜单。B5 已删除该开关与旧运行器，当前只走新实现，回退采用已验证应用镜像/锁。
 
 请求开始选择一次实现和配置。早期使用独立验收环境，无需随机分流。新实现预检失败应明确报错或回退部署；调用上游后更不能静默跑旧引擎。Shadow 仅用于合成固定响应/协议重放；真实双模型调用仅在独立、明确预算的对照实验中进行，不默认复制用户附件。
 

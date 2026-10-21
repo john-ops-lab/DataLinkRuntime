@@ -2,13 +2,15 @@
 
 **2026-10-21 续作结论：B0 代表性技术门槛通过，进入 B1。** 维护者已授权在 PR #217 依序完成 B0–B5，全部完成后集中 review。110 个本地实验用例通过，含专用 PostgreSQL、真实 SDK 和 Reader 证据；7 个源文件严格 Mypy、Ruff 检查/格式通过。精确 HEAD 的 Hosted CI 单独跟踪。以下首批暂停结论与 3 个薄包装缺口观察仍保留为历史证据，不改写为原方案通过。
 
+B5 删除实验实现后，以下命令、独立锁及材料均固定链接到 B0 的历史提交；当时 110 项、首批 53 项及 3 个 gap 的口径不变。现行生产回归对应见 [B5 删除记录](issue213-pydantic-b5.md)，不再运行独立探针 CI。
+
 ## B0 续作：兼容修复与继续决定
 
 本轮范围限定为公开工具桥接、真实工作所有者、领域授权纠正和依赖成本四类最小证据；新增实验源模块上限 3 个，实际为 `dispatch_model.py`、`owned_work.py`、`final_probe.py`。真实模型调用预算为 0，不在 B0 搭建完整助手。无需 fork、框架私有 API、通用循环或完整 HTTP 栈重写即可完成本轮；生产接入及完整兼容矩阵依序留在 B1–B4。
 
 | 门槛 | 续作证据 |
 |---|---|
-| P0 | 同现行依赖组合安装并导入三 SDK；采用明确的 websockets 16.0 调整，其他原包保持锁定。许可证基线保留。Linux arm64 依赖测量镜像增量 17,948,678 bytes；116 个 API 路径及 OpenAPI hash 一致。详见 [image-cost.json](../../tools/ai-migration/image-cost.json)，不是发布镜像或 HTTP 业务验收 |
+| P0 | 同现行依赖组合安装并导入三 SDK；采用明确的 websockets 16.0 调整，其他原包保持锁定。许可证基线保留。Linux arm64 依赖测量镜像增量 17,948,678 bytes；116 个 API 路径及 OpenAPI hash 一致。详见 [image-cost.json](https://github.com/john-ops-lab/DataLinkRuntime/blob/8654f73eb38944b47d3088b243437e8c76d344da/tools/ai-migration/image-cost.json)，不是发布镜像或 HTTP 业务验收 |
 | P1/P3 | 原三协议、输出模式和实际媒体证据保留；新增三 SDK 工具往返，wire 仅含原白名单工具，未知工具名、原参数、call/result ID 保持，无内部调度工具泄漏 |
 | P2/P7 | 原 envelope、最终文本与工具原参数严格验证；重复 key、错误类型、非法 JSON、Unicode 在 coercion 前拒绝。三协议实际证明一次禁工具格式纠正不回送非法原文，同预算/同 deadline；安全失败不纠正，停止后的收尾至多一次，HTTP 状态错误无隐藏重试 |
 | P4 | WrapperModel 将模型调用映射到固定内部桥接，DLR 原 dispatcher 决定接受/拒绝，Agent 驱动迭代。未知/坏参数、知识前置拒绝、整批预算、重复、半批停止、结果字节及停止优先级均有断言；三协议实际证明知识纠正不回送未取证输出，附件补读最多一次，失败读取不再补读 |
@@ -36,13 +38,13 @@ G01/G02 已有可信替代路径：Agent 驱动多轮，SDK 承担协议编码�
 
 - 初始设计：`7fb4c8fc00a0a167a65a95f18e310b9208f1e3ed`；审查和本批源码基线：`5fc95945b894fbc07aae7fc873aac91a2e26fabc`。
 - 已将 #213 最新设计、32 项兼容要求、P/G 门槛及任务同步入版本管理；补入 B5 周期完成定义和 G03/G04 同一扩展的新旧对照。
-- [baseline.json](../../tools/ai-migration/baseline.json) 冻结 API、Schema、Provider、预算、Prompt、助手页面、#215 记录及合成图片/PDF/输出材料 hash。初始设计至当前基线的文件变化单独列出。
+- [baseline.json](https://github.com/john-ops-lab/DataLinkRuntime/blob/8654f73eb38944b47d3088b243437e8c76d344da/tools/ai-migration/baseline.json) 冻结 API、Schema、Provider、预算、Prompt、助手页面、#215 记录及合成图片/PDF/输出材料 hash。初始设计至当前基线的文件变化单独列出。
 - #215 的 Go 注释语言、Python 说明/实现、TypeScript 空白金额及中文服务端/英文页面附件 Regenerate 的 `ai_tool_duplicate` 首次失败保留。最新顶部帮助入口在原记录中明确未重跑测试；本批不将其写成已验收。
 - 验证环境为 Python 3.13 的独立虚拟环境。模型请求通过真实 OpenAI、Anthropic、Google SDK 发往 loopback 模拟器；FunctionModel 仅用于循环与工具控制，未拿它替代协议证据。
 
 ## Dependencies
 
-候选固定为 `pydantic-ai-slim[openai,anthropic,google]==2.57.0`，SDK 锁为 OpenAI 3.35.1、Anthropic 1.17.0、Google GenAI 2.32.0；完整传递依赖见独立 [uv.lock](../../tools/ai-migration/uv.lock)。
+候选固定为 `pydantic-ai-slim[openai,anthropic,google]==2.57.0`，SDK 锁为 OpenAI 3.35.1、Anthropic 1.17.0、Google GenAI 2.32.0；完整传递依赖见独立 [uv.lock](https://github.com/john-ops-lab/DataLinkRuntime/blob/8654f73eb38944b47d3088b243437e8c76d344da/tools/ai-migration/uv.lock)。
 
 **首次解析失败：** 原后端锁中的 `websockets==17.0.1` 与候选 Google SDK 的 `websockets<17` 不相容。为继续隔离实验，独立项目只将该传递依赖固定为 16.0，其他已有包受原锁版本约束。该组合完成安装、三 SDK 导入及相关严格类型检查；不能将其写成“现有后端锁原样兼容”。
 
@@ -105,7 +107,7 @@ G01/G02 已有可信替代路径：Agent 驱动多轮，SDK 承担协议编码�
 | P6 | 部分：合成请求态/ACL 隔离通过；真实 Session、Reader、凭据及撤权可见性尚未齐备 |
 | P7 | 部分：三 SDK 429/503 各一次请求、非法 final 无自动纠正已测；完整纠正与审计 canary 覆盖未齐备 |
 
-本批 53 个观察用例包含 3 个 `gap` 用例。全部观察通过仍不满足 B0 继续条件。复现命令见 [实验 README](../../tools/ai-migration/README.md)；Hosted CI 结果归属于实际 PR HEAD，不以本地记录代替。
+本批 53 个观察用例包含 3 个 `gap` 用例。全部观察通过仍不满足 B0 继续条件。复现命令见 [实验 README](https://github.com/john-ops-lab/DataLinkRuntime/blob/8654f73eb38944b47d3088b243437e8c76d344da/tools/ai-migration/README.md)；Hosted CI 结果归属于实际 PR HEAD，不以本地记录代替。
 
 ## Maintenance value and next decision
 

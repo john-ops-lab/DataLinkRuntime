@@ -6,16 +6,13 @@ from typing import Any
 import pytest
 
 from ai_runtime_support import response, server
-from dlr.common.config import settings
 from dlr.control.ai import tools
 from test_ai import assist_body, configure, create_adapter
 
 
-@pytest.mark.parametrize("runtime", ["legacy", "pydantic_ai"])
 def test_same_read_only_tool_extension_needs_no_runtime_or_codec_branch(
-    api_client: Any, monkeypatch: pytest.MonkeyPatch, runtime: str
+    api_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(settings, "ai_assist_runtime", runtime)
     launched: list[int] = []
 
     def read(args: dict[str, Any]) -> dict[str, Any]:
@@ -57,11 +54,9 @@ def test_same_read_only_tool_extension_needs_no_runtime_or_codec_branch(
         assert offered == tools.tools_payload(include_knowledge=False)
 
 
-@pytest.mark.parametrize("runtime", ["legacy", "pydantic_ai"])
 def test_same_existing_protocol_model_extension_needs_only_configuration(
-    api_client: Any, monkeypatch: pytest.MonkeyPatch, runtime: str
+    api_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(settings, "ai_assist_runtime", runtime)
     with server(response("openai")) as script:
         adapter = create_adapter(api_client, "same-model-extension")
         configure(api_client, base_url=script.url + "/gateway/v1", model="synthetic-profile-v2")

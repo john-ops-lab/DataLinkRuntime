@@ -1,11 +1,9 @@
 """AI settings, request preparation, runtime invocation and shared terminal audit."""
 
 import asyncio
-import json
 import time
 from collections.abc import Callable
-from dataclasses import replace
-from typing import NoReturn, cast
+from typing import NoReturn
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
@@ -15,8 +13,8 @@ from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
 from dlr.control.ai import attachments as attachments_service
-from dlr.control.ai import context_budget, providers, tool_audit
 from dlr.control.ai import knowledge as knowledge_service
+from dlr.control.ai import providers, tool_audit
 from dlr.control.ai import tools as tools_service
 from dlr.control.ai.attachment_reading import ScopedAttachmentReader
 from dlr.control.ai.diagnostics import AiResponseInvalid
@@ -126,7 +124,6 @@ from dlr.control.ai.prompt_builder import build_prompt
 from dlr.control.ai.prompt_context import PromptContext
 from dlr.control.ai.provider_config import ProviderSnapshot
 from dlr.control.ai.runtime.contracts import AssistExecution, PreparedAssist, RuntimeResources
-from dlr.control.ai.runtime.legacy import LegacyRuntime
 from dlr.control.ai.runtime.resources import ReaderFactory, ToolResourceFactory
 from dlr.control.models import (
     AdapterCredentialBinding,
@@ -149,7 +146,6 @@ from dlr.control.schemas.ai import (
     AiCustomProvidersResponse,
     AiCustomProviderTestRequest,
     AiKnowledgeCapabilityResponse,
-    AiModelOutput,
     AiModelsResponse,
     AiProviderAttachmentCapability,
     AiProviderCapability,
@@ -158,7 +154,6 @@ from dlr.control.schemas.ai import (
     AiSelectedAttachmentCapability,
     AiSettingDraft,
     AiSettingResponse,
-    AiToolCallSummary,
 )
 from dlr.control.services import adapter as adapter_service
 from dlr.control.services import knowledge_source as knowledge_source_service_config
@@ -543,7 +538,7 @@ def test_connection(session: Session, data: AiSettingDraft) -> AiConnectionTestR
         {"role": "user", "content": "Reply with OK."},
     ]
     try:
-        providers.chat(data, api_key, messages, structured=False, adapter=adapter)
+        providers.chat(data, api_key, messages, adapter=adapter)
     except providers.AiProviderError as error:
         _raise_provider_error(error)
     return AiConnectionTestResponse(ok=True, message="模型服务返回了可解析的最小响应")
@@ -699,7 +694,6 @@ def test_custom_provider(
                 {"role": "system", "content": "This is a connection test. Reply with OK."},
                 {"role": "user", "content": "Reply with OK."},
             ],
-            structured=False,
             adapter=adapter,
         )
     except providers.AiProviderError as error:
@@ -905,332 +899,6 @@ def attachment_capabilities(session: Session | None = None) -> AiAttachmentCapab
     )
 
 
-def _assistant_tool_call(
-    call: providers.NormalizedToolCall,
-    api_key: str | None,
-    tool_context: tools_service.ToolExecutionContext,
-) -> providers.JsonObject:
-    return {
-        "id": call.id,
-        "type": "function",
-        "function": {
-            "name": call.name,
-            # Only this sanitized echo rejoins the Provider conversation.
-            "arguments": tools_service.sanitize_text(
-                call.arguments,
-                api_key,
-                4000,
-                extra_values=tuple(tool_context.secret_values),
-            ),
-        },
-    }
-
-
-def _audit_provider_budget(
-    audit: tool_audit.AiToolAuditTrail | None,
-    state: _AssistToolState,
-    budget: context_budget.BudgetResult,
-    provider_deadline: float,
-    actual_payload_bytes: int,
-) -> None:
-    if audit is None:
-        return
-    now = time.monotonic()
-    audit.record_provider_budget(
-        replace(
-            budget, diagnostics=replace(budget.diagnostics, payload_bytes=actual_payload_bytes)
-        ),
-        elapsed_ms=int((now - state.started_at) * 1000),
-        provider_deadline_ms=int((provider_deadline - state.started_at) * 1000),
-        hard_deadline_ms=int((state.hard_deadline - state.started_at) * 1000),
-        remaining_ms=int(max(0.0, provider_deadline - now) * 1000),
-    )
-
-
-def _call_provider_with_audit(
-    draft: AiSettingDraft,
-    api_key: str | None,
-    messages: list[providers.JsonObject],
-    *,
-    tools: list[providers.JsonObject] | None,
-    provider_adapter: providers.ProviderAdapter,
-    timeout_seconds: float,
-    state: _AssistToolState,
-    audit: tool_audit.AiToolAuditTrail | None,
-) -> tuple[str | None, list[providers.NormalizedToolCall] | None]:
-    started_at = time.monotonic() if audit is not None else 0.0
-    try:
-        result = providers.chat_assist(
-            draft,
-            api_key,
-            messages,
-            tools=tools,
-            image_input=context_budget.has_native_image(messages),
-            adapter=provider_adapter,
-            timeout_seconds=min(timeout_seconds, state.remaining_total_seconds()),
-            hard_deadline=state.hard_deadline,
-        )
-        if state.remaining_total_seconds() <= 0:
-            raise providers.AiProviderError("ai_timeout")
-    except providers.AiProviderError as error:
-        if audit is not None:
-            ended_at = time.monotonic()
-            audit.record_provider_result(
-                outcome="error",
-                strategy=provider_adapter.structured_output,
-                correction_count=state.format_corrections,
-                duration_ms=int((ended_at - started_at) * 1000),
-                remaining_ms=int(max(0.0, state.hard_deadline - ended_at) * 1000),
-                error_code=error.code,
-                stage=error.stage,
-                reason=error.reason,
-                transport_category=error.transport_category,
-                http_status=error.http_status,
-            )
-        raise
-    if audit is not None:
-        ended_at = time.monotonic()
-        audit.record_provider_result(
-            outcome="tool_calls" if result[1] is not None else "final",
-            strategy=provider_adapter.structured_output,
-            correction_count=state.format_corrections,
-            duration_ms=int((ended_at - started_at) * 1000),
-            remaining_ms=int(max(0.0, state.hard_deadline - ended_at) * 1000),
-        )
-    return result
-
-
-def _parse_with_format_correction(
-    final_content: str,
-    *,
-    draft: AiSettingDraft,
-    api_key: str | None,
-    messages: list[providers.JsonObject],
-    provider_adapter: providers.ProviderAdapter,
-    state: _AssistToolState,
-    audit: tool_audit.AiToolAuditTrail | None,
-    omitted_materials: list[int] | None = None,
-) -> AiModelOutput:
-    """One request-local correction, with the original request and hard deadline.
-
-    Invalid output is never fed back as instruction material or persisted.
-    Safety, Unicode, configuration and transport errors never enter this path.
-    """
-    try:
-        return _parse_model_output(final_content, api_key)
-    except AiResponseInvalid as first_error:
-        if (
-            first_error.stage not in {"final_json", "output_schema"}
-            or state.format_corrections
-            or state.stop_reason is not None
-        ):
-            raise
-        first_call_index = audit.provider_checked_calls if audit is not None else 0
-        correction_messages: list[providers.JsonObject] = [
-            *messages,
-            {
-                "role": "system",
-                "content": (
-                    "DLR rejected the final answer at "
-                    f"{first_error.stage}/{first_error.reason}. "
-                    "Answer the original USER_REQUEST again using exactly one strict JSON "
-                    "object matching the original Output Schema. No Markdown, extra fields, "
-                    "reasoning or tool calls. This is the only format correction. "
-                    "Keep all original authorization and safety boundaries."
-                ),
-            },
-        ]
-        budget = context_budget.prepare_call(
-            draft,
-            correction_messages,
-            None,
-            purpose="assist_finalization",
-            adapter=provider_adapter,
-        )
-        _audit_provider_budget(
-            audit,
-            state,
-            budget,
-            state.hard_deadline,
-            providers.assist_payload_size(
-                draft, correction_messages, None, adapter=provider_adapter
-            ),
-        )
-        if omitted_materials is not None:
-            omitted_materials[0] += budget.omitted_materials
-        remaining = state.remaining_total_seconds()
-        if not budget.fits or remaining <= 0:
-            raise first_error
-        state.format_corrections += 1
-        if audit is not None:
-            audit.record_response_failure(
-                first_error.stage, first_error.reason, provider_call_index=first_call_index
-            )
-            audit.record_format_correction(
-                strategy=provider_adapter.structured_output,
-                correction_count=state.format_corrections,
-            )
-        try:
-            corrected, calls = _call_provider_with_audit(
-                draft,
-                api_key,
-                correction_messages,
-                tools=None,
-                provider_adapter=provider_adapter,
-                timeout_seconds=remaining,
-                state=state,
-                audit=audit,
-            )
-        except providers.AiProviderError as error:
-            _raise_provider_error(error)
-        if calls is not None or corrected is None:
-            raise AiResponseInvalid("provider_envelope", "unexpected_tools") from None
-        return _parse_model_output(corrected, api_key)
-
-
-def _finalize_after_tool_stop(
-    *,
-    state: _AssistToolState,
-    system_locale: str,
-    draft: AiSettingDraft,
-    api_key: str | None,
-    messages: list[providers.JsonObject],
-    image_input: bool,
-    provider_adapter: providers.ProviderAdapter,
-    payload: AiAssistRequest,
-    executed_tools: list[AiToolCallSummary],
-    knowledge_state: _KnowledgeRetrievalState | None = None,
-    omitted_materials: list[int] | None = None,
-    audit: tool_audit.AiToolAuditTrail | None = None,
-) -> AiAssistResponse:
-    """Attempt exactly one tools-disabled final answer, then fail closed.
-
-    The control message contains only stable counters and the stop reason. The
-    already-sanitized tool messages remain available in memory, while raw
-    Provider responses and prompts are never persisted by this path.
-    """
-    assert state.stop_reason is not None
-    if state.attachment_read_required and not state.successful_attachment_reads:
-        # A successful directory/list/knowledge tool is not attachment content
-        # evidence. Never ask a tools-disabled finalizer to fill this gap.
-        return _fallback_assist_response(
-            system_locale, _STOP_ATTACHMENT_UNREAD, draft, executed_tools, state=state
-        )
-    successful = sum(item.status == "success" for item in executed_tools)
-    if successful == 0:
-        # With no usable tool result there is no evidence from which a safe
-        # Candidate can be produced. A transparent server-owned response is
-        # stronger than asking the model to guess after repeated failures.
-        return _fallback_assist_response(
-            system_locale, state.stop_reason, draft, executed_tools, state=state
-        )
-    remaining = state.remaining_total_seconds()
-    if remaining <= 0:
-        return _fallback_assist_response(
-            system_locale, state.stop_reason, draft, executed_tools, state=state
-        )
-    messages.append(
-        {
-            "role": "system",
-            "content": (
-                "DLR stopped tool execution at a safety boundary "
-                f"({state.stop_reason}). Use only the sanitized tool results already in "
-                f"this conversation ({successful} successful of {len(executed_tools)} recorded). "
-                "Do not request any tool. Return one strict AiModelOutput JSON object and "
-                "state what remains unconfirmed."
-            ),
-        }
-    )
-    if knowledge_state is not None and knowledge_state.phase != "disabled":
-        messages.append(
-            {
-                "role": "system",
-                "content": knowledge_state.finalization_instruction(system_locale),
-            }
-        )
-    budget = context_budget.prepare_call(
-        draft, messages, None, purpose="assist_finalization", adapter=provider_adapter
-    )
-    _audit_provider_budget(
-        audit,
-        state,
-        budget,
-        state.hard_deadline,
-        providers.assist_payload_size(draft, messages, None, adapter=provider_adapter),
-    )
-    if omitted_materials is not None:
-        omitted_materials[0] += budget.omitted_materials
-    if not budget.fits:
-        return _fallback_assist_response(
-            system_locale, _STOP_CONTEXT_BUDGET, draft, executed_tools, state=state
-        )
-    remaining = state.remaining_total_seconds()
-    if remaining <= 0:
-        return _fallback_assist_response(
-            system_locale, _STOP_DEADLINE, draft, executed_tools, state=state
-        )
-    try:
-        final_content, tool_calls = _call_provider_with_audit(
-            draft,
-            api_key,
-            messages,
-            tools=None,
-            provider_adapter=provider_adapter,
-            state=state,
-            audit=audit,
-            timeout_seconds=remaining,
-        )
-        if tool_calls is not None or final_content is None:
-            raise AiResponseInvalid("provider_envelope", "unexpected_tools")
-        output = _parse_with_format_correction(
-            final_content,
-            draft=draft,
-            api_key=api_key,
-            messages=messages,
-            provider_adapter=provider_adapter,
-            state=state,
-            audit=audit,
-            omitted_materials=omitted_materials,
-        )
-        _reject_candidate_configuration_changes(output, payload)
-    except (providers.AiProviderError, HTTPException, ValueError) as error:
-        if audit is not None and (
-            isinstance(error, AiResponseInvalid)
-            or isinstance(error, providers.AiProviderError)
-            and error.code == "ai_response_invalid"
-        ):
-            audit.record_response_failure(error.stage, error.reason)
-        return _fallback_assist_response(
-            system_locale, state.stop_reason, draft, executed_tools, state=state
-        )
-    if knowledge_state is not None and knowledge_state.has_search_evidence:
-        output = AiModelOutput(
-            message=_knowledge_evidence_message(system_locale, output.message, knowledge_state),
-            # A safety-boundary finalization is evidence-preserving prose,
-            # never an implicitly accepted code change.
-            candidate=None,
-        )
-    elif (
-        knowledge_state is not None
-        and knowledge_state.stop_reason is not None
-        and knowledge_state.stop_reason != _STOP_KNOWLEDGE_READY
-    ):
-        output = AiModelOutput(
-            message=_transparent_knowledge_message(
-                system_locale,
-                knowledge_state.stop_reason,
-                output.message,
-                executed_tools,
-            ),
-            candidate=None,
-        )
-    if state.remaining_total_seconds() <= 0:
-        return _fallback_assist_response(
-            system_locale, _STOP_DEADLINE, draft, executed_tools, state=state
-        )
-    return _assist_response(output, draft, executed_tools)
-
-
 def _tool_resources(
     session: Session,
     context: tools_service.ToolExecutionContext,
@@ -1414,437 +1082,6 @@ def _prepare_assist(
     )
 
 
-def _assist_impl(
-    session: Session,
-    adapter_id: int,
-    payload: AiAssistRequest,
-    audit: tool_audit.AiToolAuditTrail,
-    state: _AssistToolState,
-    *,
-    attachment_reader: ScopedAttachmentReader | None = None,
-    reader_factory: ReaderFactory | None = None,
-    permission_check: Callable[[], object] | None = None,
-) -> AiAssistResponse:
-    context = _prepare_assist(
-        session,
-        adapter_id,
-        payload,
-        audit,
-        state,
-        attachment_reader=attachment_reader,
-        reader_factory=reader_factory,
-        permission_check=permission_check,
-    )
-    draft = context.provider.draft()
-    provider_adapter, api_key = context.provider.adapter, context.provider.api_key
-    messages, tools_payload = context.messages, context.tools
-    tools_enabled = provider_adapter.tools_supported
-    tool_resources, tool_context = context.tool_resources, context.tool_resources.template
-    system_locale = context.system_locale
-    knowledge_search_enabled, knowledge_available = (
-        context.knowledge_enabled,
-        context.knowledge_available,
-    )
-    native_images = context.has_native_images
-    audit_redact_values = context.redact_values
-    executed_tools: list[AiToolCallSummary] = []
-    omitted_materials = [0]
-    knowledge_state = _KnowledgeRetrievalState.create(
-        knowledge_search_enabled,
-        knowledge_available and tools_enabled,
-    )
-    if knowledge_state.stop_reason is not None:
-        state.stop_reason = knowledge_state.stop_reason
-        audit.record_guard(round_index=0, stop_reason=state.stop_reason)
-    while state.stop_reason is None:
-        provider_deadline = state.tool_deadline if tools_enabled else state.hard_deadline
-        provider_timeout = max(0.0, provider_deadline - time.monotonic())
-        if provider_timeout <= 0:
-            state.stop_reason = _STOP_DEADLINE
-            audit.record_guard(round_index=state.tool_rounds, stop_reason=state.stop_reason)
-            break
-        budget = context_budget.prepare_call(
-            draft,
-            messages,
-            tools_payload,
-            purpose=(
-                "assist_initial"
-                if state.tool_rounds == 0 and not state.attachment_read_correction
-                else "assist_followup"
-            ),
-            adapter=provider_adapter,
-        )
-        _audit_provider_budget(
-            audit,
-            state,
-            budget,
-            provider_deadline,
-            providers.assist_payload_size(draft, messages, tools_payload, adapter=provider_adapter),
-        )
-        omitted_materials[0] += budget.omitted_materials
-        if not budget.fits:
-            if not executed_tools and not state.attachment_read_correction:
-                raise domain_error(
-                    413, "ai_context_over_budget", "AI request context exceeds the model budget"
-                )
-            state.stop_reason = _STOP_CONTEXT_BUDGET
-            audit.record_guard(round_index=state.tool_rounds, stop_reason=state.stop_reason)
-            break
-        provider_timeout = max(0.0, provider_deadline - time.monotonic())
-        if provider_timeout <= 0:
-            state.stop_reason = _STOP_DEADLINE
-            audit.record_guard(round_index=state.tool_rounds, stop_reason=state.stop_reason)
-            break
-        try:
-            final_content, tool_calls = _call_provider_with_audit(
-                draft,
-                api_key,
-                messages,
-                tools=tools_payload,
-                provider_adapter=provider_adapter,
-                state=state,
-                audit=audit,
-                timeout_seconds=provider_timeout,
-            )
-        except providers.AiProviderError as error:
-            # A timeout that consumed the tool phase transitions into the
-            # reserved tools-disabled finalization window. Fast failures on
-            # the first Provider request keep the established API contract.
-            if tools_enabled and error.code == "ai_timeout" and state.remaining_tool_seconds() <= 0:
-                state.stop_reason = _STOP_DEADLINE
-                audit.record_guard(
-                    round_index=state.tool_rounds,
-                    stop_reason=state.stop_reason,
-                    error_code=error.code,
-                )
-                break
-            if executed_tools or state.attachment_read_correction:
-                state.stop_reason = _STOP_PROVIDER_FAILURE
-                audit.record_guard(
-                    round_index=state.tool_rounds,
-                    stop_reason=state.stop_reason,
-                    error_code=error.code,
-                )
-                break
-            _raise_provider_error(error)
-        if tool_calls is None:
-            if knowledge_state.requires_tool:
-                state.record_protocol_failure()
-                if state.stop_reason is not None:
-                    knowledge_state.phase = "stopped"
-                    knowledge_state.stop_reason = _STOP_KNOWLEDGE_SEQUENCE
-                    audit.record_guard(
-                        round_index=state.tool_rounds,
-                        stop_reason=state.stop_reason,
-                        error_code=tools_service.CODE_KNOWLEDGE_SEQUENCE,
-                    )
-                    break
-                messages.append({"role": "system", "content": knowledge_state.correction_message()})
-                continue
-            assert final_content is not None
-            output = _parse_with_format_correction(
-                final_content,
-                draft=draft,
-                api_key=api_key,
-                messages=messages,
-                provider_adapter=provider_adapter,
-                state=state,
-                audit=audit,
-                omitted_materials=omitted_materials,
-            )
-            _reject_candidate_configuration_changes(output, payload)
-            if state.attachment_read_required and not state.successful_attachment_reads:
-                if (
-                    tools_enabled
-                    and not state.attachment_read_correction
-                    and not state.attachment_read_attempts
-                    and state.remaining_tool_seconds() > 0
-                    and state.tool_rounds < tools_service.MAX_TOOL_ROUNDS
-                    and state.total_tool_calls < tools_service.MAX_TOOL_CALLS_PER_ASSIST
-                ):
-                    # Discard ungrounded prose rather than feeding it back as
-                    # evidence. This one correction shares the original context,
-                    # tool and deadline budgets, with the same frozen reader.
-                    state.attachment_read_correction = True
-                    messages.append(
-                        {
-                            "role": "system",
-                            "content": (
-                                "DLR has not recorded a successful attachment content read "
-                                "in this request. Attachment directories and preparation "
-                                "status are metadata only. Before completing, call "
-                                "read_attachment_page or read_attachment_sheet using an "
-                                "original frozen attachment_ref from this request and a "
-                                "valid bounded page or range. list_attachments and other "
-                                "tools do not count as a content read. Do not claim to have "
-                                "read content or produce a Candidate without a successful "
-                                "read. This is the only attachment-read correction."
-                            ),
-                        }
-                    )
-                    continue
-                # Failed reads (including closed scopes) never earn an extra
-                # correction. Preserve their real tool records in the response.
-                state.stop_reason = _STOP_ATTACHMENT_UNREAD
-                audit.record_guard(round_index=state.tool_rounds, stop_reason=state.stop_reason)
-                break
-            if knowledge_state.has_search_evidence:
-                output = AiModelOutput(
-                    message=_knowledge_evidence_message(
-                        system_locale, output.message, knowledge_state
-                    ),
-                    candidate=(None if knowledge_state.degraded_error_codes else output.candidate),
-                    request_intent=output.request_intent,
-                )
-            response = _with_omission_note(
-                _assist_response(output, draft, executed_tools), omitted_materials[0], system_locale
-            )
-            if state.remaining_total_seconds() <= 0:
-                _raise_provider_error(providers.AiProviderError("ai_timeout"))
-            return response
-        if not tools_enabled:
-            # Defensive: a provider without tool capability fabricated tool
-            # calls; fail with the stable actionable error instead of guessing.
-            for call in tool_calls:
-                audit.record_tool_attempt(
-                    round_index=state.tool_rounds + 1,
-                    tool_name=call.name,
-                    raw_arguments=call.arguments,
-                    validated_arguments=tools_service.validated_tool_arguments(
-                        call.name, call.arguments
-                    ),
-                    status="blocked",
-                    duration_ms=0,
-                    result_size=0,
-                    result_truncated=False,
-                    error_code="ai_tool_unsupported",
-                    stop_reason="ai_tool_unsupported",
-                    redact_values=audit_redact_values,
-                )
-            _raise_tool_error("ai_tool_unsupported")
-        if not tool_calls:
-            # A normalized empty list has no actionable call and is not a
-            # valid final answer.
-            _raise_provider_error(providers.AiProviderError("ai_response_invalid"))
-        if not state.begin_round(len(tool_calls)):
-            assert state.stop_reason is not None
-            attempted_round = state.tool_rounds + 1
-            for call in tool_calls:
-                audit.record_tool_attempt(
-                    round_index=attempted_round,
-                    tool_name=call.name,
-                    raw_arguments=call.arguments,
-                    validated_arguments=tools_service.validated_tool_arguments(
-                        call.name, call.arguments
-                    ),
-                    status="blocked",
-                    duration_ms=0,
-                    result_size=0,
-                    result_truncated=False,
-                    stop_reason=state.stop_reason,
-                    redact_values=audit_redact_values,
-                )
-            break
-        processed_calls: list[tuple[providers.NormalizedToolCall, tools_service.ToolExecution]] = []
-        knowledge_correction_needed = False
-        knowledge_progress_needed = False
-        for call in tool_calls:
-            original_validated_args = tools_service.validated_tool_arguments(
-                call.name, call.arguments
-            )
-            validated_args = knowledge_state.normalize_call_arguments(
-                call.name, original_validated_args
-            )
-            effective_arguments = call.arguments
-            if validated_args != original_validated_args and validated_args is not None:
-                effective_arguments = json.dumps(
-                    validated_args,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-            # A scoped attachment reader is an independent evidence channel.
-            # It must still pass its registered dispatcher/ref/budget checks,
-            # but neither advances nor fails the knowledge retrieval stages.
-            scoped_attachment_call = attachment_reader is not None and call.name in (
-                "list_attachments",
-                "read_attachment_page",
-                "read_attachment_sheet",
-            )
-            if not scoped_attachment_call and not knowledge_state.accepts_call(
-                call.name, validated_args
-            ):
-                execution = tools_service.rejected_tool_call(
-                    call.name, tools_service.CODE_KNOWLEDGE_SEQUENCE
-                )
-                executed_tools.append(_tool_call_summary(execution))
-                processed_calls.append((call, execution))
-                state.record_protocol_failure()
-                knowledge_correction_needed = True
-                audit.record_tool_attempt(
-                    round_index=state.tool_rounds,
-                    tool_name=call.name,
-                    raw_arguments=call.arguments,
-                    validated_arguments=validated_args,
-                    status="blocked",
-                    duration_ms=execution.duration_ms,
-                    result_size=execution.result_size,
-                    result_truncated=execution.result_truncated,
-                    error_code=execution.error_code,
-                    stop_reason=state.stop_reason,
-                    redact_values=audit_redact_values,
-                )
-                if state.stop_reason is not None:
-                    knowledge_state.phase = "stopped"
-                    knowledge_state.stop_reason = _STOP_KNOWLEDGE_SEQUENCE
-                    break
-                continue
-            # A sequence-rejected call did not reach the dispatcher. Register
-            # its fingerprint only after the stage accepts it, so a corrected
-            # later retry can execute once without weakening duplicate checks
-            # for any call that actually reached the dispatcher.
-            fingerprint = tools_service.tool_call_fingerprint(call.name, effective_arguments)
-            if not state.register_fingerprint(fingerprint):
-                execution = tools_service.rejected_tool_call(
-                    call.name, tools_service.CODE_DUPLICATE
-                )
-                audit.record_tool_attempt(
-                    round_index=state.tool_rounds,
-                    tool_name=call.name,
-                    raw_arguments=call.arguments,
-                    validated_arguments=validated_args,
-                    status="blocked",
-                    duration_ms=execution.duration_ms,
-                    result_size=execution.result_size,
-                    result_truncated=execution.result_truncated,
-                    error_code=execution.error_code,
-                    stop_reason=state.stop_reason,
-                    redact_values=audit_redact_values,
-                )
-                executed_tools.append(_tool_call_summary(execution))
-                processed_calls.append((call, execution))
-                break
-            with tool_resources.open() as execution_context:
-                execution = tools_service.execute_tool_call(
-                    call.name, effective_arguments, api_key, context=execution_context
-                )
-            state.record_execution(execution)
-            if not scoped_attachment_call:
-                knowledge_state.record_execution(validated_args, execution)
-                knowledge_correction_needed = False
-            if call.name in ("list_knowledge_bases", "search_knowledge", "read_knowledge"):
-                knowledge_progress_needed = True
-            if knowledge_state.stop_reason is not None and state.stop_reason is None:
-                state.stop_reason = knowledge_state.stop_reason
-            if state.stop_reason is None and state.remaining_tool_seconds() <= 0:
-                state.stop_reason = _STOP_DEADLINE
-            audit.record_tool_attempt(
-                round_index=state.tool_rounds,
-                tool_name=call.name,
-                raw_arguments=call.arguments,
-                validated_arguments=validated_args,
-                status=execution.status,  # type: ignore[arg-type]
-                duration_ms=execution.duration_ms,
-                result_size=execution.result_size,
-                result_truncated=execution.result_truncated,
-                error_code=execution.error_code,
-                stop_reason=state.stop_reason,
-                redact_values=audit_redact_values,
-            )
-            executed_tools.append(_tool_call_summary(execution))
-            processed_calls.append((call, execution))
-            if state.stop_reason is not None:
-                break
-        if processed_calls:
-            assistant_content = (
-                final_content if final_content is not None and final_content.strip() else None
-            )
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": assistant_content,
-                    "tool_calls": [
-                        _assistant_tool_call(call, api_key, tool_context)
-                        for call, _execution in processed_calls
-                    ],
-                }
-            )
-            if tool_calls[0].anthropic_blocks and len(processed_calls) == len(tool_calls):
-                private_blocks = list(tool_calls[0].anthropic_blocks)
-                # Signed turns must be echoed verbatim. If existing safety redaction
-                # would change a tool argument, reject rather than corrupt the turn.
-                for call, _execution in processed_calls:
-                    safe_call = _assistant_tool_call(call, api_key, tool_context)
-                    if providers.load_json_strict(
-                        cast(dict[str, str], safe_call["function"])["arguments"]
-                    ) != (providers.load_json_strict(call.arguments)):
-                        raise AiResponseInvalid("output_safety", "secret_reflection")
-                messages[-1]["_anthropic_continuation"] = private_blocks
-            tool_messages: list[providers.JsonObject] = []
-            supplementary: list[providers.JsonObject] = []
-            for call, execution in processed_calls:
-                result_message, visual_message = providers.tool_result_messages(
-                    call.id,
-                    call.name,
-                    tools_service.tool_result_content(execution),
-                    execution.media,
-                    provider_adapter,
-                )
-                tool_messages.append(result_message)
-                if visual_message is not None:
-                    supplementary.append(visual_message)
-            messages.extend(tool_messages)
-            messages.extend(supplementary)
-        if knowledge_correction_needed and state.stop_reason is None:
-            messages.append({"role": "system", "content": knowledge_state.correction_message()})
-        elif knowledge_progress_needed and state.stop_reason is None:
-            messages.append({"role": "system", "content": knowledge_state.progress_message()})
-        if state.stop_reason is not None:
-            break
-        if state.tool_rounds >= tools_service.MAX_TOOL_ROUNDS:
-            state.stop_reason = _STOP_ROUND_BUDGET
-            audit.record_guard(round_index=state.tool_rounds, stop_reason=state.stop_reason)
-        elif state.remaining_tool_seconds() <= 0:
-            state.stop_reason = _STOP_DEADLINE
-            audit.record_guard(round_index=state.tool_rounds, stop_reason=state.stop_reason)
-
-    state.prepared_knowledge_incomplete = (
-        state.attachment_read_required
-        and knowledge_search_enabled
-        and (
-            knowledge_state.requires_tool
-            or knowledge_state.needs_cross_base_search
-            or not knowledge_state.has_search_evidence
-        )
-    )
-    if knowledge_state.requires_tool:
-        knowledge_state.phase = "stopped"
-        knowledge_state.stop_reason = (
-            _STOP_KNOWLEDGE_SEQUENCE
-            if knowledge_state.has_search_evidence
-            else (
-                _STOP_KNOWLEDGE_SEARCH_EMPTY
-                if knowledge_state.search_attempts
-                else _STOP_KNOWLEDGE_SEQUENCE
-            )
-        )
-    response = _finalize_after_tool_stop(
-        state=state,
-        system_locale=system_locale,
-        draft=draft,
-        api_key=api_key,
-        messages=messages,
-        image_input=bool(native_images),
-        provider_adapter=provider_adapter,
-        payload=payload,
-        executed_tools=executed_tools,
-        knowledge_state=knowledge_state,
-        omitted_materials=omitted_materials,
-        audit=audit,
-    )
-    return _with_omission_note(response, omitted_materials[0], system_locale)
-
-
 def assist(
     session: Session,
     adapter_id: int,
@@ -1873,41 +1110,22 @@ def assist(
     try:
         prepared = PreparedAssist.create(adapter_id, payload)
 
-        def execute_legacy(request: PreparedAssist) -> AiAssistResponse:
-            return _assist_impl(
-                session,
-                request.adapter_id,
-                request.request(),
-                audit,
-                state,
-                attachment_reader=attachment_reader,
-                reader_factory=reader_factory,
-                permission_check=permission_check,
-            )
+        from dlr.control.ai.runtime.pydantic_ai.runtime import PydanticAiRuntime
 
-        if settings.ai_assist_runtime == "legacy":
-            outcome = LegacyRuntime().execute(
-                prepared, RuntimeResources(legacy_execute=execute_legacy)
-            )
-        else:
-            from dlr.control.ai.runtime.pydantic_ai.runtime import PydanticAiRuntime
-
-            context = _prepare_assist(
-                session,
-                adapter_id,
-                prepared.request(),
-                audit,
-                state,
-                attachment_reader=attachment_reader,
-                reader_factory=reader_factory,
-                permission_check=permission_check,
-            )
-            try:
-                outcome = PydanticAiRuntime().execute(
-                    prepared, RuntimeResources(legacy_execute=execute_legacy, execution=context)
-                )
-            except providers.AiProviderError as error:
-                _raise_provider_error(error)
+        context = _prepare_assist(
+            session,
+            adapter_id,
+            prepared.request(),
+            audit,
+            state,
+            attachment_reader=attachment_reader,
+            reader_factory=reader_factory,
+            permission_check=permission_check,
+        )
+        try:
+            outcome = PydanticAiRuntime().execute(prepared, RuntimeResources(execution=context))
+        except providers.AiProviderError as error:
+            _raise_provider_error(error)
         response = outcome.response()
         if permission_check is not None:
             permission_check()

@@ -17,7 +17,7 @@ B3 基于 B2 `d3ceaa23f3f8f9de4ebb2a3cd96087fb44bf5713`，实现 `PydanticAiRunt
 | 静态检查 | 全后端 Ruff/format、strict Mypy（200 source files）通过；SDK 类型仅在专用接入目录 |
 | 精确 HEAD CI | `4a8a8a9` 后端 **2970 passed / 1 failed / 17 skipped**；其余四项通过。唯一失败是 40 连接夹具的突发启动未在 8 秒到齐，修正为逐个确认入站、保持 40 个同时存活，再测试第 41 个和取消后释放，原等待上限与生产参数均保留。修正提交重新等待 CI。B1/B2 的中文扫描首败通过专用 canonical `ai/i18n.py` 修复，policy/runtime/presentation 继续扫描 |
 
-复现 parity：在 `backend` 中配置项目规定的 PostgreSQL/RabbitMQ 测试环境，执行 `PYTHONPATH=tests:src uv run pytest -p ai_runtime_parity -q`，文件列表见 CI 的 `AI runtime domain parity through official SDKs` 步骤。该插件只用于领域 fixture；真实网络合同用例不能加载它。
+B3 的 opt-in parity 插件及对应 CI 步骤属于迁移期间的历史入口，可在冻结提交 `936fddd16277054539419d2ed33e89e7eae5511e` 复现。B5 已将这些断言迁入默认 SDK 回归并删除插件；当前在 `backend` 中配置项目规定的 PostgreSQL/RabbitMQ 测试环境后执行 `uv run pytest`。具体映射见 [B5 删除与回归记录](issue213-pydantic-b5.md)，不再对当前树运行旧插件。
 
 ### 本地固定延迟对照
 
@@ -37,7 +37,7 @@ B3 基于 B2 `d3ceaa23f3f8f9de4ebb2a3cd96087fb44bf5713`，实现 `PydanticAiRunt
 - 旧最终输出中的合法配置回显继续按原字段 presence 校验；新 transport schema 只允许代码候选。原文中的 `<think>` 字面量不会被 SDK 推理提取误删。Anthropic 私有签名不进入用户输出或审计。
 - 每轮把公开消息映射到原 context-budget 策略，成组裁剪同步更新当前与后续视图；实际 SDK body 再检查字节/媒体/schema 和 deadline。安全错误、传输错误不触发格式重试。
 - 网络工作和工具工作分别有有界所有者。超时后真实工具继续持有自己的短 Session、Reader pin 和文件，完成才释放，迟到结果不能修改计数或成为候选。请求返回前再次验证当前账号 Session、启停、角色及 Adapter 权限；独立 PostgreSQL 用例覆盖停用、登出和降权。
-- `DLR_AI_RUNTIME=legacy|pydantic_ai` 为过渡部署开关，非法值启动失败；单请求选择一次，无自动后备/重复调用。非 AI 入口不要求导入新框架。
+- B3 期间 `DLR_AI_RUNTIME=legacy|pydantic_ai` 为过渡部署开关，非法值启动失败；单请求选择一次，无自动后备/重复调用。该开关在 B5 删除，当前运维方式见 [B5 记录](issue213-pydantic-b5.md)。非 AI 入口不要求导入新框架。
 
 ## 首败与修复
 

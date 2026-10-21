@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+import ai_sdk_fixtures
 from dlr.control.ai import context_budget, providers, tool_audit, tools
 from dlr.control.ai.attachment_documents import DocumentConversionError
 from dlr.control.ai.attachment_reading import AttachmentReadResult
@@ -201,7 +202,7 @@ def harness(monkeypatch):
                 raise answer
             return answer
 
-        monkeypatch.setattr(providers, "chat_assist", chat)
+        monkeypatch.setattr(ai_sdk_fixtures, "round_reply", chat)
         body = {
             "message": "Read the attached workbook and calculate its total.",
             "task_intent": intent,
