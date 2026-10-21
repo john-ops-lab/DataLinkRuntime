@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -12,15 +13,42 @@ from dlr.common.config import settings
 from dlr.control.ai import policy, providers, tool_audit, tools
 from dlr.control.ai.diagnostics import AiResponseInvalid
 from dlr.control.ai.provider_config import ProviderSnapshot
-from dlr.control.ai.runtime.contracts import AssistExecution
+from dlr.control.ai.runtime.contracts import AssistExecution, PreparedAssist
 from dlr.control.ai.runtime.pydantic_ai import control
 from dlr.control.ai.runtime.pydantic_ai.control import RunState
 from dlr.control.ai.runtime.pydantic_ai.messages import initial_messages
 from dlr.control.ai.runtime.pydantic_ai.models import model_client
-from dlr.control.ai.runtime.pydantic_ai.runtime import correct_format, final_after_stop
+from dlr.control.ai.runtime.pydantic_ai.runtime import (
+    PydanticAiRuntime,
+    correct_format,
+    final_after_stop,
+)
 from dlr.control.ai.runtime.pydantic_ai.transport import OwnedTransport
 from dlr.control.ai.runtime.resources import ToolResourceFactory
 from dlr.control.schemas.ai import AiAssistRequest, AiSettingDraft, AiToolCallSummary
+
+
+@pytest.mark.parametrize("runtime", ["legacy", "pydantic_ai"])
+def test_format_correction_total_timeout_keeps_provider_error(
+    api_client: Any, monkeypatch: Any, runtime: str
+) -> None:
+    from ai_runtime_support import response, server
+    from test_ai import valid_output
+    from test_ai_pydantic_runtime import request
+
+    monkeypatch.setattr(settings, "ai_assist_runtime", runtime)
+    monkeypatch.setattr(settings, "ai_assist_total_timeout_seconds", 2)
+    monkeypatch.setattr(policy, "_FINALIZATION_RESERVE_SECONDS", 0)
+    late = response("openai", json.dumps(valid_output()))
+    late.wait = threading.Event()
+    with server(response("openai", "invalid first response canary"), late) as script:
+        result = request(api_client, script)
+        assert late.entered.is_set()
+        assert result.status_code == 504, result.text
+        assert result.json()["detail"]["code"] == "ai_timeout"
+        assert len(script.requests) == 2
+        assert "tools" not in script.requests[1].json()
+        assert b"invalid first response canary" not in script.requests[1].body
 
 
 @asynccontextmanager
@@ -56,6 +84,67 @@ async def _run(state: Any, messages: Any):
         )
         run.before_request = initial_messages(messages)
         yield run
+
+
+@pytest.mark.parametrize("external_cancel", [False, True])
+def test_correction_cancelled_before_admission_keeps_original_terminal(
+    monkeypatch: Any, external_cancel: bool
+) -> None:
+    from ai_runtime_support import response
+
+    monkeypatch.setattr(policy, "_FINALIZATION_RESERVE_SECONDS", 0)
+    state = policy._AssistToolState.create(2)
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(tool_audit, "_emit_record", events.append)
+    requests: list[bytes] = []
+    entered = asyncio.Event()
+    original_hook = control.DomainControl.before_model_request
+
+    async def paused(self: Any, ctx: Any, request_context: Any) -> Any:
+        if ctx.deps.pending_format_error is not None:
+            entered.set()
+            await asyncio.Event().wait()
+        return await original_hook(self, ctx, request_context)
+
+    monkeypatch.setattr(control.DomainControl, "before_model_request", paused)
+    original_transport = OwnedTransport.__init__
+
+    def reply(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request.content)
+        return httpx2.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            stream=httpx2.ByteStream(response("openai", "invalid original JSON").body),
+            request=request,
+        )
+
+    def initialize(self: OwnedTransport, **kwargs: Any) -> None:
+        original_transport(self, **kwargs)
+        self.inner.close()
+        self.inner = httpx2.MockTransport(reply)  # type: ignore[assignment]
+
+    monkeypatch.setattr(OwnedTransport, "__init__", initialize)
+
+    async def invoke() -> None:
+        async with _run(state, [{"role": "user", "content": "original request"}]) as run:
+            task = asyncio.create_task(
+                PydanticAiRuntime().run_async(PreparedAssist.create(1, run.payload), run.execution)
+            )
+            await asyncio.wait_for(entered.wait(), 1)
+            if external_cancel:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                with pytest.raises(AiResponseInvalid) as caught:
+                    await task
+                assert caught.value.stage == "final_json"
+                assert caught.value.reason == "malformed_json"
+            assert state.format_corrections == 0
+
+    asyncio.run(invoke())
+    assert len(requests) == 1
+    assert not [event for event in events if event["event_type"] == "format_correction"]
 
 
 def test_budget_rejected_correction_does_not_spend_count_or_emit_attempt(monkeypatch: Any) -> None:

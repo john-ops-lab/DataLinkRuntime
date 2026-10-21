@@ -235,6 +235,7 @@ class PydanticAiRuntime:
             if run.knowledge.stop_reason is not None:
                 state.stop_reason = run.knowledge.stop_reason
                 context.audit.record_guard(round_index=0, stop_reason=state.stop_reason)
+            first_format_error: AiResponseInvalid | None = None
             try:
                 async with asyncio.timeout(state.remaining_total_seconds()):
                     try:
@@ -249,7 +250,9 @@ class PydanticAiRuntime:
                         output = result.output
                     except AiResponseInvalid as error:
                         progress_history = list(run.before_request)
+                        first_format_error = error
                         output = await correct_format(model, run, error)
+                        first_format_error = None
                         if instruction := attachment_correction(run):
                             # One explicit domain resumption after the no-tool
                             # format correction. Neither rejected nor corrected
@@ -281,6 +284,12 @@ class PydanticAiRuntime:
             except RuntimeStop:
                 response = await final_after_stop(model, run)
             except TimeoutError:
+                if first_format_error is not None:
+                    # Only the enclosing timeout converts its own cancellation
+                    # here. External cancellation remains CancelledError.
+                    if state.format_corrections:
+                        raise AiProviderError("ai_timeout", transport_category="timeout") from None
+                    raise first_format_error from None
                 state.stop_reason = policy._STOP_DEADLINE
                 context.audit.record_guard(
                     round_index=state.tool_rounds, stop_reason=state.stop_reason
