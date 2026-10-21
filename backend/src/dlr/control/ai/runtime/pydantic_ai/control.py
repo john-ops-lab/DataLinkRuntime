@@ -80,15 +80,21 @@ class RunState:
         raise RuntimeStop(state.stop_reason)
 
     def record(
-        self, call: ToolCallPart, execution: tools.ToolExecution, *, dispatched: bool
+        self,
+        call: ToolCallPart,
+        execution: tools.ToolExecution,
+        *,
+        validated_arguments: dict[str, object] | None,
+        dispatched: bool,
     ) -> None:
+        """Audit the effective validated arguments for this executed or blocked attempt."""
         name, raw = original_call(call)
         state = self.execution.state
         self.execution.audit.record_tool_attempt(
             round_index=state.tool_rounds,
             tool_name=name,
             raw_arguments=raw,
-            validated_arguments=tools.validated_tool_arguments(name, raw),
+            validated_arguments=validated_arguments,
             status=cast(Any, execution.status if dispatched else "blocked"),
             duration_ms=execution.duration_ms,
             result_size=execution.result_size,
@@ -216,11 +222,11 @@ async def dispatch(
         run.knowledge_correction = True
         if state.stop_reason is not None:
             knowledge.phase, knowledge.stop_reason = "stopped", policy._STOP_KNOWLEDGE_SEQUENCE
-        run.record(call, execution, dispatched=False)
+        run.record(call, execution, validated_arguments=validated, dispatched=False)
         return tool_return(execution, wire_id, context)
     if not state.register_fingerprint(tools.tool_call_fingerprint(name, effective)):
         execution = tools.rejected_tool_call(name, tools.CODE_DUPLICATE)
-        run.record(call, execution, dispatched=False)
+        run.record(call, execution, validated_arguments=validated, dispatched=False)
         return tool_return(execution, wire_id, context)
 
     def execute() -> tools.ToolExecution:
@@ -247,7 +253,7 @@ async def dispatch(
         state.stop_reason = knowledge.stop_reason
     if state.stop_reason is None and state.remaining_tool_seconds() <= 0:
         state.stop_reason = policy._STOP_DEADLINE
-    run.record(call, execution, dispatched=True)
+    run.record(call, execution, validated_arguments=validated, dispatched=True)
     return tool_return(execution, wire_id, context)
 
 
@@ -448,7 +454,7 @@ class DomainControl(AbstractCapability[RunState]):
                         "stopped",
                         policy._STOP_KNOWLEDGE_SEQUENCE,
                     )
-                    run.stop(state.stop_reason)
+                    run.stop(state.stop_reason, tools.CODE_KNOWLEDGE_SEQUENCE)
                 run.discarded = response
                 raise ModelRetry(run.knowledge.correction_message())
             output = policy._parse_model_output(response.text or "", context.provider.api_key)

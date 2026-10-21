@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
 from dlr.control.ai import ima as ima_adapter
-from dlr.control.ai import knowledge, providers
+from dlr.control.ai import knowledge, providers, tool_audit
 from dlr.control.ai import tools as tools_service
 from dlr.control.models import Credential
 from dlr.control.schemas.credential import CredentialCreate
@@ -1824,6 +1824,8 @@ def test_assist_stops_after_three_direct_final_corrections(
         fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
     )
     provider_calls = 0
+    audit_events: list[dict[str, Any]] = []
+    monkeypatch.setattr(tool_audit, "_emit_record", audit_events.append)
 
     def fake_request(*_: object, **__: object) -> object:
         nonlocal provider_calls
@@ -1839,6 +1841,10 @@ def test_assist_stops_after_three_direct_final_corrections(
     assert response.json()["candidate"] is None
     assert response.json()["tool_calls"] == []
     assert "知识库检索顺序未完成" in response.json()["message"]
+    guards = [event for event in audit_events if event["event_type"] == "guard"]
+    assert len(guards) == 1
+    assert guards[0]["stop_reason"] == "knowledge_sequence_incomplete"
+    assert guards[0]["error_code"] == tools_service.CODE_KNOWLEDGE_SEQUENCE
 
 
 def test_assist_blocks_nonknowledge_tool_before_corrected_knowledge_chain(
@@ -1918,6 +1924,8 @@ def test_assist_repairs_one_trailing_quote_in_listed_knowledge_base_id(
         credential_type="access_key",
         fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
     )
+    audit_events: list[dict[str, Any]] = []
+    monkeypatch.setattr(tool_audit, "_emit_record", audit_events.append)
     monkeypatch.setattr(
         providers,
         "_request_json",
@@ -1945,6 +1953,15 @@ def test_assist_repairs_one_trailing_quote_in_listed_knowledge_base_id(
     ]
     assert FakeImaHandler.requested_search_knowledge_base_ids == ["dlr-interface-lib"]
     assert "Answered from the repaired listed knowledge base" in response.json()["message"]
+    searches = [
+        event
+        for event in audit_events
+        if event["event_type"] == "tool_attempt" and event["tool"] == "search_knowledge"
+    ]
+    assert len(searches) == 1
+    assert searches[0]["args_summary"]["knowledge_base_id"] == "dlr-interface-lib"
+    assert IMA_CLIENT_ID not in json.dumps(audit_events)
+    assert IMA_API_KEY not in json.dumps(audit_events)
 
 
 def test_assist_knowledge_reuses_duplicate_protection_for_repeated_search(

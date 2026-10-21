@@ -22,7 +22,7 @@ AI 入口目前为同步 FastAPI 路由。原基线中 `services/ai.py` 约 2,50
 
 | 参考原则 | DLR 设计 | 边界 |
 |---|---|---|
-| 框架依赖限制在接入层 | `ai/runtime/pydantic_ai/` 为运行代码中导入框架和模型 SDK 的唯一接入目录 | API、领域策略、工具处理器和 Worker 不接收框架对象；框架专用测试可直接引用公开 API |
+| 框架依赖限制在接入层 | `ai/runtime/pydantic_ai/` 承载 Assist 的框架与模型 SDK 实现；`provider_catalog.chat` 保留局部 Pydantic AI 导入，复用相同 client/transport 完成单次文本请求 | API、领域策略、工具处理器和 Worker 不接收框架对象；Catalog 不进入 Assist Agent；框架专用测试可直接引用公开 API |
 | 模型只产生候选 | DLR 校验后才接纳 Candidate | 仍由用户预览、Diff、Apply、Save、Run |
 | 显式组装模型、凭据和客户端 | 从现有设置与 Secret Store 冻结请求配置 | 不读取框架默认模型或环境备用 Key，不自动切供应商 |
 | 错误转为领域错误 | 映射既有 HTTP 状态、错误码和安全参数 | 不把原始异常、Prompt、推理或凭据送给用户 |
