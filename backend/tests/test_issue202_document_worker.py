@@ -159,8 +159,10 @@ import os, signal, sys, time
 pid = os.fork()
 if pid == 0:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    with open(sys.argv[1], 'w') as output:
+    marker_tmp = sys.argv[1] + '.tmp'
+    with open(marker_tmp, 'w') as output:
         output.write(str(os.getpid()))
+    os.replace(marker_tmp, sys.argv[1])
     while True:
         time.sleep(.01)
 if sys.argv[2] == 'exit':

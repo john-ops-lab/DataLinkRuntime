@@ -22,6 +22,8 @@ from dlr.control import db
 from dlr.control.app import create_app
 from dlr.control.services import events as events_service
 
+pytest_plugins = ["ai_sdk_fixtures"]
+
 TEST_DATABASE = os.environ.get("DLR_TEST_DATABASE", "dlr_test")
 
 # M2: fixed test tokens. conftest configures them on the settings singleton

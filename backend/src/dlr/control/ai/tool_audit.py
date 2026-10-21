@@ -222,11 +222,17 @@ class AiToolAuditTrail:
             }
         )
 
-    def record_format_correction(self, *, strategy: str, correction_count: int) -> None:
+    def record_format_correction(
+        self, *, strategy: str, correction_count: int, provider_call_index: int | None = None
+    ) -> None:
         _emit_record(
             {
                 **self._base_record("format_correction"),
-                "provider_call_index": self.provider_checked_calls,
+                "provider_call_index": (
+                    self.provider_checked_calls
+                    if provider_call_index is None
+                    else provider_call_index
+                ),
                 "strategy": _safe_code_value(strategy),
                 "correction_count": min(1, max(0, correction_count)),
                 "elapsed_ms": max(0, int((time.monotonic() - self.started_at) * 1000)),

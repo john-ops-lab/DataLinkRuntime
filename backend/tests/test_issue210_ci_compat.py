@@ -1,11 +1,13 @@
 """Run the real smoke image block against Assist API without a Compose deployment."""
 
 import ast
+import base64
 import json
 from pathlib import Path
 
 import pytest
 
+import ai_sdk_fixtures
 from dlr.control.ai import providers
 from dlr.control.schemas.ai import AiSettingDraft
 from test_ai import (
@@ -73,14 +75,22 @@ def test_compose_smoke_images_require_explicit_profile_and_keep_unknown_rejectio
 
 
 @pytest.mark.parametrize("protocol", ["anthropic", "gemini"])
-def test_legacy_default_does_not_invent_pdf_and_explicit_adapter_preserves_media(protocol):
-    helper = (
-        providers._anthropic_messages if protocol == "anthropic" else providers._gemini_contents
+def test_default_pdf_is_denied_and_official_profile_preserves_sdk_media(protocol):
+    from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
+
+    from dlr.control.ai import tools
+    from test_issue202_model_reading import Reader, tool_context
+
+    default = providers.get_provider(protocol)
+    assert not default.native_pdf
+    reader = Reader()
+    denied = tools.execute_tool_call(
+        "read_attachment_page",
+        '{"attachment_ref":"ref-1","page":3,"view":"pdf"}',
+        None,
+        context=tool_context(reader, native_pdf=default.native_pdf),
     )
-    messages = [{"role": "user", "content": providers.media_content_parts((media(pdf=True),))}]
-    with pytest.raises(providers.AiProviderError) as error:
-        helper(messages)
-    assert error.value.code == "ai_attachment_type_unsupported"
+    assert denied.error_code == "ai_attachment_type_unsupported" and not reader.calls
     draft = AiSettingDraft(
         provider=protocol,
         base_url="https://api.anthropic.com"
@@ -88,11 +98,28 @@ def test_legacy_default_does_not_invent_pdf_and_explicit_adapter_preserves_media
         else "https://generativelanguage.googleapis.com",
         model="claude-opus-5-5" if protocol == "anthropic" else "gemini-2.5-pro",
     )
-    resolved = providers.resolve_attachment_adapter(draft, providers.get_provider(protocol))
-    _, converted = helper(messages, resolved)
-    assert media(pdf=True).data_base64 in json.dumps(converted)
-    assert (
-        "document" in json.dumps(converted)
-        if protocol == "anthropic"
-        else "inlineData" in json.dumps(converted)
-    )
+    resolved = providers.resolve_attachment_adapter(draft, default)
+    assert resolved.native_pdf
+    item = media(pdf=True)
+    history = [
+        ModelRequest(
+            parts=[
+                UserPromptPart(
+                    [
+                        BinaryContent(
+                            base64.b64decode(item.data_base64), media_type=item.content_type
+                        )
+                    ]
+                )
+            ]
+        )
+    ]
+    payload = ai_sdk_fixtures.sdk_payload(draft, [], adapter=resolved, history=history)
+    if protocol == "anthropic":
+        document = next(p for p in payload["messages"][0]["content"] if p["type"] == "document")
+        assert document["source"]["media_type"] == "application/pdf"
+        assert base64.b64decode(document["source"]["data"]) == base64.b64decode(item.data_base64)
+    else:
+        binary = payload["contents"][0]["parts"][0]["inlineData"]
+        assert binary.get("mimeType", binary.get("mime_type")) == "application/pdf"
+        assert base64.urlsafe_b64decode(binary["data"]) == base64.b64decode(item.data_base64)

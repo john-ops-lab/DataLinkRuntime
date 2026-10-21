@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+import ai_sdk_fixtures
 from dlr.control.ai import providers, tool_audit
 from dlr.control.schemas.ai import AiSettingDraft
 from dlr.control.services import ai
@@ -121,17 +122,14 @@ def test_late_provider_final_is_rejected_even_when_transport_is_stubbed(monkeypa
         time.sleep(0.06)
         return '{"message":"late","candidate":null}', None
 
-    monkeypatch.setattr(providers, "chat_assist", late)
+    monkeypatch.setattr(ai_sdk_fixtures, "round_reply", late)
     with pytest.raises(providers.AiProviderError) as error:
-        ai._call_provider_with_audit(
+        ai_sdk_fixtures.request_once(
             AiSettingDraft(
                 provider="minimax", base_url="https://api.minimax.cn", model="MiniMax-M3"
             ),
             None,
             [],
-            tools=None,
-            provider_adapter=providers.get_provider("minimax"),
-            timeout_seconds=1,
             state=state,
             audit=None,
         )
@@ -141,16 +139,19 @@ def test_late_provider_final_is_rejected_even_when_transport_is_stubbed(monkeypa
 def test_final_service_return_rejects_late_response(session_factory, monkeypatch):
     from fastapi import HTTPException
 
+    from dlr.control.ai.runtime.contracts import RuntimeOutcome
+    from dlr.control.ai.runtime.pydantic_ai.runtime import PydanticAiRuntime
     from dlr.control.schemas.ai import AiAssistRequest, AiAssistResponse
     from test_ai import assist_body
 
     def late(*args, **kwargs):
         time.sleep(0.04)
-        return AiAssistResponse(
-            message="late", candidate=None, provider="minimax", model="MiniMax-M3"
+        return RuntimeOutcome.from_response(
+            AiAssistResponse(message="late", candidate=None, provider="minimax", model="MiniMax-M3")
         )
 
-    monkeypatch.setattr(ai, "_assist_impl", late)
+    ai_sdk_fixtures.stub_preparation(monkeypatch)
+    monkeypatch.setattr(PydanticAiRuntime, "execute", late)
     with session_factory() as session, pytest.raises(HTTPException) as error:
         ai.assist(
             session, 1, AiAssistRequest(**assist_body()), hard_deadline=time.monotonic() + 0.02

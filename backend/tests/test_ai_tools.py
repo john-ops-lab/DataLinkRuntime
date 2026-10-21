@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+import ai_sdk_fixtures
 from dlr.control.ai import providers
 from dlr.control.ai import tools as tools_service
 from dlr.control.schemas.ai import AiAssistRequest, AiSettingDraft, AiToolCallSummary
@@ -214,8 +215,8 @@ def test_protection_finalization_disables_tools_and_uses_only_remaining_time(
         return json.dumps(valid_output()), None
 
     monkeypatch.setattr(ai_service.time, "monotonic", lambda: 20.0)
-    monkeypatch.setattr(providers, "chat_assist", fake_chat_assist)
-    response = ai_service._finalize_after_tool_stop(
+    monkeypatch.setattr(ai_sdk_fixtures, "round_reply", fake_chat_assist)
+    response = ai_sdk_fixtures.finalize(
         state=state,
         system_locale="en",
         draft=draft,
@@ -252,8 +253,8 @@ def test_protection_finalization_failures_return_candidate_null_once(
         return "not-json", None
 
     monkeypatch.setattr(ai_service.time, "monotonic", lambda: 20.0)
-    monkeypatch.setattr(providers, "chat_assist", fake_chat_assist)
-    response = ai_service._finalize_after_tool_stop(
+    monkeypatch.setattr(ai_sdk_fixtures, "round_reply", fake_chat_assist)
+    response = ai_sdk_fixtures.finalize(
         state=state,
         system_locale="zh-CN",
         draft=draft,
@@ -283,8 +284,8 @@ def test_expired_hard_deadline_returns_english_fallback_without_provider_call(
         raise AssertionError("expired finalization must not call the Provider")
 
     monkeypatch.setattr(ai_service.time, "monotonic", lambda: state.hard_deadline)
-    monkeypatch.setattr(providers, "chat_assist", should_not_call)
-    response = ai_service._finalize_after_tool_stop(
+    monkeypatch.setattr(ai_sdk_fixtures, "round_reply", should_not_call)
+    response = ai_sdk_fixtures.finalize(
         state=state,
         system_locale="en",
         draft=draft,
@@ -306,11 +307,11 @@ def test_protection_without_success_returns_candidate_null_without_provider_call
 ) -> None:
     state, draft, payload, _summaries = _finalization_inputs()
     monkeypatch.setattr(
-        providers,
-        "chat_assist",
+        ai_sdk_fixtures,
+        "round_reply",
         lambda *_args, **_kwargs: pytest.fail("no evidence must not produce a Candidate"),
     )
-    response = ai_service._finalize_after_tool_stop(
+    response = ai_sdk_fixtures.finalize(
         state=state,
         system_locale="zh-CN",
         draft=draft,
@@ -335,11 +336,11 @@ def test_protection_finalization_rejects_candidate_configuration_changes(
 
     monkeypatch.setattr(ai_service.time, "monotonic", lambda: 20.0)
     monkeypatch.setattr(
-        providers,
-        "chat_assist",
+        ai_sdk_fixtures,
+        "round_reply",
         lambda *_args, **_kwargs: (json.dumps(changed), None),
     )
-    response = ai_service._finalize_after_tool_stop(
+    response = ai_sdk_fixtures.finalize(
         state=state,
         system_locale="en",
         draft=draft,

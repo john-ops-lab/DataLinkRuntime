@@ -3,11 +3,13 @@
 import json
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 from dlr.common.config import settings
-from dlr.control.ai import providers
+from dlr.control.ai import provider_config as providers
 from dlr.control.ai.attachment_reading import AttachmentMedia
+from dlr.control.ai.output_schema import code_only_output_schema, transport_output_schema
 from dlr.control.schemas.ai import AiSettingDraft
 
 # Only models with a verified minimum context window belong here. All other
@@ -22,6 +24,14 @@ BYTES_PER_ESTIMATED_TOKEN = 2
 REQUEST_PREFIX = "DLR_REQUEST_CONTEXT_V1\n"
 CallPurpose = Literal["assist_initial", "assist_followup", "assist_finalization"]
 ESTIMATION_METHOD = "utf8_json_bytes_div2_plus_fixed_reserves_v1"
+# A protocol-independent estimate for the histories DLR emits. These margins
+# cover wrappers, not variable text/signature/media lengths. Actual SDK bytes
+# remain subject to the transport's independent hard limit.
+PAYLOAD_ROOT_OVERHEAD = 1024
+PAYLOAD_ROW_OVERHEAD = 64
+PAYLOAD_PART_OVERHEAD = 256
+PAYLOAD_TOOL_OVERHEAD = 256
+_INTERNAL_COUNTS = frozenset({"private_utf8_bytes", "private_ascii_bytes", "response_part_count"})
 
 
 @dataclass(frozen=True)
@@ -43,6 +53,7 @@ class BudgetDiagnostics:
     omitted_reference_items: int
     omitted_images: int
     payload_bytes: int = 0
+    estimated_payload_bytes: int = 0
     max_payload_bytes: int = providers.MAX_PROVIDER_REQUEST_BYTES
     schema_tokens: int = 0
     image_count: int = 0
@@ -123,13 +134,118 @@ def _media_counts(value: object) -> tuple[int, int, int]:
 
 def _message_tokens(message: providers.JsonObject) -> int:
     content, reserve = _media_estimate(message.get("content"))
-    metadata = {key: value for key, value in message.items() if key != "content"}
-    return MESSAGE_OVERHEAD_TOKENS + _text_tokens(metadata) + _text_tokens(content) + reserve
+    metadata = {
+        key: value
+        for key, value in message.items()
+        if key != "content" and key not in _INTERNAL_COUNTS
+    }
+    private = math.ceil(_internal_count(message, "private_utf8_bytes") / BYTES_PER_ESTIMATED_TOKEN)
+    return (
+        MESSAGE_OVERHEAD_TOKENS + _text_tokens(metadata) + _text_tokens(content) + reserve + private
+    )
+
+
+def _internal_count(message: providers.JsonObject, name: str) -> int:
+    value = message.get(name, 0)
+    assert isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return value
+
+
+def _payload_value(value: object) -> tuple[object, int]:
+    """Measure each base64 occurrence without copying blobs into another JSON."""
+    if isinstance(value, dict):
+        media = value.get("media")
+        if value.get("type") == "dlr_media" and isinstance(media, AttachmentMedia):
+            return (
+                {"media_type": media.content_type, "data": "", "source": media.source()},
+                len(media.data_base64),
+            )
+        image = value.get("image_url")
+        if value.get("type") == "image_url" and isinstance(image, dict):
+            url = image.get("url")
+            if isinstance(url, str) and url.startswith("data:") and ";base64," in url:
+                header, body = url.split(";base64,", 1)
+                return (
+                    {**value, "image_url": {**image, "url": header + ";base64,"}},
+                    len(body),
+                )
+        converted: dict[str, object] = {}
+        total = 0
+        for key, item in value.items():
+            converted[key], count = _payload_value(item)
+            total += count
+        return converted, total
+    if isinstance(value, list | tuple):
+        items: list[object] = []
+        total = 0
+        for item in value:
+            converted_item, count = _payload_value(item)
+            items.append(converted_item)
+            total += count
+        return items, total
+    return value, 0
+
+
+@lru_cache(maxsize=1)
+def _transport_schema_bytes() -> int:
+    # Only an integer is cached; consumers always get a fresh schema object.
+    return len(json.dumps(transport_output_schema(), ensure_ascii=True).encode("ascii"))
+
+
+def estimated_payload_bytes(
+    draft: AiSettingDraft,
+    messages: list[providers.JsonObject],
+    tools: list[providers.JsonObject] | None,
+) -> int:
+    """Estimate DLR-generated SDK histories without any protocol encoder.
+
+    ASCII escaping includes Google's larger encoding of non-ASCII strings.
+    Tool objects may become JSON inside a JSON string on OpenAI endpoints.
+    Near a limit, this estimate can remove an optional whole item earlier.
+    It is not an upper-bound promise for arbitrary SDK message extensions.
+    """
+    rows: list[dict[str, object]] = []
+    private = parts = blobs = 0
+    for message in messages:
+        converted, blob_bytes = _payload_value(
+            {key: value for key, value in message.items() if key not in _INTERNAL_COUNTS}
+        )
+        assert isinstance(converted, dict)
+        content = converted.get("content")
+        if message.get("role") == "tool" and content is not None and not isinstance(content, str):
+            converted["content"] = json.dumps(content, ensure_ascii=True)
+        rows.append(converted)
+        blobs += blob_bytes
+        private += _internal_count(message, "private_ascii_bytes")
+        calls = message.get("tool_calls")
+        parts += max(
+            _internal_count(message, "response_part_count"),
+            len(content) if isinstance(content, list) else 1,
+            len(calls) if isinstance(calls, list) else 0,
+        )
+    canonical = {
+        "model": draft.model,
+        "reasoning_mode": draft.reasoning_mode,
+        "reasoning_effort": draft.reasoning_effort,
+        "messages": rows,
+        "tools": tools,
+        "output_schema": None,
+    }
+    return (
+        len(json.dumps(canonical, ensure_ascii=True).encode("ascii"))
+        + _transport_schema_bytes()
+        + blobs
+        + private
+        + PAYLOAD_ROOT_OVERHEAD
+        + PAYLOAD_ROW_OVERHEAD * len(rows)
+        + PAYLOAD_PART_OVERHEAD * parts
+        + PAYLOAD_TOOL_OVERHEAD * len(tools or [])
+    )
 
 
 def _schema_tokens(adapter: providers.ProviderAdapter | None) -> int:
     return (
-        _text_tokens(providers.code_only_output_schema())
+        _text_tokens(code_only_output_schema())
         if adapter is not None and adapter.structured_output == "json_schema"
         else 0
     )
@@ -274,9 +390,7 @@ def prepare_call(
                 omitted_history_messages=omitted_history,
                 omitted_reference_items=omitted_references,
                 omitted_images=omitted_images,
-                payload_bytes=providers.assist_payload_size(
-                    draft, messages, tools, adapter=adapter
-                ),
+                estimated_payload_bytes=estimated_payload_bytes(draft, messages, tools),
                 max_payload_bytes=adapter.max_request_bytes,
                 schema_tokens=_schema_tokens(adapter),
                 image_count=image_count,
@@ -287,8 +401,7 @@ def prepare_call(
 
     while (
         estimate_tokens(messages, tools, purpose=purpose, adapter=adapter) > window
-        or providers.assist_payload_size(draft, messages, tools, adapter=adapter)
-        > adapter.max_request_bytes
+        or estimated_payload_bytes(draft, messages, tools) > adapter.max_request_bytes
     ):
         request = _request_message(messages)
         if request is not None:

@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
 from dlr.control.ai import ima as ima_adapter
-from dlr.control.ai import knowledge, providers
+from dlr.control.ai import knowledge, providers, tool_audit
 from dlr.control.ai import tools as tools_service
 from dlr.control.models import Credential
 from dlr.control.schemas.credential import CredentialCreate
@@ -1824,6 +1824,8 @@ def test_assist_stops_after_three_direct_final_corrections(
         fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
     )
     provider_calls = 0
+    audit_events: list[dict[str, Any]] = []
+    monkeypatch.setattr(tool_audit, "_emit_record", audit_events.append)
 
     def fake_request(*_: object, **__: object) -> object:
         nonlocal provider_calls
@@ -1839,6 +1841,10 @@ def test_assist_stops_after_three_direct_final_corrections(
     assert response.json()["candidate"] is None
     assert response.json()["tool_calls"] == []
     assert "知识库检索顺序未完成" in response.json()["message"]
+    guards = [event for event in audit_events if event["event_type"] == "guard"]
+    assert len(guards) == 1
+    assert guards[0]["stop_reason"] == "knowledge_sequence_incomplete"
+    assert guards[0]["error_code"] == tools_service.CODE_KNOWLEDGE_SEQUENCE
 
 
 def test_assist_blocks_nonknowledge_tool_before_corrected_knowledge_chain(
@@ -1918,6 +1924,8 @@ def test_assist_repairs_one_trailing_quote_in_listed_knowledge_base_id(
         credential_type="access_key",
         fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
     )
+    audit_events: list[dict[str, Any]] = []
+    monkeypatch.setattr(tool_audit, "_emit_record", audit_events.append)
     monkeypatch.setattr(
         providers,
         "_request_json",
@@ -1945,6 +1953,15 @@ def test_assist_repairs_one_trailing_quote_in_listed_knowledge_base_id(
     ]
     assert FakeImaHandler.requested_search_knowledge_base_ids == ["dlr-interface-lib"]
     assert "Answered from the repaired listed knowledge base" in response.json()["message"]
+    searches = [
+        event
+        for event in audit_events
+        if event["event_type"] == "tool_attempt" and event["tool"] == "search_knowledge"
+    ]
+    assert len(searches) == 1
+    assert searches[0]["args_summary"]["knowledge_base_id"] == "dlr-interface-lib"
+    assert IMA_CLIENT_ID not in json.dumps(audit_events)
+    assert IMA_API_KEY not in json.dumps(audit_events)
 
 
 def test_assist_knowledge_reuses_duplicate_protection_for_repeated_search(
@@ -2634,3 +2651,85 @@ def test_assist_knowledge_unknown_source_and_recent_messages_shape(
     assert "知识库列表阶段失败" in result["message"]
     # Tool data never joins recent_messages (C1 contract preserved).
     assert "bogus" not in json.dumps(result["message"])
+
+
+@pytest.mark.parametrize("protocol", ["openai", "anthropic", "google"])
+def test_sdk_protocol_knowledge_correction_omits_ungrounded_reply(
+    api_client: TestClient,
+    ima_config: ThreadingHTTPServer,
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+) -> None:
+    from ai_runtime_support import response as sdk_response
+    from ai_runtime_support import server as sdk_server
+    from dlr.control.ai import tool_audit
+
+    FakeImaHandler.bases = [BASES[0]]
+    adapter = create_adapter(api_client, "sdk-knowledge-correction-" + protocol)
+    create_credential(
+        api_client,
+        name=CREDENTIAL_NAME,
+        credential_type="access_key",
+        fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
+    )
+    events: list[dict[str, Any]] = []
+    contexts = []
+    prepare = ai_service._prepare_assist
+
+    def trace(*args: Any, **kwargs: Any) -> Any:
+        context = prepare(*args, **kwargs)
+        contexts.append(context)
+        return context
+
+    monkeypatch.setattr(ai_service, "_prepare_assist", trace)
+    monkeypatch.setattr(tool_audit, "_emit_record", events.append)
+    first = '{"message":"ungrounded-must-not-resend","candidate":null}'
+    with sdk_server(
+        sdk_response(protocol, first),
+        sdk_response(protocol, calls=[("list_knowledge_bases", "list", '{"source":"ima"}')]),
+        sdk_response(
+            protocol,
+            calls=[
+                (
+                    "search_knowledge",
+                    "search",
+                    json.dumps(
+                        {
+                            "source": "ima",
+                            "knowledge_base_id": "dlr-interface-lib",
+                            "query": "secrets",
+                        }
+                    ),
+                )
+            ],
+        ),
+        sdk_response(protocol, '{"message":"已检索知识库摘要；未读取全文。","candidate":null}'),
+    ) as script:
+        configure(
+            api_client,
+            provider="anthropic"
+            if protocol == "anthropic"
+            else "gemini"
+            if protocol == "google"
+            else "custom_openai_compatible",
+            base_url=script.url,
+        )
+        result = api_client.post(
+            f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
+        )
+        assert result.status_code == 200, result.text
+        body = result.json()
+        assert body["candidate"] is None
+        assert [item["tool_name"] for item in body["tool_calls"]] == [
+            "list_knowledge_bases",
+            "search_knowledge",
+        ]
+        assert all(item["status"] == "success" for item in body["tool_calls"])
+        assert len(script.requests) == 4
+        assert all(b"ungrounded-must-not-resend" not in item.body for item in script.requests)
+        assert all(b"dlr_internal_dispatch" not in item.body for item in script.requests)
+        assert all(item.json().get("tools") for item in script.requests)
+    state = contexts[0].state
+    assert state.total_tool_calls == state.tool_rounds == 2
+    assert state.format_corrections == 0
+    assert not [event for event in events if event["event_type"] == "format_correction"]

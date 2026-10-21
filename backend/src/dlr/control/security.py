@@ -174,6 +174,34 @@ def require_principal(
     return _require_account_principal(request, session)
 
 
+def recheck_principal(
+    session: Session,
+    principal: Principal,
+    *,
+    authorization: str | None,
+    account_cookie: str | None,
+) -> Principal:
+    """Recheck current authority for a long-running, already authenticated request."""
+    if principal.kind == "superadmin":
+        _require_token(authorization, settings.admin_token)
+        return principal
+    matched = find_session(session, account_cookie)
+    if matched is None or matched.user.id != principal.user_id:
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "account_session_required", "message": "Account session is required"},
+        )
+    if matched.user.must_change_password:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "account_password_change_required",
+                "message": "Change the account password before using the application",
+            },
+        )
+    return _account_principal(matched)
+
+
 def require_upload_principal(
     request: Request,
     authorization: AuthorizationHeader = None,

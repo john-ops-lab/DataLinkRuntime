@@ -27,6 +27,7 @@ def record() -> dict[str, object]:
         safety_reserve_tokens=50,
         schema_tokens=17,
         payload_bytes=128,
+        estimated_payload_bytes=192,
         max_payload_bytes=256,
         provider_deadline_ms=100,
         hard_deadline_ms=150,
@@ -47,6 +48,12 @@ def test_native_schema_and_wire_bytes_both_gate_prepared_status() -> None:
     contract["validate_provider_audit"](rejected)
 
 
+def test_estimated_bytes_can_reject_before_actual_bytes_exceed_limit() -> None:
+    rejected = record()
+    rejected.update(estimated_payload_bytes=512, status="rejected")
+    _contract()["validate_provider_audit"](rejected)
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -58,6 +65,10 @@ def test_native_schema_and_wire_bytes_both_gate_prepared_status() -> None:
         ("max_payload_bytes", 0),
         ("payload_bytes", float("nan")),
         ("payload_bytes", -1),
+        ("estimated_payload_bytes", False),
+        ("estimated_payload_bytes", -1),
+        ("estimated_payload_bytes", float("nan")),
+        ("estimated_payload_bytes", 512),
         ("max_payload_bytes", 256.0),
         ("schema_tokens", -1),
         ("schema_tokens", 0),

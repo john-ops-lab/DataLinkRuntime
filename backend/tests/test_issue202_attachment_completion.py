@@ -6,6 +6,7 @@ import copy
 import json
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 from uuid import uuid4
@@ -13,6 +14,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+import ai_sdk_fixtures
 from dlr.control.ai import context_budget, providers, tool_audit, tools
 from dlr.control.ai.attachment_documents import DocumentConversionError
 from dlr.control.ai.attachment_reading import AttachmentReadResult
@@ -100,6 +102,15 @@ def harness(monkeypatch):
         ai.knowledge_source_service_config, "knowledge_search_capability", lambda *_: (True, None)
     )
     monkeypatch.setattr(ai.knowledge_service, "redact_values_for", lambda *_: ())
+    # These pure domain trajectories use no database. The production resource
+    # factory is verified separately against real PostgreSQL and Reader pins.
+    monkeypatch.setattr(
+        ai,
+        "_tool_resources",
+        lambda _session, context, **_kwargs: SimpleNamespace(
+            template=context, open=lambda: nullcontext(context)
+        ),
+    )
 
     def knowledge_result(name, result):
         def handler(*args):
@@ -171,13 +182,13 @@ def harness(monkeypatch):
         return original_prepare(*args, **kwargs)
 
     monkeypatch.setattr(context_budget, "prepare_call", prepare)
-    original_call = ai._call_provider_with_audit
+    original_call = ai._prepare_assist
 
     def audited(*args, **kwargs):
-        state.states.append(kwargs["state"])
+        state.states.append(args[4])
         return original_call(*args, **kwargs)
 
-    monkeypatch.setattr(ai, "_call_provider_with_audit", audited)
+    monkeypatch.setattr(ai, "_prepare_assist", audited)
 
     def run(responses, *, prepared=True, inline=False, reader=None, intent="auto", knowledge=False):
         pending = iter(responses)
@@ -191,7 +202,7 @@ def harness(monkeypatch):
                 raise answer
             return answer
 
-        monkeypatch.setattr(providers, "chat_assist", chat)
+        monkeypatch.setattr(ai_sdk_fixtures, "round_reply", chat)
         body = {
             "message": "Read the attached workbook and calculate its total.",
             "task_intent": intent,

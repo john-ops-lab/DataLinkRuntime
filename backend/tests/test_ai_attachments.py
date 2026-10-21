@@ -508,7 +508,6 @@ def test_provider_rejecting_native_image_maps_to_stable_code() -> None:
                 ),
                 None,
                 [{"role": "user", "content": "hi"}],
-                structured=False,
                 image_input=True,
             )
     finally:
@@ -546,7 +545,6 @@ def test_provider_image_error_never_leaks_image_bytes_or_echoes() -> None:
                 ),
                 None,
                 [{"role": "user", "content": "hi"}],
-                structured=False,
                 image_input=True,
             )
     finally:

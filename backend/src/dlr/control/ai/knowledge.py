@@ -31,8 +31,9 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Any, Protocol
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any, Protocol, cast
 
 from sqlalchemy.orm import Session
 
@@ -161,8 +162,9 @@ class KnowledgeSource(ABC):
 class ToolContext(Protocol):
     """The per-execution context the tools layer hands to knowledge sources.
 
-    ``session`` is the request's DB session (used to resolve DLR Credential
-    rows inside the Secret Store); ``secret_values`` is the mutable list the
+    ``session`` is the execution thread's short DB session; Assist injects a
+    frozen source factory so no ORM object crosses into tool work.
+    ``secret_values`` is the mutable list the
     source appends its credential truth to so the tools layer can redact it
     by value from everything the model / browser / logs see.
     """
@@ -240,15 +242,54 @@ def build_source(source_id: str, context: ToolContext | None) -> KnowledgeSource
     """Resolve one registered knowledge source id to a concrete adapter.
 
     Unknown ids raise ``ks_unknown_source`` before any execution. The ima
-    adapter is built per call so credential truth only exists in memory for
-    the duration of one tool execution.
+    Assist uses its frozen per-request source factory. Standalone callers
+    build the adapter per call; credential truth remains in memory only.
     """
+    factory = getattr(context, "source_factory", None)
+    if factory is not None:
+        return cast(Callable[[str], KnowledgeSource], factory)(source_id)
     if source_id == "ima":
         from dlr.control.ai import ima
 
         session = context.session if context is not None else None
         return ima.build_source(session)
     raise KnowledgeSourceError(KS_UNKNOWN_SOURCE, "unknown knowledge source")
+
+
+@dataclass(frozen=True)
+class SourceSnapshot:
+    source: KnowledgeSource | None = field(repr=False)
+    error_code: str | None = None
+
+    def build(self, source_id: str) -> KnowledgeSource:
+        if source_id != "ima":
+            raise KnowledgeSourceError(KS_UNKNOWN_SOURCE, "unknown knowledge source")
+        if self.source is None:
+            raise KnowledgeSourceError(
+                self.error_code or KS_NOT_CONFIGURED, "knowledge source is unavailable"
+            )
+        return self.source
+
+    def redact_values(self) -> tuple[str, ...]:
+        return self.source.redact_values() if self.source is not None else ()
+
+
+def snapshot_source(session: Session) -> SourceSnapshot:
+    """Freeze one request's source configuration without retaining its ORM Session.
+
+    A stable preparation error is deferred to the actual tool call, preserving
+    the tool's refusal/error contract rather than failing Assist preparation.
+    """
+
+    @dataclass
+    class PreparationContext:
+        session: Session | None
+        secret_values: list[str] = field(default_factory=list)
+
+    try:
+        return SourceSnapshot(build_source("ima", PreparationContext(session)))
+    except KnowledgeSourceError as error:
+        return SourceSnapshot(None, error.code)
 
 
 def redact_values_for(source_id: str, session: Session | None) -> tuple[str, ...]:

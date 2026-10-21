@@ -1,12 +1,61 @@
 """The Assist return guard distinguishes server fallback from late provider output."""
 
+import asyncio
+
 import pytest
 from fastapi import HTTPException
 
+import ai_sdk_fixtures
 from dlr.control.ai import providers, tool_audit
+from dlr.control.ai.runtime.contracts import RuntimeOutcome
+from dlr.control.ai.runtime.pydantic_ai.runtime import PydanticAiRuntime
 from dlr.control.schemas.ai import AiAssistRequest, AiAssistResponse
 from dlr.control.services import ai
 from test_ai import assist_body, configure, create_adapter
+
+
+def test_permission_recheck_cannot_admit_candidate_after_deadline(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(ai.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(tool_audit, "_emit_record", lambda _record: None)
+    monkeypatch.setattr(
+        PydanticAiRuntime,
+        "execute",
+        lambda *args, **kwargs: RuntimeOutcome.from_response(
+            AiAssistResponse(
+                message="Prepared candidate",
+                candidate={"summary": "update", "code": "return input", "required_secret_keys": []},
+                provider="custom_openai_compatible",
+                model="deadline-model",
+            )
+        ),
+    )
+
+    ai_sdk_fixtures.stub_preparation(monkeypatch)
+
+    def recheck():
+        clock[0] = 150.0
+
+    with pytest.raises(HTTPException) as caught:
+        ai.assist(None, 1, AiAssistRequest(**assist_body()), permission_check=recheck)
+    assert caught.value.detail["code"] == "ai_timeout"
+
+
+def test_cancelled_request_records_one_truthful_terminal(monkeypatch):
+    events = []
+    monkeypatch.setattr(tool_audit, "_emit_record", events.append)
+
+    def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    ai_sdk_fixtures.stub_preparation(monkeypatch)
+    monkeypatch.setattr(PydanticAiRuntime, "execute", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        ai.assist(None, 1, AiAssistRequest(**assist_body()))
+    terminal = [event for event in events if event["event_type"] == "request_terminal"]
+    assert len(terminal) == 1
+    assert terminal[0]["status"] == "error"
+    assert terminal[0]["error_code"] == "ai_assist_cancelled"
 
 
 def test_final_provider_deadline_keeps_server_summary_through_api(api_client, monkeypatch):
@@ -59,21 +108,24 @@ def test_stop_reason_and_candidate_null_do_not_admit_late_provider(monkeypatch, 
     monkeypatch.setattr(ai.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(tool_audit, "_emit_record", lambda _record: None)
 
-    def late_provider_result(session, adapter_id, payload, audit, state, **kwargs):
+    def late_provider_result(self, prepared, resources):
         clock[0] = 150.0
-        state.stop_reason = ai._STOP_DEADLINE
-        return AiAssistResponse(
-            message="Late provider answer",
-            candidate=(
-                {"summary": "late", "code": "return input", "required_secret_keys": []}
-                if has_candidate
-                else None
-            ),
-            provider="custom_openai_compatible",
-            model="review-model",
+        resources.execution.state.stop_reason = ai._STOP_DEADLINE
+        return RuntimeOutcome.from_response(
+            AiAssistResponse(
+                message="Late provider answer",
+                candidate=(
+                    {"summary": "late", "code": "return input", "required_secret_keys": []}
+                    if has_candidate
+                    else None
+                ),
+                provider="custom_openai_compatible",
+                model="review-model",
+            )
         )
 
-    monkeypatch.setattr(ai, "_assist_impl", late_provider_result)
+    ai_sdk_fixtures.stub_preparation(monkeypatch)
+    monkeypatch.setattr(PydanticAiRuntime, "execute", late_provider_result)
     with pytest.raises(HTTPException) as error:
         ai.assist(None, 1, AiAssistRequest(**assist_body()))
     assert error.value.status_code == 504 and error.value.detail["code"] == "ai_timeout"

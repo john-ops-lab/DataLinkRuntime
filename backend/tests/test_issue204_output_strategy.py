@@ -3,6 +3,7 @@
 import jsonschema
 import pytest
 
+import ai_sdk_fixtures
 from dlr.control.ai import providers
 from dlr.control.schemas.ai import AiSettingDraft
 
@@ -26,7 +27,7 @@ def test_exact_combination_output_strategy(provider, url, model, strategy) -> No
     setting = AiSettingDraft(provider=provider, base_url=url, model=model)
     adapter = providers.resolve_output_adapter(setting, providers.get_provider(provider))
     assert adapter.structured_output == strategy
-    payload = providers.build_chat_payload(setting, [], structured=True, adapter=adapter)
+    payload = ai_sdk_fixtures.sdk_payload(setting, [], structured=True, adapter=adapter)
     if strategy == "prompt_only":
         assert "response_format" not in payload
     else:

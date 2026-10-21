@@ -1,10 +1,12 @@
 """Official image input IDs must keep the existing inline Assist path usable."""
 
+import base64
 import json
 from dataclasses import replace
 
 import pytest
 
+import ai_sdk_fixtures
 from dlr.control.ai import providers
 from dlr.control.schemas.ai import AiSettingDraft
 from test_ai import assist_body, configure, create_adapter, fake_chat_response
@@ -85,7 +87,8 @@ def test_documented_model_keeps_legacy_inline_pixels(api_client, monkeypatch, pr
             for part in message["parts"]
             if "inlineData" in part
         )
-        assert pixels == {"mimeType": "image/png", "data": PNG}
+        assert pixels.get("mimeType", pixels.get("mime_type")) == "image/png"
+        assert base64.urlsafe_b64decode(pixels["data"]) == base64.b64decode(PNG)
     elif provider == "anthropic":
         assert captured[0]["model"] == model and "response_format" not in captured[0]
         pixels = next(
@@ -164,16 +167,15 @@ def test_flash_lite_native_pdf_uses_documented_inline_transport():
     adapter = providers.resolve_attachment_adapter(draft, providers.get_provider("gemini"))
     assert adapter.images_native and adapter.native_pdf
     item = media(pdf=True)
-    payload = providers._build_protocol_payload(
+    payload = ai_sdk_fixtures.sdk_payload(
         draft,
-        [{"role": "user", "content": providers.media_content_parts((item,))}],
+        [{"role": "user", "content": [{"type": "dlr_media", "media": item}]}],
         structured=True,
         adapter=adapter,
     )
-    assert payload["contents"][0]["parts"][0]["inlineData"] == {
-        "mimeType": "application/pdf",
-        "data": item.data_base64,
-    }
+    binary = payload["contents"][0]["parts"][0]["inlineData"]
+    assert binary.get("mimeType", binary.get("mime_type")) == "application/pdf"
+    assert base64.urlsafe_b64decode(binary["data"]) == base64.b64decode(item.data_base64)
 
 
 @pytest.mark.parametrize("model", RESTORED_ANTHROPIC_IDS)

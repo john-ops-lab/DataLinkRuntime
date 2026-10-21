@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+import ai_sdk_fixtures
 from dlr.control.ai import providers
 from dlr.control.ai.diagnostics import AiResponseInvalid
 from dlr.control.schemas.ai import AiSettingDraft
@@ -21,9 +22,9 @@ def _parse(monkeypatch: pytest.MonkeyPatch, first: str, following: str):
         calls.append(kwargs)
         return following, None
 
-    monkeypatch.setattr(providers, "chat_assist", chat)
+    monkeypatch.setattr(ai_sdk_fixtures, "round_reply", chat)
     state = ai._AssistToolState.create(30)
-    output = ai._parse_with_format_correction(
+    output = ai_sdk_fixtures.correct_final(
         first,
         draft=_draft(),
         api_key="private-provider-key",
@@ -49,10 +50,12 @@ def test_one_correction_can_succeed(monkeypatch: pytest.MonkeyPatch, first: str)
 
 def test_second_invalid_output_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
-    monkeypatch.setattr(providers, "chat_assist", lambda *a, **k: (calls.append(k) or "{bad", None))
+    monkeypatch.setattr(
+        ai_sdk_fixtures, "round_reply", lambda *a, **k: (calls.append(k) or "{bad", None)
+    )
     state = ai._AssistToolState.create(30)
     with pytest.raises(AiResponseInvalid) as error:
-        ai._parse_with_format_correction(
+        ai_sdk_fixtures.correct_final(
             "{broken",
             draft=_draft(),
             api_key=None,
@@ -76,10 +79,10 @@ def test_safety_failures_never_correct(
     monkeypatch: pytest.MonkeyPatch, first: str, stage: str
 ) -> None:
     monkeypatch.setattr(
-        providers, "chat_assist", lambda *a, **k: pytest.fail("unexpected correction")
+        ai_sdk_fixtures, "round_reply", lambda *a, **k: pytest.fail("unexpected correction")
     )
     with pytest.raises(AiResponseInvalid) as error:
-        ai._parse_with_format_correction(
+        ai_sdk_fixtures.correct_final(
             first,
             draft=_draft(),
             api_key="private-provider-key",
@@ -94,12 +97,12 @@ def test_safety_failures_never_correct(
 @pytest.mark.parametrize("already_corrected,timeout", [(1, 30), (0, 0)])
 def test_no_second_correction_or_new_deadline(monkeypatch, already_corrected, timeout) -> None:
     monkeypatch.setattr(
-        providers, "chat_assist", lambda *a, **k: pytest.fail("unexpected correction")
+        ai_sdk_fixtures, "round_reply", lambda *a, **k: pytest.fail("unexpected correction")
     )
     state = ai._AssistToolState.create(timeout, now=time.monotonic())
     state.format_corrections = already_corrected
     with pytest.raises(AiResponseInvalid):
-        ai._parse_with_format_correction(
+        ai_sdk_fixtures.correct_final(
             "{broken",
             draft=_draft(),
             api_key=None,
@@ -114,10 +117,12 @@ def test_context_budget_does_not_admit_correction(monkeypatch: pytest.MonkeyPatc
     from dlr.common.config import settings
 
     monkeypatch.setattr(settings, "ai_context_default_window_tokens", 1024)
-    monkeypatch.setattr(providers, "chat_assist", lambda *a, **k: pytest.fail("unexpected call"))
+    monkeypatch.setattr(
+        ai_sdk_fixtures, "round_reply", lambda *a, **k: pytest.fail("unexpected call")
+    )
     state = ai._AssistToolState.create(30)
     with pytest.raises(AiResponseInvalid):
-        ai._parse_with_format_correction(
+        ai_sdk_fixtures.correct_final(
             "{broken",
             draft=_draft().model_copy(update={"base_url": "https://unverified.invalid"}),
             api_key=None,
@@ -133,17 +138,16 @@ def test_context_budget_does_not_admit_correction(monkeypatch: pytest.MonkeyPatc
 
 
 def test_correction_transport_failure_is_reported_without_fallback_provider(monkeypatch) -> None:
-    from fastapi import HTTPException
 
     calls = []
 
     def fail(*args, **kwargs):
-        calls.append(args[0].provider)
+        calls.append(args[0].model)
         raise providers.AiProviderError("ai_provider_unreachable")
 
-    monkeypatch.setattr(providers, "chat_assist", fail)
-    with pytest.raises(HTTPException) as error:
-        ai._parse_with_format_correction(
+    monkeypatch.setattr(ai_sdk_fixtures, "round_reply", fail)
+    with pytest.raises(providers.AiProviderError) as error:
+        ai_sdk_fixtures.correct_final(
             "{broken",
             draft=_draft(),
             api_key=None,
@@ -152,5 +156,5 @@ def test_correction_transport_failure_is_reported_without_fallback_provider(monk
             state=ai._AssistToolState.create(30),
             audit=None,
         )
-    assert calls == ["minimax"]
-    assert error.value.detail["code"] == "ai_provider_unreachable"
+    assert calls == ["MiniMax-M3"]
+    assert error.value.code == "ai_provider_unreachable"

@@ -27,7 +27,7 @@
   <a href="https://github.com/john-ops-lab/DataLinkRuntime/issues">Issues</a>
 </p>
 
-<p align="center">稳定版：<a href="https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.5.0">v0.5.0</a></p>
+<p align="center">稳定版：<a href="https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.6.0">v0.6.0</a></p>
 
 ---
 
@@ -218,7 +218,7 @@ AI 不会自动替你执行：
 
 **Apply 只是把候选修改放回 Working Copy；最终保存与运行必须由用户明确触发。**
 
-对话用于当前页面的临时调试，刷新页面或切换账号、适配器后清空。可添加附件作为本轮资料；需要文档转换时，按[转换组件说明](docs/zh-CN/issue202-document-conversion.md)启用附加服务。模型对附件的事实和引用仍需核对，已知限制见[版本说明](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.5.0)。
+对话用于当前页面的临时调试，刷新页面或切换账号、适配器后清空。可添加附件作为本轮资料；需要文档转换时，按[转换组件说明](docs/zh-CN/issue202-document-conversion.md)启用附加服务。模型对附件的事实和引用仍需核对，已知限制见[版本说明](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.6.0)。
 
 ---
 
@@ -249,7 +249,7 @@ DLR 专注的是 **独立 Adapter 的开发和运行**，而不是 Workflow / DA
 ```bash
 git clone https://github.com/john-ops-lab/DataLinkRuntime.git
 cd DataLinkRuntime
-git checkout v0.5.0
+git checkout v0.6.0
 
 cp .env.example .env
 ```
@@ -281,6 +281,12 @@ AI Assist 的总超时由 `DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS=150` 控制；工
 `DLR_AI_TOOL_AUDIT_BACKUP_COUNT=10` 做应用内轮转，默认最大占用为 110 MiB。其他
 `*.log` 仍遵循平台日志轮转和脱敏要求。回滚到不识别这些配置的旧版 Control/Web 时，
 同时移除这三个新增变量，但保留已有且已脱敏的审计文件供运维处置。
+
+Issue #213 的 Assist 迁移完成后，正式路径统一使用锁定的 Pydantic AI 与三协议 SDK。
+过渡运行器选择及 `DLR_AI_RUNTIME` 已删除，模型设置与凭据继续沿用。回退使用已验证的
+应用镜像和配套锁文件，保留持久卷、Token 与 Master Key，不恢复数据库；重启后的临时
+附件需按现有流程重新上传。验收范围与真实服务未验项见
+[迁移记录](docs/testing/issue213-pydantic-b5.md)。
 
 ```bash
 mkdir -p ./platform-logs/control \
@@ -354,8 +360,9 @@ Worker 启动时必须通过真实资源隔离预检；失败时不会退回无�
 
 ## 已有部署升级
 
-- **v0.4.4 → v0.5.0 无新增数据库迁移**，最终 revision 仍为 `0046_issue166_retire_ai_history`。升级前备份数据库和材料数据，保留 Worker 的运行与恢复目录、持久卷、Token 和 Master Key。
-- 等待运行任务和清理操作结束，再停止旧 Control/Worker；切换到 `v0.5.0`，沿用原 `.env`、Compose 附加清单和持久卷构建、迁移并启动 Control、Worker 和 Web。
+- **v0.5.x → v0.6.0 无新增数据库迁移**，最终 revision 仍为 `0046_issue166_retire_ai_history`。升级前备份数据库和材料数据，保留 Worker 的运行与恢复目录、持久卷、Token 和 Master Key。
+- 等待运行任务和清理操作结束，再停止旧 Control/Worker；切换到 `v0.6.0`，沿用原 `.env`、Compose 附加清单和持久卷构建、迁移并启动 Control、Worker 和 Web。
+- AI Assist 改用锁定的 Pydantic AI 与三协议 SDK，模型设置及凭据继续沿用。当前版本不再提供运行器切换；应用回退及已知验收边界见[迁移记录](docs/testing/issue213-pydantic-b5.md)。
 - 两个自动清理开关需要新版 Worker。已有开关设置保留；尚未保存时沿用部署默认值。设置文件损坏时暂停自动清理，节点继续工作，其他缓存保护不变。详见[缓存管理](docs/zh-CN/issue139-cache-governance.md)。
 - v0.4.3 及更早版本先核对 [v0.4.4 升级说明](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.4.4)，特别是 AI 历史表退役和备份要求。跨服务器 Worker 池与高可用部署（#129）不属于本版范围。
 
