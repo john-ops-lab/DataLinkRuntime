@@ -15,7 +15,7 @@ B3 基于 B2 `d3ceaa23f3f8f9de4ebb2a3cd96087fb44bf5713`，实现 `PydanticAiRunt
 | 同一个合成只读工具与同协议模型扩展 | **4 passed**，两种实现都无需修改主循环；不发布演示工具 |
 | 单进程 40 个实际 SDK 工作跨 loop 占位、第 41 个等待 | **1 passed**，与 Catalog 共用许可，实际结束后归还 |
 | 静态检查 | 全后端 Ruff/format、strict Mypy（200 source files）通过；SDK 类型仅在专用接入目录 |
-| 精确 HEAD CI | 提交后等待。B1/B2 的后端首败为抽取后中文文案不在原扫描许可内；本批抽成专用 canonical `ai/i18n.py`，policy/runtime/presentation 继续扫描，未整体豁免业务目录 |
+| 精确 HEAD CI | `4a8a8a9` 后端 **2970 passed / 1 failed / 17 skipped**；其余四项通过。唯一失败是 40 连接夹具的突发启动未在 8 秒到齐，修正为逐个确认入站、保持 40 个同时存活，再测试第 41 个和取消后释放，原等待上限与生产参数均保留。修正提交重新等待 CI。B1/B2 的中文扫描首败通过专用 canonical `ai/i18n.py` 修复，policy/runtime/presentation 继续扫描 |
 
 复现 parity：在 `backend` 中配置项目规定的 PostgreSQL/RabbitMQ 测试环境，执行 `PYTHONPATH=tests:src uv run pytest -p ai_runtime_parity -q`，文件列表见 CI 的 `AI runtime domain parity through official SDKs` 步骤。该插件只用于领域 fixture；真实网络合同用例不能加载它。
 

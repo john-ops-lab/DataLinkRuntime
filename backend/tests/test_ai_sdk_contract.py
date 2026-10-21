@@ -406,12 +406,20 @@ def test_forty_physical_sdk_requests_share_capacity_with_catalog_beyond_loop_clo
                 ).run("Return JSON.", model_settings=client.settings)
 
         async def scenario() -> None:
-            tasks = [asyncio.create_task(occupy()) for _ in range(40)]
+            tasks = []
             try:
                 deadline = time.monotonic() + 8
-                while len(script.requests) < 40:
-                    assert time.monotonic() < deadline
-                    await asyncio.sleep(0.005)
+                # Ramp to forty held physical requests. A simultaneous SYN
+                # burst measures the loopback server's listen backlog rather
+                # than the shared capacity we are proving here.
+                for index in range(40):
+                    tasks.append(asyncio.create_task(occupy()))
+                    while len(script.requests) < index + 1:
+                        assert time.monotonic() < deadline, (
+                            len(script.requests),
+                            len(NETWORK_WORK.active),
+                        )
+                        await asyncio.sleep(0.005)
                 assert len(NETWORK_WORK.active) == 40
                 with pytest.raises(TimeoutError):
                     providers._bounded_http_read(Request(script.url, data=b"{}"), 0.02)
