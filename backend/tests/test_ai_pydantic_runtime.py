@@ -126,8 +126,13 @@ def test_duplicate_stops_partial_batch_without_unexecuted_tool_records(api_clien
     "first", ["invalid first response canary", '{"message":3,"candidate":null}']
 )
 def test_one_format_correction_disables_tools_and_omits_invalid_text(
-    api_client: Any, first: str
+    api_client: Any, first: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from dlr.control.ai import tool_audit
+    from test_issue207_smoke_audit_contract import _contract
+
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(tool_audit, "_emit_record", events.append)
     with server(response("openai", first), response("openai")) as script:
         result = request(api_client, script)
         assert result.status_code == 200, result.text
@@ -135,6 +140,14 @@ def test_one_format_correction_disables_tools_and_omits_invalid_text(
         assert "tools" not in script.requests[1].json()
         assert first not in script.requests[1].body.decode()
         assert b"only format correction" in script.requests[1].body
+        _contract()["validate_correction_audit"](events)
+        corrections = [event for event in events if event["event_type"] == "format_correction"]
+        assert len(corrections) == 1 and corrections[0]["correction_count"] == 1
+        assert corrections[0]["provider_call_index"] == 2
+        failures = [event for event in events if event["event_type"] == "response_validation"]
+        assert len(failures) == 1 and failures[0]["provider_call_index"] == 1
+        results = [event for event in events if event["event_type"] == "provider_result"]
+        assert [event["provider_call_index"] for event in results] == [1, 2]
 
 
 def test_second_invalid_final_fails_without_third_request(api_client: Any) -> None:

@@ -44,6 +44,10 @@ from dlr.control.schemas.ai import AiAssistRequest, AiToolCallSummary
 class RuntimeStop(Exception):
     """Domain stop, caught outside Agent iteration for one bounded finalizer."""
 
+    def __init__(self, reason: str | None):
+        super().__init__(reason)
+        self.reason = reason
+
 
 @dataclass
 class RunState:
@@ -64,6 +68,8 @@ class RunState:
     finalizing: bool = False
     provider_started: float = 0.0
     dispatcher: DispatchModel | None = None
+    pending_format_error: AiResponseInvalid | None = None
+    format_error_call_index: int = 0
 
     def stop(self, reason: str, error_code: str | None = None) -> None:
         state = self.execution.state
@@ -268,7 +274,9 @@ class DomainControl(AbstractCapability[RunState]):
             else state.tool_deadline
         )
         remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        if remaining <= 0 and run.pending_format_error is None:
+            if run.finalizing:
+                raise RuntimeStop(policy._STOP_DEADLINE)
             run.stop(policy._STOP_DEADLINE)
         context_messages = [message for message in ctx.messages if message is not run.discarded]
         if run.discarded is not None:
@@ -314,10 +322,48 @@ class DomainControl(AbstractCapability[RunState]):
         ctx.messages[:] = prepared
         request_context.messages = list(prepared)
         run.before_request = list(prepared)
+
+        def record_budget(value: context_budget.BudgetResult) -> None:
+            now = time.monotonic()
+            context.audit.record_provider_budget(
+                value,
+                elapsed_ms=int((now - state.started_at) * 1000),
+                provider_deadline_ms=int((deadline - state.started_at) * 1000),
+                hard_deadline_ms=int((state.hard_deadline - state.started_at) * 1000),
+                remaining_ms=int(max(0, deadline - now) * 1000),
+            )
+
         if not budget.fits:
+            # No SDK body exists for a rejected check; keep its estimated
+            # diagnostics and index without inventing a provider attempt.
+            record_budget(budget)
+            if run.pending_format_error is not None:
+                raise run.pending_format_error
             if not run.summaries and not state.attachment_read_correction and not run.finalizing:
                 raise AiProviderError("ai_context_over_budget")
+            if run.finalizing:
+                raise RuntimeStop(policy._STOP_CONTEXT_BUDGET)
             run.stop(policy._STOP_CONTEXT_BUDGET)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            record_budget(budget)
+            if run.pending_format_error is not None:
+                raise run.pending_format_error
+            if run.finalizing:
+                raise RuntimeStop(policy._STOP_DEADLINE)
+            run.stop(policy._STOP_DEADLINE)
+        if run.pending_format_error is not None:
+            error = run.pending_format_error
+            run.pending_format_error = None
+            state.format_corrections += 1
+            context.audit.record_response_failure(
+                error.stage, error.reason, provider_call_index=run.format_error_call_index
+            )
+            context.audit.record_format_correction(
+                strategy=context.provider.adapter.structured_output,
+                correction_count=state.format_corrections,
+                provider_call_index=context.audit.provider_checked_calls + 1,
+            )
         run.client.transport.hard_deadline = deadline
         current = ModelSettings(**(request_context.model_settings or {}))
         current["timeout"] = min(remaining, settings.ai_provider_timeout_seconds)
@@ -333,14 +379,7 @@ class DomainControl(AbstractCapability[RunState]):
             actual = replace(
                 budget, diagnostics=replace(budget.diagnostics, payload_bytes=len(body))
             )
-            now = time.monotonic()
-            context.audit.record_provider_budget(
-                actual,
-                elapsed_ms=int((now - state.started_at) * 1000),
-                provider_deadline_ms=int((deadline - state.started_at) * 1000),
-                hard_deadline_ms=int((state.hard_deadline - state.started_at) * 1000),
-                remaining_ms=int(max(0, deadline - now) * 1000),
-            )
+            record_budget(actual)
 
         run.client.transport.inspect_request = actual_budget
         return request_context

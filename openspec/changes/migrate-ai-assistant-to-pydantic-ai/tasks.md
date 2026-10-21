@@ -1,6 +1,6 @@
 # Tasks
 
-当前完成 B0–B3；共 32/46 项。B0 代表性门槛与精确提交 CI 通过；B1 的共享策略、配置/Catalog、运行接口和资源准备通过相称验证，见 [B0 报告](../../../docs/testing/issue213-pydantic-b0.md)、[B1 报告](../../../docs/testing/issue213-pydantic-b1.md)、[B2 报告](../../../docs/testing/issue213-pydantic-b2.md)与 [B3 报告](../../../docs/testing/issue213-pydantic-b3.md)。维护者已于 2026-10-21 明确授权在 PR #217 连续完成 B0–B5，全部完成后集中 review。按 B0→B1→B2→B3→B4→B5 推进；每批保留独立 SHA、证据和停止条件，技术与收益门槛通过后继续下一批。同步 OpenSpec 后执行项目校验，行为变化另立规格。
+当前完成 B0–B3 及 B4 材料冻结；共 33/46 项。B0 代表性门槛与精确提交 CI 通过；B1 的共享策略、配置/Catalog、运行接口和资源准备通过相称验证，见 [B0 报告](../../../docs/testing/issue213-pydantic-b0.md)、[B1 报告](../../../docs/testing/issue213-pydantic-b1.md)、[B2 报告](../../../docs/testing/issue213-pydantic-b2.md)与 [B3 报告](../../../docs/testing/issue213-pydantic-b3.md)。维护者已于 2026-10-21 明确授权在 PR #217 连续完成 B0–B5，全部完成后集中 review。按 B0→B1→B2→B3→B4→B5 推进；每批保留独立 SHA、证据和停止条件，技术与收益门槛通过后继续下一批。同步 OpenSpec 后执行项目校验，行为变化另立规格。
 
 ## 1. B0：先验证公开接口与维护收益
 

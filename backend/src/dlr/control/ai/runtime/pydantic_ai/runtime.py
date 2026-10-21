@@ -57,12 +57,12 @@ def agent(
     return result
 
 
-def fallback(run: RunState) -> AiAssistResponse:
+def fallback(run: RunState, reason: str | None = None) -> AiAssistResponse:
     context, state = run.execution, run.execution.state
     assert state.stop_reason is not None
     return presentation._fallback_assist_response(
         context.system_locale,
-        state.stop_reason,
+        reason or state.stop_reason,
         context.provider.draft(),
         run.summaries,
         state=state,
@@ -125,7 +125,9 @@ async def final_after_stop(model: Model, run: RunState) -> AiAssistResponse:
             None, deps=run, message_history=history, model_settings=run.client.settings
         )
         output = result.output
-    except (AiProviderError, HTTPException, RuntimeStop, ValueError) as error:
+    except RuntimeStop as error:
+        return fallback(run, error.reason)
+    except (AiProviderError, HTTPException, ValueError) as error:
         if isinstance(error, AiResponseInvalid):
             context.audit.record_response_failure(error.stage, error.reason)
         return fallback(run)
@@ -146,7 +148,7 @@ async def final_after_stop(model: Model, run: RunState) -> AiAssistResponse:
             candidate=None,
         )
     if state.remaining_total_seconds() <= 0:
-        return fallback(run)
+        return fallback(run, policy._STOP_DEADLINE)
     return presentation._assist_response(output, context.provider.draft(), run.summaries)
 
 
@@ -177,23 +179,17 @@ async def correct_format(
             ]
         ),
     ]
-    if state.remaining_total_seconds() <= 0:
-        raise first_error
-    state.format_corrections += 1
-    context.audit.record_response_failure(
-        first_error.stage,
-        first_error.reason,
-        provider_call_index=context.audit.provider_checked_calls,
-    )
-    context.audit.record_format_correction(
-        strategy=context.provider.adapter.structured_output,
-        correction_count=state.format_corrections,
-    )
+    run.pending_format_error = first_error
+    run.format_error_call_index = context.audit.provider_checked_calls
     run.finalizing = True
-    result = await agent(model, run, finalizing=True).run(
-        None, deps=run, message_history=history, model_settings=run.client.settings
-    )
-    return result.output
+    try:
+        result = await agent(model, run, finalizing=True).run(
+            None, deps=run, message_history=history, model_settings=run.client.settings
+        )
+        return result.output
+    finally:
+        run.pending_format_error = None
+        run.format_error_call_index = 0
 
 
 class PydanticAiRuntime:
