@@ -8,6 +8,10 @@ from typing import Protocol
 from sqlalchemy.orm import Session
 
 from dlr.control.ai.attachment_reading import ScopedAttachmentReader
+from dlr.control.ai.policy import _AssistToolState
+from dlr.control.ai.provider_config import JsonObject, ProviderSnapshot
+from dlr.control.ai.runtime.resources import ToolResourceFactory
+from dlr.control.ai.tool_audit import AiToolAuditTrail
 from dlr.control.schemas.ai import (
     AiAssistRequest,
     AiAssistResponse,
@@ -40,6 +44,32 @@ class RuntimeResources:
         default=None, repr=False
     )
     permission_check: Callable[[], object] | None = field(default=None, repr=False)
+    execution: "AssistExecution | None" = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class AssistExecution:
+    """Prepared request-owned data; no route Session or SDK objects escape."""
+
+    provider: ProviderSnapshot = field(repr=False)
+    messages: list[JsonObject] = field(repr=False)
+    tools: list[JsonObject] | None = field(repr=False)
+    tool_resources: ToolResourceFactory = field(repr=False)
+    state: _AssistToolState = field(repr=False)
+    audit: AiToolAuditTrail = field(repr=False)
+    system_locale: str
+    knowledge_enabled: bool
+    knowledge_available: bool
+    scoped_attachments: bool
+    has_native_images: bool
+
+    @property
+    def redact_values(self) -> tuple[str, ...]:
+        return tuple(
+            value
+            for value in (self.provider.api_key, *self.tool_resources.template.secret_values)
+            if isinstance(value, str) and value
+        )
 
 
 @dataclass(frozen=True)

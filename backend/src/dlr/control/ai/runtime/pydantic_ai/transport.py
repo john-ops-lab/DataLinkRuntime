@@ -5,6 +5,8 @@ import json
 import threading
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 
 import httpx2
 
@@ -20,7 +22,16 @@ from dlr.control.ai.runtime.pydantic_ai.work import NETWORK_WORK, WorkOwner
 from dlr.control.schemas.ai import AiProvider
 
 
-def inspect_envelope(raw: bytes, protocol: Protocol) -> None:
+@dataclass
+class ResponseCapture:
+    final_text: str | None = field(default=None, repr=False)
+    tool_arguments: tuple[str, ...] | None = field(default=None, repr=False)
+
+
+RAW_CAPTURE: ContextVar[ResponseCapture | None] = ContextVar("dlr_sdk_raw_capture", default=None)
+
+
+def inspect_envelope(raw: bytes, protocol: Protocol) -> object:
     try:
         value = providers.load_json_strict(raw)
     except StrictJsonError as error:
@@ -48,7 +59,47 @@ def inspect_envelope(raw: bytes, protocol: Protocol) -> None:
     provider: AiProvider = (
         "anthropic" if protocol == "anthropic" else "gemini" if protocol == "gemini" else "openai"
     )
-    providers.extract_round(provider, value)
+    final, calls = providers.extract_round(provider, value)
+    capture = RAW_CAPTURE.get()
+    if capture is not None and calls is None:
+        capture.final_text = final
+    elif capture is not None and calls is not None:
+        capture.tool_arguments = tuple(call.arguments for call in calls)
+    return value
+
+
+def sdk_metadata(value: object, protocol: Protocol, request_body: bytes) -> bytes:
+    """Adapt SDK parsing after strict raw capture, without changing DLR dispatch.
+
+    Raw domain fields have already passed the original envelope contract.
+    Missing non-domain metadata is supplied for minimal compatible gateways.
+    Native non-object arguments use an SDK-only placeholder; SdkModel restores
+    every original argument before DLR validation and budget accounting.
+    """
+    assert isinstance(value, dict)
+    if protocol == "openai_compatible":
+        value.setdefault("id", "dlr-compatible-response")
+        value.setdefault("object", "chat.completion")
+        value.setdefault("created", 0)
+        value.setdefault("model", json.loads(request_body).get("model", "dlr-compatible-model"))
+        for index, choice in enumerate(value["choices"]):
+            choice.setdefault("index", index)
+            choice["message"].setdefault("role", "assistant")
+    elif protocol == "anthropic":
+        value.setdefault("id", "dlr-compatible-response")
+        value.setdefault("type", "message")
+        value.setdefault("role", "assistant")
+        value.setdefault("model", json.loads(request_body).get("model", "dlr-compatible-model"))
+        value.setdefault("usage", {"input_tokens": 0, "output_tokens": 0})
+        for block in value["content"]:
+            if block.get("type") == "tool_use" and not isinstance(block.get("input", {}), dict):
+                block["input"] = {}
+    elif protocol == "gemini":
+        for part in value["candidates"][0]["content"]["parts"]:
+            call = part.get("functionCall")
+            if isinstance(call, dict) and not isinstance(call.get("args", {}), dict):
+                call["args"] = {}
+    return json.dumps(value, ensure_ascii=True).encode()
 
 
 class OwnedTransport(httpx2.AsyncBaseTransport):
@@ -86,16 +137,18 @@ class OwnedTransport(httpx2.AsyncBaseTransport):
                 self.closed.set()
 
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        deadline = self.hard_deadline
+        capture = RAW_CAPTURE.get()
         body = await request.aread()
         if len(body) > self.request_limit:
             raise AiProviderError("ai_context_over_budget")
         if self.inspect_request is not None:
             self.inspect_request(body)
         while not self.permits.acquire(blocking=False):
-            if time.monotonic() >= self.hard_deadline:
+            if time.monotonic() >= deadline:
                 raise AiProviderError("ai_timeout")
-            await asyncio.sleep(min(0.005, max(0.0, self.hard_deadline - time.monotonic())))
-        if time.monotonic() >= self.hard_deadline:
+            await asyncio.sleep(min(0.005, max(0.0, deadline - time.monotonic())))
+        if time.monotonic() >= deadline:
             self.permits.release()
             raise AiProviderError("ai_timeout")
         with self.lock:
@@ -129,7 +182,7 @@ class OwnedTransport(httpx2.AsyncBaseTransport):
                         )
                     raw = bytearray()
                     for chunk in response.iter_raw():
-                        if time.monotonic() >= self.hard_deadline:
+                        if time.monotonic() >= deadline:
                             raise AiProviderError("ai_timeout")
                         if len(raw) + len(chunk) > self.response_limit:
                             raise AiProviderError(
@@ -138,14 +191,20 @@ class OwnedTransport(httpx2.AsyncBaseTransport):
                                 reason="response_too_large",
                             )
                         raw.extend(chunk)
+                    data = bytes(raw)
                     if 200 <= response.status_code < 300:
-                        inspect_envelope(bytes(raw), self.protocol)
-                    if time.monotonic() >= self.hard_deadline:
+                        token = RAW_CAPTURE.set(capture)
+                        try:
+                            inspected = inspect_envelope(data, self.protocol)
+                        finally:
+                            RAW_CAPTURE.reset(token)
+                        data = sdk_metadata(inspected, self.protocol, body)
+                    if time.monotonic() >= deadline:
                         raise AiProviderError("ai_timeout")
                     return httpx2.Response(
                         response.status_code,
                         headers=response.headers,
-                        content=bytes(raw),
+                        content=data,
                         request=request,
                     )
                 finally:
@@ -163,7 +222,7 @@ class OwnedTransport(httpx2.AsyncBaseTransport):
             self.permits.release()
             raise
         try:
-            async with asyncio.timeout(max(0.0, self.hard_deadline - time.monotonic())):
+            async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
                 return await self.owner.result(future)
         except TimeoutError:
             raise AiProviderError("ai_timeout") from None

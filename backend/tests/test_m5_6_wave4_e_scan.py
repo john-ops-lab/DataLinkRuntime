@@ -134,10 +134,13 @@ def test_web_has_no_user_visible_hardcoded_english_props() -> None:
 # tools.py: the deterministic truncation marker is data inside sanitized tool
 # results (the localized "truncated" notice is the UI chrome), exactly like
 # the ai.py compatibility-message contract.
+# ai/i18n.py is the canonical zh/en evidence/fallback copy extracted from
+# services/ai.py. Runtime, policy and presentation remain scanned.
 BACKEND_ALLOWLISTED_FILES = (
     "dlr/worker/i18n.py",
     "dlr/control/package_source_defaults.py",
     "dlr/control/services/ai.py",
+    "dlr/control/ai/i18n.py",
     "dlr/control/ai/tools.py",
 )
 

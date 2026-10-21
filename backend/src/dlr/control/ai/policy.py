@@ -482,11 +482,9 @@ class _KnowledgeRetrievalState:
         )
 
     def finalization_instruction(self, system_locale: str) -> str:
-        labels = (
-            ("知识库检索结果", "模型综合")
-            if system_locale != "en"
-            else ("Knowledge retrieval result", "Model synthesis")
-        )
+        from dlr.control.ai.i18n import knowledge_finalization_labels
+
+        labels = knowledge_finalization_labels(system_locale)
         trajectory = json.dumps(self.search_attempts, ensure_ascii=False, separators=(",", ":"))
         state_label = self.stop_reason or self.phase
         return (

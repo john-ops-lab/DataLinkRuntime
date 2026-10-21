@@ -282,6 +282,11 @@ AI Assist 的总超时由 `DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS=150` 控制；工
 `*.log` 仍遵循平台日志轮转和脱敏要求。回滚到不识别这些配置的旧版 Control/Web 时，
 同时移除这三个新增变量，但保留已有且已脱敏的审计文件供运维处置。
 
+Issue #213 迁移期间，部署变量 `DLR_AI_RUNTIME` 可选 `legacy`（默认）或
+`pydantic_ai`。运行器在单个请求开始时固定；非法值导致启动失败，调用失败不会自动
+重跑旧实现。新运行器的在线、Chrome、资源和回退门槛全部通过前保留默认值，记录与
+批次状态见 [迁移任务](openspec/changes/migrate-ai-assistant-to-pydantic-ai/tasks.md)。
+
 ```bash
 mkdir -p ./platform-logs/control \
   ./platform-logs/worker \

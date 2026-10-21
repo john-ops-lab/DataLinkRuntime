@@ -2,6 +2,7 @@
 
 from os.path import isabs
 from pathlib import Path
+from typing import Literal
 from urllib.parse import unquote, urlsplit
 
 from pydantic import Field, model_validator
@@ -486,6 +487,9 @@ class Settings(BaseSettings):
     # M4 non-streaming Provider requests may generate a complete code Candidate.
     # Keep the deployment override bounded so a typo cannot create an
     # effectively immediate or unbounded network deadline.
+    ai_assist_runtime: Literal["legacy", "pydantic_ai"] = Field(
+        default="legacy", validation_alias="DLR_AI_RUNTIME"
+    )
     ai_provider_timeout_seconds: float = Field(
         default=180.0,
         ge=10.0,

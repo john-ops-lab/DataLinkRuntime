@@ -106,7 +106,9 @@ def harness(monkeypatch):
     monkeypatch.setattr(
         ai,
         "_tool_resources",
-        lambda _session, context, **_kwargs: SimpleNamespace(open=lambda: nullcontext(context)),
+        lambda _session, context, **_kwargs: SimpleNamespace(
+            template=context, open=lambda: nullcontext(context)
+        ),
     )
 
     def knowledge_result(name, result):
@@ -179,13 +181,13 @@ def harness(monkeypatch):
         return original_prepare(*args, **kwargs)
 
     monkeypatch.setattr(context_budget, "prepare_call", prepare)
-    original_call = ai._call_provider_with_audit
+    original_call = ai._prepare_assist
 
     def audited(*args, **kwargs):
-        state.states.append(kwargs["state"])
+        state.states.append(args[4])
         return original_call(*args, **kwargs)
 
-    monkeypatch.setattr(ai, "_call_provider_with_audit", audited)
+    monkeypatch.setattr(ai, "_prepare_assist", audited)
 
     def run(responses, *, prepared=True, inline=False, reader=None, intent="auto", knowledge=False):
         pending = iter(responses)

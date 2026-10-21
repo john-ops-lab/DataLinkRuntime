@@ -3,7 +3,7 @@
 from contextlib import AbstractContextManager
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from dlr.control import db
@@ -28,6 +28,7 @@ from dlr.control.schemas.ai import (
 )
 from dlr.control.security import (
     Principal,
+    recheck_principal,
     require_admin_principal,
     require_business_principal,
     require_principal,
@@ -133,13 +134,19 @@ def assist_adapter(
     payload: AiAssistRequest,
     principal: CurrentPrincipal,
     session: DbSession,
+    request: Request,
 ) -> AiAssistResponse:
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
     bind = session.get_bind().engine
+    authorization = request.headers.get("authorization")
+    account_cookie = request.cookies.get("dlr_account_session")
 
     def check_edit_permission() -> None:
         with Session(bind=bind) as acl_session:
-            adapter_access.require_adapter_access(acl_session, adapter_id, principal, "edit")
+            current = recheck_principal(
+                acl_session, principal, authorization=authorization, account_cookie=account_cookie
+            )
+            adapter_access.require_adapter_access(acl_session, adapter_id, current, "edit")
 
     if payload.attachment_refs:
         assert payload.attachment_scope_id is not None  # Enforced by the request schema.

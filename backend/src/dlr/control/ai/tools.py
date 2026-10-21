@@ -1158,6 +1158,11 @@ def tool_result_content(execution: ToolExecution) -> str:
     return execution.model_content
 
 
+def timed_out_tool_call(tool_name: str, duration_ms: int) -> ToolExecution:
+    """One dispatcher invocation timed out while physical work remains owned."""
+    return _error_execution(_bounded_text(tool_name, 64), "", CODE_TIMEOUT, duration_ms)
+
+
 def check_budget(calls_used: int, round_index: int, incoming_calls: int) -> None:
     """Raise ValueError when a round would exceed the fixed call/round budget.
 

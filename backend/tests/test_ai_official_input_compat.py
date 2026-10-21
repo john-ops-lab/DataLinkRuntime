@@ -1,10 +1,12 @@
 """Official image input IDs must keep the existing inline Assist path usable."""
 
+import base64
 import json
 from dataclasses import replace
 
 import pytest
 
+from dlr.common.config import settings
 from dlr.control.ai import providers
 from dlr.control.schemas.ai import AiSettingDraft
 from test_ai import assist_body, configure, create_adapter, fake_chat_response
@@ -85,7 +87,13 @@ def test_documented_model_keeps_legacy_inline_pixels(api_client, monkeypatch, pr
             for part in message["parts"]
             if "inlineData" in part
         )
-        assert pixels == {"mimeType": "image/png", "data": PNG}
+        if settings.ai_assist_runtime == "legacy":
+            assert pixels == {"mimeType": "image/png", "data": PNG}
+        else:
+            # Official genai SDK uses proto JSON aliases and URL-safe base64.
+            # Preserve the independent MIME / decoded-byte assertion.
+            assert pixels.get("mimeType", pixels.get("mime_type")) == "image/png"
+            assert base64.urlsafe_b64decode(pixels["data"]) == base64.b64decode(PNG)
     elif provider == "anthropic":
         assert captured[0]["model"] == model and "response_format" not in captured[0]
         pixels = next(

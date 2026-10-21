@@ -71,7 +71,7 @@ def server(
                 )
             reply.entered.set()
             if reply.wait is not None:
-                reply.wait.wait(5)
+                reply.wait.wait(10)
             try:
                 self.send_response(reply.status)
                 self.send_header("Content-Type", "application/json")

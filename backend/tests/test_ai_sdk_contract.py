@@ -377,3 +377,85 @@ def test_actual_wire_bounds(request_limit: int, response_limit: int, code: str) 
             asyncio.run(execute())
         assert caught.value.code == code
         assert len(script.requests) == (0 if request_limit == 2 else 1)
+
+
+def test_forty_physical_sdk_requests_share_capacity_with_catalog_beyond_loop_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from urllib.request import Request
+
+    from dlr.control.ai import providers
+    from dlr.control.ai.runtime.pydantic_ai.work import NETWORK_WORK
+
+    permits = threading.BoundedSemaphore(40)
+    monkeypatch.setattr(providers, "_TRANSPORT_PERMITS", permits)
+    release = threading.Event()
+    replies = [response("openai") for _ in range(40)]
+    for reply in replies:
+        reply.wait = release
+    clients = []
+    with server(*replies) as script:
+
+        async def occupy() -> None:
+            async with model_client(
+                snapshot("openai", script.url), time.monotonic() + 10
+            ) as client:
+                clients.append(client)
+                await Agent(
+                    client.model, output_type=output_type(snapshot("openai", script.url)), retries=0
+                ).run("Return JSON.", model_settings=client.settings)
+
+        async def scenario() -> None:
+            tasks = [asyncio.create_task(occupy()) for _ in range(40)]
+            try:
+                deadline = time.monotonic() + 8
+                while len(script.requests) < 40:
+                    assert time.monotonic() < deadline
+                    await asyncio.sleep(0.005)
+                assert len(NETWORK_WORK.active) == 40
+                with pytest.raises(TimeoutError):
+                    providers._bounded_http_read(Request(script.url, data=b"{}"), 0.02)
+                async with model_client(
+                    snapshot("openai", script.url), time.monotonic() + 0.05
+                ) as extra:
+                    with pytest.raises(AiProviderError) as caught:
+                        await Agent(
+                            extra.model,
+                            output_type=output_type(snapshot("openai", script.url)),
+                            retries=0,
+                        ).run("Return JSON.", model_settings=extra.settings)
+                    assert caught.value.code == "ai_timeout"
+                assert len(script.requests) == 40
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        try:
+            asyncio.run(scenario())
+            assert len(NETWORK_WORK.active) == 40
+            assert not permits.acquire(blocking=False)
+            assert all(not client.transport.closed.is_set() for client in clients)
+        finally:
+            release.set()
+        assert all(client.transport.closed.wait(2) for client in clients)
+        deadline = time.monotonic() + 2
+        while NETWORK_WORK.active and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert not NETWORK_WORK.active
+        for _ in range(40):
+            assert permits.acquire(blocking=False)
+        for _ in range(40):
+            permits.release()
+
+
+@pytest.mark.parametrize("protocol", PROTOCOLS)
+def test_http_image_failure_precedes_reasoning_and_preserves_one_request(
+    protocol: Protocol,
+) -> None:
+    with server(Reply(b"untrusted image rejection", 422)) as script:
+        with pytest.raises(AiProviderError) as caught:
+            asyncio.run(run(snapshot(protocol, script.url), media=True))
+        assert caught.value.code == "ai_attachment_image_unsupported"
+        assert caught.value.http_status == 422
+        assert len(script.requests) == 1

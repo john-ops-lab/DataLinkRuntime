@@ -5,7 +5,7 @@ import ssl
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Annotated
 
 import httpx2
@@ -16,7 +16,16 @@ from openai import AsyncOpenAI
 from pydantic import WithJsonSchema
 from pydantic_ai import NativeOutput, PromptedOutput
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
-from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.messages import (
+    BinaryContent,
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.google import GoogleModel
@@ -31,7 +40,11 @@ from pydantic_ai.settings import ModelSettings
 from dlr.common.config import settings
 from dlr.control.ai import providers
 from dlr.control.ai.provider_config import AiProviderError, ProviderSnapshot, normalize_base_url
-from dlr.control.ai.runtime.pydantic_ai.transport import OwnedTransport
+from dlr.control.ai.runtime.pydantic_ai.transport import (
+    RAW_CAPTURE,
+    OwnedTransport,
+    ResponseCapture,
+)
 from dlr.control.schemas.ai import AiModelOutput
 
 
@@ -128,9 +141,46 @@ class SdkModel(WrapperModel):
             extra_body["reasoning_split"] = not bool(model_request_parameters.function_tools)
             current["extra_body"] = extra_body
         try:
-            return await self.wrapped.request(messages, current, model_request_parameters)
+            capture = ResponseCapture()
+            token = RAW_CAPTURE.set(capture)
+            try:
+                response = await self.wrapped.request(messages, current, model_request_parameters)
+            finally:
+                RAW_CAPTURE.reset(token)
+            if capture.final_text is not None:
+                # SDK thinking-tag splitting must never alter literal tags
+                # inside JSON code strings. Raw DLR final validation owns this.
+                response = replace(response, parts=[TextPart(capture.final_text)])
+            elif (
+                capture.tool_arguments is not None
+                and self.snapshot.adapter.protocol != "openai_compatible"
+            ):
+                # Native SDKs may coerce/reject non-object arguments. Restore
+                # the raw pre-SDK values for DLR dispatch and its D6 ledger.
+                calls = [part for part in response.parts if isinstance(part, ToolCallPart)]
+                if len(calls) != len(capture.tool_arguments):
+                    raise AiProviderError("ai_response_invalid")
+                raw_args = iter(capture.tool_arguments)
+                response = replace(
+                    response,
+                    parts=[
+                        replace(part, args=next(raw_args))
+                        if isinstance(part, ToolCallPart)
+                        else part
+                        for part in response.parts
+                    ],
+                )
+            return response
         except Exception as error:
-            raise safe_error(error, self.snapshot) from None
+            image_input = any(
+                isinstance(item, BinaryContent) and item.media_type.startswith("image/")
+                for message in messages
+                if isinstance(message, ModelRequest)
+                for part in message.parts
+                if isinstance(part, UserPromptPart | ToolReturnPart)
+                for item in (part.content if isinstance(part.content, list | tuple) else [])
+            )
+            raise safe_error(error, self.snapshot, image_input=image_input) from None
 
 
 @asynccontextmanager
