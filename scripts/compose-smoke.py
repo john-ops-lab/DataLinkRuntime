@@ -1528,6 +1528,7 @@ budget_counters = {
     "pdf_page_count",
     "media_bytes",
     "payload_bytes",
+    "estimated_payload_bytes",
     "max_payload_bytes",
     "provider_call_index",
     "elapsed_ms",
@@ -1630,6 +1631,7 @@ def validate_provider_audit(record: dict[str, Any]) -> None:
         assert record["max_payload_bytes"] > 0, record
         assert (
             record["estimated_after_tokens"] <= record["window_tokens"]
+            and record["estimated_payload_bytes"] <= record["max_payload_bytes"]
             and record["payload_bytes"] <= record["max_payload_bytes"]
         ) == (record["status"] == "prepared"), record
         assert (

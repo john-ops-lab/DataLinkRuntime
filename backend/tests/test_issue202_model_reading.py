@@ -286,8 +286,9 @@ def test_budget_includes_schema_media_and_exact_bytes_and_keeps_tool_group() -> 
     assert budget.diagnostics.image_count == 1
     assert budget.diagnostics.pdf_page_count == 0
     assert budget.diagnostics.media_bytes == media().size_bytes
-    assert budget.diagnostics.payload_bytes == providers.assist_payload_size(
-        draft, messages, None, adapter=adapter
+    assert budget.diagnostics.payload_bytes == 0  # No SDK request exists at this boundary.
+    assert budget.diagnostics.estimated_payload_bytes == context_budget.estimated_payload_bytes(
+        draft, messages, None
     )
     assert (
         context_budget.estimate_tokens(messages, None, adapter=adapter)
@@ -374,9 +375,9 @@ def test_service_reader_hook_and_selected_capability(
     hard_deadlines = []
     original_budget = ai._audit_provider_budget
 
-    def audit_budget(audit, state, budget, deadline):
+    def audit_budget(audit, state, budget, deadline, actual_payload_bytes):
         hard_deadlines.append(state.hard_deadline)
-        return original_budget(audit, state, budget, deadline)
+        return original_budget(audit, state, budget, deadline, actual_payload_bytes)
 
     monkeypatch.setattr(ai, "_audit_provider_budget", audit_budget)
 

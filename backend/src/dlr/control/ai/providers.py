@@ -27,6 +27,7 @@ from dlr.control.ai.diagnostics import (
     TransportFailureCategory,
     safe_http_status,
 )
+from dlr.control.ai.output_schema import code_only_output_schema as code_only_output_schema
 from dlr.control.ai.provider_catalog import _normalize_gemini_models as _normalize_gemini_models
 from dlr.control.ai.provider_catalog import chat as chat
 from dlr.control.ai.provider_catalog import fetch_models as fetch_models
@@ -89,7 +90,6 @@ from dlr.control.ai.provider_config import (
     validate_reasoning as validate_reasoning,
 )
 from dlr.control.schemas.ai import (
-    AiModelOutput,
     AiProvider,
     AiSettingDraft,
     contains_unicode_surrogate,
@@ -381,31 +381,6 @@ def tool_result_messages(
         tool["content"] = [{"type": "text", "text": content}, *parts]
         return tool, None
     return tool, {"role": "user", "content": parts}
-
-
-def code_only_output_schema() -> JsonObject:
-    """Derive a closed transport schema; local parsing still accepts legacy echoes."""
-    schema = AiModelOutput.model_json_schema()
-    definitions = schema.get("$defs", {})
-    candidate = definitions["AiCandidate"]
-    for legacy in ("requirements", "runtime_config"):
-        candidate["properties"].pop(legacy, None)
-    definitions.pop("JsonValue", None)
-
-    def close(value: object) -> None:
-        if isinstance(value, dict):
-            value.pop("default", None)
-            if value.get("type") == "object" and isinstance(value.get("properties"), dict):
-                value["additionalProperties"] = False
-                value["required"] = list(value["properties"])
-            for item in value.values():
-                close(item)
-        elif isinstance(value, list):
-            for item in value:
-                close(item)
-
-    close(schema)
-    return schema
 
 
 def _endpoint(base_url: str, path: str) -> str:

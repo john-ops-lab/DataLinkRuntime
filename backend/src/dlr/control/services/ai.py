@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import NoReturn, cast
 from urllib.parse import urlsplit
 
@@ -930,12 +931,15 @@ def _audit_provider_budget(
     state: _AssistToolState,
     budget: context_budget.BudgetResult,
     provider_deadline: float,
+    actual_payload_bytes: int,
 ) -> None:
     if audit is None:
         return
     now = time.monotonic()
     audit.record_provider_budget(
-        budget,
+        replace(
+            budget, diagnostics=replace(budget.diagnostics, payload_bytes=actual_payload_bytes)
+        ),
         elapsed_ms=int((now - state.started_at) * 1000),
         provider_deadline_ms=int((provider_deadline - state.started_at) * 1000),
         hard_deadline_ms=int((state.hard_deadline - state.started_at) * 1000),
@@ -1043,7 +1047,15 @@ def _parse_with_format_correction(
             purpose="assist_finalization",
             adapter=provider_adapter,
         )
-        _audit_provider_budget(audit, state, budget, state.hard_deadline)
+        _audit_provider_budget(
+            audit,
+            state,
+            budget,
+            state.hard_deadline,
+            providers.assist_payload_size(
+                draft, correction_messages, None, adapter=provider_adapter
+            ),
+        )
         if omitted_materials is not None:
             omitted_materials[0] += budget.omitted_materials
         remaining = state.remaining_total_seconds()
@@ -1139,7 +1151,13 @@ def _finalize_after_tool_stop(
     budget = context_budget.prepare_call(
         draft, messages, None, purpose="assist_finalization", adapter=provider_adapter
     )
-    _audit_provider_budget(audit, state, budget, state.hard_deadline)
+    _audit_provider_budget(
+        audit,
+        state,
+        budget,
+        state.hard_deadline,
+        providers.assist_payload_size(draft, messages, None, adapter=provider_adapter),
+    )
     if omitted_materials is not None:
         omitted_materials[0] += budget.omitted_materials
     if not budget.fits:
@@ -1456,7 +1474,13 @@ def _assist_impl(
             ),
             adapter=provider_adapter,
         )
-        _audit_provider_budget(audit, state, budget, provider_deadline)
+        _audit_provider_budget(
+            audit,
+            state,
+            budget,
+            provider_deadline,
+            providers.assist_payload_size(draft, messages, tools_payload, adapter=provider_adapter),
+        )
         omitted_materials[0] += budget.omitted_materials
         if not budget.fits:
             if not executed_tools and not state.attachment_read_correction:

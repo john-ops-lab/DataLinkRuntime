@@ -23,6 +23,7 @@ from pydantic_ai.messages import (
 
 from dlr.control.ai import context_budget
 from dlr.control.ai.attachment_reading import AttachmentMedia
+from dlr.control.ai.diagnostics import AiResponseInvalid
 from dlr.control.ai.provider_config import JsonObject, ProviderSnapshot
 
 
@@ -101,11 +102,30 @@ def budget_view(
                     }
                     for call in calls
                 ]
-            thinking = [part for part in message.parts if isinstance(part, ThinkingPart)]
-            if thinking:
-                row["private_continuation"] = [
-                    {"content": part.content, "signature": part.signature} for part in thinking
-                ]
+            private_utf8 = private_ascii = 0
+            for response_part in message.parts:
+                private: dict[str, object] = {}
+                if isinstance(response_part, ThinkingPart):
+                    private = {
+                        "content": response_part.content,
+                        "signature": response_part.signature,
+                    }
+                if (
+                    isinstance(response_part, ThinkingPart | TextPart | ToolCallPart)
+                    and response_part.provider_details
+                ):
+                    private["provider_details"] = response_part.provider_details
+                if private:
+                    try:
+                        private_utf8 += len(json.dumps(private, ensure_ascii=False).encode("utf-8"))
+                        private_ascii += len(json.dumps(private, ensure_ascii=True).encode("ascii"))
+                    except (ValueError, TypeError, RecursionError, UnicodeError):
+                        raise AiResponseInvalid("provider_envelope", "invalid_shape") from None
+            row.update(
+                private_utf8_bytes=private_utf8,
+                private_ascii_bytes=private_ascii,
+                response_part_count=len(message.parts),
+            )
             result.append(row)
             origins[id(row)] = original, -1
         elif isinstance(message, ModelRequest):

@@ -37,7 +37,7 @@ B3 基于 B2 `d3ceaa23f3f8f9de4ebb2a3cd96087fb44bf5713`，实现 `PydanticAiRunt
 - 旧最终输出中的合法配置回显继续按原字段 presence 校验；新 transport schema 只允许代码候选。原文中的 `<think>` 字面量不会被 SDK 推理提取误删。Anthropic 私有签名不进入用户输出或审计。
 - 每轮把公开消息映射到原 context-budget 策略，成组裁剪同步更新当前与后续视图；实际 SDK body 再检查字节/媒体/schema 和 deadline。安全错误、传输错误不触发格式重试。
 - 网络工作和工具工作分别有有界所有者。超时后真实工具继续持有自己的短 Session、Reader pin 和文件，完成才释放，迟到结果不能修改计数或成为候选。请求返回前再次验证当前账号 Session、启停、角色及 Adapter 权限；独立 PostgreSQL 用例覆盖停用、登出和降权。
-- `DLR_AI_ASSIST_RUNTIME=legacy|pydantic_ai` 为过渡部署开关，非法值启动失败；单请求选择一次，无自动后备/重复调用。非 AI 入口不要求导入新框架。
+- `DLR_AI_RUNTIME=legacy|pydantic_ai` 为过渡部署开关，非法值启动失败；单请求选择一次，无自动后备/重复调用。非 AI 入口不要求导入新框架。
 
 ## 首败与修复
 
@@ -71,3 +71,5 @@ B3 基于 B2 `d3ceaa23f3f8f9de4ebb2a3cd96087fb44bf5713`，实现 `PydanticAiRunt
 | G06 | 新增接入约 1,633 行，包含传输/资源/消息桥接等必要成本，共存阶段总代码增多。主要收益是删除手写循环与三协议编解码、由 SDK 跟进协议；性能有小幅开销。不能用 LOC 单独宣称净收益，B4 独立审查与 B5 实际删除清单继续核对 |
 
 允许进入 B4 的本地技术依据已具备；提交 CI、真实服务、产品链路、回退和切换后覆盖仍须逐项完成。#202 的数量/截断质量与 #215 历史首败继续单独记录，不通过放宽保护或改变 Prompt 美化迁移结果。
+
+后续冻结提交 `936fddd16277054539419d2ed33e89e7eae5511e` 的五项 CI 全部通过：后端 **2979 passed / 17 skipped**，官方 SDK 领域 parity **658 passed**。进入 B4 后另发现私有 continuation 预估遗漏，修正及首败见 [B4 预算记录](issue213-pydantic-b4-budget.md)；实际 wire 硬限制保持，不将 B3 的原预估覆盖记为完整验证。

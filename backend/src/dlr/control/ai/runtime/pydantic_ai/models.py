@@ -38,7 +38,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 
 from dlr.common.config import settings
-from dlr.control.ai import providers
+from dlr.control.ai.output_schema import transport_output_schema as _transport_schema
 from dlr.control.ai.provider_config import AiProviderError, ProviderSnapshot, normalize_base_url
 from dlr.control.ai.runtime.pydantic_ai.transport import (
     RAW_CAPTURE,
@@ -46,27 +46,6 @@ from dlr.control.ai.runtime.pydantic_ai.transport import (
     ResponseCapture,
 )
 from dlr.control.schemas.ai import AiModelOutput
-
-
-def _transport_schema() -> dict[str, object]:
-    schema = providers.code_only_output_schema()
-    definitions = schema.pop("$defs", {})
-    assert isinstance(definitions, dict)
-
-    def inline(value: object) -> object:
-        if isinstance(value, dict):
-            reference = value.get("$ref")
-            if isinstance(reference, str) and reference.startswith("#/$defs/"):
-                return inline(definitions[reference.removeprefix("#/$defs/")])
-            return {key: inline(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [inline(item) for item in value]
-        return value
-
-    result = inline(schema)
-    assert isinstance(result, dict)
-    return result
-
 
 Output = Annotated[AiModelOutput, WithJsonSchema(_transport_schema())]
 
