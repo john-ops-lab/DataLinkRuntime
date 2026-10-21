@@ -6,6 +6,23 @@ on:
   pull_request:
 
 jobs:
+  ai-migration-b0:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - name: Install isolated AI migration probe (locked)
+        run: uv sync --project tools/ai-migration --frozen --python 3.13
+      - name: Check probe style and types
+        run: |
+          uv run --project tools/ai-migration --frozen ruff check tools/ai-migration
+          uv run --project tools/ai-migration --frozen ruff format --check tools/ai-migration
+          uv run --project tools/ai-migration --frozen mypy --config-file tools/ai-migration/pyproject.toml tools/ai-migration/probe_support.py tools/ai-migration/guards.py tools/ai-migration/control_probe.py tools/ai-migration/snapshot.py
+      - name: Run compatibility observations (includes documented gaps)
+        run: uv run --project tools/ai-migration --frozen pytest tools/ai-migration/tests -q
+
   local-preview:
     runs-on: ubuntu-latest
     steps:
