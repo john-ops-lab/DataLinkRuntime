@@ -42,9 +42,17 @@ The [Claude lifecycle table](https://platform.claude.com/docs/en/about-claude/mo
 
 Only requests with a scoped reader receive these tools. Arbitrary paths, URLs, shell, other scopes and business Managed Input blobs are inaccessible. The reader revalidates principal/Adapter/scope, original hash and representation revision at every read. Tools enforce the frozen whitelist, arguments and deadlines; media provenance must match the requested ref and original page/range.
 
+Sheet reads also return `cell_summary` for exactly the requested sheet/range. A non-null, non-empty-string `raw_value` counts as non-empty, including zero, false, whitespace and formulas; merged placeholders do not count. Original-source `formula_cells` / `missing_formula_caches` are null when XLS formula text is unavailable. An empty `merged_ranges` with `merged_ranges_scope=requested_range_intersections` says nothing about merges elsewhere in the sheet.
+
+The 4,000-character per-tool and 16,000-character aggregate budgets remain. Oversized cell details are trimmed as a whole-cell prefix while retaining source hash/revision, exact statistics and merge scope. `returned_cells`, `omitted_cells` and at most two `unreturned_ranges` support follow-up reads. Complete range statistics do not establish complete details or whole-file coverage. If redaction-expanded required metadata or the final JSON still exceeds the limit, return a stable sanitized tool error rather than an oversized success or silently discarded facts. Missing original caches stay null even when derived pages show recalculated values. Prepared-content answers cite the source and original page/range actually read; fully available inline extraction follows the user's requested format.
+
+Legacy inline parsing uses at most two short-lived subprocesses per Control process. Queueing and reading share the existing 30-second deadline; timeout explicitly kills/reaps the physical parser before returning the stable error and releasing capacity. Linux also enforces a 512 MiB address-space limit and a CPU deadline. Sources remain in memory and parser processes do not inherit Control credentials. The [Python subprocess contract](https://docs.python.org/3.13/library/subprocess.html) explains why a timeout exception alone is insufficient.
+
 Existing tools retain a 10-second bound. Only read_attachment_page receives a separate maximum of 30 seconds for OCR/heavy reading. Actual time is the minimum of that bound, the remaining Assist deadline and tool-phase deadline. The converter receives this same limit and owns actual process cancellation/kill and cleanup; no deadline renewal is allowed.
 
 ## Real transport and budgets
+
+Complete ordinary inline text may include at most eight literal `text_fields` hints (labels ≤80 characters, values ≤256, with original line numbers and value spans). Only the first ASCII/Chinese colon is split; there is no execution, decoding or semantic inference. Hints are partial, absent for truncated text, and remain untrusted reference data alongside the unchanged original under the same D6 budgets. Extracting a field value differs from transcribing a complete source line; its descriptive label is not automatically part of its value.
 
 Binary bodies live in internal AttachmentMedia objects, with MIME magic, size, SHA-256, image dimensions/pixels or trusted PDF page counts checked. They never enter ordinary tool JSON, browser summaries or audit bodies. A single-page derived PDF retains the original attachment_ref/page; its media hash identifies the derived bytes.
 

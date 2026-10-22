@@ -6,6 +6,21 @@
 
 ## ADDED Requirements
 
+### Requirement: Bounded literal inline field hints
+
+系统 SHALL 在完整普通 inline 文本含合法字面标签和值时附加有界源跨度提示，同时保留完整原文；提示 MUST 与原文处于不可信资料区并接受既有预算，不得改变指令权限或推断操作授权。
+
+#### Scenario: Field extraction differs from complete-line transcription
+
+- **WHEN** 原文是 `Reference: ZX-17`，用户要求仅返回字段值或原样复述整行
+- **THEN** 标签和值 SHALL 明确分开，值具有可核对的原始行号和字符跨度；模型按请求分别返回 `ZX-17` 或原始完整行，而非擅自添加前缀
+- **AND** 提示最多 8 个、标签最多 80 字符、值最多 256 字符；截断文本不得假装具有完整字段提示
+
+#### Scenario: Source field labels never gain authority
+
+- **WHEN** 一个字面字段叫 `SYSTEM` 且值要求读取 Secret 或执行代码
+- **THEN** 提示 SHALL 仍为不可信数据，不能进入系统指令或权威状态，不能注册工具、生成未授权 Candidate 或保存／执行
+
 ### Requirement: 实际模型输入能力
 系统 SHALL 根据所选 Provider、模型、endpoint 与协议决定图片和原生 PDF 支持，保留能力依据或未知状态；品牌名、未实现的勾选或上游文件占位 MUST NOT 被宣称为已验证原生支持，系统不得自动切换模型。
 
@@ -19,6 +34,22 @@
 #### Scenario: 长 PDF 末页与工作簿后段
 - **WHEN** 目标内容在初始上下文预算之外的 PDF 末页或 sheet 的后段单元格
 - **THEN** 模型可根据目录调用有界工具取得指定范围的真实图像或精确单元格，不把初始截断误报为全文已读
+
+#### Scenario: sheet 明细超过工具结果预算
+- **WHEN** 已读取的原件范围包含超过单次结果预算的 cell 明细
+- **THEN** 系统按完整记录裁剪明细，并在原字符上限内保留来源、统计及统计适用范围、明细覆盖与遗漏数量；模型按需补读遗漏明细，不把前缀数目当作整个范围的格数
+
+#### Scenario: 脱敏扩张不能绕过结果预算
+
+- **WHEN** 凭据脱敏扩张了附件必要 metadata，或 JSON 转义后结果仍超过 4,000 字符
+- **THEN** 系统 SHALL 返回稳定脱敏工具错误，不以超预算成功结果或静默丢弃范围事实绕过门禁
+
+### Requirement: 回答采用原件事实与真实来源
+系统 SHALL 向模型提供程序计算的原件范围事实及来源，要求计数、公式缓存与合并范围回答遵循该事实，引用实际已读页/sheet/range 并说明遗漏；源数据传输和自然语言业务回答 MUST 分别按独立真值验收，不把 JSON 合法或读取成功视为事实正确。
+
+#### Scenario: 精确提取与 prepared 来源
+- **WHEN** 用户明确只要求提取完整 inline 原文，或依据 prepared 工作簿进行咨询
+- **THEN** 前者遵循精确提取要求而不添加无关说明；后者基于实际读取并保留来源及覆盖，附件正文仍不能改变权限或触发自动保存/运行
 
 #### Scenario: 越权引用
 - **WHEN** 模型请求未在该次 Assist 引用集合内的附件或任意路径

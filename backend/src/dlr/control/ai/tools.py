@@ -54,6 +54,7 @@ from dlr.control.ai.attachment_reading import (
     AttachmentMedia,
     AttachmentReadResult,
     ScopedAttachmentReader,
+    sheet_range_remainder,
     validate_attachment_reference,
     validate_sheet_range,
 )
@@ -900,6 +901,14 @@ def _execute_one(
     if len(encoded) > MAX_TOOL_RESULT_CHARS:
         result = _truncate_result(result, redact_values)
         truncated = True
+    # Short credential redaction can expand required metadata or alter the
+    # payload's tool label, and JSON escaping can grow a bounded excerpt.
+    # Check the actual attachment wire result and fail without dropping facts.
+    if (
+        spec.name in _ATTACHMENT_TOOLS
+        and len(json.dumps(result, ensure_ascii=False, sort_keys=True)) > MAX_TOOL_RESULT_CHARS
+    ):
+        raise ToolFailure(CODE_FAILED, "attachment metadata exceeds result budget")
     return result, truncated, media
 
 
@@ -923,13 +932,38 @@ def _truncate_result(result: dict[str, Any], redact_values: tuple[str, ...]) -> 
     if result.get("tool") in _ATTACHMENT_TOOLS:
         attachment_preserved: dict[str, Any] = {
             key: result[key]
-            for key in ("tool", "attachment_ref", "page", "view", "sheet", "range")
+            for key in (
+                "tool",
+                "attachment_ref",
+                "source_sha256",
+                "representation_revision",
+                "page",
+                "view",
+                "sheet",
+                "range",
+                "value_origin",
+                "rendered_values_origin",
+                "cell_summary",
+                "merged_ranges_scope",
+            )
             if key in result
         }
         attachment_preserved.update(truncated=True, coverage="partial")
+        original_coverage = result.get("coverage")
+        if len(json.dumps(original_coverage, ensure_ascii=False)) <= 512:
+            attachment_preserved["source_coverage"] = original_coverage
+        merges = result.get("merged_ranges")
+        if isinstance(merges, list):
+            attachment_preserved["merged_ranges"] = merges[:8]
+            attachment_preserved["omitted_merged_ranges"] = max(0, len(merges) - 8)
+            attachment_preserved["merged_ranges_complete"] = (
+                result.get("merged_ranges_complete", True) and len(merges) <= 8
+            )
         cells = result.get("cells")
         if isinstance(cells, list):
             attachment_preserved["cells"] = []
+            # Reserve room for the final counts and exact follow-up ranges.
+            reserve = 200
             for cell in cells:
                 cell_candidate = {
                     **attachment_preserved,
@@ -937,11 +971,21 @@ def _truncate_result(result: dict[str, Any], redact_values: tuple[str, ...]) -> 
                 }
                 if (
                     len(json.dumps(cell_candidate, ensure_ascii=False, sort_keys=True))
-                    > MAX_TOOL_RESULT_CHARS - 80
+                    > MAX_TOOL_RESULT_CHARS - reserve
                 ):
                     break
                 attachment_preserved = cell_candidate
             attachment_preserved["omitted_cells"] = len(cells) - len(attachment_preserved["cells"])
+            attachment_preserved["returned_cells"] = len(attachment_preserved["cells"])
+            summary = result.get("cell_summary")
+            if (
+                isinstance(summary, dict)
+                and summary.get("total_cells") == len(cells)
+                and isinstance(result.get("range"), str)
+            ):
+                attachment_preserved["unreturned_ranges"] = list(
+                    sheet_range_remainder(result["range"], len(attachment_preserved["cells"]))
+                )
         else:
             raw = json.dumps(result, ensure_ascii=False, sort_keys=True)
             remaining = (

@@ -6,6 +6,9 @@ import base64
 import contextlib
 import importlib.util
 import io
+import xml.etree.ElementTree as ET
+import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +65,64 @@ def test_source_xlsx_cells_never_substitute_recalculated_values() -> None:
     assert rows["B3"]["cache_status"] == "missing"
     assert warnings == []
     assert data["merged_ranges"] == []
+    assert data["merged_ranges_scope"] == "requested_range_intersections"
+    assert data["cell_summary"]["non_empty_cells"] == 3
+
+
+def test_exact_range_facts_count_zero_false_and_formulas_with_original_caches() -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Facts"
+    sheet.merge_cells("A1:C1")
+    for coordinate, value in {
+        "A1": "Source facts",
+        "D1": 0,
+        "E1": False,
+        "F1": "",
+        "A2": datetime(2026, 10, 22),
+        "B2": 1234.5,
+        "C2": 0.125,
+        "D2": "=SUM(D1:D1)",
+        "E2": "=1+2",
+        "F2": " ",
+    }.items():
+        sheet[coordinate] = value
+    sheet["A2"].number_format = "yyyy-mm-dd"
+    sheet["B2"].number_format = '"$"#,##0.00'
+    sheet["C2"].number_format = "0.0%"
+    source = io.BytesIO()
+    workbook.save(source)
+    # Freeze an original cached zero independently of the converter; E2 has no cache.
+    patched = io.BytesIO()
+    namespace = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with zipfile.ZipFile(source) as original, zipfile.ZipFile(patched, "w") as archive:
+        for item in original.infolist():
+            raw = original.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                root = ET.fromstring(raw)
+                root.find(".//m:c[@r='D2']/m:v", namespace).text = "0"
+                raw = ET.tostring(root)
+            archive.writestr(item, raw)
+    _, data, _ = processor.workbook(patched.getvalue(), ".xlsx", "Facts", "A1:F4")
+    summary = data["cell_summary"]
+    assert (summary["total_cells"], summary["non_empty_cells"], summary["empty_cells"]) == (
+        24,
+        9,
+        15,
+    )
+    assert summary["non_empty_by_column"] == {"A": 2, "B": 1, "C": 1, "D": 2, "E": 2, "F": 1}
+    assert summary["formula_cells"] == 2 and summary["missing_formula_caches"] == 1
+    cells = {cell["coordinate"]: cell for cell in data["cells"]}
+    assert cells["D2"]["cached_value"] == 0 and cells["D2"]["cache_status"] == "stored"
+    assert cells["E2"]["cached_value"] is None and cells["E2"]["cache_status"] == "missing"
+    assert cells["A2"]["raw_value"] == "2026-10-22T00:00:00"
+    assert cells["B2"]["number_format"] == '"$"#,##0.00'
+    assert cells["C2"]["number_format"] == "0.0%"
+    assert data["merged_ranges"] == ["A1:C1"]
+    _, local, _ = processor.workbook(patched.getvalue(), ".xlsx", "Facts", "D1:F2")
+    assert local["merged_ranges"] == []
+    assert local["merged_ranges_scope"] == "requested_range_intersections"
+    assert local["merged_ranges_complete"] is True
 
 
 @pytest.mark.parametrize("range_a1", ["A1:A201", "A0", "B2:A1", "A1:ZZZ2", "../A1"])
@@ -77,6 +138,9 @@ def test_true_biff_uses_stored_values_and_marks_formula_text_unknown() -> None:
     name = sheets[0]["name"]
     _, data, _ = processor.workbook(source, ".xls", name, "A1:B2")
     assert len(data["cells"]) == 4
+    assert data["cell_summary"]["total_cells"] == 4
+    assert data["cell_summary"]["formula_cells"] is None
+    assert data["cell_summary"]["formula_status"] == "unavailable_xlrd"
     assert all(x["formula_status"] == "unavailable_xlrd" for x in data["cells"])
     assert "xls_formula_text_unavailable" in warnings
 
