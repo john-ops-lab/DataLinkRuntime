@@ -5,7 +5,11 @@ import hashlib
 
 import pytest
 
-from dlr.control.ai.attachment_reading import AttachmentMedia, validate_sheet_range
+from dlr.control.ai.attachment_reading import (
+    AttachmentMedia,
+    sheet_range_remainder,
+    validate_sheet_range,
+)
 
 
 def test_media_hash_body_and_dimensions_are_checked() -> None:
@@ -38,3 +42,23 @@ def test_bounded_sheet_ranges(range_a1: str) -> None:
 def test_invalid_sheet_ranges_are_rejected(range_a1: str) -> None:
     with pytest.raises(ValueError):
         validate_sheet_range(range_a1)
+
+
+@pytest.mark.parametrize("range_a1", ["A1:D30", "Z99:AC108", "XFD1048377:XFD1048576", "B3"])
+def test_every_prefix_remainder_covers_exactly_the_unreturned_cells(range_a1: str) -> None:
+    from openpyxl.utils.cell import cols_from_range, rows_from_range
+
+    original = [cell for row in rows_from_range(range_a1) for cell in row]
+    for returned in range(len(original) + 1):
+        ranges = sheet_range_remainder(range_a1, returned)
+        assert len(ranges) <= 2
+        remaining = [cell for part in ranges for row in rows_from_range(part) for cell in row]
+        assert remaining == original[returned:]
+        assert not set(original[:returned]).intersection(remaining)
+        for part in ranges:
+            validate_sheet_range(part)
+            assert len(list(cols_from_range(part))) >= 1
+    with pytest.raises(ValueError):
+        sheet_range_remainder(range_a1, len(original) + 1)
+    with pytest.raises(ValueError):
+        sheet_range_remainder(range_a1, -1)

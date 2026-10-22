@@ -14,7 +14,7 @@ import zipfile
 from datetime import date, datetime, time
 from pathlib import Path
 
-REVISION = "dlr-documents-v1-docling2.138-lo26.8"
+REVISION = "dlr-documents-v2-docling2.138-lo26.8-range-facts"
 MAX_SOURCE = 6 * 1024 * 1024
 MAX_DERIVED = 64 * 1024 * 1024
 MAX_PAGES = 200
@@ -128,6 +128,38 @@ def archive_policy(source):
 
 def json_value(value):
     return value.isoformat() if isinstance(value, (datetime, date, time)) else value
+
+
+def cell_summary(cells, sheet, range_a1, extension):
+    """Facts from the complete requested source range, never rendered pixels."""
+    non_empty = [
+        cell for cell in cells if cell["raw_value"] is not None and cell["raw_value"] != ""
+    ]
+    columns = {}
+    for cell in cells:
+        column = re.match(r"[A-Z]+", cell["coordinate"])[0]
+        columns.setdefault(column, 0)
+        if cell["raw_value"] is not None and cell["raw_value"] != "":
+            columns[column] += 1
+    formulas_available = extension == ".xlsx"
+    return {
+        "sheet": sheet,
+        "range": range_a1,
+        "value_origin": "source_file",
+        "total_cells": len(cells),
+        "non_empty_cells": len(non_empty),
+        "empty_cells": len(cells) - len(non_empty),
+        "counting": "raw_value_not_null_or_empty_string;zero_false_and_formulas_count",
+        "non_empty_by_column": dict(list(columns.items())[:32]),
+        "omitted_column_counts": max(0, len(columns) - 32),
+        "formula_cells": sum(cell["formula"] is not None for cell in cells)
+        if formulas_available
+        else None,
+        "missing_formula_caches": sum(cell["cache_status"] == "missing" for cell in cells)
+        if formulas_available
+        else None,
+        "formula_status": "source_formula" if formulas_available else "unavailable_xlrd",
+    }
 
 
 def workbook(source, extension, sheet=None, range_a1=None):
@@ -275,6 +307,9 @@ def workbook(source, extension, sheet=None, range_a1=None):
             range=range_a1,
             cells=cells,
             merged_ranges=merges,
+            merged_ranges_scope="requested_range_intersections" if bounds else "sheet_directory",
+            merged_ranges_complete="sheet_metadata_partial" not in warnings,
+            **({"cell_summary": cell_summary(cells, sheet, range_a1, extension)} if bounds else {}),
             value_origin="source_file",
             rendered_values_origin="libreoffice_recalculation",
         ),

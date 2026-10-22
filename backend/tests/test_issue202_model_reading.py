@@ -346,6 +346,68 @@ def test_attachment_truncation_keeps_source_and_clamps_whole_cells() -> None:
     assert len(result.model_content) <= tools.MAX_TOOL_RESULT_CHARS
 
 
+@pytest.mark.parametrize("value_size", [80, 10000])
+def test_truncated_range_retains_complete_facts_identity_and_exact_followup(value_size) -> None:
+    from openpyxl.utils.cell import get_column_letter
+
+    cells = [
+        {"coordinate": f"{get_column_letter(col)}{row}", "raw_value": "x" * value_size}
+        for row in range(1, 6)
+        for col in range(1, 41)
+    ]
+    summary = {
+        "sheet": "明细" * 15,
+        "range": "A1:AN5",
+        "value_origin": "source_file",
+        "total_cells": 200,
+        "non_empty_cells": 200,
+        "empty_cells": 0,
+        "counting": "raw_value_not_null_or_empty_string;zero_false_and_formulas_count",
+        "non_empty_by_column": {get_column_letter(col): 5 for col in range(1, 33)},
+        "omitted_column_counts": 8,
+        "formula_cells": 0,
+        "missing_formula_caches": 0,
+        "formula_status": "source_formula",
+    }
+    reader = Reader()
+    reader.read_sheet = lambda *args, **kwargs: AttachmentReadResult(
+        {
+            "source_sha256": "a" * 64,
+            "representation_revision": "dlr-documents-v2-docling2.138-lo26.8-range-facts",
+            "coverage": {"text": "partial", "pages": "complete"},
+            "value_origin": "source_file",
+            "rendered_values_origin": "libreoffice_recalculation",
+            "cell_summary": summary,
+            "cells": cells,
+            "merged_ranges": [
+                f"{get_column_letter(col)}6:{get_column_letter(col)}7" for col in range(1, 11)
+            ],
+            "merged_ranges_complete": True,
+            "merged_ranges_scope": "requested_range_intersections",
+        }
+    )
+    result = tools.execute_tool_call(
+        "read_attachment_sheet",
+        json.dumps({"attachment_ref": "ref-1", "sheet": summary["sheet"], "range": "A1:AN5"}),
+        None,
+        context=tool_context(reader),
+    )
+    data = json.loads(result.model_content)
+    assert result.status == "success" and result.result_truncated
+    assert len(result.model_content) <= tools.MAX_TOOL_RESULT_CHARS
+    assert data["cell_summary"] == summary
+    assert data["source_sha256"] == "a" * 64
+    assert data["representation_revision"].endswith("range-facts")
+    assert data["source_coverage"] == {"text": "partial", "pages": "complete"}
+    assert data["value_origin"] == "source_file"
+    assert data["rendered_values_origin"] == "libreoffice_recalculation"
+    assert data["cells"] == cells[: data["returned_cells"]]
+    assert data["omitted_cells"] + data["returned_cells"] == 200
+    assert data["unreturned_ranges"]
+    assert data["merged_ranges_scope"] == "requested_range_intersections"
+    assert data["omitted_merged_ranges"] == 2 and data["merged_ranges_complete"] is False
+
+
 @pytest.mark.parametrize("correct_final", [False, True])
 def test_service_reader_hook_and_selected_capability(
     api_client, monkeypatch, session_factory, correct_final

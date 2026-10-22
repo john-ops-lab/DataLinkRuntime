@@ -20,21 +20,27 @@ Contract summary (the Wave B3 UI and every future caller rely on it):
   ``xml.etree``); XLS uses the pinned, in-memory ``xlrd`` BIFF parser; PDF uses
   the pinned, pure-Python ``pypdf`` (BSD-3-Clause, no transitive deps,
   headless-container friendly).
-- Everything stays in memory: no temp files, no database rows, no Thread,
-  no logs. Success, validation failure, parse failure and timeout all leave
-  nothing behind.
+- Original and parsed bytes stay in memory. Parsing uses a bounded,
+  short-lived worker process, reaped before returning success or timeout;
+  no temporary files, database rows or content logs are created.
 """
 
 import base64
 import binascii
 import io
+import json
+import os
+import signal
+import subprocess
+import sys
 import threading
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
-from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 import xlrd
@@ -51,6 +57,10 @@ MAX_TOTAL_BYTES = MAX_ATTACHMENTS * MAX_FILE_BYTES  # sum of decoded sizes
 MAX_PARSED_CHARS_PER_FILE = 64 * 1024  # extracted text budget per file
 MAX_PARSED_TOTAL_CHARS = 256 * 1024  # total extracted text budget
 PARSE_TIMEOUT_SECONDS = 30.0
+MAX_PARSE_PROCESSES = 2
+MAX_PARSE_MEMORY_BYTES = 512 * 1024 * 1024
+_PARSE_SLOTS = threading.BoundedSemaphore(MAX_PARSE_PROCESSES)
+_MAX_PARSE_OUTPUT_BYTES = MAX_PARSED_CHARS_PER_FILE * 6 + 1024
 
 # DOCX (zip) decompression-bomb guards: no single member may inflate past the
 # member cap, the archive's total uncompressed size stays below the total cap
@@ -719,33 +729,98 @@ def _parse_xlsx(data: bytes, limit_chars: int) -> tuple[str, bool]:
 # ---------------------------------------------------------------------------
 
 
-def _with_timeout[T](timeout_seconds: float, fn: Callable[[], T]) -> T:
-    """Run a parse with a hard wall-clock deadline.
+def _start_parse_process(
+    category: str, char_budget: int, timeout_seconds: float
+) -> subprocess.Popen[bytes]:
+    # Only fixed parser identifiers cross argv; source bytes use stdin. Do not
+    # inherit Control credentials or use fork from the request's thread.
+    environment = {
+        "PYTHONPATH": str(Path(__file__).resolve().parents[3]),
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "LANG": "C.UTF-8",
+    }
+    if "SYSTEMROOT" in os.environ:
+        environment["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "dlr.control.ai.attachment_parser_worker",
+            category,
+            str(char_budget),
+            str(timeout_seconds),
+            str(MAX_PARSE_MEMORY_BYTES),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=environment,
+        start_new_session=os.name == "posix",
+    )
 
-    Parsers run in a daemon thread so a pathological file can never block the
-    request handler; ``join`` enforces the deadline and the request returns
-    ``ai_attachment_parse_timeout``. All working data is in-memory, so a
-    timed-out thread leaves no temp resources behind.
-    """
-    result: dict[str, object] = {}
 
-    def runner() -> None:
-        try:
-            result["value"] = fn()
-        except Exception as error:  # noqa: BLE001 - sanitized below
-            result["error"] = error
-
-    thread = threading.Thread(target=runner, daemon=True, name="dlr-attachment-parse")
-    thread.start()
-    thread.join(timeout_seconds)
-    if thread.is_alive():
-        raise AttachmentError("ai_attachment_parse_timeout")
-    error = result.get("error")
-    if error is not None:
-        if isinstance(error, AttachmentError):
-            raise error
+def _stop_parse_process(process: subprocess.Popen[bytes]) -> None:
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        # Never report an ordinary timeout or return capacity while the
+        # physical parser's termination cannot be confirmed.
         raise AttachmentError("ai_attachment_parse_failed") from None
-    return cast(T, result["value"])
+
+
+def _parse_isolated(category: str, data: bytes, char_budget: int) -> tuple[str, bool]:
+    deadline = time.monotonic() + PARSE_TIMEOUT_SECONDS
+    if not _PARSE_SLOTS.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        raise AttachmentError("ai_attachment_parse_timeout")
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AttachmentError("ai_attachment_parse_timeout")
+        process = _start_parse_process(category, char_budget, remaining)
+        try:
+            output, _ = process.communicate(
+                input=data, timeout=max(0.0, deadline - time.monotonic())
+            )
+        except subprocess.TimeoutExpired:
+            _stop_parse_process(process)
+            raise AttachmentError("ai_attachment_parse_timeout") from None
+        if process.returncode != 0 or len(output) > _MAX_PARSE_OUTPUT_BYTES:
+            raise AttachmentError("ai_attachment_parse_failed")
+        result = json.loads(output)
+        if not isinstance(result, dict):
+            raise AttachmentError("ai_attachment_parse_failed")
+        if "error" in result:
+            code = result["error"]
+            raise AttachmentError(
+                code if code in ATTACHMENT_ERROR_STATUS else "ai_attachment_parse_failed"
+            )
+        text, truncated = result.get("text"), result.get("truncated")
+        if not isinstance(text, str) or type(truncated) is not bool or len(text) > char_budget:
+            raise AttachmentError("ai_attachment_parse_failed")
+        return text, truncated
+    except (OSError, ValueError, TypeError, RecursionError):
+        raise AttachmentError("ai_attachment_parse_failed") from None
+    finally:
+        try:
+            if process is not None and process.poll() is None:
+                _stop_parse_process(process)
+        finally:
+            if process is not None:
+                for stream in (process.stdin, process.stdout):
+                    if stream is not None:
+                        with suppress(OSError):
+                            stream.close()
+            if process is None or process.poll() is not None:
+                _PARSE_SLOTS.release()
 
 
 @dataclass(frozen=True)
@@ -802,26 +877,7 @@ def process_attachment(
             data_base64=cast(str, data_base64),
             size_bytes=len(data),
         )
-    if category == PDF_CATEGORY:
-        text, truncated = _with_timeout(
-            PARSE_TIMEOUT_SECONDS, lambda: _parse_pdf(data, char_budget)
-        )
-    elif category == DOCX_CATEGORY:
-        text, truncated = _with_timeout(
-            PARSE_TIMEOUT_SECONDS, lambda: _parse_docx(data, char_budget)
-        )
-    elif category == XLS_CATEGORY:
-        text, truncated = _with_timeout(
-            PARSE_TIMEOUT_SECONDS, lambda: _parse_xls(data, char_budget)
-        )
-    elif category == XLSX_CATEGORY:
-        text, truncated = _with_timeout(
-            PARSE_TIMEOUT_SECONDS, lambda: _parse_xlsx(data, char_budget)
-        )
-    else:
-        text, truncated = _with_timeout(
-            PARSE_TIMEOUT_SECONDS, lambda: _parse_text(data, char_budget)
-        )
+    text, truncated = _parse_isolated(category, data, char_budget)
     return ParsedText(
         filename=safe_filename,
         content_type=normalized_content_type,

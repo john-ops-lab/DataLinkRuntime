@@ -14,6 +14,8 @@ import base64
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -920,16 +922,28 @@ def test_parse_timeout_returns_stable_code_and_no_partial_context(
     configure(api_client)
     monkeypatch.setattr(attachments_module, "PARSE_TIMEOUT_SECONDS", 0.05)
 
-    def slow_parse(_data: bytes, _limit: int) -> tuple[str, bool]:
-        time.sleep(1.0)
-        return "late text", False
+    children = []
 
-    monkeypatch.setattr(attachments_module, "_parse_text", slow_parse)
+    def start(*args):
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30); print('late text')"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(attachments_module, "_start_parse_process", start)
     body = assist_body()
     body["attachments"] = [attachment("slow.txt", "text/plain", b"payload")]
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert_stable_error(response, 504, "ai_attachment_parse_timeout")
     assert "late text" not in response.text
+    assert len(children) == 1 and children[0].poll() is not None
+    with pytest.raises(ProcessLookupError):
+        os.kill(children[0].pid, 0)
 
 
 # ---------------------------------------------------------------------------

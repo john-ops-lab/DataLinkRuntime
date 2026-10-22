@@ -41,6 +41,42 @@ def validate_sheet_range(value: str) -> None:
         raise ValueError("ai_attachment_range_invalid")
 
 
+def sheet_range_remainder(value: str, returned_cells: int) -> tuple[str, ...]:
+    """At most two rectangles after a row-major prefix of an exact range."""
+    validate_sheet_range(value)
+    match = _RANGE.fullmatch(value)
+    assert match is not None
+
+    def column(name: str) -> int:
+        result = 0
+        for char in name:
+            result = result * 26 + ord(char) - ord("A") + 1
+        return result
+
+    def name(index: int) -> str:
+        result = ""
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            result = chr(ord("A") + remainder) + result
+        return result
+
+    left_name, right_name = match[1], match[3] or match[1]
+    left, right = column(left_name), column(right_name)
+    top, bottom = int(match[2]), int(match[4] or match[2])
+    width = right - left + 1
+    if not 0 <= returned_cells <= width * (bottom - top + 1):
+        raise ValueError("ai_attachment_range_invalid")
+    row_offset, column_offset = divmod(returned_cells, width)
+    row = top + row_offset
+    remaining = []
+    if row <= bottom and column_offset:
+        remaining.append(f"{name(left + column_offset)}{row}:{right_name}{row}")
+        row += 1
+    if row <= bottom:
+        remaining.append(f"{left_name}{row}:{right_name}{bottom}")
+    return tuple(remaining)
+
+
 @dataclass(frozen=True)
 class AttachmentMedia:
     content_type: str

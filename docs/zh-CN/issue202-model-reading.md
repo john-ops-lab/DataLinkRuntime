@@ -42,6 +42,12 @@
 
 工具只在本轮有 scoped reader 时提供，禁止路径、URL、Shell、其他会话附件及业务 Managed Input Blob。每次读取由reader复核账号/Adapter/scope、原件hash与表示revision。工具层先检查本轮白名单、参数和期限；媒体来源须匹配请求ref和原页号/range。
 
+表格读取额外提供 `cell_summary`：统计仅覆盖请求的精确 sheet/range，`raw_value` 非 null 且非空字符串才计非空，0、false、空格和公式均计入；合并占位不计入。`formula_cells` / `missing_formula_caches` 基于原件，XLS 无法读取公式文本时为 null。`merged_ranges_scope=requested_range_intersections` 的空列表仅说明该范围未交叉合并区域，不代表整张表没有合并。
+
+单工具 4,000 字符、累计 16,000 字符预算保持。超限按完整 cell 前缀裁剪，保留原件 hash/revision、范围统计与合并作用域，并提供 `returned_cells`、`omitted_cells`、最多两个 `unreturned_ranges` 供补读。范围统计完整不代表逐格明细或全文完整。原件缺失缓存仍为 null，派生页的重算显示不得替代。prepared 正文答复需标注实际读取的来源和页号／范围；完整 inline 的精确提取按用户格式回答。
+
+旧 inline 解析使用每个 Control 进程最多两个短生命周期子进程，等待和读取共用原 30 秒期限；超时后实际 kill/reap 再返回稳定错误并释放许可。Linux 子进程另有 512 MiB 地址空间和 CPU 时间限制，源文件不落临时文件，解析器不继承 Control 凭据环境。[Python 子进程超时合同](https://docs.python.org/3.13/library/subprocess.html)说明超时异常本身不会终止进程；本路径显式终止并回收。
+
 普通工具仍以10秒为上限，仅read_attachment_page为OCR等重解析单独允许最多30秒；实际期限取工具上限、Assist剩余总时限、工具阶段剩余时限的最小值。超时期限向转换进程传播，由隔离转换层执行实际取消/kill与回收，不通过续期绕过总时限。
 
 ## 真实内容传输与预算
