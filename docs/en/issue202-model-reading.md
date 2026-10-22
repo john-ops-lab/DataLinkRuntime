@@ -52,6 +52,8 @@ Existing tools retain a 10-second bound. Only read_attachment_page receives a se
 
 ## Real transport and budgets
 
+Complete ordinary inline text may include at most eight literal `text_fields` hints (labels ≤80 characters, values ≤256, with original line numbers and value spans). Only the first ASCII/Chinese colon is split; there is no execution, decoding or semantic inference. Hints are partial, absent for truncated text, and remain untrusted reference data alongside the unchanged original under the same D6 budgets. Extracting a field value differs from transcribing a complete source line; its descriptive label is not automatically part of its value.
+
 Binary bodies live in internal AttachmentMedia objects, with MIME magic, size, SHA-256, image dimensions/pixels or trusted PDF page counts checked. They never enter ordinary tool JSON, browser summaries or audit bodies. A single-page derived PDF retains the original attachment_ref/page; its media hash identifies the derived bytes.
 
 OpenAI Chat tool messages accept text only: append all tool-call/results first, followed by server-associated provenance and real user image/file parts. Anthropic embeds image/document blocks inside tool_result. Current verified Gemini combinations use functionResponse followed by real user inlineData. Supplementary user media remains untrusted tool material and gains no user instruction authority. See [OpenAI tool message contract](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) and [Anthropic tool content blocks](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls).

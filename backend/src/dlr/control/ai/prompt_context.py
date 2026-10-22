@@ -9,6 +9,38 @@ from dlr.control.ai import attachments as attachments_service
 from dlr.control.schemas.ai import AiAssistRequest
 
 
+def literal_text_fields(text: str, *, truncated: bool = False) -> list[dict[str, object]]:
+    """Bounded lexical hints, never a semantic parser or instruction authority."""
+    if truncated:
+        return []
+    fields: list[dict[str, object]] = []
+    for number, line in enumerate(text.splitlines(), 1):
+        separators = [index for mark in (":", "：") if (index := line.find(mark)) >= 0]
+        if not separators:
+            continue
+        separator = min(separators)
+        label, value = line[:separator].strip(" \t"), line[separator + 1 :].strip(" \t")
+        if (
+            not 1 <= len(label) <= 80
+            or not 1 <= len(value) <= 256
+            or not all(char.isalnum() or char in " _-./" for char in label)
+        ):
+            continue
+        start = line.index(value, separator + 1)
+        fields.append(
+            {
+                "label": label,
+                "value": value,
+                "line": number,
+                "value_start": start,
+                "value_end": start + len(value),
+            }
+        )
+        if len(fields) == 8:
+            break
+    return fields
+
+
 def _freeze(value: object) -> object:
     if isinstance(value, Mapping):
         return MappingProxyType({key: _freeze(item) for key, item in value.items()})
@@ -86,6 +118,12 @@ class PromptContext:
                 "category": item.category,
                 "text": item.text,
                 "truncated": item.truncated,
+                **(
+                    {"text_fields": fields}
+                    if item.category == attachments_service.TEXT_CATEGORY
+                    and (fields := literal_text_fields(item.text, truncated=item.truncated))
+                    else {}
+                ),
             }
             for item in parsed_attachments or ()
         ]

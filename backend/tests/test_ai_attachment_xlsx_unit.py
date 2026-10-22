@@ -2,8 +2,10 @@
 
 import base64
 import io
+import os
 import struct
-import time
+import subprocess
+import sys
 import zipfile
 import zlib
 from types import SimpleNamespace
@@ -289,13 +291,21 @@ def test_xls_dimension_truncation_releases_parser_resources(
 
 
 def test_xlsx_parse_timeout_uses_stable_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(attachments, "PARSE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(attachments, "PARSE_TIMEOUT_SECONDS", 0.05)
+    children = []
 
-    def slow_parse(_data: bytes, _limit: int) -> tuple[str, bool]:
-        time.sleep(0.2)
-        return "late", False
+    def start(*args):
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        children.append(child)
+        return child
 
-    monkeypatch.setattr(attachments, "_parse_xlsx", slow_parse)
+    monkeypatch.setattr(attachments, "_start_parse_process", start)
     with pytest.raises(AttachmentError) as caught:
         attachments.process_attachment(
             "slow.xlsx",
@@ -305,3 +315,6 @@ def test_xlsx_parse_timeout_uses_stable_error(monkeypatch: pytest.MonkeyPatch) -
             char_budget=4096,
         )
     assert caught.value.code == "ai_attachment_parse_timeout"
+    assert len(children) == 1 and children[0].poll() is not None
+    with pytest.raises(ProcessLookupError):
+        os.kill(children[0].pid, 0)

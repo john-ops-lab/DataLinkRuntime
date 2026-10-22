@@ -52,6 +52,8 @@
 
 ## 真实内容传输与预算
 
+完整普通 inline 文本可附加最多 8 个 `text_fields` 字面提示（标签 ≤80 字符，值 ≤256 字符，保留原行号和值跨度）。只按首个中英文冒号拆分，不执行、不解码、不推断业务含义；提示不保证穷尽全部字段，截断文本不生成提示。提示和原文均属于不可信参考资料，仍受原有 D6 预算约束。仅提取字段值与复述完整行采用不同输出格式；字段标签不自动属于字段值。
+
 媒体字节放在内部 AttachmentMedia 中，验证MIME魔数、大小、SHA-256、图像尺寸/像素或可信PDF页数；不进入普通工具JSON、浏览器摘要或审计。单页PDF仍关联原件attachment_ref与原页号，媒体hash是派生页文件hash。
 
 OpenAI Chat Completions 的tool只接收文本，先完成全部tool_call/result关系，再附加服务端来源封装与真实user image/file parts；Anthropic用tool_result里的image/document blocks；当前Gemini已核对组合先functionResponse，再追加真实user inlineData。补充user媒体仍是只读工具资料，不取得用户指令权限。[OpenAI工具合同](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[Anthropic工具内容块](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls)。
