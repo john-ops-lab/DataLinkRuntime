@@ -6,7 +6,7 @@ context: |
   Keep OpenSpec structural headings and SHALL/MUST keywords in English.
 
   Project: DataLinkRuntime (DLR), a brownfield, self-hosted, code-first data adapter runtime.
-  Current released baseline: v0.1.0.
+  Release baseline: v0.6.1 (the GitHub Release tag is authoritative).
   Backend: Python 3.13, FastAPI, SQLAlchemy/Alembic, PostgreSQL.
   Web: React 19, Vite, Ant Design 5.29.3, ProComponents 2.8.10.
   Runtime workers execute Python, JavaScript, and Java adapters.

@@ -27,7 +27,7 @@
   <a href="https://github.com/john-ops-lab/DataLinkRuntime/issues">Issues</a>
 </p>
 
-<p align="center">稳定版：<a href="https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.6.0">v0.6.0</a></p>
+<p align="center">稳定版：<a href="https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.6.1">v0.6.1</a></p>
 
 ---
 
@@ -218,7 +218,9 @@ AI 不会自动替你执行：
 
 **Apply 只是把候选修改放回 Working Copy；最终保存与运行必须由用户明确触发。**
 
-对话用于当前页面的临时调试，刷新页面或切换账号、适配器后清空。可添加附件作为本轮资料；需要文档转换时，按[转换组件说明](docs/zh-CN/issue202-document-conversion.md)启用附加服务。模型对附件的事实和引用仍需核对，已知限制见[版本说明](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.6.0)。
+对话用于当前页面的临时调试，刷新页面或切换账号、适配器后清空。可添加附件作为本轮资料；需要文档转换时，按[转换组件说明](docs/zh-CN/issue202-document-conversion.md)启用附加服务。模型对附件的事实和引用仍需核对，已知限制见[版本说明](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.6.1)。
+
+v0.6.1 补齐附件解析超时后的进程回收、表格范围统计与来源、普通文本字面字段提示及结果预算检查。当前 MiniMax/Kimi 组合的专项结果、首败与补验见[收尾记录](docs/evidence/issue202-multimodal-attachments/closeout-20261022.md)。
 
 ---
 
@@ -249,7 +251,7 @@ DLR 专注的是 **独立 Adapter 的开发和运行**，而不是 Workflow / DA
 ```bash
 git clone https://github.com/john-ops-lab/DataLinkRuntime.git
 cd DataLinkRuntime
-git checkout v0.6.0
+git checkout v0.6.1
 
 cp .env.example .env
 ```
@@ -360,8 +362,8 @@ Worker 启动时必须通过真实资源隔离预检；失败时不会退回无�
 
 ## 已有部署升级
 
-- **v0.5.x → v0.6.0 无新增数据库迁移**，最终 revision 仍为 `0046_issue166_retire_ai_history`。升级前备份数据库和材料数据，保留 Worker 的运行与恢复目录、持久卷、Token 和 Master Key。
-- 等待运行任务和清理操作结束，再停止旧 Control/Worker；切换到 `v0.6.0`，沿用原 `.env`、Compose 附加清单和持久卷构建、迁移并启动 Control、Worker 和 Web。
+- **v0.5.x / v0.6.0 → v0.6.1 无新增数据库迁移**，最终 revision 仍为 `0046_issue166_retire_ai_history`。升级前备份数据库和材料数据，保留 Worker 的运行与恢复目录、持久卷、Token 和 Master Key。
+- 等待运行任务和清理操作结束，再停止旧 Control/Worker；切换到 `v0.6.1`，沿用原 `.env`、Compose 附加清单和持久卷构建、迁移并启动 Control、Worker 和 Web。
 - AI Assist 改用锁定的 Pydantic AI 与三协议 SDK，模型设置及凭据继续沿用。当前版本不再提供运行器切换；应用回退及已知验收边界见[迁移记录](docs/testing/issue213-pydantic-b5.md)。
 - 两个自动清理开关需要新版 Worker。已有开关设置保留；尚未保存时沿用部署默认值。设置文件损坏时暂停自动清理，节点继续工作，其他缓存保护不变。详见[缓存管理](docs/zh-CN/issue139-cache-governance.md)。
 - v0.4.3 及更早版本先核对 [v0.4.4 升级说明](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.4.4)，特别是 AI 历史表退役和备份要求。跨服务器 Worker 池与高可用部署（#129）不属于本版范围。
