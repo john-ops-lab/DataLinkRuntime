@@ -24,7 +24,7 @@
 - [x] 3.4 完成并发、取消/超时/内存/派生字节边界真实进程与存储核验，以及混合附件和无附件旧路径回归；记录所有缺口且不得把partial算pass。
 - [x] 3.5 独立审查第三批变更并通过当前HEAD完整CI，在同一固定本机验收入口部署累计HEAD，保存真实镜像/SHA/schema/挂载/认证/Worker和页面结果；提交第三批PR。历史完成证据为 PR #211 的 v0.4.4 交付记录，不表示本次收尾已验收。
 
-真实模型和资源验证范围见 [验收记录](../../../docs/evidence/issue202-multimodal-attachments/acceptance.md)。3.5 的历史 CI/SHA/部署回执保存在本机私有交付记录中；本次收尾的 CI 与验收由 6.x 单独记录，公开仓库不保存本机入口或部署参数。
+真实模型和资源验证范围见 [验收记录](../../../../docs/evidence/issue202-multimodal-attachments/acceptance.md)。3.5 的历史 CI/SHA/部署回执保存在本机私有交付记录中；本次收尾的 CI 与验收由 6.x 单独记录，公开仓库不保存本机入口或部署参数。
 
 ## Workflow follow-up
 
@@ -58,4 +58,12 @@ A16 提示词兼容性验收固定原87字节附件与原请求，对 MiniMax/Ki
 - [x] 6.7 同步 Issue、OpenSpec、部署与验收文档的最终 SHA/范围/结果和历史证据；提交并附加开放 PR 供维护者评审，不合并、不关闭 Issue、不归档本 change；清理本次无用临时材料。
 
 
-6.x 最终专项证据见 [2026-10-22 收尾报告](../../../docs/evidence/issue202-multimodal-attachments/closeout-20261022.md)：产品提交 `282b49e` 的四项 CI 通过并部署至同一固定环境；真实 HTTP 为 26 项／28 次尝试，两次明确上游 529 原样保留并各补验通过。两家原 A16 各 5/5、整行／普通字段、原始 17 格与新增 A4 九类事实、prepared 来源及注入边界均已核对。Chrome 的冻结引用和 Diff／Apply／Save／Run、沙箱回执及原资产保全另按其实际 SHA 分层记录。最终文档提交不改变运行源码，其精确 HEAD CI／部署回执由 PR 与 Issue 最终更新给出；本 change 未归档，Issue 不关闭，等待维护者评审和用户最终确认。
+6.x 最终专项证据见 [2026-10-22 收尾报告](../../../../docs/evidence/issue202-multimodal-attachments/closeout-20261022.md)：产品提交 `282b49e` 的四项 CI 通过并部署至同一固定环境；真实 HTTP 为 26 项／28 次尝试，两次明确上游 529 原样保留并各补验通过。两家原 A16 各 5/5、整行／普通字段、原始 17 格与新增 A4 九类事实、prepared 来源及注入边界均已核对。Chrome 的冻结引用和 Diff／Apply／Save／Run、沙箱回执及原资产保全另按其实际 SHA 分层记录。最终文档提交不改变运行源码，其精确 HEAD CI／部署回执由 PR 与 Issue 最终更新给出；本 change 未归档，Issue 不关闭，等待维护者评审和用户最终确认。
+
+## 7. 2026-10-22 维护者确认与归档
+
+维护者已完成独立评审并确认 approve；[PR #218](https://github.com/john-ops-lab/DataLinkRuntime/pull/218) 合并为 `fe5b03f2e8bdea0c91803943719ca23c9e8ddce8`，其 [main CI 39764043921](https://github.com/john-ops-lab/DataLinkRuntime/actions/runs/39764043921) 首轮四项通过，Backend 3044 passed / 17 skipped。维护者随后明确要求关闭 #202、归档本 change 并发布 v0.6.1，取代上述实施与交付阶段的暂不合并／关闭／归档限制。
+
+29 个任务均已完成；三个 capability 的 22 条要求、29 个场景完整同步到 `openspec/specs/`，逐项核对和 strict 校验通过。本 change 归档到 `openspec/changes/archive/2026-10-22-issue202-multimodal-attachments/`；归档与双语发布文档不改变运行源码，最终发布 SHA 和 CI 回执以 PR、Issue 与 GitHub Release 为准。
+
+历史 FAIL、两次上游 529、候选弃用与实际验收 SHA 保持原记录，不因维护者确认改写为首轮通过。解析进程无法确认 reap 时的无内容 warning／指标，以及未测量的 inline 子进程启动延迟，保留为不阻塞后续观察，不扩大本轮实现或验收范围。

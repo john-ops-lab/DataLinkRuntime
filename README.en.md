@@ -27,7 +27,7 @@
   <a href="https://github.com/john-ops-lab/DataLinkRuntime/issues">Issues</a>
 </p>
 
-<p align="center">Stable release: <a href="https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.6.0">v0.6.0</a></p>
+<p align="center">Stable release: <a href="https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.6.1">v0.6.1</a></p>
 
 ---
 
@@ -216,7 +216,9 @@ The AI does not automatically:
 
 **Apply only updates the browser Working Copy. Saving and running always require an explicit user action.**
 
-Conversations are temporary debugging sessions for the current page. Refreshing or switching accounts or Adapters clears them. Attachments can provide material for the current request; enable optional services as described in [document conversion](docs/en/issue202-document-conversion.md) when needed. Check model facts and citations against the attachments; see the [release notes](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.6.0) for known limitations.
+Conversations are temporary debugging sessions for the current page. Refreshing or switching accounts or Adapters clears them. Attachments can provide material for the current request; enable optional services as described in [document conversion](docs/en/issue202-document-conversion.md) when needed. Check model facts and citations against the attachments; see the [release notes](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.6.1) for known limitations.
+
+v0.6.1 fixes parser process cleanup after attachment timeouts, preserves exact sheet-range statistics and source facts, and adds literal text-field hints and final result-budget checks. See the [closeout record](docs/evidence/issue202-multimodal-attachments/closeout-20261022.md) for the tested MiniMax/Kimi combinations, first failures and explicit retries.
 
 ---
 
@@ -247,7 +249,7 @@ DLR focuses on **developing and running independent Adapters**, not Workflow / D
 ```bash
 git clone https://github.com/john-ops-lab/DataLinkRuntime.git
 cd DataLinkRuntime
-git checkout v0.6.0
+git checkout v0.6.1
 
 cp .env.example .env
 ```
@@ -367,8 +369,8 @@ Use `DLR_ADMIN_TOKEN` from `.env` for the first Web Console login.
 
 ## Upgrading an existing deployment
 
-- **v0.5.x → v0.6.0 adds no database migration**; the final revision remains `0046_issue166_retire_ai_history`. Back up the database and material data, and preserve Worker runtime and recovery directories, persistent volumes, Tokens, and the Master Key.
-- Wait for running tasks and cleanup operations to finish before stopping the old Control and Worker. Check out `v0.6.0`, then build, migrate, and start Control, Worker, and Web with the same `.env`, Compose overlays, and persistent volumes.
+- **v0.5.x / v0.6.0 → v0.6.1 adds no database migration**; the final revision remains `0046_issue166_retire_ai_history`. Back up the database and material data, and preserve Worker runtime and recovery directories, persistent volumes, Tokens, and the Master Key.
+- Wait for running tasks and cleanup operations to finish before stopping the old Control and Worker. Check out `v0.6.1`, then build, migrate, and start Control, Worker, and Web with the same `.env`, Compose overlays, and persistent volumes.
 - AI Assist now uses the pinned Pydantic AI and SDKs for all three protocols; existing model settings and credentials remain valid. The runtime selector is no longer available. See the [migration record](docs/testing/issue213-pydantic-b5.md) for application rollback and known validation limits.
 - Both automatic-cleanup switches require an updated Worker. Saved settings remain in effect; deployments without saved settings keep their environment defaults. Invalid settings suspend automatic cleanup while the node continues working, without relaxing other cache protections. See [cache management](docs/en/issue139-cache-governance.md).
 - For v0.4.3 or earlier, first check the [v0.4.4 upgrade notes](https://github.com/john-ops-lab/DataLinkRuntime/releases/tag/v0.4.4), especially AI history retirement and backup requirements. Cross-server Worker pools and high availability (#129) are outside this release.
