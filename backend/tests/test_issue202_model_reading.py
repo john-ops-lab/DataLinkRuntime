@@ -408,6 +408,51 @@ def test_truncated_range_retains_complete_facts_identity_and_exact_followup(valu
     assert data["omitted_merged_ranges"] == 2 and data["merged_ranges_complete"] is False
 
 
+@pytest.mark.parametrize("sheet_length", [31, 128])
+def test_redaction_expanded_attachment_metadata_fails_within_budget(sheet_length) -> None:
+    reader = Reader()
+    sheet = "a" * sheet_length
+    reader.read_sheet = lambda *args, **kwargs: AttachmentReadResult(
+        {
+            "source_sha256": hashlib.sha256(b"source").hexdigest(),
+            "representation_revision": "dlr-documents-v2-docling2.138-lo26.8-range-facts",
+            "value_origin": "source_file",
+            "rendered_values_origin": "libreoffice_recalculation",
+            "cell_summary": {
+                "sheet": sheet,
+                "range": "A1:Z5",
+                "value_origin": "source_file",
+                "total_cells": 130,
+                "non_empty_cells": 130,
+                "empty_cells": 0,
+                "counting": "raw_value_not_null_or_empty_string;zero_false_and_formulas_count",
+                "non_empty_by_column": {chr(65 + i): 5 for i in range(26)},
+                "omitted_column_counts": 0,
+                "formula_cells": 0,
+                "missing_formula_caches": 0,
+                "formula_status": "source_formula",
+            },
+            "cells": [
+                {"coordinate": f"{chr(65 + col)}{row}", "raw_value": "a" * 80}
+                for row in range(1, 6)
+                for col in range(26)
+            ],
+            "merged_ranges": [f"A{i}:B{i}" for i in range(6, 14)],
+            "merged_ranges_scope": "requested_range_intersections",
+        }
+    )
+    result = tools.execute_tool_call(
+        "read_attachment_sheet",
+        json.dumps({"attachment_ref": "ref-1", "sheet": sheet, "range": "A1:Z5"}),
+        "a",
+        context=tool_context(reader),
+    )
+    assert result.status == "error" and result.error_code == tools.CODE_FAILED
+    assert len(result.model_content) <= tools.MAX_TOOL_RESULT_CHARS
+    assert sheet not in result.model_content
+    assert "metadata" not in result.model_content
+
+
 @pytest.mark.parametrize("correct_final", [False, True])
 def test_service_reader_hook_and_selected_capability(
     api_client, monkeypatch, session_factory, correct_final

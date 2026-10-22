@@ -901,6 +901,14 @@ def _execute_one(
     if len(encoded) > MAX_TOOL_RESULT_CHARS:
         result = _truncate_result(result, redact_values)
         truncated = True
+    # Short credential redaction can expand required metadata or alter the
+    # payload's tool label, and JSON escaping can grow a bounded excerpt.
+    # Check the actual attachment wire result and fail without dropping facts.
+    if (
+        spec.name in _ATTACHMENT_TOOLS
+        and len(json.dumps(result, ensure_ascii=False, sort_keys=True)) > MAX_TOOL_RESULT_CHARS
+    ):
+        raise ToolFailure(CODE_FAILED, "attachment metadata exceeds result budget")
     return result, truncated, media
 
 
