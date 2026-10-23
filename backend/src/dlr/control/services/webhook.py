@@ -177,6 +177,10 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
     if adapter.adapter_type != "webhook":
         raise domain_error(409, "adapter_type_mismatch", "Only webhook Adapters support Webhook")
     _require_not_archived(adapter)
+    if data.enabled:
+        from dlr.control.services.subscription_guards import require_no_subscription
+
+        require_no_subscription(session, adapter.id)
     webhook = session.scalar(
         select(AdapterWebhook).where(AdapterWebhook.adapter_id == adapter_id).with_for_update()
     )

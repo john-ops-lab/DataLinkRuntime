@@ -310,6 +310,7 @@
   "history": {
     "activeTrigger": "主动触发",
     "scheduledTrigger": "定时触发",
+    "subscriptionTrigger": "事件订阅触发",
     "webhookTrigger": "Webhook 触发",
     "unknownTrigger": "{{trigger}}",
     "scheduledFor": "计划 {{time}}",

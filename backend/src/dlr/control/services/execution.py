@@ -276,6 +276,10 @@ def _create_execution_locked(
             )
         return existing
 
+    from dlr.control.services.subscription_guards import require_subscription_unlocked
+
+    require_subscription_unlocked(session, adapter.id)
+
     # A Schedule run-now must take the same Schedule lock as the Scheduler,
     # but it never mutates the row or its cursor.
     if schedule is None and adapter.run_mode == "schedule":

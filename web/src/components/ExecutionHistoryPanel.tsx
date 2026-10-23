@@ -48,7 +48,7 @@ function errorMessage(error: unknown): string {
   return userErrorMessage(error);
 }
 
-/** M5.5.10：用户侧触发方式只保留主动/定时/Webhook 三种；历史兼容值原样兜底。 */
+/** Known trigger labels; preserve unknown historical values. */
 function triggerLabel(
   trigger: string,
   translate: (key: string, options?: Record<string, unknown>) => string,
@@ -61,6 +61,9 @@ function triggerLabel(
   }
   if (trigger === "webhook") {
     return translate("history.webhookTrigger");
+  }
+  if (trigger === "subscription") {
+    return translate("history.subscriptionTrigger");
   }
   return translate("history.unknownTrigger", { trigger });
 }

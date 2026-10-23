@@ -226,6 +226,19 @@ def update_credential(session: Session, credential_id: int, data: CredentialUpda
 
 def delete_credential(session: Session, credential_id: int) -> None:
     credential = get_credential(session, credential_id)
+    from dlr.control.models.subscription import ActivationCredentialReference
+
+    if (
+        session.scalar(
+            select(ActivationCredentialReference.activation_id)
+            .where(ActivationCredentialReference.credential_id == credential_id)
+            .limit(1)
+        )
+        is not None
+    ):
+        raise domain_error(
+            409, "credential_in_use", "Credential is retained by a subscription activation"
+        )
     try:
         session.delete(credential)
         session.commit()

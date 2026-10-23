@@ -539,7 +539,7 @@ export const api = {
 
   listExecutions: (
     adapterId: number,
-    options: { limit?: number; before_id?: number; trigger?: "manual" | "schedule" | "webhook" } = {},
+    options: { limit?: number; before_id?: number; trigger?: "manual" | "schedule" | "webhook" | "subscription" } = {},
   ): Promise<ExecutionHistoryPage> => {
     const params = new URLSearchParams();
     params.set("limit", String(options.limit ?? 50));

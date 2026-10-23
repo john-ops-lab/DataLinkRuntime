@@ -32,8 +32,10 @@ def active_execution(session: Session, adapter_id: int) -> Execution | None:
 
 def runtime_state(session: Session, adapter: Adapter) -> AdapterRuntimeState:
     """Load one Adapter's runtime state without repeating the active query."""
+    from dlr.control.services.subscription_guards import runtime_guard
+
     active = active_execution(session, adapter.id)
-    if active is not None:
+    if active is not None or runtime_guard(session, adapter.id):
         return AdapterRuntimeState(locked=True, active_execution=active)
     if adapter.adapter_type == "task":
         enabled = session.scalar(
@@ -47,10 +49,13 @@ def runtime_state(session: Session, adapter: Adapter) -> AdapterRuntimeState:
 
 
 def runtime_states(session: Session, adapters: list[Adapter]) -> dict[int, AdapterRuntimeState]:
-    """Load runtime states for a Catalog response in three bounded queries."""
+    """Load runtime states for a Catalog response in four bounded queries."""
     if not adapters:
         return {}
+    from dlr.control.services.subscription_guards import locked_adapter_ids
+
     adapter_ids = [adapter.id for adapter in adapters]
+    subscription_locked = locked_adapter_ids(session, adapter_ids)
     active_by_adapter = {
         execution.adapter_id: execution
         for execution in session.scalars(
@@ -85,7 +90,7 @@ def runtime_states(session: Session, adapters: list[Adapter]) -> dict[int, Adapt
             else adapter.id in enabled_webhook_ids
         )
         states[adapter.id] = AdapterRuntimeState(
-            locked=active is not None or trigger_enabled,
+            locked=active is not None or trigger_enabled or adapter.id in subscription_locked,
             active_execution=active,
         )
     return states
@@ -98,6 +103,9 @@ def adapter_runtime_locked(session: Session, adapter: Adapter) -> bool:
 
 def require_runtime_unlocked(session: Session, adapter: Adapter) -> None:
     """Reject runtime-affecting writes with one stable, actionable 409."""
+    from dlr.control.services.subscription_guards import require_subscription_unlocked
+
+    require_subscription_unlocked(session, adapter.id)
     if adapter_runtime_locked(session, adapter):
         # Local import avoids an adapter <-> adapter_runtime import cycle.
         from dlr.control.services.adapter import domain_error

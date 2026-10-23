@@ -36,6 +36,7 @@ from dlr.control.api import (
     package_sources,
     portable,
     schedules,
+    subscriptions,
     templates,
     users,
     webhooks,
@@ -52,6 +53,10 @@ from dlr.control.services.rabbitmq import topology_bootstrap_loop
 from dlr.control.services.retention import retention_loop
 from dlr.control.services.schedule import scheduler_loop
 from dlr.control.services.secrets import bootstrap_demo_credentials
+from dlr.control.services.subscription_management import (
+    subscription_maintenance_loop,
+    subscription_quota_audit_loop,
+)
 from dlr.control.template_catalog import get_template_catalog
 
 logger = logging.getLogger("dlr.control.app")
@@ -98,6 +103,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     admission_task = asyncio.create_task(admission_reconciler_loop())
     attempt_task = asyncio.create_task(attempt_reconciler_loop())
     infrastructure_dlq_task = asyncio.create_task(infrastructure_dlq_loop())
+    subscription_task = asyncio.create_task(subscription_maintenance_loop())
+    quota_audit_task = asyncio.create_task(subscription_quota_audit_loop())
     rabbitmq_tasks: tuple[asyncio.Task[None], ...] = ()
     if settings.rabbitmq_url:
         rabbitmq_tasks = (
@@ -117,6 +124,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             admission_task,
             attempt_task,
             infrastructure_dlq_task,
+            subscription_task,
+            quota_audit_task,
             *rabbitmq_tasks,
         ):
             background_task.cancel()
@@ -138,6 +147,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await attempt_task
         with contextlib.suppress(asyncio.CancelledError):
             await infrastructure_dlq_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await subscription_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await quota_audit_task
         for background_task in rabbitmq_tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await background_task
@@ -235,6 +248,16 @@ def create_app() -> FastAPI:
         the Template Gallery. Other API routes retain FastAPI's default
         validation response for compatibility.
         """
+        if request.url.path.startswith("/api/event-subscriptions"):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "subscription_config_invalid",
+                        "message": "Event subscription request is invalid",
+                    }
+                },
+            )
         if request.url.path.startswith("/api/portable/") or (
             request.url.path.startswith("/api/adapters/")
             and request.url.path.endswith(("/portable-preview", "/templates"))
@@ -366,6 +389,7 @@ def create_app() -> FastAPI:
     app.include_router(builtin_packages.worker_router)
     app.include_router(knowledge_sources.router)
     app.include_router(schedules.router)
+    app.include_router(subscriptions.router)
     app.include_router(webhooks.router)
     # M5.4.3: the external Webhook ingress has its own Bearer authentication
     # and must never require the admin token.

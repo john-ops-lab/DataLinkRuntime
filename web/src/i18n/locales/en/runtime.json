@@ -310,6 +310,7 @@
   "history": {
     "activeTrigger": "Manual trigger",
     "scheduledTrigger": "Schedule trigger",
+    "subscriptionTrigger": "Event subscription",
     "webhookTrigger": "Webhook trigger",
     "unknownTrigger": "{{trigger}}",
     "scheduledFor": "Scheduled {{time}}",

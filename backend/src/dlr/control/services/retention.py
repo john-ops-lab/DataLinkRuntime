@@ -62,15 +62,23 @@ def retention_policies() -> tuple[RetentionPolicy, ...]:
             settings.execution_retention_schedule_days,
             settings.execution_retention_schedule_max_per_adapter,
         ),
+        RetentionPolicy(
+            "subscription",
+            settings.execution_retention_task_days,
+            settings.execution_retention_task_max_per_adapter,
+        ),
     )
 
 
 def _terminal_query(policy: RetentionPolicy, adapter_id: int) -> Select[tuple[int]]:
+    from dlr.control.services.subscription_delivery import execution_protected
+
     return select(Execution.id).where(
         Execution.adapter_id == adapter_id,
         Execution.trigger == policy.trigger,
         Execution.status.in_(TERMINAL_STATUSES),
         Execution.admission_released_at.is_not(None),
+        ~execution_protected(),
         ~exists(
             select(1).where(
                 ExecutionIdempotencyRecord.execution_id == Execution.id,
@@ -101,6 +109,8 @@ def _adapter_ids(session: Session, policy: RetentionPolicy) -> list[int]:
 def _delete_batch(session: Session, ids: list[int]) -> int:
     if not ids:
         return 0
+    from dlr.control.services.subscription_delivery import execution_protected
+
     result = cast(
         Any,
         session.execute(
@@ -108,6 +118,7 @@ def _delete_batch(session: Session, ids: list[int]) -> int:
                 Execution.id.in_(ids),
                 Execution.status.in_(TERMINAL_STATUSES),
                 Execution.admission_released_at.is_not(None),
+                ~execution_protected(),
                 ~exists(
                     select(1).where(
                         ExecutionIdempotencyRecord.execution_id == Execution.id,

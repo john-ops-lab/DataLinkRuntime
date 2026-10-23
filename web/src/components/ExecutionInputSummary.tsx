@@ -19,6 +19,9 @@ function snapshotFor(execution: Execution): ExecutionInputSnapshot | null {
   if (!isRecord(candidate) || typeof candidate.source_type !== "string") {
     return null;
   }
+  if (candidate.source_type === "json" && candidate.revision === null && execution.trigger === "subscription") {
+    return { source_type: "json", revision: null };
+  }
   if (
     (candidate.source_type === "none" || candidate.source_type === "json" || candidate.source_type === "remote_files") &&
     typeof candidate.revision === "number"
