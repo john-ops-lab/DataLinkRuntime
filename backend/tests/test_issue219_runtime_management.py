@@ -68,6 +68,7 @@ class RecordingSource:
 def test_connection_uses_implemented_registry_without_enabling(
     api_client, monkeypatch, session_factory
 ):
+    monkeypatch.setattr(management, "AVAILABLE_SOURCES", frozenset())
     _, _, sub = setup_subscription(api_client, monkeypatch)
     source = RecordingSource()
     manager = runtime.SubscriptionRuntimeManager(session_factory, {"kafka": source})

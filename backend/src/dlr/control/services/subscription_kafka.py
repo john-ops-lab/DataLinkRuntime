@@ -885,6 +885,11 @@ class KafkaSourceRunner:
                             and capacity_ready(session, context)
                         )
                     if ready and tracker.snapshot()[0] == token:
+                        # A disposition can advance DB custody with no following
+                        # message. Confirm that safe snapshot before resuming.
+                        self._ack(context, transport, tracker, token, {part: plan})
+                        if tracker.snapshot()[0] != token or context.stop_event.is_set():
+                            continue
                         transport.seek(part, plan.offset)
                         transport.resume((part,))
                         plans[part] = plan

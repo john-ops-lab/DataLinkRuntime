@@ -474,7 +474,8 @@ def test_capacity_pause_resumes_from_db_after_explicit_pending_disposition(conte
 
     transport = RecoveringTransport(context, [record(0), record(1)])
     kafka.KafkaSourceRunner(lambda *args: transport).run(context)
-    assert [item[P0] for item in transport.commits] == [0, 1, 2]
+    # Resuming confirms the durable safe snapshot even without a following record.
+    assert [item[P0] for item in transport.commits] == [0, 1, 1, 2]
     assert (P0, 1) in transport.seeks
     with context.session_factory() as session:
         receipts = session.scalars(select(EventReceipt).order_by(EventReceipt.sequence)).all()

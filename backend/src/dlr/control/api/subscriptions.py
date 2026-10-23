@@ -11,12 +11,21 @@ from starlette.concurrency import run_in_threadpool
 from dlr.common.config import settings
 from dlr.control import db
 from dlr.control.models.subscription import (
+    ActivationCredentialReference,
+    DeliveryDisposition,
     EventDelivery,
     EventReceipt,
     EventSubscription,
+    SourceCheckpoint,
+    SubscriptionActivation,
+    SubscriptionConfigVersion,
     SubscriptionQuota,
 )
 from dlr.control.schemas.subscription import (
+    ActivationReference,
+    ActivationResponse,
+    CheckpointPage,
+    CheckpointResponse,
     EventPage,
     EventResponse,
     QuotaAuditResponse,
@@ -31,8 +40,14 @@ from dlr.control.schemas.subscription import (
     SubscriptionReset,
     SubscriptionResponse,
     SubscriptionUpdate,
+    UnacceptedSkip,
 )
-from dlr.control.security import Principal, require_business_principal, require_principal
+from dlr.control.security import (
+    Principal,
+    require_admin_principal,
+    require_business_principal,
+    require_principal,
+)
 from dlr.control.services import adapter_access
 from dlr.control.services import subscription_management as management
 from dlr.control.services.adapter import domain_error
@@ -43,7 +58,12 @@ DbSession = Annotated[Session, Depends(db.get_session)]
 CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
 
 
-def serialize(session: Session, subscription: EventSubscription) -> SubscriptionResponse:
+def serialize(
+    session: Session, subscription: EventSubscription, principal: Principal
+) -> SubscriptionResponse:
+    from dlr.control.services.subscription_delivery import DEFAULT_LIMITS, GLOBAL_LIMITS
+
+    current = management.current_config(session, subscription)
     quota = session.get(SubscriptionQuota, f"sub:{subscription.id}")
     pending = session.scalar(
         select(func.min(EventReceipt.first_received_at)).where(
@@ -58,6 +78,17 @@ def serialize(session: Session, subscription: EventSubscription) -> Subscription
             .group_by(EventReceipt.state)
         ).all()
     }
+    counts["accepted"] = sum(counts.values())
+    counts["replayed"] = (
+        session.scalar(
+            select(func.count())
+            .select_from(EventDelivery)
+            .join(EventReceipt, EventReceipt.id == EventDelivery.receipt_id)
+            .where(EventReceipt.subscription_id == subscription.id, EventDelivery.ordinal > 1)
+        )
+        or 0
+    )
+    counts["coalesced"] = counts.get("superseded", 0)
     if subscription.delivery_state == "repair":
         delivery_state = "repair"
     elif counts.get("failed", 0):
@@ -86,7 +117,9 @@ def serialize(session: Session, subscription: EventSubscription) -> Subscription
         activation_id=subscription.activation_id,
         repair_revision_id=subscription.repair_revision_id,
         last_error_code=subscription.last_error_code,
-        config=management.current_config(session, subscription).config,
+        config=current.config,
+        limits={**DEFAULT_LIMITS, **current.config.get("limits", {})},
+        global_limits=dict(GLOBAL_LIMITS),
         quota={
             key: getattr(quota, key) if quota else 0
             for key in (
@@ -95,12 +128,18 @@ def serialize(session: Session, subscription: EventSubscription) -> Subscription
                 "history_count",
                 "history_bytes",
                 "dedupe_count",
+                "reserved_control_count",
+                "reserved_control_bytes",
+                "rate_count",
             )
         },
         oldest_pending_at=pending,
         event_counts=counts,
         available=settings.event_subscriptions_enabled
         and subscription.source_type in management.AVAILABLE_SOURCES,
+        access_level=adapter_access.require_adapter_access(
+            session, subscription.adapter_id, principal
+        ).level,
         created_at=subscription.created_at,
         updated_at=subscription.updated_at,
     )
@@ -128,6 +167,182 @@ def capabilities() -> dict[str, Any]:
     }
 
 
+@router.get(
+    "/api/event-subscriptions/runtime-status", dependencies=[Depends(require_admin_principal)]
+)
+def runtime_status() -> dict[str, int]:
+    """Process-wide counters for administrators; no source identities or native RPCs."""
+    from dlr.control.services.subscription_runtime import get_runtime
+
+    runtime = get_runtime()
+    return {
+        "active_count": runtime.active_count,
+        "application_buffer_used_bytes": runtime.buffer.used_bytes,
+        "application_buffer_peak_bytes": runtime.buffer.peak_bytes,
+        "application_buffer_limit_bytes": runtime.buffer.limit_bytes,
+    }
+
+
+def _safe_position(value: dict[str, Any]) -> dict[str, Any]:
+    keys = {
+        "topic",
+        "partition",
+        "offset",
+        "cluster_id",
+        "topic_id",
+        "reset_pending",
+        "resource_version",
+        "batch_id",
+        "scope_fingerprint",
+    }
+    return {
+        key: item
+        for key, item in value.items()
+        if key in keys and (isinstance(item, bool) or isinstance(item, str) and len(item) <= 4096)
+    }
+
+
+@router.get("/api/event-subscriptions/{subscription_id}/checkpoints", response_model=CheckpointPage)
+def list_checkpoints(
+    subscription_id: int,
+    session: DbSession,
+    principal: CurrentPrincipal,
+    before_id: int | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> CheckpointPage:
+    sub = management.get_subscription(session, subscription_id, principal)
+    query = select(SourceCheckpoint).where(
+        SourceCheckpoint.subscription_id == sub.id,
+        SourceCheckpoint.source_epoch == sub.source_epoch,
+    )
+    total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
+    if before_id is not None:
+        query = query.where(SourceCheckpoint.id < before_id)
+    rows = list(session.scalars(query.order_by(SourceCheckpoint.id.desc()).limit(limit + 1)))
+    items = []
+    for row in rows[:limit]:
+        fault = row.blocked_unaccepted
+        summary = None
+        if fault is not None:
+            summary = {
+                key: fault.get(key)
+                for key in ("code", "source_event_id", "size", "content_hash", "duplicate_count")
+            }
+            summary["position"] = _safe_position(fault.get("position", {}))
+        items.append(
+            CheckpointResponse(
+                id=row.id,
+                shard=row.shard,
+                source_epoch=row.source_epoch,
+                position=_safe_position(row.position),
+                confirmed_position=_safe_position(row.confirmed_position),
+                assignment_generation=row.assignment_generation,
+                blocked_receipt_id=row.blocked_receipt_id,
+                blocked_unaccepted=summary,
+                source_lag=None,
+            )
+        )
+    return CheckpointPage(
+        items=items, total=total, next_before_id=rows[limit - 1].id if len(rows) > limit else None
+    )
+
+
+@router.get(
+    "/api/event-subscriptions/{subscription_id}/activations/{activation_id}",
+    response_model=ActivationResponse,
+)
+def get_activation(
+    subscription_id: int, activation_id: int, session: DbSession, principal: CurrentPrincipal
+) -> ActivationResponse:
+    management.get_subscription(session, subscription_id, principal)
+    activation = session.get(SubscriptionActivation, activation_id)
+    if activation is None or activation.subscription_id != subscription_id:
+        raise domain_error(404, "subscription_activation_not_found", "Activation not found")
+    config = session.get(SubscriptionConfigVersion, activation.config_version_id)
+    assert config is not None
+    return ActivationResponse(
+        id=activation.id,
+        config_version=config.version,
+        source_epoch=config.source_epoch,
+        revision_id=activation.revision_id,
+        worker_id=activation.worker_id,
+        source_credential_id=config.source_credential_id,
+        credential_refs=[
+            ActivationReference(
+                credential_id=row.credential_id, env_key=row.env_key, field=row.field
+            )
+            for row in session.scalars(
+                select(ActivationCredentialReference)
+                .where(ActivationCredentialReference.activation_id == activation.id)
+                .order_by(ActivationCredentialReference.env_key)
+            )
+        ],
+    )
+
+
+@router.post("/api/event-subscriptions/{subscription_id}/skip-unaccepted")
+def skip_unaccepted(
+    subscription_id: int, payload: UnacceptedSkip, session: DbSession, principal: CurrentPrincipal
+) -> dict[str, Any]:
+    from dlr.control.services import subscription_delivery as delivery
+
+    sub = management.get_subscription(session, subscription_id, principal, "edit", lock=True)
+    management.check_version(sub, payload.expected_config_version)
+    old = session.scalar(
+        select(DeliveryDisposition).where(
+            DeliveryDisposition.subscription_id == sub.id,
+            DeliveryDisposition.request_id == payload.request_id,
+        )
+    )
+    if old is not None:
+        if (
+            old.action != "skip_unaccepted"
+            or old.actor_id != principal.user_id
+            or old.reason != payload.reason
+            or old.details.get("shard") != payload.shard
+            or old.details.get("source_event_id") != payload.source_event_id
+            or old.details.get("source_epoch") != sub.source_epoch
+        ):
+            raise domain_error(409, "event_disposition_conflict", "Disposition request differs")
+        return {"disposition_id": old.id, "outcome": "skipped_without_processing"}
+    checkpoint = session.scalar(
+        select(SourceCheckpoint)
+        .where(
+            SourceCheckpoint.subscription_id == sub.id,
+            SourceCheckpoint.source_epoch == sub.source_epoch,
+            SourceCheckpoint.shard == payload.shard,
+        )
+        .with_for_update()
+    )
+    fault = checkpoint.blocked_unaccepted if checkpoint is not None else None
+    if (
+        checkpoint is None
+        or fault is None
+        or fault.get("source_event_id") != payload.source_event_id
+    ):
+        raise domain_error(409, "event_diagnosis_invalid", "No matching unaccepted source fault")
+    if sub.source_type != "kafka":
+        raise domain_error(409, "source_history_gap", "Kubernetes fault requires a new full sync")
+    try:
+        offset = max(
+            int(fault["position"]["offset"]) + 1, int(checkpoint.position.get("offset", "0"))
+        )
+    except (ValueError, TypeError, KeyError):
+        raise domain_error(409, "event_diagnosis_invalid", "Source offset is unavailable") from None
+    disposition = delivery.skip_unaccepted(
+        session,
+        sub.id,
+        payload.shard,
+        payload.request_id,
+        principal.user_id,
+        payload.reason,
+        payload.source_event_id,
+        {**checkpoint.position, "offset": str(offset)},
+    )
+    commit(session)
+    return {"disposition_id": disposition.id, "outcome": "skipped_without_processing"}
+
+
 @router.get("/api/event-subscriptions", response_model=SubscriptionPage)
 def list_subscriptions(
     session: DbSession,
@@ -153,7 +368,7 @@ def list_subscriptions(
         query = query.where(EventSubscription.id < before_id)
     rows = list(session.scalars(query.order_by(EventSubscription.id.desc()).limit(limit + 1)))
     return SubscriptionPage(
-        items=[serialize(session, item) for item in rows[:limit]],
+        items=[serialize(session, item, principal) for item in rows[:limit]],
         total=total,
         next_before_id=rows[limit - 1].id if len(rows) > limit else None,
     )
@@ -171,14 +386,16 @@ def create_subscription(
         raise domain_error(
             409, "subscription_binding_conflict", "Adapter or source group already bound"
         ) from None
-    return serialize(session, subscription)
+    return serialize(session, subscription, principal)
 
 
 @router.get("/api/event-subscriptions/{subscription_id}", response_model=SubscriptionResponse)
 def get_subscription(
     subscription_id: int, session: DbSession, principal: CurrentPrincipal
 ) -> SubscriptionResponse:
-    return serialize(session, management.get_subscription(session, subscription_id, principal))
+    return serialize(
+        session, management.get_subscription(session, subscription_id, principal), principal
+    )
 
 
 @router.patch("/api/event-subscriptions/{subscription_id}", response_model=SubscriptionResponse)
@@ -190,7 +407,7 @@ def update_subscription(
 ) -> SubscriptionResponse:
     subscription = management.update_subscription(session, subscription_id, payload, principal)
     commit(session)
-    return serialize(session, subscription)
+    return serialize(session, subscription, principal)
 
 
 @router.post(
@@ -209,7 +426,7 @@ def enable_subscription(
         session, subscription_id, payload.expected_config_version, principal
     )
     commit(session)
-    return serialize(session, subscription)
+    return serialize(session, subscription, principal)
 
 
 @router.post(
@@ -225,7 +442,7 @@ def disable_subscription(
         session, subscription_id, payload.expected_config_version, principal
     )
     commit(session)
-    return serialize(session, subscription)
+    return serialize(session, subscription, principal)
 
 
 @router.delete("/api/event-subscriptions/{subscription_id}", status_code=204)
@@ -326,7 +543,7 @@ def clone_subscription(
     clone = management.clone_for_adapter(session, source.adapter_id, payload.target_adapter_id)
     assert clone is not None
     commit(session)
-    return serialize(session, clone)
+    return serialize(session, clone, principal)
 
 
 @router.post(
@@ -340,7 +557,7 @@ def reset_subscription(
 ) -> SubscriptionResponse:
     subscription = management.reset_subscription(session, subscription_id, payload, principal)
     commit(session)
-    return serialize(session, subscription)
+    return serialize(session, subscription, principal)
 
 
 @router.post(
@@ -356,7 +573,7 @@ def enter_repair(
         session, subscription_id, payload.expected_config_version, principal
     )
     commit(session)
-    return serialize(session, subscription)
+    return serialize(session, subscription, principal)
 
 
 @router.post("/api/event-subscriptions/{subscription_id}/repair/revisions", status_code=201)
@@ -381,7 +598,7 @@ def exit_repair(
         session, subscription_id, payload.expected_config_version, principal
     )
     commit(session)
-    return serialize(session, subscription)
+    return serialize(session, subscription, principal)
 
 
 def _event(session: Session, subscription_id: int, receipt_id: int) -> EventReceipt:
@@ -401,6 +618,7 @@ def serialize_event(session: Session, receipt: EventReceipt) -> EventResponse:
         id=receipt.id,
         source_event_id=receipt.source_event_id,
         source_epoch=receipt.source_epoch,
+        activation_id=receipt.activation_id,
         state=receipt.state,
         shard=receipt.shard,
         sequence=receipt.sequence,
@@ -415,6 +633,8 @@ def serialize_event(session: Session, receipt: EventReceipt) -> EventResponse:
                 "execution_id": item.execution_id,
                 "state": item.state,
                 "revision_override_id": item.revision_override_id,
+                "activation_override_id": item.activation_override_id,
+                "effective_activation_id": item.activation_override_id or receipt.activation_id,
             }
             for item in deliveries
         ],

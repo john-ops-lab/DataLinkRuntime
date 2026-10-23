@@ -132,6 +132,7 @@ def stop_and_ack(client, session_factory, sub):
 def test_default_off_and_registry_empty(api_client, monkeypatch, session_factory):
     from dlr.control.services import subscription_runtime
 
+    monkeypatch.setattr(management, "AVAILABLE_SOURCES", frozenset())
     monkeypatch.setattr(
         subscription_runtime,
         "_runtime",

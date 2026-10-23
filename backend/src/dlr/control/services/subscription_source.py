@@ -35,12 +35,18 @@ class ApplicationBufferBudget:
             raise ValueError("Invalid application buffer limit")
         self.limit_bytes = limit_bytes
         self._used = 0
+        self._peak = 0
         self._lock = threading.Lock()
 
     @property
     def used_bytes(self) -> int:
         with self._lock:
             return self._used
+
+    @property
+    def peak_bytes(self) -> int:
+        with self._lock:
+            return self._peak
 
     def reserve(self, size: int) -> bool:
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
@@ -49,6 +55,7 @@ class ApplicationBufferBudget:
             if self._used + size > self.limit_bytes:
                 return False
             self._used += size
+            self._peak = max(self._peak, self._used)
             return True
 
     def release(self, size: int) -> None:

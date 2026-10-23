@@ -9,10 +9,10 @@ import uuid
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import exists, false, func, or_, select
+from sqlalchemy import Select, exists, false, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from dlr.common.config import settings
 from dlr.common.jcs import canonicalize
@@ -52,12 +52,37 @@ from dlr.control.services.input_config import database_now
 logger = logging.getLogger("dlr.control.subscriptions")
 # Public enablement follows delivery acceptance, independently from implemented
 # connectors that can already perform a bounded connection diagnostic.
-AVAILABLE_SOURCES: frozenset[str] = frozenset()
+AVAILABLE_SOURCES: frozenset[str] = frozenset({"kafka"})
 NONTERMINAL = ("queued", "running", "retry_wait")
 MAX_ENABLED_SUBSCRIPTIONS = 16
 _delivery_cursor = 0
+_delivery_upper = 0
 _subscription_cursor = 0
+_subscription_upper = 0
 _quota_cursor = 0
+_quota_upper = 0
+
+
+def bounded_page(
+    session: Session,
+    query: Select[tuple[int]],
+    identity: InstrumentedAttribute[int],
+    cursor: int,
+    upper: int,
+) -> tuple[list[int], int, int]:
+    """A finite sweep must revisit old work despite a continuously growing tail."""
+    if not upper:
+        upper = session.scalar(query.with_only_columns(func.max(identity)).order_by(None)) or 0
+    if not upper:
+        return [], 0, 0
+    rows = list(
+        session.scalars(
+            query.where(identity > cursor, identity <= upper).order_by(identity).limit(100)
+        )
+    )
+    if not rows or rows[-1] >= upper:
+        return rows, 0, 0
+    return rows, rows[-1], upper
 
 
 def _flush(session: Session) -> None:
@@ -719,28 +744,23 @@ def maintenance_tick() -> None:
     from dlr.control import db
     from dlr.control.services import subscription_delivery as delivery
 
-    global _delivery_cursor, _subscription_cursor
+    global _delivery_cursor, _delivery_upper, _subscription_cursor, _subscription_upper
 
     with db.SessionLocal() as session:
-        deliveries = list(
-            session.scalars(
-                select(EventDelivery.id)
-                .where(EventDelivery.state.in_(("pending", "processing")))
-                .where(EventDelivery.id > _delivery_cursor)
-                .order_by(EventDelivery.id)
-                .limit(100)
-            )
+        deliveries, _delivery_cursor, _delivery_upper = bounded_page(
+            session,
+            select(EventDelivery.id).where(EventDelivery.state.in_(("pending", "processing"))),
+            EventDelivery.id,
+            _delivery_cursor,
+            _delivery_upper,
         )
-        subscriptions = list(
-            session.scalars(
-                select(EventSubscription.id)
-                .where(EventSubscription.id > _subscription_cursor)
-                .order_by(EventSubscription.id)
-                .limit(100)
-            )
+        subscriptions, _subscription_cursor, _subscription_upper = bounded_page(
+            session,
+            select(EventSubscription.id),
+            EventSubscription.id,
+            _subscription_cursor,
+            _subscription_upper,
         )
-    _delivery_cursor = deliveries[-1] if deliveries else 0
-    _subscription_cursor = subscriptions[-1] if subscriptions else 0
     for delivery_id in deliveries:
         with db.SessionLocal() as session:
             try:
@@ -782,17 +802,15 @@ def quota_audit_tick() -> None:
     from dlr.control import db
     from dlr.control.services.subscription_delivery import audit_global_quota, audit_quota
 
-    global _quota_cursor
+    global _quota_cursor, _quota_upper
     with db.SessionLocal() as session:
-        ids = list(
-            session.scalars(
-                select(EventSubscription.id)
-                .where(EventSubscription.id > _quota_cursor)
-                .order_by(EventSubscription.id)
-                .limit(100)
-            )
+        ids, _quota_cursor, _quota_upper = bounded_page(
+            session,
+            select(EventSubscription.id),
+            EventSubscription.id,
+            _quota_cursor,
+            _quota_upper,
         )
-    _quota_cursor = ids[-1] if ids else 0
     for subscription_id in ids:
         with db.SessionLocal() as session:
             report = audit_quota(session, subscription_id)

@@ -92,6 +92,8 @@ class CredentialUsageItem(BaseModel):
         "ai_custom_provider",
         "knowledge_source",
         "package_source",
+        "subscription_source",
+        "subscription_activation",
     ]
     name: str
     adapter_id: int | None = None

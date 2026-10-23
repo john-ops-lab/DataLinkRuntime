@@ -1115,7 +1115,12 @@ def skip_unaccepted(
         "next_position": next_position,
     }
     if old is not None:
-        if old.action != "skip_unaccepted" or old.details != details or old.reason != reason:
+        if (
+            old.action != "skip_unaccepted"
+            or old.details != details
+            or old.reason != reason
+            or old.actor_id != actor_id
+        ):
             raise domain_error(409, "event_disposition_conflict", "Disposition request differs")
         return old
     if not request_id or len(request_id) > 128 or not reason.strip() or len(reason) > 4096:

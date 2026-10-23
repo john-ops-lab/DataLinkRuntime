@@ -126,6 +126,22 @@ class SubscriptionDisposition(SubscriptionAction):
         return value
 
 
+class UnacceptedSkip(SubscriptionDisposition):
+    shard: str = Field(min_length=1, max_length=512)
+    source_event_id: str = Field(min_length=1, max_length=128)
+
+    @field_validator("shard", "source_event_id")
+    @classmethod
+    def source_identifier(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("Source identity contains an unsupported character")
+        try:
+            value.encode("utf-8")
+        except UnicodeError:
+            raise ValueError("Source identity must be valid UTF-8") from None
+        return value
+
+
 class SubscriptionReplay(SubscriptionDisposition):
     revision_id: int | None = Field(default=None, gt=0)
     use_current_configuration: bool = False
@@ -167,9 +183,12 @@ class SubscriptionResponse(BaseModel):
     last_error_code: str | None
     config: dict[str, Any]
     quota: dict[str, int]
+    limits: dict[str, int]
+    global_limits: dict[str, int]
     oldest_pending_at: datetime | None
     event_counts: dict[str, int]
     available: bool
+    access_level: Literal["admin", "owner", "edit", "read"] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -184,6 +203,7 @@ class EventResponse(BaseModel):
     id: int
     source_event_id: str
     source_epoch: str
+    activation_id: int
     state: str
     shard: str
     sequence: int
@@ -198,6 +218,41 @@ class EventPage(BaseModel):
     items: list[EventResponse]
     total: int
     next_before_id: int | None
+
+
+class CheckpointResponse(BaseModel):
+    id: int
+    shard: str
+    source_epoch: str
+    position: dict[str, Any]
+    confirmed_position: dict[str, Any]
+    assignment_generation: int
+    blocked_receipt_id: int | None
+    blocked_unaccepted: dict[str, Any] | None
+    # DB custody positions alone cannot establish broker log-end lag.
+    source_lag: int | None = None
+
+
+class CheckpointPage(BaseModel):
+    items: list[CheckpointResponse]
+    total: int
+    next_before_id: int | None
+
+
+class ActivationReference(BaseModel):
+    credential_id: int
+    env_key: str
+    field: str
+
+
+class ActivationResponse(BaseModel):
+    id: int
+    config_version: int
+    source_epoch: str
+    revision_id: int
+    worker_id: int
+    source_credential_id: int | None
+    credential_refs: list[ActivationReference]
 
 
 class QuotaAuditResponse(BaseModel):

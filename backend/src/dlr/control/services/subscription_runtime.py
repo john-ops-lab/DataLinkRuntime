@@ -98,6 +98,7 @@ class SubscriptionRuntimeManager:
         self._supervisor: threading.Thread | None = None
         self._renewer: threading.Thread | None = None
         self._cursor = 0
+        self._upper = 0
 
     @property
     def active_count(self) -> int:
@@ -367,20 +368,17 @@ class SubscriptionRuntimeManager:
                     or lease.generation != owner.context.generation
                 ):
                     self.stop_single(subscription_id)
-            ids = list(
-                session.scalars(
-                    select(EventSubscription.id)
-                    .where(
-                        EventSubscription.id > self._cursor,
-                        EventSubscription.deleted_at.is_(None),
-                        EventSubscription.desired_state == "enabled",
-                        EventSubscription.connection_state != "blocked",
-                    )
-                    .order_by(EventSubscription.id)
-                    .limit(100)
-                )
+            ids, self._cursor, self._upper = management.bounded_page(
+                session,
+                select(EventSubscription.id).where(
+                    EventSubscription.deleted_at.is_(None),
+                    EventSubscription.desired_state == "enabled",
+                    EventSubscription.connection_state != "blocked",
+                ),
+                EventSubscription.id,
+                self._cursor,
+                self._upper,
             )
-        self._cursor = ids[-1] if ids else 0
         for subscription_id in ids:
             with self._lock:
                 retry_at = self._retry.get(subscription_id, (0, 0))[1]
