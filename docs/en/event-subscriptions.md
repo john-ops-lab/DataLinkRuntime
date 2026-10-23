@@ -1,6 +1,15 @@
 # Event subscriptions: management and durable custody
 
-The feature defaults to `DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`. In this branch's B5 candidate, enabling the flag makes `GET /api/event-subscriptions/capabilities` advertise `kafka` and `kubernetes`. Kafka passed B3; the Kubernetes backend passed B4, while its B5 product/browser and remaining real-target gates are still pending. Candidate enablement does not establish final product delivery. The implemented diagnostic registry and public enablement registry currently contain the same two sources; diagnostics remain a separate operation. A successful connection test does not establish business success.
+The feature defaults to `DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`. With the flag enabled, this branch advertises `kafka` and `kubernetes` through `GET /api/event-subscriptions/capabilities`; the public enablement and implemented diagnostic registries contain the same two sources. The representative local business, recovery and browser paths below have been validated. Connection diagnostics are separate and do not establish business success. Exact-HEAD remote PR CI, user acceptance and release remain separate gates.
+
+## Supported source scope
+
+| Source | Resources and modes | Verified connection and runtime scope |
+| --- | --- | --- |
+| Kafka | Exact topics; `per_event`, `partition_serial` | Apache Kafka 4.1.2, single-node KRaft; TLS, SCRAM-SHA-256/512 and isolated PLAINTEXT; capacity applies only to the B3 configuration below |
+| Kubernetes | Pod (`core/v1`), Deployment (`apps/v1`); `per_event` or explicit `state_sync` | Kubernetes 1.35 API, bearer-token references and strict TLS; real Pods contain metadata only and Deployments use `replicas=0` |
+
+Other Kubernetes resources, arbitrary API paths and authentication mechanisms, and other Kafka authentication mechanisms or arbitrary broker/platform combinations are outside the verified scope. Kubernetes has no 30-minute sustained-capacity result. Metadata API reconciliation does not establish workload health.
 
 ## Management and authorization
 
@@ -37,9 +46,9 @@ Current-configuration replay requires a disabled subscription with no other unfi
 
 Normal manual tests retain the saved Task InputConfig. Backend guards block runtime mutations and ordinary triggers while a subscription receives, stops, drains or repairs. A bound subscription must be explicitly deleted after stopping/draining before changing the Task trigger mode or deleting its Adapter.
 
-### Kubernetes batch APIs and B5 candidate status
+### Kubernetes batch APIs and Web operations
 
-These backend interfaces passed B4. The B5 candidate permits Kubernetes enablement through the ordinary authorized API when the feature flag is enabled; no test-only public bypass is required. New subscriptions still start disabled. The Web must use capabilities to expose supported sources; its B5 workflow and final delivery status remain subject to separate acceptance. Saving a configuration or passing diagnostics does not start reception.
+These backend interfaces passed B4, with B5 public-path, representative recovery and browser validation added below. The ordinary authorized API permits Kubernetes enablement when the feature flag is enabled; new subscriptions still start disabled. The Web offers the intersection of implemented sources and capabilities. Saving configuration or passing diagnostics does not start reception. After stopping and draining, an explicit `new_epoch` may switch sources. Historical events and batches retain their original source, activation and relationships: an old event opens its own batch rather than reinterpreting history through the current configuration.
 
 | Method and suffix | Behavior |
 | --- | --- |
@@ -138,7 +147,7 @@ Consumer close disables automatic commit. Explicit commit/Consumer close use a 3
 
 ## Kubernetes configuration, batches and recovery
 
-The candidate pins `kubernetes==35.0.0` and `urllib3==2.8.0`. It supports namespaced Pod (`core/v1`) and Deployment (`apps/v1`) resources, with bearer-token references and verified TLS. Other resources, arbitrary API paths and authentication mechanisms are outside this support matrix. `cluster_id` is an explicitly configured logical identity, bound to connection trust and scope; it is not a discovered system-namespace UID.
+The client pins `kubernetes==35.0.0` and `urllib3==2.8.0`. It supports namespaced Pod (`core/v1`) and Deployment (`apps/v1`) resources, with bearer-token references and verified TLS. Other resources, arbitrary API paths and authentication mechanisms are outside this support matrix. `cluster_id` is an explicitly configured logical identity, bound to connection trust and scope; it is not a discovered system-namespace UID.
 
 | Configuration | Rule |
 | --- | --- |
@@ -174,15 +183,33 @@ Disable reception and wait for actual closure; accepted responsibility and prepa
 | `subscription_sync_history_capacity`, `subscription_sync_batch_capacity` | Reserve or batch capacity is unavailable; inspect existing custody/retention without relaxing ceilings or deleting protected history |
 | `subscription_sync_completion_conflict` | Completion eligibility or expected responsibility changed, or the old control is already settled; reconcile the original request result before a new action |
 
-### B4 evidence and remaining B5 gates
+### B4 backend validation baseline
 
 Source `326dca6` passed the B4 backend gate with a real Kubernetes 1.35 API, ordinary Python Adapter/Worker, RabbitMQ Attempt/Outbox links and independent PostgreSQL target readback. The metadata-only fixture had 17 selected Pods, returned as 16+1 pages. LIST members plus started/completed made 19 receipts; one WATCH update made 20. Every target payload/hash and UID matched; the updated object had two effective writes, the other sixteen one each. After stopping, an annotation changed while reception was closed; re-enabling on the same epoch created a new activation and accepted WATCH from the durable RV, with one retained batch, no new LIST, 21 total receipts and three writes for that object. Listeners and application buffers returned to zero.
 
-The initial TypeMeta rejection remains a recorded first failure, followed by a narrow correction that preserves omitted member fields. Its failed control succeeded, the failed batch closed with reserve zero, and reception stopped. Deliberately requesting an old RV established a native `410` diagnostic only; it is not proof of natural platform expiry/recovery. Deployment real-target paths, Kubernetes browser workflows and the remaining B5 representative recovery cases are pending. No Kubernetes sustained-throughput or long-duration capacity result is claimed. Details and unverified scope are in the [B4 review](../../openspec/changes/add-event-subscriptions/b4-review.md); exact-HEAD remote CI and user acceptance remain separate gates.
+The initial TypeMeta rejection remains a recorded first failure, followed by a narrow correction that preserves omitted member fields. Its failed control succeeded, the failed batch closed with reserve zero, and reception stopped. Deliberately requesting an old RV established a native `410` diagnostic only; it is not proof of natural platform expiry/recovery. Historical facts and their limits remain in the [B4 review](../../openspec/changes/add-event-subscriptions/b4-review.md).
+
+### B5 representative local validation
+
+The following groups each scenario under its actual matching deployment. Business success is backed by actual Worker execution and independent target readback.
+
+The matching deployment of source `ff50dd2c48dabb00cf2129e9697db3e69825898e` completed:
+
+- Real Deployment LIST, control events and WATCH, including deleting and recreating the same resource name with a different UID. Target ownership remains bound to UID and scope.
+- After a mid-pagination `403`, 18 accepted object/control responsibilities, including `sync.failed`, succeeded without granting the old batch cleanup permission. An explicitly started complete batch then succeeded with 19 responsibilities and full target membership checks.
+
+The matching deployment of source `6f68df56db25ce062c0fba3ade5c3a7d203e3bf6` completed:
+
+- Chinese and English browsers exercised dedicated completion abandonment at full quota, with bounded audit charges of 546/570 bytes. Coverage includes the latest pending replay having no Execution, a stale expected relationship returning `409`, and preservation of the old failure and audit. Abandonment leaves the target business result unconfirmed. An explicit new batch in the same epoch with a new activation then succeeded with three responsibilities; the independent target rejected a late old completed control with `409`.
+- The passing `state_sync` WATCH run retained seven Receipts, including two superseded ones. Six Executions preserved one original failure and five successes; the latest target state matched the source object. Previously dispatched custody was neither merged again nor used to rewrite an old execution.
+- An authorized read-only account viewed historical batches without mutation controls. Browser validation covered a new source-configuration version, connection diagnostics, public enablement and stopping reception. A new activation resumed the original batch from its durable RV in the same epoch without another LIST. Two new WATCH events had matching full inputs/outputs, Attempts, Outbox entries and independent target records; stopping through the UI returned listeners, buffers, pending custody and control reserves to zero. Focused component/backend regressions separately cover opening an old event's own batch after switching sources.
+- Kafka K01/K02 were rechecked with three fresh business events: a code failure blocked its partition's successor while the other partition wrote normally. Public repair fixed only the selected head; its successor still had no Execution during repair and drained on the original Revision after exit. Each target row was written once, the original failed Execution remained unchanged, safe/confirmed/broker positions agreed, and Saved Input was unchanged. C14 repeated ordinary manual, real schedule and Webhook execution with deterministic results of 10, 31 and 59, checking actual Worker Attempts and input/output hashes.
+
+Local focused `#219` backend tests passed 230 cases with 11 conditional skips; another 14 compatibility and 39 Web cases passed. Both T2/abandonment race orderings and 30-day GC use deterministic database tests. Kubernetes 30-minute capacity and natural platform `410` expiry/recovery remain unverified. Discarded history is not reconstructed, and results do not extend to arbitrary resources, authentication mechanisms or fault combinations. Exact-HEAD remote CI and final deployment status are tracked by the delivery gate in [PR #221](https://github.com/john-ops-lab/DataLinkRuntime/pull/221); user acceptance and release are separate.
 
 ## B3 validation status and capacity limits
 
-B3 passed independent acceptance; Kubernetes continues through B4/B5. The matching `10ec0f4` deployment completed real Chrome creation, connection diagnostics without joining a group, enable/disable with actual closure, Kafka-to-target processing, restricted repair with same-partition backlog, skip, current-configuration replay and reset. Independent reads preserved original failure outcomes: four business rows each had one effective write, while the skipped event had no target row. Reset retained old Receipts, Deliveries and checkpoints, left Saved Input unchanged and did not re-enable reception. An account with read access to one Adapter saw only its subscription and no write actions; an open event detail updated through polling. C14 compatibility also passed three real Worker paths: manual, actual scheduled triggering and Webhook.
+B3 passed independent acceptance. The following preserves its original deployment and capacity evidence; the B5 representative rechecks are listed above. The matching `10ec0f4` deployment completed real Chrome creation, connection diagnostics without joining a group, enable/disable with actual closure, Kafka-to-target processing, restricted repair with same-partition backlog, skip, current-configuration replay and reset. Independent reads preserved original failure outcomes: four business rows each had one effective write, while the skipped event had no target row. Reset retained old Receipts, Deliveries and checkpoints, left Saved Input unchanged and did not re-enable reception. An account with read access to one Adapter saw only its subscription and no write actions; an open event detail updated through polling. C14 compatibility also passed three real Worker paths: manual, actual scheduled triggering and Webhook.
 
 Chrome additionally exposed an ordinary RunOnce button and Task status-label mismatch during the subscription lock. The backend rejected the negative trigger test without creating an Execution. The `d48e3f8` Web correction passed component tests, independent review and a bilingual Chrome check on its matching deployment. Catalog and Header showed the subscription lock; RunOnce was actually disabled, while save, Input and Worker remained locked. The ordinary manual Adapter retained an enabled run button without another execution. Enabling and stopping latest reception in the new epoch preserved old custody and unique target writes. Runtime files and Web artifacts had separate hash verification.
 
@@ -191,6 +218,8 @@ The first capacity run used one ordinary Python Adapter, four partitions, two Wo
 The existing `DLR_RABBITMQ_RETRY_BASE_SECONDS=0.1` setting was applied to the empty development queue in an exclusive quiet window with applications stopped and consecutive zero connection, consumer and message checks. RabbitMQ 4.3.5 quorum queues do not support conditional deletion, so this maintenance had no atomic server-side empty-queue guard. Product defaults remain unchanged.
 
 The revised configuration fixed `d48e3f8`, one Adapter, four partitions, a 1-second tick and two configured execution slots. Excluding warmup, all 1,800 events offered over approximately 1,800 seconds reached the target before the phase ended. Independent review checked every complete payload, source position and single effective write, with no accumulating backlog; this specific 30-minute steady gate passed. Send-to-insert time for ultimately committed target rows had a 1.98-second p95. Application buffer peak was 3,501 bytes. Control RSS still had a small positive slope of about 32 kB/min over the last ten minutes, which does not establish absence of leaks or arbitrary-duration stability. This result does not extend to the default 1-second redelivery setting or seven-day operation. A finite burst was followed by 600 seconds of reduced-quota observation and explicit recovery. The 103 inputs ended as 71 successes, two explicit skips and 30 unaccepted records at the history limit. The observation window met the two-times API threshold; the ten runtime-status samples during the short burst had a 2.604-times p95, retained as a transient finding. Accepted custody drained and listeners closed. History remains full until legitimate governance permits recovery; limits were not raised and payload retention was not shortened. Versions, first failures, growth and unverified scope are recorded in the [B3 review and acceptance record](../../openspec/changes/add-event-subscriptions/b3-review.md).
+
+The B2 WorkerLost probe retains its original 100-second completion-wait timeout. Later read-only reconciliation confirmed eventual convergence, but the new Outbox was created 125.897 seconds after `next_attempt_at`; the delay was in Control retry scheduling. Its cause and correction were not established in this batch, and eventual success does not make the original timing gate pass. B5 code-fault rechecks did not repeat WorkerLost and establish no universal low-latency retry bound.
 
 ## Migration and application rollback
 

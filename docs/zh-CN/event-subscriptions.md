@@ -1,6 +1,15 @@
 # 事件订阅：公共管理和可靠接收
 
-当前分支默认关闭：`DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`。本分支 B5 候选打开开关后，`GET /api/event-subscriptions/capabilities` 返回 `kafka` 与 `kubernetes`。Kafka 已通过 B3，Kubernetes 后端已通过 B4；其 B5 产品/浏览器和剩余真实目标门槛仍待验收，候选可启用不等于最终可交付。内部诊断和公开启用注册表当前包含相同两种来源，连接诊断仍是独立动作，成功不代表业务处理成功。
+功能默认关闭：`DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`。本分支打开开关后，`GET /api/event-subscriptions/capabilities` 声明 `kafka` 与 `kubernetes`；公开启用与内部连接诊断注册表包含相同两种来源。本地已完成下文列出的代表性业务、恢复和浏览器验证。连接诊断是独立动作，成功不代表业务处理成功；PR 精确 HEAD 远端 CI、用户验收和发布仍是独立门槛。
+
+## 来源支持范围
+
+| 来源 | 资源与模式 | 已验证的连接与运行范围 |
+| --- | --- | --- |
+| Kafka | 精确 topic；`per_event`、`partition_serial` | Apache Kafka 4.1.2 单节点 KRaft；TLS、SCRAM-SHA-256/512，及隔离环境的 PLAINTEXT；容量仅限下文 B3 已测配置 |
+| Kubernetes | Pod（`core/v1`）、Deployment（`apps/v1`）；`per_event` 或显式 `state_sync` | Kubernetes 1.35 API、bearer token 引用、严格 TLS；真实 Pod 为仅含元数据的资源，Deployment 为 `replicas=0` |
+
+其他 Kubernetes 资源、任意 API 路径和认证机制，以及其他 Kafka 认证机制或任意 broker/platform 组合，不在当前已验范围内。Kubernetes 未进行 30 分钟持续容量验证；元数据 API 对账不证明工作负载健康。
 
 ## 管理与权限
 
@@ -37,9 +46,9 @@
 
 普通手动测试继续使用 Adapter 已保存 InputConfig。订阅启用、停止中、排空或 repair 时，后端拒绝修改运行配置与普通触发；存在绑定时改变 Task 运行方式或删除 Adapter 前应先显式删除停用排空的订阅。
 
-### Kubernetes 批次 API 与 B5 候选状态
+### Kubernetes 批次 API 与 Web 操作
 
-以下后端接口已通过 B4。B5 候选在打开总开关后，允许通过普通授权 API 启用 Kubernetes，无需公开测试绕过入口；新建订阅仍默认停用。Web 按 capabilities 展示支持来源，其 B5 操作路径与最终交付状态仍须单独验收。保存配置或连接诊断不会自动开始接收。
+以下后端接口已通过 B4，并由 B5 公共路径、代表性恢复和浏览器验证补充。打开总开关后，可通过普通授权 API 启用 Kubernetes；新建订阅仍默认停用。Web 按已实现来源与 capabilities 的交集提供配置，保存或连接诊断不会自动开始接收。停用排空后显式 `new_epoch` 可切换来源；历史事件和批次保留原来源、激活与关联，旧事件应打开其自身批次，不能按当前配置重新解释历史。
 
 | 方法与路径 | 用途 |
 | --- | --- |
@@ -138,7 +147,7 @@ Consumer 关闭时禁用自动提交，显式 commit/Consumer close 使用 3 秒
 
 ## Kubernetes 配置、批次与恢复
 
-候选固定 `kubernetes==35.0.0`、`urllib3==2.8.0`，支持命名空间资源 Pod（`core/v1`）和 Deployment（`apps/v1`），使用 bearer token 引用及经过验证的 TLS。其他资源、任意 API 路径和认证机制不在本支持矩阵内。`cluster_id` 是显式配置、与连接信任和范围绑定的逻辑身份，不是自动发现的系统 namespace UID。
+当前客户端固定 `kubernetes==35.0.0`、`urllib3==2.8.0`，支持命名空间资源 Pod（`core/v1`）和 Deployment（`apps/v1`），使用 bearer token 引用及经过验证的 TLS。其他资源、任意 API 路径和认证机制不在本支持矩阵内。`cluster_id` 是显式配置、与连接信任和范围绑定的逻辑身份，不是自动发现的系统 namespace UID。
 
 | 配置 | 规则 |
 | --- | --- |
@@ -174,15 +183,33 @@ LIST 每页最多 16 个对象、原始体 1 MiB；WATCH 每行最多 512 KiB。
 | `subscription_sync_history_capacity`、`subscription_sync_batch_capacity` | 预留或整批容量不足；检查现有责任/留存，不放宽上限或删除受保护历史 |
 | `subscription_sync_completion_conflict` | 完成资格或期望责任已改变，或旧控制已结清；新动作前先核对原请求结果 |
 
-### B4 证据与尚待完成的 B5 门槛
+### B4 后端验证基线
 
 源码 `326dca6` 已通过 B4 后端门槛：真实 Kubernetes 1.35 API、普通 Python Adapter/Worker、RabbitMQ Attempt/Outbox 关联和独立 PostgreSQL 目标读回。仅含元数据的 fixture 有 17 个选中 Pod，分页为16+1；LIST 成员加 started/completed 共19个 Receipt，一次 WATCH 更新后共20个。全部目标 payload/hash 和 UID 匹配，更新对象有2次有效写入，其余16个各1次。停用期间再次修改 annotation，同 epoch 重新启用产生新 activation，从持久 RV 接收 WATCH，仍只有原批次、无新 LIST、总21个 Receipt，选中对象3次写入；最后监听和应用缓冲归零。
 
-最初 TypeMeta 拒绝保留为首败，随后通过窄修允许成员字段省略且不注入 payload；首败的 failed 控制业务成功后，失败批次闭合、预留归零并停用。故意请求旧 RV 只证明原生 `410` 诊断，不证明自然平台过期恢复。Deployment 真实目标路径、Kubernetes 浏览器操作及剩余 B5 代表恢复场景仍待验证；未声明 Kubernetes 稳态吞吐或长期容量结果。详情与未验范围见 [B4 审查记录](../../openspec/changes/add-event-subscriptions/b4-review.md)，精确 HEAD 远端 CI 与用户验收仍是独立门槛。
+最初 TypeMeta 拒绝保留为首败，随后通过窄修允许成员字段省略且不注入 payload；首败的 failed 控制业务成功后，失败批次闭合、预留归零并停用。故意请求旧 RV 只证明原生 `410` 诊断，不证明自然平台过期恢复。历史事实及其边界保留在 [B4 审查记录](../../openspec/changes/add-event-subscriptions/b4-review.md)。
+
+### B5 本地代表性验证
+
+以下按各场景实际匹配部署列出验证，业务成功均有实际 Worker 执行和独立目标读回。
+
+源码 `ff50dd2c48dabb00cf2129e9697db3e69825898e` 的匹配部署完成：
+
+- Deployment 的真实 LIST、控制事件和 WATCH，包含同名资源删除后以不同 UID 重建；目标按 UID 和 scope 保留正确归属。
+- 分页中途 `403` 后，18 条已接管对象/控制责任成功处理，含 `sync.failed`，旧批未取得清理资格；显式新完整批次的 19 条责任成功，目标按完整成员核对。
+
+源码 `6f68df56db25ce062c0fba3ade5c3a7d203e3bf6` 的匹配部署完成：
+
+- 中英文浏览器在配额满额时执行专用放弃完成确认，两份有界审计计账为 546/570 字节。覆盖最新 pending 补处理尚无 Execution、过期期望关联返回 `409`、旧失败及审计保留；放弃不表示目标业务已确认成功。之后同 epoch、新 activation 的显式新批次三条责任成功，独立目标以 `409` 拒绝晚到旧 completed。
+- `state_sync` WATCH 的通过轮次保留七条 Receipt，其中两条被替代；六份 Execution 为一份原失败和五份成功，最新目标状态与来源对象一致。未把已派发责任重新合并或改写原执行。
+- 授权只读账号可查看历史批次且没有变更入口。浏览器已验证来源配置升版、连接诊断、公开启用及停用：同 epoch 以新 activation 从持久 RV 续接原批次，不重新 LIST；两条新 WATCH 的完整输入/输出、Attempt、Outbox 与独立目标对应，UI 停用后监听、缓冲、pending 和控制预留归零。来源切换后的旧事件跳转其自身批次另有定向组件与后端回归覆盖。
+- Kafka K01/K02 以三条新业务事件复验：一分区代码故障阻塞后继，另一分区正常写入；公开 repair 仅修复所选头条，repair 内后继仍无 Execution，退出后按原 Revision 排空。三条目标各写入一次，原失败 Execution 不改，safe/confirmed/broker 一致，Saved Input 保持不变。普通 manual、真实 schedule、Webhook 的 C14 复验分别返回确定业务结果 10、31、59，并核对实际 Worker Attempt、输入和输出 hash。
+
+`#219` 本地定向后端测试 230 通过、11 条按条件跳过，另有 14 条兼容和 39 条 Web 测试通过。两种 T2/放弃竞争次序与 30 天 GC 由确定性数据库测试覆盖。未进行 Kubernetes 30 分钟容量或自然平台 `410` 过期恢复验证，不提供已丢弃历史的重建能力，也不外推到任意资源、认证和故障组合。PR 精确 HEAD 远端 CI 与最终部署状态以[统一 PR #221](https://github.com/john-ops-lab/DataLinkRuntime/pull/221) 的交付门禁为准，用户验收与发布单独进行。
 
 ## B3 验证状态与容量边界
 
-B3 已通过独立验收，Kubernetes 继续按 B4/B5 推进。匹配部署的 `10ec0f4` 已完成真实 Chrome 创建、无入组连接诊断、启停与实际关闭、Kafka 消息到目标、带同 partition 积压的受限 repair、skip、当前配置补处理和 reset。独立核对保留原失败终态，四条目标业务各有效写入一次，skip 无目标写入；reset 保留旧 Receipt/Delivery/checkpoint，Saved Input 不变且未重新启用。仅有一个 Adapter 读取权限的账号只看到授权订阅且无写入口，已打开事件详情可随轮询更新。普通 manual、实际 schedule、Webhook 三条真实 Worker 路径的 C14 兼容验证已通过。
+B3 已通过独立验收，以下为其原部署与容量证据；B5 的代表性复验范围见上文。匹配部署的 `10ec0f4` 已完成真实 Chrome 创建、无入组连接诊断、启停与实际关闭、Kafka 消息到目标、带同 partition 积压的受限 repair、skip、当前配置补处理和 reset。独立核对保留原失败终态，四条目标业务各有效写入一次，skip 无目标写入；reset 保留旧 Receipt/Delivery/checkpoint，Saved Input 不变且未重新启用。仅有一个 Adapter 读取权限的账号只看到授权订阅且无写入口，已打开事件详情可随轮询更新。普通 manual、实际 schedule、Webhook 三条真实 Worker 路径的 C14 兼容验证已通过。
 
 浏览器另发现订阅锁定时普通 RunOnce 按钮及 Task 状态文案不一致；后端负测拒绝普通触发且未创建 Execution。`d48e3f8` 的 Web 窄修已通过组件、独立审查及匹配部署的双语 Chrome 窄复验：目录和 Header 显示订阅锁定，RunOnce 实际禁用，保存、Input 和 Worker 仍锁定；普通 manual Adapter 的运行按钮保持可用，未重复执行。新 epoch 的 latest 再次启用与停用未改变旧责任及目标唯一写入；运行版本另有逐哈希核对。
 
@@ -191,6 +218,8 @@ B3 已通过独立验收，Kubernetes 继续按 B4/B5 推进。匹配部署的 `
 既有 `DLR_RABBITMQ_RETRY_BASE_SECONDS=0.1` 已在停止应用、连接/消费者与全部消息计数连续清零的独占静默窗口下完成空开发队列维护；RabbitMQ 4.3.5 quorum 不支持条件删除，此操作不具备服务端原子空队列保护。产品默认值保持不变。
 
 修订配置固定 `d48e3f8`，同一 Adapter、四个 partition、1 秒 tick、两个配置执行槽，预热另计后，正式约 1,800 秒发送的 1,800 条全部在阶段末写入目标。独立审查逐条核对完整 payload、来源位置和一次有效写入，积压未累计增长，30 分钟稳态门槛通过；发送至目标已提交行 insert 时间的 p95 为 1.98 秒。应用缓冲峰值 3,501 字节，Control RSS 尾十分钟仍有约 32 kB/min 小幅正斜率，不能据此声称无泄漏或任意时长稳定。此结果不外推默认 1 秒重投配置或七天持续运行。有限突发后已完成触限后的 600 秒观察与显式恢复，103 条输入明确分为 71 成功、2 显式跳过、30 因历史满额未接管；观察窗口 API 均满足两倍门槛，但短突发 runtime-status 的 10 个样本 p95 曾为基线 2.604 倍，保留该波动。已接管责任排空、监听关闭；历史满额仍等待合法治理，不加配额或提前删除原文。版本、首败、增长及未验范围见 [B3 审查与验收记录](../../openspec/changes/add-event-subscriptions/b3-review.md)。
+
+B2 的 WorkerLost 探针保留原 100 秒完成等待超时：后续只读核验确认责任最终收敛，但新 Outbox 比 `next_attempt_at` 晚 125.897 秒建立，延迟位于 Control 重试调度。该延迟的根因与修复未在本批确认，后续成功不构成按时恢复通过。B5 的代码故障复验未重复 WorkerLost，不承诺统一的低延迟重试上界。
 
 ## 迁移与应用回退
 
