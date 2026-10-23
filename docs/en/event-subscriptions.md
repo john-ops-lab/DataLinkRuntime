@@ -1,6 +1,6 @@
 # Event subscriptions: management and durable custody
 
-The feature defaults to `DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`. B2 includes the Kafka connector and isolated protocol probes; the public available-source registry remains empty. `GET /api/event-subscriptions/capabilities` reports the actual flag and delivered sources. The internal implemented registry permits connection diagnostics separately from public enablement. Kafka requires B3 management, business-result and capacity acceptance before being exposed; Kubernetes follows B4/B5. A successful connection test establishes neither delivery readiness nor business success.
+The feature defaults to `DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`. The B3 candidate registers the public Kafka entry point: with the flag enabled, `GET /api/event-subscriptions/capabilities` includes `kafka`. Registration does not establish completion of the batch's acceptance gates; see the OpenSpec batch records for their status. The implemented diagnostic registry remains separate from public enablement. Kubernetes follows B4/B5. A successful connection test does not establish business success.
 
 ## Management and authorization
 
@@ -11,6 +11,7 @@ All routes use `/api/event-subscriptions`:
 | Method and suffix | Behavior |
 | --- | --- |
 | GET `/capabilities` | Actual flag and available sources |
+| GET `/runtime-status` | Admin-only listener count and application buffer usage/peak/limit in the current Control process |
 | GET/POST root | Authorized listing or a new disabled subscription |
 | GET/PATCH/DELETE `/{id}` | Detail, configuration/metadata update, or deletion after stopping and draining |
 | POST `/{id}/enable`, `/{id}/disable` | Start/stop reception; accepted custody continues draining |
@@ -19,10 +20,20 @@ All routes use `/api/event-subscriptions`:
 | POST `/{id}/reset` | Audited request ID/reason and a new epoch after stopping/draining |
 | POST `/{id}/repair/enter`, `/repair/revisions`, `/repair/exit` | Restricted code repair with backlog |
 | GET `/{id}/events`, `/{id}/events/{receipt_id}` | Event and original/replay execution chain |
+| GET `/{id}/checkpoints` | Read-only, bounded current-epoch safe/confirmed positions, barriers and unaccepted faults |
+| GET `/{id}/activations/{activation_id}` | Activation version, Worker and credential-reference metadata, without secret decryption |
+| GET `/{id}/events/{receipt_id}/replay-context` | Read-only original/current reference comparison and concurrency fingerprint |
 | POST `/{id}/events/{receipt_id}/replay`, `/skip` | Idempotent replay or an explicit unprocessed disposition |
+| POST `/{id}/skip-unaccepted` | Explicitly skip a matching unaccepted Kafka fault; the server derives the safe next position |
 | GET `/{id}/quota-audit`, POST `/{id}/quota-repair` | Read-only accounting audit or explicit repair after disabling and confirming listener closure |
 
 Runtime-affecting operations include `expected_config_version`; stale versions return `subscription_config_conflict`. Replay/skip/reset also require `request_id` and a nonempty `reason`, and request IDs cannot be reused with different semantics. Name/description updates are independent. Lists use bounded `before_id` pagination.
+
+Inspect desired, connection and delivery states separately. `event_counts.accepted` counts currently retained Receipts and `replayed` counts retained subsequent Deliveries; neither is a lifetime counter. `limits` contains resolved subscription limits, while `global_limits` describes shared ceilings; reserved control capacity is separate. Checkpoint `source_lag=null` means unknown: the safe/confirmed position difference is not broker message lag. Diagnostic reads perform no source RPC and create neither leases nor quota records.
+
+The event's `activation_id` identifies its original activation. Each Delivery's `effective_activation_id` identifies the original or explicitly overridden current-configuration activation, and `revision_override_id` identifies a restricted repair Revision. Compare the selected Delivery rather than treating the original activation as the configuration for every replay. Credential usage includes retained source configurations and activation references, exposing only identifiers and binding fields, never secret values.
+
+Current-configuration replay requires a disabled subscription with no other unfinished custody. Before confirmation, read `replay-context` to compare Revision, fixed Worker, configuration version/epoch and credential references. Submit `use_current_configuration=true` with that preview's `expected_preview_token`. Under the same Adapter lock, the server rechecks all references; a change returns `subscription_config_conflict` rather than executing an undisplayed configuration. The fingerprint checks concurrency, not authorization. After an unknown submission result, retain the version, request ID and fingerprint when retrying. Before refreshing the preview or changing the selection, reconcile the previous request's result and begin a new request. An unavailable fixed Worker never silently becomes automatic selection.
 
 Normal manual tests retain the saved Task InputConfig. Backend guards block runtime mutations and ordinary triggers while a subscription receives, stops, drains or repairs. A bound subscription must be explicitly deleted after stopping/draining before changing the Task trigger mode or deleting its Adapter.
 
@@ -38,7 +49,7 @@ Pending, retained payloads, deduplication metadata and receipt rates have indepe
 
 Background accounting audits use bounded batches and never automatically change custody or counters. After disabling reception and confirming actual listener closure, an editor may submit `quota-repair` with the expected version, request ID and reason. It recomputes this subscription's ledger from durable responsibilities and rebuilds the shared aggregate. Pending custody may remain so a corrupt counter cannot make draining and repair mutually impossible. Events and Executions remain unchanged.
 
-## Kafka configuration and connection diagnostics (B2)
+## Kafka configuration and connection diagnostics
 
 The client is pinned to `kafka-python==3.0.11`. Isolated probes use Apache Kafka 4.1.2 with single-node KRaft; they do not establish acceptance for arbitrary broker versions, multi-node availability or every fault combination.
 
@@ -58,7 +69,7 @@ The client is pinned to `kafka-python==3.0.11`. Isolated probes use Apache Kafka
 
 Diagnostics require cluster/topic metadata and group-query permissions. Reception additionally needs consumption and offset-commit permissions for the selected topics and dedicated group. Foreign members or another subscription occupying the same source/group are rejected. An idle group does not authorize its existing committed offsets to override DLR custody.
 
-With the flag enabled, connection testing can inspect implemented Kafka even while public enablement remains unavailable. Supply `expected_config_version`; the response contains verified `source_type`, `cluster_id`, topic/partition counts and group availability. Testing does not join a group, commit offsets, write checkpoints or execute an Adapter. SQL preparation, decryption and transaction release run in the synchronous API pool; source RPCs use the dedicated budget. Responses exclude source addresses and secret values.
+With the flag enabled, connection testing inspects implemented Kafka. Supply `expected_config_version`; the response contains verified `source_type`, `cluster_id`, topic/partition counts and group availability. Testing does not join a group, commit offsets, write checkpoints or execute an Adapter. SQL preparation, decryption and transaction release run in the synchronous API pool; source RPCs use the dedicated budget. Responses exclude source addresses and secret values.
 
 B2 isolated probes cover TLS with both SCRAM mechanisms, wrong passwords, untrusted CAs, and credential rotation retaining the same epoch/checkpoint. A real committed/aborted transaction probe checks `read_committed` visibility and legitimate offset holes. These results do not replace B3 business and capacity acceptance. SASL_PLAINTEXT, OAuth, GSSAPI, client-certificate authentication and other broker/platform combinations are outside this batch's verified scope.
 
@@ -95,6 +106,8 @@ Recovery procedure:
 4. For a history gap, scope/initial-position change or source switch, settle or explicitly dispose of old custody. Submit reset with the expected version, request ID and reason, choosing earliest/latest and a new epoch. Old custody, checkpoints and audit remain. A new epoch may reread or skip source history; target business idempotency remains necessary.
 5. For an unknown target outcome, replay with the same business ID and independently read the target; see the [ordinary Python example](../../samples/event-subscriptions/README.md). Editing broker commits does not establish business success.
 
+For a fault rejected before Inbox custody, such as an oversized record, checkpoint `blocked_unaccepted` exposes a bounded diagnosis and source-event identity. After review, submit `shard`, `source_event_id`, expected version, request ID and reason to `skip-unaccepted`. The server accepts only a matching current-epoch fault and derives the next position; clients cannot supply arbitrary offsets. Its `skipped_without_processing` disposition creates no Receipt or Execution and implies no target success. The resumed source first acknowledges this durable safe frontier, so skipping the last poison record does not require a later normal record to commit it. Retrying a request must retain the same actor and semantics.
+
 ### Listener budgets and closure
 
 Control shares at most 16 source-owner/connection-test permits, without a waiting queue, and one actual owner per subscription. SDK I/O threads and connections are counted separately. Source waiting occupies neither ordinary Worker Slots, the default API pool nor its event loop. Application buffer accounting is shared at 64 MiB, with 2 MiB per owner; raw records and final Envelopes also obey their own and Execution JSON size limits. Native fetch/frame limits do not impose a hard ceiling on decompression or process RSS; B3 must measure capacity.
@@ -102,6 +115,18 @@ Control shares at most 16 source-owner/connection-test permits, without a waitin
 Database leases last 30 seconds and renew independently every 10 seconds. Temporary connection errors use jittered exponential delays of 1–60 seconds; capacity retries use 1–30 seconds and require low-water recovery. Definite authentication, authorization and identity failures await explicit action. Connection-test HTTP waiting defaults to 15 seconds. Timeout/cancellation ends that wait only; the permit remains occupied until native work actually returns and closes. Failed closure retains the permit; repeated enable cannot bypass it.
 
 Consumer close disables automatic commit. Explicit commit/Consumer close use a 3-second client budget; normal Consumer requests use 10 seconds. Three seconds is not an absolute bound on the entire stop operation or arbitrary OS/NSS behavior, and excludes DNS resolution and sequential RPCs. Resolver/platform behavior must remain within the B0 verified boundary. Turning reception off preserves draining under the current Control; reverting old binaries or removing tables must not erase backlog.
+
+## B3 validation status and capacity limits
+
+B3 passed independent acceptance; Kubernetes continues through B4/B5. The matching `10ec0f4` deployment completed real Chrome creation, connection diagnostics without joining a group, enable/disable with actual closure, Kafka-to-target processing, restricted repair with same-partition backlog, skip, current-configuration replay and reset. Independent reads preserved original failure outcomes: four business rows each had one effective write, while the skipped event had no target row. Reset retained old Receipts, Deliveries and checkpoints, left Saved Input unchanged and did not re-enable reception. An account with read access to one Adapter saw only its subscription and no write actions; an open event detail updated through polling. C14 compatibility also passed three real Worker paths: manual, actual scheduled triggering and Webhook.
+
+Chrome additionally exposed an ordinary RunOnce button and Task status-label mismatch during the subscription lock. The backend rejected the negative trigger test without creating an Execution. The `d48e3f8` Web correction passed component tests, independent review and a bilingual Chrome check on its matching deployment. Catalog and Header showed the subscription lock; RunOnce was actually disabled, while save, Input and Worker remained locked. The ordinary manual Adapter retained an enabled run button without another execution. Enabling and stopping latest reception in the new epoch preserved old custody and unique target writes. Runtime files and Web artifacts had separate hash verification.
+
+The first capacity run used one ordinary Python Adapter, four partitions, two Worker execution slots and the existing 1-second RabbitMQ minimum redelivery delay. It offered 1,800 events over 1,800 seconds; 1,732 target writes completed during that phase, about 0.962 events/second, with growing backlog. It therefore failed the sustained 1-event/second gate. Complete post-production convergence to 1,800/1,800 does not change that result. The sample added about 14.81 kB of physical Control database storage per event. Linear projection at 1 event/second is neither achieved throughput nor retained steady-state storage. At that hypothetical rate the default 10,000-row history budget fills in about 2 hours 46 minutes 40 seconds; it does not promise seven days of uninterrupted reception.
+
+The existing `DLR_RABBITMQ_RETRY_BASE_SECONDS=0.1` setting was applied to the empty development queue in an exclusive quiet window with applications stopped and consecutive zero connection, consumer and message checks. RabbitMQ 4.3.5 quorum queues do not support conditional deletion, so this maintenance had no atomic server-side empty-queue guard. Product defaults remain unchanged.
+
+The revised configuration fixed `d48e3f8`, one Adapter, four partitions, a 1-second tick and two configured execution slots. Excluding warmup, all 1,800 events offered over approximately 1,800 seconds reached the target before the phase ended. Independent review checked every complete payload, source position and single effective write, with no accumulating backlog; this specific 30-minute steady gate passed. Send-to-insert time for ultimately committed target rows had a 1.98-second p95. Application buffer peak was 3,501 bytes. Control RSS still had a small positive slope of about 32 kB/min over the last ten minutes, which does not establish absence of leaks or arbitrary-duration stability. This result does not extend to the default 1-second redelivery setting or seven-day operation. A finite burst was followed by 600 seconds of reduced-quota observation and explicit recovery. The 103 inputs ended as 71 successes, two explicit skips and 30 unaccepted records at the history limit. The observation window met the two-times API threshold; the ten runtime-status samples during the short burst had a 2.604-times p95, retained as a transient finding. Accepted custody drained and listeners closed. History remains full until legitimate governance permits recovery; limits were not raised and payload retention was not shortened. Versions, first failures, growth and unverified scope are recorded in the [B3 review and acceptance record](../../openspec/changes/add-event-subscriptions/b3-review.md).
 
 ## Migration and application rollback
 

@@ -1,6 +1,6 @@
 # 事件订阅：公共管理和可靠接收
 
-当前分支默认关闭：`DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`。B2 已接入 Kafka 连接器和隔离协议探针，公开可启用来源仍为空；`GET /api/event-subscriptions/capabilities` 返回实际开关及已交付来源。内部“已实现、可测试连接”的注册表与公开“可启用”的注册表分开。Kafka 须完成 B3 的管理交互、真实业务读回和容量验收后才开放；Kubernetes 按 B4/B5 单独推进。连接测试成功不代表来源已交付或业务处理成功。
+当前分支默认关闭：`DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`。B3 候选已注册 Kafka 公共入口，打开开关时 `GET /api/event-subscriptions/capabilities` 返回 `kafka`；本批完整验收状态见 OpenSpec 批次记录，注册不等于验收完成。内部“已实现、可测试连接”的注册表与公开“可启用”的注册表分开。Kubernetes 按 B4/B5 单独推进。连接测试成功不代表业务处理成功。
 
 ## 管理与权限
 
@@ -11,6 +11,7 @@
 | 方法与路径 | 用途 |
 | --- | --- |
 | GET `/capabilities` | 当前开关和真实可用来源 |
+| GET `/runtime-status` | 管理员读取当前 Control 进程的监听数、应用缓冲占用/峰值/上限 |
 | GET/POST 根路径 | 按权限列出或创建默认停用的订阅 |
 | GET/PATCH/DELETE `/{id}` | 详情、配置/名称描述修改、停用排空后删除 |
 | POST `/{id}/enable`、`/{id}/disable` | 启停接收；停用保留已接管责任 |
@@ -19,10 +20,20 @@
 | POST `/{id}/reset` | 显式原因及请求 ID，停用排空后建立新 epoch |
 | POST `/{id}/repair/enter`、`/repair/revisions`、`/repair/exit` | 带积压的受限代码修复 |
 | GET `/{id}/events`、`/{id}/events/{receipt_id}` | 事件、原执行和补处理链 |
+| GET `/{id}/checkpoints` | 当前 epoch 的安全/确认位置、失败屏障与未接管故障，只读且有界分页 |
+| GET `/{id}/activations/{activation_id}` | 原激活版本、Worker 和凭据引用元数据，不解密 Secret |
+| GET `/{id}/events/{receipt_id}/replay-context` | 只读比较原/当前激活引用并生成并发校验指纹 |
 | POST `/{id}/events/{receipt_id}/replay`、`/skip` | 幂等补处理或明确记录未处理跳过 |
+| POST `/{id}/skip-unaccepted` | 显式跳过所选 Kafka 未接管故障，由服务端推导安全下一位置 |
 | GET `/{id}/quota-audit`、POST `/{id}/quota-repair` | 只读额度核对，或停用并确认监听关闭后的显式修复 |
 
 影响运行的操作携带 `expected_config_version`；过期返回 `subscription_config_conflict`。`replay/skip/reset` 还要求 `request_id` 和非空 `reason`，同一请求不能改变语义后重用。名称、描述可独立更新。事件列表使用 `before_id` 游标，订阅列表同样有界分页。
+
+详情分别展示期望、连接和交付状态。`event_counts.accepted` 是当前仍留存的 Receipt 数，`replayed` 是仍留存的后续 Delivery 数，都不是终身累计计数。`limits` 是本订阅解析后的限制，`global_limits` 是共享上限；配额中的控制预留单独列出。checkpoint 的 `source_lag=null` 表示未知，安全位置与已确认位置之差不能当成 broker 消息积压。诊断 API 不执行来源 RPC，也不创建租约或额度记录。
+
+事件的 `activation_id` 指向原激活；每次 Delivery 的 `effective_activation_id` 反映原激活或显式当前配置补处理所用的覆盖激活，`revision_override_id` 反映受限修复 Revision。比较版本时应检查这一条 Delivery，不能把原激活当成所有后续补处理的实际配置。凭据使用位置包含保留的来源配置与激活引用，仅返回 ID 和绑定字段，不返回真值。
+
+“使用当前配置”只在停用且无其他未完责任时允许，确认前读取 `replay-context` 比较 Revision、固定 Worker、配置版本/epoch 和凭据引用。提交时携带 `use_current_configuration=true` 与该预览的 `expected_preview_token`；服务端在同一 Adapter 锁内重新校验，期间任一引用变化返回 `subscription_config_conflict`，不会按未展示的新配置执行。指纹用于并发校验，不代替权限。提交结果不明时重试同一请求应保留版本、请求 ID 和指纹；若要刷新预览或改变选择，先核对旧请求结果，再开始新请求。固定 Worker 不可用时不能静默改为自动选择。
 
 普通手动测试继续使用 Adapter 已保存 InputConfig。订阅启用、停止中、排空或 repair 时，后端拒绝修改运行配置与普通触发；存在绑定时改变 Task 运行方式或删除 Adapter 前应先显式删除停用排空的订阅。
 
@@ -38,7 +49,7 @@ pending、原文历史、去重和接管速率分别有界；触限后等待低�
 
 后台按有界批次只读核对占用，不自动修改责任或计数。发现计数漂移后，编辑者可停用并确认监听实际关闭，再携带版本、请求 ID 和原因执行 `quota-repair`；它从持久责任重算本订阅账本，并重建共享聚合。允许保留 pending，避免错误计数阻止排空后又无法修复；操作不重写事件或 Execution。
 
-## Kafka 配置与连接诊断（B2）
+## Kafka 配置与连接诊断
 
 当前客户端固定为 `kafka-python==3.0.11`。隔离探针以 Apache Kafka 4.1.2、单节点 KRaft 为基线；这不代表任意 broker 版本、多节点高可用或所有故障组合已经验收。
 
@@ -58,7 +69,7 @@ pending、原文历史、去重和接管速率分别有界；触限后等待低�
 
 诊断需要读取 cluster/topic 元数据及组状态的权限；运行还需要所选 topic 和专用组的消费、位置提交权限。现有外部成员或同源同组占用会被拒绝，不能通过共享组悄悄分流。空闲组也不意味着其旧提交位置可以覆盖 DLR checkpoint。
 
-开关开启后，连接测试可检查已实现的 Kafka，即使公开可启用来源尚为空。请求携带 `expected_config_version`；返回经验证的 `source_type`、`cluster_id`、topic/partition 数及组可用性。它不加入消费组、不提交 offset、不写 checkpoint，也不执行 Adapter。数据库准备及凭据解密在线程池内完成，来源 RPC 使用独立预算；诊断结果不包含源地址或凭据真值。
+开关开启后，连接测试检查已实现的 Kafka。请求携带 `expected_config_version`；返回经验证的 `source_type`、`cluster_id`、topic/partition 数及组可用性。它不加入消费组、不提交 offset、不写 checkpoint，也不执行 Adapter。数据库准备及凭据解密在线程池内完成，来源 RPC 使用独立预算；诊断结果不包含源地址或凭据真值。
 
 B2 隔离探针已覆盖 TLS + SCRAM 两种机制、错误密码、不受信 CA，以及凭据轮换后的同 epoch/checkpoint 恢复。事务探针用真实提交和中止记录核对 `read_committed` 可见性及合法 offset 空洞。探针通过不替代 B3 业务和容量验收；SASL_PLAINTEXT、OAuth、GSSAPI、客户端证书认证及其他 broker/platform 组合不在本批已验范围。
 
@@ -95,6 +106,8 @@ checkpoint 保守记录实际消息的 `offset + 1`，不会因为尾部控制/�
 4. 对历史缺口、范围/起点变化或身份切换，先处理或显式处置旧责任，再携带版本、`request_id` 和原因执行 reset，选择 earliest/latest 并建立新 epoch。旧责任、checkpoint 和审计保留；新 epoch 可能重读或跳过源历史，目标仍需业务幂等。
 5. 目标结果不明时按同业务 ID 补处理并独立读回；参考[普通 Python 示例](../../samples/event-subscriptions/README.md)。不要通过改 Kafka 提交位置伪造业务成功。
 
+超限等故障若尚未进入 Inbox，checkpoint 的 `blocked_unaccepted` 提供有界错误和源事件身份。审查后可用 `skip-unaccepted` 提交 `shard`、`source_event_id`、版本、请求 ID 和原因；服务端只接受当前 epoch 的匹配故障，不接受任意目标 offset。操作记录为 `skipped_without_processing`，不会伪造 Receipt、Execution 或目标成功。来源恢复时先确认这个持久安全位置，再继续接收，因此末条毒消息也不依赖下一条正常消息才提交位置。相同请求重试须保持操作者与语义一致。
+
 ### 监听预算与关闭
 
 Control 共享最多 16 个来源 owner/连接测试名额，无等待队列，每订阅最多一个实际 owner。SDK 的内部 I/O 线程和连接另计；来源等待不占普通 Worker Slot、默认 API 线程池或事件循环。应用缓冲共享 64 MiB、每 owner 2 MiB；原始项和最终 Envelope 还受各自及 Execution JSON 大小限制。原生 fetch/frame 限额不构成压缩展开或进程 RSS 的硬上界，容量仍需 B3 实测。
@@ -102,6 +115,18 @@ Control 共享最多 16 个来源 owner/连接测试名额，无等待队列，�
 数据库租约 30 秒、独立 10 秒续租。暂时连接错误按 1–60 秒指数退避并抖动，容量重试按 1–30 秒且恢复需满足低水位；确定的认证、权限、身份错误等待显式处置。HTTP 连接测试默认最多等待 15 秒，超时或取消只结束等待，原生调用实际返回并关闭后才归还名额；关闭失败则保留名额，重复 enable 不能绕过。
 
 Consumer 关闭时禁用自动提交，显式 commit/Consumer close 使用 3 秒客户端预算，普通 Consumer 请求预算为 10 秒。3 秒不等于整个停止过程或任意 OS/NSS 的绝对上界，也不涵盖 DNS 解析和多个顺序 RPC；解析器与平台须符合 B0 的已验证支持边界。功能关闭停止新接收，当前 Control 继续排空既有责任；不能回退旧应用或删表来清除积压。
+
+## B3 验证状态与容量边界
+
+B3 已通过独立验收，Kubernetes 继续按 B4/B5 推进。匹配部署的 `10ec0f4` 已完成真实 Chrome 创建、无入组连接诊断、启停与实际关闭、Kafka 消息到目标、带同 partition 积压的受限 repair、skip、当前配置补处理和 reset。独立核对保留原失败终态，四条目标业务各有效写入一次，skip 无目标写入；reset 保留旧 Receipt/Delivery/checkpoint，Saved Input 不变且未重新启用。仅有一个 Adapter 读取权限的账号只看到授权订阅且无写入口，已打开事件详情可随轮询更新。普通 manual、实际 schedule、Webhook 三条真实 Worker 路径的 C14 兼容验证已通过。
+
+浏览器另发现订阅锁定时普通 RunOnce 按钮及 Task 状态文案不一致；后端负测拒绝普通触发且未创建 Execution。`d48e3f8` 的 Web 窄修已通过组件、独立审查及匹配部署的双语 Chrome 窄复验：目录和 Header 显示订阅锁定，RunOnce 实际禁用，保存、Input 和 Worker 仍锁定；普通 manual Adapter 的运行按钮保持可用，未重复执行。新 epoch 的 latest 再次启用与停用未改变旧责任及目标唯一写入；运行版本另有逐哈希核对。
+
+容量首轮使用同一个普通 Python Adapter、四个 partition、两个 Worker 执行槽及既有 1 秒 RabbitMQ 最小重投延迟：1,800 秒输入 1,800 条，持续阶段目标完成 1,732 条，约 0.962 条/秒，积压增长，因此持续 1 条/秒门槛不通过。停产后 1,800/1,800 完整收敛不改变首轮结论。仅按该次样本估算，Control 物理库增加约 14.81 kB/事件；持续 1 条/秒的线性投影不是已达到的吞吐或留存稳态。默认 10,000 条历史额度在该假设速率下约 2 小时 46 分 40 秒触限，不构成七天持续接收承诺。
+
+既有 `DLR_RABBITMQ_RETRY_BASE_SECONDS=0.1` 已在停止应用、连接/消费者与全部消息计数连续清零的独占静默窗口下完成空开发队列维护；RabbitMQ 4.3.5 quorum 不支持条件删除，此操作不具备服务端原子空队列保护。产品默认值保持不变。
+
+修订配置固定 `d48e3f8`，同一 Adapter、四个 partition、1 秒 tick、两个配置执行槽，预热另计后，正式约 1,800 秒发送的 1,800 条全部在阶段末写入目标。独立审查逐条核对完整 payload、来源位置和一次有效写入，积压未累计增长，30 分钟稳态门槛通过；发送至目标已提交行 insert 时间的 p95 为 1.98 秒。应用缓冲峰值 3,501 字节，Control RSS 尾十分钟仍有约 32 kB/min 小幅正斜率，不能据此声称无泄漏或任意时长稳定。此结果不外推默认 1 秒重投配置或七天持续运行。有限突发后已完成触限后的 600 秒观察与显式恢复，103 条输入明确分为 71 成功、2 显式跳过、30 因历史满额未接管；观察窗口 API 均满足两倍门槛，但短突发 runtime-status 的 10 个样本 p95 曾为基线 2.604 倍，保留该波动。已接管责任排空、监听关闭；历史满额仍等待合法治理，不加配额或提前删除原文。版本、首败、增长及未验范围见 [B3 审查与验收记录](../../openspec/changes/add-event-subscriptions/b3-review.md)。
 
 ## 迁移与应用回退
 
