@@ -33,7 +33,7 @@
 
 事务核心原冻结 20 项独立 PostgreSQL 测试通过；继续代码审查发现，已执行失败的 WATCH 在人工 replay 尚未派发时可能被错误合并。现已修正为检查任意历史 Delivery 的 Execution 关联；旧逻辑在进程内替换下复现失败，修后作者 23 项通过，证明显式补处理责任、原 Envelope 和账本保留。completed 落账及 T2 另复核 started 最新业务成功；公开 replay 在 ready 与已材料化两个窗口均拒绝重开未排空责任。事务核心独立审查通过，修订后组合复验包含上述回归。
 
-最终受影响后端组合为 225 passed / 11 skipped（89.36s），覆盖全部 Issue #219 测试与订阅兼容测试，含独立目标用例在常规 conftest 下的集成；跳过的是未配置专用连接的可选真实 Kafka 故障测试，本批没有借此重跑 B3 已关闭的 Kafka 故障矩阵。全后端 Ruff 与 439 文件格式检查通过，mypy 214 源文件通过，核心窄修另经对应类型/格式检查。OpenSpec strict 和公开暂存内容检查通过；这些静态和事务结果不替代部署及业务验收。
+`ab3a924` 候选的受影响后端组合为 225 passed / 11 skipped（89.36s），覆盖全部 Issue #219 测试与订阅兼容测试，含独立目标用例在常规 conftest 下的集成；跳过的是未配置专用连接的可选真实 Kafka 故障测试，本批没有借此重跑 B3 已关闭的 Kafka 故障矩阵。全后端 Ruff 与 439 文件格式检查通过，mypy 214 源文件通过，核心窄修另经对应类型/格式检查。后续真实来源发现的 TypeMeta 窄修采用下文定向复验。OpenSpec strict 和公开暂存内容检查通过；这些静态和事务结果不替代部署及业务验收。
 
 ## 真实来源的只读协议代表
 
@@ -42,6 +42,16 @@
 候选连接器使用 SDK 35.0.0 / urllib3 2.8.0 完成无接管的 LIST 与短 WATCH 连接测试。默认每页 16 项实际读到 `[16, 1]`，共 17 个唯一 UID、两页 collection RV 一致，selector 外的另一 Pod 未进入结果。原始应用缓冲峰值 27,609 字节，显式关闭 pool 后原生 pool 已关闭；FD 首尾均 4、线程首尾均 1。这些是单次诊断及关闭证据，不是运行进程 RSS 硬上界。
 
 另主动从真实 API 请求旧 `resourceVersion="1"` 的短 WATCH，得到实际 410 并转为有界 `source_history_gap`，原生资源已关闭。此项只证明真实旧位置的协议分支：没有修改或回退 DLR checkpoint，不能说平台保存位置自然过期、已补齐历史或完成平台恢复。上述来源只读操作未创建 DLR Batch/Receipt/Execution。容器网络内的 server 入口另通过严格 CA/hostname TLS 1.3 核对；不以握手成功代替来源或目标验收。
+
+## 精确候选部署与真实链路首败
+
+候选 `ab3a9246aff2eb58d6dd52ba7c0ed2a677dc2e68` 已按精确 Git archive 构建并部署，开发数据库前向升级到 `0048`。核对 Control 358、Worker 307 个文件哈希与 75 个运行依赖锁版本，新增 Kubernetes/urllib3 的项目依赖元数据也已重建。Web 源码无变化，继续核对原 B3 构建的两个 98 文件产物。固定六个卷、挂载、Token/Master Key、其他容器，以及原数据库的 schema、135 条终态执行和 Adapter 数量保持不变。
+
+首次离线构建中，`uv sync` 因本地 wheel 的安装来源与锁中 registry URL 不同而尝试重新下载，离线失败；没有部署该候选。随后使用与锁哈希匹配的五个官方 wheel、离线 editable 元数据重建、完整已安装版本逐锁核对和 pip check，通过本机候选构建；不宣称公开 Dockerfile 的在线构建或离线 `uv sync` 已通过。
+
+真实链路脚本最初两次在创建订阅前退出，分别为本机 `host:port` 绑定拼接和 host 只读客户端导入缺少必填运行配置；修正入口和前置依赖后保留原失败记录。首次真正接入来源时，真实 LIST 成员只包含 metadata/spec/status，省略了可选 TypeMeta；候选校验错误地要求逐成员存在 kind/apiVersion，导致 `source_object_invalid`。失败批次与来源错误已保存，通过失败控制收敛后订阅已停用、原生关闭且排空，预留归零；没有成员或 completed，不回写该批次为成功。
+
+该兼容性窄修仅允许已验证 typed LIST 页面中的成员省略一个或两个 TypeMeta 字段，完整保存原 payload；显式错误、空值/null、WATCH 独立对象及顶层 LIST 的类型验证维持严格规则。官方 TypeMeta 声明、serializer/WATCH 编码路径与实际 raw LIST 共同支持此边界，不能将其泛化为 WATCH 豁免。修后作者 56 项来源测试通过（2.20s），独立按影响选取 15 项通过（2.00s），包含真实 PostgreSQL runner 原样保存缺省成员、原始 16+1 两页解码与错误值拒绝；其余 41 项未重复，Ruff/格式/两模块类型检查通过。修订后的实际链路仍待复验。
 
 ## 待完成门槛
 

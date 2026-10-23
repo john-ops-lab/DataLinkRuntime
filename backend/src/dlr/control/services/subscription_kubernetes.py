@@ -416,8 +416,12 @@ def build_envelope(
         raise SourceFailure("source_object_invalid")
     expected_kind = "Pod" if config["resource"] == "pods" else "Deployment"
     api_version = "v1" if not config["group"] else "apps/v1"
-    if obj.get("kind") != expected_kind or obj.get("apiVersion") != api_version:
-        raise SourceFailure("source_object_invalid")
+    # A typed LIST can omit each member's TypeMeta; its enclosing page has
+    # already proved the GVR. Preserve that raw payload without adding fields.
+    # Standalone WATCH objects still require their versioned object identity.
+    for field, expected in (("kind", expected_kind), ("apiVersion", api_version)):
+        if (watch_type != "LIST" or field in obj) and obj.get(field) != expected:
+            raise SourceFailure("source_object_invalid")
     attrs = {
         "cluster_id": config["cluster_id"],
         "group": config["group"],

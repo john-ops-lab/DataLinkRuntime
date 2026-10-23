@@ -363,6 +363,80 @@ def obj(uid="uid-one", rv="opaque-rv"):
     }
 
 
+@pytest.mark.parametrize("resource", ["pods", "deployments"])
+@pytest.mark.parametrize("omitted", [("kind",), ("apiVersion",), ("kind", "apiVersion")])
+def test_list_members_may_omit_typemeta_without_changing_payload(config, resource, omitted):
+    value = obj()
+    if resource == "deployments":
+        config.update(group="apps", resource=resource)
+        value.update(kind="Deployment", apiVersion="apps/v1")
+    for field in omitted:
+        value.pop(field)
+    result = kube.build_envelope(context(config), value, "LIST", sync=sync(1))
+    assert result["data"]["value"] is value
+    assert not any(field in result["data"]["value"] for field in omitted)
+    assert result["source"]["attributes"]["resource"] == resource
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("kind", "Deployment"), ("apiVersion", "apps/v1"), ("kind", None), ("apiVersion", "")],
+)
+def test_list_explicit_typemeta_must_match_typed_endpoint(config, field, value):
+    member = obj()
+    member[field] = value
+    with pytest.raises(SourceFailure, match="source_object_invalid"):
+        kube.build_envelope(context(config), member, "LIST", sync=sync(1))
+
+
+@pytest.mark.parametrize("omitted", [("kind",), ("apiVersion",), ("kind", "apiVersion")])
+def test_watch_object_still_requires_standalone_typemeta(config, omitted):
+    value = obj()
+    for field in omitted:
+        value.pop(field)
+    with pytest.raises(SourceFailure, match="source_object_invalid"):
+        kube.build_envelope(context(config), value, "MODIFIED")
+
+
+def test_raw_paginated_list_preserves_members_without_typemeta(transport, config, monkeypatch):
+    members = [obj(uid=f"uid-{i}") for i in range(17)]
+    for member in members:
+        member.pop("kind")
+        member.pop("apiVersion")
+    responses = [
+        Response(
+            json.dumps(
+                {
+                    "kind": "PodList",
+                    "apiVersion": "v1",
+                    "metadata": {"resourceVersion": "collection-rv", "continue": token},
+                    "items": values,
+                }
+            ).encode()
+        )
+        for token, values in (("page-two", members[:16]), ("", members[16:]))
+    ]
+    requests = []
+
+    def request(*args, **kwargs):
+        requests.append(dict(kwargs["fields"]))
+        return responses[len(requests) - 1]
+
+    monkeypatch.setattr(transport.api.rest_client.pool_manager, "request", request)
+    decoded = []
+    for token in (None, "page-two"):
+        with transport.list_page(token) as page:
+            assert page["metadata"]["resourceVersion"] == "collection-rv"
+            decoded.extend(
+                kube.build_envelope(context(config), member, "LIST", sync=sync(1))["data"]["value"]
+                for member in page["items"]
+            )
+    assert decoded == members and all("kind" not in member for member in decoded)
+    assert [request.get("continue") for request in requests] == [None, "page-two"]
+    assert all(response.closed and response.released for response in responses)
+    assert transport.budget.used_bytes == 0
+
+
 def sync(batch):
     return {
         "batch_id": str(batch),
@@ -744,12 +818,15 @@ def test_runner_paged_list_then_watch_and_bookmark_use_real_postgresql_custody(d
         @contextmanager
         def list_page(self, token):
             calls.append(("list", token))
+            member = obj(uid="first" if token is None else "second", rv="item-only")
+            member.pop("kind")
+            member.pop("apiVersion")
             yield {
                 "metadata": {
                     "resourceVersion": "collection-opaque",
                     "continue": "page-two" if token is None else "",
                 },
-                "items": [obj(uid="first" if token is None else "second", rv="item-only")],
+                "items": [member],
             }
 
         def watch(self, rv):
@@ -774,6 +851,9 @@ def test_runner_paged_list_then_watch_and_bookmark_use_real_postgresql_custody(d
             "watch",
         ]
         assert receipts[1].envelope["source"]["position"] == {"resource_version": "item-only"}
+        for receipt in receipts[1:3]:
+            assert "kind" not in receipt.envelope["data"]["value"]
+            assert "apiVersion" not in receipt.envelope["data"]["value"]
         assert cp.position == {"resource_version": "bookmark-rv"} and cp.next_sequence == 5
         assert batch.read_complete and batch.resource_version == "collection-opaque"
         assert batch.item_count == 2 and batch.page_count == 2
