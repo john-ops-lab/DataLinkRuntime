@@ -5,6 +5,7 @@ subscription/global Inbox counters -> existing Admission -> Execution/Outbox.
 No source RPC, broker ACK, sleep or user code runs in these transactions.
 """
 
+import hashlib
 from datetime import timedelta
 from typing import Any
 
@@ -594,6 +595,43 @@ def _disposition(
     return existing
 
 
+def current_replay_context(session: Session, sub: EventSubscription) -> tuple[dict[str, Any], str]:
+    """Read-only reference preview. Call under the Adapter lock when accepting replay."""
+    from dlr.control.services.event_envelope import canonical
+    from dlr.control.services.reliable_execution import resolve_queue_target_worker
+
+    adapter = session.get(Adapter, sub.adapter_id)
+    assert adapter is not None
+    if adapter.latest_version_id is None:
+        raise domain_error(409, "subscription_activation_missing", "Current target unavailable")
+    worker = resolve_queue_target_worker(session, adapter)
+    config = session.scalar(
+        select(SubscriptionConfigVersion).where(
+            SubscriptionConfigVersion.subscription_id == sub.id,
+            SubscriptionConfigVersion.version == sub.config_version,
+        )
+    )
+    assert config is not None
+    context = {
+        "config_version": config.version,
+        "source_epoch": config.source_epoch,
+        "revision_id": adapter.latest_version_id,
+        "worker_id": worker.id,
+        "source_credential_id": config.source_credential_id,
+        "credential_refs": [
+            {"credential_id": row.credential_id, "env_key": row.env_key, "field": row.field}
+            for row in session.scalars(
+                select(AdapterCredentialBinding)
+                .where(AdapterCredentialBinding.adapter_id == adapter.id)
+                .order_by(AdapterCredentialBinding.env_key)
+            )
+        ],
+    }
+    # This is an optimistic concurrency fingerprint, not an authorization token.
+    token = hashlib.sha256(canonical({"subscription_id": sub.id, **context})).hexdigest()
+    return context, token
+
+
 def replay_event(
     session: Session,
     receipt_id: int,
@@ -602,6 +640,7 @@ def replay_event(
     reason: str,
     revision_id: int | None = None,
     use_current_configuration: bool = False,
+    expected_preview_token: str | None = None,
 ) -> EventDelivery:
     info = session.get(EventReceipt, receipt_id)
     if info is None:
@@ -622,6 +661,7 @@ def replay_event(
         if (
             delivery.revision_override_id != revision_id
             or bool(delivery.activation_override_id) != use_current_configuration
+            or existing.details.get("preview_token") != expected_preview_token
         ):
             raise domain_error(409, "event_disposition_conflict", "Replay version differs")
         return delivery
@@ -649,10 +689,11 @@ def replay_event(
             or has_unfinished(session, sub.id, exclude_receipt_id=receipt.id)
         ):
             raise domain_error(409, "subscription_draining", "Current replay requires drained stop")
-        adapter = session.get(Adapter, sub.adapter_id)
-        assert adapter is not None
-        if adapter.latest_version_id is None or adapter.runtime_worker_id is None:
-            raise domain_error(409, "subscription_activation_missing", "Current target unavailable")
+        context, preview_token = current_replay_context(session, sub)
+        if expected_preview_token is not None and expected_preview_token != preview_token:
+            raise domain_error(
+                409, "subscription_config_conflict", "Current replay configuration changed"
+            )
         current_config = session.scalar(
             select(SubscriptionConfigVersion).where(
                 SubscriptionConfigVersion.subscription_id == sub.id,
@@ -663,15 +704,15 @@ def replay_event(
         activation = SubscriptionActivation(
             subscription_id=sub.id,
             config_version_id=current_config.id,
-            revision_id=adapter.latest_version_id,
-            worker_id=adapter.runtime_worker_id,
+            revision_id=context["revision_id"],
+            worker_id=context["worker_id"],
         )
         session.add(activation)
         session.flush()
         override_id = activation.id
         for binding in session.scalars(
             select(AdapterCredentialBinding).where(
-                AdapterCredentialBinding.adapter_id == adapter.id
+                AdapterCredentialBinding.adapter_id == sub.adapter_id
             )
         ):
             session.add(
@@ -721,7 +762,7 @@ def replay_event(
             reason=reason,
             receipt_id=receipt.id,
             delivery_id=delivery.id,
-            details={"previous_delivery_id": previous.id},
+            details={"previous_delivery_id": previous.id, "preview_token": expected_preview_token},
         )
     )
     refresh_delivery_state(session, sub)

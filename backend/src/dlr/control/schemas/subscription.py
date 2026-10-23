@@ -145,6 +145,13 @@ class UnacceptedSkip(SubscriptionDisposition):
 class SubscriptionReplay(SubscriptionDisposition):
     revision_id: int | None = Field(default=None, gt=0)
     use_current_configuration: bool = False
+    expected_preview_token: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def current_preview_required(self) -> "SubscriptionReplay":
+        if self.use_current_configuration != (self.expected_preview_token is not None):
+            raise ValueError("Current-configuration replay requires its exact preview token")
+        return self
 
 
 class SubscriptionReset(SubscriptionDisposition):

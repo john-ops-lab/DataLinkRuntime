@@ -16,10 +16,12 @@ from dlr.control.models import (
     EventSubscription,
     Execution,
     SourceCheckpoint,
+    SubscriptionActivation,
     SubscriptionConfigVersion,
     SubscriptionLease,
     SubscriptionQuota,
     User,
+    Worker,
 )
 from dlr.control.security import Principal, require_principal
 from dlr.control.services import secrets, subscription_runtime
@@ -28,11 +30,12 @@ from dlr.control.services import subscription_kafka as kafka
 from dlr.control.services import subscription_management as management
 from dlr.control.services.input_config import database_now
 from dlr.control.services.subscription_source import ApplicationBufferBudget
+from test_adapters import save_version
 from test_issue219_delivery import delivery_id, receive
 from test_issue219_delivery import world as world
 from test_issue219_kafka import P0, FakeTransport, record
 from test_issue219_kafka import context as context
-from test_issue219_management import action, activate, setup_subscription
+from test_issue219_management import action, activate, setup_subscription, stop_and_ack
 from test_issue219_management import receive as receive_managed
 
 
@@ -520,3 +523,235 @@ def test_last_poison_skip_confirms_durable_next_position_without_another_record(
         assert cp.position["offset"] == cp.confirmed_position["offset"] == "1"
         assert cp.blocked_unaccepted is None
         assert session.scalar(select(func.count()).select_from(EventReceipt)) == 0
+
+
+@pytest.fixture
+def replay_product(api_client, session_factory, monkeypatch):
+    def credential(name, kind, fields):
+        response = api_client.post(
+            "/api/credentials", json={"name": name, "type": kind, "fields": fields}
+        )
+        assert response.status_code == 201, response.text
+        return response.json()["id"]
+
+    source = credential(
+        "replay-source", "password", {"username": "fixture", "password": "private-replay-source"}
+    )
+    target = credential("replay-target", "token", {"token": "private-replay-target"})
+    replacement = credential("replay-replacement", "token", {"token": "private-replacement"})
+    adapter, revision, sub = setup_subscription(api_client, monkeypatch, credential_id=source)
+    bindings = api_client.put(
+        f"/api/adapters/{adapter['id']}/credential-bindings",
+        json={"bindings": [{"env_key": "TARGET", "credential_id": target, "field": "token"}]},
+    )
+    assert bindings.status_code == 200, bindings.text
+    sub = activate(api_client, monkeypatch, sub)
+    receipt_id, did = receive_managed(session_factory, sub, 0)
+    with session_factory.begin() as session:
+        execution = delivery.dispatch_delivery(session, did)
+        assert execution is not None
+        execution.status = "succeeded"
+        execution.ended_at = database_now(session)
+        session.flush()
+        delivery.observe_terminal(session, did)
+    stop_and_ack(api_client, session_factory, sub)
+    sub = api_client.get(f"/api/event-subscriptions/{sub['id']}").json()
+    assert sub["desired_state"] == "disabled" and sub["connection_state"] == "stopped"
+    return {
+        "adapter": adapter,
+        "revision": revision,
+        "sub": sub,
+        "receipt_id": receipt_id,
+        "source": source,
+        "target": target,
+        "replacement": replacement,
+        "path": f"/api/event-subscriptions/{sub['id']}/events/{receipt_id}",
+    }
+
+
+def replay_cardinalities(session_factory):
+    with session_factory() as session:
+        return [
+            session.scalar(select(func.count()).select_from(model))
+            for model in (EventDelivery, SubscriptionActivation, DeliveryDisposition, Execution)
+        ]
+
+
+def current_replay_body(product, token, **overrides):
+    return {
+        "expected_config_version": product["sub"]["config_version"],
+        "request_id": "product-current-replay",
+        "reason": "Replay using the explicitly inspected references",
+        "use_current_configuration": True,
+        "expected_preview_token": token,
+        **overrides,
+    }
+
+
+def test_replay_context_is_readonly_acl_scoped_and_does_not_decrypt(
+    replay_product, api_client, session_factory, monkeypatch
+):
+    product = replay_product
+
+    def no_decryption(*args, **kwargs):
+        raise AssertionError("Replay reference preview tried to decrypt a Secret")
+
+    monkeypatch.setattr(secrets, "decrypt_fields", no_decryption)
+    before = replay_cardinalities(session_factory)
+    viewer = account(
+        session_factory, "replay-reference-viewer", adapter_id=product["adapter"]["id"]
+    )
+    api_client.app.dependency_overrides[require_principal] = lambda: viewer
+    response = api_client.get(product["path"] + "/replay-context")
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert len(preview["preview_token"]) == 64
+    assert all(char in "0123456789abcdef" for char in preview["preview_token"])
+    original, current = preview["original"], preview["current"]
+    for key in (
+        "config_version",
+        "source_epoch",
+        "revision_id",
+        "worker_id",
+        "source_credential_id",
+        "credential_refs",
+    ):
+        assert current[key] == original[key]
+    assert original["id"] == product["sub"]["activation_id"]
+    assert current["revision_id"] == product["revision"]["id"]
+    assert current["source_credential_id"] == product["source"]
+    assert current["credential_refs"] == [
+        {"credential_id": product["target"], "env_key": "TARGET", "field": "token"}
+    ]
+    assert "private-" not in response.text
+    assert api_client.get(product["path"] + "/replay-context").json() == preview
+    denied = api_client.post(
+        product["path"] + "/replay", json=current_replay_body(product, preview["preview_token"])
+    )
+    assert denied.status_code == 403
+    assert replay_cardinalities(session_factory) == before
+    outsider = account(session_factory, "replay-reference-outsider")
+    api_client.app.dependency_overrides[require_principal] = lambda: outsider
+    assert api_client.get(product["path"] + "/replay-context").status_code == 404
+    assert api_client.get(product["path"] + "0/replay-context").status_code == 404
+
+
+@pytest.mark.parametrize("changed", ["revision_id", "worker_id", "credential_refs"])
+def test_current_replay_rejects_changed_preview_without_creating_responsibility(
+    replay_product, api_client, session_factory, changed
+):
+    product = replay_product
+    original = api_client.get(product["path"] + "/replay-context").json()
+    if changed == "revision_id":
+        save_version(api_client, product["adapter"]["id"], code="def handle(c, i):\n    return 2\n")
+    elif changed == "worker_id":
+        with session_factory.begin() as session:
+            worker = Worker(
+                name="product-replay-replacement",
+                status="online",
+                capabilities=["python"],
+                protocol_version=3,
+                rabbitmq_execution_v3=True,
+            )
+            session.add(worker)
+            session.flush()
+            worker_id = worker.id
+        changed_worker = api_client.patch(
+            f"/api/adapters/{product['adapter']['id']}", json={"runtime_worker_id": worker_id}
+        )
+        assert changed_worker.status_code == 200, changed_worker.text
+    else:
+        changed_bindings = api_client.put(
+            f"/api/adapters/{product['adapter']['id']}/credential-bindings",
+            json={
+                "bindings": [
+                    {"env_key": "TARGET", "credential_id": product["replacement"], "field": "token"}
+                ]
+            },
+        )
+        assert changed_bindings.status_code == 200, changed_bindings.text
+    current = api_client.get(product["path"] + "/replay-context").json()
+    assert current["preview_token"] != original["preview_token"]
+    assert current["original"] == original["original"]
+    assert current["current"][changed] != original["current"][changed]
+    before = replay_cardinalities(session_factory)
+    stale = api_client.post(
+        product["path"] + "/replay", json=current_replay_body(product, original["preview_token"])
+    )
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["detail"]["code"] == "subscription_config_conflict"
+    assert replay_cardinalities(session_factory) == before
+    with session_factory() as session:
+        assert session.get(EventReceipt, product["receipt_id"]).state == "succeeded"
+    accepted = api_client.post(
+        product["path"] + "/replay", json=current_replay_body(product, current["preview_token"])
+    )
+    assert accepted.status_code == 201, accepted.text
+    with session_factory() as session:
+        item = session.get(EventDelivery, accepted.json()["delivery_id"])
+        activation = session.get(SubscriptionActivation, item.activation_override_id)
+        assert activation.id != product["sub"]["activation_id"]
+        assert activation.revision_id == current["current"]["revision_id"]
+        assert activation.worker_id == current["current"]["worker_id"]
+    detail = api_client.get(product["path"]).json()
+    assert detail["deliveries"][-1]["effective_activation_id"] == activation.id
+    effective = api_client.get(
+        f"/api/event-subscriptions/{product['sub']['id']}/activations/{activation.id}"
+    )
+    assert effective.status_code == 200, effective.text
+    for key in ("config_version", "source_epoch", "source_credential_id", "credential_refs"):
+        assert effective.json()[key] == current["current"][key]
+
+
+def test_current_replay_retries_original_token_after_later_adapter_change_without_duplication(
+    replay_product, api_client, session_factory
+):
+    product = replay_product
+    preview = api_client.get(product["path"] + "/replay-context").json()
+    body = current_replay_body(product, preview["preview_token"])
+    first = api_client.post(product["path"] + "/replay", json=body)
+    assert first.status_code == 201, first.text
+    did = first.json()["delivery_id"]
+    # After completion the Adapter can legally change again. A retry of an
+    # unknown result must resolve the original disposition before revalidating
+    # the now-current references or allocating another activation/delivery.
+    with session_factory.begin() as session:
+        execution = delivery.dispatch_delivery(session, did)
+        assert execution is not None
+        execution.status = "succeeded"
+        execution.ended_at = database_now(session)
+        session.flush()
+        delivery.observe_terminal(session, did)
+    save_version(api_client, product["adapter"]["id"], code="def handle(c, i):\n    return 3\n")
+    now = api_client.get(product["path"] + "/replay-context").json()
+    assert now["preview_token"] != preview["preview_token"]
+    before = replay_cardinalities(session_factory)
+    again = api_client.post(product["path"] + "/replay", json=body)
+    assert again.status_code == 201, again.text
+    assert again.json()["delivery_id"] == did
+    assert replay_cardinalities(session_factory) == before
+    changed = api_client.post(
+        product["path"] + "/replay",
+        json={**body, "expected_preview_token": now["preview_token"]},
+    )
+    assert changed.status_code == 409
+    assert changed.json()["detail"]["code"] == "event_disposition_conflict"
+    assert replay_cardinalities(session_factory) == before
+
+
+def test_current_replay_api_requires_token_and_original_mode_forbids_token(
+    replay_product, api_client, session_factory
+):
+    product = replay_product
+    preview = api_client.get(product["path"] + "/replay-context").json()
+    body = current_replay_body(product, preview["preview_token"])
+    before = replay_cardinalities(session_factory)
+    invalid_bodies = [
+        {key: value for key, value in body.items() if key != "expected_preview_token"},
+        {**body, "expected_preview_token": "invalid"},
+        {**body, "use_current_configuration": False},
+    ]
+    for invalid in invalid_bodies:
+        response = api_client.post(product["path"] + "/replay", json=invalid)
+        assert response.status_code == 422, response.text
+    assert replay_cardinalities(session_factory) == before

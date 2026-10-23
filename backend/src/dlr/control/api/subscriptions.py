@@ -258,6 +258,12 @@ def get_activation(
     activation = session.get(SubscriptionActivation, activation_id)
     if activation is None or activation.subscription_id != subscription_id:
         raise domain_error(404, "subscription_activation_not_found", "Activation not found")
+    return _serialize_activation(session, activation)
+
+
+def _serialize_activation(
+    session: Session, activation: SubscriptionActivation
+) -> ActivationResponse:
     config = session.get(SubscriptionConfigVersion, activation.config_version_id)
     assert config is not None
     return ActivationResponse(
@@ -672,6 +678,24 @@ def get_event(
     return serialize_event(session, _event(session, subscription_id, receipt_id))
 
 
+@router.get("/api/event-subscriptions/{subscription_id}/events/{receipt_id}/replay-context")
+def replay_context(
+    subscription_id: int, receipt_id: int, session: DbSession, principal: CurrentPrincipal
+) -> dict[str, Any]:
+    from dlr.control.services.subscription_delivery import current_replay_context
+
+    sub = management.get_subscription(session, subscription_id, principal)
+    receipt = _event(session, subscription_id, receipt_id)
+    activation = session.get(SubscriptionActivation, receipt.activation_id)
+    assert activation is not None
+    current, token = current_replay_context(session, sub)
+    return {
+        "original": _serialize_activation(session, activation),
+        "current": current,
+        "preview_token": token,
+    }
+
+
 @router.post(
     "/api/event-subscriptions/{subscription_id}/events/{receipt_id}/replay", status_code=201
 )
@@ -697,6 +721,7 @@ def replay_event(
         payload.reason,
         revision_id=payload.revision_id,
         use_current_configuration=payload.use_current_configuration,
+        expected_preview_token=payload.expected_preview_token,
     )
     commit(session)
     return {"delivery_id": delivery.id, "execution_id": delivery.execution_id}
