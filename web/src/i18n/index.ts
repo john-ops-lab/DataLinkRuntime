@@ -1,4 +1,6 @@
 import i18n from "i18next";
+import subscriptionEn from "./locales/en/subscription.json";
+import subscriptionZhCN from "./locales/zh-CN/subscription.json";
 import { initReactI18next } from "react-i18next";
 
 import portableEn from "./locales/en/portable.json";
@@ -26,6 +28,7 @@ import type { SystemLocale } from "../types";
 
 export const resources = {
   "zh-CN": {
+    subscription: subscriptionZhCN,
     common: commonZhCN,
     adapter: adapterZhCN,
     runtime: runtimeZhCN,
@@ -35,6 +38,7 @@ export const resources = {
     portable: portableZhCN,
   },
   en: {
+    subscription: subscriptionEn,
     common: commonEn,
     adapter: adapterEn,
     runtime: runtimeEn,
@@ -51,7 +55,7 @@ void i18n.use(initReactI18next).init({
   lng: readCachedSystemLocale(),
   fallbackLng: DEFAULT_SYSTEM_LOCALE,
   supportedLngs: ["zh-CN", "en"],
-  ns: ["common", "adapter", "runtime", "settings", "ai", "template", "portable"],
+  ns: ["common", "adapter", "runtime", "settings", "ai", "template", "portable", "subscription"],
   defaultNS: "common",
   resources,
   interpolation: { escapeValue: false },

@@ -30,6 +30,8 @@ import type { WebhookRuntimeState, WebhookTriggerHandle } from "./components/Web
 import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import UserManagementDrawer from "./components/UserManagementDrawer";
 import ApplicationShell from "./components/ApplicationShell";
+import SubscriptionPage from "./components/SubscriptionPage";
+import type { SubscriptionDraftState } from "./subscription-types";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
 import { useRuntimeAuthority } from "./hooks/useRuntimeAuthority";
 import {
@@ -453,6 +455,10 @@ export function AdapterConsole({
   const webhookRuntimeRef = useRef<WebhookTriggerHandle>(null);
   const systemSettingsLeaveGuardRef = useRef<PageLeaveGuardHandle>(null);
   const adapterSettingsLeaveGuardRef = useRef<PageLeaveGuardHandle>(null);
+  const subscriptionDraftRef = useRef<SubscriptionDraftState>({ dirty: false, busy: false });
+  const setSubscriptionDraft = useCallback((value: SubscriptionDraftState) => { subscriptionDraftRef.current = value; }, []);
+  const confirmSubscriptionLeave = useCallback(() => !subscriptionDraftRef.current.busy
+    && (!subscriptionDraftRef.current.dirty || window.confirm(t("confirm.discardChanges"))), [t]);
   const [waitingForWebhook, setWaitingForWebhook] = useState(false);
   const [saveWorkerPromptOpen, setSaveWorkerPromptOpen] = useState(false);
   const [saveWorkerId, setSaveWorkerId] = useState<number | null>(null);
@@ -559,7 +565,7 @@ export function AdapterConsole({
 
   useEffect(() => subscribeToBrowserLocation(() => {
     const nextRoute = appRouteFromPath(window.location.pathname);
-    if (nextRoute.section === "templates" || nextRoute.settingsCategory !== null) {
+    if (nextRoute.section !== "adapters" || nextRoute.settingsCategory !== null) {
       closePagePortals();
     }
   }), [closePagePortals]);
@@ -920,12 +926,13 @@ export function AdapterConsole({
     const nextRoute = appRouteFromPath(new URL(nextLocation, window.location.origin).pathname);
     const leavesWorkspace = requestedSettingsCategory === null && (
       (nextRoute.section === "adapters" && nextRoute.settingsCategory !== null)
-      || (activeSection === "adapters" && nextRoute.section === "templates")
+      || (activeSection === "adapters" && nextRoute.section !== "adapters")
     );
-    return systemSettingsLeaveGuardRef.current?.confirmLeave() !== false
+    return confirmSubscriptionLeave()
+      && systemSettingsLeaveGuardRef.current?.confirmLeave() !== false
       && adapterSettingsLeaveGuardRef.current?.confirmLeave() !== false
-      && (!leavesWorkspace || confirmWorkspaceLeave(nextRoute.section === "templates"));
-  }), [activeSection, busy, confirmWorkspaceLeave, requestedSettingsCategory]);
+      && (!leavesWorkspace || confirmWorkspaceLeave(nextRoute.section !== "adapters"));
+  }), [activeSection, busy, confirmSubscriptionLeave, confirmWorkspaceLeave, requestedSettingsCategory]);
 
   async function refreshSystemStatus(): Promise<void> {
     if (systemStatusRefreshInFlight.current) {
@@ -1106,12 +1113,16 @@ export function AdapterConsole({
       busy
       || systemSettingsLeaveGuardRef.current?.confirmLeave() === false
       || adapterSettingsLeaveGuardRef.current?.confirmLeave() === false
-      || (activeSection === "adapters" && section === "templates" && !confirmWorkspaceLeave(true))
+      || !confirmSubscriptionLeave()
+      || (activeSection === "adapters" && section !== "adapters" && !confirmWorkspaceLeave(true))
     ) {
       return false;
     }
     closePagePortals();
-    if (section === "templates") {
+    if (section === "subscriptions") {
+      pushBrowserLocation("/subscriptions");
+      return window.location.pathname === "/subscriptions";
+    } else if (section === "templates") {
       pushBrowserLocation(templatePath());
       return window.location.pathname === templatePath();
     } else {
@@ -2021,6 +2032,7 @@ export function AdapterConsole({
                             onRuntimeStateChange={handleTaskRuntimeStateChange}
                             onError={setError}
                             readOnly={!selectedCanEdit}
+                            canManageSubscriptions={selectedCanManage}
                           />
                         ),
                       }
@@ -2119,6 +2131,14 @@ export function AdapterConsole({
               onInstantiate={handleInstantiateTemplate}
             />
           )}
+          {activeSection === "subscriptions" && <SubscriptionPage key={appRoute.section === "subscriptions" ? appRoute.subscriptionId ?? "list" : "list"}
+            id={appRoute.section === "subscriptions" ? appRoute.subscriptionId : null}
+            adapters={adapters}
+            onDraftStateChange={setSubscriptionDraft}
+            onOpen={(id) => pushBrowserLocation(`/subscriptions/${id}`)}
+            onBack={() => { if (confirmSubscriptionLeave()) pushBrowserLocation("/subscriptions"); }}
+            onOpenAdapter={(adapter) => { if (confirmSubscriptionLeave() && confirmWorkspaceLeave()) { pushBrowserLocation("/adapters"); void loadAdapterContent(adapter, undefined, "runtime"); } }}
+          />}
         </>
       )}
 

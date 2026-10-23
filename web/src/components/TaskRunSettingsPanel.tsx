@@ -34,6 +34,8 @@ import "./operations-ux.css";
 import "./input-ux-followup.css";
 
 import ManagedInputExamples from "./ManagedInputExamples";
+import KafkaSubscriptionPanel from "./KafkaSubscriptionPanel";
+import type { SubscriptionDraftState } from "../subscription-types";
 
 /** Preserve the server value; choose readable units without rounding expiry. */
 function formatRetentionDuration(seconds: number | undefined, translate: (key: string, options?: Record<string, unknown>) => string): string {
@@ -91,6 +93,7 @@ interface TaskRunSettingsPanelProps {
   onRuntimeStateChange: (state: TaskRuntimeState) => void;
   onError: (message: string | null) => void;
   readOnly?: boolean;
+  canManageSubscriptions?: boolean;
 }
 
 // M5.5.11 单次执行超时合同（秒为权威值）。
@@ -311,6 +314,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     finish: () => undefined,
   }));
   const [workerOverride, setWorkerOverride] = useState<number | null | undefined>(undefined);
+  const [subscriptionBound, setSubscriptionBound] = useState(false);
+  const [subscriptionDraft, setSubscriptionDraft] = useState<SubscriptionDraftState>({ dirty: false, busy: false });
   const [runModeOverride, setRunModeOverride] = useState<TaskRunMode | undefined>(undefined);
   // M5.5.11: 表单内超时值（秒）；null = 跟随 Adapter 保存值。
   const [timeoutOverride, setTimeoutOverride] = useState<number | null>(null);
@@ -1094,7 +1099,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       retentionDraft.seconds !== inputConfig.retention.seconds
     ))
   );
-  const hasUnsavedChanges = runtimeConfigDirty || inputDirty || stagedArtifacts.length > 0;
+  const hasUnsavedChanges = runtimeConfigDirty || inputDirty || stagedArtifacts.length > 0 || subscriptionDraft.dirty || subscriptionDraft.busy;
 
   useEffect(() => {
     if (!hasUnsavedChanges) {
@@ -1254,7 +1259,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   useEffect(() => {
-    const mutationInFlight = savingRuntime
+    const mutationInFlight = subscriptionDraft.busy || savingRuntime
       || savingInput
       || savingSchedule
       || submitting
@@ -1276,6 +1281,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     });
   }, [
     activeExecution,
+    subscriptionDraft.busy,
     canRun,
     cancelling,
     deletingArtifactId,
@@ -1309,11 +1315,11 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         ? t("task.input.stagedLeaveWarning")
         : t("confirm.discardChanges", { ns: "common" }),
     ),
-    confirmLeave: () => !hasUnsavedChanges || window.confirm(
+    confirmLeave: () => !subscriptionDraft.busy && (!hasUnsavedChanges || window.confirm(
       stagedArtifacts.length > 0
         ? t("task.input.stagedLeaveWarning")
         : t("confirm.discardChanges", { ns: "common" }),
-    ),
+    )),
   }));
 
   const scheduleVisible = runMode === "schedule";
@@ -1342,6 +1348,13 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
 
   return (
     <div className="task-run-settings" data-testid="task-run-settings">
+      {props.adapter.run_mode === "manual" && <KafkaSubscriptionPanel
+        adapter={props.adapter} readOnly={readOnly} canManage={props.canManageSubscriptions === true}
+        dirty={props.dirty || hasUnsavedChanges} onBindingChange={setSubscriptionBound}
+        onDraftStateChange={setSubscriptionDraft}
+        onChanged={async () => { await props.requestRuntimeRefresh?.("mutation"); }}
+      />}
+      {subscriptionBound && <Alert type="info" message={t("boundMode", { ns: "subscription" })} />}
       <section className="task-runtime-config">
         <Typography.Title level={5}>{t("task.settings.title")}</Typography.Title>
         <Space direction="vertical" size="middle" className="schedule-form">
@@ -1375,7 +1388,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             <Radio.Group
               data-testid="task-run-mode"
               value={runMode}
-              disabled={readOnly || runtimeLocked || savingRuntime}
+              disabled={readOnly || runtimeLocked || savingRuntime || subscriptionBound}
               onChange={(event) => {
                 const nextRunMode = event.target.value as TaskRunMode;
                 runtimeEditEpoch.current += 1;

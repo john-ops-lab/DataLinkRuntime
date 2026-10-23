@@ -6,7 +6,7 @@ export type TaskRunMode = "manual" | "schedule";
 export type SystemLocale = "zh-CN" | "en";
 
 export interface CredentialUsageItem {
-  kind: "adapter_binding" | "webhook" | "ai_model" | "ai_custom_provider" | "knowledge_source" | "package_source";
+  kind: "adapter_binding" | "webhook" | "ai_model" | "ai_custom_provider" | "knowledge_source" | "package_source" | "subscription_source" | "subscription_activation";
   name: string;
   adapter_id?: number | null;
   detail?: string | null;

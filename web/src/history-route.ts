@@ -1,8 +1,9 @@
 import { settingsCategoryFromPath, type SettingsCategory } from "./settings-route";
 
-export type PrimarySection = "adapters" | "templates";
+export type PrimarySection = "adapters" | "templates" | "subscriptions";
 
 export type AppRoute =
+  | { section: "subscriptions"; subscriptionId: number | null }
   | { section: "adapters"; settingsCategory: null }
   | { section: "adapters"; settingsCategory: SettingsCategory }
   | { section: "templates"; scenarioSlug: null }
@@ -12,6 +13,9 @@ const SCENARIO_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /** Parse only the small set of first-party routes supported by the Console. */
 export function appRouteFromPath(pathname: string): AppRoute {
+  if (/^\/subscriptions\/?$/.test(pathname)) return { section: "subscriptions", subscriptionId: null };
+  const subscription = /^\/subscriptions\/([1-9]\d*)\/?$/.exec(pathname);
+  if (subscription && Number.isSafeInteger(Number(subscription[1]))) return { section: "subscriptions", subscriptionId: Number(subscription[1]) };
   if (pathname === "/templates" || pathname === "/templates/") {
     return { section: "templates", scenarioSlug: null };
   }
