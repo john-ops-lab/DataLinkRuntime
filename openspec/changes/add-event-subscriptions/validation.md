@@ -50,16 +50,21 @@ B2 验证协议和恢复；B3 完成真实业务读回、管理交互、容量�
 | --- | --- | --- |
 | U01 | 分页 LIST → started/items/completed → WATCH → 目标读回 | complete 在全部成员成功之后；目标只在本 scope 对账；已有 scope 外对象保留 |
 | U02 | LIST 页失败/403/continue 失效/超大对象 | 无 completed、无缺失对象清理；有 failed 和可操作的恢复原因 |
-| U03 | WATCH 断线、410、bookmark；含已入账 WATCH 的失败批次 | cursor 不超未提交项；failed 打开排空路径，新 batch 可启动；gap 明确，旧 batch 永不复活 |
+| U03 | WATCH断线、410、bookmark；含已入账WATCH的失败批次 | cursor不超未提交项；failed处置后旧责任排空，已冻结资格的gap归下一轮；恢复正常路径可新批，专用abandon后仍须显式启用；旧批不复活 |
 | U04 | 同名不同 UID、离开 selector、旧删除与新对象 | 不合并新旧 UID；目标新对象不被旧删除误清理；不误报物理删除 |
 | U05 | per_event 与 state_sync、执行中新更新、删除边界 | 默认不合并；合并有审计；不改既有输入；后续变化有责任；LIST/删除边界不被吞掉 |
-| U06 | LIST 已读完但一个目标写入失败或被 skip | 无清理完成标记；skip 令本批失效；新完整批次才可对账 |
-| U07 | 新 LIST 返回旧批次相同 UID/RV，或范围变更 | 新成员不被旧去重漏掉；scope/epoch 变更可追踪且不自动清理旧范围 |
-| U08 | 普通数据恰好占满 pending/原文/全局去重元数据预算、整批对象/字节超限 | 控制预留覆盖各层且其他订阅不能抢占，仍能写 completed/failed；超大批次明确中止，保护可解除；不无限重开批次 |
-| U09 | sync.started/failed/completed 各一次目标响应丢失或业务错误 | 控制事件有稳定幂等身份；failed 处置后能排空；completed 错误阻塞后续且能受限修复，不能重复清理 |
-| U10 | completed 创建与 WATCH 410/失效并发，分别控制提交先后 | 失效先提交时无 completed；完成资格先冻结则既有执行保持合法，新 gap 进入下一轮恢复 |
+| U06 | LIST读完而成员失败，分别显式repair成功或skip；另含started skip | 未解决失败无completed；完整快照仍有效且无失效时，最新责任修复成功可重新检查全员成功；LIST/started skip令旧批永久失效，后来成功也不复活，须新完整批次 |
+| U07 | 新LIST返回相同UID/RV；范围、server或有效CA信任变化；同引用token轮换 | 新成员不被旧去重漏掉；范围/信任无显式new_epoch拒绝，合法切换保留旧历史且不清理旧范围；token值轮换仍沿原epoch/RV |
+| U08 | local/global pending数量/字节、历史/去重、整批上限及控制rate竞争 | 预留覆盖各层且其他订阅不能抢占，仍可落合法控制；ready按持久since/ID公平且同窗口不超10/50；T2只释放实际pending，超大批明确failed；空批/featureoff意图可维护，余reserve可核对且只结账一次 |
+| U09 | sync.started/failed/completed各一次目标响应丢失或业务错误 | 控制身份稳定；failed业务失败可显式generic skip且审计未处理，不恢复清理资格，处置后重算普通失败并排空；正常completed错误阻塞且可受限修复，另按U11–U15验证专用人工例外，均不改原终态或重复清理 |
+| U10 | completed创建与WATCH410/失效并发，分别控制提交先后 | 失效先赢则pending completed明确superseded且无Execution；T2先赢则独立freeze保持，新gap进入后续恢复；执行外键清空不丢冻结事实 |
+| U11 | history_count=4，started/item/completed已用3且余1预留，完成失败后新replay需5被拒绝 | 专用abandon在原预算内将有界槽原子转换为单份≤8KiB实际审计；无额外空位/免计费/Envelope副本，原历史不删，余reserve只结账一次；30天及引用保护，账本可重建 |
+| U12 | view/edit/隐藏ID、监听未关闭、queued/running/retry_wait、过期版本/Batch/epoch/Receipt/latestDelivery/执行关联、同request重试 | 非法条件零副作用；latest Execution已succeeded而Receipt/Delivery投影滞后也拒绝；合法重复原请求只读回同结果，改actor/reason/对象/期望责任复用ID冲突；UI明确业务结果未确认、取消pending补处理及不可回滚 |
+| U13 | 已冻结完成链latest replay为pending且execution_id=null，与T2/新replay竞争及事务rollback | 两向固定提交顺序：T2先赢即使快速终态也冲突；新replay改变最新责任则冲突；abandon先赢无新Execution/Outbox，只释放一次pending而保留history/dedupe，失败回滚无半状态 |
+| U14 | abandon后新的原/repair/current replay、reset历史、restart、迟到observe及旧请求重试 | 独立放弃与completion_committed持久保留，原失败Delivery/Execution不变，无任何新旧completed执行；旧replay/abandon请求只读回原结果，不重复结账或新增审计 |
+| U15 | 放弃完成屏障后仍有普通failed/旧WATCH；结清后显式新批，旧completed晚到 | 重算普通失败并保留repair入口，WATCH原序排空；不自动enable/LIST；显式新批started后目标generation/控制幂等阻止旧清理，新批/scope外/新UID数据保留；放弃不算目标成功 |
 
-B4 验证来源和批次机制；B5 完成 Pod/Deployment 两个已声明范围的真实读回，以及对账保护和 UI 的最后集成验证。U10 的事务交错由确定性并发测试覆盖，真实环境复核一个代表路径即可。
+B4验证来源、批次和专用完成放弃机制；B5完成Pod/Deployment两个已声明范围的真实读回、目标保护及双语UI。U10/U13的两向事务交错由确定性并发测试覆盖，真实环境各复核代表路径；U11–U15采用收紧预算和代表目标，不扩成全资源/全故障组合。
 
 ## Capacity Gate
 
@@ -69,15 +74,15 @@ B0 建立方法和基线，B3/B5 使用实现复测。此处是最低实验合�
 2. Kafka 以 1 条/秒运行 30 分钟，目标正常时记录可持续完成率、延迟和增长；不达此基线则不得宣称该配置适用。再以 10 条/秒有限突发并注入目标故障，验证背压而非要求全部立即完成。
 3. 用降低后的测试配额分别触发数量、字节、历史与控制预留边界；达到后继续观察 10 分钟，应用缓冲不超过设置预算，RSS 不持续随消息增长，健康/API 请求不因监听阻塞。记录客户端额外 RSS 上界；API p95 不高于无监听基线的 2 倍且无资源耗尽 5xx，否则 B0/B3 返回修订。
 4. 目标恢复后确认按持久顺序排空、所有已接管责任可解释。按实测每事件数据库/日志增量估算每天和 7/30 天窗口用量，连同默认配额预计何时暂停一起交付。
-5. K8s 使用缩小配额复现完整批次、超限失败与失败后新批次；无需生成全生产规模集群或扩展全资源类型矩阵。
+5. K8s使用缩小配额复现完整批次、超限失败和U11满额完成失败的专用abandon，核对单份实际审计、pending/reserve及历史占用；分别验证正常失败恢复和人工放弃后旧责任结清、显式新批次与目标代次保护。产品max下新批可继续等合法留存治理，不以临时加额/删原文通过；无需全规模集群或扩资源矩阵。
 
 ## Stop Conditions
 
-- 丢失已接管责任、来源位置超前、重复造成未受控副作用、旧 owner 可写、错误全量清理或修复/批次无法退出：阻止当前批次合并/交付，修复对应原因后只重验受影响范围。
+- 丢失已接管责任、来源位置超前、重复造成未受控副作用、旧owner可写、错误全量清理、人工放弃伪造成功/免计费，或已有原责任无法通过合法修复/显式处置结账：阻止当前批次合并/交付，只重验受影响范围。原责任依法结账后新批因产品max/保留窗口等待额度，属于已声明治理边界，不得误写为旧责任仍无法退出或新批已成功。
 - 无法满足来源必要 API、客户端有界行为或 JSON/trigger 兼容：停在 B0/B1，修改设计并重新审查；不靠省略确认/恢复保证推进。
 - 不能控制的来源/目标环境故障：记录“未验”，不能以 mock、绿 CI 或容器健康代替；其他独立批次可继续已授权工作。
 - 出现无关问题：单独记录，不自动扩大本项实现范围。
 
 ## Review Checklist
 
-本稿供用户重点审查的决策是：首期一 Adapter 一订阅且触发互斥；Control 内监听；统一有界 Inbox；Kafka 分区失败阻塞；K8s 显式合并与批次屏障；受限代码修复；初始容量/留存；Kafka 与 K8s 分开交付。表中的用例是这些决策的验证方式，不代表已通过。
+本稿供用户重点审查的决策是：首期一 Adapter 一订阅且触发互斥；Control 内监听；统一有界 Inbox；Kafka 分区失败阻塞；K8s 显式合并与批次屏障；受限代码修复；正常完成成功屏障及用户批准的专用人工放弃例外；同预算有界审计/目标代次；初始容量/留存；Kafka与K8s分开交付。表中的用例是这些决策的验证方式，不代表已通过。

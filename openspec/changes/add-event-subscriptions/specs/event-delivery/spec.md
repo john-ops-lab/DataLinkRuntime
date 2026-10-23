@@ -44,10 +44,10 @@
 
 #### Scenario: 业务错误耗尽重试
 - **WHEN** 当前事件进入 dead_letter
-- **THEN** 保留失败事实和处置入口，相关顺序屏障保持阻塞，平台不无限新建执行
+- **THEN** 保留失败事实和处置入口，未按来源合同补处理或显式处置前相关顺序屏障保持阻塞，平台不无限新建执行
 
 ### Requirement: 人工重处理创建可追踪新责任
-replay SHALL 创建保留原事件与原执行关系的新 Delivery/Execution，按请求 ID 幂等并经过容量检查。默认使用原输入、Revision、Worker 和凭据引用；更换为当前配置 MUST 显式选择且只在停用、无其他未完责任时允许。显式 repair 下可在后续 pending 保留时仅指定修复 Revision，仍须满足受限修复合同。
+replay SHALL 仅为来源合同仍允许执行的责任创建保留原事件与原执行关系的新 Delivery/Execution，按请求 ID 幂等并经过容量检查。已专用放弃的 K8s completed MUST 拒绝任何新的原/repair/current-config 补处理；旧请求只可幂等读回原责任。默认使用原输入、Revision、Worker 和凭据引用；更换为当前配置 MUST 显式选择且只在停用、无其他未完责任时允许。显式 repair 下可在后续 pending 保留时仅指定修复 Revision，仍须满足受限修复合同。
 
 #### Scenario: 重复提交补处理请求
 - **WHEN** 同一 request_id 被重复提交
@@ -60,6 +60,24 @@ replay SHALL 创建保留原事件与原执行关系的新 Delivery/Execution，
 #### Scenario: 重放已被后续越过的历史记录
 - **WHEN** 用户重放已完成或已跳过、且已有后续业务的旧事件
 - **THEN** 必须先停用排空，记录带外修复，不回退来源位置或承诺原业务顺序
+
+### Requirement: 冻结完成责任可通过专用人工放弃有界结账
+K8s 已冻结但业务结果未确认的 completed MAY 使用专用 `abandon-completion`；正常路径仍 SHALL 等业务成功。此动作 MUST 与 generic skip、成功和同批 sync.failed 区分，保留 completion_committed、原 Envelope、原失败 Delivery/Execution及其终态。最新 replay 若仍 pending 且无 Execution，SHALL 在同一事务明确终止该未派发责任、释放一次实际 pending并保留已用历史/去重；不得创建 Execution/Outbox。请求 MUST 绑定期望最新 Delivery及其Execution关联快照，含null，与T2/新replay/终态观察在既定锁序内原子互斥。
+
+#### Scenario: 放弃与 pending 补处理 T2 竞争
+- **WHEN** 已冻结完成链的最新 replay 尚无 Execution，专用放弃与 T2 并发
+- **THEN** T2先提交则放弃冲突，即使执行已快速终态；放弃先提交则该 Delivery无新Execution/Outbox，pending只释放一次且历史保留，任一事务回滚不留下半处置
+
+#### Scenario: 已放弃完成责任的历史重处理
+- **WHEN** 放弃后发生dispatch、原/repair/current-config新replay、reset后的历史调用、重启或迟到观察
+- **THEN** 持久放弃事实阻止旧completed复活；原请求仅按原参数与权限幂等读回既有结果，不追加Delivery、执行或副作用
+
+### Requirement: 完成放弃审计计入现有预算且保留原责任事实
+专用放弃 MUST 使用已有 Batch/责任预算中的有界槽原子转换为单份实际审计占用，至多8KiB并受既有元数据30天留存及引用保护；不得要求额外空位、免计费追加审计、复制原Envelope或提前删除原历史。账本/audit/显式修复 SHALL 可重建该审计实际占用及remaining reserve，未用预留只结账一次。该动作不放宽产品max，也不承诺下一批立即获得额度。
+
+#### Scenario: 历史满额但完成责任需要人工退出
+- **WHEN** history_count=4、已用3份且余1控制预留，completed冻结后失败，新replay因需要第五份占用被拒绝
+- **THEN** 合法专用放弃在既有预算内留下单份有界且已计费审计并结账预留，原历史不删；重复请求不再占用或归还额度，新批仍服从产品max和合法留存治理
 
 ### Requirement: 显式跳过保留损失事实
 skip/reset SHALL 要求 edit 权限、原因与幂等请求 ID，并记录操作者、原事件/位置和影响。系统 MUST 将跳过显示为未处理处置，不能伪装为业务成功，不能隐式清除其他已接管责任。

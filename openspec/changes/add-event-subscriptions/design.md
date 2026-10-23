@@ -2,7 +2,7 @@
 
 ## Context
 
-状态：**已批准，B0/B1 已通过，B2 实施中**。动机和范围见 [proposal.md](proposal.md)；验证设计见 [validation.md](validation.md)。以下决策已获用户授权实施；各批次验证及独立审查通过后继续。
+状态：**已批准，B0/B1/B2 已通过，B3 进行中，B4/B5 未实施**。2026-10-23 用户已明确选择专用“放弃完成确认”；本次同步该人工结账规则及相关澄清，不代表开始 B4 或完成其验证。动机和范围见 [proposal.md](proposal.md)；验证设计见 [validation.md](validation.md)。以下决策已获用户授权实施；各批次验证及独立审查通过后继续。
 
 源码以 `eedda36f9ed1e3ab4f84b0a76532d3916f8ca6d5` 为基线，设计编写时已直接核对该源码。当前规格中部分 `pending`、旧协议描述早于可靠执行实现，本变更仅增加订阅合同，不借机重写无关历史规格。
 
@@ -73,8 +73,8 @@ flowchart LR
 | Subscription / ConfigVersion | 当前 desired state、Adapter、source type；不可变配置版本、source epoch、容量及语义模式 |
 | ListenerLease / SourceCheckpoint | owner/generation；按来源 shard 保存安全接收位置、Kafka 已确认位置与业务顺序屏障 |
 | EventReceipt / PendingDelivery | 唯一源身份、稳定内容哈希、首次接收 Envelope、处理状态、执行关联、合并替代关系；pending 责任受数量/字节上限限制 |
-| DeliveryDisposition | replay/skip/reset 的请求 ID、操作者、原因、旧/新责任关联；请求幂等 |
-| SyncBatch | K8s 范围指纹、LIST RV、页/对象计数、开始/读取结束/处理结束/失败、屏障与完成执行 |
+| DeliveryDisposition / completion abandonment | replay/skip/reset 的请求 ID、操作者、原因、旧/新责任关联；专用完成放弃的单份有界审计及不可复活事实；请求幂等且全部计入已有预算 |
+| SyncBatch | 固定 subscription/epoch/activation/scope、LIST RV、页/对象计数；控制意图/剩余预留/闭合事实、独立 completion_committed、pending gap 与完成放弃；完成 Execution 外键清空不抹去冻结和处置事实 |
 
 这些是设计逻辑，不强制一对象一表；实际表结构在 B1 审查，但唯一性、事务和留存语义不变。
 
@@ -135,8 +135,8 @@ flowchart LR
 | 创建 | `desired=disabled`，无监听、无自动接收 |
 | 启用 | 校验配置并创建 activation；`starting → listening`，连接失败为 `reconnecting/blocked`，不伪装成处理成功 |
 | 停用 | 提交 desired=disabled 和新 generation；收敛在途事务、关闭 listener，停止接收新数据；已提交责任继续 T2/执行 |
-| 排空 | listener 已关但还有 pending/非终态 Execution，显示 `draining`，运行配置保持锁定 |
-| 修改/删除 | 停用、listener 回收、pending=0 且关联 Execution 全终态后允许；失败屏障另须显式处置才能改范围/重启 |
+| 排空 | listener 已关但还有 pending/非终态 Execution、未闭合批次、待落控制或未结预留，显示 `draining`，包括尚无 Receipt 的空批次；运行配置保持锁定 |
+| 修改/删除 | 停用、listener 回收、pending=0、关联 Execution 全终态且批次/控制/预留已结清后允许；失败屏障另须显式处置才能改范围/重启 |
 | 控制进程恢复 | 读取 desired state 和有效 lease；接管失效 lease，恢复 pending，保留原 activation/Receipt |
 | 克隆 | 新订阅默认停用，不复制 cursor、Receipt、Batch 或激活事实；Kafka 生成独立 group，首次启用重新选择起点 |
 
@@ -150,7 +150,9 @@ flowchart LR
 
 自动重投只返回原责任；人工 replay 才创建新 Delivery/Execution，保存原 Receipt、原 Execution、request_id、原因及操作者。默认复用原输入、Revision、Worker 和凭据引用；选“使用当前配置”须显式指定并展示差异，只在停用且无其他未完责任时允许。D5 的“指定修复 Revision”是单独受限动作，可保留后续 pending，只替换本次补处理代码版本。原版本/Worker 不可用或原内容已过期时分别拒绝，不能静默替换。
 
-失败屏障处只允许同一事件的一个补处理链推进；成功后解除屏障，失败继续阻塞。已被后续业务越过的旧记录重放只能在停用、排空后执行，标记为带外修复，不承诺保持原业务顺序，不能回退来源 checkpoint。`skip` 需 edit 权限、原因和幂等请求 ID，记录“未处理而跳过”，不伪装成功。原执行始终保留原终态。
+正常失败屏障处只允许同一事件的一个补处理链推进；成功后解除屏障，失败继续阻塞。K8s 已冻结完成链另可按 D9 的专用“放弃完成确认”人工结账；它不是 generic skip、成功或 `sync.failed`，不能隐式处置其他失败。已被后续业务越过的旧记录重放只能在停用、排空后执行，标记为带外修复，不承诺保持原业务顺序，不能回退来源 checkpoint。`skip` 需 edit 权限、原因和幂等请求 ID，记录“未处理而跳过”，不伪装成功。原执行始终保留原终态。
+
+放弃完成确认后，禁止为该旧 completed 新建原版本、repair 或当前配置的 Delivery/Execution；重启、reset 后的历史入口、迟到结果观察及维护均遵守持久放弃事实。旧 replay 请求在权限和原参数仍匹配时只读回原 Delivery，旧 abandon 请求只读回原结账结果，不产生新的执行许可。
 
 默认原始内容/可重放历史窗口 7 天，源身份去重元数据 30 天（均从责任进入可清理终态起算）；尚有未完责任、未解决屏障或批次引用的数据不得到期删除。Execution 沿用现有保留规则，但订阅引用增加保护；独立元数据留存能显示“原执行已清理”。超过原文窗口 replay 返回 `event_payload_expired`。
 
@@ -171,6 +173,14 @@ flowchart LR
 | 时间与治理 | oldest pending 5 分钟告警，30 分钟停止新接收；恢复至容量 80% 以下且最老 pending <5 分钟后恢复；超过时间不自动丢数据 |
 
 K8s 每订阅至多一个活动全量批次。开启批次前在上述配额内为 3 条生命周期记录（各 ≤8 KiB）预留 pending、原文/历史及源身份去重元数据额度，包含订阅和全局计数；普通对象、WATCH 和其他订阅不能占用预留。T2 释放 pending 不取消未使用的控制预留。整批 LIST 初始上限 5,000 个对象/128 MiB，且实际可用历史预算也必须足够；发现整批越界或历史不足时中止为 `sync.failed`，不用无限暂停等待被本批保护的历史自行释放。pending 暂满但可经 T2 消化时允许正常背压。批次关闭后释放未用预留，对已终态成员解除批次保护，但仍遵守 7/30 天窗口；若保留窗口使下次批次不能启动，明确要求等待治理窗口或缩小范围，不能热循环重开。
+
+ready-control 意图必须持久化，仅指已具备有界落账资格的控制；等待成员成功的 completed 不算 ready。控制接管仍扣同一每订阅 10/s、全局 50/s 窗口，不豁免或放大 rate。普通接管为已 ready 的控制保留下一可用令牌，控制按持久等待时间及稳定 ID 公平挑选；维护使用专门的有界 ready-control 扫描和逐 Batch 短事务，不依赖全 Sub GC 游标偶然轮到。先只读选候选 ID，再按既定锁序获取单批锁，不持全局计数器反取其他 Adapter。已材料化控制遇 Admission 拒绝仍留 Inbox 等 T2，不重复落账或返还已消费 rate。
+
+有限历史预算不能保证任意次失败后的新 replay 都有空间。例如 history_count=4，started/item/completed 已用3且余1控制预留时，completed 已冻结后失败，新的 replay 需要第五份占用而被拒绝；重复同请求返回既有 Delivery 不属于新增占用。用户选择 D9 专用放弃路径来明确结清原责任，不增加带积压限额 API、恢复信用或无限重试承诺。
+
+该动作使用已有 Batch/责任预算中的有界槽，原子结账/转换为一份至多 8 KiB 的 abandon 审计实际占用；不要求额外空位，不免计费，不复制原 Envelope，也不删除原历史。审计绑定 actor/reason/request_id 和期望责任，按既有元数据 30 天窗口及引用保护保留；重复请求不追加第二行。实际账本、只读核对和显式修复必须可重建审计占用及 remaining reserve。未用 reserve 仅结账一次，已用 history/dedupe 按合法窗口回收。即使原批能结账，达到产品 max 时新批仍可能等待留存治理，不承诺立即重新接收。
+
+未闭合 Batch、待控制意图和未结预留即使尚无 Receipt 也受运行锁/GC保护。来源停用或功能关闭只停止新接收，既有 Batch 控制由有界维护恢复，不依赖旧 owner finally；不完整 LIST 走 failed 收敛，已读完整的有效批次仍可合法完成。Batch 本身有界 GC，保留 Batch 对 activation/config/凭据引用的保护；不能仅按 state=failed 判断责任已闭合，独立冻结/放弃事实不随完成 Execution 外键清空而丢失。
 
 pending 转 Execution 后仍计入原文/历史预算；终态和合并后的审计行、Outbox、Execution 副本也计入实际存储监控，逻辑 quota 不等于物理磁盘上限。记录占用必须随事务更新、定期只读核对并可修复，不能只数 UI 中的 pending。
 
@@ -198,7 +208,7 @@ pending 转 Execution 后仍计入原文/历史预算；终态和合并后的审
 
 ### D9. Kubernetes：默认保留变化，状态合并显式选择
 
-一条订阅对应稳定 `cluster_id + GVR + namespace范围 + selectors`，首期一个 GVR，支持完整范围 LIST/WATCH 的资源；无一致 LIST 或权限不足的聚合 API 不声称支持。`cluster_id` 是配置的稳定逻辑身份并结合连接信任校验，换集群必须显式新 epoch。首批验证 Pod/Deployment，其他 GVR 逐项验证而非宣称通用兼容。
+一条订阅对应稳定 `cluster_id + GVR + namespace范围 + selectors`，首期一个 GVR，支持完整范围 LIST/WATCH 的资源；无一致 LIST 或权限不足的聚合 API 不声称支持。`cluster_id` 是配置的稳定逻辑身份并结合 server/有效 CA 信任校验，不声称原生全局 UUID。server 或有效 CA 信任范围改变、换集群及范围变化都须先停用、实际关闭并结清旧责任，再显式新 scope/epoch；同一凭据引用的 token 值轮换保持 epoch/RV。首批验证 Pod/Deployment，其他 GVR 逐项验证而非宣称通用兼容。
 
 模式：
 
@@ -209,25 +219,38 @@ pending 转 Execution 后仍计入原文/历史预算；终态和合并后的审
 
 LIST/WATCH 流程：
 
-1. 新建 `batch_id + scope_fingerprint`，发送有幂等身份的 `sync.started`；成功后才能派发该批 LIST 对象。
+1. 新建 `batch_id + scope_fingerprint`，发送有幂等身份的 `sync.started`；正常有效批次中，started成功后才能派发LIST对象；失效批次另按failed处置后的排空规则收敛。
 2. 分页 LIST 保持同一快照，持久化每页对象责任后记录页进度；最终页完成才标记 `read_complete`。对象可边读边处理，不能把整轮全量塞内存。
 3. 从 LIST collection RV 建立 WATCH。后续 WATCH 事件可有界接管，但业务派发等待当前批次完成屏障。
-4. 只有所有页成功、所有 LIST 对象处理成功、该批未 failed/superseded，才派发 `sync.completed`。该消息包含 batch_id、scope、总量和读取完成事实；Adapter 在目标侧核对 begin/batch 写入记录，才可执行受管范围内对账。完成事件成功后才放行缓冲 WATCH。
+4. 只有所有页成功、所有LIST对象最新责任成功、该批未failed/superseded，才派发 `sync.completed`。该消息包含 batch_id、scope、总量和读取完成事实；Adapter 在目标侧核对 begin/batch 写入记录，才可执行受管范围内对账。正常路径中完成事件业务成功后才放行缓冲 WATCH；下述专用人工放弃是唯一例外，不等同成功对账。
 5. 部分页失败、403、超时、continue token 失效或 LIST/WATCH 衔接发现历史缺口，批次置 failed/superseded，使用预留控制额度记录 `sync.failed`，永不派发成功完成标记。该失败标记终结的是全量对账资格；它经处理或显式处置后打开失败批次的派发屏障，已接管 LIST 对象和 WATCH 按原接收序号继续排空，不能继续等待不存在的 `sync.completed`。普通对象失败仍按业务失败屏障处置。已写目标的部分对象不回滚为不存在；重试另开 batch，旧批不能复活。
 
-WATCH 断线从最后安全持久 RV 续接。`410 Gone` 明确记录 history gap，终结尚未冻结完成资格批次的对账资格，按上述失败路径排空旧责任后重新 LIST；已冻结的批次按下一段规则收敛。不恢复全部历史。失败控制标记可以越过批次完成等待，但不得越过正在执行的 Attempt；其重试耗尽须明确处置才能继续。BOOKMARK 仅在之前事件全部持久化后推进接收位置，不创建业务 Execution，不依赖固定发送周期。错误事件不能当对象删除。
+WATCH 断线从最后安全持久 RV 续接。`410 Gone` 明确记录 history gap，终结尚未冻结完成资格批次的对账资格，按上述失败路径排空旧责任后重新 LIST；已冻结的批次按下一段规则收敛。不恢复全部历史。失败控制标记可以越过批次完成等待及早期普通失败，但不得越过正在执行的 Attempt；其重试耗尽须明确处置才能继续。`sync.failed` 业务失败可显式 generic skip，审计为未处理且不恢复清理资格；这不放宽已冻结 completed 的 generic skip 禁令。若控制临时占用 checkpoint blocker，结账后必须重算并恢复其他普通 failed/active 屏障及 repair 入口，不能直接清空。BOOKMARK 仅在之前事件全部持久化后推进接收位置，不创建业务 Execution，不依赖固定发送周期。错误事件不能当对象删除。
 
-批次完成资格在 completed 的 T2 事务中锁定并冻结（`completion_committed`），与 failed/superseded 转换互斥。若失效先提交则不能创建 completed；若 completed 先提交，随后 WATCH 缺口归为下一轮恢复，不能追溯撤回已创建执行的资格。completed 的业务失败按原快照补处理并阻塞后续，不能再生成同批 failed 去取消可能已发生的目标副作用。`sync.failed` 只撤销对账清理资格，示例 Adapter 仍允许旧批已接管对象的幂等写入和排空。
+批次完成资格在 completed 的 T2 事务中锁定并冻结（`completion_committed`），与 failed/superseded 转换互斥。若失效先提交则不能创建 completed；若 completed 先提交，随后 WATCH 缺口归为下一轮恢复，不能追溯撤回已创建执行的资格。正常路径中 completed 的业务失败按原快照受限补处理并阻塞后续；可选择以下专用人工放弃结账，但不能再生成同批 failed 去取消可能已发生的目标副作用。`sync.failed` 只撤销对账清理资格，示例 Adapter 仍允许旧批已接管对象的幂等写入和排空。
 
-任何逐条失败都阻塞当前订阅后续业务派发。对 LIST 对象 skip 必须令该批失效，不能通过跳过失败对象满足“全量成功”；清理必须等新完整批次。范围变更创建新 scope/epoch，旧范围退出对象如何处理由业务明确决定，平台不自动发送全局删除。带 selector 的 `DELETED` 可能仅表示对象离开选择范围，Adapter 不能据此声称 Kubernetes 对象物理消失。
+普通逐条失败保持当前订阅后续业务屏障；控制只有规定的生命周期优先及专用完成放弃例外，不能吞掉普通失败。LIST 成员最新责任失败时不得 completed；若完整页证据仍有效且该批未失效，显式 repair/replay 的最新责任成功后可重新检查全员成功，历史失败本身不永久废除资格。对 LIST 对象或 sync.started 显式 skip 则必须令该批永久失效，不能当作全量成功；后续补处理成功也不复活旧批，清理须等新完整批次。范围变更创建新 scope/epoch，旧范围退出对象如何处理由业务明确决定，平台不自动发送全局删除。带 selector 的 `DELETED` 可能仅表示对象离开选择范围，Adapter 不能据此声称 Kubernetes 对象物理消失。
+
+#### 专用人工例外：放弃完成确认
+
+用户已明确选择此方案。它仅适用于 `completion_committed=true`、完成结果仍未确认且未被其他处置终结的 completed 链。正常路径继续要求 completed 业务成功；generic skip 在已冻结 completed 上一律拒绝。专用 `abandon-completion` 记录“放弃后续补处理 / 业务结果未确认”，不是成功、generic skip 或同批 `sync.failed`。
+
+- 必须 desired=disabled、原生 listener 已确认关闭，且该订阅所有关联 Execution 均已终态；queued/running/retry_wait 任一存在都拒绝。edit 权限仍由 Adapter ACL决定。操作不取消已有 Execution，不以 Execution 终态证明远端不存在迟到副作用。
+- 请求绑定 `expected_config_version`、Batch/epoch、completed Receipt、期望最新 Delivery ID/责任序号及其 Execution 关联快照（包括 null）、actor、非空 reason、request_id 和明确影响确认；actor取认证主体。与 replay/T2/observe 共用 Adapter→Subscription 及既定后续锁序。未冻结、已成功、已被其他处置终结、跨批次/epoch或责任/执行关联已变化均冲突，零副作用；资格须读取真实 Execution 结果，不能因 Receipt/Delivery 成功投影滞后而放弃已成功责任。旧请求的幂等读回另按原参数和权限处理。
+- 已冻结完成链的最新 replay 若仍 pending 且 execution_id=null，可在同一处置事务中标记为未执行放弃，释放它一次 pending count/bytes，保留该 Delivery 的历史/dedupe。T2 先提交（即使已快速终态）或新 replay 先改变最新责任，旧处置均冲突；放弃先提交则之后 T2 不得创建 Execution/Outbox。事务失败时处置、pending与预留结账一起回滚。
+- 保留 completion_committed、原 Envelope、原失败 Delivery/Execution 和原终态，追加独立持久放弃事实；只解除 completion 屏障，重算并保留其他普通失败和原 repair 入口。已接管 WATCH 仍按本地持久序号排空，旧普通失败照常显式修复/处置。
+- 放弃后，dispatch、原/repair/current-config 新 replay、迟到 observe、后台恢复及 reset 后历史调用都不得复活旧 completed；旧 replay 请求只读回其原 Delivery，旧放弃请求只读回同一次结账结果。重复请求不重复扣/放 pending、占审计或结账 reserve；改变actor、对象、理由或期望责任后复用request_id须冲突。
+- D7 的单份有界且已计费审计使满额原批可明确结账，原历史不提前删除；仅释放未用 reserve，不自动解除其他责任或运行锁。动作不自动 enable、不新建 LIST；旧责任全结清后，用户才可沿现有配置路径调整收紧限额并显式启用新批次，产品 max/合法留存仍可能阻止新批立即开始。
+
+目标示例必须持久化每 scope/batch 的 generation 与控制幂等结果，generation独立于opaque RV。新批 started 生效后，迟到或重复的旧 completed 不能清理新批数据；同一控制重试只返回其既有结果，不重复清理。平台禁止新 replay 不代表远端请求被物理撤回。UI 必须明确目标可能已部分执行、放弃不能回滚，且取消尚未派发的本次补处理后，下一完整批次仍须重新核对目标。
 
 ### D10. API、权限与产品呈现
 
-建议资源面：`/api/event-subscriptions` 的列表/创建/详情/更新/删除，`/{id}/enable`、`disable`、`resume`、`reset`、`events`，以及事件的 `replay`、`skip` 和受限 `repair` 进入/退出与修复版本保存。enable/disable 等动作、配置写入及处置请求携带 expected config version 或幂等 request_id；稳定冲突由后端返回，不依赖前端禁用按钮。
+建议资源面：`/api/event-subscriptions` 的列表/创建/详情/更新/删除，`/{id}/enable`、`disable`、`resume`、`reset`、`events`，以及事件的 `replay`、`skip`、专用 `abandon-completion` 和受限 `repair` 进入/退出与修复版本保存。enable/disable 等动作、配置写入及处置请求携带 expected config version 或幂等 request_id；稳定冲突由后端返回，不依赖前端禁用按钮。
 
-首期能力集中在 Adapter“运行设置 → 事件订阅”；全局列表支持来源、连接/处理状态、Adapter 筛选和跳转。事件详情关联原事件、执行与重处理链；普通 Execution 历史保持只读，重处理只在订阅的独立授权动作中进行。
+首期能力集中在 Adapter“运行设置 → 事件订阅”；全局列表支持来源、连接/处理状态、Adapter 筛选和跳转。事件详情关联原事件、执行与重处理链，并分别显示完成冻结、业务成功、失效和人工放弃；放弃确认展示原/最新责任、执行关联与不可回滚影响。普通 Execution 历史保持只读，重处理及人工放弃只在订阅的独立授权动作中进行。
 
-复用绑定 Adapter 的 view/edit 权限：view 可查看已授权摘要和执行详情；edit 才可配置、启停、重放、skip/reset，且必须有凭据引用权限；全局列表先按权限过滤再分页/计数，禁止通过 ID 查询泄露。Secret 不返回前端；来源 payload 作为业务输入受现有详情权限保护，不进入普通平台日志或 AI 自动上下文。连接地址只在有权配置页展示，日志为脱敏摘要。
+复用绑定 Adapter 的 view/edit 权限：view 可查看已授权摘要和执行详情；edit 才可配置、启停、重放、skip/reset 和专用完成放弃，且必须有凭据引用权限；全局列表先按权限过滤再分页/计数，禁止通过 ID 查询泄露。Secret 不返回前端；来源 payload 作为业务输入受现有详情权限保护，不进入普通平台日志或 AI 自动上下文。连接地址只在有权配置页展示，日志为脱敏摘要。
 
 新增稳定错误至少覆盖 `subscription_binding_conflict`、`subscription_draining`、`subscription_config_conflict`、`subscription_owner_stale`、`source_history_gap`、`event_identity_conflict`、`event_payload_too_large`、`event_payload_expired`、`subscription_capacity_exceeded`、`source_not_available`；错误 code 不翻译，用户解释支持 zh-CN/en。未交付来源不出现在可启用选项中。
 
@@ -238,7 +261,8 @@ WATCH 断线从最后安全持久 RV 续接。`410 Gone` 明确记录 history ga
 | Inbox 增加一次持久化和治理复杂度 | 一条公共 T1/T2 路径；以崩溃窗口和配额交接测试为合并门槛 |
 | Control 与外部客户端共享资源 | 全局连接/内存预算、超时、专用执行池；测量 HTTP 延迟与 RSS，不满足则回到设计审查 |
 | partition 严格顺序遇毒消息会停滞 | 清楚显示阻塞身份和补处理/skip，不以吞吐为由悄悄越过 |
-| K8s 批次与业务目标不在同一事务 | begin/item/finish 业务幂等；完成屏障只是必要条件，目标 Adapter 还须核对写入事实 |
+| K8s 批次与业务目标不在同一事务 | begin/item/finish 业务幂等及目标代次保护；完成屏障只是必要条件，目标 Adapter 还须核对写入事实；人工放弃不回滚或伪造目标结果 |
+| 有限历史容量耗尽使完成补处理无空间 | 专用放弃用已有预算内有界审计结清原完成责任；保留历史、原终态和冻结事实，新批仍服从产品 max 与留存治理 |
 | 目标写入成功而响应丢失 | 同一业务幂等键重试并读回；平台执行去重不替代目标幂等 |
 | 低频工具被误用于高吞吐 | 默认配额、暂停策略、容量估计和实测适用范围共同交付 |
 | 旧应用不识别新 trigger/责任表 | 新旧版本兼容性必须单独验证，不承诺裸二进制回滚 |
@@ -264,4 +288,4 @@ WATCH 断线从最后安全持久 RV 续接。`410 Gone` 明确记录 history ga
 - [Kubernetes API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/)：LIST/WATCH、resourceVersion、分页与 410 恢复。
 - [Windmill Kafka triggers](https://www.windmill.dev/docs/triggers/kafka_triggers)：服务器监听、不占 Worker 的职责划分参考；其队列确认规则不直接充当 DLR 持久接收证明。
 
-参考资料核对日期：2026-10-23。未在本轮运行连接器、压力测试或任何业务验收。
+参考资料核对日期：2026-10-23。初稿仅定义设计；后续实施与实测状态以 [tasks.md](tasks.md) 和各批次审查记录为准，本次规划修订不代表新增测试已通过。
