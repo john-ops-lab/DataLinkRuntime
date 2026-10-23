@@ -1,6 +1,6 @@
 # Tasks
 
-**状态：已批准实施，B0/B1 已通过，当前 B2 进行中。** 2026-10-23 用户明确授权本方案，批次按 B0 → B1 → B2 → B3 → B4 → B5 推进；每批产出独立可审查变更与证据，不因 OpenSpec 文件齐备自动进入 apply。
+**状态：已批准实施，B0/B1/B2 已通过，当前 B3 进行中。** 2026-10-23 用户明确授权本方案，批次按 B0 → B1 → B2 → B3 → B4 → B5 推进；每批产出独立可审查变更与证据，不因 OpenSpec 文件齐备自动进入 apply。
 
 | 批次 | 可审查交付物 | 进入/退出门槛 |
 | --- | --- | --- |
@@ -37,12 +37,14 @@ B0–B2 未完成对用户的功能交付。B3 可独立完成 Kafka 阶段验�
 
 ## 3. B2：Kafka 连接器与可靠恢复
 
-- [ ] 3.1 接入 B0 锁定客户端，完成专用组、topic allowlist、TLS/SASL、首次起点和源身份/epoch 校验；用 K03/K05/K07 验证配置拒绝、起点持久化和凭据轮换。
-- [ ] 3.2 实现无损 key/value/header Envelope、T1 接收与安全下一位置 commit；用 C11/K03 及提交前后中断验证 binary/null/tombstone、offset 空洞和不超前确认。
-- [ ] 3.3 实现 assignment generation、rebalance、重连和 checkpoint 对账；用 C03/C05/K04 验证旧 owner、确认失败、broker/DB 位置差异和重启恢复。
-- [ ] 3.4 实现 partition_serial、失败阻塞、补处理和显式 skip；用 K02 与一次目标幂等故障实验验证 retry_wait 不越序、另一分区仍能推进。
-- [ ] 3.5 实现消费暂停/恢复、客户端预算和历史缺口处置；用 K05–K06 与 C09 证明无静默 reset、热重试或无界内存。
-- [ ] 3.6 交付 Kafka 运维/API 文档和一个普通 Python Adapter 示例，明确 source commit 不等于业务成功；运行连接器测试和必要 CI，真实隔离 Kafka 用 K01 读回目标，保留初步证据后提交本批。
+验证和独立审查通过，见 [b2-review.md](b2-review.md)。真实 Worker 中断探针的 100 秒等待曾超时，后续同责任收敛；额外重试调度延迟作为 B3 必须跟踪的事实保留，未把首轮超时改写为通过。
+
+- [x] 3.1 接入 B0 锁定客户端，完成专用组、topic allowlist、TLS/SASL、首次起点和源身份/epoch 校验；用 K03/K05/K07 验证配置拒绝、起点持久化和凭据轮换。
+- [x] 3.2 实现无损 key/value/header Envelope、T1 接收与安全下一位置 commit；用 C11/K03 及提交前后中断验证 binary/null/tombstone、offset 空洞和不超前确认。
+- [x] 3.3 实现 assignment generation、rebalance、重连和 checkpoint 对账；用 C03/C05/K04 验证旧 owner、确认失败、broker/DB 位置差异和重启恢复。
+- [x] 3.4 实现 partition_serial、失败阻塞、补处理和显式 skip；用 K02 与一次目标幂等故障实验验证 retry_wait 不越序、另一分区仍能推进。
+- [x] 3.5 实现消费暂停/恢复、客户端预算和历史缺口处置；用 K05–K06 与 C09 证明无静默 reset、热重试或无界内存。
+- [x] 3.6 交付 Kafka 运维/API 文档和一个普通 Python Adapter 示例，明确 source commit 不等于业务成功；运行连接器测试和必要 CI，真实隔离 Kafka 用 K01 读回目标，保留初步证据后提交本批。
 
 ## 4. B3：Kafka 产品交付与独立验收
 
