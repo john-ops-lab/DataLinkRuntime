@@ -58,14 +58,14 @@ B0–B2 未完成对用户的功能交付。B3 可独立完成 Kafka 阶段验�
 
 ## 5. B4：Kubernetes 来源、全量批次与显式合并
 
-2026-10-23 用户已选择专用“放弃完成确认”，下述任务包含该明确人工例外及有界审计；规划修订已通过独立审查，B3 门槛已通过；按下述任务进入实施，本节尚未完成。
+验证和独立审查通过，见 [b4-review.md](b4-review.md)。保留真实 LIST TypeMeta 首败、修订提交与目标读回；公开 Kubernetes 门槛及最终集成留至 B5，远端精确 HEAD CI 留至统一 PR。
 
-- [ ] 5.1 复核 B0 Kubernetes 支持矩阵和客户端版本，增加 logical cluster + server/CA 信任、GVR/namespace/selector、RBAC 连接校验；用 U04/U07 验证同名不同 UID、信任/范围变更新 epoch 与同引用 token 轮换，更新来源配置文档。
-- [ ] 5.2 实现一致分页 LIST、固定 epoch/activation 的 batch/scope、控制意图/未闭合空批次保护、started/item/completed/failed、完成冻结及专用 abandon；控制预留与有界处置审计覆盖各层且仍服从同一10/50速率。用 U01/U02/U06/U08–U14 验证成员失败可修复、skip永久失效、两类T2竞争、pending-noExecution原子结账、满额退出、幂等及旧completed不可复活；成功确认且闭合的completed同样拒绝新replay，原请求只读回，重新对账使用新完整批次。
-- [ ] 5.3 实现 WATCH 持久 RV、bookmark、断线与 410 恢复，以及停用/featureoff后既有控制维护；用 U03/U15 验证 failed或专用abandon后旧责任原序排空、普通失败屏障及repair入口保留、不自动enable/LIST，且没有历史补齐的虚假承诺。
-- [ ] 5.4 实现默认 per_event 和显式 state_sync 合并，保留合并审计与删除边界；用 U05/U07 验证已有 Execution 输入不改、新批次成员不被旧去重漏掉。
-- [ ] 5.5 提供普通 Adapter 的 begin/item/finish/failed 业务幂等示例及持久scope/batch generation保护，清理前核对目标写入和范围；用 U04/U06/U09/U15 证明旧删除、失败成员、响应丢失及人工放弃后晚到旧completed不清理新批数据。
-- [ ] 5.6 更新本批恢复/批次/合并/API 文档并提供严格有界诊断及专用完成放弃API；运行受影响后端检查和必要 CI，在隔离真实 API server 完成代表性 LIST/WATCH/410、关闭恢复与目标回读后提交本批，保留实测资源类型边界。K8s内部候选与公开可启用注册分开，不因接口就绪提前开放来源。
+- [x] 5.1 复核 B0 Kubernetes 支持矩阵和客户端版本，增加 logical cluster + server/CA 信任、GVR/namespace/selector、RBAC 连接校验；用 U04/U07 验证同名不同 UID、信任/范围变更新 epoch 与同引用 token 轮换，更新来源配置文档。
+- [x] 5.2 实现一致分页 LIST、固定 epoch/activation 的 batch/scope、控制意图/未闭合空批次保护、started/item/completed/failed、完成冻结及专用 abandon；控制预留与有界处置审计覆盖各层且仍服从同一10/50速率。用 U01/U02/U06/U08–U14 验证成员失败可修复、skip永久失效、两类T2竞争、pending-noExecution原子结账、满额退出、幂等及旧completed不可复活；成功确认且闭合的completed同样拒绝新replay，原请求只读回，重新对账使用新完整批次。
+- [x] 5.3 实现 WATCH 持久 RV、bookmark、断线与 410 恢复，以及停用/featureoff后既有控制维护；用 U03/U15 验证 failed或专用abandon后旧责任原序排空、普通失败屏障及repair入口保留、不自动enable/LIST，且没有历史补齐的虚假承诺。
+- [x] 5.4 实现默认 per_event 和显式 state_sync 合并，保留合并审计与删除边界；用 U05/U07 验证已有 Execution 输入不改、新批次成员不被旧去重漏掉。
+- [x] 5.5 提供普通 Adapter 的 begin/item/finish/failed 业务幂等示例及持久scope/batch generation保护，清理前核对目标写入和范围；用 U04/U06/U09/U15 证明旧删除、失败成员、响应丢失及人工放弃后晚到旧completed不清理新批数据。
+- [x] 5.6 更新本批恢复/批次/合并/API 文档并提供严格有界诊断及专用完成放弃API；运行受影响后端检查和必要 CI，在隔离真实 API server 完成代表性 LIST/WATCH/410、关闭恢复与目标回读后提交本批，保留实测资源类型边界。K8s内部候选与公开可启用注册分开，不因接口就绪提前开放来源。
 
 ## 6. B5：Kubernetes 产品交付与最终集成
 
