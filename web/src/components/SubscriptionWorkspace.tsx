@@ -20,11 +20,19 @@ import type {
   SubscriptionDraftState,
   SubscriptionEvent,
   SubscriptionEventPage,
+  SyncBatchDetail,
+  SyncBatchSummary,
 } from "../subscription-types";
-import { subscriptionDrained } from "../subscription-types";
+import {
+  completionReplayBlocked,
+  implementedSourceTypes,
+  isCompletionEvent,
+  subscriptionDrained,
+} from "../subscription-types";
 import { subscriptionErrorMessage } from "../subscription-message";
 import ExecutionHistoryPanel from "./ExecutionHistoryPanel";
-import KafkaSubscriptionConfig from "./KafkaSubscriptionConfig";
+import SubscriptionConfigDialog from "./SubscriptionConfigDialog";
+import SubscriptionBatchPanel from "./SubscriptionBatchPanel";
 import SubscriptionActionDialog, {
   type SubscriptionActionKind,
 } from "./SubscriptionActionDialog";
@@ -45,6 +53,7 @@ export function SubscriptionState({ value }: { value: string }) {
                   "reconnecting",
                   "stopping",
                   "repair",
+                  "abandoned",
                 ].includes(value)
               ? "warning"
               : "default"
@@ -104,8 +113,14 @@ export default function SubscriptionWorkspace({
     dirty: false,
     busy: false,
   });
-  const draftDirty = metadataDirty || configDraft.dirty || actionDraft.dirty;
-  const draftBusy = metadataBusy || configDraft.busy || actionDraft.busy;
+  const [batchDraft, setBatchDraft] = useState<SubscriptionDraftState>({
+    dirty: false,
+    busy: false,
+  });
+  const draftDirty =
+    metadataDirty || configDraft.dirty || actionDraft.dirty || batchDraft.dirty;
+  const draftBusy =
+    metadataBusy || configDraft.busy || actionDraft.busy || batchDraft.busy;
   useEffect(() => {
     onDraftStateChange?.({ dirty: draftDirty, busy: draftBusy });
   }, [draftDirty, draftBusy, onDraftStateChange]);
@@ -116,6 +131,9 @@ export default function SubscriptionWorkspace({
   const [selectedEvent, setSelectedEvent] = useState<SubscriptionEvent | null>(
     null,
   );
+  const [selectedBatchId, setSelectedBatchId] = useState<number | null>(null);
+  const [selectedEventBatch, setSelectedEventBatch] =
+    useState<SyncBatchDetail | null>(null);
   const [activation, setActivation] = useState<SubscriptionActivation | null>(
     null,
   );
@@ -125,6 +143,7 @@ export default function SubscriptionWorkspace({
   const [action, setAction] = useState<{
     kind: SubscriptionActionKind;
     event?: SubscriptionEvent;
+    batch?: SyncBatchSummary | null;
     checkpoint?: SourceCheckpoint;
     code?: string;
     requirements?: string;
@@ -195,6 +214,31 @@ export default function SubscriptionWorkspace({
       window.clearInterval(timer);
     };
   }, [refreshSelectedEvent, selectedEventId]);
+  const eventBatchId = selectedEvent?.batch_id;
+  useEffect(() => {
+    if (eventBatchId == null) return;
+    let active = true;
+    async function load() {
+      try {
+        const batch = await api.subscriptionBatch(id, eventBatchId!);
+        if (active) setSelectedEventBatch(batch);
+      } catch (reason) {
+        if (active) setError(subscriptionErrorMessage(reason));
+      }
+    }
+    const initial = window.setTimeout(() => void load(), 0);
+    const timer = window.setInterval(() => void load(), 5000);
+    return () => {
+      active = false;
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+    };
+  }, [id, eventBatchId]);
+  const eventBatch =
+    selectedEventBatch?.id === eventBatchId ? selectedEventBatch : null;
+  const hasKubernetesEvents = events.items.some(
+    (item) => item.source_phase != null || item.batch_id != null,
+  );
   const canEdit =
     (sub?.access_level ?? adapter.access_level ?? "read") !== "read";
   const canManage = ["admin", "owner"].includes(
@@ -204,7 +248,8 @@ export default function SubscriptionWorkspace({
   const canEnable =
     sub?.available === true &&
     capabilities.enabled &&
-    capabilities.available_sources.includes("kafka");
+    sub !== null &&
+    capabilities.available_sources.includes(sub.source_type);
   async function changed() {
     await reload();
     await onChanged?.();
@@ -220,10 +265,12 @@ export default function SubscriptionWorkspace({
         sub.config_version,
       );
       setDiagnostic(
-        `${t("testPassed")} ${t("testResult", { cluster: result.cluster_id, topics: result.topic_count ?? "—", partitions: result.partition_count ?? "—" })}`,
+        result.source_type === "kubernetes" && result.kubernetes
+          ? `${t("kubernetes.testPassed")} ${t("kubernetes.testResult", { cluster: result.cluster_id, resource: `${result.kubernetes.group || "core"}/${result.kubernetes.version}/${result.kubernetes.resource}`, namespace: result.kubernetes.namespace ?? t("kubernetes.allNamespaces"), scope: result.kubernetes.scope_fingerprint, trust: t(result.kubernetes.trust_verified ? "batch.yes" : "batch.no"), list: t(result.kubernetes.list_verified ? "batch.yes" : "batch.no"), watch: t(result.kubernetes.watch_verified ? "batch.yes" : "batch.no") })}`
+          : `${t("testPassed")} ${t("testResult", { cluster: result.cluster_id, topics: result.topic_count ?? "—", partitions: result.partition_count ?? "—" })}`,
       );
     } catch (reason) {
-      setError(subscriptionErrorMessage(reason));
+      setError(subscriptionErrorMessage(reason, sub.source_type));
     } finally {
       setTesting(false);
     }
@@ -287,9 +334,14 @@ export default function SubscriptionWorkspace({
           message={
             <>
               <code>{sub.last_error_code}</code> ·{" "}
-              {t(`errors.${sub.last_error_code}`, {
-                defaultValue: t("operationFailed"),
-              })}
+              {t(
+                `${sub.source_type === "kubernetes" ? "kubernetes." : ""}errors.${sub.last_error_code}`,
+                {
+                  defaultValue: t(`errors.${sub.last_error_code}`, {
+                    defaultValue: t("operationFailed"),
+                  }),
+                },
+              )}
             </>
           }
         />
@@ -353,7 +405,7 @@ export default function SubscriptionWorkspace({
           >
             {t("metadata")}
           </Button>
-          {sub.source_type === "kafka" && (
+          {implementedSourceTypes.includes(sub.config.source_type) && (
             <Button
               disabled={!drained}
               onClick={() => setConfiguration(structuredClone(sub))}
@@ -437,6 +489,71 @@ export default function SubscriptionWorkspace({
         </Space>
       )}
       {diagnostic && <Alert type="success" showIcon message={diagnostic} />}
+      {sub.config.source_type === "kubernetes" ? (
+        <>
+          <Descriptions
+            size="small"
+            column={{ xs: 1, md: 2 }}
+            items={[
+              {
+                key: "cluster",
+                label: t("kubernetes.cluster"),
+                children: sub.config.cluster_id,
+              },
+              {
+                key: "resource",
+                label: t("kubernetes.resource"),
+                children: `${sub.config.group || "core"}/${sub.config.version}/${sub.config.resource}`,
+              },
+              {
+                key: "namespace",
+                label: t("kubernetes.namespace"),
+                children: sub.config.namespace ?? t("kubernetes.allNamespaces"),
+              },
+              {
+                key: "selector",
+                label: t("kubernetes.labelSelector"),
+                children: <code>{sub.config.label_selector || "—"}</code>,
+              },
+              {
+                key: "field",
+                label: t("kubernetes.fieldSelector"),
+                children: <code>{sub.config.field_selector || "—"}</code>,
+              },
+              {
+                key: "mode",
+                label: t("kubernetes.mode"),
+                children: t(
+                  sub.config.mode === "state_sync"
+                    ? "kubernetes.stateSync"
+                    : "kubernetes.perEvent",
+                ),
+              },
+            ]}
+          />
+        </>
+      ) : null}
+      {sub.config.source_type === "kubernetes" ||
+      sub.latest_batch != null ||
+      selectedBatchId !== null ? (
+        <SubscriptionBatchPanel
+          sub={sub}
+          canEdit={canEdit && sub.source_type === "kubernetes"}
+          selectedId={selectedBatchId}
+          onSelect={setSelectedBatchId}
+          onEvent={(receiptId) => {
+            void api
+              .getSubscriptionEvent(id, receiptId)
+              .then(setSelectedEvent)
+              .catch((reason: unknown) =>
+                setError(subscriptionErrorMessage(reason)),
+              );
+          }}
+          onExecution={setExecutionId}
+          onChanged={changed}
+          onDraftStateChange={setBatchDraft}
+        />
+      ) : null}
       {!drained && <Alert type="info" message={t("locked")} />}
       <section>
         <h3>{t("quota")}</h3>
@@ -474,7 +591,11 @@ export default function SubscriptionWorkspace({
       </section>
       <section>
         <h3>{t("checkpoints")}</h3>
-        <p>{t("gapNote")}</p>
+        <p>
+          {t(
+            sub.source_type === "kubernetes" ? "kubernetes.gapNote" : "gapNote",
+          )}
+        </p>
         <Table<SourceCheckpoint>
           rowKey="id"
           size="small"
@@ -482,7 +603,14 @@ export default function SubscriptionWorkspace({
           scroll={{ x: 720 }}
           dataSource={checkpoints}
           columns={[
-            { title: t("shard"), dataIndex: "shard" },
+            {
+              title: t(
+                sub.source_type === "kubernetes"
+                  ? "kubernetes.stream"
+                  : "shard",
+              ),
+              dataIndex: "shard",
+            },
             {
               title: t("position"),
               render: (_, row) => <code>{JSON.stringify(row.position)}</code>,
@@ -506,7 +634,7 @@ export default function SubscriptionWorkspace({
                 row.blocked_unaccepted ? (
                   <>
                     <code>{row.blocked_unaccepted.code}</code>
-                    {canEdit && (
+                    {canEdit && sub.source_type === "kafka" && (
                       <Button
                         danger
                         size="small"
@@ -565,7 +693,32 @@ export default function SubscriptionWorkspace({
                 </Button>
               ),
             },
-            { title: t("shard"), dataIndex: "shard" },
+            {
+              title: t(
+                sub.source_type === "kubernetes"
+                  ? "kubernetes.stream"
+                  : "shard",
+              ),
+              dataIndex: "shard",
+            },
+            ...(sub.source_type === "kubernetes" || hasKubernetesEvents
+              ? [
+                  {
+                    title: t("batch.id"),
+                    render: (_: unknown, row: SubscriptionEvent) =>
+                      row.batch_id ? (
+                        <Button
+                          type="link"
+                          onClick={() => setSelectedBatchId(row.batch_id!)}
+                        >
+                          #{row.batch_id} · {row.source_phase}
+                        </Button>
+                      ) : (
+                        (row.source_phase ?? "—")
+                      ),
+                  },
+                ]
+              : []),
             {
               title: t("state"),
               render: (_, row) => <SubscriptionState value={row.state} />,
@@ -623,7 +776,10 @@ export default function SubscriptionWorkspace({
         </section>
       )}
       {configuration && (
-        <KafkaSubscriptionConfig
+        <SubscriptionConfigDialog
+          availableSources={implementedSourceTypes.filter((source) =>
+            capabilities.available_sources.includes(source),
+          )}
           adapterId={adapter.id}
           subscription={configuration}
           canManage={canManage}
@@ -706,24 +862,37 @@ export default function SubscriptionWorkspace({
                   <Button
                     disabled={
                       selectedEvent.payload_expired ||
-                      ["pending", "processing"].includes(selectedEvent.state)
+                      ["pending", "processing"].includes(selectedEvent.state) ||
+                      completionReplayBlocked(selectedEvent, eventBatch)
                     }
                     onClick={() =>
-                      setAction({ kind: "replay", event: selectedEvent })
+                      setAction({
+                        kind: "replay",
+                        event: selectedEvent,
+                        batch: eventBatch,
+                      })
                     }
                   >
                     {t("replay")}
                   </Button>
                   <Button
                     danger
-                    disabled={[
-                      "succeeded",
-                      "skipped",
-                      "superseded",
-                      "processing",
-                    ].includes(selectedEvent.state)}
+                    disabled={
+                      (isCompletionEvent(selectedEvent) &&
+                        (!eventBatch || eventBatch.completion_committed)) ||
+                      [
+                        "succeeded",
+                        "skipped",
+                        "superseded",
+                        "processing",
+                      ].includes(selectedEvent.state)
+                    }
                     onClick={() =>
-                      setAction({ kind: "skip", event: selectedEvent })
+                      setAction({
+                        kind: "skip",
+                        event: selectedEvent,
+                        batch: eventBatch,
+                      })
                     }
                   >
                     {t("skip")}
@@ -742,6 +911,51 @@ export default function SubscriptionWorkspace({
           <p>
             {t("epoch")}: {selectedEvent.source_epoch}
           </p>
+          {selectedEvent.batch_id ? (
+            <Button
+              onClick={() => {
+                setSelectedBatchId(selectedEvent.batch_id!);
+                setSelectedEvent(null);
+              }}
+            >
+              {t("batch.id")} #{selectedEvent.batch_id} ·{" "}
+              {selectedEvent.source_phase}
+            </Button>
+          ) : null}
+          {isCompletionEvent(selectedEvent) &&
+          completionReplayBlocked(selectedEvent, eventBatch) ? (
+            <Alert type="info" message={t("batch.closedReplayNote")} />
+          ) : null}
+          {selectedEvent.source_phase != null ||
+          selectedEvent.batch_id != null ? (
+            <p>
+              {t("batch.coalescing", {
+                count: selectedEvent.coalesced_count ?? 0,
+              })}{" "}
+              · {t("batch.firstIdentity")}:{" "}
+              <code>
+                {selectedEvent.first_source_event_id ??
+                  ((selectedEvent.coalesced_count ?? 0) === 0
+                    ? selectedEvent.source_event_id
+                    : t("batch.historicalUnknown"))}
+              </code>
+              {selectedEvent.superseded_by_id ? (
+                <Button
+                  type="link"
+                  onClick={() => {
+                    void api
+                      .getSubscriptionEvent(id, selectedEvent.superseded_by_id!)
+                      .then(setSelectedEvent)
+                      .catch((reason: unknown) =>
+                        setError(subscriptionErrorMessage(reason)),
+                      );
+                  }}
+                >
+                  {t("batch.supersededBy")} #{selectedEvent.superseded_by_id}
+                </Button>
+              ) : null}
+            </p>
+          ) : null}
           <Button
             onClick={() => void viewActivation(selectedEvent.activation_id)}
           >
@@ -872,6 +1086,7 @@ export default function SubscriptionWorkspace({
           onDraftStateChange={setActionDraft}
           sub={sub}
           event={action.event}
+          batch={action.batch}
           checkpoint={action.checkpoint}
           initialCode={action.code}
           initialRequirements={action.requirements}

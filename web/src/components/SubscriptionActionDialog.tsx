@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Form, Input, Modal, Select, Table } from "antd";
+import { Alert, Checkbox, Form, Input, Modal, Select, Table } from "antd";
 import { useTranslation } from "react-i18next";
 import { ApiError, api } from "../api";
 import type {
@@ -10,8 +10,13 @@ import type {
   SubscriptionEvent,
   SubscriptionActivation,
   SubscriptionReplayContext,
+  SyncBatchSummary,
 } from "../subscription-types";
-import { subscriptionDrained } from "../subscription-types";
+import {
+  completionReplayBlocked,
+  isCompletionEvent,
+  subscriptionDrained,
+} from "../subscription-types";
 import { userErrorMessage } from "../user-message";
 
 export type SubscriptionActionKind =
@@ -31,6 +36,7 @@ interface Values {
   replayMode?: "original" | "current" | "repair";
   previewToken?: string;
   initial?: "earliest" | "latest";
+  confirmEpoch?: boolean;
   code?: string;
   requirements?: string;
 }
@@ -38,7 +44,8 @@ interface Values {
 export default function SubscriptionActionDialog({
   action,
   sub: liveSub,
-  event,
+  event: liveEvent,
+  batch: liveBatch,
   checkpoint,
   initialCode,
   initialRequirements,
@@ -49,6 +56,7 @@ export default function SubscriptionActionDialog({
   action: SubscriptionActionKind;
   sub: EventSubscription;
   event?: SubscriptionEvent;
+  batch?: SyncBatchSummary | null;
   checkpoint?: SourceCheckpoint;
   initialCode?: string;
   initialRequirements?: string;
@@ -58,6 +66,12 @@ export default function SubscriptionActionDialog({
 }) {
   const { t } = useTranslation("subscription");
   const [sub] = useState(() => structuredClone(liveSub));
+  const [event] = useState(() =>
+    liveEvent ? structuredClone(liveEvent) : undefined,
+  );
+  const [batch] = useState(() =>
+    liveBatch ? structuredClone(liveBatch) : null,
+  );
   const [form] = Form.useForm<Values>();
   const replayMode = Form.useWatch("replayMode", form);
   const [original, setOriginal] = useState<SubscriptionActivation | null>(null);
@@ -90,7 +104,8 @@ export default function SubscriptionActionDialog({
     replay: "replayNote",
     skip: "skipNote",
     skipUnaccepted: "skipNote",
-    reset: "resetNote",
+    reset:
+      sub.source_type === "kubernetes" ? "kubernetes.resetNote" : "resetNote",
     repairEnter: "repairNote",
     repairSave: "repairNote",
     repairExit: "repairNote",
@@ -143,10 +158,16 @@ export default function SubscriptionActionDialog({
           shard: checkpoint.shard,
           source_event_id: checkpoint.blocked_unaccepted.source_event_id,
         });
-      else if (action === "reset" && values.initial)
+      else if (
+        action === "reset" &&
+        (sub.config.source_type === "kubernetes" || values.initial)
+      )
         await api.resetSubscription(sub.id, {
           ...body,
-          config: { ...sub.config, initial_position: values.initial },
+          config:
+            sub.config.source_type === "kubernetes"
+              ? sub.config
+              : { ...sub.config, initial_position: values.initial! },
         });
       else if (action === "delete")
         await api.deleteSubscription(sub.id, version);
@@ -181,7 +202,7 @@ export default function SubscriptionActionDialog({
       )
         setError(
           reason instanceof ApiError
-            ? `${t(`errors.${reason.code}`, { defaultValue: t("operationFailed") })} (${reason.code})`
+            ? `${t(`${sub.source_type === "kubernetes" ? "kubernetes." : ""}errors.${reason.code}`, { defaultValue: t(`errors.${reason.code}`, { defaultValue: t("operationFailed") }) })} (${reason.code})`
             : userErrorMessage(reason),
         );
     } finally {
@@ -194,7 +215,14 @@ export default function SubscriptionActionDialog({
       sub.connection_state === "stopped" &&
       sub.delivery_state !== "repair" &&
       !(sub.event_counts.pending || sub.event_counts.processing) &&
-      (sub.event_counts.failed ?? 0) <= (event?.state === "failed" ? 1 : 0));
+      (sub.event_counts.failed ?? 0) <= (event?.state === "failed" ? 1 : 0) &&
+      (!sub.latest_batch || sub.latest_batch.closed));
+  const controlForbidden =
+    event !== undefined &&
+    ((action === "replay" && completionReplayBlocked(event, batch)) ||
+      (action === "skip" &&
+        isCompletionEvent(event) &&
+        (!batch || batch.completion_committed)));
   useEffect(() => {
     if (action !== "replay" || !event) return;
     let active = true;
@@ -290,6 +318,7 @@ export default function SubscriptionActionDialog({
       cancelButtonProps={{ disabled: busy }}
       okButtonProps={{
         danger: ["skip", "skipUnaccepted", "reset", "delete"].includes(action),
+        disabled: !submitted && controlForbidden,
       }}
       okText={t(action)}
       cancelText={submitted ? t("newRequest") : t("cancel")}
@@ -303,6 +332,13 @@ export default function SubscriptionActionDialog({
         showIcon
         message={t(notes[action] ?? "operationFailed")}
       />
+      {controlForbidden ? (
+        <Alert type="warning" message={t("batch.closedReplayNote")} />
+      ) : null}
+      {action === "skip" &&
+      ["list", "sync.started"].includes(event?.source_phase ?? "") ? (
+        <Alert type="warning" message={t("batch.memberSkipNote")} />
+      ) : null}
       <p>
         {t("version")}: {version} · {t("activation")}:{" "}
         {sub.activation_id ?? "—"}
@@ -390,7 +426,7 @@ export default function SubscriptionActionDialog({
             />
           </>
         )}
-        {action === "reset" && (
+        {action === "reset" && sub.config.source_type === "kafka" && (
           <Form.Item
             name="initial"
             label={t("initial")}
@@ -404,6 +440,22 @@ export default function SubscriptionActionDialog({
             />
           </Form.Item>
         )}
+        {action === "reset" && sub.config.source_type === "kubernetes" ? (
+          <Form.Item
+            name="confirmEpoch"
+            valuePropName="checked"
+            rules={[
+              {
+                validator: (_, value: boolean) =>
+                  value
+                    ? Promise.resolve()
+                    : Promise.reject(new Error(t("required"))),
+              },
+            ]}
+          >
+            <Checkbox>{t("kubernetes.confirmReset")}</Checkbox>
+          </Form.Item>
+        ) : null}
         {action === "repairSave" && (
           <>
             <Form.Item

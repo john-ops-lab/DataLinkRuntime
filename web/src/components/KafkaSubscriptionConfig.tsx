@@ -60,7 +60,10 @@ export default function KafkaSubscriptionConfig({
     [onDraftStateChange],
   );
   const [error, setError] = useState<string | null>(null);
-  const config = subscription?.config;
+  const config =
+    subscription?.config.source_type === "kafka"
+      ? subscription.config
+      : undefined;
   useEffect(() => {
     let current = true;
     if (canManage)

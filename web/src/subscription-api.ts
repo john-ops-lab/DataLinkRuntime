@@ -1,7 +1,11 @@
 import type {
   CheckpointPage,
   EventSubscription,
-  KafkaSourceConfig,
+  SubscriptionSourceConfig,
+  SyncBatchPage,
+  SyncBatchDetail,
+  CompletionAbandonment,
+  CompletionAbandonmentResult,
   SourceConnectionResult,
   SubscriptionActivation,
   SubscriptionCapabilities,
@@ -17,6 +21,30 @@ type Request = <T>(path: string, init?: RequestInit) => Promise<T>;
 /** Reuses the authenticated Control client; all source secrets remain references. */
 export function createSubscriptionApi(request: Request) {
   return {
+    subscriptionBatches: (
+      id: number,
+      before_id?: number,
+    ): Promise<SyncBatchPage> =>
+      request(
+        `/api/event-subscriptions/${id}/sync-batches?limit=20${before_id === undefined ? "" : `&before_id=${before_id}`}`,
+      ),
+    subscriptionBatch: (
+      id: number,
+      batchId: number,
+    ): Promise<SyncBatchDetail> =>
+      request(`/api/event-subscriptions/${id}/sync-batches/${batchId}`),
+    abandonSubscriptionCompletion: (
+      id: number,
+      batchId: number,
+      payload: CompletionAbandonment,
+    ): Promise<CompletionAbandonmentResult> =>
+      request(
+        `/api/event-subscriptions/${id}/sync-batches/${batchId}/abandon-completion`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+      ),
     subscriptionCheckpoints: (
       id: number,
       before_id?: number,
@@ -64,7 +92,7 @@ export function createSubscriptionApi(request: Request) {
       adapter_id: number;
       name: string;
       description: string;
-      config: KafkaSourceConfig;
+      config: SubscriptionSourceConfig;
     }): Promise<EventSubscription> =>
       request("/api/event-subscriptions", {
         method: "POST",
@@ -76,7 +104,7 @@ export function createSubscriptionApi(request: Request) {
         expected_config_version?: number;
         name?: string;
         description?: string;
-        config?: KafkaSourceConfig;
+        config?: SubscriptionSourceConfig;
         new_epoch?: boolean;
       },
     ): Promise<EventSubscription> =>
@@ -111,7 +139,7 @@ export function createSubscriptionApi(request: Request) {
       }),
     resetSubscription: (
       id: number,
-      payload: SubscriptionDisposition & { config: KafkaSourceConfig },
+      payload: SubscriptionDisposition & { config: SubscriptionSourceConfig },
     ): Promise<EventSubscription> =>
       request(`/api/event-subscriptions/${id}/reset`, {
         method: "POST",

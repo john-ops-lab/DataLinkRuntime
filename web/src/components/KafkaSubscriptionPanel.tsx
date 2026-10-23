@@ -9,7 +9,8 @@ import type {
   SubscriptionDraftState,
 } from "../subscription-types";
 import { subscriptionErrorMessage } from "../subscription-message";
-import KafkaSubscriptionConfig from "./KafkaSubscriptionConfig";
+import { implementedSourceTypes } from "../subscription-types";
+import SubscriptionConfigDialog from "./SubscriptionConfigDialog";
 import SubscriptionWorkspace from "./SubscriptionWorkspace";
 
 export default function KafkaSubscriptionPanel({
@@ -67,12 +68,15 @@ export default function KafkaSubscriptionPanel({
       window.clearInterval(polling);
     };
   }, [load]);
+  const availableSources = implementedSourceTypes.filter((source) =>
+    capabilities.available_sources.includes(source),
+  );
   const canCreate =
     !readOnly &&
     !dirty &&
     !adapter.runtime_locked &&
     capabilities.enabled &&
-    capabilities.available_sources.includes("kafka") &&
+    availableSources.length > 0 &&
     adapter.run_mode === "manual";
   return (
     <section
@@ -109,10 +113,10 @@ export default function KafkaSubscriptionPanel({
           {!loading && !capabilities.enabled && (
             <Alert type="info" showIcon message={t("featureOff")} />
           )}
-          {!loading && !capabilities.available_sources.includes("kafka") && (
+          {!loading && availableSources.length === 0 && (
             <Alert type="info" showIcon message={t("unavailable")} />
           )}
-          {!readOnly && capabilities.available_sources.includes("kafka") && (
+          {!readOnly && availableSources.length > 0 && (
             <Button disabled={!canCreate} onClick={() => setCreating(true)}>
               {t("create")}
             </Button>
@@ -120,7 +124,8 @@ export default function KafkaSubscriptionPanel({
         </>
       )}
       {creating && (
-        <KafkaSubscriptionConfig
+        <SubscriptionConfigDialog
+          availableSources={availableSources}
           adapterId={adapter.id}
           canManage={canManage}
           onDraftStateChange={onDraftStateChange}

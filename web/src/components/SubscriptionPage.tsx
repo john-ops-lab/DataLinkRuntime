@@ -10,6 +10,7 @@ import type {
   SubscriptionPage as Page,
 } from "../subscription-types";
 import { subscriptionErrorMessage } from "../subscription-message";
+import { implementedSourceTypes } from "../subscription-types";
 import SubscriptionWorkspace, {
   SubscriptionState,
 } from "./SubscriptionWorkspace";
@@ -141,9 +142,10 @@ export default function SubscriptionPage({
         <Button onClick={() => void load()}>{t("refresh")}</Button>
       </header>
       {error && <Alert type="error" showIcon message={error} />}
-      {(!caps.enabled || !caps.available_sources.includes("kafka")) && (
-        <Alert type="info" showIcon message={t("unavailable")} />
-      )}
+      {(!caps.enabled ||
+        !implementedSourceTypes.some((value) =>
+          caps.available_sources.includes(value),
+        )) && <Alert type="info" showIcon message={t("unavailable")} />}
       <Space wrap>
         <Select
           aria-label={t("adapter")}
@@ -166,9 +168,12 @@ export default function SubscriptionPage({
           value={source}
           allowClear
           style={{ minWidth: 120 }}
-          options={caps.available_sources
-            .filter((value) => value === "kafka")
-            .map((value) => ({ value, label: "Kafka" }))}
+          options={implementedSourceTypes
+            .filter((value) => caps.available_sources.includes(value))
+            .map((value) => ({
+              value,
+              label: value === "kafka" ? "Kafka" : "Kubernetes",
+            }))}
           onChange={(value: string | undefined) => {
             setSource(value);
             setBefore(undefined);
