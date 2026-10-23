@@ -62,7 +62,7 @@ from test_issue130_b2_runtime import (
     _rabbit_adapter,
     _ready_worker,
 )
-from test_unified_runtime_migration import _isolated_schema, _upgrade
+from test_unified_runtime_migration import HEAD_REVISION, _isolated_schema, _upgrade
 
 
 def _incident(
@@ -153,8 +153,8 @@ def test_disposition_migration_preserves_old_incident_without_backfill() -> None
             "id",
         ]
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0046_issue166_retire_ai_history"
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
             )
             assert (
                 connection.scalar(
