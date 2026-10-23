@@ -28,6 +28,9 @@ dependencies = [
     # Issue #219 B0 selected client: explicit commit/close timeouts, no mandatory
     # dependencies; keep the tested protocol implementation fixed.
     "kafka-python==3.0.11",
+    # Issue #219 B0: preserve the tested bounded raw HTTP API and transport.
+    "kubernetes==35.0.0",
+    "urllib3==2.8.0",
     # Legacy BIFF .xls fallback stays in memory; xlrd is the maintained,
     # pure-Python parser for the historical Excel format.
     "xlrd>=2.0.2,<3",
@@ -85,6 +88,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["kafka", "kafka.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["kubernetes", "kubernetes.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

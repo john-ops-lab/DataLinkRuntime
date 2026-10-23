@@ -61,6 +61,8 @@ _subscription_cursor = 0
 _subscription_upper = 0
 _quota_cursor = 0
 _quota_upper = 0
+_batch_cursor = 0
+_batch_upper = 0
 
 
 def bounded_page(
@@ -200,7 +202,46 @@ def _validate_adapter(adapter: Adapter) -> None:
         )
 
 
-def _new_config(session: Session, subscription: EventSubscription, value: dict[str, Any]) -> None:
+def _source_identity(value: dict[str, Any]) -> dict[str, Any] | None:
+    if value["source_type"] != "kubernetes":
+        return None
+    from dlr.control.services.subscription_kubernetes_identity import (
+        KubernetesIdentityError,
+        kubernetes_scope_identity,
+    )
+
+    try:
+        return dict(kubernetes_scope_identity(value))
+    except KubernetesIdentityError as error:
+        raise domain_error(
+            422, error.code, "Kubernetes source identity could not be verified"
+        ) from None
+    except ValueError:
+        raise domain_error(
+            422, "subscription_config_invalid", "Kubernetes source configuration is invalid"
+        ) from None
+
+
+def require_verified_identity(config: SubscriptionConfigVersion) -> None:
+    if config.config["source_type"] != "kubernetes":
+        return
+    if config.source_identity is None:
+        raise domain_error(
+            409, "source_epoch_required", "Save a verified configuration in an explicit new epoch"
+        )
+    if config.source_identity != _source_identity(config.config):
+        raise domain_error(
+            409, "source_identity_changed", "Effective source trust changed; create a new epoch"
+        )
+
+
+def _new_config(
+    session: Session,
+    subscription: EventSubscription,
+    value: dict[str, Any],
+    *,
+    source_identity: dict[str, Any] | None = None,
+) -> None:
     session.add(
         SubscriptionConfigVersion(
             subscription_id=subscription.id,
@@ -208,6 +249,9 @@ def _new_config(session: Session, subscription: EventSubscription, value: dict[s
             source_epoch=subscription.source_epoch,
             source_credential_id=value.get("credential_id"),
             config=value,
+            source_identity=source_identity
+            if source_identity is not None
+            else _source_identity(value),
         )
     )
     subscription.source_type = value["source_type"]
@@ -272,7 +316,9 @@ def _require_drained(session: Session, subscription: EventSubscription) -> None:
         )
 
 
-def _identity(value: dict[str, Any]) -> dict[str, Any]:
+def _identity(
+    value: dict[str, Any], source_identity: dict[str, Any] | None = None
+) -> dict[str, Any]:
     fields: tuple[str, ...] = (
         "source_type",
         "cluster_id",
@@ -281,19 +327,11 @@ def _identity(value: dict[str, Any]) -> dict[str, Any]:
         "initial_position",
     )
     if value["source_type"] == "kubernetes":
-        fields = (
-            "source_type",
-            "cluster_id",
-            "server",
-            "group",
-            "version",
-            "resource",
-            "namespace",
-            "label_selector",
-            "field_selector",
-            "mode",
-        )
-    return {key: value.get(key) for key in fields}
+        fields = ("source_type", "mode")
+    identity = {key: value.get(key) for key in fields}
+    if value["source_type"] == "kubernetes":
+        identity["source_identity"] = source_identity
+    return identity
 
 
 def update_subscription(
@@ -304,7 +342,9 @@ def update_subscription(
         check_version(subscription, payload.expected_config_version)
         _require_drained(session, subscription)
         value = _configuration(payload.config)
-        previous = current_config(session, subscription).config
+        previous_config = current_config(session, subscription)
+        previous = previous_config.config
+        identity = _source_identity(value)
         if (
             value.get("group_id") != previous.get("group_id")
             and payload.config.source_type == "kafka"
@@ -312,7 +352,7 @@ def update_subscription(
         ):
             value["group_id"] = previous.get("group_id")
         _credential_access(session, subscription.adapter_id, value.get("credential_id"), principal)
-        if _identity(previous) != _identity(value):
+        if _identity(previous, previous_config.source_identity) != _identity(value, identity):
             if not payload.new_epoch:
                 raise domain_error(
                     409,
@@ -323,7 +363,7 @@ def update_subscription(
         elif payload.new_epoch:
             subscription.source_epoch = uuid.uuid4().hex
         subscription.config_version += 1
-        _new_config(session, subscription, value)
+        _new_config(session, subscription, value, source_identity=identity)
         subscription.activation_id = None
     elif payload.expected_config_version is not None:
         check_version(subscription, payload.expected_config_version)
@@ -402,6 +442,7 @@ def enable_subscription(
     subscription = get_subscription(session, subscription_id, principal, "edit", lock=True)
     check_version(subscription, expected)
     require_source(subscription.source_type)
+    require_verified_identity(current_config(session, subscription))
     if subscription.desired_state == "enabled":
         if subscription.connection_state == "blocked":
             _fence(session, subscription)
@@ -743,8 +784,10 @@ def maintenance_tick() -> None:
     """Bounded, one-responsibility transactions; feature-off still preserves draining."""
     from dlr.control import db
     from dlr.control.services import subscription_delivery as delivery
+    from dlr.control.services import subscription_sync as sync
 
     global _delivery_cursor, _delivery_upper, _subscription_cursor, _subscription_upper
+    global _batch_cursor, _batch_upper
 
     with db.SessionLocal() as session:
         deliveries, _delivery_cursor, _delivery_upper = bounded_page(
@@ -761,13 +804,56 @@ def maintenance_tick() -> None:
             _subscription_cursor,
             _subscription_upper,
         )
+        states: dict[int, str] = {
+            delivery_id: state
+            for delivery_id, state in session.execute(
+                select(EventDelivery.id, EventDelivery.state).where(
+                    EventDelivery.id.in_(deliveries)
+                )
+            ).all()
+        }
     for delivery_id in deliveries:
+        if states.get(delivery_id) != "processing":
+            continue
         with db.SessionLocal() as session:
             try:
                 item = session.get(EventDelivery, delivery_id)
                 if item is not None and item.state == "processing":
                     delivery.observe_terminal(session, delivery_id)
-                elif item is not None:
+                session.commit()
+            except Exception:
+                session.rollback()
+                logger.warning("subscription delivery tick failed", exc_info=False)
+    with db.SessionLocal() as session:
+        batches, _batch_cursor, _batch_upper = sync.select_batch_maintenance_candidates(
+            session, _batch_cursor, _batch_upper, 100
+        )
+    for batch_id in batches:
+        with db.SessionLocal() as session:
+            try:
+                sync.maintain_batch(session, batch_id)
+                session.commit()
+            except Exception:
+                session.rollback()
+                logger.warning("subscription batch tick failed", exc_info=False)
+    # Fair, persisted ready controls have a dedicated scan, independent of Sub GC.
+    with db.SessionLocal() as session:
+        tickets = sync.select_ready_control_candidates(session, limit=100)
+    for ticket in tickets:
+        with db.SessionLocal() as session:
+            try:
+                sync.materialize_ready_control(session, ticket)
+                session.commit()
+            except Exception:
+                session.rollback()
+                logger.warning("subscription control tick failed", exc_info=False)
+    for delivery_id in deliveries:
+        if states.get(delivery_id) != "pending":
+            continue
+        with db.SessionLocal() as session:
+            try:
+                item = session.get(EventDelivery, delivery_id)
+                if item is not None and item.state == "pending":
                     delivery.dispatch_delivery(session, delivery_id)
                 session.commit()
             except Exception:

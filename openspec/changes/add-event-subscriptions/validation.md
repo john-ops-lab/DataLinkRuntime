@@ -61,7 +61,7 @@ B2 验证协议和恢复；B3 完成真实业务读回、管理交互、容量�
 | U11 | history_count=4，started/item/completed已用3且余1预留，完成失败后新replay需5被拒绝 | 专用abandon在原预算内将有界槽原子转换为单份≤8KiB实际审计；无额外空位/免计费/Envelope副本，原历史不删，余reserve只结账一次；30天及引用保护，账本可重建 |
 | U12 | view/edit/隐藏ID、监听未关闭、queued/running/retry_wait、过期版本/Batch/epoch/Receipt/latestDelivery/执行关联、同request重试 | 非法条件零副作用；latest Execution已succeeded而Receipt/Delivery投影滞后也拒绝；合法重复原请求只读回同结果，改actor/reason/对象/期望责任复用ID冲突；UI明确业务结果未确认、取消pending补处理及不可回滚 |
 | U13 | 已冻结完成链latest replay为pending且execution_id=null，与T2/新replay竞争及事务rollback | 两向固定提交顺序：T2先赢即使快速终态也冲突；新replay改变最新责任则冲突；abandon先赢无新Execution/Outbox，只释放一次pending而保留history/dedupe，失败回滚无半状态 |
-| U14 | abandon后新的原/repair/current replay、reset历史、restart、迟到observe及旧请求重试 | 独立放弃与completion_committed持久保留，原失败Delivery/Execution不变，无任何新旧completed执行；旧replay/abandon请求只读回原结果，不重复结账或新增审计 |
+| U14 | abandon后及completed成功确认且批次闭合后的新原/repair/current replay；reset历史、restart、迟到observe及旧请求重试，含合法config升版/featureoff | 放弃与completion_committed持久保留，原失败/成功终态不变，两类已结完成链均拒绝新增Delivery/Execution/Outbox；旧replay/abandon原请求按当前权限和完整原参数先只读回，不重复结账或新增审计；再次全量对账使用新完整批次，普通对象/WATCH历史补处理不变 |
 | U15 | 放弃完成屏障后仍有普通failed/旧WATCH；结清后显式新批，旧completed晚到 | 重算普通失败并保留repair入口，WATCH原序排空；不自动enable/LIST；显式新批started后目标generation/控制幂等阻止旧清理，新批/scope外/新UID数据保留；放弃不算目标成功 |
 
 B4验证来源、批次和专用完成放弃机制；B5完成Pod/Deployment两个已声明范围的真实读回、目标保护及双语UI。U10/U13的两向事务交错由确定性并发测试覆盖，真实环境各复核代表路径；U11–U15采用收紧预算和代表目标，不扩成全资源/全故障组合。

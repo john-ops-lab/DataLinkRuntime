@@ -37,6 +37,26 @@ Current-configuration replay requires a disabled subscription with no other unfi
 
 Normal manual tests retain the saved Task InputConfig. Backend guards block runtime mutations and ordinary triggers while a subscription receives, stops, drains or repairs. A bound subscription must be explicitly deleted after stopping/draining before changing the Task trigger mode or deleting its Adapter.
 
+### B4 backend candidate API
+
+These backend interfaces are being implemented in B4. Kubernetes has not passed the B4/B5 product-delivery gates; public capabilities and enablement still offer Kafka only. The API can save disabled candidate configurations for known sources and perform controlled diagnostics. Saving or diagnosing one does not open enablement. The Web exposes only sources in capabilities, without an external bypass switch.
+
+| Method and suffix | Behavior |
+| --- | --- |
+| GET `/{id}/sync-batches` | Authorized retained batches for this subscription, with `before_id`, `limit=1..100` and optional `source_epoch` filtering |
+| GET `/{id}/sync-batches/{batch_id}` | Frozen activation/epoch, read/completion facts, pending controls/reserve, gaps and at most three control-custody summaries |
+| POST `/{id}/sync-batches/{batch_id}/abandon-completion` | Dedicated completion abandonment with an unconfirmed business result; ordinary skip cannot substitute for it |
+
+The subscription's `latest_batch` and batch detail distinguish `read_complete`, `completion_committed`, `completion_abandoned`, `closed`, unmaterialized controls and remaining reserve. An empty batch may still carry obligations; neither zero Receipts nor `state=failed` establishes draining completion. RVs remain opaque strings. Responses exclude raw pages, continue tokens, server addresses, CA contents and Secrets. Read-only batch queries make no source calls and remain available with the feature disabled.
+
+Abandonment requires edit permission, `expected_config_version`, `source_epoch`, the completion `receipt_id`, `expected_latest_delivery_id`, `expected_delivery_ordinal`, an explicitly supplied nullable `expected_execution_id`, the original `request_id`, a nonempty `reason` and `confirm_impact=true`. Reception must be disabled, native closure confirmed and all associated Executions terminal. A latest pending replay without an Execution may be atomically abandoned. An Execution or new replay that changes the expected association wins a conflict; this action cannot cancel running executions.
+
+The action preserves original failures, input and the committed completion fact, using one bounded audit within existing capacity. It releases only the completion barrier: other failures still require repair, old WATCH custody drains in order, and neither enablement nor a new LIST starts automatically. It cannot undo target effects, and the old completed chain can never gain new execution permission. After an unknown result, retry with all original parameters and the same request ID. The same request can still read its original result under current authorization after a later legitimate configuration update, without settling twice. Disabling the feature does not prevent settlement of existing custody.
+
+A successfully confirmed, closed completed control also rejects new original/repair/current-configuration replay. Under current authorization and matching complete original parameters, its original request reads back the existing Delivery before checking the version or eligibility of a new action; later legitimate configuration updates or feature disablement do not block this readback. It creates no new Delivery, Execution, Outbox or audit. A new full reconciliation uses a new complete batch. Ordinary object/WATCH replay rules remain unchanged.
+
+Kubernetes configuration freezes logical cluster, HTTPS origin, effective CA trust and GVR/namespace/selectors identity; server URLs cannot include API paths. Trust or scope changes require stopping, settlement and an explicit `new_epoch`, rather than silently reusing an old RV. Rotating a token value under the same credential reference retains the epoch. A legacy configuration without a verified identity snapshot is not silently backfilled: create an immutable configuration in an explicit new epoch.
+
 ## Durable delivery and recovery
 
 T1 atomically commits the complete Envelope, custody, quotas and safe source position before source acknowledgment. T2 atomically transfers pending custody to Admission, Execution, Outbox and the delivery link. Queue unavailability leaves custody pending. Database-time leases and generation fencing reject stale owners; listener permits remain occupied until the native connection actually closes.

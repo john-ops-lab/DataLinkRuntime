@@ -37,6 +37,26 @@
 
 普通手动测试继续使用 Adapter 已保存 InputConfig。订阅启用、停止中、排空或 repair 时，后端拒绝修改运行配置与普通触发；存在绑定时改变 Task 运行方式或删除 Adapter 前应先显式删除停用排空的订阅。
 
+### B4 后端候选接口
+
+以下为 B4 实施中的后端接口；Kubernetes 尚未通过 B4/B5 产品交付门槛，公开 `capabilities` 和启用入口仍只提供 Kafka。API 可保存已知来源的停用候选配置并作受控诊断，保存或诊断成功不等于已开放启用；Web 只展示 capabilities 中的来源，不提供外部绕过开关。
+
+| 方法与路径 | 用途 |
+| --- | --- |
+| GET `/{id}/sync-batches` | 按本订阅权限读取保留批次，`before_id`、`limit=1..100`，可显式按 `source_epoch` 筛选 |
+| GET `/{id}/sync-batches/{batch_id}` | 固定激活/epoch、读取与完成事实、待落控制/剩余预留、缺口及至多三种控制责任摘要 |
+| POST `/{id}/sync-batches/{batch_id}/abandon-completion` | 专用“放弃完成确认”，记录业务结果未确认，不能用普通 skip 替代 |
+
+订阅的 `latest_batch` 和批次详情独立区分 `read_complete`、`completion_committed`、`completion_abandoned`、`closed`、控制待落账和剩余预留。空批次仍可能有未结责任，不能以没有 Receipt 或 `state=failed` 判断已排空。RV 是不透明字符串；返回结果不包含原页面、continue token、服务器地址、CA 原文或 Secret。只读批次查询不连接来源，关闭功能开关后仍可查看历史。
+
+放弃请求需要 edit 权限、`expected_config_version`、`source_epoch`、完成 `receipt_id`、`expected_latest_delivery_id`、`expected_delivery_ordinal`、必须显式出现且可为 null 的 `expected_execution_id`、固定 `request_id`、非空 `reason` 和 `confirm_impact=true`。仅在停用、原生监听实际关闭且关联执行全终态后允许；最新补处理仍 pending 且没有 Execution 时可原子取消这份未派发责任。执行或新补处理先改变期望关联则冲突，不能取消正在运行的执行。
+
+动作保留原失败、输入和冻结事实，使用既有预算中的单份有界审计，只解除完成屏障；其他失败仍须修复，旧 WATCH 按序排空，不自动启用或新建 LIST，也不能回滚目标副作用。之后旧 completed 不再取得新执行许可。结果不明时保持完整原参数及请求 ID 重试；相同原请求在配置后来合法更新后仍可按当前权限读回原结果，不重复结账。功能开关关闭不阻止结清已有责任。
+
+已成功确认且闭合的 completed 同样拒绝新的原版本/repair/当前配置 replay。原请求按当前权限及完整原参数匹配，先只读回原 Delivery，再对新动作校验版本和资格；之后合法配置升版或功能关闭不阻断该读回，不新增 Delivery、Execution、Outbox 或审计。再次全量对账使用新完整批次。普通对象/WATCH 的补处理规则不变。
+
+Kubernetes 配置冻结逻辑集群、HTTPS origin、有效 CA 信任集合及 GVR/namespace/selectors 的身份；server 不接受附带 API 路径。信任或范围变化须停用结清并显式 `new_epoch`，不能沿旧 RV 静默切换；同一凭据引用的 token 真值轮换保持 epoch。旧配置没有已验证身份快照时也不自动补写，须显式新 epoch 创建不可变配置。
+
 ## 接收、版本与故障恢复
 
 接收事务 T1 一次提交完整 Envelope、责任、占用及安全位置，之后来源才能确认；调度事务 T2 一次提交 Admission、Execution、Outbox、关联与 pending 计数交接。内部队列暂不可用时责任留在 pending。监听租约由数据库时间和 generation 防止旧 owner 写入，连接实际回收前不释放监听名额。

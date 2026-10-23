@@ -37,8 +37,10 @@ def locked_adapter_ids(session: Session, adapter_ids: list[int]) -> set[int]:
 
 def _unfinished_responsibility() -> ColumnElement[bool]:
     from dlr.control.models.subscription import EventReceipt, EventSubscription, SourceCheckpoint
+    from dlr.control.services.subscription_sync import unfinished_sync_predicate
 
     return or_(
+        unfinished_sync_predicate(EventSubscription.id),
         exists(
             select(1).where(
                 EventReceipt.subscription_id == EventSubscription.id,

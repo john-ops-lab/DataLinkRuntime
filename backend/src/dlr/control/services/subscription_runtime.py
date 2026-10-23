@@ -44,8 +44,9 @@ def implemented_sources() -> dict[str, SourceRunner]:
     # Implemented permits bounded connection diagnostics. Public availability is
     # independently gated by acceptance in management.AVAILABLE_SOURCES.
     from dlr.control.services.subscription_kafka import KafkaSourceRunner
+    from dlr.control.services.subscription_kubernetes import KubernetesSourceRunner
 
-    return {"kafka": KafkaSourceRunner()}
+    return {"kafka": KafkaSourceRunner(), "kubernetes": KubernetesSourceRunner()}
 
 
 def credential_values(session: Session, credential_id: int | None) -> dict[str, str]:
@@ -149,6 +150,17 @@ class SubscriptionRuntimeManager:
                 config = session.get(SubscriptionConfigVersion, activation.config_version_id)
                 if config is None or config.subscription_id != sub.id:
                     raise SourceFailure("source_configuration_unavailable")
+                from dlr.control.services.subscription_sync import native_start_decision
+
+                decision = native_start_decision(
+                    session, sub.id, activation.id, config.source_epoch
+                )
+                if decision.action != "allow":
+                    if decision.action == "blocked":
+                        sub.connection_state = "blocked"
+                        sub.last_error_code = decision.code
+                    self._release_start(subscription_id)
+                    return False
                 values = credential_values(session, config.source_credential_id)
                 lease = delivery.acquire_lease(session, sub.id, uuid.uuid4().hex)
                 context = SourceRunContext(
@@ -164,6 +176,7 @@ class SubscriptionRuntimeManager:
                     session_factory=self.session_factory,
                     buffer=self.buffer.scope(),
                     connected=lambda: self._connected(subscription_id),
+                    identity_snapshot=copy.deepcopy(config.source_identity),
                 )
                 sub.connection_state = "starting"
             owner = _Owner(context, runner)

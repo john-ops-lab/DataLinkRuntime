@@ -39,6 +39,10 @@
 - **WHEN** 订阅停用排空后保存新代码并重新启用
 - **THEN** 新接收使用新激活版本，已有历史事件及其默认补处理保留原输入和版本
 
+#### Scenario: 已成功闭合完成链的管理入口
+- **WHEN** 对成功确认且已闭合的 K8s completed 提交新的原/repair/current-config replay
+- **THEN** 拒绝并引导显式新完整批次，不重开旧完成责任；同一原请求仍按当前 ACL 和完整原参数先只读回原 Delivery，再对新请求校验当前版本/资格，合法配置升版或 featureoff 不阻断旧请求读回；普通对象/WATCH 历史补处理规则不变
+
 ### Requirement: 监听接管具有唯一有效所有权
 系统 SHALL 为监听接管分配可失效的所有权和单调 generation；只有当前有效 owner 能提交接收责任、合并待处理和推进来源位置。恢复过程 MUST 不长期占用普通 Execution/Attempt 槽位。
 

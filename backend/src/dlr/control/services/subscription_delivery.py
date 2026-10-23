@@ -52,7 +52,7 @@ GLOBAL_LIMITS = {
     "dedupe_count": 500000,
     "rate": 50,
 }
-TERMINAL = {"succeeded", "skipped", "superseded"}
+TERMINAL = {"succeeded", "skipped", "superseded", "abandoned"}
 EXECUTION_TERMINAL = {"succeeded", "dead_letter", "cancelled", "expired"}
 
 
@@ -73,6 +73,11 @@ def lock_subscription(session: Session, subscription_id: int) -> tuple[Adapter, 
 
 def refresh_delivery_state(session: Session, sub: EventSubscription) -> None:
     """Persist the same responsibility-derived status that management serializes."""
+    if sub.source_type == "kubernetes":
+        from dlr.control.services.subscription_sync import sync_status_snapshot
+
+        sub.delivery_state = sync_status_snapshot(session, sub.id).delivery_state
+        return
     if sub.delivery_state == "repair":
         return
     counts = {
@@ -192,6 +197,10 @@ def _limits(session: Session, activation: SubscriptionActivation) -> dict[str, i
 def _reserve(
     session: Session, sub: EventSubscription, activation: SubscriptionActivation, size: int
 ) -> None:
+    if session.scalar(select(exists().where(SyncBatch.ready_kind.is_not(None)))):
+        raise domain_error(
+            429, "subscription_capacity_exceeded", "Ready control owns the next token"
+        )
     rows = _quotas(session, sub.id)
     limits = _limits(session, activation)
     now = database_now(session)
@@ -263,6 +272,12 @@ def receive_event(
     batch_id: int | None = None,
 ) -> tuple[EventReceipt | None, bool]:
     """T1. Source commit is allowed only after the caller commits this entire transaction."""
+    if envelope.get("source", {}).get("type") == "kubernetes":
+        raise domain_error(
+            422,
+            "subscription_sync_protocol_required",
+            "Kubernetes intake requires the batch protocol",
+        )
     content_hash, size = validate_envelope(envelope)
     if envelope["source"]["type"] == "kafka" and position.get("offset") != str(
         int(envelope["source"]["position"]["offset"]) + 1
@@ -420,6 +435,8 @@ def _delivery_context(
         )
         .with_for_update()
     )
+    if receipt_info.batch_id is not None:
+        session.get(SyncBatch, receipt_info.batch_id, with_for_update=True, populate_existing=True)
     receipt = session.get(EventReceipt, info[1], with_for_update=True, populate_existing=True)
     delivery = session.get(EventDelivery, delivery_id, with_for_update=True, populate_existing=True)
     assert receipt is not None and delivery is not None and checkpoint is not None
@@ -443,6 +460,13 @@ def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
         return None
     if delivery.retry_after is not None and delivery.retry_after > database_now(session):
         return None
+    from dlr.control.services import subscription_sync as sync
+
+    if sub.source_type == "kubernetes" and not sync.delivery_eligible(
+        session, sub, checkpoint, receipt
+    ):
+        return None
+    closing_control = receipt.source_phase in {"sync.completed", "sync.failed"}
     earlier = session.scalar(
         select(EventReceipt.id)
         .where(
@@ -454,7 +478,7 @@ def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
         )
         .limit(1)
     )
-    if earlier is not None:
+    if earlier is not None and not closing_control:
         return None
     if receipt.envelope is None:
         raise domain_error(409, "event_payload_expired", "Event payload expired")
@@ -491,6 +515,7 @@ def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
                     for ref in refs
                 ],
             )
+            sync.freeze_completion(session, receipt, execution.id)
             delivery.execution_id = execution.id
             delivery.state = "processing"
             receipt.state = "processing"
@@ -524,20 +549,21 @@ def observe_terminal(session: Session, delivery_id: int) -> None:
     else:
         delivery.state = receipt.state = "failed"
         checkpoint.blocked_receipt_id = receipt.id
+    if sub.source_type == "kubernetes":
+        from dlr.control.services import subscription_sync as sync
+
+        sync._recompute_blocker(session, sub, checkpoint)
+        if receipt.batch_id is not None:
+            sync.maintain_batch(session, receipt.batch_id)
     refresh_delivery_state(session, sub)
 
 
 def has_unfinished(
     session: Session, subscription_id: int, exclude_receipt_id: int | None = None
 ) -> bool:
-    if session.scalar(
-        select(
-            exists().where(
-                SyncBatch.subscription_id == subscription_id,
-                SyncBatch.state.in_(["reading", "processing"]),
-            )
-        )
-    ):
+    from dlr.control.services.subscription_sync import unfinished_sync_predicate
+
+    if session.scalar(select(unfinished_sync_predicate(subscription_id))):
         return True
     return bool(
         session.scalar(
@@ -641,6 +667,7 @@ def replay_event(
     revision_id: int | None = None,
     use_current_configuration: bool = False,
     expected_preview_token: str | None = None,
+    expected_config_version: int | None = None,
 ) -> EventDelivery:
     info = session.get(EventReceipt, receipt_id)
     if info is None:
@@ -662,11 +689,22 @@ def replay_event(
             delivery.revision_override_id != revision_id
             or bool(delivery.activation_override_id) != use_current_configuration
             or existing.details.get("preview_token") != expected_preview_token
+            or (
+                "expected_config_version" in existing.details
+                and existing.details["expected_config_version"] != expected_config_version
+            )
         ):
             raise domain_error(409, "event_disposition_conflict", "Replay version differs")
         return delivery
+    if expected_config_version is not None and sub.config_version != expected_config_version:
+        raise domain_error(
+            409, "subscription_config_conflict", "Subscription configuration changed"
+        )
     if receipt.envelope is None:
         raise domain_error(409, "event_payload_expired", "Event payload expired")
+    from dlr.control.services.subscription_sync import disposition_guard
+
+    disposition_guard(session, receipt)
     if previous.state in {"pending", "processing"}:
         raise domain_error(409, "event_replay_in_progress", "Event still has an active delivery")
     if checkpoint.blocked_receipt_id != receipt.id and (
@@ -762,7 +800,11 @@ def replay_event(
             reason=reason,
             receipt_id=receipt.id,
             delivery_id=delivery.id,
-            details={"previous_delivery_id": previous.id, "preview_token": expected_preview_token},
+            details={
+                "previous_delivery_id": previous.id,
+                "preview_token": expected_preview_token,
+                "expected_config_version": expected_config_version,
+            },
         )
     )
     refresh_delivery_state(session, sub)
@@ -787,6 +829,9 @@ def skip_event(
     existing = _disposition(session, sub, receipt, request_id, "skip", actor_id, reason)
     if existing is not None:
         return existing
+    from dlr.control.services.subscription_sync import disposition_guard
+
+    disposition_guard(session, receipt, skip=True)
     if delivery.state == "processing":
         raise domain_error(409, "event_execution_active", "Execution must reach terminal first")
     if receipt.state in TERMINAL:
@@ -802,7 +847,11 @@ def skip_event(
     delivery.completed_at = receipt.terminal_at = database_now(session)
     if checkpoint.blocked_receipt_id == receipt.id:
         checkpoint.blocked_receipt_id = None
-    if batch is not None:
+    if sub.source_type == "kubernetes":
+        from dlr.control.services.subscription_sync import after_skip
+
+        after_skip(session, sub, receipt, checkpoint)
+    elif batch is not None:
         batch.state, batch.failure_code = "failed", "member_skipped"
     disposition = DeliveryDisposition(
         subscription_id=sub.id,
@@ -835,7 +884,18 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
     member = aliased(EventReceipt)
     active_batch = exists(
         select(SyncBatch.id).where(
-            SyncBatch.id == EventReceipt.batch_id, SyncBatch.state.in_(["reading", "processing"])
+            SyncBatch.id == EventReceipt.batch_id,
+            (
+                (SyncBatch.activation_id.is_(None) & SyncBatch.state.in_(["reading", "processing"]))
+                | (
+                    SyncBatch.activation_id.is_not(None)
+                    & (
+                        SyncBatch.finished_at.is_(None)
+                        | SyncBatch.ready_kind.is_not(None)
+                        | (SyncBatch.reserved_control_count > 0)
+                    )
+                )
+            ),
         )
     ).correlate(EventReceipt)
     unresolved_member = exists(
@@ -898,6 +958,9 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
             SubscriptionActivation.created_at <= now - timedelta(days=30),
             ~receipt_ref,
             ~override_ref,
+            ~exists(
+                select(SyncBatch.id).where(SyncBatch.activation_id == SubscriptionActivation.id)
+            ).correlate(SubscriptionActivation),
             SubscriptionActivation.id != sub.activation_id
             if not deleted_old and sub.activation_id is not None
             else true(),
@@ -948,6 +1011,18 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
                 quota.history_bytes -= receipt.payload_bytes * copies
             expired += 1
         if receipt.terminal_at is not None and receipt.terminal_at <= now - timedelta(days=30):
+            audits = session.execute(
+                select(
+                    func.count(), func.coalesce(func.sum(DeliveryDisposition.audit_bytes), 0)
+                ).where(
+                    DeliveryDisposition.receipt_id == receipt.id,
+                    DeliveryDisposition.audit_bytes > 0,
+                )
+            ).one()
+            for quota in quotas:
+                quota.history_count -= audits[0]
+                quota.history_bytes -= audits[1]
+                quota.dedupe_count -= audits[0]
             delivery_ids = select(EventDelivery.id).where(EventDelivery.receipt_id == receipt.id)
             session.execute(
                 delete(DeliveryDisposition).where(DeliveryDisposition.delivery_id.in_(delivery_ids))
@@ -957,6 +1032,41 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
             for quota in quotas:
                 quota.dedupe_count -= 1
             deleted += 1
+    session.flush()
+    old_batches = session.scalars(
+        select(SyncBatch)
+        .where(
+            SyncBatch.subscription_id == sub.id,
+            SyncBatch.activation_id.is_not(None),
+            SyncBatch.finished_at <= now - timedelta(days=30),
+            SyncBatch.ready_kind.is_(None),
+            SyncBatch.reserved_control_count == 0,
+            SyncBatch.reserved_control_bytes == 0,
+            ~exists(select(EventReceipt.id).where(EventReceipt.batch_id == SyncBatch.id)).correlate(
+                SyncBatch
+            ),
+            ~exists(
+                select(DeliveryDisposition.id).where(DeliveryDisposition.batch_id == SyncBatch.id)
+            ).correlate(SyncBatch),
+            # Preserve the current recovery intent until explicitly superseded by a
+            # new batch/epoch. Historical completed batches retain independent freeze.
+            (
+                (SyncBatch.pending_gap.is_(None))
+                | (SyncBatch.source_epoch != sub.source_epoch)
+                | (
+                    SyncBatch.id
+                    < select(func.max(SyncBatch.id))
+                    .where(SyncBatch.subscription_id == sub.id)
+                    .scalar_subquery()
+                )
+            ),
+        )
+        .order_by(SyncBatch.id)
+        .limit(100)
+        .with_for_update()
+    ).all()
+    for old_batch in old_batches:
+        session.delete(old_batch)
     session.flush()
     for activation in orphan_activations:
         session.execute(
@@ -1210,6 +1320,8 @@ QUOTA_FACT_KEYS = (
     "history_count",
     "history_bytes",
     "dedupe_count",
+    "reserved_control_count",
+    "reserved_control_bytes",
 )
 
 
@@ -1299,12 +1411,42 @@ def audit_quota(session: Session, subscription_id: int, *, repair: bool = False)
         )
         .scalar_subquery()
     )
+    audit_count = (
+        select(func.count())
+        .select_from(DeliveryDisposition)
+        .where(
+            DeliveryDisposition.subscription_id == subscription_id,
+            DeliveryDisposition.audit_bytes > 0,
+        )
+        .scalar_subquery()
+    )
+    audit_bytes = (
+        select(func.coalesce(func.sum(DeliveryDisposition.audit_bytes), 0))
+        .where(
+            DeliveryDisposition.subscription_id == subscription_id,
+            DeliveryDisposition.audit_bytes > 0,
+        )
+        .scalar_subquery()
+    )
+    reserve_count = (
+        select(func.coalesce(func.sum(SyncBatch.reserved_control_count), 0))
+        .where(SyncBatch.subscription_id == subscription_id)
+        .scalar_subquery()
+    )
+    reserve_bytes = (
+        select(func.coalesce(func.sum(SyncBatch.reserved_control_bytes), 0))
+        .where(SyncBatch.subscription_id == subscription_id)
+        .scalar_subquery()
+    )
     expected_columns = [
-        getattr(stats.c, key).label(f"expected_{key}")
-        for key in QUOTA_FACT_KEYS
-        if key != "dedupe_count"
+        stats.c.pending_count.label("expected_pending_count"),
+        stats.c.pending_bytes.label("expected_pending_bytes"),
+        (stats.c.history_count + audit_count).label("expected_history_count"),
+        (stats.c.history_bytes + audit_bytes).label("expected_history_bytes"),
+        (receipt_count + disposition_count + audit_count).label("expected_dedupe_count"),
+        reserve_count.label("expected_reserved_control_count"),
+        reserve_bytes.label("expected_reserved_control_bytes"),
     ]
-    expected_columns.append((receipt_count + disposition_count).label("expected_dedupe_count"))
     actual_columns = [
         func.coalesce(getattr(SubscriptionQuota, key), 0).label(f"actual_{key}")
         for key in QUOTA_FACT_KEYS

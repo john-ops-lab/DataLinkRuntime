@@ -47,7 +47,7 @@
 - **THEN** 保留失败事实和处置入口，未按来源合同补处理或显式处置前相关顺序屏障保持阻塞，平台不无限新建执行
 
 ### Requirement: 人工重处理创建可追踪新责任
-replay SHALL 仅为来源合同仍允许执行的责任创建保留原事件与原执行关系的新 Delivery/Execution，按请求 ID 幂等并经过容量检查。已专用放弃的 K8s completed MUST 拒绝任何新的原/repair/current-config 补处理；旧请求只可幂等读回原责任。默认使用原输入、Revision、Worker 和凭据引用；更换为当前配置 MUST 显式选择且只在停用、无其他未完责任时允许。显式 repair 下可在后续 pending 保留时仅指定修复 Revision，仍须满足受限修复合同。
+replay SHALL 仅为来源合同仍允许执行的责任创建保留原事件与原执行关系的新 Delivery/Execution，按请求 ID 幂等并经过容量检查。已专用放弃，或已成功确认且批次已闭合的 K8s completed MUST 拒绝任何新的原/repair/current-config 补处理；旧请求只可幂等读回原责任。重新全量对账 SHALL 使用新完整批次，不重开旧清理资格或预留。尚未确认完成的失败链和普通对象/WATCH历史补处理仍按原合同处理。默认使用原输入、Revision、Worker 和凭据引用；更换为当前配置 MUST 显式选择且只在停用、无其他未完责任时允许。显式 repair 下可在后续 pending 保留时仅指定修复 Revision，仍须满足受限修复合同。
 
 #### Scenario: 重复提交补处理请求
 - **WHEN** 同一 request_id 被重复提交
@@ -58,8 +58,12 @@ replay SHALL 仅为来源合同仍允许执行的责任创建保留原事件与�
 - **THEN** 返回明确不可重放原因，不静默使用当前版本或不完整输入
 
 #### Scenario: 重放已被后续越过的历史记录
-- **WHEN** 用户重放已完成或已跳过、且已有后续业务的旧事件
+- **WHEN** 用户重放来源合同仍允许补处理的已完成或已跳过、且已有后续业务的旧事件
 - **THEN** 必须先停用排空，记录带外修复，不回退来源位置或承诺原业务顺序
+
+#### Scenario: 已成功闭合的完成控制再次补处理
+- **WHEN** completed 已成功确认且批次闭合，随后提交新的原/repair/current-config replay
+- **THEN** 拒绝且不新增责任、执行或审计；原请求先按当前权限和完整原参数只读回原 Delivery，合法配置升版或 featureoff 不阻断该幂等读回；重新对账使用新完整批次
 
 ### Requirement: 冻结完成责任可通过专用人工放弃有界结账
 K8s 已冻结但业务结果未确认的 completed MAY 使用专用 `abandon-completion`；正常路径仍 SHALL 等业务成功。此动作 MUST 与 generic skip、成功和同批 sync.failed 区分，保留 completion_committed、原 Envelope、原失败 Delivery/Execution及其终态。最新 replay 若仍 pending 且无 Execution，SHALL 在同一事务明确终止该未派发责任、释放一次实际 pending并保留已用历史/去重；不得创建 Execution/Outbox。请求 MUST 绑定期望最新 Delivery及其Execution关联快照，含null，与T2/新replay/终态观察在既定锁序内原子互斥。

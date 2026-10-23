@@ -122,6 +122,7 @@ class SourceRunContext:
     session_factory: sessionmaker[Session] = field(repr=False)
     buffer: ScopedBufferBudget = field(repr=False)
     connected: Callable[[], None] = field(repr=False)
+    identity_snapshot: dict[str, Any] | None = field(default=None, repr=False)
 
 
 class SourceRunner(Protocol):

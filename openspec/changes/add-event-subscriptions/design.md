@@ -154,6 +154,8 @@ flowchart LR
 
 放弃完成确认后，禁止为该旧 completed 新建原版本、repair 或当前配置的 Delivery/Execution；重启、reset 后的历史入口、迟到结果观察及维护均遵守持久放弃事实。旧 replay 请求在权限和原参数仍匹配时只读回原 Delivery，旧 abandon 请求只读回原结账结果，不产生新的执行许可。
 
+用户另已明确选择：已成功确认且批次已闭合的 K8s completed，同样拒绝新的原版本、repair 或当前配置 replay。闭合不重新开启旧清理资格或补回已结账控制预留；重新全量对账须显式使用新完整批次。原 request_id 仍在当前权限和完整原参数匹配后只读回原 Delivery，即使之后合法配置升版或 featureoff；先解析旧请求，再校验新动作的当前版本与资格。此限制不改变尚未确认完成的失败链及其 repair/replay/abandon，也不限制普通对象/WATCH 的历史 replay。
+
 默认原始内容/可重放历史窗口 7 天，源身份去重元数据 30 天（均从责任进入可清理终态起算）；尚有未完责任、未解决屏障或批次引用的数据不得到期删除。Execution 沿用现有保留规则，但订阅引用增加保护；独立元数据留存能显示“原执行已清理”。超过原文窗口 replay 返回 `event_payload_expired`。
 
 去重不是永久保证。Kafka 正常续读还受已提交的安全 checkpoint 保护，低于该位置的自动重投只归为历史重投，不新建责任；越过窗口的人工历史读取必须显式新 epoch。K8s 没有可数值比较的永久位置屏障，过期后可能再处理，业务仍须幂等。
@@ -228,6 +230,8 @@ LIST/WATCH 流程：
 WATCH 断线从最后安全持久 RV 续接。`410 Gone` 明确记录 history gap，终结尚未冻结完成资格批次的对账资格，按上述失败路径排空旧责任后重新 LIST；已冻结的批次按下一段规则收敛。不恢复全部历史。失败控制标记可以越过批次完成等待及早期普通失败，但不得越过正在执行的 Attempt；其重试耗尽须明确处置才能继续。`sync.failed` 业务失败可显式 generic skip，审计为未处理且不恢复清理资格；这不放宽已冻结 completed 的 generic skip 禁令。若控制临时占用 checkpoint blocker，结账后必须重算并恢复其他普通 failed/active 屏障及 repair 入口，不能直接清空。BOOKMARK 仅在之前事件全部持久化后推进接收位置，不创建业务 Execution，不依赖固定发送周期。错误事件不能当对象删除。
 
 批次完成资格在 completed 的 T2 事务中锁定并冻结（`completion_committed`），与 failed/superseded 转换互斥。若失效先提交则不能创建 completed；若 completed 先提交，随后 WATCH 缺口归为下一轮恢复，不能追溯撤回已创建执行的资格。正常路径中 completed 的业务失败按原快照受限补处理并阻塞后续；可选择以下专用人工放弃结账，但不能再生成同批 failed 去取消可能已发生的目标副作用。`sync.failed` 只撤销对账清理资格，示例 Adapter 仍允许旧批已接管对象的幂等写入和排空。
+
+completed 业务成功确认且批次闭合后，原清理生命周期已经终结，未用预留按 D7 结账；不得通过新 replay 重新打开完成责任。只允许同一旧请求读回原责任，不新增 Delivery/Execution/Outbox 或审计；需要再次对账时启动新完整批次。该边界与专用放弃后禁止复活并行适用，不将已成功完成改成业务结果未确认。
 
 普通逐条失败保持当前订阅后续业务屏障；控制只有规定的生命周期优先及专用完成放弃例外，不能吞掉普通失败。LIST 成员最新责任失败时不得 completed；若完整页证据仍有效且该批未失效，显式 repair/replay 的最新责任成功后可重新检查全员成功，历史失败本身不永久废除资格。对 LIST 对象或 sync.started 显式 skip 则必须令该批永久失效，不能当作全量成功；后续补处理成功也不复活旧批，清理须等新完整批次。范围变更创建新 scope/epoch，旧范围退出对象如何处理由业务明确决定，平台不自动发送全局删除。带 selector 的 `DELETED` 可能仅表示对象离开选择范围，Adapter 不能据此声称 Kubernetes 对象物理消失。
 

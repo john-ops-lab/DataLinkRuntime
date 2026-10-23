@@ -2,9 +2,10 @@
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+
+type SourcePhase = Literal["list", "watch", "sync.started", "sync.completed", "sync.failed"]
 
 
 class ClosedModel(BaseModel):
@@ -76,17 +77,24 @@ class KubernetesSourceConfig(SourceModel):
     @field_validator("server")
     @classmethod
     def validate_server(cls, value: str) -> str:
-        parsed = urlsplit(value)
-        if (
-            parsed.scheme != "https"
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError("Kubernetes server must be an HTTPS origin without credentials")
-        return value.rstrip("/")
+        from dlr.control.services.subscription_kubernetes_identity import normalized_origin
+
+        try:
+            if any(ord(character) < 32 for character in value):
+                raise ValueError
+            return normalized_origin(value)
+        except ValueError:
+            raise ValueError(
+                "Kubernetes server must be an HTTPS origin without credentials"
+            ) from None
+
+    @model_validator(mode="after")
+    def supported_resource(self) -> "KubernetesSourceConfig":
+        from dlr.control.services.subscription_kubernetes_identity import SUPPORTED_RESOURCES
+
+        if (self.group, self.version, self.resource) not in SUPPORTED_RESOURCES:
+            raise ValueError("Kubernetes resource is outside the verified Pod/Deployment matrix")
+        return self
 
 
 SourceConfig = Annotated[
@@ -154,6 +162,38 @@ class SubscriptionReplay(SubscriptionDisposition):
         return self
 
 
+class CompletionAbandonment(SubscriptionDisposition):
+    source_epoch: str = Field(min_length=1, max_length=64)
+    receipt_id: int = Field(gt=0, strict=True)
+    expected_latest_delivery_id: int = Field(gt=0, strict=True)
+    expected_delivery_ordinal: int = Field(gt=0, strict=True)
+    # Missing and explicitly null bind different intentions; null must be supplied.
+    expected_execution_id: int | None = Field(gt=0, strict=True)
+    confirm_impact: bool = Field(strict=True)
+
+    @field_validator("source_epoch")
+    @classmethod
+    def valid_epoch(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("Source epoch contains an unsupported character")
+        value.encode("utf-8")
+        return value
+
+    @field_validator("reason", "request_id")
+    @classmethod
+    def bounded_audit_bytes(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 4096:
+            raise ValueError("Audit text exceeds its byte budget")
+        return value
+
+    @field_validator("confirm_impact")
+    @classmethod
+    def confirmed_abandonment(cls, value: bool) -> bool:
+        if not value:
+            raise ValueError("Completion abandonment requires explicit impact confirmation")
+        return value
+
+
 class SubscriptionReset(SubscriptionDisposition):
     config: SourceConfig | None = None
 
@@ -172,6 +212,94 @@ class RepairRevision(SubscriptionAction):
         if not value.strip():
             raise ValueError("Code cannot be blank")
         return value
+
+
+class SyncRemainingReserve(ClosedModel):
+    count: int = Field(ge=0, le=3, strict=True)
+    bytes: int = Field(ge=0, le=24576, strict=True)
+
+
+class SyncPendingGap(ClosedModel):
+    code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    detected_at: datetime
+    after_completion_committed: bool
+    relist_required: bool
+
+
+class SyncControlDiagnostic(ClosedModel):
+    kind: Literal["sync.started", "sync.completed", "sync.failed"]
+    receipt_id: int = Field(gt=0)
+    state: (
+        Literal[
+            "pending", "processing", "succeeded", "failed", "skipped", "superseded", "abandoned"
+        ]
+        | None
+    ) = None
+    latest_delivery_id: int | None = Field(default=None, gt=0)
+    latest_delivery_ordinal: int | None = Field(default=None, gt=0)
+    execution_id: int | None = Field(default=None, gt=0)
+    effective_activation_id: int | None = Field(default=None, gt=0)
+    revision_override_id: int | None = Field(default=None, gt=0)
+
+
+class SyncBatchSummary(ClosedModel):
+    id: int = Field(gt=0)
+    subscription_id: int = Field(gt=0)
+    source_epoch: str | None = Field(max_length=64)
+    activation_id: int | None = Field(gt=0)
+    config_version: int | None = Field(gt=0)
+    scope_fingerprint: str = Field(min_length=1, max_length=64)
+    state: Literal["reading", "processing", "completed", "failed", "superseded", "abandoned"]
+    read_complete: bool
+    completion_committed: bool
+    completion_abandoned: bool
+    closed: bool
+    drain_open: bool
+    control_pending: list[Literal["sync.started", "sync.completed", "sync.failed"]] = Field(
+        max_length=3
+    )
+    remaining_reserve: SyncRemainingReserve
+    pending_gap: SyncPendingGap | None
+    failure_code: str | None = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    created_at: datetime
+    finished_at: datetime | None
+
+
+class SyncBatchDetail(SyncBatchSummary):
+    resource_version: str | None = Field(max_length=4096)
+    item_count: int = Field(ge=0)
+    page_count: int = Field(ge=0)
+    total_bytes: int = Field(ge=0)
+    controls: list[SyncControlDiagnostic] = Field(max_length=3)
+    abandonment: "CompletionAbandonmentResponse | None" = None
+
+    @field_validator("resource_version")
+    @classmethod
+    def bounded_resource_version(cls, value: str | None) -> str | None:
+        if value is not None and len(value.encode("utf-8")) > 4096:
+            raise ValueError("Resource version exceeds its byte budget")
+        return value
+
+
+class SyncBatchPage(ClosedModel):
+    items: list[SyncBatchSummary] = Field(max_length=100)
+    total: int = Field(ge=0)
+    next_before_id: int | None
+
+
+class CompletionAbandonmentResponse(ClosedModel):
+    batch_id: int = Field(gt=0)
+    receipt_id: int = Field(gt=0)
+    latest_delivery_id: int = Field(gt=0)
+    execution_id: int | None
+    request_id: str = Field(min_length=1, max_length=128)
+    actor_id: int | None
+    reason: str = Field(min_length=1, max_length=4096)
+    outcome: Literal["abandoned"] = "abandoned"
+    business_result: Literal["unconfirmed"] = "unconfirmed"
+    cancelled_pending_delivery_id: int | None = Field(default=None, gt=0)
+    disposition_id: int | None = Field(default=None, gt=0)
+    settled_at: datetime
 
 
 class SubscriptionResponse(BaseModel):
@@ -198,6 +326,7 @@ class SubscriptionResponse(BaseModel):
     access_level: Literal["admin", "owner", "edit", "read"] | None = None
     created_at: datetime
     updated_at: datetime
+    latest_batch: SyncBatchSummary | None = None
 
 
 class SubscriptionPage(BaseModel):
@@ -219,6 +348,11 @@ class EventResponse(BaseModel):
     first_received_at: datetime
     duplicate_count: int
     deliveries: list[dict[str, Any]]
+    batch_id: int | None = None
+    source_phase: SourcePhase | None = None
+    coalesced_count: int = Field(default=0, ge=0)
+    first_source_event_id: str | None = Field(default=None, max_length=128)
+    superseded_by_id: int | None = Field(default=None, gt=0)
 
 
 class EventPage(BaseModel):
@@ -269,6 +403,17 @@ class QuotaAuditResponse(BaseModel):
     repaired: bool
 
 
+class KubernetesConnectionDiagnostic(ClosedModel):
+    scope_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    trust_verified: bool = Field(strict=True)
+    list_verified: bool = Field(strict=True)
+    watch_verified: bool = Field(strict=True)
+    group: str = Field(max_length=256)
+    version: str = Field(min_length=1, max_length=128)
+    resource: str = Field(min_length=1, max_length=128)
+    namespace: str | None = Field(default=None, max_length=253)
+
+
 class SourceConnectionResponse(BaseModel):
     source_type: Literal["kafka", "kubernetes"]
     cluster_id: str = Field(min_length=1, max_length=256)
@@ -276,3 +421,4 @@ class SourceConnectionResponse(BaseModel):
     partition_count: int | None = Field(default=None, ge=1, le=16, strict=True)
     group_available: bool | None = None
     identity_verified: bool | None = None
+    kubernetes: KubernetesConnectionDiagnostic | None = None

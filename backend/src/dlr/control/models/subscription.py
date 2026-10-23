@@ -95,6 +95,7 @@ class SubscriptionConfigVersion(Base):
     source_epoch: Mapped[str] = mapped_column(String(64))
     source_credential_id: Mapped[int | None] = reference("credentials", nullable=True)
     config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    source_identity: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     created_at: Mapped[datetime] = clock()
 
 
@@ -154,8 +155,33 @@ class SourceCheckpoint(Base):
 
 class SyncBatch(Base):
     __tablename__ = "subscription_sync_batches"
+    __table_args__ = (
+        Index(
+            "uq_subscription_open_sync_batch",
+            "subscription_id",
+            unique=True,
+            postgresql_where=text("activation_id IS NOT NULL AND finished_at IS NULL"),
+        ),
+        Index(
+            "ix_sync_ready_control",
+            "ready_since",
+            "id",
+            postgresql_where=text("ready_kind IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "reserved_control_count >= 0 AND reserved_control_count <= 3 "
+            "AND reserved_control_bytes >= 0 AND reserved_control_bytes <= 24576",
+            name="ck_sync_control_reserve",
+        ),
+    )
     id: Mapped[int] = identity()
     subscription_id: Mapped[int] = reference("event_subscriptions")
+    # Nullable only for pre-connector historical skeletons. New batches require
+    # the original activation/epoch and never infer either from current config.
+    activation_id: Mapped[int | None] = reference("subscription_activations", nullable=True)
+    source_epoch: Mapped[str | None] = mapped_column(String(64))
+    owner_id: Mapped[str | None] = mapped_column(String(128))
+    owner_generation: Mapped[int | None] = mapped_column(BigInteger)
     scope_fingerprint: Mapped[str] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String(32), default="reading")
     resource_version: Mapped[str | None] = mapped_column(Text)
@@ -163,6 +189,19 @@ class SyncBatch(Base):
     total_bytes: Mapped[int] = counter()
     page_count: Mapped[int] = counter()
     read_complete: Mapped[bool] = mapped_column(default=False)
+    completion_committed: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    completion_abandoned: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    drain_open: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    reserved_control_count: Mapped[int] = counter()
+    reserved_control_bytes: Mapped[int] = counter()
+    ready_kind: Mapped[str | None] = mapped_column(String(32))
+    ready_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pending_gap: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    # Logical control backpointers are checked under the Batch lock. Retaining
+    # their IDs after lawful Receipt cleanup must not resurrect qualification.
+    started_receipt_id: Mapped[int | None] = mapped_column(BigInteger)
+    completed_receipt_id: Mapped[int | None] = mapped_column(BigInteger)
+    failed_receipt_id: Mapped[int | None] = mapped_column(BigInteger)
     completed_execution_id: Mapped[int | None] = reference(
         "executions", nullable=True, ondelete="SET NULL"
     )
@@ -189,6 +228,15 @@ class EventReceipt(Base):
         ),
         CheckConstraint("payload_bytes >= 0", name="ck_receipt_payload_bytes"),
         Index("ix_receipt_cleanup", "subscription_id", "terminal_at"),
+        Index("ix_receipt_sync_members", "batch_id", "source_phase", "state", "id"),
+        Index(
+            "ix_receipt_pending_object",
+            "subscription_id",
+            "source_epoch",
+            "object_key_hash",
+            "id",
+            postgresql_where=text("source_phase = 'watch' AND state = 'pending'"),
+        ),
     )
     id: Mapped[int] = identity()
     subscription_id: Mapped[int] = reference("event_subscriptions")
@@ -201,6 +249,11 @@ class EventReceipt(Base):
     shard: Mapped[str] = mapped_column(String(512))
     sequence: Mapped[int] = mapped_column(BigInteger)
     batch_id: Mapped[int | None] = reference("subscription_sync_batches", nullable=True)
+    source_phase: Mapped[str | None] = mapped_column(String(32))
+    list_page_index: Mapped[int | None] = mapped_column(BigInteger)
+    object_key_hash: Mapped[str | None] = mapped_column(String(64))
+    coalesced_count: Mapped[int] = counter()
+    first_source_event_id: Mapped[str | None] = mapped_column(String(128))
     state: Mapped[str] = mapped_column(String(32), default="pending")
     first_received_at: Mapped[datetime] = clock()
     last_seen_at: Mapped[datetime] = clock()
@@ -237,6 +290,12 @@ class DeliveryDisposition(Base):
         UniqueConstraint(
             "subscription_id", "request_id", name="uq_subscription_disposition_request"
         ),
+        Index(
+            "uq_sync_abandon_audit",
+            "batch_id",
+            unique=True,
+            postgresql_where=text("action = 'abandon_completion' AND batch_id IS NOT NULL"),
+        ),
     )
     id: Mapped[int] = identity()
     subscription_id: Mapped[int] = reference("event_subscriptions")
@@ -246,6 +305,10 @@ class DeliveryDisposition(Base):
     reason: Mapped[str] = mapped_column(Text)
     receipt_id: Mapped[int | None] = reference("event_receipts", nullable=True)
     delivery_id: Mapped[int | None] = reference("event_deliveries", nullable=True)
+    batch_id: Mapped[int | None] = reference("subscription_sync_batches", nullable=True)
+    # Nonzero only for the one prepaid completion-abandonment audit. This is
+    # actual retained history/dedupe, not a request for additional free quota.
+    audit_bytes: Mapped[int] = counter()
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = clock()
 
@@ -255,7 +318,8 @@ class SubscriptionQuota(Base):
     __table_args__ = (
         CheckConstraint(
             "pending_count >= 0 AND pending_bytes >= 0 AND history_count >= 0 "
-            "AND history_bytes >= 0 AND dedupe_count >= 0",
+            "AND history_bytes >= 0 AND dedupe_count >= 0 "
+            "AND reserved_control_count >= 0 AND reserved_control_bytes >= 0",
             name="ck_subscription_quota_nonnegative",
         ),
     )

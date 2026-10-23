@@ -1,8 +1,9 @@
 """Authenticated event lifecycle and history; ordinary Execution history stays read-only."""
 
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, Query, Response
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -20,17 +21,21 @@ from dlr.control.models.subscription import (
     SubscriptionActivation,
     SubscriptionConfigVersion,
     SubscriptionQuota,
+    SyncBatch,
 )
 from dlr.control.schemas.subscription import (
     ActivationReference,
     ActivationResponse,
     CheckpointPage,
     CheckpointResponse,
+    CompletionAbandonment,
+    CompletionAbandonmentResponse,
     EventPage,
     EventResponse,
     QuotaAuditResponse,
     RepairRevision,
     SourceConnectionResponse,
+    SourcePhase,
     SubscriptionAction,
     SubscriptionClone,
     SubscriptionCreate,
@@ -40,6 +45,12 @@ from dlr.control.schemas.subscription import (
     SubscriptionReset,
     SubscriptionResponse,
     SubscriptionUpdate,
+    SyncBatchDetail,
+    SyncBatchPage,
+    SyncBatchSummary,
+    SyncControlDiagnostic,
+    SyncPendingGap,
+    SyncRemainingReserve,
     UnacceptedSkip,
 )
 from dlr.control.security import (
@@ -50,12 +61,103 @@ from dlr.control.security import (
 )
 from dlr.control.services import adapter_access
 from dlr.control.services import subscription_management as management
+from dlr.control.services import subscription_sync as sync
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.subscription_source import SourceFailure
 
 router = APIRouter(dependencies=[Depends(require_business_principal)])
 DbSession = Annotated[Session, Depends(db.get_session)]
 CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
+
+
+def serialize_abandonment(
+    result: sync.CompletionAbandonmentResult,
+) -> CompletionAbandonmentResponse:
+    return CompletionAbandonmentResponse.model_validate(
+        {
+            "disposition_id": result.disposition_id,
+            "batch_id": result.batch_id,
+            "receipt_id": result.receipt_id,
+            "latest_delivery_id": result.latest_delivery_id,
+            "execution_id": result.execution_id,
+            "request_id": result.request_id,
+            "actor_id": result.actor_id,
+            "reason": result.reason,
+            "outcome": result.outcome,
+            "business_result": result.business_result,
+            "cancelled_pending_delivery_id": result.cancelled_pending_id,
+            "settled_at": result.closed_at,
+        }
+    )
+
+
+def serialize_batch(view: sync.SyncBatchView) -> SyncBatchSummary:
+    gap = view.pending_gap
+    return SyncBatchSummary.model_validate(
+        {
+            "id": view.id,
+            "subscription_id": view.subscription_id,
+            "source_epoch": view.source_epoch,
+            "activation_id": view.activation_id,
+            "config_version": view.config_version,
+            "scope_fingerprint": view.scope_fingerprint,
+            "state": view.state,
+            "read_complete": view.read_complete,
+            "completion_committed": view.completion_committed,
+            "completion_abandoned": view.completion_abandoned,
+            "closed": view.closed,
+            "drain_open": view.drain_open,
+            "control_pending": list(view.control_pending),
+            "remaining_reserve": SyncRemainingReserve(
+                count=view.remaining_reserve.count, bytes=view.remaining_reserve.bytes
+            ),
+            "pending_gap": (
+                SyncPendingGap.model_validate(
+                    {
+                        key: gap[key]
+                        for key in (
+                            "code",
+                            "detected_at",
+                            "after_completion_committed",
+                            "relist_required",
+                        )
+                        if key in gap
+                    }
+                )
+                if gap is not None
+                else None
+            ),
+            "failure_code": view.failure_code,
+            "created_at": view.created_at,
+            "finished_at": view.finished_at,
+        }
+    )
+
+
+def serialize_batch_detail(view: sync.SyncBatchView) -> SyncBatchDetail:
+    return SyncBatchDetail(
+        **serialize_batch(view).model_dump(),
+        resource_version=view.resource_version,
+        item_count=view.item_count,
+        page_count=view.page_count,
+        total_bytes=view.total_bytes,
+        controls=[
+            SyncControlDiagnostic.model_validate(
+                {
+                    "kind": control.kind,
+                    "receipt_id": control.receipt_id,
+                    "state": control.state,
+                    "latest_delivery_id": control.latest_delivery_id,
+                    "latest_delivery_ordinal": control.latest_delivery_ordinal,
+                    "execution_id": control.execution_id,
+                    "effective_activation_id": control.effective_activation_id,
+                    "revision_override_id": control.revision_override_id,
+                }
+            )
+            for control in view.controls
+        ],
+        abandonment=serialize_abandonment(view.abandonment) if view.abandonment else None,
+    )
 
 
 def serialize(
@@ -89,20 +191,7 @@ def serialize(
         or 0
     )
     counts["coalesced"] = counts.get("superseded", 0)
-    if subscription.delivery_state == "repair":
-        delivery_state = "repair"
-    elif counts.get("failed", 0):
-        delivery_state = "blocked"
-    elif subscription.desired_state == "disabled" and (
-        counts.get("pending", 0) or counts.get("processing", 0)
-    ):
-        delivery_state = "draining"
-    elif counts.get("processing", 0):
-        delivery_state = "processing"
-    elif counts.get("pending", 0):
-        delivery_state = "pending"
-    else:
-        delivery_state = "idle"
+    status = sync.sync_status_snapshot(session, subscription.id)
     return SubscriptionResponse(
         id=subscription.id,
         adapter_id=subscription.adapter_id,
@@ -111,7 +200,7 @@ def serialize(
         source_type=subscription.source_type,
         desired_state=subscription.desired_state,
         connection_state=subscription.connection_state,
-        delivery_state=delivery_state,
+        delivery_state=status.delivery_state,
         config_version=subscription.config_version,
         source_epoch=subscription.source_epoch,
         activation_id=subscription.activation_id,
@@ -142,6 +231,7 @@ def serialize(
         ).level,
         created_at=subscription.created_at,
         updated_at=subscription.updated_at,
+        latest_batch=serialize_batch(status.latest_batch) if status.latest_batch else None,
     )
 
 
@@ -404,6 +494,78 @@ def get_subscription(
     )
 
 
+@router.get("/api/event-subscriptions/{subscription_id}/sync-batches", response_model=SyncBatchPage)
+def list_sync_batches(
+    subscription_id: int,
+    session: DbSession,
+    principal: CurrentPrincipal,
+    before_id: Annotated[int | None, Query(gt=0)] = None,
+    source_epoch: Annotated[
+        str | None, Query(min_length=1, max_length=64, pattern=r"^[^\x00]+$")
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> SyncBatchPage:
+    management.get_subscription(session, subscription_id, principal)
+    query = select(SyncBatch.id).where(SyncBatch.subscription_id == subscription_id)
+    if source_epoch is not None:
+        query = query.where(SyncBatch.source_epoch == source_epoch)
+    total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
+    if before_id is not None:
+        query = query.where(SyncBatch.id < before_id)
+    ids = list(session.scalars(query.order_by(SyncBatch.id.desc()).limit(limit + 1)))
+    return SyncBatchPage(
+        items=[
+            serialize_batch(sync.batch_detail(session, subscription_id, bid)) for bid in ids[:limit]
+        ],
+        total=total,
+        next_before_id=ids[limit - 1] if len(ids) > limit else None,
+    )
+
+
+@router.get(
+    "/api/event-subscriptions/{subscription_id}/sync-batches/{batch_id}",
+    response_model=SyncBatchDetail,
+)
+def get_sync_batch(
+    subscription_id: int, batch_id: int, session: DbSession, principal: CurrentPrincipal
+) -> SyncBatchDetail:
+    management.get_subscription(session, subscription_id, principal)
+    return serialize_batch_detail(sync.batch_detail(session, subscription_id, batch_id))
+
+
+@router.post(
+    "/api/event-subscriptions/{subscription_id}/sync-batches/{batch_id}/abandon-completion",
+    response_model=CompletionAbandonmentResponse,
+)
+def abandon_completion(
+    subscription_id: int,
+    batch_id: int,
+    payload: CompletionAbandonment,
+    session: DbSession,
+    principal: CurrentPrincipal,
+) -> CompletionAbandonmentResponse:
+    management.get_subscription(session, subscription_id, principal, "edit", lock=True)
+    # The core resolves prior identical requests before checking today's version/state.
+    # Existing custody remains governable with the feature disabled.
+    result = sync.abandon_completion(
+        session,
+        subscription_id,
+        batch_id=batch_id,
+        source_epoch=payload.source_epoch,
+        receipt_id=payload.receipt_id,
+        expected_config_version=payload.expected_config_version,
+        expected_latest_delivery_id=payload.expected_latest_delivery_id,
+        expected_delivery_ordinal=payload.expected_delivery_ordinal,
+        expected_execution_id=payload.expected_execution_id,
+        request_id=payload.request_id,
+        actor_id=principal.user_id,
+        reason=payload.reason,
+        confirm_impact=payload.confirm_impact,
+    )
+    commit(session)
+    return serialize_abandonment(result)
+
+
 @router.patch("/api/event-subscriptions/{subscription_id}", response_model=SubscriptionResponse)
 def update_subscription(
     subscription_id: int,
@@ -479,6 +641,7 @@ def _prepare_connection_test(
         management.check_version(subscription, payload.expected_config_version)
         management.require_feature()
         config = management.current_config(session, subscription)
+        management.require_verified_identity(config)
         return dict(config.config), credential_values(session, config.source_credential_id)
     finally:
         session.rollback()
@@ -508,7 +671,42 @@ async def test_connection(
                 409, "source_not_available", "This event source is not yet implemented"
             )
         # Source RPCs use only the dedicated native budget, after the DB worker returned.
-        return await runtime.test_connection(subscription_id, source_config, credentials)
+        result = await runtime.test_connection(subscription_id, source_config, credentials)
+        # SDK-returned objects/raw fields never enter response validation or its logs.
+        checked: dict[str, Any] = {
+            key: result[key]
+            for key in (
+                "source_type",
+                "cluster_id",
+                "topic_count",
+                "partition_count",
+                "group_available",
+                "identity_verified",
+            )
+            if key in result
+        }
+        if "kubernetes" in result:
+            details = result["kubernetes"]
+            if not isinstance(details, dict):
+                raise SourceFailure("source_protocol_unsupported")
+            checked["kubernetes"] = {
+                key: details[key]
+                for key in (
+                    "scope_fingerprint",
+                    "trust_verified",
+                    "list_verified",
+                    "watch_verified",
+                    "group",
+                    "version",
+                    "resource",
+                    "namespace",
+                )
+                if key in details
+            }
+        try:
+            return SourceConnectionResponse.model_validate(checked).model_dump(exclude_none=True)
+        except ValidationError:
+            raise SourceFailure("source_protocol_unsupported") from None
     except SourceFailure as error:
         status = (
             429
@@ -644,6 +842,11 @@ def serialize_event(session: Session, receipt: EventReceipt) -> EventResponse:
             }
             for item in deliveries
         ],
+        batch_id=receipt.batch_id,
+        source_phase=cast(SourcePhase | None, receipt.source_phase),
+        coalesced_count=receipt.coalesced_count,
+        first_source_event_id=receipt.first_source_event_id,
+        superseded_by_id=receipt.superseded_by_id,
     )
 
 
@@ -708,10 +911,7 @@ def replay_event(
 ) -> dict[str, Any]:
     from dlr.control.services import subscription_delivery
 
-    subscription = management.get_subscription(
-        session, subscription_id, principal, "edit", lock=True
-    )
-    management.check_version(subscription, payload.expected_config_version)
+    management.get_subscription(session, subscription_id, principal, "edit", lock=True)
     _event(session, subscription_id, receipt_id)
     delivery = subscription_delivery.replay_event(
         session,
@@ -722,6 +922,7 @@ def replay_event(
         revision_id=payload.revision_id,
         use_current_configuration=payload.use_current_configuration,
         expected_preview_token=payload.expected_preview_token,
+        expected_config_version=payload.expected_config_version,
     )
     commit(session)
     return {"delivery_id": delivery.id, "execution_id": delivery.execution_id}
