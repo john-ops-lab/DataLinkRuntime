@@ -4,7 +4,7 @@
 
 [Issue #219](https://github.com/john-ops-lab/DataLinkRuntime/issues/219) 需要把 Kafka、Kubernetes 等长期接收来源纳入 DLR，同时保持 Adapter 按次执行、业务逻辑由代码负责的产品边界。先固定接收责任、恢复、版本、顺序与容量合同，才能避免把“连接正常”或“已入队”误当作目标处理成功。
 
-本稿为 **待审查设计，尚未批准实施**。源码基线为 2026-10-23 核对的 `origin/main`：`eedda36f9ed1e3ab4f84b0a76532d3916f8ca6d5`。本轮仅新增规划文件；任务勾选、功能实现、运行验收及发布均未开始。
+本稿已获用户批准，**按 B0 → B5 实施中**。源码基线为 2026-10-23 核对的 `origin/main`：`eedda36f9ed1e3ab4f84b0a76532d3916f8ca6d5`。2026-10-23 用户授权每批验证与审查通过后继续，最终统一提交一个 PR 审查，不自动合并；`dlr-preview` 改作开发测试环境。任务与证据以实际完成记录为准。
 
 ## What Changes
 
@@ -17,7 +17,7 @@
 - 后交付 Kubernetes：默认保留逐条已接收变化，显式选择 `state_sync` 才可合并；LIST/WATCH、410 重同步、UID 和批次完成屏障共同防止错误对账。两种模式都不承诺恢复已过期历史。
 - 新增来源到 Execution 的追踪、独立接收/处理状态、容量与留存界限；中英文、现有权限与凭据脱敏贯穿管理和历史页面。
 
-非目标：HA/Worker 池（#129）、DAG、完整流计算、任意常驻用户代码、通用连接器市场、平台内置 CMDB/Sink、全局业务 exactly-once；AMQP、MQTT、文件/对象存储、CDC 为后续独立变更。Kafka 与 Kubernetes 分别验收，不捆绑发布，也不预定版本或日期。
+非目标：HA/Worker 池（#129）、DAG、完整流计算、任意常驻用户代码、通用连接器市场、平台内置 CMDB/Sink、全局业务 exactly-once；AMQP、MQTT、文件/对象存储、CDC 为后续独立变更。Kafka 与 Kubernetes 分别验收，本轮统一在一个 PR 中提交审查；发布另行授权，不预定版本或日期。
 
 ## Capabilities
 

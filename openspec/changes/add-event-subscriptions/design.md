@@ -2,7 +2,7 @@
 
 ## Context
 
-状态：**待审查，未启动实现**。动机和范围见 [proposal.md](proposal.md)；验证设计见 [validation.md](validation.md)。以下决策是本稿建议固定的合同，用户审查后才能进入实施。
+状态：**已批准，B0 已通过，B1 实施中**。动机和范围见 [proposal.md](proposal.md)；验证设计见 [validation.md](validation.md)。以下决策已获用户授权实施；各批次验证及独立审查通过后继续。
 
 源码以 `eedda36f9ed1e3ab4f84b0a76532d3916f8ca6d5` 为基线，设计编写时已直接核对该源码。当前规格中部分 `pending`、旧协议描述早于可靠执行实现，本变更仅增加订阅合同，不借机重写无关历史规格。
 
@@ -245,7 +245,7 @@ WATCH 断线从最后安全持久 RV 续接。`410 Gone` 明确记录 history ga
 
 ## Migration Plan
 
-批次划分见 [tasks.md](tasks.md)：B0 技术与容量门槛 → B1 公共责任模型 → B2 Kafka 连接器 → B3 Kafka 产品验收 → B4 K8s 连接器/批次 → B5 K8s 产品验收。B3 后可仅发布 Kafka；B4/B5 不构成 Kafka 发布前置。
+批次划分见 [tasks.md](tasks.md)：B0 技术与容量门槛 → B1 公共责任模型 → B2 Kafka 连接器 → B3 Kafka 产品验收 → B4 K8s 连接器/批次 → B5 K8s 产品验收。B3 完成 Kafka 独立阶段验收，B5 完成 Kubernetes 验收；按本轮授权统一在一个 PR 审查和合并，发布另行授权。
 
 部署时先备份并验证可读，暂停新接收，使用向前 Alembic 迁移新增结构与 trigger 约束；升级 Control/Web，再核验现有 Worker 可消费 JSON 输入和新 trigger。任何不兼容必须在 B0/B1 被发现并列为同批升级项。功能默认关闭，既有 Adapter 不生成订阅；独立来源验收通过后才对用户开放相应类型。
 
