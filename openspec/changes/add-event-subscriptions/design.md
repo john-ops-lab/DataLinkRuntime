@@ -2,7 +2,7 @@
 
 ## Context
 
-状态：**已批准，B0 已通过，B1 实施中**。动机和范围见 [proposal.md](proposal.md)；验证设计见 [validation.md](validation.md)。以下决策已获用户授权实施；各批次验证及独立审查通过后继续。
+状态：**已批准，B0/B1 已通过，B2 实施中**。动机和范围见 [proposal.md](proposal.md)；验证设计见 [validation.md](validation.md)。以下决策已获用户授权实施；各批次验证及独立审查通过后继续。
 
 源码以 `eedda36f9ed1e3ab4f84b0a76532d3916f8ca6d5` 为基线，设计编写时已直接核对该源码。当前规格中部分 `pending`、旧协议描述早于可靠执行实现，本变更仅增加订阅合同，不借机重写无关历史规格。
 
