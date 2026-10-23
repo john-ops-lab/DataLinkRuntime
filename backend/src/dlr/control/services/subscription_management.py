@@ -50,7 +50,8 @@ from dlr.control.services.adapter import domain_error
 from dlr.control.services.input_config import database_now
 
 logger = logging.getLogger("dlr.control.subscriptions")
-# B1 deliberately has no available source. Later batches register only delivered connectors.
+# Public enablement follows delivery acceptance, independently from implemented
+# connectors that can already perform a bounded connection diagnostic.
 AVAILABLE_SOURCES: frozenset[str] = frozenset()
 NONTERMINAL = ("queued", "running", "retry_wait")
 MAX_ENABLED_SUBSCRIPTIONS = 16
@@ -439,7 +440,7 @@ def disable_subscription(
     if subscription.desired_state != "disabled":
         _fence(session, subscription)
     subscription.desired_state = "disabled"
-    # B1 has no native listeners. Later connectors acknowledge stopping after actual close.
+    # Native owners acknowledge stopping only after their clients actually close.
     lease = session.get(SubscriptionLease, subscription.id)
     subscription.connection_state = "stopping" if lease and lease.owner_id else "stopped"
     refresh_delivery_state(session, subscription)

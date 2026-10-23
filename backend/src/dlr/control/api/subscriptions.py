@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from dlr.common.config import settings
 from dlr.control import db
@@ -20,6 +21,7 @@ from dlr.control.schemas.subscription import (
     EventResponse,
     QuotaAuditResponse,
     RepairRevision,
+    SourceConnectionResponse,
     SubscriptionAction,
     SubscriptionClone,
     SubscriptionCreate,
@@ -34,6 +36,7 @@ from dlr.control.security import Principal, require_business_principal, require_
 from dlr.control.services import adapter_access
 from dlr.control.services import subscription_management as management
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.subscription_source import SourceFailure
 
 router = APIRouter(dependencies=[Depends(require_business_principal)])
 DbSession = Annotated[Session, Depends(db.get_session)]
@@ -239,20 +242,61 @@ def delete_subscription(
     return Response(status_code=204)
 
 
-@router.post("/api/event-subscriptions/{subscription_id}/test-connection")
-def test_connection(
+def _prepare_connection_test(
+    subscription_id: int,
+    payload: SubscriptionAction,
+    session: Session,
+    principal: Principal,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Only short SQL/decryption work uses the ordinary synchronous API pool."""
+    from dlr.control.services.subscription_runtime import credential_values
+
+    try:
+        subscription = management.get_subscription(session, subscription_id, principal, "edit")
+        management.check_version(subscription, payload.expected_config_version)
+        management.require_feature()
+        config = management.current_config(session, subscription)
+        return dict(config.config), credential_values(session, config.source_credential_id)
+    finally:
+        session.rollback()
+
+
+@router.post(
+    "/api/event-subscriptions/{subscription_id}/test-connection",
+    response_model=SourceConnectionResponse,
+    response_model_exclude_none=True,
+)
+async def test_connection(
     subscription_id: int,
     payload: SubscriptionAction,
     session: DbSession,
     principal: CurrentPrincipal,
 ) -> dict[str, Any]:
-    subscription = management.get_subscription(session, subscription_id, principal, "edit")
-    management.check_version(subscription, payload.expected_config_version)
-    management.require_source(subscription.source_type)
-    # Delivered connectors provide a bounded test action; never report an unperformed test.
-    raise domain_error(
-        409, "source_not_available", "Connection testing is not available for this source"
-    )
+    from dlr.control.services.subscription_runtime import get_runtime
+
+    credentials: dict[str, str] = {}
+    try:
+        source_config, credentials = await run_in_threadpool(
+            _prepare_connection_test, subscription_id, payload, session, principal
+        )
+        runtime = get_runtime()
+        if source_config["source_type"] not in runtime.registry:
+            raise domain_error(
+                409, "source_not_available", "This event source is not yet implemented"
+            )
+        # Source RPCs use only the dedicated native budget, after the DB worker returned.
+        return await runtime.test_connection(subscription_id, source_config, credentials)
+    except SourceFailure as error:
+        status = (
+            429
+            if error.disposition == "capacity"
+            else 503
+            if error.disposition == "backoff"
+            else 409
+        )
+        raise domain_error(status, error.code, "Source connection could not be verified") from None
+    finally:
+        credentials.clear()
 
 
 @router.post(

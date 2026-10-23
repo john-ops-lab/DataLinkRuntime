@@ -129,7 +129,14 @@ def stop_and_ack(client, session_factory, sub):
             management.listener_closed(session, sub["id"], *original)
 
 
-def test_default_off_and_registry_empty(api_client, monkeypatch):
+def test_default_off_and_registry_empty(api_client, monkeypatch, session_factory):
+    from dlr.control.services import subscription_runtime
+
+    monkeypatch.setattr(
+        subscription_runtime,
+        "_runtime",
+        subscription_runtime.SubscriptionRuntimeManager(session_factory, {}),
+    )
     monkeypatch.setattr(settings, "event_subscriptions_enabled", False)
     adapter = create_adapter(api_client)
     response = api_client.post(
@@ -258,6 +265,14 @@ def test_acl_filter_before_count_and_paging(api_client, monkeypatch, session_fac
         assert hidden.status_code == missing.status_code == 404
         assert hidden.json() == missing.json()
     assert action(api_client, one, "disable").status_code == 403
+    assert action(api_client, one, "test-connection").status_code == 403
+    hidden_test = action(api_client, two, "test-connection")
+    missing_test = api_client.post(
+        "/api/event-subscriptions/999999/test-connection",
+        json={"expected_config_version": 1},
+    )
+    assert hidden_test.status_code == missing_test.status_code == 404
+    assert hidden_test.json() == missing_test.json()
     assert (
         action(
             api_client, one, "quota-repair", request_id="viewer", reason="not permitted"

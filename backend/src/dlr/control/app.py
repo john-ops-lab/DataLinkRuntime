@@ -57,6 +57,7 @@ from dlr.control.services.subscription_management import (
     subscription_maintenance_loop,
     subscription_quota_audit_loop,
 )
+from dlr.control.services.subscription_runtime import get_runtime
 from dlr.control.template_catalog import get_template_catalog
 
 logger = logging.getLogger("dlr.control.app")
@@ -105,6 +106,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     infrastructure_dlq_task = asyncio.create_task(infrastructure_dlq_loop())
     subscription_task = asyncio.create_task(subscription_maintenance_loop())
     quota_audit_task = asyncio.create_task(subscription_quota_audit_loop())
+    source_runtime = get_runtime()
+    source_runtime.start()
     rabbitmq_tasks: tuple[asyncio.Task[None], ...] = ()
     if settings.rabbitmq_url:
         rabbitmq_tasks = (
@@ -114,6 +117,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await source_runtime.aclose()
         for background_task in (
             task,
             ai_attachment_task,

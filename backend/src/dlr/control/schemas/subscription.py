@@ -205,3 +205,12 @@ class QuotaAuditResponse(BaseModel):
     expected: dict[str, int]
     differences: dict[str, dict[str, int]]
     repaired: bool
+
+
+class SourceConnectionResponse(BaseModel):
+    source_type: Literal["kafka", "kubernetes"]
+    cluster_id: str = Field(min_length=1, max_length=256)
+    topic_count: int | None = Field(default=None, ge=1, le=16, strict=True)
+    partition_count: int | None = Field(default=None, ge=1, le=16, strict=True)
+    group_available: bool | None = None
+    identity_verified: bool | None = None
