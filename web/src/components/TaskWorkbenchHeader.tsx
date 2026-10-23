@@ -40,17 +40,22 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
   const runtimeLocked = props.adapter.runtime_locked === true;
   const activeExecution = props.runtimeState.activeExecution;
   const scheduleMode = props.adapter.run_mode === "schedule";
+  const subscriptionRuntimeLocked = runtimeLocked && !scheduleMode && !activeExecution;
   const runtimeStatus = activeExecution
     ? t("task.status.running")
     : scheduleMode && props.runtimeState.scheduleEnabled
       ? t("task.status.scheduled")
-      : t("task.status.stopped");
+      : subscriptionRuntimeLocked
+        ? t("task.status.subscriptionLocked")
+        : t("task.status.stopped");
   const saveBlockedReason = readOnly
     ? t("task.reasons.readOnly")
     : archived
     ? t("task.reasons.deleted")
     : props.runtimeSynchronizing
       ? t("task.reasons.processing")
+    : subscriptionRuntimeLocked
+      ? t("task.reasons.subscriptionLocked")
     : runtimeLocked
       ? scheduleMode && props.runtimeState.scheduleEnabled
         ? t("task.reasons.scheduleEnabledSave")
@@ -65,6 +70,10 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
   // M5.5.9：存在未保存修改时不得直接运行，先保存。
   const runBlockedReason = props.dirty
     ? t("task.reasons.dirtyRun")
+    : subscriptionRuntimeLocked
+      ? t("task.reasons.subscriptionLocked")
+    : props.runtimeSynchronizing
+      ? t("task.reasons.processing")
     : props.runtimeState.canRun
       ? null
       : props.runtimeState.runBlockedReason ?? (
@@ -93,7 +102,7 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
         <div className="workbench-meta-row" data-testid="workbench-meta" role="group" aria-label={t("task.contextAria")}>
           <Tag color="blue">{t("task.header.type")}</Tag>
           <span className="workbench-context-fact">{LANGUAGE_LABELS[props.adapter.language]}</span>
-          <Tag color={activeExecution || props.runtimeState.scheduleEnabled ? "processing" : "default"}>{runtimeStatus}</Tag>
+          <Tag color={runtimeLocked || activeExecution || props.runtimeState.scheduleEnabled ? "processing" : "default"}>{runtimeStatus}</Tag>
           <span className="workbench-context-fact" data-testid="header-runtime-worker">
             {t("task.header.worker", {
               name: props.runtimeWorker?.name ?? t("labels.notSelected", { ns: "common" }),
@@ -103,7 +112,7 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
         {/* M5.5.9：运行中只保留低干扰提示，不再展示大块说明或“复制适配器”升级引导。 */}
         {runtimeLocked && (
           <p className="runtime-lock-hint" data-testid="task-active-execution">
-            {t("task.lockHint")}
+            {t(subscriptionRuntimeLocked ? "task.subscriptionLockHint" : "task.lockHint")}
           </p>
         )}
       </div>

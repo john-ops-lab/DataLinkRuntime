@@ -103,7 +103,9 @@ function catalogRuntimeStatus(adapter: Adapter): {
     if (adapter.running_execution_id != null) {
       return { dot: "running", label: "running", fact: "running" };
     }
-    const label = adapter.runtime_locked ? "scheduledRunning" : "idle";
+    const label = adapter.runtime_locked
+      ? adapter.run_mode === "schedule" ? "scheduledRunning" : "subscriptionLocked"
+      : "idle";
     return { dot: adapter.runtime_locked ? "running" : "stopped", label, fact: label };
   }
   if (adapter.running_execution_id != null) {

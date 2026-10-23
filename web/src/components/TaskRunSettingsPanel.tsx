@@ -1080,6 +1080,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     (execution !== null && !isTerminal(execution.status));
   const runtimeLocked = props.adapter.runtime_locked === true || props.runtimeSynchronizing === true;
   const scheduleEnabled = schedule?.enabled === true;
+  const subscriptionRuntimeLocked = props.adapter.run_mode === "manual" && props.adapter.runtime_locked === true;
   const scheduleFieldsLocked = runtimeLocked;
   const scheduleConfigMissing =
     runMode === "schedule" && schedule === null && !loadingSchedule && !scheduleLoadFailed;
@@ -1182,6 +1183,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     props.adapter.latest_version_id !== null &&
     props.adapter.runtime_worker_id != null &&
     !activeExecution &&
+    !subscriptionRuntimeLocked &&
+    props.runtimeSynchronizing !== true &&
     !submitting;
   const runBlockedReason = (() => {
     if (readOnly) return t("task.reasons.readOnly");
@@ -1191,6 +1194,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     if (props.adapter.latest_version_id === null) return t("task.reasons.noVersion");
     if (props.adapter.runtime_worker_id == null) return t("task.reasons.noWorker");
     if (activeExecution) return t("task.reasons.activeRun");
+    if (subscriptionRuntimeLocked) return t("task.reasons.subscriptionLocked");
+    if (props.runtimeSynchronizing === true) return t("task.reasons.processing");
     if (submitting) return t("task.reasons.processing");
     // 防御性兜底：未来若新增 canRun 条件但遗漏对应文案，命令式入口仍保持阻断。
     return canRun ? null : t("task.reasons.unavailable");

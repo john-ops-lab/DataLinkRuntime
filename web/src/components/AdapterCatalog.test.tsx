@@ -82,10 +82,11 @@ function visibleNames(): string[] {
 it("exposes each Task and Webhook runtime status and type in the catalog item name", () => {
   const adapters = [
     makeAdapter(1, "task-idle"),
-    makeAdapter(2, "task-scheduled", { runtime_locked: true }),
+    makeAdapter(2, "task-scheduled", { run_mode: "schedule", runtime_locked: true }),
     makeAdapter(3, "task-running", { running_execution_id: 31 }),
     makeAdapter(4, "webhook-stopped", { adapter_type: "webhook" }),
     makeAdapter(5, "webhook-receiving", { adapter_type: "webhook", runtime_locked: true }),
+    makeAdapter(7, "task-subscription-locked", { runtime_locked: true }),
     makeAdapter(6, "webhook-calling", {
       adapter_type: "webhook",
       running_execution_id: 61,
@@ -102,7 +103,12 @@ it("exposes each Task and Webhook runtime status and type in the catalog item na
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "task-scheduled，[任务] Python · 手动运行 · 任务 状态：定时运行中 · 运行节点未配置",
+      name: "task-scheduled，[任务] Python · 定时运行 · 任务 状态：定时运行中 · 运行节点未配置",
+    }),
+  ).toBeTruthy();
+  expect(
+    screen.getByRole("button", {
+      name: "task-subscription-locked，[任务] Python · 手动运行 · 任务 状态：订阅锁定 · 运行节点未配置",
     }),
   ).toBeTruthy();
   expect(

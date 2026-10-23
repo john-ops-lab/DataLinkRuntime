@@ -39,7 +39,8 @@
     "status": {
       "running": "运行中",
       "scheduled": "定时已启用",
-      "stopped": "已停止"
+      "stopped": "已停止",
+      "subscriptionLocked": "订阅锁定"
     },
     "reasons": {
       "readOnly": "当前适配器为只读共享，不能修改、保存、运行或改变定时配置。",
@@ -61,7 +62,8 @@
       "saveWorkerFirst": "请先保存运行节点，再启用定时。",
       "saveChangesFirst": "请先保存当前修改，再启用定时。",
       "runtimeDirty": "运行设置有未保存修改，请先保存运行设置。",
-      "saveRuntimeFirst": "请先保存运行设置，再启用定时。"
+      "saveRuntimeFirst": "请先保存运行设置，再启用定时。",
+      "subscriptionLocked": "请先停用事件订阅，并处理或处置已接管责任后再手动运行或编辑。"
     },
     "lockHint": "适配器正在运行，编辑与运行设置已锁定。",
     "header": {
@@ -237,7 +239,8 @@
         "seconds_one": "{{count}} 秒",
         "seconds_other": "{{count}} 秒"
       }
-    }
+    },
+    "subscriptionLockHint": "事件订阅锁定了此任务；请在事件订阅中停用来源并处理或处置已接管责任后，再手动运行或编辑。"
   },
   "webhook": {
     "status": {
