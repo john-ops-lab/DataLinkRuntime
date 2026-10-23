@@ -1,6 +1,6 @@
 # 事件订阅：公共管理和可靠接收
 
-当前分支默认关闭：`DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`。B3 候选已注册 Kafka 公共入口，打开开关时 `GET /api/event-subscriptions/capabilities` 返回 `kafka`；本批完整验收状态见 OpenSpec 批次记录，注册不等于验收完成。内部“已实现、可测试连接”的注册表与公开“可启用”的注册表分开。Kubernetes 按 B4/B5 单独推进。连接测试成功不代表业务处理成功。
+当前分支默认关闭：`DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`。本分支 B5 候选打开开关后，`GET /api/event-subscriptions/capabilities` 返回 `kafka` 与 `kubernetes`。Kafka 已通过 B3，Kubernetes 后端已通过 B4；其 B5 产品/浏览器和剩余真实目标门槛仍待验收，候选可启用不等于最终可交付。内部诊断和公开启用注册表当前包含相同两种来源，连接诊断仍是独立动作，成功不代表业务处理成功。
 
 ## 管理与权限
 
@@ -37,9 +37,9 @@
 
 普通手动测试继续使用 Adapter 已保存 InputConfig。订阅启用、停止中、排空或 repair 时，后端拒绝修改运行配置与普通触发；存在绑定时改变 Task 运行方式或删除 Adapter 前应先显式删除停用排空的订阅。
 
-### B4 后端候选接口
+### Kubernetes 批次 API 与 B5 候选状态
 
-以下为 B4 实施中的后端接口；Kubernetes 尚未通过 B4/B5 产品交付门槛，公开 `capabilities` 和启用入口仍只提供 Kafka。API 可保存已知来源的停用候选配置并作受控诊断，保存或诊断成功不等于已开放启用；Web 只展示 capabilities 中的来源，不提供外部绕过开关。
+以下后端接口已通过 B4。B5 候选在打开总开关后，允许通过普通授权 API 启用 Kubernetes，无需公开测试绕过入口；新建订阅仍默认停用。Web 按 capabilities 展示支持来源，其 B5 操作路径与最终交付状态仍须单独验收。保存配置或连接诊断不会自动开始接收。
 
 | 方法与路径 | 用途 |
 | --- | --- |
@@ -136,6 +136,50 @@ Control 共享最多 16 个来源 owner/连接测试名额，无等待队列，�
 
 Consumer 关闭时禁用自动提交，显式 commit/Consumer close 使用 3 秒客户端预算，普通 Consumer 请求预算为 10 秒。3 秒不等于整个停止过程或任意 OS/NSS 的绝对上界，也不涵盖 DNS 解析和多个顺序 RPC；解析器与平台须符合 B0 的已验证支持边界。功能关闭停止新接收，当前 Control 继续排空既有责任；不能回退旧应用或删表来清除积压。
 
+## Kubernetes 配置、批次与恢复
+
+候选固定 `kubernetes==35.0.0`、`urllib3==2.8.0`，支持命名空间资源 Pod（`core/v1`）和 Deployment（`apps/v1`），使用 bearer token 引用及经过验证的 TLS。其他资源、任意 API 路径和认证机制不在本支持矩阵内。`cluster_id` 是显式配置、与连接信任和范围绑定的逻辑身份，不是自动发现的系统 namespace UID。
+
+| 配置 | 规则 |
+| --- | --- |
+| `cluster_id`、`server` | 逻辑集群 ID 与 HTTPS origin；不能含凭据、API 路径、query 或 fragment |
+| `group`、`version`、`resource` | 只能是 `""`、`v1`、`pods`，或 `apps`、`v1`、`deployments` |
+| `namespace` | 精确命名空间，或明确以 `null` 选择凭据有权限的全部命名空间 |
+| `label_selector`、`field_selector` | LIST/WATCH 共用的精确 selector，参与范围身份 |
+| `credential_id` | 含 `token` 字段的 Secret Store 引用，配置中不放 token 真值 |
+| `ca_pem` | 可选公开 CA PEM；省略时使用 SDK 实际 certifi CA bundle。冻结有效证书 DER 信任集合，并用同份已核验字节固定连接信任 |
+| `mode` | 默认 `per_event`；必须显式选择 `state_sync` |
+| `limits` | 只能收紧既有配额，不能绕过控制预留或共享上限 |
+
+凭据需要对所选资源/范围具有 LIST 和 WATCH 权限。连接测试只验证有界 LIST/WATCH 访问，返回逻辑身份、范围指纹及 trust/list/watch 验证事实，不建 Batch、Receipt、checkpoint 或业务 Execution，也不证明完整源快照或目标对账成功。同引用 token 真值轮换在重连时读取；有效 CA 信任、origin、selector、资源范围或模式改变，须停用、真实关闭、责任结清并显式新 epoch。
+
+`per_event` 保留逐条已接管变化。`state_sync` 仅在同 scope/对象 UID 的责任从未关联任何 Execution 时合并 pending WATCH 状态；即使旧执行之后又有 pending replay，也不能合并。LIST 成员和 `DELETED` 事件不合并。已有执行输入不改，首次/当前事件身份、合并次数和替代关联保留审计，合并不代表业务成功。两种模式都不能还原 Kubernetes 已丢弃的历史。带 selector 的 `DELETED` 可能仅表示离开所选范围，不等于对象物理消失；删除必须限定 UID 和 scope。
+
+LIST 每页最多 16 个对象、原始体 1 MiB；WATCH 每行最多 512 KiB。成功和错误响应都在 JSON 解码前通过 `read1(4096, decode_content=False)` 有界读取，要求 identity 编码并禁重定向。对象 Envelope 仍不得超过 1 MiB 与 Execution 输入限额中的较小者。整批最多接管 5,000 对象、128 MiB 内容；超限或不完整快照丧失清理资格，保留已接管责任并走 failed 控制路径，绝不能据此推断未读取对象不存在。
+
+每批预付三份各至多 8 KiB 的控制槽，覆盖订阅/全局的 pending、history 与 dedupe 计账，普通对象/WATCH 不得挤占。ready 控制仍服从同一每订阅10/s、全局50/s窗口并公平等待；预留不豁免 rate 或 Admission。空未闭合批次和剩余控制预留同样锁住运行变更。16 个原生连接名额和 64 MiB 应用缓冲与 Kafka、诊断共享，确认原生关闭才归还名额。raw/应用计账不是进程 RSS 硬上界；3 秒连接、2 秒 socket read、每次读取之间检查的 5 秒 deadline，不代表 DNS/OS 可被硬取消。
+
+正常流程为 `sync.started` → LIST 成员 → `sync.completed`：所有页和成员最新责任成功后才能授予完成执行资格，Adapter 还须核对自身目标写入，才能清理。已验证 PodList/DeploymentList 的成员可省略 `kind`/`apiVersion`，原始 payload 保持不变；显式错误/null/空值、独立 WATCH 对象和顶层 LIST 身份仍严格校验。成员失败在快照证据仍有效时可修复；对成员或 started 显式 skip 则永久取消旧批清理资格。
+
+部分 LIST 失败、权限失败或冻结前的历史缺口产生 `sync.failed`。failed 控制处理成功或经显式审计 skip 后，旧对象/WATCH 才可继续排空；这不授予清理资格，也不掩盖其他业务失败。完成资格在 T2 冻结，之后的新缺口记录为下一轮恢复，不把已冻结批次改写为 failed。成功闭合 completed 拒绝新 replay，再次对账使用新完整批次；未确认的失败完成链仍可受限 replay/repair 或使用前述专用放弃。
+
+停用后应等待真实关闭；已接管责任和预付控制在功能关闭时仍接受有界维护。相同 epoch 再启用可用新 activation 从持久 opaque RV 续接；原批仍有效时不重新 LIST。BOOKMARK 仅在之前责任提交后推进位置，不创建业务 Execution。`410 Gone` 表示可读历史缺失：保留 gap、结清旧生命周期，再取得新快照，不能补齐漏掉的变化。正常 enabled 恢复可新建有效批次；专用放弃保持停用，旧责任结清后仍须显式启用。reset 仅在停止和结清后创建新 epoch并保留历史；Kubernetes 没有 Kafka 的 earliest/latest 或任意位置跳过动作。
+
+| Kubernetes 诊断码 | 处置含义 |
+| --- | --- |
+| `source_permission_denied` | 核对 bearer token 引用及本资源/范围的 LIST/WATCH RBAC |
+| `source_trust_invalid`、`source_tls_invalid`、`source_identity_changed` | 核对有效 CA、主机名和信任身份；不关闭 TLS 校验或静默沿旧 RV |
+| `source_history_gap`、`source_list_snapshot_changed` | 保留已接管责任，检查批次 failed/冻结后的恢复路径 |
+| `source_response_too_large`、`source_content_invalid`、`source_object_invalid` | 核对来源内容或范围；未接管数据尚未完成业务处理 |
+| `subscription_sync_history_capacity`、`subscription_sync_batch_capacity` | 预留或整批容量不足；检查现有责任/留存，不放宽上限或删除受保护历史 |
+| `subscription_sync_completion_conflict` | 完成资格或期望责任已改变，或旧控制已结清；新动作前先核对原请求结果 |
+
+### B4 证据与尚待完成的 B5 门槛
+
+源码 `326dca6` 已通过 B4 后端门槛：真实 Kubernetes 1.35 API、普通 Python Adapter/Worker、RabbitMQ Attempt/Outbox 关联和独立 PostgreSQL 目标读回。仅含元数据的 fixture 有 17 个选中 Pod，分页为16+1；LIST 成员加 started/completed 共19个 Receipt，一次 WATCH 更新后共20个。全部目标 payload/hash 和 UID 匹配，更新对象有2次有效写入，其余16个各1次。停用期间再次修改 annotation，同 epoch 重新启用产生新 activation，从持久 RV 接收 WATCH，仍只有原批次、无新 LIST、总21个 Receipt，选中对象3次写入；最后监听和应用缓冲归零。
+
+最初 TypeMeta 拒绝保留为首败，随后通过窄修允许成员字段省略且不注入 payload；首败的 failed 控制业务成功后，失败批次闭合、预留归零并停用。故意请求旧 RV 只证明原生 `410` 诊断，不证明自然平台过期恢复。Deployment 真实目标路径、Kubernetes 浏览器操作及剩余 B5 代表恢复场景仍待验证；未声明 Kubernetes 稳态吞吐或长期容量结果。详情与未验范围见 [B4 审查记录](../../openspec/changes/add-event-subscriptions/b4-review.md)，精确 HEAD 远端 CI 与用户验收仍是独立门槛。
+
 ## B3 验证状态与容量边界
 
 B3 已通过独立验收，Kubernetes 继续按 B4/B5 推进。匹配部署的 `10ec0f4` 已完成真实 Chrome 创建、无入组连接诊断、启停与实际关闭、Kafka 消息到目标、带同 partition 积压的受限 repair、skip、当前配置补处理和 reset。独立核对保留原失败终态，四条目标业务各有效写入一次，skip 无目标写入；reset 保留旧 Receipt/Delivery/checkpoint，Saved Input 不变且未重新启用。仅有一个 Adapter 读取权限的账号只看到授权订阅且无写入口，已打开事件详情可随轮询更新。普通 manual、实际 schedule、Webhook 三条真实 Worker 路径的 C14 兼容验证已通过。
@@ -150,7 +194,7 @@ B3 已通过独立验收，Kubernetes 继续按 B4/B5 推进。匹配部署的 `
 
 ## 迁移与应用回退
 
-数据库使用向前迁移 `0047_issue219_subscriptions`，增加订阅结构并扩展 trigger，既有 Adapter 和输入不自动转换。首次部署先停止接收/写入、备份并验证可读，再运行迁移并更新 Control/Web；现有 protocol-v3 JSON Worker 无须增加输入类型。
+向前迁移 `0047_issue219_subscriptions` 增加订阅结构并扩展 trigger，`0048_issue219_kubernetes` 增加不可变来源身份和持久批次/控制/放弃计账；不自动创建订阅，也不改写既有 Adapter 输入。没有已验证身份的旧 Kubernetes 配置须显式新 epoch。首次部署先停止接收/写入、备份并验证可读，再运行迁移并更新 Control/Web；现有 protocol-v3 JSON Worker 无须增加输入类型。
 
 回退旧应用前必须停用全部订阅，确认监听实际回收，处理或明确保全所有 pending、非终态 Execution 和失败屏障。开关关闭仍允许已经接管的责任排空。不能把“关闭功能开关”“容器健康”或“内部队列为空”单独当作责任已清空；应核对事件、执行和持久计数。保留新表和审计，不自动数据库 downgrade/restore。迁移在已有订阅历史时拒绝降级，避免删除已确认责任。
 

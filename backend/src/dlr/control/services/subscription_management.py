@@ -50,9 +50,9 @@ from dlr.control.services.adapter import domain_error
 from dlr.control.services.input_config import database_now
 
 logger = logging.getLogger("dlr.control.subscriptions")
-# Public enablement follows delivery acceptance, independently from implemented
-# connectors that can already perform a bounded connection diagnostic.
-AVAILABLE_SOURCES: frozenset[str] = frozenset({"kafka"})
+# Public candidates follow their source batch gates. Enablement alone does not
+# establish product acceptance; implemented connectors also serve diagnostics.
+AVAILABLE_SOURCES: frozenset[str] = frozenset({"kafka", "kubernetes"})
 NONTERMINAL = ("queued", "running", "retry_wait")
 MAX_ENABLED_SUBSCRIPTIONS = 16
 _delivery_cursor = 0

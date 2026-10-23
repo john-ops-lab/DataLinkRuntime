@@ -1,6 +1,6 @@
 # Event subscriptions: management and durable custody
 
-The feature defaults to `DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`. The B3 candidate registers the public Kafka entry point: with the flag enabled, `GET /api/event-subscriptions/capabilities` includes `kafka`. Registration does not establish completion of the batch's acceptance gates; see the OpenSpec batch records for their status. The implemented diagnostic registry remains separate from public enablement. Kubernetes follows B4/B5. A successful connection test does not establish business success.
+The feature defaults to `DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`. In this branch's B5 candidate, enabling the flag makes `GET /api/event-subscriptions/capabilities` advertise `kafka` and `kubernetes`. Kafka passed B3; the Kubernetes backend passed B4, while its B5 product/browser and remaining real-target gates are still pending. Candidate enablement does not establish final product delivery. The implemented diagnostic registry and public enablement registry currently contain the same two sources; diagnostics remain a separate operation. A successful connection test does not establish business success.
 
 ## Management and authorization
 
@@ -37,9 +37,9 @@ Current-configuration replay requires a disabled subscription with no other unfi
 
 Normal manual tests retain the saved Task InputConfig. Backend guards block runtime mutations and ordinary triggers while a subscription receives, stops, drains or repairs. A bound subscription must be explicitly deleted after stopping/draining before changing the Task trigger mode or deleting its Adapter.
 
-### B4 backend candidate API
+### Kubernetes batch APIs and B5 candidate status
 
-These backend interfaces are being implemented in B4. Kubernetes has not passed the B4/B5 product-delivery gates; public capabilities and enablement still offer Kafka only. The API can save disabled candidate configurations for known sources and perform controlled diagnostics. Saving or diagnosing one does not open enablement. The Web exposes only sources in capabilities, without an external bypass switch.
+These backend interfaces passed B4. The B5 candidate permits Kubernetes enablement through the ordinary authorized API when the feature flag is enabled; no test-only public bypass is required. New subscriptions still start disabled. The Web must use capabilities to expose supported sources; its B5 workflow and final delivery status remain subject to separate acceptance. Saving a configuration or passing diagnostics does not start reception.
 
 | Method and suffix | Behavior |
 | --- | --- |
@@ -136,6 +136,50 @@ Database leases last 30 seconds and renew independently every 10 seconds. Tempor
 
 Consumer close disables automatic commit. Explicit commit/Consumer close use a 3-second client budget; normal Consumer requests use 10 seconds. Three seconds is not an absolute bound on the entire stop operation or arbitrary OS/NSS behavior, and excludes DNS resolution and sequential RPCs. Resolver/platform behavior must remain within the B0 verified boundary. Turning reception off preserves draining under the current Control; reverting old binaries or removing tables must not erase backlog.
 
+## Kubernetes configuration, batches and recovery
+
+The candidate pins `kubernetes==35.0.0` and `urllib3==2.8.0`. It supports namespaced Pod (`core/v1`) and Deployment (`apps/v1`) resources, with bearer-token references and verified TLS. Other resources, arbitrary API paths and authentication mechanisms are outside this support matrix. `cluster_id` is an explicitly configured logical identity, bound to connection trust and scope; it is not a discovered system-namespace UID.
+
+| Configuration | Rule |
+| --- | --- |
+| `cluster_id`, `server` | Logical cluster ID and HTTPS origin only; no credentials, API path, query or fragment |
+| `group`, `version`, `resource` | Exactly `""`, `v1`, `pods`, or `apps`, `v1`, `deployments` |
+| `namespace` | Exact namespace, or explicit `null` for all namespaces allowed by the credential |
+| `label_selector`, `field_selector` | Exact selectors for both LIST and WATCH; they participate in scope identity |
+| `credential_id` | Secret Store reference with a `token` field; no token value in configuration |
+| `ca_pem` | Optional public CA PEM; otherwise the SDK's actual certifi CA bundle is used. Effective certificate DER trust is frozen, and the same verified bytes are pinned for the connection |
+| `mode` | `per_event` by default; `state_sync` must be selected explicitly |
+| `limits` | May tighten existing quotas only; does not bypass control reserves or shared ceilings |
+
+The credential needs LIST and WATCH permission on the selected resource/scope. Connection testing verifies bounded LIST and WATCH access and returns logical identity, scope fingerprint and trust/list/watch verification facts. It creates no Batch, Receipt, checkpoint or business Execution. It does not prove a complete source snapshot or target reconciliation. Credential truth rotation under the same reference is picked up on reconnection; changing effective CA trust, origin, selectors, resource scope or mode requires disabled/closed reception, settled custody and an explicit new epoch.
+
+`per_event` retains individually accepted changes. `state_sync` can merge pending WATCH state for the same scope/object UID only when that responsibility has never had an Execution; even an older Execution followed by a pending replay prevents merging. LIST members and `DELETED` events are not merged. Existing execution input is immutable. First/current event identity, coalesced count and superseding links preserve the audit trail; coalescing is not business success. Neither mode reconstructs history that Kubernetes has already discarded. A `DELETED` event under selectors can mean leaving the selected scope, rather than physical object deletion; removal must remain UID- and scope-bound.
+
+LIST pages hold at most 16 objects and 1 MiB of raw bytes; WATCH lines hold at most 512 KiB. Successful and error responses are read with raw `read1(4096, decode_content=False)` before JSON decoding, with identity encoding and redirects disabled. Object Envelopes still obey the smaller of 1 MiB and the configured Execution input limit. A batch accepts at most 5,000 objects and 128 MiB of accepted content. An oversized or incomplete snapshot loses cleanup qualification, retains already accepted responsibility and uses its failed-control path; it never proves that unread objects are absent.
+
+Each batch prepays three control slots of up to 8 KiB across pending, history and dedupe accounting at both subscription and global scope. Ordinary objects/WATCH cannot spend that reserve. Ready controls still use the same subscription/global 10/50-per-second rate windows, and wait fairly; reserved capacity does not exempt them from rate or Admission. An empty, unfinished batch or remaining control reserve still locks runtime changes. The sixteen native permits and 64 MiB application-buffer budget are shared with Kafka and diagnostics; permits return only after confirmed native close. Raw/application limits are not a full process RSS bound. The 3-second connect, 2-second socket-read and 5-second between-read deadline do not establish hard DNS/OS cancellation.
+
+The normal path is `sync.started` → LIST members → `sync.completed`: all pages and latest member responsibilities must succeed before completion receives execution permission, and the Adapter must verify its own target writes before cleanup. A typed LIST member may omit `kind`/`apiVersion` after its enclosing PodList/DeploymentList is verified; the original payload remains unchanged. Explicit wrong/null/empty values, standalone WATCH objects and top-level LIST identities remain strict. A failed member can be repaired while valid snapshot evidence remains. Skipping a member or started control permanently invalidates that batch's cleanup qualification.
+
+A partial LIST, permission failure or pre-completion history gap produces `sync.failed`. Successful handling or an explicit audited skip of that failed control opens draining for old objects/WATCH; it does not authorize cleanup or hide other business failures. Completion qualification freezes in T2. A later gap records next-round recovery rather than rewriting the frozen batch as failed. After successful closed completion, new completed replay is rejected; use a new complete batch. Unconfirmed failed completion can use restricted replay/repair or the dedicated abandonment described above.
+
+Disable reception and wait for actual closure; accepted responsibility and prepaid controls continue bounded maintenance even when the feature is off. Re-enable on the same epoch can resume its durable opaque RV with a new activation, without a new LIST when the existing batch remains valid. BOOKMARK only advances after earlier custody commits and creates no business Execution. A `410 Gone` means lost readable history: record the gap and settle the old lifecycle before a fresh snapshot. It does not reconstruct missed changes. A normally enabled recovery may start a new valid batch; abandonment stays disabled and requires explicit enablement after old custody settles. Reset creates a new epoch only after stopping and settlement, preserving history; Kubernetes has no Kafka earliest/latest or arbitrary-offset skip operation.
+
+| Kubernetes diagnostic code | Action |
+| --- | --- |
+| `source_permission_denied` | Review the referenced bearer token and LIST/WATCH RBAC for this exact scope |
+| `source_trust_invalid`, `source_tls_invalid`, `source_identity_changed` | Review effective CA/hostname/trust identity; do not disable TLS verification or silently reuse the old RV |
+| `source_history_gap`, `source_list_snapshot_changed` | Preserve accepted custody and inspect the batch's failed/frozen recovery path |
+| `source_response_too_large`, `source_content_invalid`, `source_object_invalid` | Review source content or scope; unaccepted data has not completed business processing |
+| `subscription_sync_history_capacity`, `subscription_sync_batch_capacity` | Reserve or batch capacity is unavailable; inspect existing custody/retention without relaxing ceilings or deleting protected history |
+| `subscription_sync_completion_conflict` | Completion eligibility or expected responsibility changed, or the old control is already settled; reconcile the original request result before a new action |
+
+### B4 evidence and remaining B5 gates
+
+Source `326dca6` passed the B4 backend gate with a real Kubernetes 1.35 API, ordinary Python Adapter/Worker, RabbitMQ Attempt/Outbox links and independent PostgreSQL target readback. The metadata-only fixture had 17 selected Pods, returned as 16+1 pages. LIST members plus started/completed made 19 receipts; one WATCH update made 20. Every target payload/hash and UID matched; the updated object had two effective writes, the other sixteen one each. After stopping, an annotation changed while reception was closed; re-enabling on the same epoch created a new activation and accepted WATCH from the durable RV, with one retained batch, no new LIST, 21 total receipts and three writes for that object. Listeners and application buffers returned to zero.
+
+The initial TypeMeta rejection remains a recorded first failure, followed by a narrow correction that preserves omitted member fields. Its failed control succeeded, the failed batch closed with reserve zero, and reception stopped. Deliberately requesting an old RV established a native `410` diagnostic only; it is not proof of natural platform expiry/recovery. Deployment real-target paths, Kubernetes browser workflows and the remaining B5 representative recovery cases are pending. No Kubernetes sustained-throughput or long-duration capacity result is claimed. Details and unverified scope are in the [B4 review](../../openspec/changes/add-event-subscriptions/b4-review.md); exact-HEAD remote CI and user acceptance remain separate gates.
+
 ## B3 validation status and capacity limits
 
 B3 passed independent acceptance; Kubernetes continues through B4/B5. The matching `10ec0f4` deployment completed real Chrome creation, connection diagnostics without joining a group, enable/disable with actual closure, Kafka-to-target processing, restricted repair with same-partition backlog, skip, current-configuration replay and reset. Independent reads preserved original failure outcomes: four business rows each had one effective write, while the skipped event had no target row. Reset retained old Receipts, Deliveries and checkpoints, left Saved Input unchanged and did not re-enable reception. An account with read access to one Adapter saw only its subscription and no write actions; an open event detail updated through polling. C14 compatibility also passed three real Worker paths: manual, actual scheduled triggering and Webhook.
@@ -150,7 +194,7 @@ The revised configuration fixed `d48e3f8`, one Adapter, four partitions, a 1-sec
 
 ## Migration and application rollback
 
-Forward migration `0047_issue219_subscriptions` adds subscription structures and extends the trigger constraint. It creates no default subscriptions and does not rewrite existing Adapter inputs. Stop writers/reception, create and verify a backup, migrate forward, then update Control/Web. Existing protocol-v3 JSON Workers need no new input type.
+Forward migration `0047_issue219_subscriptions` adds subscription structures and extends the trigger constraint. `0048_issue219_kubernetes` adds immutable source identity and persistent batch/control/abandonment accounting. They create no default subscriptions and do not rewrite existing Adapter inputs. Legacy Kubernetes configurations without a verified identity require an explicit new epoch. Stop writers/reception, create and verify a backup, migrate forward, then update Control/Web. Existing protocol-v3 JSON Workers need no new input type.
 
 Before reverting application binaries, disable subscriptions, verify actual listener closure, and settle or explicitly preserve pending custody, nonterminal executions and unresolved barriers. Turning the feature off still allows existing custody to drain. A feature flag, healthy container or empty dispatch queue alone does not establish that custody is clear. Retain the new tables/audit; never automatically downgrade or restore the database. Downgrade refuses existing subscription history to avoid deleting acknowledged responsibilities.
 

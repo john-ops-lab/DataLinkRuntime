@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select
 
-from dlr.common.config import settings
+from dlr.common.config import Settings, settings
 from dlr.control.models import AdapterPermission, Execution, User
 from dlr.control.models.subscription import (
     DeliveryDisposition,
@@ -60,9 +60,7 @@ def kube_subscription(client, monkeypatch, name="kubernetes-management"):
 
 
 def activate_kube(client, monkeypatch, sub):
-    with monkeypatch.context() as internal:
-        internal.setattr(management, "AVAILABLE_SOURCES", frozenset({"kafka", "kubernetes"}))
-        activated = action(client, sub, "enable")
+    activated = action(client, sub, "enable")
     assert activated.status_code == 200, activated.text
     return activated.json()
 
@@ -403,6 +401,8 @@ def test_runtime_uses_deepcopy_of_original_config_identity(
 def test_internal_diagnostic_does_not_open_public_enablement_or_custody(
     api_client, monkeypatch, session_factory
 ):
+    # A bounded diagnostic must still respect a deliberately unavailable public source.
+    monkeypatch.setattr(management, "AVAILABLE_SOURCES", frozenset({"kafka"}))
     _, _, sub = kube_subscription(api_client, monkeypatch)
     assert "kubernetes" in runtime.implemented_sources()
     source = RecordingSource()
@@ -437,6 +437,44 @@ def test_internal_diagnostic_does_not_open_public_enablement_or_custody(
     with session_factory() as session:
         for model in (SyncBatch, SourceCheckpoint, SubscriptionQuota, SubscriptionLease, Execution):
             assert session.scalar(select(func.count()).select_from(model)) == 0
+
+
+def test_public_candidate_sources_match_implementation_and_remain_default_off(
+    api_client, monkeypatch, session_factory
+):
+    assert Settings.model_fields["event_subscriptions_enabled"].default is False
+    assert (
+        management.AVAILABLE_SOURCES
+        == frozenset(runtime.implemented_sources())
+        == {
+            "kafka",
+            "kubernetes",
+        }
+    )
+    monkeypatch.setattr(settings, "event_subscriptions_enabled", False)
+    assert api_client.get("/api/event-subscriptions/capabilities").json() == {
+        "enabled": False,
+        "available_sources": [],
+    }
+    _, _, sub = kube_subscription(api_client, monkeypatch)
+    assert api_client.get("/api/event-subscriptions/capabilities").json() == {
+        "enabled": True,
+        "available_sources": ["kafka", "kubernetes"],
+    }
+    activated = action(api_client, sub, "enable")
+    assert activated.status_code == 200, activated.text
+    assert activated.json()["desired_state"] == "enabled"
+    assert activated.json()["activation_id"] is not None
+    with session_factory() as session:
+        config = management.current_config(session, session.get(EventSubscription, sub["id"]))
+        assert config.source_identity is not None
+        for model in (SyncBatch, SourceCheckpoint, Execution):
+            assert session.scalar(select(func.count()).select_from(model)) == 0
+    assert action(api_client, sub, "disable").status_code == 200
+    monkeypatch.setattr(settings, "event_subscriptions_enabled", False)
+    rejected = action(api_client, sub, "enable")
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] == "source_not_available"
 
 
 @pytest.mark.parametrize("resolution", ["abandon", "success"])
