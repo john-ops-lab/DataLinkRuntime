@@ -73,11 +73,10 @@ def lock_subscription(session: Session, subscription_id: int) -> tuple[Adapter, 
 
 def refresh_delivery_state(session: Session, sub: EventSubscription) -> None:
     """Persist the same responsibility-derived status that management serializes."""
-    if sub.source_type == "kubernetes":
-        from dlr.control.services.subscription_sync import sync_status_snapshot
+    from dlr.control.services.subscription_sync import unfinished_sync_predicate
 
-        sub.delivery_state = sync_status_snapshot(session, sub.id).delivery_state
-        return
+    # Retained responsibility can belong to a source type used before the
+    # current configuration. Do not build the read-only Batch DTO on this path.
     if sub.delivery_state == "repair":
         return
     counts = {
@@ -88,15 +87,16 @@ def refresh_delivery_state(session: Session, sub: EventSubscription) -> None:
             .group_by(EventReceipt.state)
         ).all()
     }
+    unfinished = bool(session.scalar(select(unfinished_sync_predicate(sub.id))))
     if counts.get("failed", 0):
         sub.delivery_state = "blocked"
     elif sub.desired_state == "disabled" and (
-        counts.get("pending", 0) or counts.get("processing", 0)
+        counts.get("pending", 0) or counts.get("processing", 0) or unfinished
     ):
         sub.delivery_state = "draining"
     elif counts.get("processing", 0):
         sub.delivery_state = "processing"
-    elif counts.get("pending", 0):
+    elif counts.get("pending", 0) or unfinished:
         sub.delivery_state = "pending"
     else:
         sub.delivery_state = "idle"
@@ -462,7 +462,7 @@ def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
         return None
     from dlr.control.services import subscription_sync as sync
 
-    if sub.source_type == "kubernetes" and not sync.delivery_eligible(
+    if receipt.source_phase is not None and not sync.delivery_eligible(
         session, sub, checkpoint, receipt
     ):
         return None
@@ -549,7 +549,7 @@ def observe_terminal(session: Session, delivery_id: int) -> None:
     else:
         delivery.state = receipt.state = "failed"
         checkpoint.blocked_receipt_id = receipt.id
-    if sub.source_type == "kubernetes":
+    if receipt.source_phase is not None:
         from dlr.control.services import subscription_sync as sync
 
         sync._recompute_blocker(session, sub, checkpoint)
@@ -847,7 +847,7 @@ def skip_event(
     delivery.completed_at = receipt.terminal_at = database_now(session)
     if checkpoint.blocked_receipt_id == receipt.id:
         checkpoint.blocked_receipt_id = None
-    if sub.source_type == "kubernetes":
+    if receipt.source_phase is not None:
         from dlr.control.services.subscription_sync import after_skip
 
         after_skip(session, sub, receipt, checkpoint)

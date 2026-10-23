@@ -346,7 +346,8 @@ def update_subscription(
         previous = previous_config.config
         identity = _source_identity(value)
         if (
-            value.get("group_id") != previous.get("group_id")
+            previous.get("source_type") == "kafka"
+            and value.get("group_id") != previous.get("group_id")
             and payload.config.source_type == "kafka"
             and payload.config.group_id is None
         ):
