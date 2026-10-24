@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { api } from "../api";
+import { ApiError, api } from "../api";
+import { subscriptionErrorMessage } from "../subscription-message";
 import { applyUiLocale } from "../i18n";
 import type { SubscriptionSourceType } from "../subscription-types";
 import SubscriptionConfigDialog from "./SubscriptionConfigDialog";
@@ -88,4 +89,12 @@ it("summarizes queue scopes and IDs without Kafka partitions", () => {
   const translate = vi.fn((_key, value) => `${value.scope}:${value.id}`);
   expect(eventSummary(event, translate)).toBe("orders:one");
   expect(translate).toHaveBeenCalledWith("queues.messageSummary", { scope: "orders", id: "one" });
+});
+
+it("explains a changed queue scope in plain language in both locales", async () => {
+  const error = new ApiError(409, "source_epoch_required", "internal detail");
+  expect(subscriptionErrorMessage(error, "rocketmq")).toContain("The connection scope changed");
+  await applyUiLocale("zh-CN");
+  expect(subscriptionErrorMessage(error, "rabbitmq")).toContain("连接范围已改变");
+  expect(subscriptionErrorMessage(error, "rabbitmq")).not.toContain("新建 epoch");
 });

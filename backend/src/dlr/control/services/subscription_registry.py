@@ -119,10 +119,14 @@ def configuration_identity(
             "mode": value.get("mode"),
             "source_identity": verified,
         }
-    return {
+    identity = {
         key: value.get(key)
         for key in ("source_type", "cluster_id", "server", "ca_pem", *definition.scope_fields)
     }
+    # PEM boundary whitespace does not change trust. Match the editor's trim and
+    # compare old persisted configurations the same way; preserve legacy contracts.
+    identity["ca_pem"] = (value.get("ca_pem") or "").strip() or None
+    return identity
 
 
 def source_group_key(value: dict[str, Any]) -> str | None:

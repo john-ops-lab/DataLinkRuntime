@@ -278,7 +278,7 @@ completed 业务成功确认且批次闭合后，原清理生命周期已经终�
 
 ### D12. RabbitMQ 订阅
 
-首期使用 AMQP 0-9-1、已有 durable 队列、专用 exclusive consumer、`basic_qos(prefetch_count=1)` 和 `auto_ack=False`；平台不创建、清空或删除来源队列。连接配置为稳定逻辑来源标识、AMQP(S) 地址、vhost、queue、账号凭据和可选 CA。地址、信任或队列范围变化须显式新 epoch；逻辑来源标识不是 RabbitMQ 提供的全局 UUID。连接测试只建立连接并 passive 检查队列，不消费、不 ACK、不加入业务执行。
+首期使用 AMQP 0-9-1、已有 durable 队列、专用 exclusive consumer、`basic_qos(prefetch_count=1)` 和 `auto_ack=False`；平台不创建、清空或删除来源队列。连接配置为稳定逻辑来源标识、AMQP(S) 地址、vhost、queue、账号凭据和可选 CA。地址、信任或队列范围变化须显式新 epoch（PEM 边界空白不视为信任变化）；逻辑来源标识不是 RabbitMQ 提供的全局 UUID。连接测试只建立连接并 passive 检查队列，不消费、不 ACK、不加入业务执行。
 
 每条逻辑消息要求稳定、非空且不复用的 producer `message_id`。稳定身份包含来源标识、vhost、queue 和 message_id；不得使用随通道改变的 delivery_tag、redelivered 标记或正文哈希充当去重 ID。保留二进制正文及有界、带类型的 AMQP 业务属性/headers；确认句柄和重投次数不加入稳定内容哈希。数据限制沿用原始 512 KiB、最终 Envelope 1 MiB 及公共额度，并在原生帧/SDK 组装处限制入站数据，不能在无限分配后才报超限。
 

@@ -408,6 +408,9 @@
     "resetNote": "Starting again clears the local deduplication scope and may process retained messages again. Source queue or group progress is not reset.",
     "confirmReset": "I understand messages may be processed again and confirm starting again.",
     "connectionPassed": "Connected to {{source}} ({{cluster}}); no messages consumed.",
-    "stream": "Receive stream"
+    "stream": "Receive stream",
+    "errors": {
+      "source_epoch_required": "The connection scope changed. Stop receiving, settle existing events, then confirm starting again in advanced connection settings."
+    }
   }
 }

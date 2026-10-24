@@ -12,7 +12,8 @@ export function subscriptionErrorMessage(
   const specific =
     error instanceof ApiError && sourceType === "kubernetes"
       ? `kubernetes.errors.${error.code}`
-      : "";
+      : error instanceof ApiError && ["rabbitmq", "rocketmq"].includes(sourceType ?? "")
+        ? `queues.errors.${error.code}` : "";
   const key =
     specific && i18n.exists(specific, { lng: locale, ns: "subscription" })
       ? specific

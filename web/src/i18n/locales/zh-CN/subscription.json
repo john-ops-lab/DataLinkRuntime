@@ -408,6 +408,9 @@
     "resetNote": "重新开始会清除本地去重范围，可能再次处理已有消息。来源的队列或接收组进度不会被自动重置。",
     "confirmReset": "我已了解可能重复处理，确认重新开始。",
     "connectionPassed": "已连接 {{source}}（{{cluster}}）；未接收消息。",
-    "stream": "接收通道"
+    "stream": "接收通道",
+    "errors": {
+      "source_epoch_required": "连接范围已改变。请先停止接收并结清旧事件，再在高级连接设置中确认重新开始。"
+    }
   }
 }

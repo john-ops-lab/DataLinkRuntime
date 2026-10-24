@@ -255,3 +255,14 @@ def test_queue_management_keeps_epoch_and_clone_scope_explicit(
     key = "queue" if name == "rabbitmq" else "group_id"
     assert copy["config"][key] != config[key]
     assert copy["desired_state"] == "disabled" and copy["activation_id"] is None
+
+
+@pytest.mark.parametrize("name", ["rabbitmq", "rocketmq"])
+def test_queue_trust_boundary_whitespace_does_not_create_an_epoch(name):
+    config = {**queue_config(name), "ca_pem": "fixture-certificate\n"}
+    assert configuration_identity(config) == configuration_identity(
+        {**config, "ca_pem": "fixture-certificate"}
+    )
+    assert configuration_identity(config) != configuration_identity(
+        {**config, "ca_pem": "different-certificate"}
+    )
