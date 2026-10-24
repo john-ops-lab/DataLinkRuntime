@@ -94,7 +94,8 @@
     "webhookHelp": "收到其他系统请求时执行，例如接收告警或系统通知。",
     "templateHint": "想使用现成代码？",
     "fromTemplate": "从模板创建",
-    "createNote": "创建后进入编辑页，继续编写和保存；不会自动运行。"
+    "createNote": "创建后进入编辑页，继续编写和保存；不会自动运行。",
+    "subscriptionLocked": "订阅锁定"
   },
   "settings": {
     "title": "适配器设置",

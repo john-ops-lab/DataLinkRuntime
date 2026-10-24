@@ -9,6 +9,7 @@ import {
   StopOutlined,
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
+import type { ReactNode } from "react";
 
 import "./workbench-ux.css";
 
@@ -31,6 +32,9 @@ interface TaskWorkbenchHeaderProps {
   onStopExecution: () => void;
   onToggleSchedule: () => void;
   readOnly?: boolean;
+  eventMode?: boolean;
+  eventStatus?: string;
+  eventAction?: ReactNode;
 }
 
 export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
@@ -40,17 +44,22 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
   const runtimeLocked = props.adapter.runtime_locked === true;
   const activeExecution = props.runtimeState.activeExecution;
   const scheduleMode = props.adapter.run_mode === "schedule";
-  const runtimeStatus = activeExecution
+  const subscriptionRuntimeLocked = runtimeLocked && !scheduleMode && !activeExecution;
+  const runtimeStatus = props.eventStatus ?? (activeExecution
     ? t("task.status.running")
     : scheduleMode && props.runtimeState.scheduleEnabled
       ? t("task.status.scheduled")
-      : t("task.status.stopped");
+      : subscriptionRuntimeLocked
+        ? t("task.status.subscriptionLocked")
+        : t("task.status.stopped"));
   const saveBlockedReason = readOnly
     ? t("task.reasons.readOnly")
     : archived
     ? t("task.reasons.deleted")
     : props.runtimeSynchronizing
       ? t("task.reasons.processing")
+    : subscriptionRuntimeLocked
+      ? t("task.reasons.subscriptionLocked")
     : runtimeLocked
       ? scheduleMode && props.runtimeState.scheduleEnabled
         ? t("task.reasons.scheduleEnabledSave")
@@ -65,6 +74,10 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
   // M5.5.9：存在未保存修改时不得直接运行，先保存。
   const runBlockedReason = props.dirty
     ? t("task.reasons.dirtyRun")
+    : subscriptionRuntimeLocked
+      ? t("task.reasons.subscriptionLocked")
+    : props.runtimeSynchronizing
+      ? t("task.reasons.processing")
     : props.runtimeState.canRun
       ? null
       : props.runtimeState.runBlockedReason ?? (
@@ -93,7 +106,8 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
         <div className="workbench-meta-row" data-testid="workbench-meta" role="group" aria-label={t("task.contextAria")}>
           <Tag color="blue">{t("task.header.type")}</Tag>
           <span className="workbench-context-fact">{LANGUAGE_LABELS[props.adapter.language]}</span>
-          <Tag color={activeExecution || props.runtimeState.scheduleEnabled ? "processing" : "default"}>{runtimeStatus}</Tag>
+          {props.eventMode && <span>{t("ux.mode", { ns: "subscription" })}</span>}
+          <Tag color={runtimeLocked || activeExecution || props.runtimeState.scheduleEnabled ? "processing" : "default"}>{runtimeStatus}</Tag>
           <span className="workbench-context-fact" data-testid="header-runtime-worker">
             {t("task.header.worker", {
               name: props.runtimeWorker?.name ?? t("labels.notSelected", { ns: "common" }),
@@ -103,7 +117,7 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
         {/* M5.5.9：运行中只保留低干扰提示，不再展示大块说明或“复制适配器”升级引导。 */}
         {runtimeLocked && (
           <p className="runtime-lock-hint" data-testid="task-active-execution">
-            {t("task.lockHint")}
+            {t(subscriptionRuntimeLocked ? "task.subscriptionLockHint" : "task.lockHint")}
           </p>
         )}
       </div>
@@ -140,7 +154,9 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
                 {t("editor.saveContent", { ns: "common" })}
               </Button>
             </ActionWithReason>
-            {scheduleMode ? (
+            {props.eventMode ? <>{props.eventAction}{activeExecution && <Button danger
+              data-testid="header-task-stop" icon={<StopOutlined aria-hidden="true" />}
+              onClick={props.onStopExecution}>{t("actions.stopCurrentExecution", { ns: "common" })}</Button>}</> : scheduleMode ? (
               <>
                 <ActionWithReason
                   label={props.runtimeState.scheduleEnabled ? t("actions.disableSchedule", { ns: "common" }) : t("actions.enableSchedule", { ns: "common" })}

@@ -52,7 +52,7 @@ class ExecutionResponse(BaseModel):
     cancel_requested: bool
     input: Any
     input_source_type: str
-    input_config_revision: int
+    input_config_revision: int | None
     input_snapshot: dict[str, Any]
     timeout_seconds_snapshot: int | None = None
     recovery_grace_seconds_snapshot: int | None = None
@@ -77,6 +77,14 @@ class ExecutionResponse(BaseModel):
     started_at: datetime | None
     ended_at: datetime | None
     duration_ms: int | None
+
+    @model_validator(mode="after")
+    def subscription_input_metadata(self) -> "ExecutionResponse":
+        """The internal JSON revision sentinel is not a Task InputConfig version."""
+        if self.trigger == "subscription":
+            self.input_config_revision = None
+            self.input_snapshot = {"source_type": "json", "revision": None}
+        return self
 
 
 class ExecutionResultReport(BaseModel):

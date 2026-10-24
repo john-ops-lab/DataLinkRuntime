@@ -19,6 +19,8 @@ machine contract and remain allowed as well.
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = REPO_ROOT / "web" / "src"
 BACKEND_ROOT = REPO_ROOT / "backend" / "src"
@@ -40,7 +42,8 @@ WEB_LINE_ALLOWLIST_CHINESE = (".test(errorDetail",)
 # binding editor renders the `context.secrets.get("PASSWORD")` code sample.
 WEB_LINE_ALLOWLIST_JSX_TEXT = ("context.secrets.get",)
 
-JSX_TEXT_NODE_RE = re.compile(r">([^<{]*[A-Za-z][^<{]*)<")
+# A text node ends at a JSX tag/fragment, not a TypeScript numeric comparison.
+JSX_TEXT_NODE_RE = re.compile(r">([^<{]*[A-Za-z][^<{]*)<(?=/?[A-Za-z>])")
 JSX_PROPS_RE = re.compile(
     r'\b(?:title|placeholder|label|description|aria-label|tooltip|okText|cancelText)="([^"]*)"'
 )
@@ -70,6 +73,22 @@ def _strip_ts_comments_and_strings(code: str) -> str:
     for line in code.splitlines():
         lines.append(re.sub(r"//.*$", "", line))
     return "\n".join(lines)
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ('items.some(([key, amount]) => !["rate"].includes(key) || amount <= 0)', []),
+        ("!url.port || Number(url.port) > 65535 || Number(url.port) < 1", []),
+        ("<div>Needs attention</div>", ["Needs attention"]),
+        ("<div>Please review <strong>details</strong></div>", ["Please review", "details"]),
+        ("<div>Please review <>details</></div>", ["Please review", "details"]),
+    ],
+)
+def test_jsx_text_scan_distinguishes_comparisons_from_tag_boundaries(
+    code: str, expected: list[str]
+) -> None:
+    assert [match.group(1).strip() for match in JSX_TEXT_NODE_RE.finditer(code)] == expected
 
 
 def test_web_has_no_user_visible_hardcoded_chinese() -> None:

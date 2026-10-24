@@ -4,6 +4,8 @@ import sqlalchemy as sa
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from test_unified_runtime_migration import HEAD_REVISION
+
 
 def test_fresh_schema_has_active_only_name_uniqueness(test_engine: Engine) -> None:
     with test_engine.connect() as connection:
@@ -21,7 +23,7 @@ def test_fresh_schema_has_active_only_name_uniqueness(test_engine: Engine) -> No
             )
         )
 
-    assert revision == "0046_issue166_retire_ai_history"
+    assert revision == HEAD_REVISION
     assert index_definition is not None
     assert "UNIQUE" in index_definition
     assert "archived_at IS NULL" in index_definition

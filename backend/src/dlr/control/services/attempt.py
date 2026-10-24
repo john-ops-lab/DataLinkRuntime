@@ -1449,6 +1449,8 @@ def execution_detail(
 
 
 def _replay_availability(session: Session, execution: Execution) -> tuple[bool, str | None]:
+    if execution.trigger == "subscription":
+        return False, "subscription_replay_required"
     if execution.dispatch_backend != "rabbitmq" or execution.status != "dead_letter":
         return False, "execution_not_dead_letter"
     if execution.input_source_type != "managed_files":

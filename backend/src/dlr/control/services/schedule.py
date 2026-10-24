@@ -522,6 +522,11 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
             "execution_input_override_not_supported",
             "Schedule input overrides are disabled; save the Adapter input first",
         )
+    if data.enabled:
+        from dlr.control.services.subscription_guards import require_no_subscription
+
+        require_no_subscription(session, adapter.id)
+
     if data.enabled and adapter.latest_version_id is None:
         raise domain_error(
             409,

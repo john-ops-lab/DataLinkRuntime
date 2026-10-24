@@ -17,9 +17,20 @@ from dlr.control.ai.runtime.pydantic_ai.transport import OwnedTransport
 from dlr.control.ai.runtime.pydantic_ai.work import WorkOwner
 
 
-@pytest.mark.parametrize("phase", ["headers", "body", "keepalive_headers"])
-def test_slow_drip_releases_physical_work_before_server_stops(phase: str) -> None:
+@pytest.mark.parametrize(
+    ("phase", "setup_delay"),
+    [
+        pytest.param("headers", 0.0, id="headers"),
+        pytest.param("body", 0.0, id="body"),
+        pytest.param("keepalive_headers", 0.0, id="keepalive_headers"),
+        pytest.param("keepalive_headers", 0.35, id="keepalive_headers_slow_setup"),
+    ],
+)
+def test_slow_drip_releases_physical_work_before_server_stops(
+    phase: str, setup_delay: float
+) -> None:
     release = threading.Event()
+    slow_started = threading.Event()
     server_finished = threading.Event()
     connections: list[int] = []
     requests: list[int] = []
@@ -45,6 +56,7 @@ def test_slow_drip_releases_physical_work_before_server_stops(phase: str) -> Non
                 self.wfile.write(data)
                 self.wfile.flush()
                 return
+            slow_started.set()
             try:
                 self.wfile.write(
                     b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n"
@@ -68,22 +80,31 @@ def test_slow_drip_releases_physical_work_before_server_stops(phase: str) -> Non
     transport = OwnedTransport(
         protocol="openai_compatible",
         authenticated=False,
-        hard_deadline=time.monotonic() + 0.3,
+        hard_deadline=time.monotonic() + 5,
         permits=permits,
         owner=owner,
     )
 
-    async def execute() -> None:
+    # Client construction and connection warmup are setup, outside the short
+    # deadline being tested. A slow runner must still reach the slow response.
+    time.sleep(setup_delay)
+
+    async def execute() -> AiProviderError:
         async with httpx2.AsyncClient(transport=transport, timeout=0.2) as client:
             if phase == "keepalive_headers":
-                first = await client.post(f"http://127.0.0.1:{httpd.server_port}", content=b"{}")
+                first = await client.post(
+                    f"http://127.0.0.1:{httpd.server_port}", content=b"{}", timeout=2
+                )
                 assert first.status_code == 200
-            await client.post(f"http://127.0.0.1:{httpd.server_port}", content=b"{}")
+            transport.hard_deadline = time.monotonic() + 0.3
+            with pytest.raises(AiProviderError) as caught:
+                await client.post(f"http://127.0.0.1:{httpd.server_port}", content=b"{}")
+            return caught.value
 
     try:
-        with pytest.raises(AiProviderError) as caught:
-            asyncio.run(execute())
-        assert caught.value.code == "ai_timeout"
+        error = asyncio.run(execute())
+        assert error.code == "ai_timeout"
+        assert slow_started.is_set(), "deadline expired before the slow response started"
         assert not release.is_set()
         assert transport.closed.wait(0.5), "response returned but physical header work survived"
         assert server_finished.wait(0.5)

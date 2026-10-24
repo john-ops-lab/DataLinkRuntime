@@ -1220,3 +1220,23 @@ it("keeps process navigation disabled when reliable detail fails", async () => {
   expect(button.getAttribute("aria-controls")).toBeNull();
   expect(screen.queryByTestId("execution-attempt-timeline")).toBeNull();
 });
+
+it.each([
+  ["zh-CN", "事件触发", "输入"],
+  ["en", "Event triggered", "Input"],
+] as const)("renders subscription JSON without a Task revision in %s", async (locale, label, inputTab) => {
+  await applyUiLocale(locale);
+  renderHistory(execution({
+    trigger: "subscription",
+    input: { schema: "dlr.event.v1", event: { id: "stable-event" } },
+    input_source_type: "json",
+    input_config_revision: null,
+    input_snapshot: { source_type: "json", revision: null },
+  }), summary({ trigger: "subscription" }));
+  const row = await screen.findByTestId("history-row");
+  expect(row.textContent).toContain(label);
+  fireEvent.click(row);
+  fireEvent.click(await screen.findByRole("tab", { name: inputTab }));
+  expect((await screen.findByTestId("detail-input-json")).textContent).toContain("stable-event");
+  expect(screen.queryByTestId("detail-input-revision")).toBeNull();
+});

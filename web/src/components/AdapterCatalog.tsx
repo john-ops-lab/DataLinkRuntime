@@ -1,7 +1,7 @@
 /** 左侧 Adapter Catalog：高密度行式导航 + 新建表单（M3.1 §7，业务合同仍沿用 M1）。 */
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Button, Dropdown, Empty, Input, Popover, Radio, Select, Tooltip } from "antd";
+import { Alert, Button, Checkbox, Dropdown, Empty, Form, Input, Popover, Radio, Select, Tooltip } from "antd";
 import type { InputRef } from "antd";
 import { QuestionCircleOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
@@ -14,6 +14,8 @@ import "./workbench-ux.css";
 import { adapterAccessLevel } from "../adapter-access";
 import { useOverlayFocus } from "../hooks/useOverlayFocus";
 import { LANGUAGE_LABELS } from "../languages";
+import type { EventSubscription } from "../subscription-types";
+import { eventNeedsAttention, eventStatusKey } from "../event-trigger";
 import type {
   AccountPrincipal,
   Adapter,
@@ -29,7 +31,7 @@ interface CreateAdapterValues {
   name: string;
   description: string;
   language: AdapterLanguage;
-  adapterType: AdapterType;
+  adapterType: AdapterType | "event" | "schedule";
 }
 
 interface CatalogFilterValues {
@@ -66,6 +68,7 @@ interface AdapterCatalogProps {
     description: string,
     language: AdapterLanguage,
     adapterType: AdapterType,
+    initialMode?: "event" | "schedule",
   ) => Promise<boolean>;
   // Version lists are loaded only for selected Adapters. Known id -> seq
   // mappings are cached by App; unknown ids stay explicit as #id instead of
@@ -82,6 +85,10 @@ interface AdapterCatalogProps {
   onBrowseTemplates?: () => boolean;
   onRefresh: () => Promise<void>;
   accountPrincipal?: AccountPrincipal;
+  eventSubscriptions?: Map<number, EventSubscription>;
+  eventLoading?: boolean;
+  eventError?: string | null;
+  eventIntentAdapterId?: number | null;
 }
 
 function versionLabel(
@@ -103,7 +110,9 @@ function catalogRuntimeStatus(adapter: Adapter): {
     if (adapter.running_execution_id != null) {
       return { dot: "running", label: "running", fact: "running" };
     }
-    const label = adapter.runtime_locked ? "scheduledRunning" : "idle";
+    const label = adapter.runtime_locked
+      ? adapter.run_mode === "schedule" ? "scheduledRunning" : "subscriptionLocked"
+      : "idle";
     return { dot: adapter.runtime_locked ? "running" : "stopped", label, fact: label };
   }
   if (adapter.running_execution_id != null) {
@@ -224,11 +233,18 @@ export default function AdapterCatalog({
   onBrowseTemplates,
   onRefresh,
   accountPrincipal,
+  eventSubscriptions,
+  eventLoading = false,
+  eventError,
+  eventIntentAdapterId,
 }: AdapterCatalogProps) {
   const { t } = useTranslation(["adapter", "common"]);
   const [creating, setCreating] = useState(false);
+  const [runFilter, setRunFilter] = useState("all");
+  const [attentionOnly, setAttentionOnly] = useState(false);
   const createNameRef = useRef<InputRef>(null);
   const [createForm] = ProForm.useForm<CreateAdapterValues>();
+  const createMode = Form.useWatch("adapterType", createForm);
   const [filters, setFilters] = useState<CatalogFilterValues>({
     search: "",
     type: "all",
@@ -271,11 +287,13 @@ export default function AdapterCatalog({
     }
     setSubmitting(true);
     try {
+      const extra = values.adapterType === "event" || values.adapterType === "schedule" ? [values.adapterType] as const : [];
       const created = await onCreate(
         trimmed,
         values.description,
         values.language,
-        values.adapterType,
+        values.adapterType === "webhook" ? "webhook" : "task",
+        ...extra,
       );
       if (created) {
         createForm.resetFields();
@@ -312,11 +330,18 @@ export default function AdapterCatalog({
     filters.status === "all"
       ? typeFiltered
       : typeFiltered.filter((adapter) => catalogRuntimeStatus(adapter).dot === filters.status);
-  const visible = keyword === ""
+  const searched = keyword === ""
     ? statusFiltered
     : statusFiltered.filter((adapter) =>
         [adapter.name, adapter.description].some((value) => value.toLowerCase().includes(keyword)),
       );
+  const eventFiltersReady = !eventLoading && !eventError;
+  const visible = searched.filter(adapter => {
+    const sub = eventSubscriptions?.get(adapter.id);
+    const mode = sub || adapter.id === eventIntentAdapterId ? "event" : adapter.adapter_type === "webhook" ? "webhook" : adapter.run_mode;
+    return (!eventFiltersReady || runFilter === "all" || runFilter === mode)
+      && (!eventFiltersReady || !attentionOnly || (sub !== undefined && eventNeedsAttention(sub)));
+  });
   const typeFilterOptions: Array<{ value: AdapterTypeFilter | "all"; label: string }> = [
     { value: "all", label: t("catalog.filterTypeAll") },
     { value: "task-manual", label: t("catalog.taskManual") },
@@ -417,8 +442,19 @@ export default function AdapterCatalog({
           />
         </div>
         <span className="catalog-summary" data-testid="adapter-catalog-summary">
-          {t("catalog.summary", { count: visible.length })}
+          {eventSubscriptions && !eventFiltersReady && (attentionOnly || runFilter !== "all")
+            ? t("ux.loading", { ns: "subscription" }) : t("catalog.summary", { count: visible.length })}
         </span>
+        {eventSubscriptions && <div className="catalog-event-filters">
+          <Select size="small" aria-label={t("ux.filterMode", { ns: "subscription" })} value={runFilter}
+            disabled={!eventFiltersReady} options={["all", "manual", "schedule", "event", "webhook"].map(value => ({
+              value, label: t(`ux.filter.${value}`, { ns: "subscription" }),
+            }))} onChange={setRunFilter} />
+          <Checkbox checked={attentionOnly} disabled={!eventFiltersReady} onChange={event => setAttentionOnly(event.target.checked)}>
+            {t("ux.attentionOnly", { ns: "subscription" })}
+          </Checkbox>
+        </div>}
+        {eventError && <Alert type="warning" showIcon message={t("ux.statusUnavailable", { ns: "subscription" })} />}
       </div>
 
       <div className="catalog-list" data-testid="adapter-catalog-list">
@@ -441,13 +477,24 @@ export default function AdapterCatalog({
               type: t(`types.${adapter.adapter_type}`),
               status: runtimeStatus.label,
             });
-            const subtitle = catalogSubtitle(
+            const ordinarySubtitle = catalogSubtitle(
               adapter,
               runtimeStatusKey,
               versionSeqById,
               workersById,
               (key, options) => t(key, options),
             );
+            const eventSub = eventSubscriptions?.get(adapter.id);
+            const eventPhrase = eventSub ? `${t("ux.mode", { ns: "subscription" })} · ${t(`ux.status.${eventStatusKey(eventSub)}`, { ns: "subscription" })}`
+              : adapter.id === eventIntentAdapterId ? `${t("ux.mode", { ns: "subscription" })} · ${t("ux.notConfigured", { ns: "subscription" })}`
+              : eventSubscriptions && !eventFiltersReady && adapter.adapter_type === "task" && adapter.run_mode === "manual" ? t("ux.statusUnknown", { ns: "subscription" }) : null;
+            const subtitle = eventPhrase ? {
+              primary: eventPhrase, attention: ordinarySubtitle.attention,
+              full: [eventPhrase, ...ordinarySubtitle.attention,
+                adapter.runtime_worker_id == null ? t("catalog.workerNotConfigured")
+                  : t("catalog.workerNamed", { name: workersById.get(adapter.runtime_worker_id)?.name ?? `#${adapter.runtime_worker_id}` }),
+                adapter.description].filter(Boolean).join(" · "),
+            } : ordinarySubtitle;
             const relationship = relationshipLabel(adapter, accountPrincipal, (key, options) =>
               t(key, options),
             );
@@ -607,8 +654,10 @@ export default function AdapterCatalog({
               data-testid="new-adapter-type"
               disabled={busy}
               options={[
-                { value: "task", label: <span><strong>{t("types.taskAdapter")}</strong><small>{t("catalog.taskHelp")}</small></span> },
+                { value: "task", label: <span><strong>{t("catalog.manual")}</strong><small>{t("ux.createManual", { ns: "subscription" })}</small></span> },
+                { value: "schedule", label: <span><strong>{t("catalog.schedule")}</strong><small>{t("ux.createSchedule", { ns: "subscription" })}</small></span> },
                 { value: "webhook", label: <span><strong>{t("types.webhookAdapter")}</strong><small>{t("catalog.webhookHelp")}</small></span> },
+                { value: "event", label: <span><strong>{t("ux.mode", { ns: "subscription" })}</strong><small>{t("ux.createEvent", { ns: "subscription" })}</small></span> },
               ]}
             />
           </ProForm.Item>
@@ -639,7 +688,8 @@ export default function AdapterCatalog({
             rows={3}
           />
         </ProForm.Item>
-        <p className="ux-muted">{t("catalog.createNote")}</p>
+        <p className="ux-muted">{createMode === "event" || createMode === "schedule"
+          ? t(`ux.createNote.${createMode}`, { ns: "subscription" }) : t("catalog.createNote")}</p>
       </DrawerForm>
     </aside>
   );

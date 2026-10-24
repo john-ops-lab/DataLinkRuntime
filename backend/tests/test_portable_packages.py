@@ -88,7 +88,7 @@ def test_codec_readable_roundtrip(language: str, kind: str) -> None:
 
 
 def test_portable_upgrade_preserves_builtin_library() -> None:
-    from test_unified_runtime_migration import _isolated_schema, _upgrade
+    from test_unified_runtime_migration import HEAD_REVISION, _isolated_schema, _upgrade
 
     with _isolated_schema("portable_after_builtin", "0035_builtin_packages") as (engine, database):
         with engine.begin() as connection:
@@ -109,7 +109,7 @@ def test_portable_upgrade_preserves_builtin_library() -> None:
         with engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalars().all() == ["0046_issue166_retire_ai_history"]
+            ).scalars().all() == [HEAD_REVISION]
             assert (
                 connection.scalar(text("SELECT quota_bytes FROM builtin_package_settings"))
                 == 2147483648

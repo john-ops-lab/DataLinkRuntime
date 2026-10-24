@@ -383,11 +383,11 @@ it("renders status, reason, error and missing-key fallback text per locale", asy
 });
 
 it("updates disabled-action accessible names and reasons with the locale", async () => {
-  const adapter = makeAdapter({ id: 1, latest_version_id: null, runtime_locked: true });
+  const adapter = makeAdapter({ id: 1, latest_version_id: null, runtime_locked: true, running_execution_id: 17 });
   const runtimeState = {
     scheduleEnabled: false,
     loading: false,
-    activeExecution: false,
+    activeExecution: true,
     canRun: false,
     scheduleEnableBlockedReason: null,
     mutationInFlight: false,

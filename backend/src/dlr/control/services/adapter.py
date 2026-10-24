@@ -302,6 +302,9 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
 
     run_mode_changed = "run_mode" in data.model_fields_set and data.run_mode != adapter.run_mode
     if run_mode_changed:
+        from dlr.control.services.subscription_guards import require_no_subscription
+
+        require_no_subscription(session, adapter.id)
         if adapter.adapter_type != "task":
             raise domain_error(
                 409,
@@ -501,12 +504,20 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
     if adapter is None or adapter.archived_at is not None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
 
+    from dlr.control.services.subscription_guards import require_no_subscription
+
+    # Even stop=true must not cancel/delete accepted subscription responsibility.
+    require_no_subscription(session, adapter.id)
+
     # Upload creation and permanent deletion both serialize on the Adapter
     # row.  Check the writer state before any runtime stop/cancellation work so
     # a concurrent upload is never converted into an orphaned reservation.
     from dlr.control.services import managed_input_gc
 
     managed_input_gc.ensure_no_active_upload(session, adapter.id)
+    from dlr.control.services.subscription_delivery import purge_deleted_adapter_history
+
+    purge_deleted_adapter_history(session, adapter.id)
 
     # Acquire the RabbitMQ Admission scope before locking any Execution.  The
     # scope is harmless for a legacy-only Adapter and makes stop/delete follow
@@ -811,6 +822,9 @@ def clone_adapter(
                 ),
             )
         )
+    from dlr.control.services.subscription_management import clone_for_adapter
+
+    clone_for_adapter(session, source.id, clone.id)
     session.commit()
     session.refresh(clone)
     return clone

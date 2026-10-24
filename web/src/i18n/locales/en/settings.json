@@ -496,7 +496,9 @@
       "package_source": "Package repository",
       "webhook": "Webhook authentication",
       "ai_model": "AI model",
-      "ai_custom_provider": "Custom AI service"
+      "ai_custom_provider": "Custom AI service",
+      "subscription_source": "Subscription source configuration versions",
+      "subscription_activation": "Retained subscription activation references"
     }
   },
   "bindings": {

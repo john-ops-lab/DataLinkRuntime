@@ -37,6 +37,8 @@ describe("appRouteFromPath", () => {
     ["/adapters", { section: "adapters", settingsCategory: null }],
     ["/templates", { section: "templates", scenarioSlug: null }],
     ["/templates/", { section: "templates", scenarioSlug: null }],
+    ["/subscriptions", { section: "subscriptions", subscriptionId: null }],
+    ["/subscriptions/12", { section: "subscriptions", subscriptionId: 12 }],
     ["/templates/rest-single-request", { section: "templates", scenarioSlug: "rest-single-request" }],
     ["/settings/system-status", { section: "adapters", settingsCategory: "system-status" }],
   ])("parses %s", (path, expected) => {
@@ -49,6 +51,8 @@ describe("appRouteFromPath", () => {
     "/templates/UPPERCASE",
     "/templates/a/b",
     "/unknown",
+    "/subscriptions/0",
+    "/subscriptions/9007199254740992",
   ])("fails closed to the Adapter surface for %s", (path) => {
     expect(appRouteFromPath(path)).toEqual({ section: "adapters", settingsCategory: null });
   });

@@ -140,7 +140,7 @@ class Execution(Base):
             name="ck_executions_resource_class",
         ),
         CheckConstraint(
-            "trigger IN ('manual', 'schedule', 'webhook')",
+            "trigger IN ('manual', 'schedule', 'webhook', 'subscription')",
             name="ck_executions_trigger",
         ),
         CheckConstraint("locale IN ('zh-CN', 'en')", name="ck_executions_locale"),

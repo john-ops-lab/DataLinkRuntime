@@ -7,12 +7,22 @@ from contextlib import contextmanager
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
 
 from dlr.common.config import settings
 
-HEAD_REVISION = "0046_issue166_retire_ai_history"
+
+def _current_head_revision() -> str:
+    config = Config()
+    config.set_main_option("script_location", "alembic")
+    revision = ScriptDirectory.from_config(config).get_current_head()
+    assert revision is not None, "Alembic must have one current head"
+    return revision
+
+
+HEAD_REVISION = _current_head_revision()
 
 
 def _upgrade(database: str, revision: str) -> None:
