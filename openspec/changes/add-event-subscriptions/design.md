@@ -292,7 +292,7 @@ completed 业务成功确认且批次闭合后，原清理生命周期已经终�
 
 使用原生稳定 message_id 和来源/topic 形成事件身份。消息正文、tag、keys、业务 properties 原样进入有界 message Envelope；receipt handle、不可见时间和 delivery attempt 不成为身份或稳定内容。一次最多接收一条，只在 T1 提交后明确 ACK；ACK 超时保留原责任，消息可在不可见期限后重投并去重。SDK 必须限制网络消息大小、RPC deadline、预取/线程/连接数和实际关闭，不能默认使用无界后台任务。公共 owner 失效后不再接管或续租消息；任何迟到 ACK 只能对应已提交内容。
 
-客户端选型核对发现官方 `rocketmq-python-client==5.1.2` 的高层运行器默认 gRPC 收发大小为无限，并使用进程级后台 I/O 循环。DLR 仅复用该精确包的官方 protobuf/gRPC 消息定义，以独立同步 channel 完成有界 QueryRoute/Heartbeat/ReceiveMessage/AckMessage。协议要求一条 Telemetry 设置流登记 SimpleConsumer；只保留这条有 deadline 的设置流，不启用指标上传。短 RPC 最长 3 秒、接收 RPC 最长 8 秒（Proxy 最小长轮询 5 秒），设置流最长 30 秒并有界更新；固定单条接收、最多四个响应帧、2 MiB 原生帧上限和确定关闭。不启动其高层 SimpleConsumer 调度器、指标遥测及解码线程池。行为属于 SimpleConsumer 协议，必须由真实 5.x Proxy 验证，不以类名相同替代协议证明。原有 Pika 精确版本保持。
+客户端选型核对发现官方 `rocketmq-python-client==5.1.2` 的高层运行器默认 gRPC 收发大小为无限，并使用进程级后台 I/O 循环。DLR 仅复用该精确包的官方 protobuf/gRPC 消息定义，以独立同步 channel 完成有界 QueryRoute/Heartbeat/ReceiveMessage/AckMessage。协议要求一条 Telemetry 设置流登记 SimpleConsumer；只保留这条有 deadline 的设置流，不启用指标上传。短 RPC 最长 3 秒、接收 RPC 最长 8 秒（Proxy 最小长轮询 5 秒），设置流最长 30 秒并有界更新；固定单条接收、最多四个响应帧、2 MiB 原生帧上限和确定关闭。不启动其高层 SimpleConsumer 调度器、指标遥测及解码线程池。行为属于 SimpleConsumer 协议，必须由真实 5.x Proxy 验证，不以类名相同替代协议证明。原有 Pika 精确版本保持。GZIP 正文先检查传输摘要，再有界解压，解压后仍受原始总量限制；不启动 SDK 解压线程。实测 Proxy 最小不可见时间为 10 秒，产品固定 30 秒且不自动延长。
 
 全订阅一个本地串行 shard，与 RabbitMQ 一样只承诺 DLR 持久接收顺序。组必须专用于该 DLR 订阅；消息过期、上游保留或死信策略造成的数据缺失不能自动补齐，源去重仅受现有留存窗口保证。超限/非法内容进入阻塞诊断且不 ACK；原生未接管 skip 暂不提供，已接管 replay/repair/skip 沿用公共行为。4.x、FIFO、事务、Lite、云托管专用协议及跨组有序性均不在首期支持矩阵。
 

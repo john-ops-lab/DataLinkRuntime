@@ -88,7 +88,6 @@ SOURCES = {
         1,
         "redelivery",
         "receipt_serial",
-        implemented=False,
         scope_fields=("topic", "group_id"),
         attribute_fields=frozenset(
             {"cluster_id", "topic", "group_id", "tag", "keys", "properties"}

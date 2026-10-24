@@ -39,9 +39,9 @@ B0–B8 的 PR 交付规则保留历史含义；新增范围仅为 RabbitMQ、Ro
 
 ## 12. B11：RocketMQ
 
-- [ ] 12.1 实现 5.x gRPC SimpleConsumer、单条接收、路由诊断、认证/TLS、稳定 message_id、手动 ACK 和实际有界关闭。
-- [ ] 12.2 验证提交前后故障、ACK 超时/不可见重投、非法/超限、owner 失效及停止；确认临时 receipt handle 等不导致重复或内容冲突。
-- [ ] 12.3 在隔离真实 RocketMQ 5.x 完成接收→持久接管及确认/重投验证，记录客户端与 Broker 实测版本、支持矩阵和审查结论后本地提交；部署后的真实 Worker 业务结果在 B13 统一验证。
+- [x] 12.1 实现 5.x gRPC SimpleConsumer、单条接收、路由诊断、认证/TLS、稳定 message_id、手动 ACK 和实际有界关闭。
+- [x] 12.2 验证提交前后故障、ACK 超时/不可见重投、非法/超限、owner 失效及停止；确认临时 receipt handle 等不导致重复或内容冲突。
+- [x] 12.3 在隔离真实 RocketMQ 5.x 完成接收→持久接管及确认/重投验证，记录客户端与 Broker 实测版本、支持矩阵和审查结论后本地提交；部署后的真实 Worker 业务结果在 B13 统一验证。
 
 ## 13. B12：来源配置与用户路径
 
