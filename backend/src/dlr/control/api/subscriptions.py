@@ -251,7 +251,15 @@ def commit(session: Session) -> None:
 def capabilities() -> dict[str, Any]:
     from dlr.control.services.subscription_registry import SOURCES
 
-    available = sorted(management.AVAILABLE_SOURCES) if settings.event_subscriptions_enabled else []
+    available = (
+        sorted(
+            name
+            for name in management.AVAILABLE_SOURCES
+            if name in SOURCES and SOURCES[name].implemented
+        )
+        if settings.event_subscriptions_enabled
+        else []
+    )
     return {
         "enabled": settings.event_subscriptions_enabled,
         "available_sources": available,

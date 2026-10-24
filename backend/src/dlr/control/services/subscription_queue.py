@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import ssl
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -45,6 +46,33 @@ def silence_sdk(name: str) -> None:
             logger.propagate = False
     logging.getLogger(name).handlers = [logging.NullHandler()]
     logging.getLogger(name).propagate = False
+
+
+_PIKA_LOG_CONTEXT = threading.local()
+
+
+class _SourcePikaFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not getattr(_PIKA_LOG_CONTEXT, "depth", 0)
+
+
+_PIKA_FILTER = _SourcePikaFilter()
+
+
+class SourcePikaLogBoundary:
+    """Suppress only source-owner Pika records; internal dispatcher logging stays intact."""
+
+    def __init__(self) -> None:
+        self.closed = False
+        _PIKA_LOG_CONTEXT.depth = getattr(_PIKA_LOG_CONTEXT, "depth", 0) + 1
+        for name, logger in list(logging.Logger.manager.loggerDict.items()):
+            if (name == "pika" or name.startswith("pika.")) and isinstance(logger, logging.Logger):
+                logger.addFilter(_PIKA_FILTER)
+
+    def close(self) -> None:
+        if not self.closed:
+            self.closed = True
+            _PIKA_LOG_CONTEXT.depth -= 1
 
 
 def classify(error: Exception) -> SourceFailure:

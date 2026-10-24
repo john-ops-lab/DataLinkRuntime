@@ -203,3 +203,55 @@ def test_capabilities_only_describe_available_sources(api_client, monkeypatch):
     result = api_client.get("/api/event-subscriptions/capabilities").json()
     assert {x["type"] for x in result["sources"]} == set(result["available_sources"])
     assert all(x["type"] in SOURCES for x in result["sources"])
+
+
+@pytest.mark.parametrize("name", ["rabbitmq", "rocketmq"])
+def test_queue_management_keeps_epoch_and_clone_scope_explicit(
+    api_client, session_factory, monkeypatch, name
+):
+    from dlr.control.models import Credential
+    from dlr.control.services.secrets import encrypt_fields
+    from test_adapters import create_adapter
+
+    monkeypatch.setattr(settings, "event_subscriptions_enabled", True)
+    with session_factory.begin() as session:
+        credential = Credential(
+            name="source-test",
+            type="password",
+            ciphertext=encrypt_fields({"username": "fixture", "password": "unit-only"}),
+        )
+        session.add(credential)
+        session.flush()
+        credential_id = credential.id
+    adapter = create_adapter(api_client, name="queue-management")
+    config = queue_config(name)
+    config["credential_id"] = credential_id if name == "rabbitmq" else None
+    response = api_client.post(
+        "/api/event-subscriptions", json={"adapter_id": adapter["id"], "config": config}
+    )
+    assert response.status_code == 201
+    sub = response.json()
+    assert sub["available"] is True and sub["desired_state"] == "disabled"
+    assert sub["activation_id"] is None
+    endpoint = f"/api/event-subscriptions/{sub['id']}"
+    changed = {
+        **config,
+        "server": config["server"]
+        .replace("broker.invalid", "new.invalid")
+        .replace("proxy.invalid", "new.invalid"),
+    }
+    update = api_client.patch(endpoint, json={"config": changed, "expected_config_version": 1})
+    assert update.status_code == 409 and update.json()["detail"]["code"] == "source_epoch_required"
+    updated = api_client.patch(
+        endpoint, json={"config": changed, "expected_config_version": 1, "new_epoch": True}
+    )
+    assert updated.status_code == 200 and updated.json()["source_epoch"] != sub["source_epoch"]
+    target = create_adapter(api_client, name="queue-clone-target")
+    clone = api_client.post(
+        endpoint + "/clone", json={"target_adapter_id": target["id"], "expected_config_version": 2}
+    )
+    assert clone.status_code == 201
+    copy = clone.json()
+    key = "queue" if name == "rabbitmq" else "group_id"
+    assert copy["config"][key] != config[key]
+    assert copy["desired_state"] == "disabled" and copy["activation_id"] is None

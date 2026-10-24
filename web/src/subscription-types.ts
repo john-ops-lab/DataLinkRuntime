@@ -29,13 +29,37 @@ export interface KubernetesSourceConfig {
   mode: "per_event" | "state_sync";
   limits: Record<string, number>;
 }
+interface QueueSourceConfig {
+  cluster_id: string;
+  server: string;
+  credential_id?: number | null;
+  ca_pem?: string | null;
+  mode: "per_event";
+  ordering: "receipt_serial";
+  limits: Record<string, number>;
+}
+export interface RabbitMQSourceConfig extends QueueSourceConfig {
+  source_type: "rabbitmq";
+  vhost: string;
+  queue: string;
+  credential_id: number;
+}
+export interface RocketMQSourceConfig extends QueueSourceConfig {
+  source_type: "rocketmq";
+  topic: string;
+  group_id: string;
+}
 export type SubscriptionSourceConfig =
   | KafkaSourceConfig
-  | KubernetesSourceConfig;
+  | KubernetesSourceConfig
+  | RabbitMQSourceConfig
+  | RocketMQSourceConfig;
 export type SubscriptionSourceType = SubscriptionSourceConfig["source_type"];
 export const implementedSourceTypes: SubscriptionSourceType[] = [
   "kafka",
   "kubernetes",
+  "rabbitmq",
+  "rocketmq",
 ];
 
 export interface SyncBatchSummary {
@@ -148,6 +172,8 @@ export interface EventSubscription {
 export interface SubscriptionCapabilities {
   enabled: boolean;
   available_sources: string[];
+  sources?: { type: string; ordering: string; recovery: string; batches: boolean;
+    skip_unaccepted: boolean; max_shards: number }[];
 }
 export interface SubscriptionPage {
   items: EventSubscription[];

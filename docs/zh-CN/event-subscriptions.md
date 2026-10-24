@@ -1,12 +1,12 @@
 # 事件订阅：公共管理和可靠接收
 
-功能默认关闭：`DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`。本分支打开开关后，`GET /api/event-subscriptions/capabilities` 声明 `kafka` 与 `kubernetes`；公开启用与内部连接诊断注册表包含相同两种来源。本地已完成下文列出的代表性业务、恢复和浏览器验证。连接诊断是独立动作，成功不代表业务处理成功；PR 精确 HEAD 远端 CI、用户验收和发布仍是独立门槛。
+功能默认关闭：`DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`。本分支打开开关后，`GET /api/event-subscriptions/capabilities` 声明 `kafka`、`kubernetes`、`rabbitmq`、`rocketmq`，并返回逐来源能力；公开启用与内部连接诊断注册表保持一致。本地已完成下文列出的代表性业务、恢复和浏览器验证。连接诊断是独立动作，成功不代表业务处理成功；PR 精确 HEAD 远端 CI、用户验收和发布仍是独立门槛。
 
 ## 在适配器里使用事件触发
 
 顶部导航保留“适配器、模板广场”。创建时仍点击原来的“新建”，选择“事件触发”、名称和开发语言；已有任务也可在“运行设置”选择事件触发。底层仍是普通 Task 与来源绑定，不需要另外维护订阅名称。
 
-1. 配置 Kafka 消息或 Kubernetes 资源来源。首次 Kafka 范围必须明确选择只接收新消息，或也处理仍保留的历史消息；集群标识必须是真实标识，不能填写任意友好名称。高级连接设置中保留认证、证书、消费组和容量选项。
+1. 配置 Kafka、RabbitMQ、RocketMQ 消息或 Kubernetes 资源来源。首次 Kafka 范围必须明确选择只接收新消息，或也处理仍保留的历史消息；Kafka 集群标识必须是真实标识，不能填写任意友好名称。高级连接设置中保留认证、证书、消费组和容量选项。
 2. 点击“保存”保存来源，或“保存并测试连接”先保存再检查来源。测试不会运行处理代码；测试失败时已保存的来源仍保留。取消初次配置也保留已创建的适配器。
 3. 在原“编辑”页编写并保存处理代码，保存运行节点和超时设置，准备好后主动点击标题区“开启接收”。创建或保存配置不会自动开始接收。
 4. 在原“执行记录”页签切换到“接收记录”，查看事件摘要、处理结果和执行详情。技术详情提供容量、原始位置及高级处置；原失败和重新处理的执行分别保留。
@@ -19,6 +19,14 @@
 | --- | --- | --- |
 | Kafka | 精确 topic；`per_event`、`partition_serial` | Apache Kafka 4.1.2 单节点 KRaft；TLS、SCRAM-SHA-256/512，及隔离环境的 PLAINTEXT；容量仅限下文 B3 已测配置 |
 | Kubernetes | Pod（`core/v1`）、Deployment（`apps/v1`）；`per_event` 或显式 `state_sync` | Kubernetes 1.35 API、bearer token 引用、严格 TLS；真实 Pod 为仅含元数据的资源，Deployment 为 `replicas=0` |
+| RabbitMQ | AMQP 0-9-1，已有专用持久队列；`per_event`、接收顺序 | RabbitMQ 4.3.5，Pika 1.3.2；真实账号/TLS、passive 诊断、未提交/确认丢失重投、超限关闭 |
+| RocketMQ | 5.x gRPC Proxy，NORMAL 普通消息，专用已有组/单 topic；`per_event`、接收顺序 | Apache RocketMQ 5.3.3；官方 5.1.2 协议定义加 DLR 有界同步 transport；真实无认证 Proxy 收发/重投/ACK，TLS/签名在协议服务器验证，真实 Broker ACL 未验 |
+
+RabbitMQ 的发送方必须为每条消息提供稳定且不复用的 `message_id`。来源标识是管理员约定的固定标签；同一消息服务须保持一致。队列需由管理员事先创建且不与其他应用共用；连接测试不消费消息，产品不会建队列。RocketMQ 使用 Proxy 地址与专用组，不接受 4.x NameServer 地址；FIFO、事务、Lite 和厂商专用认证未支持。两者都从来源当前可用消息/组位置继续，不提供自动回到“最早/最新”的选项，也不承诺 Broker 的全局 FIFO。
+
+保存消息后才确认来源。未确认的重投在现有留存范围内去重。无编号、超限或非法消息会阻塞接收且不确认；停止后先在来源修复/处置，再按停止、结清旧责任、重新开始流程恢复。页面只对已保存事件提供重新处理/跳过，不提供两来源的原生未保存消息跳过。克隆会生成新接收组或队列占位名，须先准备对应资源再启用。
+
+新增来源须在 `subscription_registry.py` 显式登记配置、运行器、身份、顺序/恢复/批次/跳过能力及 shard 上限，封闭模型、迁移、原生有界连接、T1 后确认、故障/重投/关闭、表单与能力交集分别通过验证后才能加入公开可用集合。未知类型拒绝；不能退化成 Kafka/K8s 的表单或身份。原 Kafka/K8s 身份、内容哈希与批次完成合同保持。
 
 其他 Kubernetes 资源、任意 API 路径和认证机制，以及其他 Kafka 认证机制或任意 broker/platform 组合，不在当前已验范围内。Kubernetes 未进行 30 分钟持续容量验证；元数据 API 对账不证明工作负载健康。
 

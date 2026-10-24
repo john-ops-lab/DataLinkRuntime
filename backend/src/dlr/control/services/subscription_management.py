@@ -48,12 +48,16 @@ from dlr.control.security import Principal
 from dlr.control.services import adapter_access
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.input_config import database_now
-from dlr.control.services.subscription_registry import configuration_identity, source_group_key
+from dlr.control.services.subscription_registry import (
+    configuration_identity,
+    source_definition,
+    source_group_key,
+)
 
 logger = logging.getLogger("dlr.control.subscriptions")
 # Public candidates follow their source batch gates. Enablement alone does not
 # establish product acceptance; implemented connectors also serve diagnostics.
-AVAILABLE_SOURCES: frozenset[str] = frozenset({"kafka", "kubernetes"})
+AVAILABLE_SOURCES: frozenset[str] = frozenset({"kafka", "kubernetes", "rabbitmq", "rocketmq"})
 NONTERMINAL = ("queued", "running", "retry_wait")
 MAX_ENABLED_SUBSCRIPTIONS = 16
 _delivery_cursor = 0
@@ -105,7 +109,7 @@ def require_feature() -> None:
 
 def require_source(source_type: str) -> None:
     require_feature()
-    if source_type not in AVAILABLE_SOURCES:
+    if source_type not in AVAILABLE_SOURCES or not source_definition(source_type).implemented:
         raise domain_error(409, "source_not_available", "This event source is not yet available")
 
 

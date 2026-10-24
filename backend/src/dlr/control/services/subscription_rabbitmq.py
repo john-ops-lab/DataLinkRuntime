@@ -16,7 +16,11 @@ import pika
 from pika import frame
 
 from dlr.control.schemas.subscription import RabbitMQSourceConfig
-from dlr.control.services.subscription_queue import Message, QueueSourceRunner, silence_sdk
+from dlr.control.services.subscription_queue import (
+    Message,
+    QueueSourceRunner,
+    SourcePikaLogBoundary,
+)
 from dlr.control.services.subscription_source import SourceFailure
 
 
@@ -71,7 +75,6 @@ def guard_content(channel: Any) -> None:
 class RabbitMQTransport:
     def __init__(self, config: dict[str, Any], credentials: dict[str, str], *, diagnostic: bool):
         value = RabbitMQSourceConfig.model_validate(config)
-        silence_sdk("pika")
         if not credentials.get("username") or not credentials.get("password"):
             raise SourceFailure("source_credential_unavailable")
         address = urlsplit(value.server)
@@ -93,6 +96,7 @@ class RabbitMQTransport:
             blocked_connection_timeout=3,
             frame_max=131072,
         )
+        self.log_boundary = SourcePikaLogBoundary()
         self.connection: Any = None
         self.channel: Any = None
         self.iterator: Any = None
@@ -188,6 +192,12 @@ class RabbitMQTransport:
             self.connection.process_data_events(time_limit=0.01)
 
     def close(self) -> None:
+        try:
+            self._close()
+        finally:
+            self.log_boundary.close()
+
+    def _close(self) -> None:
         connection = self.connection
         if connection is None or connection.is_closed:
             return

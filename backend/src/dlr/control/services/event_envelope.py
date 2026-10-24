@@ -247,6 +247,20 @@ def validate_queue_content(envelope: dict[str, Any]) -> None:
         or not isinstance(attrs["properties"], dict)
     ):
         raise ValueError("message source contract")
+    if source["identity"] != attrs["cluster_id"]:
+        raise ValueError("message source identity")
+    if source["type"] == "rabbitmq":
+        if any(not isinstance(attrs[key], str) for key in ("exchange", "routing_key")):
+            raise ValueError("AMQP routing metadata")
+    elif (
+        not isinstance(attrs["tag"], str)
+        or not isinstance(attrs["keys"], list)
+        or any(not isinstance(key, str) for key in attrs["keys"])
+        or any(
+            not isinstance(k, str) or not isinstance(v, str) for k, v in attrs["properties"].items()
+        )
+    ):
+        raise ValueError("RocketMQ properties")
     raw = base64.b64decode(envelope["data"]["value"], validate=True)
     metadata = canonical(attrs)
     if len(raw) + len(metadata) > 512 * 1024 or len(metadata) > 64 * 1024:

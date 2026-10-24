@@ -231,3 +231,74 @@ def test_real_rabbitmq_passive_diagnostic_redelivery_qos_guard_and_close(rabbit_
         oversized.close()
     channel.queue_purge(queue=config["queue"])
     producer.close()
+
+
+def test_source_pika_log_boundary_preserves_internal_logs(caplog):
+    import logging
+    import threading
+
+    logger = logging.getLogger("pika.adapters.blocking_connection")
+    with caplog.at_level(logging.WARNING):
+        boundary = queue.SourcePikaLogBoundary()
+        logger.warning("source-sensitive-test-message")
+        thread = threading.Thread(target=lambda: logger.warning("internal-dispatch-healthy"))
+        thread.start()
+        thread.join(1)
+        boundary.close()
+        logger.warning("internal-after-source-close")
+    assert "source-sensitive-test-message" not in caplog.text
+    assert "internal-dispatch-healthy" in caplog.text
+    assert "internal-after-source-close" in caplog.text
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DLR_QUEUE_FIXTURE_FILE"), reason="isolated TLS broker opt-in"
+)
+def test_real_rabbitmq_tls_credential_and_passive_diagnostic():
+    import ssl
+
+    from dlr.control.services.subscription_rabbitmq import RabbitMQSourceRunner
+
+    private = json.loads(Path(os.environ["DLR_QUEUE_FIXTURE_FILE"]).read_text())
+    if "rabbitmq_tls" not in private:
+        pytest.skip("TLS fixture not configured")
+    value = private["rabbitmq_tls"]
+    ca = Path(value["ca_pem_path"]).read_text()
+    credentials = {"username": value["username"], "password": value["password"]}
+    config = {
+        "source_type": "rabbitmq",
+        "cluster_id": "tls-fixture",
+        "credential_id": 1,
+        "server": f"amqps://{value['host']}:{value['port']}",
+        "vhost": "/",
+        "queue": "source-tls",
+        "ca_pem": ca,
+    }
+    producer = pika.BlockingConnection(
+        pika.ConnectionParameters(
+            host=value["host"],
+            port=value["port"],
+            credentials=pika.PlainCredentials(**credentials),
+            ssl_options=pika.SSLOptions(ssl.create_default_context(cadata=ca), value["host"]),
+        )
+    )
+    channel = producer.channel()
+    channel.queue_declare(queue=config["queue"], durable=True)
+    channel.queue_purge(queue=config["queue"])
+    channel.basic_publish(
+        "", config["queue"], b"tls-source", pika.BasicProperties(message_id="tls-one")
+    )
+    runner = RabbitMQSourceRunner()
+    assert runner.test_connection(config, credentials)["source_type"] == "rabbitmq"
+    assert channel.queue_declare(queue=config["queue"], passive=True).method.message_count == 1
+    with pytest.raises(SourceFailure):
+        runner.test_connection({**config, "ca_pem": None}, credentials)
+    with pytest.raises(SourceFailure, match="source_authentication_failed"):
+        runner.test_connection(config, {**credentials, "password": "wrong-fixture-password"})
+    transport = RabbitMQTransport(config, credentials, diagnostic=False)
+    try:
+        assert transport.poll().body == b"tls-source"
+    finally:
+        transport.close()
+    channel.queue_purge(queue=config["queue"])
+    producer.close()

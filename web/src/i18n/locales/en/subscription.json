@@ -172,7 +172,14 @@
     "source_trust_invalid": "API CA trust is invalid. Review the public CA bundle and server origin.",
     "source_list_snapshot_changed": "LIST pagination no longer represents one consistent collection snapshot.",
     "source_response_too_large": "The bounded source response limit was exceeded; the incomplete batch cannot authorize cleanup.",
-    "source_member_skipped": "A LIST member or started control was explicitly skipped; this batch cannot authorize cleanup."
+    "source_member_skipped": "A LIST member or started control was explicitly skipped; this batch cannot authorize cleanup.",
+    "source_message_id_required": "The message has no stable ID. Ask the producer to set message_id before resuming.",
+    "source_properties_invalid": "Message properties are unsupported or too large. Resolve this at the source.",
+    "source_message_type_unsupported": "Only normal RocketMQ 5.x messages are supported. Check the topic type.",
+    "source_message_digest_invalid": "Message integrity verification failed. Check the source message.",
+    "source_message_encoding_invalid": "Message encoding or compression is invalid. Check the source.",
+    "source_queue_unavailable": "The queue is unavailable or has another consumer. Check the queue and permissions.",
+    "source_ack_failed": "The message is stored but source acknowledgement failed. Redelivery will be deduplicated."
   },
   "controlReserve": "Control reserves (count / bytes)",
   "sourceLag": "Source lag",
@@ -323,7 +330,9 @@
     "createEvent": "Run on Kafka messages or Kubernetes resource changes",
     "sourceType": {
       "kafka": "Kafka messages",
-      "kubernetes": "Kubernetes resource changes"
+      "kubernetes": "Kubernetes resource changes",
+      "rabbitmq": "RabbitMQ messages",
+      "rocketmq": "RocketMQ messages"
     },
     "connectionOptions": "Advanced connection settings",
     "saveAndTest": "Save and test connection",
@@ -374,5 +383,31 @@
     "statusUnknown": "Trigger mode not yet confirmed",
     "checkingStatus": "Checking event sources. Please wait before changing the trigger mode."
   },
-  "repairExitNote": "Continue processing already received events with their original code and runtime settings. The repair version applies only to the events you explicitly reprocess. Receiving new events stays off."
+  "repairExitNote": "Continue processing already received events with their original code and runtime settings. The repair version applies only to the events you explicitly reprocess. Receiving new events stays off.",
+  "queues": {
+    "identity": "Source label",
+    "identityHint": "Choose a stable label for this messaging service, such as prod-orders. Reuse it for the same service.",
+    "identityInvalid": "Use letters, numbers, dots, hyphens or underscores.",
+    "server": "Connection address",
+    "serverInvalid": "Include a port and select credentials separately. Do not include credentials in the address.",
+    "vhost": "Virtual host",
+    "queue": "Receive queue",
+    "queueHint": "Use an existing dedicated durable queue. DLR does not create queues. Prepare a new dedicated queue after cloning.",
+    "topic": "Message topic",
+    "group": "Receive group",
+    "groupHint": "Ask the source administrator for an existing dedicated group. Do not share it with other applications.",
+    "accessKey": "Access credentials (optional)",
+    "rabbitmqHint": "Receive from an existing RabbitMQ queue. The producer must assign a unique message_id to each message. Messages are acknowledged only after durable storage.",
+    "rocketmqHint": "Receive normal RocketMQ 5.x messages through a gRPC Proxy. RocketMQ 4.x NameServer addresses are unsupported.",
+    "rabbitmqServerHint": "For example amqps://broker.example:5671. amqp is plain; amqps is encrypted.",
+    "rocketmqServerHint": "For example grpcs://proxy.example:8081. Ask your administrator for the port. grpc is plain; grpcs is encrypted.",
+    "rabbitmqStartHint": "Start with messages available in the queue, processing in receipt order. Problem messages pause receiving until resolved at the source.",
+    "rocketmqStartHint": "Continue from the group's current progress without resetting it. Process in receipt order. Unsupported or oversized messages pause receiving.",
+    "messageSummary": "{{scope}} · Message {{id}}",
+    "recoveryHint": "Stored messages can be retried. For an unstored problem message, stop receiving and resolve it at the source. Direct source skipping is unavailable.",
+    "resetNote": "Starting again clears the local deduplication scope and may process retained messages again. Source queue or group progress is not reset.",
+    "confirmReset": "I understand messages may be processed again and confirm starting again.",
+    "connectionPassed": "Connected to {{source}} ({{cluster}}); no messages consumed.",
+    "stream": "Receive stream"
+  }
 }

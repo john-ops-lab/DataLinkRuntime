@@ -1,12 +1,12 @@
 # Event subscriptions: management and durable custody
 
-The feature defaults to `DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`. With the flag enabled, this branch advertises `kafka` and `kubernetes` through `GET /api/event-subscriptions/capabilities`; the public enablement and implemented diagnostic registries contain the same two sources. The representative local business, recovery and browser paths below have been validated. Connection diagnostics are separate and do not establish business success. Exact-HEAD remote PR CI, user acceptance and release remain separate gates.
+The feature defaults to `DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`. With the flag enabled, this branch advertises `kafka`, `kubernetes`, `rabbitmq` and `rocketmq`, with per-source capabilities through `GET /api/event-subscriptions/capabilities`; the public enablement and implemented diagnostic registries contain the same sources. The representative local business, recovery and browser paths below have been validated. Connection diagnostics are separate and do not establish business success. Exact-HEAD remote PR CI, user acceptance and release remain separate gates.
 
 ## Use event triggers inside an adapter
 
 The primary navigation keeps Adapters and Templates. Use the existing New drawer, choose Event triggered, and enter a name and language. Existing tasks can select the same option in Runtime settings. The backend still uses an ordinary Task plus a source binding; a separate subscription name is not required.
 
-1. Configure Kafka messages or Kubernetes resources. Explicitly choose new messages only or retained history for the first Kafka reception. Cluster identity must match the actual broker identity. Authentication, certificates, consumer groups and capacity remain available under advanced connection settings.
+1. Configure Kafka, RabbitMQ or RocketMQ messages, or Kubernetes resources. Explicitly choose new messages only or retained history for the first Kafka reception. Kafka cluster identity must match the actual broker identity. Authentication, certificates, consumer groups and capacity remain available under advanced connection settings.
 2. Save the source, or choose Save and test connection to persist it before checking connectivity. Tests do not run processing code. A failed test leaves the saved source intact; cancelling first configuration also preserves the adapter.
 3. Write and save processing code in the existing Edit tab, save the worker and timeout, then explicitly click Start receiving in the header. Creating an adapter or saving its source never starts reception automatically.
 4. In the existing Execution history tab, switch to Received events for source summaries, processing results and execution details. Technical details retain capacity, original positions and advanced actions. Original failures and subsequent processing attempts remain separate.
@@ -19,6 +19,14 @@ The original adapter list supports running-mode and Needs attention filters. Sto
 | --- | --- | --- |
 | Kafka | Exact topics; `per_event`, `partition_serial` | Apache Kafka 4.1.2, single-node KRaft; TLS, SCRAM-SHA-256/512 and isolated PLAINTEXT; capacity applies only to the B3 configuration below |
 | Kubernetes | Pod (`core/v1`), Deployment (`apps/v1`); `per_event` or explicit `state_sync` | Kubernetes 1.35 API, bearer-token references and strict TLS; real Pods contain metadata only and Deployments use `replicas=0` |
+| RabbitMQ | AMQP 0-9-1, existing dedicated durable queue; per-event receipt order | RabbitMQ 4.3.5 / Pika 1.3.2; real credentials/TLS, passive diagnostics, pre-commit and lost-ACK redelivery, oversize close |
+| RocketMQ | 5.x gRPC Proxy, NORMAL messages, existing dedicated group / one topic; receipt order | Apache RocketMQ 5.3.3; official 5.1.2 protocol definitions with DLR bounded synchronous transport; real unauthenticated Proxy redelivery/ACK; TLS/signatures verified against a protocol server, real Broker ACL unverified |
+
+RabbitMQ producers must assign a stable, unique `message_id`. Use a stable administrator-defined service label consistently. Administrators must provision a dedicated durable queue; DLR only passively checks it and diagnostics never consume. RocketMQ requires a Proxy endpoint and dedicated group. 4.x NameServer endpoints, FIFO, transactions, Lite and vendor-specific authentication are unsupported. Both continue from available queue messages / current group progress. There is no automatic earliest/latest reset or global FIFO promise.
+
+ACK follows committed custody. Redelivery deduplicates within the existing retention window. Missing IDs, invalid or oversized messages block without ACK: stop reception, resolve the message at the source, settle existing responsibilities, then explicitly start again. Stored messages retain replay/repair/skip; direct skipping of unstored source messages is unavailable. Clones generate a new group or queue placeholder; provision it before enabling.
+
+Extensions require explicit registration in `subscription_registry.py`: closed configuration, runner, identity, ordering/recovery/batch/skip capabilities and shard budget. Validate migrations, bounded transport, post-T1 ACK, failure/redelivery/close and the intersection with implemented forms before public enablement. Unknown types never fall back to another source. Existing Kafka/K8s hashes and batch contracts remain unchanged.
 
 Other Kubernetes resources, arbitrary API paths and authentication mechanisms, and other Kafka authentication mechanisms or arbitrary broker/platform combinations are outside the verified scope. Kubernetes has no 30-minute sustained-capacity result. Metadata API reconciliation does not establish workload health.
 

@@ -172,7 +172,14 @@
     "source_trust_invalid": "API CA 信任不合法，请检查公开 CA 证书与服务器源地址。",
     "source_list_snapshot_changed": "LIST 分页不再属于同一个一致集合快照。",
     "source_response_too_large": "来源响应超过有界读取上限，不完整批次不能取得清理资格。",
-    "source_member_skipped": "LIST 成员或 started 控制已被显式跳过，本批不能取得清理资格。"
+    "source_member_skipped": "LIST 成员或 started 控制已被显式跳过，本批不能取得清理资格。",
+    "source_message_id_required": "消息缺少稳定编号，请让发送方设置 message_id 后再恢复接收。",
+    "source_properties_invalid": "消息属性格式不受支持或过大，请在来源修复。",
+    "source_message_type_unsupported": "当前只支持 RocketMQ 5.x 普通消息，请检查主题类型。",
+    "source_message_digest_invalid": "消息完整性校验失败，请检查来源消息。",
+    "source_message_encoding_invalid": "消息编码或压缩格式不受支持，请在来源检查。",
+    "source_queue_unavailable": "队列不可用或已有其他接收方，请检查队列和权限。",
+    "source_ack_failed": "消息已保存，但来源确认失败，系统会在重投时去重。"
   },
   "controlReserve": "控制记录预留（数量 / 字节）",
   "sourceLag": "源 lag",
@@ -323,7 +330,9 @@
     "createEvent": "收到 Kafka 消息或 Kubernetes 资源变化时运行",
     "sourceType": {
       "kafka": "Kafka 消息",
-      "kubernetes": "Kubernetes 资源变化"
+      "kubernetes": "Kubernetes 资源变化",
+      "rabbitmq": "RabbitMQ 消息",
+      "rocketmq": "RocketMQ 消息"
     },
     "connectionOptions": "高级连接设置",
     "saveAndTest": "保存并测试连接",
@@ -374,5 +383,31 @@
     "statusUnknown": "运行方式待确认",
     "checkingStatus": "正在查询事件来源；请稍候再切换运行方式。"
   },
-  "repairExitNote": "继续处理已收到的旧事件，仍使用各事件接收时固定的代码和运行配置。修复版本只用于您明确选中的重新处理，不会自动开启来源接收。"
+  "repairExitNote": "继续处理已收到的旧事件，仍使用各事件接收时固定的代码和运行配置。修复版本只用于您明确选中的重新处理，不会自动开启来源接收。",
+  "queues": {
+    "identity": "来源标识",
+    "identityHint": "为这套消息服务取一个固定标识，例如 prod-orders；同一来源请始终使用相同标识。",
+    "identityInvalid": "请使用字母、数字、点、短横线或下划线。",
+    "server": "连接地址",
+    "serverInvalid": "请填写含端口的连接地址，账号另行选择，不要放在地址中。",
+    "vhost": "虚拟主机",
+    "queue": "接收队列",
+    "queueHint": "选择已建好的专用持久队列，DLR 不会自动创建。克隆后也需先准备新的专用队列。",
+    "topic": "消息主题",
+    "group": "接收组",
+    "groupHint": "由来源管理员提供已建好的专用接收组，不能与其他应用共用。",
+    "accessKey": "访问凭据（可选）",
+    "rabbitmqHint": "从已有 RabbitMQ 队列接收消息。每条消息须由发送方设置不重复的 message_id；系统保存成功后才向队列确认。",
+    "rocketmqHint": "接收 RocketMQ 5.x 的普通消息；通过 gRPC Proxy 连接，不支持 4.x 的 NameServer 地址。",
+    "rabbitmqServerHint": "例如 amqps://broker.example:5671；amqp 为普通连接，amqps 为加密连接。",
+    "rocketmqServerHint": "例如 grpcs://proxy.example:8081；端口由管理员提供。grpc 为普通连接，grpcs 为加密连接。",
+    "rabbitmqStartHint": "开启后接收队列中可用的消息，按实际接收顺序处理。问题消息会暂停接收，请在来源处置后恢复。",
+    "rocketmqStartHint": "从接收组当前进度继续，不自动重置位置。按实际接收顺序处理；超限或不支持的消息会暂停接收。",
+    "messageSummary": "{{scope}} · 消息 {{id}}",
+    "recoveryHint": "消息已保存后支持重试处理。未保存的问题消息须先停止接收，在来源中修复或处置；此处不提供直接跳过。",
+    "resetNote": "重新开始会清除本地去重范围，可能再次处理已有消息。来源的队列或接收组进度不会被自动重置。",
+    "confirmReset": "我已了解可能重复处理，确认重新开始。",
+    "connectionPassed": "已连接 {{source}}（{{cluster}}）；未接收消息。",
+    "stream": "接收通道"
+  }
 }

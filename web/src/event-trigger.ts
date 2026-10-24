@@ -22,8 +22,13 @@ export function eventStatusKey(sub: EventSubscription): string {
 
 export function eventSourceLabel(sub: EventSubscription): string {
   const config = sub.config;
-  return config.source_type === "kafka" ? `Kafka · ${config.topics.join(", ")}`
-    : `Kubernetes · ${config.resource}${config.namespace ? ` · ${config.namespace}` : ""}`;
+  switch (config.source_type) {
+    case "kafka": return `Kafka · ${config.topics.join(", ")}`;
+    case "kubernetes": return `Kubernetes · ${config.resource}${config.namespace ? ` · ${config.namespace}` : ""}`;
+    case "rabbitmq": return `RabbitMQ · ${config.queue}`;
+    case "rocketmq": return `RocketMQ · ${config.topic}`;
+    default: return "—";
+  }
 }
 
 export function eventBytes(value: number | undefined): string {
@@ -44,6 +49,11 @@ export function eventSummary(event: SubscriptionEvent, translate: (key: string, 
     const name = [attributes.namespace, attributes.name].filter(value => typeof value === "string" && value !== "").join("/");
     return `${translate(`ux.change.${String(attributes.watch_type ?? "present").toLowerCase()}`, { defaultValue: translate("ux.objectChange") })} · ${name || translate("ux.objectChange")}`.slice(0, 220);
   }
-  if (typeof position.topic === "string") return translate("ux.kafkaSummary", { topic: position.topic.slice(0, 128), partition: position.partition ?? "—", offset: position.offset ?? "—" });
+  if (source.type === "rabbitmq" || source.type === "rocketmq") {
+    const scope = attributes.queue ?? attributes.topic;
+    return translate("queues.messageSummary", { scope: String(scope ?? "").slice(0, 128),
+      id: String(position.message_id ?? "—").slice(0, 128) });
+  }
+  if (source.type === "kafka" && typeof position.topic === "string") return translate("ux.kafkaSummary", { topic: position.topic.slice(0, 128), partition: position.partition ?? "—", offset: position.offset ?? "—" });
   return translate("ux.recordNumber", { id: event.id });
 }

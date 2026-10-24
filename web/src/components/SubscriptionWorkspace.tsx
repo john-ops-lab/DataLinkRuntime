@@ -270,6 +270,8 @@ export default function SubscriptionWorkspace({
       setDiagnostic(
         result.source_type === "kubernetes" && result.kubernetes
           ? `${t("kubernetes.testPassed")} ${t("kubernetes.testResult", { cluster: result.cluster_id, resource: `${result.kubernetes.group || "core"}/${result.kubernetes.version}/${result.kubernetes.resource}`, namespace: result.kubernetes.namespace ?? t("kubernetes.allNamespaces"), scope: result.kubernetes.scope_fingerprint, trust: t(result.kubernetes.trust_verified ? "batch.yes" : "batch.no"), list: t(result.kubernetes.list_verified ? "batch.yes" : "batch.no"), watch: t(result.kubernetes.watch_verified ? "batch.yes" : "batch.no") })}`
+          : result.source_type === "rabbitmq" || result.source_type === "rocketmq"
+            ? t("queues.connectionPassed", { source: t(`ux.sourceType.${result.source_type}`), cluster: result.cluster_id })
           : `${t("testPassed")} ${t("testResult", { cluster: result.cluster_id, topics: result.topic_count ?? "—", partitions: result.partition_count ?? "—" })}`,
       );
     } catch (reason) {
@@ -511,6 +513,8 @@ export default function SubscriptionWorkspace({
           />
         </>
       ) : null}
+      {(sub.source_type === "rabbitmq" || sub.source_type === "rocketmq") &&
+        <Alert type="info" message={t("queues.recoveryHint")} />}
       {!drained && <Alert type="info" message={t("locked")} />}
       <section>
         <h3>{t("quota")}</h3>
@@ -550,7 +554,7 @@ export default function SubscriptionWorkspace({
         <h3>{t("checkpoints")}</h3>
         <p>
           {t(
-            sub.source_type === "kubernetes" ? "kubernetes.gapNote" : "gapNote",
+            sub.source_type === "kubernetes" ? "kubernetes.gapNote" : sub.source_type === "kafka" ? "gapNote" : "queues.recoveryHint",
           )}
         </p>
         <Table<SourceCheckpoint>
@@ -564,7 +568,7 @@ export default function SubscriptionWorkspace({
               title: t(
                 sub.source_type === "kubernetes"
                   ? "kubernetes.stream"
-                  : "shard",
+                  : sub.source_type === "kafka" ? "shard" : "queues.stream",
               ),
               dataIndex: "shard",
             },

@@ -105,7 +105,7 @@ export default function SubscriptionActionDialog({
     skip: "skipNote",
     skipUnaccepted: "skipNote",
     reset:
-      sub.source_type === "kubernetes" ? "kubernetes.resetNote" : "resetNote",
+      sub.source_type === "kubernetes" ? "kubernetes.resetNote" : sub.source_type === "kafka" ? "resetNote" : "queues.resetNote",
     repairEnter: "repairNote",
     repairSave: "repairNote",
     repairExit: "repairExitNote",
@@ -160,14 +160,14 @@ export default function SubscriptionActionDialog({
         });
       else if (
         action === "reset" &&
-        (sub.config.source_type === "kubernetes" || values.initial)
+        (sub.config.source_type !== "kafka" || values.initial)
       )
         await api.resetSubscription(sub.id, {
           ...body,
           config:
-            sub.config.source_type === "kubernetes"
-              ? sub.config
-              : { ...sub.config, initial_position: values.initial! },
+            sub.config.source_type === "kafka"
+              ? { ...sub.config, initial_position: values.initial! }
+              : sub.config,
         });
       else if (action === "delete")
         await api.deleteSubscription(sub.id, version);
@@ -440,7 +440,7 @@ export default function SubscriptionActionDialog({
             />
           </Form.Item>
         )}
-        {action === "reset" && sub.config.source_type === "kubernetes" ? (
+        {action === "reset" && sub.config.source_type !== "kafka" ? (
           <Form.Item
             name="confirmEpoch"
             valuePropName="checked"
@@ -453,7 +453,7 @@ export default function SubscriptionActionDialog({
               },
             ]}
           >
-            <Checkbox>{t("kubernetes.confirmReset")}</Checkbox>
+            <Checkbox>{t(sub.config.source_type === "kubernetes" ? "kubernetes.confirmReset" : "queues.confirmReset")}</Checkbox>
           </Form.Item>
         ) : null}
         {action === "repairSave" && (

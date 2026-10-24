@@ -9,12 +9,14 @@ import type {
 } from "../subscription-types";
 import KafkaSubscriptionConfig from "./KafkaSubscriptionConfig";
 import KubernetesSubscriptionConfig from "./KubernetesSubscriptionConfig";
+import QueueSubscriptionConfig from "./QueueSubscriptionConfig";
 
 export default function SubscriptionConfigDialog(props: {
   subscription?: EventSubscription;
   availableSources: SubscriptionSourceType[];
   adapterId: number;
   canManage: boolean;
+  readOnly?: boolean;
   canTest?: boolean;
   onDraftStateChange?: (state: SubscriptionDraftState) => void;
   onClose: () => void;
@@ -37,7 +39,7 @@ export default function SubscriptionConfigDialog(props: {
   if (!source) return null;
   const sourceSelector = !props.subscription && props.availableSources.length > 1 ? <div className="event-source-choice">
     <span>{t("ux.source")}</span><Radio.Group value={source} aria-label={t("ux.source")}
-      disabled={draft.busy} options={props.availableSources.map(value => ({ value, label: t(`ux.sourceType.${value}`) }))}
+      disabled={props.readOnly || draft.busy} options={props.availableSources.map(value => ({ value, label: t(`ux.sourceType.${value}`) }))}
       onChange={event => {
         if (draft.busy || (draft.dirty && !window.confirm(t("confirm.discardChanges", { ns: "common" })))) return;
         setSource(event.target.value as SubscriptionSourceType);
@@ -46,7 +48,9 @@ export default function SubscriptionConfigDialog(props: {
   const shared = { ...props, sourceSelector, onDraftStateChange };
   return source === "kafka" ? (
     <KafkaSubscriptionConfig {...shared} />
-  ) : (
+  ) : source === "kubernetes" ? (
     <KubernetesSubscriptionConfig {...shared} />
-  );
+  ) : source === "rabbitmq" || source === "rocketmq" ? (
+    <QueueSubscriptionConfig key={source} sourceType={source} {...shared} />
+  ) : null;
 }
