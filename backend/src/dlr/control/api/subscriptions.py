@@ -249,11 +249,13 @@ def commit(session: Session) -> None:
 
 @router.get("/api/event-subscriptions/capabilities")
 def capabilities() -> dict[str, Any]:
+    from dlr.control.services.subscription_registry import SOURCES
+
+    available = sorted(management.AVAILABLE_SOURCES) if settings.event_subscriptions_enabled else []
     return {
         "enabled": settings.event_subscriptions_enabled,
-        "available_sources": sorted(management.AVAILABLE_SOURCES)
-        if settings.event_subscriptions_enabled
-        else [],
+        "available_sources": available,
+        "sources": [SOURCES[name].capabilities() for name in available],
     }
 
 

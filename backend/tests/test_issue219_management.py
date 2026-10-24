@@ -152,6 +152,7 @@ def test_default_off_and_registry_empty(api_client, monkeypatch, session_factory
     assert api_client.get("/api/event-subscriptions/capabilities").json() == {
         "enabled": False,
         "available_sources": [],
+        "sources": [],
     }
     _, _, sub = setup_subscription(api_client, monkeypatch)
     assert not sub["available"] and sub["desired_state"] == "disabled"

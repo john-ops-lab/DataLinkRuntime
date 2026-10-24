@@ -11,7 +11,7 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session
 
-from dlr.control.models import Adapter, AdapterInputConfig, AdapterVersion
+from dlr.control.models import Adapter, AdapterInputConfig, AdapterVersion, EventSubscription
 
 
 @pytest.fixture
@@ -102,3 +102,39 @@ def test_fresh_schema_installs_subscription_tables_without_default_objects(
         assert connection.scalar(text("SELECT count(*) FROM event_subscriptions")) == 0
         assert connection.scalar(text("SELECT count(*) FROM event_deliveries")) == 0
         assert connection.scalar(text("SELECT count(*) FROM adapters")) == 0
+
+
+def test_queue_source_upgrade_preserves_legacy_subscription_and_guards_downgrade(
+    upgrade_database: Engine,
+) -> None:
+    config = migration_config(upgrade_database)
+    command.upgrade(config, "0048_issue219_kubernetes")
+    with Session(upgrade_database) as session, session.begin():
+        adapter = Adapter(name="Retained source", language="python", adapter_type="task")
+        session.add(adapter)
+        session.flush()
+        source = EventSubscription(
+            adapter_id=adapter.id,
+            source_type="kafka",
+            source_epoch="retained-epoch",
+            desired_state="disabled",
+            name="retained",
+            source_group_key="retained-group",
+        )
+        session.add(source)
+        session.flush()
+        identity = source.id
+    with upgrade_database.connect() as connection:
+        before = connection.scalar(text("SELECT row_to_json(s) FROM event_subscriptions s"))
+    command.upgrade(config, "head")
+    with upgrade_database.connect() as connection:
+        assert connection.scalar(text("SELECT row_to_json(s) FROM event_subscriptions s")) == before
+    with Session(upgrade_database) as session, session.begin():
+        session.get(EventSubscription, identity).source_type = "rabbitmq"
+    with pytest.raises(RuntimeError, match="Preserve queue"):
+        command.downgrade(config, "0048_issue219_kubernetes")
+    with upgrade_database.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "0049_issue219_queue_sources"
+        )
+        assert connection.scalar(text("SELECT source_type FROM event_subscriptions")) == "rabbitmq"

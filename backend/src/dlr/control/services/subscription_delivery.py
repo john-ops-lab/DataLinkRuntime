@@ -35,6 +35,7 @@ from dlr.control.models import (
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.event_envelope import validate_envelope
 from dlr.control.services.input_config import database_now
+from dlr.control.services.subscription_registry import source_definition
 
 DEFAULT_LIMITS = {
     "pending_count": 1000,
@@ -363,7 +364,7 @@ def receive_event(
             )
             or 0
         )
-        if shard_count >= (16 if sub.source_type == "kafka" else 1):
+        if shard_count >= source_definition(sub.source_type).max_shards:
             raise domain_error(429, "subscription_capacity_exceeded", "Source shard budget reached")
         checkpoint = SourceCheckpoint(
             subscription_id=sub.id,
@@ -1199,7 +1200,7 @@ def record_rejection(
             )
             or 0
         )
-        if count >= (16 if sub.source_type == "kafka" else 1):
+        if count >= source_definition(sub.source_type).max_shards:
             raise domain_error(429, "subscription_capacity_exceeded", "Source shard budget reached")
         checkpoint = SourceCheckpoint(
             subscription_id=sub.id,

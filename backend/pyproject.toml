@@ -31,6 +31,11 @@ dependencies = [
     # Issue #219 B0: preserve the tested bounded raw HTTP API and transport.
     "kubernetes==35.0.0",
     "urllib3==2.8.0",
+    # Issue #219 queue sources: official RocketMQ v2 protocol definitions only.
+    # DLR owns the bounded gRPC channel, deadlines and acknowledgement lifecycle.
+    "rocketmq-python-client==5.1.2",
+    "grpcio==1.84.1",
+    "protobuf==7.36.2",
     # Legacy BIFF .xls fallback stays in memory; xlrd is the maintained,
     # pure-Python parser for the historical Excel format.
     "xlrd>=2.0.2,<3",
@@ -92,6 +97,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["kubernetes", "kubernetes.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["rocketmq", "rocketmq.*", "grpc", "grpc.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

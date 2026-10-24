@@ -43,10 +43,9 @@ RENEW_SECONDS = 10
 def implemented_sources() -> dict[str, SourceRunner]:
     # Implemented permits bounded connection diagnostics. Public availability is
     # independently gated by acceptance in management.AVAILABLE_SOURCES.
-    from dlr.control.services.subscription_kafka import KafkaSourceRunner
-    from dlr.control.services.subscription_kubernetes import KubernetesSourceRunner
+    from dlr.control.services.subscription_registry import SOURCES
 
-    return {"kafka": KafkaSourceRunner(), "kubernetes": KubernetesSourceRunner()}
+    return {name: item.runner() for name, item in SOURCES.items() if item.implemented}
 
 
 def credential_values(session: Session, credential_id: int | None) -> dict[str, str]:

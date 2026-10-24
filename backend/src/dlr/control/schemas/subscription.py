@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
@@ -97,8 +98,74 @@ class KubernetesSourceConfig(SourceModel):
         return self
 
 
+class QueueSourceConfig(SourceModel):
+    cluster_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.-]+$")
+    server: str = Field(min_length=1, max_length=512)
+    credential_id: int | None = Field(default=None, gt=0)
+    ca_pem: str | None = Field(default=None, max_length=65536)
+    mode: Literal["per_event"] = "per_event"
+    ordering: Literal["receipt_serial"] = "receipt_serial"
+    limits: dict[str, StrictInt] = Field(default_factory=dict)
+
+    @field_validator("server")
+    @classmethod
+    def validate_server(cls, value: str) -> str:
+        try:
+            parsed = urlsplit(value)
+            if (
+                parsed.scheme not in {"amqp", "amqps", "grpc", "grpcs"}
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+                or parsed.port is None
+                or not 1 <= parsed.port <= 65535
+                or any(ord(c) < 33 for c in value)
+            ):
+                raise ValueError
+            return value.rstrip("/")
+        except ValueError:
+            raise ValueError("Use a protocol://host:port address without credentials") from None
+
+
+class RabbitMQSourceConfig(QueueSourceConfig):
+    source_type: Literal["rabbitmq"] = "rabbitmq"
+    vhost: str = Field(default="/", min_length=1, max_length=128)
+    queue: str = Field(min_length=1, max_length=255)
+    credential_id: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def rabbitmq_contract(self) -> "RabbitMQSourceConfig":
+        if urlsplit(self.server).scheme not in {"amqp", "amqps"}:
+            raise ValueError("RabbitMQ requires amqp:// or amqps://")
+        if self.queue.startswith("amq.") or any(ord(c) < 32 for c in self.queue + self.vhost):
+            raise ValueError("Use a non-reserved dedicated queue and valid virtual host")
+        if self.ca_pem and urlsplit(self.server).scheme != "amqps":
+            raise ValueError("A CA certificate requires TLS")
+        return self
+
+
+class RocketMQSourceConfig(QueueSourceConfig):
+    source_type: Literal["rocketmq"] = "rocketmq"
+    topic: str = Field(min_length=1, max_length=127, pattern=r"^[a-zA-Z0-9_%.-]+$")
+    group_id: str = Field(min_length=1, max_length=127, pattern=r"^[a-zA-Z0-9_%.-]+$")
+
+    @model_validator(mode="after")
+    def rocketmq_contract(self) -> "RocketMQSourceConfig":
+        if urlsplit(self.server).scheme not in {"grpc", "grpcs"}:
+            raise ValueError("RocketMQ 5.x requires grpc:// or grpcs:// Proxy endpoint")
+        if self.ca_pem and urlsplit(self.server).scheme != "grpcs":
+            raise ValueError("A CA certificate requires TLS")
+        if self.topic.startswith("%") or self.group_id.startswith("%"):
+            raise ValueError("Use a normal topic and dedicated consumer group")
+        return self
+
+
 SourceConfig = Annotated[
-    KafkaSourceConfig | KubernetesSourceConfig, Field(discriminator="source_type")
+    KafkaSourceConfig | KubernetesSourceConfig | RabbitMQSourceConfig | RocketMQSourceConfig,
+    Field(discriminator="source_type"),
 ]
 
 
@@ -415,7 +482,7 @@ class KubernetesConnectionDiagnostic(ClosedModel):
 
 
 class SourceConnectionResponse(BaseModel):
-    source_type: Literal["kafka", "kubernetes"]
+    source_type: Literal["kafka", "kubernetes", "rabbitmq", "rocketmq"]
     cluster_id: str = Field(min_length=1, max_length=256)
     topic_count: int | None = Field(default=None, ge=1, le=16, strict=True)
     partition_count: int | None = Field(default=None, ge=1, le=16, strict=True)

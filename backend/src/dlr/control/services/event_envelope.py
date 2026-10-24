@@ -9,6 +9,7 @@ import rfc8785
 
 from dlr.common.config import settings
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.subscription_registry import SOURCES, source_definition
 
 FIELDS = {"schema", "subscription", "event", "source", "received_at", "data", "sync"}
 
@@ -38,6 +39,16 @@ def canonical(value: Any) -> bytes:
 def event_id(envelope: dict[str, Any]) -> str:
     source = envelope["source"]
     attrs, position = source["attributes"], source["position"]
+    definition = source_definition(source["type"])
+    if definition.identity_contract == "message-id-v1":
+        identity = [
+            source["type"],
+            source["identity"],
+            attrs["cluster_id"],
+            *[attrs[key] for key in definition.scope_fields],
+            position["message_id"],
+        ]
+        return hashlib.sha256(canonical(identity)).hexdigest()
     if source["type"] == "kafka":
         identity = [
             "kafka",
@@ -91,11 +102,13 @@ def validate_envelope(envelope: dict[str, Any]) -> tuple[str, int]:
         source = envelope["source"]
         if set(source) != {"type", "identity", "position", "attributes"}:
             raise ValueError("source")
-        if source["type"] not in {"kafka", "kubernetes"} or not source["identity"]:
+        if source["type"] not in SOURCES or not source["identity"]:
             raise ValueError("source type")
         if set(envelope["data"]) != {"encoding", "content_type", "value"}:
             raise ValueError("data")
-        if source["type"] == "kafka":
+        if source_definition(source["type"]).identity_contract == "message-id-v1":
+            validate_queue_content(envelope)
+        elif source["type"] == "kafka":
             attrs = source["attributes"]
             if set(source["position"]) != {"topic", "partition", "offset"}:
                 raise ValueError("position")
@@ -211,3 +224,30 @@ def validate_envelope(envelope: dict[str, Any]) -> tuple[str, int]:
         return hashlib.sha256(canonical(stable)).hexdigest(), size
     except (KeyError, TypeError, ValueError, UnicodeError) as error:
         raise domain_error(422, "event_content_invalid", "Invalid closed event envelope") from error
+
+
+def validate_queue_content(envelope: dict[str, Any]) -> None:
+    source = envelope["source"]
+    definition = source_definition(source["type"])
+    attrs = source["attributes"]
+    position = source["position"]
+    if (
+        set(position) != {"message_id"}
+        or not isinstance(position["message_id"], str)
+        or not 0 < len(position["message_id"].encode()) <= 256
+        or any(ord(c) < 32 for c in position["message_id"])
+        or set(attrs) != definition.attribute_fields
+        or not isinstance(attrs["cluster_id"], str)
+        or not attrs["cluster_id"]
+        or any(not isinstance(attrs[k], str) or not attrs[k] for k in definition.scope_fields)
+        or envelope["event"]
+        != {"id": envelope["event"]["id"], "kind": "message", "object_key": None}
+        or envelope["sync"] is not None
+        or envelope["data"]["encoding"] != "base64"
+        or not isinstance(attrs["properties"], dict)
+    ):
+        raise ValueError("message source contract")
+    raw = base64.b64decode(envelope["data"]["value"], validate=True)
+    metadata = canonical(attrs)
+    if len(raw) + len(metadata) > 512 * 1024 or len(metadata) > 64 * 1024:
+        raise domain_error(422, "event_payload_too_large", "Message exceeds raw byte limit")

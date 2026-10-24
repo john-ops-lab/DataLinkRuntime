@@ -48,6 +48,7 @@ from dlr.control.security import Principal
 from dlr.control.services import adapter_access
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.input_config import database_now
+from dlr.control.services.subscription_registry import configuration_identity, source_group_key
 
 logger = logging.getLogger("dlr.control.subscriptions")
 # Public candidates follow their source batch gates. Enablement alone does not
@@ -256,11 +257,7 @@ def _new_config(
     )
     subscription.source_type = value["source_type"]
     subscription.updated_at = database_now(session)
-    subscription.source_group_key = (
-        hashlib.sha256(canonicalize([value["cluster_id"], value["group_id"]])).hexdigest()
-        if value["source_type"] == "kafka"
-        else None
-    )
+    subscription.source_group_key = source_group_key(value)
 
 
 def create_subscription(
@@ -319,19 +316,7 @@ def _require_drained(session: Session, subscription: EventSubscription) -> None:
 def _identity(
     value: dict[str, Any], source_identity: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    fields: tuple[str, ...] = (
-        "source_type",
-        "cluster_id",
-        "topics",
-        "group_id",
-        "initial_position",
-    )
-    if value["source_type"] == "kubernetes":
-        fields = ("source_type", "mode")
-    identity = {key: value.get(key) for key in fields}
-    if value["source_type"] == "kubernetes":
-        identity["source_identity"] = source_identity
-    return identity
+    return configuration_identity(value, source_identity)
 
 
 def update_subscription(
@@ -566,6 +551,10 @@ def clone_for_adapter(
     value = dict(current_config(session, source).config)
     if source.source_type == "kafka":
         value["group_id"] = "dlr-subscription-" + uuid.uuid4().hex
+    elif source.source_type == "rocketmq":
+        value["group_id"] = "dlr-copy-" + uuid.uuid4().hex
+    elif source.source_type == "rabbitmq":
+        value["queue"] = value["queue"][:200] + "-dlr-copy-" + uuid.uuid4().hex
     clone = EventSubscription(
         adapter_id=target.id,
         source_type=source.source_type,

@@ -55,14 +55,14 @@ class EventSubscription(Base):
             unique=True,
             postgresql_where=text("deleted_at IS NULL AND source_group_key IS NOT NULL"),
         ),
-        CheckConstraint("source_type IN ('kafka','kubernetes')", name="ck_subscription_source"),
+        CheckConstraint("source_type ~ '^[a-z][a-z0-9_]{0,31}$'", name="ck_subscription_source"),
         CheckConstraint("desired_state IN ('disabled','enabled')", name="ck_subscription_desired"),
         CheckConstraint("config_version >= 1", name="ck_subscription_version"),
     )
     source_group_key: Mapped[str | None] = mapped_column(String(64))
     id: Mapped[int] = identity()
     adapter_id: Mapped[int] = reference("adapters")
-    source_type: Mapped[str] = mapped_column(String(16))
+    source_type: Mapped[str] = mapped_column(String(32))
     name: Mapped[str] = mapped_column(String(128), default="")
     description: Mapped[str] = mapped_column(Text, default="")
     desired_state: Mapped[str] = mapped_column(
