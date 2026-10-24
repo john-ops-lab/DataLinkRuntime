@@ -30,7 +30,11 @@ import type { WebhookRuntimeState, WebhookTriggerHandle } from "./components/Web
 import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import UserManagementDrawer from "./components/UserManagementDrawer";
 import ApplicationShell from "./components/ApplicationShell";
-import SubscriptionPage from "./components/SubscriptionPage";
+import LegacySubscriptionRoute from "./components/LegacySubscriptionRoute";
+import SubscriptionWorkspace from "./components/SubscriptionWorkspace";
+import { EventReceivingButton } from "./components/EventTriggerSettings";
+import { useEventSubscriptions } from "./hooks/useEventSubscriptions";
+import { eventStatusKey } from "./event-trigger";
 import type { SubscriptionDraftState } from "./subscription-types";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
 import { useRuntimeAuthority } from "./hooks/useRuntimeAuthority";
@@ -260,6 +264,11 @@ export function AdapterConsole({
 
   const [adapters, setAdapters] = useState<Adapter[]>([]);
   const [selected, setSelected] = useState<Adapter | null>(null);
+  const eventSubscriptions = useEventSubscriptions();
+  const [eventIntentAdapterId, setEventIntentAdapterId] = useState<number | null>(null);
+  const [eventHistory, setEventHistory] = useState(false);
+  const selectedSubscription = selected ? eventSubscriptions.items.get(selected.id) ?? null : null;
+  const selectedEventMode = selectedSubscription !== null || (selected !== null && eventIntentAdapterId === selected.id);
   const selectedAdapterIdRef = useRef<number | null>(null);
   const [versions, setVersions] = useState<VersionSummary[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null);
@@ -459,6 +468,14 @@ export function AdapterConsole({
   const setSubscriptionDraft = useCallback((value: SubscriptionDraftState) => { subscriptionDraftRef.current = value; }, []);
   const confirmSubscriptionLeave = useCallback(() => !subscriptionDraftRef.current.busy
     && (!subscriptionDraftRef.current.dirty || window.confirm(t("confirm.discardChanges"))), [t]);
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!subscriptionDraftRef.current.dirty && !subscriptionDraftRef.current.busy) return;
+      event.preventDefault(); event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, []);
   const [waitingForWebhook, setWaitingForWebhook] = useState(false);
   const [saveWorkerPromptOpen, setSaveWorkerPromptOpen] = useState(false);
   const [saveWorkerId, setSaveWorkerId] = useState<number | null>(null);
@@ -1051,6 +1068,7 @@ export function AdapterConsole({
     setEditorTopVisibleLine(null);
     liveWatcher.stop();
     setWaitingForWebhook(false);
+    setEventHistory(false);
     setTaskRuntimeState(INITIAL_TASK_RUNTIME_STATE);
     setWebhookRuntimeState(INITIAL_WEBHOOK_RUNTIME_STATE);
     // M5.5.13：上下文片段只属于当前 Adapter/会话；切换时立即清理，
@@ -1184,7 +1202,7 @@ export function AdapterConsole({
     if (selected?.id === adapter.id) {
       return;
     }
-    if (!confirmWorkspaceLeave()) {
+    if (!confirmSubscriptionLeave() || !confirmWorkspaceLeave()) {
       return;
     }
     void loadAdapterContent(adapter);
@@ -1749,6 +1767,9 @@ export function AdapterConsole({
               busy={busy}
               onSelect={handleSelectAdapter}
               onCreate={handleCreateAdapter}
+              eventSubscriptions={eventSubscriptions.items}
+              eventLoading={eventSubscriptions.loading}
+              eventError={eventSubscriptions.error}
               onBrowseTemplates={() => handlePrimarySectionChange("templates")}
               versionSeqById={versionSeqById}
               workers={workers}
@@ -1829,6 +1850,13 @@ export function AdapterConsole({
                   contentReady={contentReady}
                   runtimeSynchronizing={runtimeAuthority.synchronizingAfterMutation}
                   readOnly={!selectedCanEdit}
+                  eventMode={selectedEventMode}
+                  eventStatus={selectedSubscription ? t(`ux.status.${eventStatusKey(selectedSubscription)}`, { ns: "subscription" }) : undefined}
+                  eventAction={<EventReceivingButton key={selected.id} adapter={selected} sub={selectedSubscription}
+                    capabilities={eventSubscriptions.capabilities} dirty={dirty || taskRuntimeState.settingsDirty === true || taskRuntimeState.inputDirty === true}
+                    busy={busy || eventSubscriptions.loading || !!eventSubscriptions.error || taskRuntimeState.mutationInFlight}
+                    readOnly={!selectedCanEdit} onDraftStateChange={setSubscriptionDraft}
+                    onChanged={async () => { await eventSubscriptions.reload(); await runtimeAuthority.requestRuntimeRefresh("mutation"); }} />}
                   onSave={() => void handleSaveVersion()}
                   onOpenSettings={() => setSettingsOpen(true)}
                   onRunOnce={() => taskRuntimeRef.current?.runOnce()}
@@ -1854,7 +1882,7 @@ export function AdapterConsole({
               <Tabs
                 className="workbench-tabs"
                 activeKey={activeTabKey}
-                onChange={(key) => setActiveTabKey(key as WorkbenchTabKey)}
+                onChange={(key) => { if (confirmSubscriptionLeave()) setActiveTabKey(key as WorkbenchTabKey); }}
                 items={[
                   {
                     key: "edit",
@@ -2033,6 +2061,14 @@ export function AdapterConsole({
                             onError={setError}
                             readOnly={!selectedCanEdit}
                             canManageSubscriptions={selectedCanManage}
+                            eventSubscription={selectedSubscription}
+                            eventCapabilities={eventSubscriptions.capabilities}
+                            eventSelected={selectedEventMode}
+                            eventLoading={eventSubscriptions.loading}
+                            eventError={eventSubscriptions.error}
+                            onSelectEventMode={(value) => setEventIntentAdapterId(value ? selected.id : null)}
+                            onEventChanged={async () => { await eventSubscriptions.reload(); await runtimeAuthority.requestRuntimeRefresh("mutation"); }}
+                            onEventRecords={() => { setEventHistory(true); setActiveTabKey("history"); }}
                           />
                         ),
                       }
@@ -2069,7 +2105,15 @@ export function AdapterConsole({
                     // antd Tabs render lazily: the history API is only called
                     // after this tab is activated for the first time.
                     children: activeSection === "adapters" ? (
-                      <ExecutionHistoryPanel
+                      <div>
+                      {selectedSubscription && <Segmented className="event-history-switch" value={eventHistory ? "events" : "executions"}
+                        options={[{ value: "executions", label: t("labels.history") }, { value: "events", label: t("ux.records", { ns: "subscription" }) }]}
+                        onChange={(value) => { if (confirmSubscriptionLeave()) setEventHistory(value === "events"); }} />}
+                      {selectedSubscription && eventHistory ? <SubscriptionWorkspace key={selectedSubscription.id}
+                        id={selectedSubscription.id} adapter={selected} capabilities={eventSubscriptions.capabilities}
+                        activationBlocked={dirty} onDraftStateChange={setSubscriptionDraft}
+                        onChanged={async () => { await eventSubscriptions.reload(); await runtimeAuthority.requestRuntimeRefresh("mutation"); }}
+                        onDeleted={() => { setEventHistory(false); void eventSubscriptions.reload(); }} /> : <ExecutionHistoryPanel
                         key={selected.id}
                         adapterId={selected.id}
                         trigger={selected.adapter_type === "webhook" ? "webhook" : undefined}
@@ -2077,7 +2121,8 @@ export function AdapterConsole({
                         autoOpenExecutionId={historyExecutionId}
                         onAutoOpenHandled={() => setHistoryExecutionId(null)}
                         canCancel={selectedCanEdit}
-                      />
+                      />}
+                      </div>
                     ) : null,
                   },
                   {
@@ -2131,13 +2176,14 @@ export function AdapterConsole({
               onInstantiate={handleInstantiateTemplate}
             />
           )}
-          {activeSection === "subscriptions" && <SubscriptionPage key={appRoute.section === "subscriptions" ? appRoute.subscriptionId ?? "list" : "list"}
+          {activeSection === "subscriptions" && <LegacySubscriptionRoute key={appRoute.section === "subscriptions" ? appRoute.subscriptionId ?? "list" : "list"}
             id={appRoute.section === "subscriptions" ? appRoute.subscriptionId : null}
-            adapters={adapters}
-            onDraftStateChange={setSubscriptionDraft}
-            onOpen={(id) => pushBrowserLocation(`/subscriptions/${id}`)}
-            onBack={() => { if (confirmSubscriptionLeave()) pushBrowserLocation("/subscriptions"); }}
-            onOpenAdapter={(adapter) => { if (confirmSubscriptionLeave() && confirmWorkspaceLeave()) { pushBrowserLocation("/adapters"); void loadAdapterContent(adapter, undefined, "runtime"); } }}
+            onBack={() => replaceBrowserLocation("/adapters")}
+            onOpen={async (adapter) => {
+              if (await loadAdapterContent(adapter, undefined, "history")) {
+                setEventHistory(true); replaceBrowserLocation("/adapters");
+              }
+            }}
           />}
         </>
       )}

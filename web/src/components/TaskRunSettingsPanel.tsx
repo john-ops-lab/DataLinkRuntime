@@ -34,8 +34,8 @@ import "./operations-ux.css";
 import "./input-ux-followup.css";
 
 import ManagedInputExamples from "./ManagedInputExamples";
-import KafkaSubscriptionPanel from "./KafkaSubscriptionPanel";
-import type { SubscriptionDraftState } from "../subscription-types";
+import EventTriggerSettings from "./EventTriggerSettings";
+import type { EventSubscription, SubscriptionCapabilities, SubscriptionDraftState } from "../subscription-types";
 
 /** Preserve the server value; choose readable units without rounding expiry. */
 function formatRetentionDuration(seconds: number | undefined, translate: (key: string, options?: Record<string, unknown>) => string): string {
@@ -94,6 +94,14 @@ interface TaskRunSettingsPanelProps {
   onError: (message: string | null) => void;
   readOnly?: boolean;
   canManageSubscriptions?: boolean;
+  eventSubscription?: EventSubscription | null;
+  eventCapabilities?: SubscriptionCapabilities;
+  eventSelected?: boolean;
+  eventLoading?: boolean;
+  eventError?: string | null;
+  onSelectEventMode?: (selected: boolean) => void;
+  onEventChanged?: () => Promise<void>;
+  onEventRecords?: () => void;
 }
 
 // M5.5.11 单次执行超时合同（秒为权威值）。
@@ -314,7 +322,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     finish: () => undefined,
   }));
   const [workerOverride, setWorkerOverride] = useState<number | null | undefined>(undefined);
-  const [subscriptionBound, setSubscriptionBound] = useState(false);
+  const subscriptionBound = props.eventSubscription != null;
+  const eventSelected = subscriptionBound || props.eventSelected === true;
   const [subscriptionDraft, setSubscriptionDraft] = useState<SubscriptionDraftState>({ dirty: false, busy: false });
   const [runModeOverride, setRunModeOverride] = useState<TaskRunMode | undefined>(undefined);
   // M5.5.11: 表单内超时值（秒）；null = 跟随 Adapter 保存值。
@@ -1353,16 +1362,37 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
 
   return (
     <div className="task-run-settings" data-testid="task-run-settings">
-      {props.adapter.run_mode === "manual" && <KafkaSubscriptionPanel
-        adapter={props.adapter} readOnly={readOnly} canManage={props.canManageSubscriptions === true}
-        dirty={props.dirty || hasUnsavedChanges} onBindingChange={setSubscriptionBound}
-        onDraftStateChange={setSubscriptionDraft}
-        onChanged={async () => { await props.requestRuntimeRefresh?.("mutation"); }}
-      />}
-      {subscriptionBound && <Alert type="info" message={t("boundMode", { ns: "subscription" })} />}
       <section className="task-runtime-config">
         <Typography.Title level={5}>{t("task.settings.title")}</Typography.Title>
         <Space direction="vertical" size="middle" className="schedule-form">
+          <div className="settings-field">
+            <span className="settings-field-label">{t("task.settings.mode")}</span>
+            <Radio.Group
+              data-testid="task-run-mode"
+              value={eventSelected ? "event" : runMode}
+              disabled={readOnly || runtimeLocked || savingRuntime || subscriptionBound}
+              onChange={(event) => {
+                const nextRunMode = event.target.value as TaskRunMode | "event";
+                props.onSelectEventMode?.(nextRunMode === "event");
+                runtimeEditEpoch.current += 1;
+                setRunModeOverride(nextRunMode === "event" ? "manual" : nextRunMode);
+              }}
+            >
+              <Radio value="manual">{t("task.settings.manual")}</Radio>
+              <Radio value="schedule">{t("task.settings.schedule")}</Radio>
+              {props.eventCapabilities && <Radio value="event" disabled={!props.eventCapabilities.enabled || props.eventCapabilities.available_sources.length === 0 || props.eventLoading || !!props.eventError}>
+                {t("ux.mode", { ns: "subscription" })}
+              </Radio>}
+            </Radio.Group>
+            {subscriptionBound && <p className="ux-muted">{t("ux.unbindHint", { ns: "subscription" })}</p>}
+          </div>
+          {eventSelected && props.eventCapabilities && <EventTriggerSettings
+            key={adapterId} adapter={props.adapter} sub={props.eventSubscription ?? null}
+            capabilities={props.eventCapabilities} readOnly={readOnly}
+            canManage={props.canManageSubscriptions === true} runtimeDirty={runtimeConfigDirty || inputDirty}
+            onDraftStateChange={setSubscriptionDraft}
+            onChanged={props.onEventChanged ?? (async () => {})} onRecords={props.onEventRecords ?? (() => {})}
+          />}
           <label className="settings-field">
             <span className="settings-field-label">{t("task.settings.worker")}</span>
             <Select
@@ -1388,22 +1418,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             />
           </label>
           {props.workersError !== null && <Alert type="error" showIcon message={props.workersError} />}
-          <div className="settings-field">
-            <span className="settings-field-label">{t("task.settings.mode")}</span>
-            <Radio.Group
-              data-testid="task-run-mode"
-              value={runMode}
-              disabled={readOnly || runtimeLocked || savingRuntime || subscriptionBound}
-              onChange={(event) => {
-                const nextRunMode = event.target.value as TaskRunMode;
-                runtimeEditEpoch.current += 1;
-                setRunModeOverride(nextRunMode);
-              }}
-            >
-              <Radio value="manual">{t("task.settings.manual")}</Radio>
-              <Radio value="schedule">{t("task.settings.schedule")}</Radio>
-            </Radio.Group>
-          </div>
           <div className="settings-field">
             <span className="settings-field-label">{t("task.settings.timeout")}</span>
             <Radio.Group
@@ -1622,6 +1636,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         {t("task.settings.save")}
       </Button>
 
+      <details open={!eventSelected || undefined} className="event-input-details">
+      <summary hidden={!eventSelected}>{t("ux.manualInput", { ns: "subscription" })}</summary>
       <section className="task-input-config" data-testid="task-input-config">
         <div className="task-input-heading">
           <div>
@@ -2040,7 +2056,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
           </div>
         </Form>
       </section>
-
+      </details>
 
     </div>
   );

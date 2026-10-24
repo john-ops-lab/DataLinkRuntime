@@ -300,6 +300,12 @@ function stubFetch(routes: Route[]) {
         }),
       };
     }
+    if (!route && method === "GET" && url === "/api/event-subscriptions/capabilities") {
+      return { ok: true, status: 200, json: async () => ({ enabled: false, available_sources: [] }) };
+    }
+    if (!route && method === "GET" && url.startsWith("/api/event-subscriptions?")) {
+      return { ok: true, status: 200, json: async () => ({ items: [], total: 0, next_before_id: null }) };
+    }
     if (!route) {
       throw new Error(`Unexpected request: ${method} ${url}`);
     }

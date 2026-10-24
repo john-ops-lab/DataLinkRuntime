@@ -1,7 +1,7 @@
 /** 左侧 Adapter Catalog：高密度行式导航 + 新建表单（M3.1 §7，业务合同仍沿用 M1）。 */
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Button, Dropdown, Empty, Input, Popover, Radio, Select, Tooltip } from "antd";
+import { Alert, Button, Checkbox, Dropdown, Empty, Input, Popover, Radio, Select, Tooltip } from "antd";
 import type { InputRef } from "antd";
 import { QuestionCircleOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
@@ -14,6 +14,8 @@ import "./workbench-ux.css";
 import { adapterAccessLevel } from "../adapter-access";
 import { useOverlayFocus } from "../hooks/useOverlayFocus";
 import { LANGUAGE_LABELS } from "../languages";
+import type { EventSubscription } from "../subscription-types";
+import { eventNeedsAttention, eventStatusKey } from "../event-trigger";
 import type {
   AccountPrincipal,
   Adapter,
@@ -82,6 +84,9 @@ interface AdapterCatalogProps {
   onBrowseTemplates?: () => boolean;
   onRefresh: () => Promise<void>;
   accountPrincipal?: AccountPrincipal;
+  eventSubscriptions?: Map<number, EventSubscription>;
+  eventLoading?: boolean;
+  eventError?: string | null;
 }
 
 function versionLabel(
@@ -226,9 +231,14 @@ export default function AdapterCatalog({
   onBrowseTemplates,
   onRefresh,
   accountPrincipal,
+  eventSubscriptions,
+  eventLoading = false,
+  eventError,
 }: AdapterCatalogProps) {
   const { t } = useTranslation(["adapter", "common"]);
   const [creating, setCreating] = useState(false);
+  const [runFilter, setRunFilter] = useState("all");
+  const [attentionOnly, setAttentionOnly] = useState(false);
   const createNameRef = useRef<InputRef>(null);
   const [createForm] = ProForm.useForm<CreateAdapterValues>();
   const [filters, setFilters] = useState<CatalogFilterValues>({
@@ -314,11 +324,18 @@ export default function AdapterCatalog({
     filters.status === "all"
       ? typeFiltered
       : typeFiltered.filter((adapter) => catalogRuntimeStatus(adapter).dot === filters.status);
-  const visible = keyword === ""
+  const searched = keyword === ""
     ? statusFiltered
     : statusFiltered.filter((adapter) =>
         [adapter.name, adapter.description].some((value) => value.toLowerCase().includes(keyword)),
       );
+  const eventFiltersReady = !eventLoading && !eventError;
+  const visible = searched.filter(adapter => {
+    const sub = eventSubscriptions?.get(adapter.id);
+    const mode = sub ? "event" : adapter.adapter_type === "webhook" ? "webhook" : adapter.run_mode;
+    return (!eventFiltersReady || runFilter === "all" || runFilter === mode)
+      && (!eventFiltersReady || !attentionOnly || (sub !== undefined && eventNeedsAttention(sub)));
+  });
   const typeFilterOptions: Array<{ value: AdapterTypeFilter | "all"; label: string }> = [
     { value: "all", label: t("catalog.filterTypeAll") },
     { value: "task-manual", label: t("catalog.taskManual") },
@@ -419,8 +436,19 @@ export default function AdapterCatalog({
           />
         </div>
         <span className="catalog-summary" data-testid="adapter-catalog-summary">
-          {t("catalog.summary", { count: visible.length })}
+          {eventSubscriptions && !eventFiltersReady && (attentionOnly || runFilter !== "all")
+            ? t("ux.loading", { ns: "subscription" }) : t("catalog.summary", { count: visible.length })}
         </span>
+        {eventSubscriptions && <div className="catalog-event-filters">
+          <Select size="small" aria-label={t("ux.filterMode", { ns: "subscription" })} value={runFilter}
+            disabled={!eventFiltersReady} options={["all", "manual", "schedule", "event", "webhook"].map(value => ({
+              value, label: t(`ux.filter.${value}`, { ns: "subscription" }),
+            }))} onChange={setRunFilter} />
+          <Checkbox checked={attentionOnly} disabled={!eventFiltersReady} onChange={event => setAttentionOnly(event.target.checked)}>
+            {t("ux.attentionOnly", { ns: "subscription" })}
+          </Checkbox>
+        </div>}
+        {eventError && <Alert type="warning" showIcon message={t("ux.statusUnavailable", { ns: "subscription" })} />}
       </div>
 
       <div className="catalog-list" data-testid="adapter-catalog-list">
@@ -485,7 +513,9 @@ export default function AdapterCatalog({
                     )}
                   </span>
                   <span className="catalog-item-sub" title={subtitle.full}>
-                    <span>{subtitle.primary}</span>
+                    <span>{eventSubscriptions?.has(adapter.id)
+                      ? `${t("ux.mode", { ns: "subscription" })} · ${t(`ux.status.${eventStatusKey(eventSubscriptions.get(adapter.id)!)}`, { ns: "subscription" })}`
+                      : subtitle.primary}</span>
                     {subtitle.attention.map((item) => (
                       <span className="catalog-item-attention" key={item}> · {item}</span>
                     ))}

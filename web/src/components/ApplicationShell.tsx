@@ -96,7 +96,6 @@ function TopBar({
   const primaryLinks: { section: PrimarySection; href: string; label: string }[] = [
     { section: "adapters", href: "/adapters", label: t("shell.adapters") },
     { section: "templates", href: "/templates", label: t("shell.templates") },
-    { section: "subscriptions", href: "/subscriptions", label: t("title", { ns: "subscription" }) },
   ];
 
   return (

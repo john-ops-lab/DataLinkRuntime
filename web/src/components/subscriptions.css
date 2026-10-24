@@ -79,3 +79,14 @@
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+.event-trigger-settings { display: flex; flex-direction: column; gap: 12px; width: 100%; }
+.event-trigger-settings p { margin: 0; }
+.event-source-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.event-source-row > span { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
+.event-status-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; background: var(--ant-color-fill-quaternary, #f7f8fa); border-radius: 6px; padding: 10px 14px; }
+.event-status-strip > .ant-btn { margin-left: auto; }
+.catalog-event-filters { display: flex; align-items: center; gap: 8px; width: 100%; }
+.catalog-event-filters .ant-select { flex: 1; min-width: 105px; }
+.catalog-event-filters .ant-checkbox-wrapper { font-size: 12px; white-space: nowrap; }
+.event-history-switch { margin: 16px 20px 0; }
+.event-input-details > summary:not([hidden]) { cursor: pointer; margin: 12px 0; }

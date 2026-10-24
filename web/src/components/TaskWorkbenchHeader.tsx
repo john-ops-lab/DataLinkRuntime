@@ -9,6 +9,7 @@ import {
   StopOutlined,
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
+import type { ReactNode } from "react";
 
 import "./workbench-ux.css";
 
@@ -31,6 +32,9 @@ interface TaskWorkbenchHeaderProps {
   onStopExecution: () => void;
   onToggleSchedule: () => void;
   readOnly?: boolean;
+  eventMode?: boolean;
+  eventStatus?: string;
+  eventAction?: ReactNode;
 }
 
 export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
@@ -41,13 +45,13 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
   const activeExecution = props.runtimeState.activeExecution;
   const scheduleMode = props.adapter.run_mode === "schedule";
   const subscriptionRuntimeLocked = runtimeLocked && !scheduleMode && !activeExecution;
-  const runtimeStatus = activeExecution
+  const runtimeStatus = props.eventStatus ?? (activeExecution
     ? t("task.status.running")
     : scheduleMode && props.runtimeState.scheduleEnabled
       ? t("task.status.scheduled")
       : subscriptionRuntimeLocked
         ? t("task.status.subscriptionLocked")
-        : t("task.status.stopped");
+        : t("task.status.stopped"));
   const saveBlockedReason = readOnly
     ? t("task.reasons.readOnly")
     : archived
@@ -102,6 +106,7 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
         <div className="workbench-meta-row" data-testid="workbench-meta" role="group" aria-label={t("task.contextAria")}>
           <Tag color="blue">{t("task.header.type")}</Tag>
           <span className="workbench-context-fact">{LANGUAGE_LABELS[props.adapter.language]}</span>
+          {props.eventMode && <span>{t("ux.mode", { ns: "subscription" })}</span>}
           <Tag color={runtimeLocked || activeExecution || props.runtimeState.scheduleEnabled ? "processing" : "default"}>{runtimeStatus}</Tag>
           <span className="workbench-context-fact" data-testid="header-runtime-worker">
             {t("task.header.worker", {
@@ -149,7 +154,7 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
                 {t("editor.saveContent", { ns: "common" })}
               </Button>
             </ActionWithReason>
-            {scheduleMode ? (
+            {props.eventMode ? props.eventAction : scheduleMode ? (
               <>
                 <ActionWithReason
                   label={props.runtimeState.scheduleEnabled ? t("actions.disableSchedule", { ns: "common" }) : t("actions.enableSchedule", { ns: "common" })}
