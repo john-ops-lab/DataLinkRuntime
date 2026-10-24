@@ -27,6 +27,7 @@ from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services import subscription_management as management
 from dlr.control.services import subscription_runtime as runtime
 from dlr.control.services import subscription_sync as sync
+from dlr.control.services.subscription_registry import SOURCES
 from dlr.control.services.subscription_source import ApplicationBufferBudget, SourceRunContext
 from runtime_api_support import claim_execution, report_attempt
 from test_adapters import create_adapter, save_version
@@ -449,17 +450,22 @@ def test_public_candidate_sources_match_implementation_and_remain_default_off(
         == {
             "kafka",
             "kubernetes",
+            "rabbitmq",
+            "rocketmq",
         }
     )
     monkeypatch.setattr(settings, "event_subscriptions_enabled", False)
     assert api_client.get("/api/event-subscriptions/capabilities").json() == {
         "enabled": False,
         "available_sources": [],
+        "sources": [],
     }
     _, _, sub = kube_subscription(api_client, monkeypatch)
+    sources = ["kafka", "kubernetes", "rabbitmq", "rocketmq"]
     assert api_client.get("/api/event-subscriptions/capabilities").json() == {
         "enabled": True,
-        "available_sources": ["kafka", "kubernetes"],
+        "available_sources": sources,
+        "sources": [SOURCES[name].capabilities() for name in sources],
     }
     activated = action(api_client, sub, "enable")
     assert activated.status_code == 200, activated.text
