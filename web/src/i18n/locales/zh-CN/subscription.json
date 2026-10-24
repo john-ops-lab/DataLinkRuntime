@@ -327,7 +327,7 @@
     },
     "createManual": "点击按钮时运行",
     "createSchedule": "按设定时间运行",
-    "createEvent": "收到 Kafka 消息或 Kubernetes 资源变化时运行",
+    "createEvent": "收到消息或资源变化时运行",
     "sourceType": {
       "kafka": "Kafka 消息",
       "kubernetes": "Kubernetes 资源变化",
