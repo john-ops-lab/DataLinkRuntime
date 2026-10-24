@@ -266,3 +266,46 @@ def test_queue_trust_boundary_whitespace_does_not_create_an_epoch(name):
     assert configuration_identity(config) != configuration_identity(
         {**config, "ca_pem": "different-certificate"}
     )
+
+
+@pytest.mark.parametrize("name", ["rabbitmq", "rocketmq"])
+def test_queue_failure_blocks_tail_until_explicit_replay_succeeds(world, session_factory, name):
+    from dlr.control.models import Execution
+    from test_issue219_delivery import delivery_id
+
+    with session_factory() as session:
+        session.get(EventSubscription, world["sub"]).source_type = name
+        receipts = []
+        for number in (1, 2):
+            value = queue_envelope(world, name, message_id=str(number))
+            receipt, duplicate = delivery.receive_event(
+                session,
+                world["sub"],
+                "owner-a",
+                world["generation"],
+                value,
+                "messages",
+                {"message_id": str(number)},
+            )
+            assert not duplicate
+            receipts.append(receipt)
+        session.commit()
+        head_id = delivery_id(session, receipts[0])
+        tail_id = delivery_id(session, receipts[1])
+        original = delivery.dispatch_delivery(session, head_id)
+        session.commit()
+        original.status = "dead_letter"
+        session.commit()
+        delivery.observe_terminal(session, head_id)
+        session.commit()
+        assert delivery.dispatch_delivery(session, tail_id) is None
+        replay = delivery.replay_event(session, receipts[0].id, "queue-retry", None, "fixed target")
+        session.commit()
+        retried = delivery.dispatch_delivery(session, replay.id)
+        session.commit()
+        retried.status = "succeeded"
+        session.commit()
+        delivery.observe_terminal(session, replay.id)
+        session.commit()
+        assert delivery.dispatch_delivery(session, tail_id) is not None
+        assert session.get(Execution, original.id).status == "dead_letter"

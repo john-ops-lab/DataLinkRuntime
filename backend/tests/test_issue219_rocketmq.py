@@ -125,9 +125,9 @@ def test_real_rocketmq_t1_redelivery_ack_and_settings_close(rabbit_context):
     base = [
         "docker",
         "--context",
-        "colima-dlr-preview",
+        private["docker_context"],
         "exec",
-        "dlr219-queue-rocketmq",
+        private["broker_container"],
         "sh",
         "mqadmin",
     ]
@@ -136,7 +136,14 @@ def test_real_rocketmq_t1_redelivery_ack_and_settings_close(rabbit_context):
         ["updateSubGroup", "-g", group, "-m", "true"],
     ):
         result = subprocess.run(
-            [*base, *command, "-n", "dlr219-queue-namesrv:9876", "-b", "127.0.0.1:10911"],
+            [
+                *base,
+                *command,
+                "-n",
+                private["namesrv_address"],
+                "-b",
+                private["broker_admin_address"],
+            ],
             capture_output=True,
             timeout=20,
         )
