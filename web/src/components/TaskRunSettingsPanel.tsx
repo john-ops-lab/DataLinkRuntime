@@ -99,6 +99,8 @@ interface TaskRunSettingsPanelProps {
   eventSelected?: boolean;
   eventLoading?: boolean;
   eventError?: string | null;
+  initialEventConfigure?: boolean;
+  initialRunMode?: TaskRunMode;
   onSelectEventMode?: (selected: boolean) => void;
   onEventChanged?: () => Promise<void>;
   onEventRecords?: () => void;
@@ -325,7 +327,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   const subscriptionBound = props.eventSubscription != null;
   const eventSelected = subscriptionBound || props.eventSelected === true;
   const [subscriptionDraft, setSubscriptionDraft] = useState<SubscriptionDraftState>({ dirty: false, busy: false });
-  const [runModeOverride, setRunModeOverride] = useState<TaskRunMode | undefined>(undefined);
+  const [runModeOverride, setRunModeOverride] = useState<TaskRunMode | undefined>(props.initialRunMode);
   // M5.5.11: 表单内超时值（秒）；null = 跟随 Adapter 保存值。
   const [timeoutOverride, setTimeoutOverride] = useState<number | null>(null);
   const [timeoutCustomMode, setTimeoutCustomMode] = useState(false);
@@ -1388,6 +1390,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
           </div>
           {eventSelected && props.eventCapabilities && <EventTriggerSettings
             key={adapterId} adapter={props.adapter} sub={props.eventSubscription ?? null}
+            initialConfigure={props.initialEventConfigure}
             capabilities={props.eventCapabilities} readOnly={readOnly}
             canManage={props.canManageSubscriptions === true} runtimeDirty={runtimeConfigDirty || inputDirty}
             onDraftStateChange={setSubscriptionDraft}

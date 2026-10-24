@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Alert, Checkbox, Form, Input, Modal, Select } from "antd";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Alert, Button, Checkbox, Drawer, Form, Input, Select, Space } from "antd";
 import { useTranslation } from "react-i18next";
 import { api } from "../api";
 import type { Credential } from "../types";
@@ -31,6 +31,8 @@ export default function KubernetesSubscriptionConfig({
   subscription,
   adapterId,
   canManage,
+  sourceSelector,
+  canTest = false,
   onClose,
   onSave,
   onDraftStateChange,
@@ -38,6 +40,8 @@ export default function KubernetesSubscriptionConfig({
   subscription?: EventSubscription;
   adapterId: number;
   canManage: boolean;
+  sourceSelector?: ReactNode;
+  canTest?: boolean;
   onClose: () => void;
   onDraftStateChange?: (state: SubscriptionDraftState) => void;
   onSave: (value: {
@@ -45,7 +49,7 @@ export default function KubernetesSubscriptionConfig({
     description: string;
     config: KubernetesSourceConfig;
     new_epoch: boolean;
-  }) => Promise<void>;
+  }, test?: boolean) => Promise<void | EventSubscription>;
 }) {
   const { t } = useTranslation("subscription");
   const [form] = Form.useForm<Values>();
@@ -57,6 +61,8 @@ export default function KubernetesSubscriptionConfig({
       : undefined;
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [busy, setBusy] = useState(false);
+  const advancedRef = useRef<HTMLDetailsElement>(null);
+  const [feedback, setFeedback] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -81,7 +87,8 @@ export default function KubernetesSubscriptionConfig({
       active = false;
     };
   }, [adapterId, canManage]);
-  async function save() {
+  async function save(test = false) {
+    setFeedback(false);
     try {
       const value = await form.validateFields();
       let limits: unknown;
@@ -109,13 +116,15 @@ export default function KubernetesSubscriptionConfig({
         )
       ) {
         form.setFields([{ name: "limits", errors: [t("limitsInvalid")] }]);
+        if (advancedRef.current) advancedRef.current.open = true;
+        form.getFieldInstance("limits")?.focus?.();
         return;
       }
       setBusy(true);
       setError(null);
-      await onSave({
-        name: value.name || "",
-        description: value.description || "",
+      const saved = await onSave({
+        name: subscription?.name ?? "",
+        description: subscription?.description ?? "",
         new_epoch: value.new_epoch === true,
         config: {
           source_type: "kubernetes",
@@ -134,9 +143,24 @@ export default function KubernetesSubscriptionConfig({
           mode: value.mode,
           limits: limits as Record<string, number>,
         },
-      });
-      onClose();
+      }, test);
+      if (test) {
+        setDirty(false);
+        setFeedback(true);
+        void saved;
+        form.setFieldValue("new_epoch", false);
+      } else onClose();
     } catch (reason) {
+      const fields = (reason as { errorFields?: { name: (string | number)[] }[] })?.errorFields;
+      if (fields?.length) {
+        if (fields.some(field => ["limits", "sasl_mechanism", "group_id", "ca_pem", "label_selector", "field_selector"].includes(String(field.name[0])))) {
+          if (advancedRef.current) advancedRef.current.open = true;
+        }
+        window.setTimeout(() => {
+          if (typeof HTMLElement.prototype.scrollIntoView === "function") form.scrollToField(fields[0].name, { focus: true });
+          else form.getFieldInstance(fields[0].name)?.focus?.();
+        }, 0);
+      }
       if (
         !(
           typeof reason === "object" &&
@@ -150,32 +174,20 @@ export default function KubernetesSubscriptionConfig({
     }
   }
   return (
-    <Modal
-      open
-      width={720}
-      title={t(subscription ? "configure" : "create")}
-      maskClosable={false}
-      onCancel={() => {
-        if (
-          !busy &&
-          (!dirty ||
-            window.confirm(t("confirm.discardChanges", { ns: "common" })))
-        )
-          onClose();
-      }}
-      onOk={() => void save()}
-      confirmLoading={busy}
-      cancelButtonProps={{ disabled: busy }}
-      okText={t("save")}
-      cancelText={t("cancel")}
+    <Drawer open width="min(720px, 100vw)" title={t("ux.configureSource")}
+      maskClosable={false} keyboard={!busy} closable={{ disabled: busy }}
+      onClose={() => { if (!busy && (!dirty || window.confirm(t("confirm.discardChanges", { ns: "common" })))) onClose(); }}
+      footer={<Space><Button autoInsertSpace={false} disabled={busy} onClick={() => { if (!dirty || window.confirm(t("confirm.discardChanges", { ns: "common" }))) onClose(); }}>{t("cancel")}</Button>
+        <Button autoInsertSpace={false} type="primary" loading={busy} onClick={() => void save()}>{t("save")}</Button></Space>}
     >
+      {sourceSelector}
       {error ? <Alert type="error" showIcon message={error} /> : null}
-      <Alert type="info" showIcon message={t("kubernetes.rangeNote")} />
+      <p className="ux-muted">{t("kubernetes.rangeNote")}</p>
       <Form
         form={form}
         layout="vertical"
         disabled={busy}
-        onValuesChange={() => setDirty(true)}
+        onValuesChange={() => { setDirty(true); setFeedback(false); }}
         initialValues={{
           name: subscription?.name ?? "",
           description: subscription?.description ?? "",
@@ -192,12 +204,6 @@ export default function KubernetesSubscriptionConfig({
           limits: JSON.stringify(config?.limits ?? {}, null, 2),
         }}
       >
-        <Form.Item name="name" label={t("name")}>
-          <Input maxLength={128} />
-        </Form.Item>
-        <Form.Item name="description" label={t("description")}>
-          <Input.TextArea rows={2} maxLength={4096} />
-        </Form.Item>
         <Form.Item
           name="cluster_id"
           label={t("kubernetes.cluster")}
@@ -264,12 +270,6 @@ export default function KubernetesSubscriptionConfig({
         ) : (
           <Alert type="warning" message={t("kubernetes.allNamespacesNote")} />
         )}
-        <Form.Item name="label_selector" label={t("kubernetes.labelSelector")}>
-          <Input maxLength={4096} />
-        </Form.Item>
-        <Form.Item name="field_selector" label={t("kubernetes.fieldSelector")}>
-          <Input maxLength={4096} />
-        </Form.Item>
         <Form.Item
           name="mode"
           label={t("kubernetes.mode")}
@@ -318,6 +318,13 @@ export default function KubernetesSubscriptionConfig({
               )}
           />
         </Form.Item>
+        <details ref={advancedRef} className="event-form-advanced"><summary>{t("ux.connectionOptions")}</summary>
+        <Form.Item name="label_selector" label={t("kubernetes.labelSelector")}>
+          <Input maxLength={4096} />
+        </Form.Item>
+        <Form.Item name="field_selector" label={t("kubernetes.fieldSelector")}>
+          <Input maxLength={4096} />
+        </Form.Item>
         <Form.Item name="ca_pem" label={t("ca")}>
           <Input.TextArea rows={3} maxLength={65536} />
         </Form.Item>
@@ -329,7 +336,12 @@ export default function KubernetesSubscriptionConfig({
             <Checkbox>{t("kubernetes.newEpoch")}</Checkbox>
           </Form.Item>
         ) : null}
+        </details>
       </Form>
-    </Modal>
+      {canTest && <Space direction="vertical"><Space>
+        <Button loading={busy} onClick={() => void save(true)}>{t("ux.saveAndTest")}</Button>
+        {feedback && <span role="status">{t("ux.testPassed")}</span>}
+      </Space><span className="ux-muted">{t("ux.saveTestHint")}</span></Space>}
+    </Drawer>
   );
 }

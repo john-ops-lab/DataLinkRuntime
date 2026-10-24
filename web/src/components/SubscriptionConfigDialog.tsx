@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Modal, Select } from "antd";
+import { useCallback, useState } from "react";
+import { Radio } from "antd";
 import { useTranslation } from "react-i18next";
 import type {
   EventSubscription,
@@ -15,6 +15,7 @@ export default function SubscriptionConfigDialog(props: {
   availableSources: SubscriptionSourceType[];
   adapterId: number;
   canManage: boolean;
+  canTest?: boolean;
   onDraftStateChange?: (state: SubscriptionDraftState) => void;
   onClose: () => void;
   onSave: (value: {
@@ -22,42 +23,30 @@ export default function SubscriptionConfigDialog(props: {
     description: string;
     config: SubscriptionSourceConfig;
     new_epoch: boolean;
-  }) => Promise<void>;
+  }, test?: boolean) => Promise<void | EventSubscription>;
 }) {
   const { t } = useTranslation("subscription");
-  const [source, setSource] = useState<SubscriptionSourceType | undefined>(
-    props.subscription?.config.source_type ??
-      (props.availableSources.length === 1
-        ? props.availableSources[0]
-        : undefined),
-  );
-  const [choice, setChoice] = useState<SubscriptionSourceType>();
-  if (!source)
-    return (
-      <Modal
-        open
-        title={t("create")}
-        onCancel={props.onClose}
-        onOk={() => setSource(choice)}
-        okButtonProps={{ disabled: !choice }}
-        okText={t("continue")}
-        cancelText={t("cancel")}
-      >
-        <Select
-          aria-label={t("source")}
-          style={{ width: "100%" }}
-          value={choice}
-          onChange={setChoice}
-          options={props.availableSources.map((value) => ({
-            value,
-            label: value === "kafka" ? "Kafka" : "Kubernetes",
-          }))}
-        />
-      </Modal>
-    );
+  const [sourceChoice, setSource] = useState<SubscriptionSourceType>();
+  const source = props.subscription?.config.source_type ?? sourceChoice ?? props.availableSources[0];
+  const [draft, setDraft] = useState<SubscriptionDraftState>({ dirty: false, busy: false });
+  const reportDraft = props.onDraftStateChange;
+  const onDraftStateChange = useCallback((value: SubscriptionDraftState) => {
+    setDraft(current => current.dirty === value.dirty && current.busy === value.busy ? current : value);
+    reportDraft?.(value);
+  }, [reportDraft]);
+  if (!source) return null;
+  const sourceSelector = !props.subscription && props.availableSources.length > 1 ? <div className="event-source-choice">
+    <span>{t("ux.source")}</span><Radio.Group value={source} aria-label={t("ux.source")}
+      disabled={draft.busy} options={props.availableSources.map(value => ({ value, label: t(`ux.sourceType.${value}`) }))}
+      onChange={event => {
+        if (draft.busy || (draft.dirty && !window.confirm(t("confirm.discardChanges", { ns: "common" })))) return;
+        setSource(event.target.value as SubscriptionSourceType);
+      }} />
+  </div> : undefined;
+  const shared = { ...props, sourceSelector, onDraftStateChange };
   return source === "kafka" ? (
-    <KafkaSubscriptionConfig {...props} />
+    <KafkaSubscriptionConfig {...shared} />
   ) : (
-    <KubernetesSubscriptionConfig {...props} />
+    <KubernetesSubscriptionConfig {...shared} />
   );
 }

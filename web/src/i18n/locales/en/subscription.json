@@ -317,6 +317,21 @@
       "receiving": "Receiving events",
       "reconnecting": "Reconnecting",
       "starting": "Connecting to source"
+    },
+    "createManual": "Run when you click the button",
+    "createSchedule": "Run at scheduled times",
+    "createEvent": "Run on Kafka messages or Kubernetes resource changes",
+    "sourceType": {
+      "kafka": "Kafka messages",
+      "kubernetes": "Kubernetes resource changes"
+    },
+    "connectionOptions": "Advanced connection settings",
+    "saveAndTest": "Save and test connection",
+    "saveTestHint": "Save the source settings, then check connectivity. Processing code is not run.",
+    "savedTestFailed": "Source saved, but the connection test failed.",
+    "createNote": {
+      "event": "Configure the source and save processing code after creation, then explicitly start receiving.",
+      "schedule": "Configure the schedule and worker, then save the code. Creation does not start execution."
     }
   }
 }

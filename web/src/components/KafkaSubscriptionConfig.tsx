@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Alert, Checkbox, Form, Input, Modal, Select } from "antd";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Alert, Button, Checkbox, Drawer, Form, Input, Select, Space } from "antd";
 import { useTranslation } from "react-i18next";
 import { api } from "../api";
 import type { Credential } from "../types";
@@ -30,6 +30,8 @@ export default function KafkaSubscriptionConfig({
   subscription,
   adapterId,
   canManage,
+  sourceSelector,
+  canTest = false,
   onClose,
   onSave,
   onDraftStateChange,
@@ -37,6 +39,8 @@ export default function KafkaSubscriptionConfig({
   subscription?: EventSubscription;
   adapterId: number;
   canManage: boolean;
+  sourceSelector?: ReactNode;
+  canTest?: boolean;
   onDraftStateChange?: (state: SubscriptionDraftState) => void;
   onClose: () => void;
   onSave: (value: {
@@ -44,13 +48,15 @@ export default function KafkaSubscriptionConfig({
     description: string;
     config: KafkaSourceConfig;
     new_epoch: boolean;
-  }) => Promise<void>;
+  }, test?: boolean) => Promise<void | EventSubscription>;
 }) {
   const { t } = useTranslation("subscription");
   const [form] = Form.useForm<Values>();
   const security = Form.useWatch("security_protocol", form);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [busy, setBusy] = useState(false);
+  const advancedRef = useRef<HTMLDetailsElement>(null);
+  const [feedback, setFeedback] = useState(false);
   const [dirty, setDirty] = useState(false);
   useEffect(() => {
     onDraftStateChange?.({ dirty, busy });
@@ -79,7 +85,8 @@ export default function KafkaSubscriptionConfig({
       current = false;
     };
   }, [adapterId, canManage]);
-  async function save() {
+  async function save(test = false) {
+    setFeedback(false);
     try {
       const value = await form.validateFields();
       let limits: unknown;
@@ -107,13 +114,15 @@ export default function KafkaSubscriptionConfig({
         )
       ) {
         form.setFields([{ name: "limits", errors: [t("limitsInvalid")] }]);
+        if (advancedRef.current) advancedRef.current.open = true;
+        form.getFieldInstance("limits")?.focus?.();
         return;
       }
       setBusy(true);
       setError(null);
-      await onSave({
-        name: value.name || "",
-        description: value.description || "",
+      const saved = await onSave({
+        name: subscription?.name ?? "",
+        description: subscription?.description ?? "",
         new_epoch: value.new_epoch === true,
         config: {
           source_type: "kafka",
@@ -145,9 +154,24 @@ export default function KafkaSubscriptionConfig({
           ordering: "partition_serial",
           limits: limits as Record<string, number>,
         },
-      });
-      onClose();
+      }, test);
+      if (test) {
+        setDirty(false);
+        setFeedback(true);
+        if (saved?.config.source_type === "kafka") form.setFieldValue("group_id", saved.config.group_id ?? "");
+        form.setFieldValue("new_epoch", false);
+      } else onClose();
     } catch (reason) {
+      const fields = (reason as { errorFields?: { name: (string | number)[] }[] })?.errorFields;
+      if (fields?.length) {
+        if (fields.some(field => ["limits", "sasl_mechanism", "group_id", "ca_pem", "label_selector", "field_selector"].includes(String(field.name[0])))) {
+          if (advancedRef.current) advancedRef.current.open = true;
+        }
+        window.setTimeout(() => {
+          if (typeof HTMLElement.prototype.scrollIntoView === "function") form.scrollToField(fields[0].name, { focus: true });
+          else form.getFieldInstance(fields[0].name)?.focus?.();
+        }, 0);
+      }
       if (
         !(
           typeof reason === "object" &&
@@ -161,30 +185,17 @@ export default function KafkaSubscriptionConfig({
     }
   }
   return (
-    <Modal
-      open
-      title={t(subscription ? "configure" : "create")}
-      width={680}
-      onCancel={() => {
-        if (
-          !busy &&
-          (!form.isFieldsTouched() ||
-            window.confirm(t("confirm.discardChanges", { ns: "common" })))
-        )
-          onClose();
-      }}
-      onOk={() => void save()}
-      confirmLoading={busy}
-      maskClosable={false}
-      cancelButtonProps={{ disabled: busy }}
-      okText={t("save")}
-      cancelText={t("cancel")}
+    <Drawer open width="min(720px, 100vw)" title={t("ux.configureSource")}
+      maskClosable={false} keyboard={!busy} closable={{ disabled: busy }}
+      onClose={() => { if (!busy && (!dirty || window.confirm(t("confirm.discardChanges", { ns: "common" })))) onClose(); }}
+      footer={<Space><Button autoInsertSpace={false} disabled={busy} onClick={() => { if (!dirty || window.confirm(t("confirm.discardChanges", { ns: "common" }))) onClose(); }}>{t("cancel")}</Button>
+        <Button autoInsertSpace={false} type="primary" loading={busy} onClick={() => void save()}>{t("save")}</Button></Space>}
     >
+      {sourceSelector}
       {error && <Alert type="error" showIcon message={error} />}
-      <Alert type="info" showIcon message={t("rangeNote")} />
       <Form
         form={form}
-        onValuesChange={() => setDirty(true)}
+        onValuesChange={() => { setDirty(true); setFeedback(false); }}
         layout="vertical"
         disabled={busy}
         initialValues={{
@@ -202,12 +213,6 @@ export default function KafkaSubscriptionConfig({
           limits: JSON.stringify(config?.limits ?? {}, null, 2),
         }}
       >
-        <Form.Item name="name" label={t("name")}>
-          <Input maxLength={128} />
-        </Form.Item>
-        <Form.Item name="description" label={t("description")}>
-          <Input.TextArea rows={2} maxLength={4096} />
-        </Form.Item>
         <Form.Item
           name="cluster_id"
           label={t("cluster")}
@@ -229,9 +234,6 @@ export default function KafkaSubscriptionConfig({
         >
           <Input.TextArea rows={2} />
         </Form.Item>
-        <Form.Item name="group_id" label={t("group")}>
-          <Input maxLength={256} />
-        </Form.Item>
         <Form.Item
           name="initial_position"
           label={t("initial")}
@@ -252,20 +254,6 @@ export default function KafkaSubscriptionConfig({
             }))}
           />
         </Form.Item>
-        {security === "SASL_SSL" && (
-          <Form.Item
-            name="sasl_mechanism"
-            label={t("mechanism")}
-            rules={[{ required: true, message: t("required") }]}
-          >
-            <Select
-              options={["SCRAM-SHA-256", "SCRAM-SHA-512"].map((value) => ({
-                value,
-                label: value,
-              }))}
-            />
-          </Form.Item>
-        )}
         <Form.Item
           name="credential_id"
           label={t("credential")}
@@ -298,6 +286,24 @@ export default function KafkaSubscriptionConfig({
               )}
           />
         </Form.Item>
+        <details ref={advancedRef} className="event-form-advanced"><summary>{t("ux.connectionOptions")}</summary>
+        <Form.Item name="group_id" label={t("group")}>
+          <Input maxLength={256} />
+        </Form.Item>
+        {security === "SASL_SSL" && (
+          <Form.Item
+            name="sasl_mechanism"
+            label={t("mechanism")}
+            rules={[{ required: true, message: t("required") }]}
+          >
+            <Select
+              options={["SCRAM-SHA-256", "SCRAM-SHA-512"].map((value) => ({
+                value,
+                label: value,
+              }))}
+            />
+          </Form.Item>
+        )}
         {security !== "PLAINTEXT" && (
           <Form.Item name="ca_pem" label={t("ca")}>
             <Input.TextArea rows={3} maxLength={65536} />
@@ -311,7 +317,12 @@ export default function KafkaSubscriptionConfig({
             <Checkbox>{t("newEpoch")}</Checkbox>
           </Form.Item>
         )}
+        </details>
       </Form>
-    </Modal>
+      {canTest && <Space direction="vertical"><Space>
+        <Button loading={busy} onClick={() => void save(true)}>{t("ux.saveAndTest")}</Button>
+        {feedback && <span role="status">{t("ux.testPassed")}</span>}
+      </Space><span className="ux-muted">{t("ux.saveTestHint")}</span></Space>}
+    </Drawer>
   );
 }

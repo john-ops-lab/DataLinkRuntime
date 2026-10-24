@@ -1414,6 +1414,38 @@ it("loads the adapter list", async () => {
   });
 });
 
+it("creates an event-triggered Task, and cancelling source configuration keeps it without starting work", async () => {
+  const adapters: Adapter[] = [];
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: adapters }) },
+    { method: "GET", match: "/api/event-subscriptions/capabilities", respond: () => ({ body: { enabled: true, available_sources: ["kafka", "kubernetes"] } }) },
+    { method: "GET", match: "/api/adapters/1/credential-options", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+    { method: "POST", match: "/api/adapters", respond: () => {
+      const created = makeAdapter({ name: "订单事件测试", adapter_type: "task", run_mode: "manual", latest_version_id: null });
+      adapters.push(created); return { status: 201, body: created };
+    } },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+  ]);
+  render(<App />);
+  await screen.findByText("暂无适配器");
+  fireEvent.click(screen.getByTestId("show-create-form"));
+  fireEvent.change(await screen.findByTestId("new-adapter-name"), { target: { value: "订单事件测试" } });
+  fireEvent.click(within(screen.getByTestId("new-adapter-type")).getByRole("radio", { name: /事件触发/ }));
+  fireEvent.click(screen.getByTestId("create-adapter"));
+  await screen.findByRole("heading", { name: "订单事件测试" });
+  const source = (await screen.findByText("配置来源", { selector: ".ant-drawer-title" })).closest('[role="dialog"]') as HTMLElement;
+  expect(within(source).getByRole("radio", { name: "Kubernetes 资源变化" })).toBeTruthy();
+  fireEvent.click(within(source).getByRole("button", { name: "取消" }));
+  await waitFor(() => expect(screen.queryByText("配置来源", { selector: ".ant-drawer-title" })).toBeNull());
+  expect(screen.getByRole("heading", { name: "订单事件测试" })).toBeTruthy();
+  expect(screen.getByTestId("header-event-toggle").hasAttribute("disabled")).toBe(true);
+  const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
+  expect(posts).toHaveLength(1);
+  expect(JSON.parse(String(posts[0][1]?.body))).toMatchObject({ adapter_type: "task" });
+});
+
 it("creates an adapter and selects it", async () => {
   const adapters: Adapter[] = [];
   const fetchMock = stubFetch([

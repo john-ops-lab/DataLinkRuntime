@@ -317,6 +317,21 @@
       "receiving": "正在接收",
       "reconnecting": "正在重新连接",
       "starting": "正在连接来源"
+    },
+    "createManual": "点击按钮时运行",
+    "createSchedule": "按设定时间运行",
+    "createEvent": "收到 Kafka 消息或 Kubernetes 资源变化时运行",
+    "sourceType": {
+      "kafka": "Kafka 消息",
+      "kubernetes": "Kubernetes 资源变化"
+    },
+    "connectionOptions": "高级连接设置",
+    "saveAndTest": "保存并测试连接",
+    "saveTestHint": "先保存来源配置，再检查连接；不运行处理代码。",
+    "savedTestFailed": "来源已保存，但连接测试失败。",
+    "createNote": {
+      "event": "创建后配置事件来源并保存处理代码，再开启接收。",
+      "schedule": "创建后设置定时规则、运行节点并保存代码，不会自动运行。"
     }
   }
 }

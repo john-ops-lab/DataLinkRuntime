@@ -266,6 +266,7 @@ export function AdapterConsole({
   const [selected, setSelected] = useState<Adapter | null>(null);
   const eventSubscriptions = useEventSubscriptions();
   const [eventIntentAdapterId, setEventIntentAdapterId] = useState<number | null>(null);
+  const [createdTrigger, setCreatedTrigger] = useState<{ id: number; mode: "event" | "schedule" } | null>(null);
   const [eventHistory, setEventHistory] = useState(false);
   const selectedSubscription = selected ? eventSubscriptions.items.get(selected.id) ?? null : null;
   const selectedEventMode = selectedSubscription !== null || (selected !== null && eventIntentAdapterId === selected.id);
@@ -1213,6 +1214,7 @@ export function AdapterConsole({
     createdDescription: string,
     language: AdapterLanguage,
     adapterType: AdapterType,
+    initialMode?: "event" | "schedule",
   ): Promise<boolean> {
     if (busy) {
       return false;
@@ -1237,7 +1239,11 @@ export function AdapterConsole({
       });
       await refreshAdapters();
       starterLocaleByAdapter.current.set(created.id, starterLocale);
-      await loadAdapterContent(created, starterLocale);
+      if (initialMode) {
+        setCreatedTrigger({ id: created.id, mode: initialMode });
+        if (initialMode === "event") setEventIntentAdapterId(created.id);
+      }
+      await loadAdapterContent(created, starterLocale, initialMode ? "runtime" : "edit");
       return true;
     } catch (err) {
       if (err instanceof ApiError && err.code === "adapter_name_conflict") {
@@ -2066,6 +2072,8 @@ export function AdapterConsole({
                             eventSelected={selectedEventMode}
                             eventLoading={eventSubscriptions.loading}
                             eventError={eventSubscriptions.error}
+                            initialEventConfigure={createdTrigger?.id === selected.id && createdTrigger.mode === "event"}
+                            initialRunMode={createdTrigger?.id === selected.id && createdTrigger.mode === "schedule" ? "schedule" : undefined}
                             onSelectEventMode={(value) => setEventIntentAdapterId(value ? selected.id : null)}
                             onEventChanged={async () => { await eventSubscriptions.reload(); await runtimeAuthority.requestRuntimeRefresh("mutation"); }}
                             onEventRecords={() => { setEventHistory(true); setActiveTabKey("history"); }}

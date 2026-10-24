@@ -357,10 +357,8 @@ describe("Kubernetes source form", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "Bind event subscription" }),
     );
-    fireEvent.mouseDown(screen.getByRole("combobox", { name: "Source" }));
     expect(screen.queryByText("future")).toBeNull();
-    fireEvent.click(await screen.findByText("Kubernetes"));
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Kubernetes resource changes" }));
     expect(
       await screen.findByLabelText("Logical Kubernetes cluster ID"),
     ).toBeTruthy();

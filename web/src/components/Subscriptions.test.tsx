@@ -18,6 +18,8 @@ import KafkaSubscriptionPanel from "./KafkaSubscriptionPanel";
 import KafkaSubscriptionConfig from "./KafkaSubscriptionConfig";
 import SubscriptionActionDialog from "./SubscriptionActionDialog";
 import SubscriptionWorkspace from "./SubscriptionWorkspace";
+import SubscriptionConfigDialog from "./SubscriptionConfigDialog";
+import EventTriggerSettings from "./EventTriggerSettings";
 
 vi.mock("./ExecutionHistoryPanel", () => ({
   default: () => <div>Execution trace</div>,
@@ -400,6 +402,49 @@ it("does not offer Kafka or future sources when capabilities expose no delivered
 });
 
 describe("subscription source configuration and trace", () => {
+  it("explicitly saves before a connection test and leaves business execution untouched", async () => {
+    const saved = sub({ desired_state: "disabled", delivery_state: "idle", event_counts: {} });
+    const create = vi.spyOn(api, "createSubscription").mockResolvedValue(saved);
+    const test = vi.spyOn(api, "testSubscriptionConnection").mockResolvedValue({ source_type: "kafka", cluster_id: "fixture-cluster", topic_count: 1, partition_count: 1 });
+    const execute = vi.spyOn(api, "createExecution");
+    render(<EventTriggerSettings adapter={adapter} sub={null} capabilities={{ enabled: true, available_sources: ["kafka"] }}
+      readOnly={false} canManage={false} runtimeDirty={false} initialConfigure onChanged={vi.fn()}
+      onRecords={vi.fn()} onDraftStateChange={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Actual broker cluster ID"), { target: { value: "fixture-cluster" } });
+    fireEvent.change(screen.getByLabelText("Bootstrap servers (host:port per line)"), { target: { value: "broker.example.test:9093" } });
+    fireEvent.change(screen.getByLabelText("Exact topic allowlist (one per line)"), { target: { value: "orders" } });
+    fireEvent.mouseDown(screen.getByLabelText("Security protocol"));
+    fireEvent.click(await screen.findByText("SSL", { selector: ".ant-select-item-option-content" }));
+    fireEvent.mouseDown(screen.getByLabelText("Initial position"));
+    fireEvent.click(await screen.findByText("Earliest readable position"));
+    fireEvent.click(screen.getByRole("button", { name: "Save and test connection" }));
+    await waitFor(() => expect(test).toHaveBeenCalledWith(saved.id, saved.config_version));
+    expect(create.mock.invocationCallOrder[0]).toBeLessThan(test.mock.invocationCallOrder[0]);
+    expect(execute).not.toHaveBeenCalled();
+    expect(await screen.findByText("Connection test passed. Only source connectivity was checked; processing code was not run.")).toBeTruthy();
+  });
+  it("opens invalid advanced quota fields instead of hiding a save failure", async () => {
+    const save = vi.fn();
+    render(<KafkaSubscriptionConfig subscription={sub({ delivery_state: "idle", event_counts: {} })}
+      adapterId={9} canManage={false} onClose={vi.fn()} onSave={save} />);
+    const quota = screen.getByLabelText("Tightened quotas (optional JSON object)");
+    expect(quota.closest("details")?.open).toBe(false);
+    fireEvent.change(quota, { target: { value: '{"pending_count":0}' } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(quota.closest("details")?.open).toBe(true));
+    expect(save).not.toHaveBeenCalled();
+  });
+  it("confirms discarding a dirty source before changing the source type", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<SubscriptionConfigDialog adapterId={9} canManage={false} availableSources={["kafka", "kubernetes"]}
+      onClose={vi.fn()} onSave={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Actual broker cluster ID"), { target: { value: "draft" } });
+    fireEvent.click(screen.getByRole("radio", { name: "Kubernetes resource changes" }));
+    expect(screen.queryByLabelText("Logical Kubernetes cluster ID")).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: "Kubernetes resource changes" }));
+    expect(await screen.findByLabelText("Logical Kubernetes cluster ID")).toBeTruthy();
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
   it("requires an explicit first position and submits only TLS/SCRAM references and allowed source fields", async () => {
     vi.spyOn(api, "listAdapterCredentialOptions").mockResolvedValue([
       {
@@ -491,8 +536,8 @@ describe("subscription source configuration and trace", () => {
     fireEvent.click(
       scope.getByRole("button", { name: "Edit source configuration" }),
     );
-    fireEvent.change(screen.getByLabelText("Name"), {
-      target: { value: "source draft" },
+    fireEvent.change(screen.getByLabelText("Bootstrap servers (host:port per line)"), {
+      target: { value: "changed.example.test:9093" },
     });
     await waitFor(() =>
       expect(draft).toHaveBeenLastCalledWith({ dirty: true, busy: false }),
@@ -503,7 +548,7 @@ describe("subscription source configuration and trace", () => {
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(save.mock.calls[0][1]).toMatchObject({
       expected_config_version: 1,
-      name: "source draft",
+      config: expect.objectContaining({ bootstrap_servers: ["changed.example.test:9093"] }),
     });
   });
 

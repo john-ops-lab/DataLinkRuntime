@@ -1,7 +1,7 @@
 /** 左侧 Adapter Catalog：高密度行式导航 + 新建表单（M3.1 §7，业务合同仍沿用 M1）。 */
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Alert, Button, Checkbox, Dropdown, Empty, Input, Popover, Radio, Select, Tooltip } from "antd";
+import { Alert, Button, Checkbox, Dropdown, Empty, Form, Input, Popover, Radio, Select, Tooltip } from "antd";
 import type { InputRef } from "antd";
 import { QuestionCircleOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
@@ -31,7 +31,7 @@ interface CreateAdapterValues {
   name: string;
   description: string;
   language: AdapterLanguage;
-  adapterType: AdapterType;
+  adapterType: AdapterType | "event" | "schedule";
 }
 
 interface CatalogFilterValues {
@@ -68,6 +68,7 @@ interface AdapterCatalogProps {
     description: string,
     language: AdapterLanguage,
     adapterType: AdapterType,
+    initialMode?: "event" | "schedule",
   ) => Promise<boolean>;
   // Version lists are loaded only for selected Adapters. Known id -> seq
   // mappings are cached by App; unknown ids stay explicit as #id instead of
@@ -241,6 +242,7 @@ export default function AdapterCatalog({
   const [attentionOnly, setAttentionOnly] = useState(false);
   const createNameRef = useRef<InputRef>(null);
   const [createForm] = ProForm.useForm<CreateAdapterValues>();
+  const createMode = Form.useWatch("adapterType", createForm);
   const [filters, setFilters] = useState<CatalogFilterValues>({
     search: "",
     type: "all",
@@ -283,11 +285,13 @@ export default function AdapterCatalog({
     }
     setSubmitting(true);
     try {
+      const extra = values.adapterType === "event" || values.adapterType === "schedule" ? [values.adapterType] as const : [];
       const created = await onCreate(
         trimmed,
         values.description,
         values.language,
-        values.adapterType,
+        values.adapterType === "webhook" ? "webhook" : "task",
+        ...extra,
       );
       if (created) {
         createForm.resetFields();
@@ -639,8 +643,10 @@ export default function AdapterCatalog({
               data-testid="new-adapter-type"
               disabled={busy}
               options={[
-                { value: "task", label: <span><strong>{t("types.taskAdapter")}</strong><small>{t("catalog.taskHelp")}</small></span> },
+                { value: "task", label: <span><strong>{t("catalog.manual")}</strong><small>{t("ux.createManual", { ns: "subscription" })}</small></span> },
+                { value: "schedule", label: <span><strong>{t("catalog.schedule")}</strong><small>{t("ux.createSchedule", { ns: "subscription" })}</small></span> },
                 { value: "webhook", label: <span><strong>{t("types.webhookAdapter")}</strong><small>{t("catalog.webhookHelp")}</small></span> },
+                { value: "event", label: <span><strong>{t("ux.mode", { ns: "subscription" })}</strong><small>{t("ux.createEvent", { ns: "subscription" })}</small></span> },
               ]}
             />
           </ProForm.Item>
@@ -671,7 +677,8 @@ export default function AdapterCatalog({
             rows={3}
           />
         </ProForm.Item>
-        <p className="ux-muted">{t("catalog.createNote")}</p>
+        <p className="ux-muted">{createMode === "event" || createMode === "schedule"
+          ? t(`ux.createNote.${createMode}`, { ns: "subscription" }) : t("catalog.createNote")}</p>
       </DrawerForm>
     </aside>
   );

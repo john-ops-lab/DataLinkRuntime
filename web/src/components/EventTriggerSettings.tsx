@@ -39,14 +39,15 @@ export function EventReceivingButton({ adapter, sub, capabilities, dirty, busy, 
   </>;
 }
 
-export default function EventTriggerSettings({ adapter, sub, capabilities, readOnly, canManage, runtimeDirty, onChanged, onRecords, onDraftStateChange }: {
+export default function EventTriggerSettings({ adapter, sub, capabilities, readOnly, canManage, runtimeDirty, initialConfigure, onChanged, onRecords, onDraftStateChange }: {
   adapter: Adapter; sub: EventSubscription | null; capabilities: SubscriptionCapabilities;
   readOnly: boolean; canManage: boolean; runtimeDirty: boolean;
+  initialConfigure?: boolean;
   onChanged: () => Promise<void>; onRecords: () => void;
   onDraftStateChange: (value: SubscriptionDraftState) => void;
 }) {
   const { t } = useTranslation("subscription");
-  const [configuring, setConfiguring] = useState(false);
+  const [configuring, setConfiguring] = useState(initialConfigure === true && !sub);
   const [configSnapshot, setConfigSnapshot] = useState<EventSubscription>();
   const [deleting, setDeleting] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -84,11 +85,18 @@ export default function EventTriggerSettings({ adapter, sub, capabilities, readO
       <p>{t("ux.unbindHint")}</p><Button danger disabled={readOnly || !subscriptionDrained(sub)} onClick={() => setDeleting(true)}>{t("ux.unbind")}</Button>
     </> }]} />}
     {configuring && <SubscriptionConfigDialog subscription={configSnapshot} availableSources={available}
-      adapterId={adapter.id} canManage={canManage} onDraftStateChange={onDraftStateChange}
-      onClose={() => setConfiguring(false)} onSave={async ({ name, description, config, new_epoch }) => {
-        if (configSnapshot) await api.updateSubscription(configSnapshot.id, { name, description, config, new_epoch, expected_config_version: configSnapshot.config_version });
-        else await api.createSubscription({ adapter_id: adapter.id, name: adapter.name, description: adapter.description, config });
-        setConfiguring(false); await onChanged();
+      adapterId={adapter.id} canManage={canManage} canTest onDraftStateChange={onDraftStateChange}
+      onClose={() => setConfiguring(false)} onSave={async ({ name, description, config, new_epoch }, test) => {
+        const saved = configSnapshot
+          ? await api.updateSubscription(configSnapshot.id, { name, description, config, new_epoch, expected_config_version: configSnapshot.config_version })
+          : await api.createSubscription({ adapter_id: adapter.id, name: adapter.name, description: adapter.description, config });
+        setConfigSnapshot(structuredClone(saved));
+        await onChanged();
+        if (test) {
+          try { await api.testSubscriptionConnection(saved.id, saved.config_version); }
+          catch (reason) { throw new Error(`${t("ux.savedTestFailed")} ${subscriptionErrorMessage(reason, saved.source_type)}`); }
+        } else setConfiguring(false);
+        return saved;
       }} />}
     {deleting && sub && <SubscriptionActionDialog action="delete" sub={sub}
       onDraftStateChange={onDraftStateChange} onClose={() => setDeleting(false)}
