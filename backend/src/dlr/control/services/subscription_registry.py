@@ -76,7 +76,6 @@ SOURCES = {
         1,
         "redelivery",
         "receipt_serial",
-        implemented=False,
         scope_fields=("vhost", "queue"),
         attribute_fields=frozenset(
             {"cluster_id", "vhost", "queue", "exchange", "routing_key", "properties"}
