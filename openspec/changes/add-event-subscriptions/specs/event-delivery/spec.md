@@ -6,6 +6,17 @@
 
 ## ADDED Requirements
 
+### Requirement: 队列平台错误不得污染消息诊断
+RabbitMQ/RocketMQ 的 HTTP 与原生失败 SHALL 按错误含义统一分类。平台开关、所有权、激活/配置及未知运行错误 MUST NOT 写入消息 `blocked_unaccepted`；明确内容/身份冲突保持阻塞，容量摘要保留既有低水位恢复规则。仅提交 T1 后才可 ACK，ACK 失败 MUST NOT 新建未接管坏消息诊断。
+
+#### Scenario: 在途接收遭遇功能关闭后恢复
+- **WHEN** 消息已拉取但 T1 遭遇平台关闭，或关闭后又在客户端退出前恢复
+- **THEN** 系统不新增 Receipt、Delivery、消息屏障或 ACK，确认关闭后可沿原 epoch、激活及配置继续接收
+
+#### Scenario: 真实内容冲突保持原诊断
+- **WHEN** 稳定消息 ID 对应的内容发生冲突
+- **THEN** 系统保留原已接管事实和明确的消息阻塞，不把平台恢复当作跳过或修复内容冲突
+
 ### Requirement: 新队列订阅保持稳定消息身份与持久确认
 RabbitMQ SHALL 使用生产方稳定 message_id，RocketMQ SHALL 使用原生稳定 message_id，结合来源/范围形成身份。临时 delivery tag、receipt handle、重投次数 MUST 不作为身份或稳定内容。正文和业务属性 SHALL 无损且有界；两种来源均 MUST 在 T1 整体提交后才明确确认，源重投 SHALL 命中原责任且不覆盖首次输入。
 

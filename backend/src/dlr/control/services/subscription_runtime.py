@@ -14,13 +14,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
 from dlr.control.models import Credential
 from dlr.control.models.subscription import (
     EventSubscription,
+    SourceCheckpoint,
     SubscriptionActivation,
     SubscriptionConfigVersion,
     SubscriptionLease,
@@ -28,6 +29,7 @@ from dlr.control.models.subscription import (
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services import subscription_management as management
 from dlr.control.services.secrets import decrypt_fields
+from dlr.control.services.subscription_queue_failure import LEGACY_LIFECYCLE_FAILURES
 from dlr.control.services.subscription_source import (
     ApplicationBufferBudget,
     SourceFailure,
@@ -136,7 +138,14 @@ class SubscriptionRuntimeManager:
                 if (
                     runner is None
                     or sub.desired_state != "enabled"
-                    or sub.connection_state == "blocked"
+                    or (
+                        sub.connection_state == "blocked"
+                        and (
+                            sub.source_type not in {"rabbitmq", "rocketmq"}
+                            or sub.last_error_code
+                            not in LEGACY_LIFECYCLE_FAILURES | {"source_shard_blocked"}
+                        )
+                    )
                     or sub.deleted_at is not None
                     or sub.activation_id is None
                     or not settings.event_subscriptions_enabled
@@ -149,6 +158,12 @@ class SubscriptionRuntimeManager:
                 config = session.get(SubscriptionConfigVersion, activation.config_version_id)
                 if config is None or config.subscription_id != sub.id:
                     raise SourceFailure("source_configuration_unavailable")
+                if not delivery.recover_queue_lifecycle_fault(session, sub, config):
+                    self._release_start(subscription_id)
+                    return False
+                if sub.connection_state == "blocked":
+                    self._release_start(subscription_id)
+                    return False
                 from dlr.control.services.subscription_sync import native_start_decision
 
                 decision = native_start_decision(
@@ -385,7 +400,23 @@ class SubscriptionRuntimeManager:
                 select(EventSubscription.id).where(
                     EventSubscription.deleted_at.is_(None),
                     EventSubscription.desired_state == "enabled",
-                    EventSubscription.connection_state != "blocked",
+                    or_(
+                        EventSubscription.connection_state != "blocked",
+                        and_(
+                            EventSubscription.source_type.in_(("rabbitmq", "rocketmq")),
+                            EventSubscription.last_error_code.in_(
+                                LEGACY_LIFECYCLE_FAILURES | {"source_shard_blocked"}
+                            ),
+                            exists().where(
+                                SourceCheckpoint.subscription_id == EventSubscription.id,
+                                SourceCheckpoint.source_epoch == EventSubscription.source_epoch,
+                                SourceCheckpoint.shard == "messages",
+                                SourceCheckpoint.blocked_unaccepted["code"]
+                                .as_string()
+                                .in_(LEGACY_LIFECYCLE_FAILURES),
+                            ),
+                        ),
+                    ),
                 ),
                 EventSubscription.id,
                 self._cursor,

@@ -35,6 +35,7 @@ from dlr.control.models import (
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.event_envelope import validate_envelope
 from dlr.control.services.input_config import database_now
+from dlr.control.services.subscription_queue_failure import LEGACY_LIFECYCLE_FAILURES
 from dlr.control.services.subscription_registry import source_definition
 
 DEFAULT_LIMITS = {
@@ -1229,6 +1230,97 @@ def record_rejection(
     if code == "subscription_capacity_exceeded":
         for quota in _quotas(session, sub.id):
             quota.blocked_reason = code
+
+
+def recover_queue_lifecycle_fault(
+    session: Session, sub: EventSubscription, config: SubscriptionConfigVersion
+) -> bool:
+    """Under Adapter/Sub locks, recover only proven old false queue barriers.
+
+    False means hold reception. The caller commits the audit, quota and recovery
+    together before opening any native client. No cursor/epoch/custody changes.
+    """
+    if sub.source_type not in {"rabbitmq", "rocketmq"}:
+        return True
+    lease = session.get(SubscriptionLease, sub.id, with_for_update=True)
+    checkpoint = session.scalar(
+        select(SourceCheckpoint)
+        .where(
+            SourceCheckpoint.subscription_id == sub.id,
+            SourceCheckpoint.source_epoch == sub.source_epoch,
+            SourceCheckpoint.shard == "messages",
+        )
+        .with_for_update()
+    )
+    old = checkpoint.blocked_unaccepted if checkpoint else None
+    if old is None or old.get("code") not in LEGACY_LIFECYCLE_FAILURES:
+        return True
+    if (
+        not settings.event_subscriptions_enabled
+        or sub.desired_state != "enabled"
+        or sub.deleted_at is not None
+        or config.subscription_id != sub.id
+        or config.source_epoch != sub.source_epoch
+        or config.version != sub.config_version
+        or lease is None
+        or lease.owner_id
+        or lease.closing_generation is not None
+        or (
+            sub.connection_state == "blocked"
+            and sub.last_error_code not in LEGACY_LIFECYCLE_FAILURES | {"source_shard_blocked"}
+        )
+    ):
+        return False
+    # Persisted configuration must still be a valid instance of this source contract.
+    from pydantic import ValidationError
+
+    from dlr.control.services.event_envelope import canonical
+
+    try:
+        parsed = source_definition(sub.source_type).config_model.model_validate(config.config)
+    except ValidationError:
+        return False
+    if getattr(parsed, "source_type", None) != sub.source_type:
+        return False
+    details = {
+        "source_epoch": sub.source_epoch,
+        "shard": "messages",
+        "closed_generation": lease.generation,
+        "activation_id": sub.activation_id,
+        "config_version": config.version,
+        "previous_fault": old,
+    }
+    encoded = canonical(details)
+    if len(encoded) > 4096:
+        return False
+    request_id = "source-fault-recovery:" + hashlib.sha256(encoded).hexdigest()
+    existing = session.scalar(
+        select(DeliveryDisposition).where(
+            DeliveryDisposition.subscription_id == sub.id,
+            DeliveryDisposition.request_id == request_id,
+        )
+    )
+    if existing is not None and (
+        existing.action != "source_fault_recovery" or existing.details != details
+    ):
+        return False
+    if existing is None:
+        reserve_disposition_metadata(session, sub.id)
+        session.add(
+            DeliveryDisposition(
+                subscription_id=sub.id,
+                request_id=request_id,
+                action="source_fault_recovery",
+                reason="Recovered a legacy queue lifecycle fault after confirmed listener close",
+                details=details,
+            )
+        )
+    assert checkpoint is not None
+    checkpoint.blocked_unaccepted = None
+    sub.connection_state = "starting"
+    if sub.last_error_code in LEGACY_LIFECYCLE_FAILURES | {"source_shard_blocked"}:
+        sub.last_error_code = None
+    return True
 
 
 def skip_unaccepted(

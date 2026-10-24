@@ -6,6 +6,17 @@
 
 ## ADDED Requirements
 
+### Requirement: 队列生命周期恢复保留消息与来源事实
+系统 SHALL 仅在功能与接收意愿开启、当前激活/配置有效、旧监听确认关闭后，恢复 RabbitMQ/RocketMQ 当前 epoch 中已知生命周期误记摘要。恢复 MUST 原子预留现有元数据预算、保存最多 4 KiB 的幂等系统审计并清除摘要；不改变 epoch、配置、激活、来源位置或已接管事实。
+
+#### Scenario: 已确认旧版误记只恢复一次
+- **WHEN** 当前摘要是 `source_not_available`、`subscription_activation_missing` 或 `subscription_config_conflict`，且恢复门禁满足
+- **THEN** 系统保留旧摘要审计、只计入一次元数据预算，并允许同一接收周期继续；重复扫描不重复计费
+
+#### Scenario: 恢复证据或预算不足
+- **WHEN** 旧监听关闭未确认、当前配置无效、审计预算不足，或摘要是真实内容故障
+- **THEN** 系统不清除原诊断、不打开来源客户端、不用 reset 或跳过消息代替恢复
+
 ### Requirement: 订阅独立绑定普通 Adapter
 系统 SHALL 让每条订阅绑定一个 Task/manual Adapter，并限制每个 Adapter 至多一条未删除订阅。新订阅 MUST 默认为停用；未实现或未通过交付验收的来源 MUST 不可启用。
 

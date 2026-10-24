@@ -17,21 +17,14 @@ from dlr.control.models import EventDelivery, EventReceipt, SubscriptionQuota
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services.event_envelope import event_id, validate_envelope
 from dlr.control.services.input_config import database_now
+from dlr.control.services.subscription_queue_failure import (
+    CONFIGURATION_FAILURES,
+    MESSAGE_FAILURES,
+    RETRYABLE_FAILURES,
+)
 from dlr.control.services.subscription_source import SourceFailure, SourceRunContext
 
 SHARD = "messages"
-# Only content rejected before custody can poison a shard. Connection/account failures
-# must remain retryable after correction, including an authentication failure during ACK.
-MESSAGE_FAILURES = frozenset(
-    {
-        "event_payload_too_large",
-        "source_properties_invalid",
-        "source_message_id_required",
-        "source_message_type_unsupported",
-        "source_message_digest_invalid",
-        "source_message_encoding_invalid",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -88,7 +81,17 @@ class SourcePikaLogBoundary:
 
 
 def classify(error: Exception) -> SourceFailure:
+    if isinstance(error, HTTPException):
+        value = error.detail.get("code") if isinstance(error.detail, dict) else None
+        code = value if isinstance(value, str) else "source_runtime_error"
+        if code == "subscription_capacity_exceeded":
+            return SourceFailure(code, "capacity")
+        if code in MESSAGE_FAILURES or code in CONFIGURATION_FAILURES:
+            return SourceFailure(code)
+        return SourceFailure(code, "backoff")
     if isinstance(error, SourceFailure):
+        if error.code in RETRYABLE_FAILURES:
+            return SourceFailure(error.code, "backoff", closed=error.closed)
         return error
     if isinstance(error, ssl.SSLError):
         return SourceFailure("source_tls_failed")
@@ -197,8 +200,6 @@ def take_custody(context: SourceRunContext, message: Message) -> bool:
 
 def record_fault(context: SourceRunContext, error: Exception, message: Message | None) -> None:
     code = classify(error).code
-    if isinstance(error, HTTPException) and isinstance(error.detail, dict):
-        code = error.detail.get("code", "source_content_invalid")
     # Never store raw broker attributes/body or exception text in fault summaries.
     identity = "unaccepted"
     position: dict[str, str] = {}
@@ -234,6 +235,7 @@ class QueueSourceRunner:
         transport: Transport | None = None
         failure: SourceFailure | None = None
         message: Message | None = None
+        custody_committed = False
         try:
             if not capacity_ready(context):
                 raise SourceFailure("subscription_capacity_exceeded", "capacity")
@@ -243,6 +245,7 @@ class QueueSourceRunner:
             context.connected()
             while not context.stop_event.is_set():
                 message = None
+                custody_committed = False
                 if not capacity_ready(context):
                     raise SourceFailure("subscription_capacity_exceeded", "capacity")
                 message = transport.poll()
@@ -250,21 +253,28 @@ class QueueSourceRunner:
                     continue
                 if not take_custody(context, message):
                     break
+                custody_committed = True
                 # The committed receipt survives even if this ACK fails or ownership changes.
                 transport.ack(message)
-        except HTTPException as error:
-            code = (
-                error.detail.get("code", "source_content_invalid")
-                if isinstance(error.detail, dict)
-                else "source_content_invalid"
-            )
-            failure = SourceFailure(code, "capacity" if error.status_code == 429 else "blocked")
-            if code not in {"subscription_owner_stale", "source_shard_blocked"}:
-                record_fault(context, error, message)
         except Exception as error:
             failure = classify(error)
-            if failure.code in MESSAGE_FAILURES and not context.stop_event.is_set():
-                record_fault(context, error, message)
+            if (
+                not custody_committed
+                and not context.stop_event.is_set()
+                and (
+                    failure.code in MESSAGE_FAILURES
+                    or (
+                        isinstance(error, HTTPException)
+                        and failure.code == "subscription_capacity_exceeded"
+                        and message is not None
+                    )
+                )
+            ):
+                try:
+                    record_fault(context, error, message)
+                except Exception as diagnosis_error:
+                    # Fencing or DB loss during diagnosis does not imply native close failed.
+                    failure = classify(diagnosis_error)
         finally:
             if transport is not None:
                 try:
