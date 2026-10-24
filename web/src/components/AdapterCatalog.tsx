@@ -486,7 +486,8 @@ export default function AdapterCatalog({
             );
             const eventSub = eventSubscriptions?.get(adapter.id);
             const eventPhrase = eventSub ? `${t("ux.mode", { ns: "subscription" })} · ${t(`ux.status.${eventStatusKey(eventSub)}`, { ns: "subscription" })}`
-              : adapter.id === eventIntentAdapterId ? `${t("ux.mode", { ns: "subscription" })} · ${t("ux.notConfigured", { ns: "subscription" })}` : null;
+              : adapter.id === eventIntentAdapterId ? `${t("ux.mode", { ns: "subscription" })} · ${t("ux.notConfigured", { ns: "subscription" })}`
+              : eventSubscriptions && !eventFiltersReady && adapter.adapter_type === "task" && adapter.run_mode === "manual" ? t("ux.statusUnknown", { ns: "subscription" }) : null;
             const subtitle = eventPhrase ? {
               primary: eventPhrase, attention: ordinarySubtitle.attention,
               full: [eventPhrase, ...ordinarySubtitle.attention,

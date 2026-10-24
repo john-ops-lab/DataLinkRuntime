@@ -370,7 +370,9 @@
     },
     "kafkaIdentityHint": "Provided by the Kafka administrator; must match the actual broker cluster identity.",
     "manualTest": "Test once with saved input",
-    "manualTestHint": "Use the saved manual test input below, without reading a new source event. Testing is unavailable while reception or existing work is active."
+    "manualTestHint": "Use the saved manual test input below, without reading a new source event. Testing is unavailable while reception or existing work is active.",
+    "statusUnknown": "Trigger mode not yet confirmed",
+    "checkingStatus": "Checking event sources. Please wait before changing the trigger mode."
   },
   "repairExitNote": "Continue processing already received events with their original code and runtime settings. The repair version applies only to the events you explicitly reprocess. Receiving new events stays off."
 }

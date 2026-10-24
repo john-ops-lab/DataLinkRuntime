@@ -1437,13 +1437,15 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     <div className={`task-run-settings${eventSelected ? " is-event" : ""}`} data-testid="task-run-settings">
       <section className="task-runtime-config">
         <Typography.Title level={5}>{t("task.settings.title")}</Typography.Title>
+        {props.eventError && <Alert type="warning" showIcon message={t("ux.statusUnavailable", { ns: "subscription" })} />}
+        {props.eventLoading && <Typography.Paragraph role="status" type="secondary">{t("ux.checkingStatus", { ns: "subscription" })}</Typography.Paragraph>}
         <Space direction="vertical" size="middle" className="schedule-form">
           <div className="settings-field">
             <span className="settings-field-label">{t("task.settings.mode")}</span>
             <Radio.Group
               data-testid="task-run-mode"
               value={eventSelected ? "event" : runMode}
-              disabled={readOnly || runtimeLocked || savingRuntime || subscriptionBound}
+              disabled={readOnly || runtimeLocked || savingRuntime || subscriptionBound || props.eventLoading || !!props.eventError}
               onChange={(event) => {
                 const nextRunMode = event.target.value as TaskRunMode | "event";
                 props.onSelectEventMode?.(nextRunMode === "event");

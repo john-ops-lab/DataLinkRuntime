@@ -62,3 +62,12 @@ it("resolves old detail bookmarks only after authorized subscription and adapter
   expect(getAdapter).not.toHaveBeenCalled();
   expect(onOpen).not.toHaveBeenCalled();
 });
+
+it("does not label an unknown binding as manual when the initial event catalog failed", () => {
+  render(<AdapterCatalog adapters={[adapter]} selectedId={null} busy={false}
+    onSelect={vi.fn()} onCreate={vi.fn()} versionSeqById={new Map()} workers={[]} onOpenSettings={vi.fn()}
+    onClone={vi.fn()} onRefresh={vi.fn()} eventSubscriptions={new Map()} eventError="temporarily unavailable" />);
+  expect(screen.getByTestId("adapter-item").textContent).toContain("运行方式待确认");
+  expect((screen.getByRole("checkbox", { name: "只看需要处理" }) as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByRole("alert")).toBeTruthy();
+});
