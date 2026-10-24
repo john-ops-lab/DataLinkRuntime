@@ -20,9 +20,13 @@
 | Kafka | 精确 topic；`per_event`、`partition_serial` | Apache Kafka 4.1.2 单节点 KRaft；TLS、SCRAM-SHA-256/512，及隔离环境的 PLAINTEXT；容量仅限下文 B3 已测配置 |
 | Kubernetes | Pod（`core/v1`）、Deployment（`apps/v1`）；`per_event` 或显式 `state_sync` | Kubernetes 1.35 API、bearer token 引用、严格 TLS；真实 Pod 为仅含元数据的资源，Deployment 为 `replicas=0` |
 | RabbitMQ | AMQP 0-9-1，已有专用持久队列；`per_event`、接收顺序 | RabbitMQ 4.3.5，Pika 1.3.2；真实账号/TLS、passive 诊断、未提交/确认丢失重投、超限关闭 |
-| RocketMQ | 5.x gRPC Proxy，NORMAL 普通消息，专用已有组/单 topic；`per_event`、接收顺序 | Apache RocketMQ 5.3.3；官方 5.1.2 协议定义加 DLR 有界同步 transport；真实无认证 Proxy 收发/重投/ACK，TLS/签名在协议服务器验证，真实 Broker ACL 未验 |
+| RocketMQ | 5.x gRPC Proxy，NORMAL 普通消息，专用已有组/单 topic；`per_event`、接收顺序 | Apache RocketMQ 5.3.3 ACL 2.0（官方 Linux x86 镜像，本机模拟运行；DLR 为 ARM64）；官方 5.1.2 协议定义加有界同步 transport；真实账号/权限、收发/重投/ACK 及 Worker 结果已验，TLS 仍为协议服务器验证 |
 
 RabbitMQ 的发送方必须为每条消息提供稳定且不复用的 `message_id`。来源标识是管理员约定的固定标签；同一消息服务须保持一致。队列需由管理员事先创建且不与其他应用共用；连接测试不消费消息，产品不会建队列。RocketMQ 使用 Proxy 地址与专用组，不接受 4.x NameServer 地址；FIFO、事务、Lite 和厂商专用认证未支持。两者都从来源当前可用消息/组位置继续，不提供自动回到“最早/最新”的选项，也不承诺 Broker 的全局 FIFO。
+
+RocketMQ 账号须同时有消息主题和消费组的订阅权限。连接测试只检查主题路由，不能证明消费组可用；只有主题权限的账号可能通过连接测试，但开启接收会被拒绝。5.3.3 将账号错误和权限不足都返回为 `UNAUTHORIZED`，DLR 对应显示 `source_authentication_failed`，需同时检查账号和权限，不从服务器原始错误文字猜测原因。账号故障只阻塞连接，纠正后显式恢复仍沿用原接收周期，不记为坏消息、不确认或丢弃原消息；T1 后确认失败也保留原责任。
+
+本次真实 ACL 验证未覆盖 ARM64 Broker 或真实 Proxy TLS 与 ACL 组合。官方 5.3.3 ARM64 镜像开启 ACL 时因 `rocketmq-rocksdb-1.0.2` 缺少 Linux ARM64 原生库启动失败，保留首败后改用同版本官方 x86 镜像；没有替换 Broker 的依赖或修改其程序。
 
 保存消息后才确认来源。未确认的重投在现有留存范围内去重。无编号、超限或非法消息会阻塞接收且不确认；停止后先在来源修复/处置，再按停止、结清旧责任、重新开始流程恢复。页面只对已保存事件提供重新处理/跳过，不提供两来源的原生未保存消息跳过。克隆会生成新接收组或队列占位名，须先准备对应资源再启用。
 
