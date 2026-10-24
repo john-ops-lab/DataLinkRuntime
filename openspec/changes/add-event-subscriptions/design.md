@@ -2,7 +2,7 @@
 
 ## Context
 
-状态：**B0–B5 已交付 PR #221；2026-10-24 用户批准新增 B6–B8 界面优化，尚待实现与验证**。保留已批准的专用“放弃完成确认”和闭合 completed 不可新建 replay 规则。动机和范围见 [proposal.md](proposal.md)；历史证据见各批次审查记录。新增界面工作按批次验证和审查后继续，更新同一 PR 和开发测试环境，不自动合并。
+状态：**B0–B8 基线为 a9799f4；2026-10-24 用户授权新增 B9–B13 的 RabbitMQ、RocketMQ 及公共扩展合同，尚待实施验证**。保留已批准的专用“放弃完成确认”和闭合 completed 不可新建 replay 规则。动机和范围见 [proposal.md](proposal.md)；历史证据见各批次审查记录。本轮仅本地提交和开发环境更新，不推送、不新建/更新 PR、不自动合并。
 
 源码以 `eedda36f9ed1e3ab4f84b0a76532d3916f8ca6d5` 为基线，设计编写时已直接核对该源码。当前规格中部分 `pending`、旧协议描述早于可靠执行实现，本变更仅增加订阅合同，不借机重写无关历史规格。
 
@@ -265,6 +265,42 @@ completed 业务成功确认且批次闭合后，原清理生命周期已经终�
 复用绑定 Adapter 的 view/edit 权限：view 可查看已授权摘要和执行详情；edit 才可配置、启停、重放、skip/reset 和专用完成放弃，且必须有凭据引用权限；全局列表先按权限过滤再分页/计数，禁止通过 ID 查询泄露。Secret 不返回前端；来源 payload 作为业务输入受现有详情权限保护，不进入普通平台日志或 AI 自动上下文。连接地址只在有权配置页展示，日志为脱敏摘要。
 
 新增稳定错误至少覆盖 `subscription_binding_conflict`、`subscription_draining`、`subscription_config_conflict`、`subscription_owner_stale`、`source_history_gap`、`event_identity_conflict`、`event_payload_too_large`、`event_payload_expired`、`subscription_capacity_exceeded`、`source_not_available`；错误 code 不翻译，用户解释支持 zh-CN/en。未交付来源不出现在可启用选项中。
+
+以下 B9–B13 决策优先于 B0–B8 中“首期仅 Kafka/Kubernetes”的历史范围描述。已有 Kafka/Kubernetes 的 Envelope 身份、内容哈希、位置、批次完成和专用放弃规则不变。
+
+### D11. 来源扩展合同与公开能力
+
+使用项目内受控来源登记表，集中声明类型标识、运行器、配置/身份及内容合同、最大 shard 数、顺序/恢复/批次/来源跳过能力。配置继续为封闭模型，新增类型需显式登记；数据库约束验证有界类型标识，实际可用性由服务端已实现且通过本轮交付门槛的集合决定。未知登记、未知配置字段和没有表单的来源都不得隐式落到另一来源。能力接口保留原 `available_sources`，增加可扩展的逐来源能力描述；前端使用服务端与已实现表单的交集。
+
+共享层负责 owner/generation、T1/T2、持久去重、预算、串行屏障、不可变版本和受限处置。来源负责原生读取、稳定事件身份、协议元数据校验、确认和关闭；网络与 SDK 调用仍在事务外。每种来源须说明可否补读、来源顺序、确认时机和不可恢复条件，不能通过同一接口伪造等价保证。SDK 初始化/重连/流式读取/日志/缓冲及关闭均须有界；不在 Control 执行用户监听代码。
+
+新来源的绑定和配置切换保留停用、实际关闭、排空及显式新 epoch 门槛。凭据保持已有 Secret Store 引用；服务地址不得包含账号、密码或 Token。同一凭据内容轮换不改旧 Envelope。消费组/专用队列范围使用唯一键防止 DLR 内重复接收；Kafka 旧唯一键和旧身份哈希保持兼容。
+
+### D12. RabbitMQ 订阅
+
+首期使用 AMQP 0-9-1、已有 durable 队列、专用 exclusive consumer、`basic_qos(prefetch_count=1)` 和 `auto_ack=False`；平台不创建、清空或删除来源队列。连接配置为稳定逻辑来源标识、AMQP(S) 地址、vhost、queue、账号凭据和可选 CA。地址、信任或队列范围变化须显式新 epoch；逻辑来源标识不是 RabbitMQ 提供的全局 UUID。连接测试只建立连接并 passive 检查队列，不消费、不 ACK、不加入业务执行。
+
+每条逻辑消息要求稳定、非空且不复用的 producer `message_id`。稳定身份包含来源标识、vhost、queue 和 message_id；不得使用随通道改变的 delivery_tag、redelivered 标记或正文哈希充当去重 ID。保留二进制正文及有界、带类型的 AMQP 业务属性/headers；确认句柄和重投次数不加入稳定内容哈希。数据限制沿用原始 512 KiB、最终 Envelope 1 MiB 及公共额度，并在原生帧/SDK 组装处限制入站数据，不能在无限分配后才报超限。
+
+只有 T1 整体提交后才 ACK；提交前故障、容量满、停用或关闭会保留未确认消息，由来源重投。提交后 ACK 丢失的重投命中原责任，再确认即可，不能创建第二条责任。全订阅一个本地串行 shard；失败屏障不越过，业务顺序仅为实际接收顺序，不承诺 Broker 在重连或其他消费者存在时的全局 FIFO。
+
+缺失 message_id、超限、身份冲突或非法属性进入有界阻塞诊断，不自动确认或热重投。首期不提供 RabbitMQ 的原生未接管消息 skip；先停止监听，在上游显式修复/处置，再按原排空与新 epoch 流程恢复。已接管事件仍支持原 replay/repair/skip，能力描述和界面须区分两类动作。
+
+### D13. RocketMQ 订阅
+
+首期验证 Apache RocketMQ 5.x 的 gRPC Proxy、SimpleConsumer，配置为稳定逻辑来源标识、明确 endpoint/TLS、一个 topic、专用 consumer group、可选 access_key 凭据及 CA。不把 4.x NameServer 地址或云控制台地址当成 gRPC endpoint。账号认证、TLS、协议版本及实际客户端精确版本在 B9 固定；源码/API 能运行不构成真实来源验收。消费组按来源管理的当前位置读取；平台不隐式重置 Broker 消费位置，不提供“从最早/最新”假选项。测试连接仅做有界路由/认证诊断，不 receive、不 ACK、不推进组位置。
+
+使用原生稳定 message_id 和来源/topic 形成事件身份。消息正文、tag、keys、业务 properties 原样进入有界 message Envelope；receipt handle、不可见时间和 delivery attempt 不成为身份或稳定内容。一次最多接收一条，只在 T1 提交后明确 ACK；ACK 超时保留原责任，消息可在不可见期限后重投并去重。SDK 必须限制网络消息大小、RPC deadline、预取/线程/连接数和实际关闭，不能默认使用无界后台任务。公共 owner 失效后不再接管或续租消息；任何迟到 ACK 只能对应已提交内容。
+
+客户端选型核对发现官方 `rocketmq-python-client==5.1.2` 的高层运行器默认 gRPC 收发大小为无限，并使用进程级后台 I/O 循环。DLR 仅复用该精确包的官方 protobuf/gRPC 消息定义，以独立同步 channel 完成有界 QueryRoute/Heartbeat/ReceiveMessage/AckMessage，固定每次 RPC deadline、单条接收、最多四个响应帧、2 MiB 原生帧上限和确定关闭；不启动其高层 SimpleConsumer 调度器、遥测及解码线程池。行为属于 SimpleConsumer 协议，必须由真实 5.x Proxy 验证，不以类名相同替代协议证明。原有 Pika 精确版本保持。
+
+全订阅一个本地串行 shard，与 RabbitMQ 一样只承诺 DLR 持久接收顺序。组必须专用于该 DLR 订阅；消息过期、上游保留或死信策略造成的数据缺失不能自动补齐，源去重仅受现有留存窗口保证。超限/非法内容进入阻塞诊断且不 ACK；原生未接管 skip 暂不提供，已接管 replay/repair/skip 沿用公共行为。4.x、FIFO、事务、Lite、云托管专用协议及跨组有序性均不在首期支持矩阵。
+
+### D14. 本轮验证和开发部署
+
+B9 固定扩展规则/客户端可行性；B10 交付 RabbitMQ；B11 交付 RocketMQ；B12 在原适配器来源抽屉补齐两种表单、摘要和双语说明；B13 完成精确本地提交、针对性回归、真实消息→Worker→结果读回及同一开发环境更新。每批完成后按确认、重投、所有权、关闭、内容/容量、权限和兼容清单自审，审查方式如实记录。
+
+不运行全量后端/Web 测试，不推送分支或触发远端全量 CI。仅运行新增来源测试、直接受影响的公共接收/管理/Envelope/迁移测试、Kafka/K8s 代表性兼容用例、相关前端测试及必要静态检查/构建。未来用户授权 PR 时再执行对应远端交付门禁。开发部署从精确本地提交构建，继续使用私有配置、同一 Compose 项目及命名卷，保留 Token/Master Key 和旧责任；变更前检查空闲、可读备份、前向迁移，之后核对实际运行源码/镜像与真实处理结果。新建隔离 Broker 测试资源仅属于本轮，不复用内部调度队列，不改旧验收数据。
 
 ## Risks / Trade-offs
 

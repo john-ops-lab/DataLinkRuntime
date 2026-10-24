@@ -6,6 +6,31 @@
 
 ## ADDED Requirements
 
+### Requirement: 新队列订阅保持稳定消息身份与持久确认
+RabbitMQ SHALL 使用生产方稳定 message_id，RocketMQ SHALL 使用原生稳定 message_id，结合来源/范围形成身份。临时 delivery tag、receipt handle、重投次数 MUST 不作为身份或稳定内容。正文和业务属性 SHALL 无损且有界；两种来源均 MUST 在 T1 整体提交后才明确确认，源重投 SHALL 命中原责任且不覆盖首次输入。
+
+#### Scenario: 消息已保存但确认丢失
+- **WHEN** RabbitMQ/RocketMQ 在 T1 提交后、ACK 生效前断线并重投
+- **THEN** 使用原事件/版本/待处理责任，仅增加重复接收计数，不创建第二条责任或业务执行
+
+#### Scenario: 消息缺少稳定身份或超限
+- **WHEN** RabbitMQ 消息没有 message_id，或任一新来源的正文/属性超过边界
+- **THEN** 拒绝接管且不 ACK，保存有界诊断并阻塞来源，不以正文哈希去重、不截断、不无限分配或热重试
+
+### Requirement: 新队列来源只承诺实际持久接收顺序
+RabbitMQ/RocketMQ SHALL 各使用一个本地串行 shard，沿用失败屏障和显式补处理/跳过规则；MUST 不把 Broker 消费顺序、单槽执行或原生重投解释为跨重启全局 FIFO。平台只控制专用队列/组内已实际接管责任，不承诺恢复上游已经过期或由其他消费者取走的消息。
+
+#### Scenario: 当前业务失败而后续已接收
+- **WHEN** 当前 Delivery 最终失败且后续事件已保存
+- **THEN** 后续业务不越过该屏障；停用仅停止新接收，旧责任继续保持并允许受限修复
+
+### Requirement: 来源扩展不得改变旧输入和完成资格
+新增 RabbitMQ/RocketMQ MUST 继续使用 dlr.event.v1、subscription trigger 和原 JSON Worker 协议；旧 Kafka/Kubernetes 身份和稳定内容哈希 MUST 保持。来源 ACK 与业务成功 SHALL 分开，Kubernetes 已闭合 completed 不可新 replay、专用完成放弃的有界审计和业务未确认事实不得因公共抽象改变。
+
+#### Scenario: 新旧来源共存
+- **WHEN** 注册四种来源并读取旧事件或旧批次
+- **THEN** 旧输入身份/哈希和追踪结果不变，旧失败仍失败、已放弃完成责任不复活；未知来源无法借新配置绕过原运行锁
+
 ### Requirement: 持久接管先于来源确认
 系统 MUST 在完整可处理输入、责任、对应安全位置和容量占用原子提交后才确认来源；内存接收不等于接管。对按序读取的来源 SHALL 不越过已读但尚未提交的前序记录。
 
