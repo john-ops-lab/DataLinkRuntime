@@ -1776,6 +1776,7 @@ export function AdapterConsole({
               eventSubscriptions={eventSubscriptions.items}
               eventLoading={eventSubscriptions.loading}
               eventError={eventSubscriptions.error}
+              eventIntentAdapterId={eventIntentAdapterId}
               onBrowseTemplates={() => handlePrimarySectionChange("templates")}
               versionSeqById={versionSeqById}
               workers={workers}
@@ -1857,10 +1858,10 @@ export function AdapterConsole({
                   runtimeSynchronizing={runtimeAuthority.synchronizingAfterMutation}
                   readOnly={!selectedCanEdit}
                   eventMode={selectedEventMode}
-                  eventStatus={selectedSubscription ? t(`ux.status.${eventStatusKey(selectedSubscription)}`, { ns: "subscription" }) : undefined}
+                  eventStatus={selectedSubscription ? t(`ux.status.${eventStatusKey(selectedSubscription)}`, { ns: "subscription" }) : selectedEventMode ? t("ux.status.notStarted", { ns: "subscription" }) : undefined}
                   eventAction={<EventReceivingButton key={selected.id} adapter={selected} sub={selectedSubscription}
                     capabilities={eventSubscriptions.capabilities} dirty={dirty || taskRuntimeState.settingsDirty === true || taskRuntimeState.inputDirty === true}
-                    busy={busy || eventSubscriptions.loading || !!eventSubscriptions.error || taskRuntimeState.mutationInFlight}
+                    busy={busy || taskRuntimeState.mutationInFlight} statusPending={eventSubscriptions.loading || !!eventSubscriptions.error}
                     readOnly={!selectedCanEdit} onDraftStateChange={setSubscriptionDraft}
                     onChanged={async () => { await eventSubscriptions.reload(); await runtimeAuthority.requestRuntimeRefresh("mutation"); }} />}
                   onSave={() => void handleSaveVersion()}

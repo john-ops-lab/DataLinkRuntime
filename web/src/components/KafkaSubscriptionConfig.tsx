@@ -216,6 +216,7 @@ export default function KafkaSubscriptionConfig({
         <Form.Item
           name="cluster_id"
           label={t("cluster")}
+          extra={t("ux.kafkaIdentityHint")}
           rules={[{ required: true, message: t("required") }]}
         >
           <Input maxLength={256} />
@@ -250,7 +251,7 @@ export default function KafkaSubscriptionConfig({
           <Select
             options={["SASL_SSL", "SSL", "PLAINTEXT"].map((value) => ({
               value,
-              label: value,
+              label: t(`ux.security.${value}`),
             }))}
           />
         </Form.Item>

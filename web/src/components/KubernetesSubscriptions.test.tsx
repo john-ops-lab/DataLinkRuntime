@@ -23,7 +23,7 @@ import type {
 } from "../subscription-types";
 import type { Adapter } from "../types";
 import KubernetesSubscriptionConfig from "./KubernetesSubscriptionConfig";
-import KafkaSubscriptionPanel from "./KafkaSubscriptionPanel";
+import EventTriggerSettings from "./EventTriggerSettings";
 import SubscriptionAbandonDialog from "./SubscriptionAbandonDialog";
 import SubscriptionActionDialog from "./SubscriptionActionDialog";
 import SubscriptionBatchPanel from "./SubscriptionBatchPanel";
@@ -265,21 +265,17 @@ describe("Kubernetes source form", () => {
     });
     vi.spyOn(api, "listAdapterCredentialOptions").mockResolvedValue([]);
     render(
-      <KafkaSubscriptionPanel
-        adapter={adapter}
-        canManage
-        readOnly={false}
-        dirty={false}
-        onBindingChange={() => {}}
-      />,
+      <EventTriggerSettings adapter={adapter} sub={null} capabilities={{ enabled: true, available_sources: ["kafka"] }}
+        readOnly={false} canManage runtimeDirty={false} onChanged={vi.fn()}
+        onRecords={vi.fn()} onDraftStateChange={vi.fn()} />,
     );
     fireEvent.click(
-      await screen.findByRole("button", { name: "Bind event subscription" }),
+      await screen.findByRole("button", { name: "Configure source" }),
     );
     expect(
-      await screen.findByLabelText("Actual broker cluster ID"),
+      await screen.findByLabelText("Cluster identity"),
     ).toBeTruthy();
-    expect(screen.queryByLabelText("Logical Kubernetes cluster ID")).toBeNull();
+    expect(screen.queryByLabelText("Cluster name")).toBeNull();
     expect(screen.queryByText("Kubernetes")).toBeNull();
   });
 
@@ -300,26 +296,26 @@ describe("Kubernetes source form", () => {
     await waitFor(() => expect(options).toHaveBeenCalledWith(9));
     expect(global).not.toHaveBeenCalled();
     expect(
-      screen.getByLabelText("Delivery mode").closest(".ant-select")
+      screen.getByLabelText("Processing mode").closest(".ant-select")
         ?.textContent,
-    ).toContain("per_event");
-    fireEvent.change(screen.getByLabelText("Logical Kubernetes cluster ID"), {
+    ).toContain("Process each event");
+    fireEvent.change(screen.getByLabelText("Cluster name"), {
       target: { value: "logical-example" },
     });
-    fireEvent.change(screen.getByLabelText("API server HTTPS origin"), {
+    fireEvent.change(screen.getByLabelText("Cluster address (HTTPS)"), {
       target: { value: "https://api.example.test" },
     });
     fireEvent.change(screen.getByLabelText("Namespace"), {
       target: { value: "team" },
     });
     fireEvent.mouseDown(
-      screen.getByLabelText("Resource / API group and version"),
+      screen.getByLabelText("Watched resource"),
     );
     fireEvent.click(await screen.findByText("Deployment · apps/v1"));
-    fireEvent.mouseDown(screen.getByLabelText("Delivery mode"));
+    fireEvent.mouseDown(screen.getByLabelText("Processing mode"));
     fireEvent.click(
       await screen.findByText(
-        "state_sync · explicitly coalesce eligible pending state",
+        "Merge waiting state updates",
       ),
     );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -346,21 +342,17 @@ describe("Kubernetes source form", () => {
     });
     vi.spyOn(api, "listAdapterCredentialOptions").mockResolvedValue([]);
     render(
-      <KafkaSubscriptionPanel
-        adapter={adapter}
-        canManage
-        readOnly={false}
-        dirty={false}
-        onBindingChange={() => {}}
-      />,
+      <EventTriggerSettings adapter={adapter} sub={null} capabilities={{ enabled: true, available_sources: ["kafka", "kubernetes", "future"] }}
+        readOnly={false} canManage runtimeDirty={false} onChanged={vi.fn()}
+        onRecords={vi.fn()} onDraftStateChange={vi.fn()} />,
     );
     fireEvent.click(
-      await screen.findByRole("button", { name: "Bind event subscription" }),
+      await screen.findByRole("button", { name: "Configure source" }),
     );
     expect(screen.queryByText("future")).toBeNull();
     fireEvent.click(screen.getByRole("radio", { name: "Kubernetes resource changes" }));
     expect(
-      await screen.findByLabelText("Logical Kubernetes cluster ID"),
+      await screen.findByLabelText("Cluster name"),
     ).toBeTruthy();
   });
 });
@@ -544,18 +536,18 @@ it("uses the event's old batch for completion actions, never the latest batch, a
     />,
   );
   fireEvent.click(
-    await screen.findByRole("button", { name: "completed-event" }),
+    await screen.findByTestId(`event-record-${event().id}`),
   );
   const modal = await screen.findByRole("dialog");
   await waitFor(() => expect(get).toHaveBeenCalledWith(4, 22));
   expect(
-    (within(modal).getByRole("button", { name: "Replay" }) as HTMLButtonElement)
+    (within(modal).getByRole("button", { name: "Process again" }) as HTMLButtonElement)
       .disabled,
   ).toBe(true);
   expect(
     (
       within(modal).getByRole("button", {
-        name: "Skip without processing",
+        name: "Skip without success",
       }) as HTMLButtonElement
     ).disabled,
   ).toBe(true);
@@ -574,12 +566,12 @@ it("resets Kubernetes with an explicit full-LIST confirmation and no Kafka initi
       onDone={async () => {}}
     />,
   );
-  expect(screen.queryByLabelText("Initial position")).toBeNull();
+  expect(screen.queryByLabelText("Which messages should be received first?")).toBeNull();
   fireEvent.change(screen.getByLabelText("Disposition reason"), {
     target: { value: "new full reconciliation" },
   });
   fireEvent.click(screen.getByRole("checkbox"));
-  fireEvent.click(screen.getByRole("button", { name: "Reset to a new epoch" }));
+  fireEvent.click(screen.getByRole("button", { name: "Choose a new starting point" }));
   await waitFor(() => expect(call).toHaveBeenCalledOnce());
   expect(call.mock.calls[0][1].config).toEqual(config);
   expect(Object.hasOwn(call.mock.calls[0][1].config, "initial_position")).toBe(
@@ -657,11 +649,11 @@ it("opens a historical Kubernetes event's own batch and coalescing chain after s
     />,
   );
   fireEvent.click(
-    await screen.findByRole("button", { name: "completed-event" }),
+    await screen.findByTestId(`event-record-${event().id}`),
   );
   const eventDialog = await screen.findByRole("dialog");
   expect(
-    screen.getByRole("button", { name: "#22 · watch", hidden: true }),
+    screen.getByRole("button", { name: "#22", hidden: true }),
   ).toBeTruthy();
   expect(within(eventDialog).getByText("original-kube-identity")).toBeTruthy();
   expect(
@@ -709,7 +701,7 @@ it("keeps an original completed replay retry fixed after a live close and featur
   fireEvent.change(screen.getByLabelText("Disposition reason"), {
     target: { value: "retry original completed intent" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Replay" }));
+  fireEvent.click(screen.getByRole("button", { name: "Process again" }));
   await screen.findByText(/temporary_failure/);
   expect(call).toHaveBeenCalledOnce();
   const original = structuredClone(call.mock.calls[0][2]);
@@ -727,7 +719,7 @@ it("keeps an original completed replay retry fixed after a live close and featur
       onDone={async () => {}}
     />,
   );
-  fireEvent.click(screen.getByRole("button", { name: "Replay" }));
+  fireEvent.click(screen.getByRole("button", { name: "Process again" }));
   await waitFor(() => expect(call).toHaveBeenCalledTimes(2));
   expect(call.mock.calls[1][2]).toEqual(original);
 });
@@ -794,7 +786,8 @@ it("disables ordinary configuration and enable for an empty but unclosed batch",
       onDeleted={() => {}}
     />,
   );
-  await screen.findByRole("heading", { name: "Pod sync" });
+  await screen.findByTestId("subscription-workspace");
+  fireEvent.click(screen.getByText("Technical details", { selector: "summary" }));
   expect(
     (
       screen.getByRole("button", {
@@ -805,7 +798,7 @@ it("disables ordinary configuration and enable for an empty but unclosed batch",
   expect(
     (
       screen.getByRole("button", {
-        name: "Enable reception",
+        name: "Start receiving",
       }) as HTMLButtonElement
     ).disabled,
   ).toBe(true);

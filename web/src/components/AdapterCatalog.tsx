@@ -88,6 +88,7 @@ interface AdapterCatalogProps {
   eventSubscriptions?: Map<number, EventSubscription>;
   eventLoading?: boolean;
   eventError?: string | null;
+  eventIntentAdapterId?: number | null;
 }
 
 function versionLabel(
@@ -235,6 +236,7 @@ export default function AdapterCatalog({
   eventSubscriptions,
   eventLoading = false,
   eventError,
+  eventIntentAdapterId,
 }: AdapterCatalogProps) {
   const { t } = useTranslation(["adapter", "common"]);
   const [creating, setCreating] = useState(false);
@@ -336,7 +338,7 @@ export default function AdapterCatalog({
   const eventFiltersReady = !eventLoading && !eventError;
   const visible = searched.filter(adapter => {
     const sub = eventSubscriptions?.get(adapter.id);
-    const mode = sub ? "event" : adapter.adapter_type === "webhook" ? "webhook" : adapter.run_mode;
+    const mode = sub || adapter.id === eventIntentAdapterId ? "event" : adapter.adapter_type === "webhook" ? "webhook" : adapter.run_mode;
     return (!eventFiltersReady || runFilter === "all" || runFilter === mode)
       && (!eventFiltersReady || !attentionOnly || (sub !== undefined && eventNeedsAttention(sub)));
   });
@@ -475,13 +477,23 @@ export default function AdapterCatalog({
               type: t(`types.${adapter.adapter_type}`),
               status: runtimeStatus.label,
             });
-            const subtitle = catalogSubtitle(
+            const ordinarySubtitle = catalogSubtitle(
               adapter,
               runtimeStatusKey,
               versionSeqById,
               workersById,
               (key, options) => t(key, options),
             );
+            const eventSub = eventSubscriptions?.get(adapter.id);
+            const eventPhrase = eventSub ? `${t("ux.mode", { ns: "subscription" })} · ${t(`ux.status.${eventStatusKey(eventSub)}`, { ns: "subscription" })}`
+              : adapter.id === eventIntentAdapterId ? `${t("ux.mode", { ns: "subscription" })} · ${t("ux.notConfigured", { ns: "subscription" })}` : null;
+            const subtitle = eventPhrase ? {
+              primary: eventPhrase, attention: ordinarySubtitle.attention,
+              full: [eventPhrase, ...ordinarySubtitle.attention,
+                adapter.runtime_worker_id == null ? t("catalog.workerNotConfigured")
+                  : t("catalog.workerNamed", { name: workersById.get(adapter.runtime_worker_id)?.name ?? `#${adapter.runtime_worker_id}` }),
+                adapter.description].filter(Boolean).join(" · "),
+            } : ordinarySubtitle;
             const relationship = relationshipLabel(adapter, accountPrincipal, (key, options) =>
               t(key, options),
             );
@@ -517,9 +529,7 @@ export default function AdapterCatalog({
                     )}
                   </span>
                   <span className="catalog-item-sub" title={subtitle.full}>
-                    <span>{eventSubscriptions?.has(adapter.id)
-                      ? `${t("ux.mode", { ns: "subscription" })} · ${t(`ux.status.${eventStatusKey(eventSubscriptions.get(adapter.id)!)}`, { ns: "subscription" })}`
-                      : subtitle.primary}</span>
+                    <span>{subtitle.primary}</span>
                     {subtitle.attention.map((item) => (
                       <span className="catalog-item-attention" key={item}> · {item}</span>
                     ))}

@@ -1361,41 +1361,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     setScheduleTouched(true);
   }
 
-
-  return (
-    <div className="task-run-settings" data-testid="task-run-settings">
-      <section className="task-runtime-config">
-        <Typography.Title level={5}>{t("task.settings.title")}</Typography.Title>
-        <Space direction="vertical" size="middle" className="schedule-form">
-          <div className="settings-field">
-            <span className="settings-field-label">{t("task.settings.mode")}</span>
-            <Radio.Group
-              data-testid="task-run-mode"
-              value={eventSelected ? "event" : runMode}
-              disabled={readOnly || runtimeLocked || savingRuntime || subscriptionBound}
-              onChange={(event) => {
-                const nextRunMode = event.target.value as TaskRunMode | "event";
-                props.onSelectEventMode?.(nextRunMode === "event");
-                runtimeEditEpoch.current += 1;
-                setRunModeOverride(nextRunMode === "event" ? "manual" : nextRunMode);
-              }}
-            >
-              <Radio value="manual">{t("task.settings.manual")}</Radio>
-              <Radio value="schedule">{t("task.settings.schedule")}</Radio>
-              {props.eventCapabilities && <Radio value="event" disabled={!props.eventCapabilities.enabled || props.eventCapabilities.available_sources.length === 0 || props.eventLoading || !!props.eventError}>
-                {t("ux.mode", { ns: "subscription" })}
-              </Radio>}
-            </Radio.Group>
-            {subscriptionBound && <p className="ux-muted">{t("ux.unbindHint", { ns: "subscription" })}</p>}
-          </div>
-          {eventSelected && props.eventCapabilities && <EventTriggerSettings
-            key={adapterId} adapter={props.adapter} sub={props.eventSubscription ?? null}
-            initialConfigure={props.initialEventConfigure}
-            capabilities={props.eventCapabilities} readOnly={readOnly}
-            canManage={props.canManageSubscriptions === true} runtimeDirty={runtimeConfigDirty || inputDirty}
-            onDraftStateChange={setSubscriptionDraft}
-            onChanged={props.onEventChanged ?? (async () => {})} onRecords={props.onEventRecords ?? (() => {})}
-          />}
+  const runtimeFields = <>
           <label className="settings-field">
             <span className="settings-field-label">{t("task.settings.worker")}</span>
             <Select
@@ -1465,6 +1431,43 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               {t("task.settings.timeoutHint")}
             </Typography.Text>
           </div>
+  </>;
+
+  return (
+    <div className={`task-run-settings${eventSelected ? " is-event" : ""}`} data-testid="task-run-settings">
+      <section className="task-runtime-config">
+        <Typography.Title level={5}>{t("task.settings.title")}</Typography.Title>
+        <Space direction="vertical" size="middle" className="schedule-form">
+          <div className="settings-field">
+            <span className="settings-field-label">{t("task.settings.mode")}</span>
+            <Radio.Group
+              data-testid="task-run-mode"
+              value={eventSelected ? "event" : runMode}
+              disabled={readOnly || runtimeLocked || savingRuntime || subscriptionBound}
+              onChange={(event) => {
+                const nextRunMode = event.target.value as TaskRunMode | "event";
+                props.onSelectEventMode?.(nextRunMode === "event");
+                runtimeEditEpoch.current += 1;
+                setRunModeOverride(nextRunMode === "event" ? "manual" : nextRunMode);
+              }}
+            >
+              <Radio value="manual">{t("task.settings.manual")}</Radio>
+              <Radio value="schedule">{t("task.settings.schedule")}</Radio>
+              {props.eventCapabilities && <Radio value="event" disabled={readOnly || runtimeLocked || savingRuntime || subscriptionBound || !props.eventCapabilities.enabled || props.eventCapabilities.available_sources.length === 0 || props.eventLoading || !!props.eventError}>
+                {t("ux.mode", { ns: "subscription" })}
+              </Radio>}
+            </Radio.Group>
+            {subscriptionBound && <p className="ux-muted">{t("ux.unbindHint", { ns: "subscription" })}</p>}
+          </div>
+          {eventSelected && props.eventCapabilities && <EventTriggerSettings
+            key={adapterId} adapter={props.adapter} sub={props.eventSubscription ?? null}
+            runtimeFields={runtimeFields} initialConfigure={props.initialEventConfigure}
+            capabilities={props.eventCapabilities} readOnly={readOnly}
+            canManage={props.canManageSubscriptions === true} runtimeDirty={runtimeConfigDirty || inputDirty}
+            onDraftStateChange={setSubscriptionDraft}
+            onChanged={props.onEventChanged ?? (async () => {})} onRecords={props.onEventRecords ?? (() => {})}
+          />}
+          {!eventSelected && runtimeFields}
           {runtimeLocked && (
             <Alert
               type="warning"
@@ -2058,6 +2061,13 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             </Button>
           </div>
         </Form>
+        {eventSelected && <Space direction="vertical">
+          <Typography.Text type="secondary">{t("ux.manualTestHint", { ns: "subscription" })}</Typography.Text>
+          <Tooltip title={runBlockedReason ?? (runtimeConfigDirty ? t("task.reasons.runtimeDirty") : undefined)}>
+            <Button data-testid="event-manual-test" disabled={!canRun || runtimeConfigDirty}
+              onClick={() => void runOnce()}>{t("ux.manualTest", { ns: "subscription" })}</Button>
+          </Tooltip>
+        </Space>}
       </section>
       </details>
 

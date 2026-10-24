@@ -108,7 +108,7 @@ export default function SubscriptionActionDialog({
       sub.source_type === "kubernetes" ? "kubernetes.resetNote" : "resetNote",
     repairEnter: "repairNote",
     repairSave: "repairNote",
-    repairExit: "repairNote",
+    repairExit: "repairExitNote",
   };
   async function submit() {
     try {

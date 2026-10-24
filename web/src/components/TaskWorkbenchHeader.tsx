@@ -154,7 +154,9 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
                 {t("editor.saveContent", { ns: "common" })}
               </Button>
             </ActionWithReason>
-            {props.eventMode ? props.eventAction : scheduleMode ? (
+            {props.eventMode ? <>{props.eventAction}{activeExecution && <Button danger
+              data-testid="header-task-stop" icon={<StopOutlined aria-hidden="true" />}
+              onClick={props.onStopExecution}>{t("actions.stopCurrentExecution", { ns: "common" })}</Button>}</> : scheduleMode ? (
               <>
                 <ActionWithReason
                   label={props.runtimeState.scheduleEnabled ? t("actions.disableSchedule", { ns: "common" }) : t("actions.enableSchedule", { ns: "common" })}

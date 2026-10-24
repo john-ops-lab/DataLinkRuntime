@@ -2,6 +2,17 @@
 
 The feature defaults to `DLR_EVENT_SUBSCRIPTIONS_ENABLED=false`. With the flag enabled, this branch advertises `kafka` and `kubernetes` through `GET /api/event-subscriptions/capabilities`; the public enablement and implemented diagnostic registries contain the same two sources. The representative local business, recovery and browser paths below have been validated. Connection diagnostics are separate and do not establish business success. Exact-HEAD remote PR CI, user acceptance and release remain separate gates.
 
+## Use event triggers inside an adapter
+
+The primary navigation keeps Adapters and Templates. Use the existing New drawer, choose Event triggered, and enter a name and language. Existing tasks can select the same option in Runtime settings. The backend still uses an ordinary Task plus a source binding; a separate subscription name is not required.
+
+1. Configure Kafka messages or Kubernetes resources. Explicitly choose new messages only or retained history for the first Kafka reception. Cluster identity must match the actual broker identity. Authentication, certificates, consumer groups and capacity remain available under advanced connection settings.
+2. Save the source, or choose Save and test connection to persist it before checking connectivity. Tests do not run processing code. A failed test leaves the saved source intact; cancelling first configuration also preserves the adapter.
+3. Write and save processing code in the existing Edit tab, save the worker and timeout, then explicitly click Start receiving in the header. Creating an adapter or saving its source never starts reception automatically.
+4. In the existing Execution history tab, switch to Received events for source summaries, processing results and execution details. Technical details retain capacity, original positions and advanced actions. Original failures and subsequent processing attempts remain separate.
+
+The original adapter list supports running-mode and Needs attention filters. Stopping reception only stops new events; existing events still need processing. Repair and processing actions retain their permission and confirmation checks. To switch running modes, stop reception, settle existing events, then explicitly disconnect the source. Old subscription detail bookmarks open the owning adapter's received events.
+
 ## Supported source scope
 
 | Source | Resources and modes | Verified connection and runtime scope |

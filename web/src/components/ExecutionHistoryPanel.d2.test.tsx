@@ -1222,8 +1222,8 @@ it("keeps process navigation disabled when reliable detail fails", async () => {
 });
 
 it.each([
-  ["zh-CN", "事件订阅触发", "输入"],
-  ["en", "Event subscription", "Input"],
+  ["zh-CN", "事件触发", "输入"],
+  ["en", "Event triggered", "Input"],
 ] as const)("renders subscription JSON without a Task revision in %s", async (locale, label, inputTab) => {
   await applyUiLocale(locale);
   renderHistory(execution({

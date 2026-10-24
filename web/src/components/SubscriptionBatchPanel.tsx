@@ -113,21 +113,12 @@ export default function SubscriptionBatchPanel({
           },
           { title: t("state"), render: (_, row) => facts(row) },
           {
-            title: t("batch.scope"),
-            render: (_, row) => (
-              <code className="subscription-compare-value">
-                {row.scope_fingerprint}
-              </code>
-            ),
-          },
-          {
             title: t("batch.pendingControls"),
-            render: (_, row) => row.control_pending.join(", ") || "—",
+            render: (_, row) => row.control_pending.map(kind => t(`ux.phase.${kind.slice(5)}`)).join(", ") || "—",
           },
           {
-            title: t("controlReserve"),
-            render: (_, row) =>
-              `${row.remaining_reserve.count} / ${row.remaining_reserve.bytes} B`,
+            title: t("received"),
+            render: (_, row) => new Date(row.created_at).toLocaleString(),
           },
         ]}
       />

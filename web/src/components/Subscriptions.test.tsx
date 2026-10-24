@@ -14,7 +14,6 @@ import type {
   SubscriptionEvent,
 } from "../subscription-types";
 import type { Adapter } from "../types";
-import KafkaSubscriptionPanel from "./KafkaSubscriptionPanel";
 import KafkaSubscriptionConfig from "./KafkaSubscriptionConfig";
 import SubscriptionActionDialog from "./SubscriptionActionDialog";
 import SubscriptionWorkspace from "./SubscriptionWorkspace";
@@ -151,7 +150,7 @@ describe("subscription disposition contract", () => {
     fireEvent.change(screen.getByLabelText("Disposition reason"), {
       target: { value: "reviewed target outcome" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Replay" }));
+    fireEvent.click(screen.getByRole("button", { name: "Process again" }));
     await waitFor(() => expect(replay).toHaveBeenCalledTimes(1));
     await screen.findByText(/temporary_failure/);
     const first = structuredClone(replay.mock.calls[0]);
@@ -168,7 +167,7 @@ describe("subscription disposition contract", () => {
       (screen.getByLabelText("Disposition reason") as HTMLTextAreaElement)
         .disabled,
     ).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Replay" }));
+    fireEvent.click(screen.getByRole("button", { name: "Process again" }));
     await waitFor(() => expect(replay).toHaveBeenCalledTimes(2));
     expect(replay.mock.calls[1]).toEqual(first);
     expect(first[2]).toMatchObject({
@@ -199,14 +198,14 @@ describe("subscription disposition contract", () => {
     expect(screen.getByText("#1")).toBeTruthy();
     expect(screen.getByText("#2")).toBeTruthy();
     expect(screen.getByText(/TARGET_TOKEN/)).toBeTruthy();
-    fireEvent.mouseDown(screen.getByLabelText("Revision"));
+    fireEvent.mouseDown(screen.getByLabelText("Code version"));
     fireEvent.click(
-      screen.getAllByText("Explicitly use current configuration").at(-1)!,
+      screen.getAllByText("Use current runtime settings").at(-1)!,
     );
     fireEvent.change(screen.getByLabelText("Disposition reason"), {
       target: { value: "reviewed current references" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Replay" }));
+    fireEvent.click(screen.getByRole("button", { name: "Process again" }));
     await screen.findByText(/temporary_failure/);
     const first = structuredClone(replay.mock.calls[0][2]);
     view.rerender(
@@ -218,7 +217,7 @@ describe("subscription disposition contract", () => {
         onClose={() => {}}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Replay" }));
+    fireEvent.click(screen.getByRole("button", { name: "Process again" }));
     await waitFor(() => expect(replay).toHaveBeenCalledTimes(2));
     expect(replay.mock.calls[1][2]).toEqual(first);
     expect(first).toMatchObject({
@@ -244,7 +243,7 @@ describe("subscription disposition contract", () => {
     );
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Skip without processing",
+        name: "Skip without success",
       }),
     );
     await screen.findByText("Required");
@@ -320,7 +319,7 @@ describe("subscription disposition contract", () => {
       />,
     );
     fireEvent.click(
-      screen.getByRole("button", { name: "Save repair Revision" }),
+      screen.getByRole("button", { name: "Save fixed code" }),
     );
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(Object.keys(save.mock.calls[0][1]).sort()).toEqual([
@@ -356,18 +355,18 @@ it.each(["en", "zh-CN"] as const)(
         onDeleted={() => {}}
       />,
     );
-    await screen.findByRole("heading", { name: "Kafka orders" });
+    await screen.findByTestId("subscription-workspace");
     const scope = within(screen.getByTestId("subscription-workspace"));
     expect(
       scope.queryByRole("button", {
         name: locale === "en" ? "Edit source configuration" : "修改来源配置",
       }),
     ).toBeNull();
-    fireEvent.click(scope.getByRole("button", { name: "source-event-one" }));
+    fireEvent.click(scope.getByTestId(`event-record-${event.id}`));
     const dialog = await screen.findByRole("dialog");
     expect(
       within(dialog).queryByRole("button", {
-        name: locale === "en" ? "Replay" : "补处理",
+        name: locale === "en" ? "Process again" : "重新处理",
       }),
     ).toBeNull();
   },
@@ -384,20 +383,14 @@ it("does not offer Kafka or future sources when capabilities expose no delivered
     available_sources: [],
   });
   render(
-    <KafkaSubscriptionPanel
-      adapter={adapter}
-      readOnly={false}
-      canManage
-      dirty={false}
-      onBindingChange={() => {}}
-    />,
+    <EventTriggerSettings adapter={adapter} sub={null} capabilities={{ enabled: true, available_sources: [] }}
+      readOnly={false} canManage runtimeDirty={false} onChanged={vi.fn()}
+      onRecords={vi.fn()} onDraftStateChange={vi.fn()} />,
   );
   await screen.findByText(
-    "No source is currently available for enablement. Existing custody remains visible and drains.",
+    "This source cannot start receiving now. Existing events can still be viewed and processed.",
   );
-  expect(
-    screen.queryByRole("button", { name: "Bind Kafka subscription" }),
-  ).toBeNull();
+  expect((screen.getByRole("button", { name: "Configure source" }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.queryByText("Kubernetes")).toBeNull();
 });
 
@@ -410,13 +403,13 @@ describe("subscription source configuration and trace", () => {
     render(<EventTriggerSettings adapter={adapter} sub={null} capabilities={{ enabled: true, available_sources: ["kafka"] }}
       readOnly={false} canManage={false} runtimeDirty={false} initialConfigure onChanged={vi.fn()}
       onRecords={vi.fn()} onDraftStateChange={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("Actual broker cluster ID"), { target: { value: "fixture-cluster" } });
-    fireEvent.change(screen.getByLabelText("Bootstrap servers (host:port per line)"), { target: { value: "broker.example.test:9093" } });
-    fireEvent.change(screen.getByLabelText("Exact topic allowlist (one per line)"), { target: { value: "orders" } });
-    fireEvent.mouseDown(screen.getByLabelText("Security protocol"));
-    fireEvent.click(await screen.findByText("SSL", { selector: ".ant-select-item-option-content" }));
-    fireEvent.mouseDown(screen.getByLabelText("Initial position"));
-    fireEvent.click(await screen.findByText("Earliest readable position"));
+    fireEvent.change(screen.getByLabelText("Cluster identity"), { target: { value: "fixture-cluster" } });
+    fireEvent.change(screen.getByLabelText("Connection addresses (one per line)"), { target: { value: "broker.example.test:9093" } });
+    fireEvent.change(screen.getByLabelText("Message topics (one per line)"), { target: { value: "orders" } });
+    fireEvent.mouseDown(screen.getByLabelText("Connection method"));
+    fireEvent.click(await screen.findByText("Encrypted connection (no account)", { selector: ".ant-select-item-option-content" }));
+    fireEvent.mouseDown(screen.getByLabelText("Which messages should be received first?"));
+    fireEvent.click(await screen.findByText("Also process retained history"));
     fireEvent.click(screen.getByRole("button", { name: "Save and test connection" }));
     await waitFor(() => expect(test).toHaveBeenCalledWith(saved.id, saved.config_version));
     expect(create.mock.invocationCallOrder[0]).toBeLessThan(test.mock.invocationCallOrder[0]);
@@ -438,11 +431,11 @@ describe("subscription source configuration and trace", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
     render(<SubscriptionConfigDialog adapterId={9} canManage={false} availableSources={["kafka", "kubernetes"]}
       onClose={vi.fn()} onSave={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("Actual broker cluster ID"), { target: { value: "draft" } });
+    fireEvent.change(screen.getByLabelText("Cluster identity"), { target: { value: "draft" } });
     fireEvent.click(screen.getByRole("radio", { name: "Kubernetes resource changes" }));
-    expect(screen.queryByLabelText("Logical Kubernetes cluster ID")).toBeNull();
+    expect(screen.queryByLabelText("Cluster name")).toBeNull();
     fireEvent.click(screen.getByRole("radio", { name: "Kubernetes resource changes" }));
-    expect(await screen.findByLabelText("Logical Kubernetes cluster ID")).toBeTruthy();
+    expect(await screen.findByLabelText("Cluster name")).toBeTruthy();
     expect(confirm).toHaveBeenCalledTimes(2);
   });
   it("requires an explicit first position and submits only TLS/SCRAM references and allowed source fields", async () => {
@@ -465,24 +458,24 @@ describe("subscription source configuration and trace", () => {
         onSave={save}
       />,
     );
-    fireEvent.change(screen.getByLabelText("Actual broker cluster ID"), {
+    fireEvent.change(screen.getByLabelText("Cluster identity"), {
       target: { value: "fixture-cluster" },
     });
     fireEvent.change(
-      screen.getByLabelText("Bootstrap servers (host:port per line)"),
+      screen.getByLabelText("Connection addresses (one per line)"),
       { target: { value: "broker.example.test:9092" } },
     );
     fireEvent.change(
-      screen.getByLabelText("Exact topic allowlist (one per line)"),
+      screen.getByLabelText("Message topics (one per line)"),
       { target: { value: "orders\nshipments" } },
     );
-    fireEvent.mouseDown(screen.getByLabelText("Source credential reference"));
+    fireEvent.mouseDown(screen.getByLabelText("Account credential"));
     fireEvent.click(await screen.findByText("Kafka reference (#6)"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByText("Required");
     expect(save).not.toHaveBeenCalled();
-    fireEvent.mouseDown(screen.getByLabelText("Initial position"));
-    fireEvent.click(await screen.findByText("Earliest readable position"));
+    fireEvent.mouseDown(screen.getByLabelText("Which messages should be received first?"));
+    fireEvent.click(await screen.findByText("Also process retained history"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(save.mock.calls[0][0].config).toEqual({
@@ -533,10 +526,11 @@ describe("subscription source configuration and trace", () => {
       />,
     );
     const scope = within(await screen.findByTestId("subscription-workspace"));
+    fireEvent.click(scope.getByText("Technical details", { selector: "summary" }));
     fireEvent.click(
       scope.getByRole("button", { name: "Edit source configuration" }),
     );
-    fireEvent.change(screen.getByLabelText("Bootstrap servers (host:port per line)"), {
+    fireEvent.change(screen.getByLabelText("Connection addresses (one per line)"), {
       target: { value: "changed.example.test:9093" },
     });
     await waitFor(() =>
@@ -602,7 +596,7 @@ describe("subscription source configuration and trace", () => {
       />,
     );
     const scope = within(await screen.findByTestId("subscription-workspace"));
-    fireEvent.click(scope.getByRole("button", { name: "source-event-one" }));
+    fireEvent.click(scope.getByTestId(`event-record-${event.id}`));
     const modal = await screen.findByRole("dialog");
     fireEvent.click(within(modal).getByRole("button", { name: "#19" }));
     await waitFor(() => expect(activation).toHaveBeenCalledWith(4, 19));
@@ -623,7 +617,7 @@ describe("subscription source configuration and trace", () => {
       target: { value: "reviewed new epoch" },
     });
     fireEvent.click(
-      screen.getByRole("button", { name: "Reset to a new epoch" }),
+      screen.getByRole("button", { name: "Choose a new starting point" }),
     );
     await screen.findByText("Required");
     expect(reset).not.toHaveBeenCalled();
@@ -654,7 +648,7 @@ it("refreshes an open event detail to include its latest terminal state and repl
     />,
   );
   const scope = within(await screen.findByTestId("subscription-workspace"));
-  fireEvent.click(scope.getByRole("button", { name: "source-event-one" }));
+  fireEvent.click(scope.getByTestId(`event-record-${event.id}`));
   const modal = await screen.findByRole("dialog");
   await waitFor(() => expect(detail).toHaveBeenCalledOnce());
   detail.mockResolvedValue({

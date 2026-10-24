@@ -9,9 +9,6 @@ import { userErrorMessage } from "../user-message";
 import TaskRunSettingsPanel, { type TaskRunSettingsHandle, type TaskRuntimeState } from "./TaskRunSettingsPanel";
 import TaskWorkbenchHeader from "./TaskWorkbenchHeader";
 
-// The shared runtime/toolbar contract does not depend on rendering the source workspace.
-vi.mock("./KafkaSubscriptionPanel", () => ({ default: () => null }));
-
 const adapter = (values: Partial<Adapter> = {}): Adapter => ({
   id: 41,
   name: "subscription-task",
@@ -46,17 +43,18 @@ const headerActions = {
   onToggleSchedule: vi.fn(),
 };
 
-function SharedTask({ value, runtimeRef, onError }: {
+function SharedTask({ value, runtimeRef, onError, eventSelected = false }: {
   value: Adapter;
   runtimeRef: RefObject<TaskRunSettingsHandle | null>;
   onError: (message: string | null) => void;
+  eventSelected?: boolean;
 }) {
   const [state, setState] = useState(readyRuntime);
   return <>
     <TaskWorkbenchHeader {...headerActions} adapter={value} runtimeState={state}
       onRunOnce={() => runtimeRef.current?.runOnce()} />
     <TaskRunSettingsPanel ref={runtimeRef} adapter={value} workers={[]} workersLoading={false}
-      workersError={null} execution={null} dirty={false} onExecutionStarted={vi.fn()}
+      workersError={null} execution={null} dirty={false} eventSelected={eventSelected} onExecutionStarted={vi.fn()}
       onRuntimeStateChange={setState} onError={onError} requestRuntimeRefresh={refreshRuntime} />
   </>;
 }
@@ -80,8 +78,8 @@ afterEach(async () => {
 });
 
 it.each([
-  ["en", "Subscription locked", "Disable the event subscription"],
-  ["zh-CN", "订阅锁定", "请先停用事件订阅"],
+  ["en", "Events still need processing", "Stop receiving"],
+  ["zh-CN", "事件仍待处理", "请先停止接收"],
 ] as const)("blocks stale toolbar run eligibility and explains the subscription lock in %s", async (locale, label, reason) => {
   await applyUiLocale(locale);
   const onRunOnce = vi.fn();
@@ -94,7 +92,7 @@ it.each([
   fireEvent.click(run);
   expect(onRunOnce).not.toHaveBeenCalled();
   const message = userErrorMessage(new ApiError(409, "subscription_draining", "ignored"));
-  expect(message).toContain(locale === "en" ? "Disable it" : "请先停用订阅");
+  expect(message).toContain(locale === "en" ? "Stop receiving" : "请先停止接收");
 });
 
 it("keeps the actual shared toolbar and imperative run blocked until the subscription lock is cleared", async () => {
@@ -108,10 +106,10 @@ it("keeps the actual shared toolbar and imperative run blocked until the subscri
   view.rerender(<SharedTask value={adapter({ runtime_locked: true })} runtimeRef={runtimeRef} onError={onError} />);
   const run = screen.getByTestId("header-task-run-once") as HTMLButtonElement;
   expect(run.disabled).toBe(true);
-  expect(screen.getByTestId("workbench-meta").textContent).toContain("Subscription locked");
+  expect(screen.getByTestId("workbench-meta").textContent).toContain("Events still need processing");
   fireEvent.click(run);
   act(() => runtimeRef.current?.runOnce());
-  expect(onError).toHaveBeenLastCalledWith(expect.stringContaining("Disable the event subscription"));
+  expect(onError).toHaveBeenLastCalledWith(expect.stringContaining("Stop receiving"));
   expect(create).not.toHaveBeenCalled();
 
   // A disabled, drained subscription releases runtime_locked; ordinary manual runs use Saved Input.
@@ -132,5 +130,20 @@ it("preserves the existing run-once action for an enabled schedule", async () =>
   await waitFor(() => expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(false));
   expect(screen.getByTestId("workbench-meta").textContent).toContain("Schedule enabled");
   fireEvent.click(screen.getByTestId("header-task-run-once"));
+  await waitFor(() => expect(create).toHaveBeenCalledExactlyOnceWith(41));
+});
+
+// Event mode keeps a discoverable Saved Input test entry while the toolbar controls reception.
+it("manual test in event mode uses saved input and stays blocked while reception or old work holds the lock", async () => {
+  const create = vi.spyOn(api, "createExecution").mockResolvedValue({ id: 93 } as Execution);
+  const runtimeRef = createRef<TaskRunSettingsHandle>();
+  const view = render(<SharedTask value={adapter({ runtime_locked: true })} eventSelected runtimeRef={runtimeRef} onError={vi.fn()} />);
+  const test = screen.getByTestId("event-manual-test") as HTMLButtonElement;
+  expect(test.disabled).toBe(true);
+  fireEvent.click(test);
+  expect(create).not.toHaveBeenCalled();
+  view.rerender(<SharedTask value={adapter()} eventSelected runtimeRef={runtimeRef} onError={vi.fn()} />);
+  await waitFor(() => expect(test.disabled).toBe(false));
+  fireEvent.click(test);
   await waitFor(() => expect(create).toHaveBeenCalledExactlyOnceWith(41));
 });

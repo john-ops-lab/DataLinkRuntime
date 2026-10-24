@@ -39,6 +39,12 @@ it("does not allow a disabled source with old work to be enabled", () => {
     onChanged={vi.fn()} onDraftStateChange={vi.fn()} />);
   expect((screen.getByTestId("header-event-toggle") as HTMLButtonElement).disabled).toBe(true);
 });
+it("keeps stopping reception available when a catalog refresh failed", () => {
+  render(<EventReceivingButton adapter={adapter} sub={sub({ desired_state: "enabled", connection_state: "listening" })}
+    capabilities={{ enabled: false, available_sources: [] }} dirty statusPending busy={false} readOnly={false}
+    onChanged={vi.fn()} onDraftStateChange={vi.fn()} />);
+  expect((screen.getByTestId("header-event-toggle") as HTMLButtonElement).disabled).toBe(false);
+});
 it("filters current problems inside the original adapter catalog", () => {
   render(<AdapterCatalog adapters={[adapter, { ...adapter, id: 42, name: "历史已处理" }]} selectedId={null} busy={false}
     onSelect={vi.fn()} onCreate={vi.fn()} versionSeqById={new Map()} workers={[]} onOpenSettings={vi.fn()}

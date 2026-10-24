@@ -40,7 +40,7 @@
       "running": "运行中",
       "scheduled": "定时已启用",
       "stopped": "已停止",
-      "subscriptionLocked": "订阅锁定"
+      "subscriptionLocked": "事件仍待处理"
     },
     "reasons": {
       "readOnly": "当前适配器为只读共享，不能修改、保存、运行或改变定时配置。",
@@ -63,7 +63,7 @@
       "saveChangesFirst": "请先保存当前修改，再启用定时。",
       "runtimeDirty": "运行设置有未保存修改，请先保存运行设置。",
       "saveRuntimeFirst": "请先保存运行设置，再启用定时。",
-      "subscriptionLocked": "请先停用事件订阅，并处理或处置已接管责任后再手动运行或编辑。"
+      "subscriptionLocked": "请先停止接收并处理完旧事件，再手动运行或编辑。"
     },
     "lockHint": "适配器正在运行，编辑与运行设置已锁定。",
     "header": {
@@ -240,7 +240,7 @@
         "seconds_other": "{{count}} 秒"
       }
     },
-    "subscriptionLockHint": "事件订阅锁定了此任务；请在事件订阅中停用来源并处理或处置已接管责任后，再手动运行或编辑。"
+    "subscriptionLockHint": "来源仍在接收，或旧事件尚未处理完。请先停止接收，再到接收记录中查看和处理。"
   },
   "webhook": {
     "status": {
@@ -313,7 +313,7 @@
   "history": {
     "activeTrigger": "主动触发",
     "scheduledTrigger": "定时触发",
-    "subscriptionTrigger": "事件订阅触发",
+    "subscriptionTrigger": "事件触发",
     "webhookTrigger": "Webhook 触发",
     "unknownTrigger": "{{trigger}}",
     "scheduledFor": "计划 {{time}}",

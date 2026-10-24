@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Alert, Button, Collapse, Space, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 import { api } from "../api";
@@ -11,19 +11,21 @@ import SubscriptionActionDialog from "./SubscriptionActionDialog";
 import SubscriptionConfigDialog from "./SubscriptionConfigDialog";
 import "./subscriptions.css";
 
-export function EventReceivingButton({ adapter, sub, capabilities, dirty, busy, readOnly, onChanged, onDraftStateChange }: {
+export function EventReceivingButton({ adapter, sub, capabilities, dirty, busy, readOnly, statusPending, onChanged, onDraftStateChange }: {
   adapter: Adapter; sub: EventSubscription | null; capabilities: SubscriptionCapabilities;
   dirty: boolean; busy: boolean; readOnly: boolean; onChanged: () => Promise<void>;
+  statusPending?: boolean;
   onDraftStateChange: (value: SubscriptionDraftState) => void;
 }) {
   const { t } = useTranslation("subscription");
   const [action, setAction] = useState<"enable" | "disable" | null>(null);
   const receiving = sub?.desired_state === "enabled";
-  const reason = busy ? t("ux.loading") : !sub ? t("ux.configureFirst")
-    : receiving ? null : dirty ? t("ux.saveFirst")
+  const reason = busy ? t("ux.loading") : receiving ? null : statusPending ? t("ux.loading") : !sub ? t("ux.configureFirst")
+    : dirty ? t("ux.saveFirst")
     : adapter.latest_version_id === null ? t("ux.codeFirst")
     : adapter.runtime_worker_id == null ? t("ux.workerFirst")
-    : !capabilities.enabled || !sub.available ? t("unavailable")
+    : adapter.runtime_locked ? t("ux.settleFirst")
+    : !capabilities.enabled || !sub.available || !capabilities.available_sources.includes(sub.source_type) ? t("unavailable")
     : !subscriptionDrained(sub) ? t("ux.settleFirst") : null;
   if (readOnly) return null;
   return <>
@@ -39,10 +41,11 @@ export function EventReceivingButton({ adapter, sub, capabilities, dirty, busy, 
   </>;
 }
 
-export default function EventTriggerSettings({ adapter, sub, capabilities, readOnly, canManage, runtimeDirty, initialConfigure, onChanged, onRecords, onDraftStateChange }: {
+export default function EventTriggerSettings({ adapter, sub, capabilities, readOnly, canManage, runtimeDirty, runtimeFields, initialConfigure, onChanged, onRecords, onDraftStateChange }: {
   adapter: Adapter; sub: EventSubscription | null; capabilities: SubscriptionCapabilities;
   readOnly: boolean; canManage: boolean; runtimeDirty: boolean;
   initialConfigure?: boolean;
+  runtimeFields?: ReactNode;
   onChanged: () => Promise<void>; onRecords: () => void;
   onDraftStateChange: (value: SubscriptionDraftState) => void;
 }) {
@@ -54,7 +57,7 @@ export default function EventTriggerSettings({ adapter, sub, capabilities, readO
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const available = implementedSourceTypes.filter(source => capabilities.available_sources.includes(source));
-  const canConfigure = !readOnly && !runtimeDirty && (sub ? subscriptionDrained(sub) : !adapter.runtime_locked && adapter.run_mode === "manual");
+  const canConfigure = !readOnly && !runtimeDirty && !adapter.runtime_locked && (sub ? subscriptionDrained(sub) : adapter.run_mode === "manual");
   async function test() {
     if (!sub) return;
     setTesting(true); setError(null); setFeedback(null);
@@ -64,11 +67,13 @@ export default function EventTriggerSettings({ adapter, sub, capabilities, readO
   }
   return <section className="event-trigger-settings" data-testid="event-trigger-settings">
     <p className="ux-muted">{t("ux.eventHint")}</p>
+    {(!capabilities.enabled || available.length === 0) && <Alert type="info" message={t("unavailable")} />}
     <div className="event-source-row"><strong>{t("ux.source")}</strong>
       <span>{sub ? eventSourceLabel(sub) : t("ux.notConfigured")}</span>
-      {!readOnly && <Button type="link" disabled={!canConfigure || !capabilities.enabled}
+      {!readOnly && <Button type="link" disabled={!canConfigure || !capabilities.enabled || available.length === 0 || (sub != null && !available.some(source => source === sub.source_type))}
         onClick={() => { setConfigSnapshot(sub ? structuredClone(sub) : undefined); setConfiguring(true); }}>{t(sub ? "ux.changeSource" : "ux.configureSource")}</Button>}
     </div>
+    {runtimeFields}
     <p className="ux-muted">{t("ux.eventInput")}</p>
     {runtimeDirty && <Alert type="info" message={t("ux.saveSettingsFirst")} />}
     {error && <Alert type="error" message={error} />}
@@ -79,7 +84,7 @@ export default function EventTriggerSettings({ adapter, sub, capabilities, readO
       <span>{t("ux.failedCount", { count: sub.event_counts.failed ?? 0 })}</span>
       <Button type="link" onClick={onRecords}>{t(eventNeedsAttention(sub) ? "ux.viewProblem" : "ux.viewRecords")}</Button>
     </div>}
-    <Space wrap><Button loading={testing} disabled={!sub || !capabilities.enabled || testing} onClick={() => void test()}>{t("test")}</Button>
+    <Space wrap><Button loading={testing} disabled={readOnly || !sub || !capabilities.enabled || testing} onClick={() => void test()}>{t("test")}</Button>
       <Button onClick={() => setFeedback(t("ux.help"))}>{t("ux.helpLabel")}</Button></Space>
     {sub && <Collapse items={[{ key: "advanced", label: t("ux.advanced"), children: <>
       <p>{t("ux.unbindHint")}</p><Button danger disabled={readOnly || !subscriptionDrained(sub)} onClick={() => setDeleting(true)}>{t("ux.unbind")}</Button>

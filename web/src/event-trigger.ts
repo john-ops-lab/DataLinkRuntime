@@ -1,4 +1,4 @@
-import type { EventSubscription } from "./subscription-types";
+import type { EventSubscription, SubscriptionEvent } from "./subscription-types";
 
 /** Current operational problems, rather than failures retained for audit. */
 export function eventNeedsAttention(sub: EventSubscription): boolean {
@@ -24,4 +24,26 @@ export function eventSourceLabel(sub: EventSubscription): string {
   const config = sub.config;
   return config.source_type === "kafka" ? `Kafka · ${config.topics.join(", ")}`
     : `Kubernetes · ${config.resource}${config.namespace ? ` · ${config.namespace}` : ""}`;
+}
+
+export function eventBytes(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return "—";
+  if (value < 1024) return `${value} B`;
+  const index = Math.min(3, Math.floor(Math.log(value) / Math.log(1024)));
+  return `${(value / 1024 ** index).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${["B", "KB", "MB", "GB"][index]}`;
+}
+
+/** Summarize bounded source metadata; never guess the business payload schema. */
+export function eventSummary(event: SubscriptionEvent, translate: (key: string, values?: Record<string, unknown>) => string): string {
+  const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const source = record(event.envelope?.source);
+  const position = record(source.position);
+  const attributes = record(source.attributes);
+  if (event.source_phase?.startsWith("sync.")) return translate(`ux.phase.${event.source_phase.slice(5)}`);
+  if (source.type === "kubernetes") {
+    const name = [attributes.namespace, attributes.name].filter(value => typeof value === "string" && value !== "").join("/");
+    return `${translate(`ux.change.${String(attributes.watch_type ?? "present").toLowerCase()}`, { defaultValue: translate("ux.objectChange") })} · ${name || translate("ux.objectChange")}`.slice(0, 220);
+  }
+  if (typeof position.topic === "string") return translate("ux.kafkaSummary", { topic: position.topic.slice(0, 128), partition: position.partition ?? "—", offset: position.offset ?? "—" });
+  return translate("ux.recordNumber", { id: event.id });
 }

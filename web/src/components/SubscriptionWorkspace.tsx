@@ -8,6 +8,7 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
 } from "antd";
 import { useTranslation } from "react-i18next";
 import { api } from "../api";
@@ -29,6 +30,7 @@ import {
   isCompletionEvent,
   subscriptionDrained,
 } from "../subscription-types";
+import { eventBytes, eventNeedsAttention, eventSourceLabel, eventStatusKey, eventSummary } from "../event-trigger";
 import { subscriptionErrorMessage } from "../subscription-message";
 import ExecutionHistoryPanel from "./ExecutionHistoryPanel";
 import SubscriptionConfigDialog from "./SubscriptionConfigDialog";
@@ -82,6 +84,7 @@ export default function SubscriptionWorkspace({
   onDraftStateChange?: (state: SubscriptionDraftState) => void;
 }) {
   const { t } = useTranslation("subscription");
+  const technicalRef = useRef<HTMLDetailsElement>(null);
   const [sub, setSub] = useState<EventSubscription | null>(null);
   const [events, setEvents] = useState<SubscriptionEventPage>({
     items: [],
@@ -316,36 +319,104 @@ export default function SubscriptionWorkspace({
       data-testid="subscription-workspace"
     >
       <header className="subscription-header">
-        <div>
-          <h2>{sub.name || `#${sub.id}`}</h2>
-          <p>{sub.description}</p>
-        </div>
+        <span className="ux-muted">{eventSourceLabel(sub)}</span>
         <Button onClick={() => void reload()}>{t("refresh")}</Button>
       </header>
       {error && <Alert type="error" showIcon role="alert" message={error} />}
-      {!capabilities.enabled && (
-        <Alert type="warning" showIcon message={t("featureOff")} />
-      )}
+      {!capabilities.enabled && <Alert type="warning" showIcon message={t("featureOff")} />}
       {!canEdit && <Alert type="info" message={t("readOnly")} />}
-      {sub.last_error_code && (
-        <Alert
-          type="warning"
-          showIcon
-          message={
-            <>
-              <code>{sub.last_error_code}</code> ·{" "}
-              {t(
-                `${sub.source_type === "kubernetes" ? "kubernetes." : ""}errors.${sub.last_error_code}`,
-                {
-                  defaultValue: t(`errors.${sub.last_error_code}`, {
-                    defaultValue: t("operationFailed"),
-                  }),
-                },
-              )}
-            </>
-          }
+      <div className="event-status-strip" role="status">
+        <span>{t(`ux.status.${eventStatusKey(sub)}`)}</span>
+        <span>{t("ux.pendingCount", { count: sub.quota.pending_count ?? 0 })}</span>
+        <span>{t("ux.failedCount", { count: sub.event_counts.failed ?? 0 })}</span>
+      </div>
+      {eventNeedsAttention(sub) && <Alert type="warning" showIcon
+        message={t(`ux.status.${eventStatusKey(sub)}`)}
+        description={sub.last_error_code ? t(`${sub.source_type === "kubernetes" ? "kubernetes." : ""}errors.${sub.last_error_code}`, {
+          defaultValue: t(`errors.${sub.last_error_code}`, { defaultValue: t("ux.problemHint") }),
+        }) : t("ux.problemHint")}
+        action={<Space wrap>
+          <Button onClick={() => {
+            const blocked = checkpoints.find(item => item.blocked_receipt_id != null)?.blocked_receipt_id;
+            if (blocked) void api.getSubscriptionEvent(id, blocked).then(setSelectedEvent).catch((reason: unknown) => setError(subscriptionErrorMessage(reason)));
+            else if (events.items.some(item => item.state === "failed")) setSelectedEvent(events.items.find(item => item.state === "failed")!);
+            else if (technicalRef.current) technicalRef.current.open = true;
+          }}>{t("ux.viewProblem")}</Button>
+          {canEdit && <Tooltip title={sub.desired_state !== "disabled" || sub.connection_state !== "stopped" ? t("ux.stopBeforeRepair") : undefined}>
+            <Button type="primary" disabled={sub.desired_state !== "disabled" || sub.connection_state !== "stopped" || sub.activation_id === null || (sub.event_counts.processing ?? 0) > 0}
+              onClick={() => { if (sub.delivery_state === "repair") void repairForm(); else setAction({ kind: "repairEnter" }); }}>{t("ux.fixCode")}</Button>
+          </Tooltip>}
+          {canEdit && sub.delivery_state === "repair" && <Button disabled={(sub.event_counts.processing ?? 0) > 0 || (sub.event_counts.failed ?? 0) > 0}
+            onClick={() => setAction({ kind: "repairExit" })}>{t("repairExit")}</Button>}
+        </Space>} />}
+      {sub.latest_batch?.completion_abandoned && <Alert type="info" showIcon message={t("ux.unconfirmedBatch")} />}
+      {diagnostic && <Alert type="success" showIcon message={diagnostic} />}
+      {(sub.config.source_type === "kubernetes" || sub.latest_batch != null || selectedBatchId !== null) && <>
+      <details className="event-batch-details" open={!!sub.latest_batch && !sub.latest_batch.closed || selectedBatchId !== null || undefined}>
+        <summary>{t("ux.batchHistory")}</summary>
+      {sub.config.source_type === "kubernetes" ||
+      sub.latest_batch != null ||
+      selectedBatchId !== null ? (
+        <SubscriptionBatchPanel
+          sub={sub}
+          canEdit={canEdit && sub.source_type === "kubernetes"}
+          selectedId={selectedBatchId}
+          onSelect={setSelectedBatchId}
+          onEvent={(receiptId) => {
+            void api
+              .getSubscriptionEvent(id, receiptId)
+              .then(setSelectedEvent)
+              .catch((reason: unknown) =>
+                setError(subscriptionErrorMessage(reason)),
+              );
+          }}
+          onExecution={setExecutionId}
+          onChanged={changed}
+          onDraftStateChange={setBatchDraft}
         />
-      )}
+      ) : null}
+      </details>
+      </>}
+      <section>
+        <h3>{t("ux.records")}</h3>
+        <Table<SubscriptionEvent>
+          rowKey="id"
+          size="small"
+          loading={loading}
+          pagination={false}
+          scroll={{ x: 750 }}
+          dataSource={events.items}
+          columns={[
+            { title: t("received"), render: (_, row) => new Date(row.first_received_at).toLocaleString() },
+            { title: t("ux.eventSummary"), render: (_, row) => <Button type="link" className="subscription-event-summary"
+                data-testid={`event-record-${row.id}`} onClick={() => setSelectedEvent(row)}>{eventSummary(row, t)}</Button> },
+            ...(sub.source_type === "kubernetes" || hasKubernetesEvents ? [{ title: t("ux.batch"), render: (_: unknown, row: SubscriptionEvent) =>
+              row.batch_id ? <Button type="link" onClick={() => setSelectedBatchId(row.batch_id!)}>#{row.batch_id}</Button> : "—" }] : []),
+            { title: t("ux.result"), render: (_, row) => <SubscriptionState value={row.state} /> },
+            { title: t("ux.actions"), render: (_, row) => {
+              const execution = row.deliveries.filter(item => item.execution_id !== null).at(-1);
+              return <Space wrap><Button type="link" onClick={() => setSelectedEvent(row)}>{t("ux.viewEvent")}</Button>
+                {execution && <Button type="link" onClick={() => setExecutionId(execution.execution_id)}>{t("ux.viewExecution")}</Button>}</Space>;
+            } },
+          ]}
+        />
+        <Space>
+          <span>{t("total", { count: events.total })}</span>
+          <Button
+            disabled={before === undefined}
+            onClick={() => setBefore(undefined)}
+          >
+            {t("first")}
+          </Button>
+          <Button
+            disabled={events.next_before_id === null}
+            onClick={() => setBefore(events.next_before_id ?? undefined)}
+          >
+            {t("next")}
+          </Button>
+        </Space>
+      </section>
+      <details ref={technicalRef} className="event-technical-details"><summary>{t("ux.technical")}</summary>
       <Descriptions
         size="small"
         column={{ xs: 1, md: 3 }}
@@ -396,99 +467,6 @@ export default function SubscriptionWorkspace({
           },
         ]}
       />
-      {canEdit && (
-        <Space wrap>
-          <Button
-            onClick={() =>
-              setMetadata({ name: sub.name, description: sub.description })
-            }
-          >
-            {t("metadata")}
-          </Button>
-          {implementedSourceTypes.includes(sub.config.source_type) && (
-            <Button
-              disabled={!drained}
-              onClick={() => setConfiguration(structuredClone(sub))}
-            >
-              {t("configure")}
-            </Button>
-          )}
-          <Button
-            loading={testing}
-            disabled={!capabilities.enabled || testing}
-            onClick={() => void testConnection()}
-          >
-            {t("test")}
-          </Button>
-          {sub.desired_state === "disabled" ? (
-            <Button
-              type="primary"
-              disabled={!canEnable || !drained || activationBlocked}
-              onClick={() => setAction({ kind: "enable" })}
-            >
-              {t("enable")}
-            </Button>
-          ) : (
-            <Button onClick={() => setAction({ kind: "disable" })}>
-              {t("disable")}
-            </Button>
-          )}
-          {sub.desired_state === "enabled" &&
-            sub.connection_state === "blocked" && (
-              <Button
-                disabled={!canEnable}
-                onClick={() => setAction({ kind: "resume" })}
-              >
-                {t("resume")}
-              </Button>
-            )}
-          <Button
-            danger
-            disabled={!drained}
-            onClick={() => setAction({ kind: "reset" })}
-          >
-            {t("reset")}
-          </Button>
-          <Button
-            danger
-            disabled={!drained}
-            onClick={() => setAction({ kind: "delete" })}
-          >
-            {t("delete")}
-          </Button>
-          {sub.delivery_state === "repair" ? (
-            <>
-              <Button
-                disabled={(sub.event_counts.processing ?? 0) > 0}
-                onClick={() => void repairForm()}
-              >
-                {t("repairSave")}
-              </Button>
-              <Button
-                disabled={
-                  (sub.event_counts.processing ?? 0) > 0 ||
-                  (sub.event_counts.failed ?? 0) > 0
-                }
-                onClick={() => setAction({ kind: "repairExit" })}
-              >
-                {t("repairExit")}
-              </Button>
-            </>
-          ) : (
-            <Button
-              disabled={
-                sub.desired_state !== "disabled" ||
-                sub.connection_state !== "stopped" ||
-                sub.activation_id === null
-              }
-              onClick={() => setAction({ kind: "repairEnter" })}
-            >
-              {t("repairEnter")}
-            </Button>
-          )}
-        </Space>
-      )}
-      {diagnostic && <Alert type="success" showIcon message={diagnostic} />}
       {sub.config.source_type === "kubernetes" ? (
         <>
           <Descriptions
@@ -533,27 +511,6 @@ export default function SubscriptionWorkspace({
           />
         </>
       ) : null}
-      {sub.config.source_type === "kubernetes" ||
-      sub.latest_batch != null ||
-      selectedBatchId !== null ? (
-        <SubscriptionBatchPanel
-          sub={sub}
-          canEdit={canEdit && sub.source_type === "kubernetes"}
-          selectedId={selectedBatchId}
-          onSelect={setSelectedBatchId}
-          onEvent={(receiptId) => {
-            void api
-              .getSubscriptionEvent(id, receiptId)
-              .then(setSelectedEvent)
-              .catch((reason: unknown) =>
-                setError(subscriptionErrorMessage(reason)),
-              );
-          }}
-          onExecution={setExecutionId}
-          onChanged={changed}
-          onDraftStateChange={setBatchDraft}
-        />
-      ) : null}
       {!drained && <Alert type="info" message={t("locked")} />}
       <section>
         <h3>{t("quota")}</h3>
@@ -568,8 +525,8 @@ export default function SubscriptionWorkspace({
             <div key={key}>
               <span>{t(key)}</span>
               <strong>
-                {(sub.quota[key] ?? 0).toLocaleString()} /{" "}
-                {sub.limits?.[key]?.toLocaleString() ?? "—"}
+                {key.endsWith("_bytes") ? eventBytes(sub.quota[key] ?? 0) : (sub.quota[key] ?? 0).toLocaleString()} /{" "}
+                {key.endsWith("_bytes") ? eventBytes(sub.limits?.[key]) : sub.limits?.[key]?.toLocaleString() ?? "—"}
               </strong>
             </div>
           ))}
@@ -670,98 +627,101 @@ export default function SubscriptionWorkspace({
           </Button>
         </Space>
       </section>
-      <section>
-        <h3>{t("events")}</h3>
-        <p>{t("originalState")}</p>
-        <Table<SubscriptionEvent>
-          rowKey="id"
-          size="small"
-          loading={loading}
-          pagination={false}
-          scroll={{ x: 750 }}
-          dataSource={events.items}
-          columns={[
-            {
-              title: t("event"),
-              render: (_, row) => (
-                <Button
-                  type="link"
-                  className="subscription-event-id"
-                  onClick={() => setSelectedEvent(row)}
-                >
-                  {row.source_event_id}
-                </Button>
-              ),
-            },
-            {
-              title: t(
-                sub.source_type === "kubernetes"
-                  ? "kubernetes.stream"
-                  : "shard",
-              ),
-              dataIndex: "shard",
-            },
-            ...(sub.source_type === "kubernetes" || hasKubernetesEvents
-              ? [
-                  {
-                    title: t("batch.id"),
-                    render: (_: unknown, row: SubscriptionEvent) =>
-                      row.batch_id ? (
-                        <Button
-                          type="link"
-                          onClick={() => setSelectedBatchId(row.batch_id!)}
-                        >
-                          #{row.batch_id} · {row.source_phase}
-                        </Button>
-                      ) : (
-                        (row.source_phase ?? "—")
-                      ),
-                  },
-                ]
-              : []),
-            {
-              title: t("state"),
-              render: (_, row) => <SubscriptionState value={row.state} />,
-            },
-            {
-              title: t("received"),
-              render: (_, row) =>
-                new Date(row.first_received_at).toLocaleString(),
-            },
-            {
-              title: t("execution"),
-              render: (_, row) => (
-                <Space wrap>
-                  {row.deliveries
-                    .filter((item) => item.execution_id !== null)
-                    .map((item) => (
-                      <Button
-                        key={item.id}
-                        type="link"
-                        onClick={() => setExecutionId(item.execution_id)}
-                      >{`#${item.execution_id} · ${item.ordinal}`}</Button>
-                    ))}
-                </Space>
-              ),
-            },
-          ]}
-        />
-        <Space>
-          <span>{t("total", { count: events.total })}</span>
+        <p>{t("ux.lastErrorCode")}: <code>{sub.last_error_code ?? "—"}</code></p>
+        <h3>{t("ux.advancedActions")}</h3>
+      {canEdit && (
+        <Space wrap>
           <Button
-            disabled={before === undefined}
-            onClick={() => setBefore(undefined)}
+            onClick={() =>
+              setMetadata({ name: sub.name, description: sub.description })
+            }
           >
-            {t("first")}
+            {t("metadata")}
+          </Button>
+          {implementedSourceTypes.includes(sub.config.source_type) && (
+            <Button
+              disabled={!drained}
+              onClick={() => setConfiguration(structuredClone(sub))}
+            >
+              {t("configure")}
+            </Button>
+          )}
+          <Button
+            loading={testing}
+            disabled={!capabilities.enabled || testing}
+            onClick={() => void testConnection()}
+          >
+            {t("test")}
+          </Button>
+          {sub.desired_state === "disabled" ? (
+            <Button
+              type="primary"
+              disabled={!canEnable || !drained || activationBlocked}
+              onClick={() => setAction({ kind: "enable" })}
+            >
+              {t("enable")}
+            </Button>
+          ) : (
+            <Button onClick={() => setAction({ kind: "disable" })}>
+              {t("disable")}
+            </Button>
+          )}
+          {sub.desired_state === "enabled" &&
+            sub.connection_state === "blocked" && (
+              <Button
+                disabled={!canEnable}
+                onClick={() => setAction({ kind: "resume" })}
+              >
+                {t("resume")}
+              </Button>
+            )}
+          <Button
+            danger
+            disabled={!drained}
+            onClick={() => setAction({ kind: "reset" })}
+          >
+            {t("reset")}
           </Button>
           <Button
-            disabled={events.next_before_id === null}
-            onClick={() => setBefore(events.next_before_id ?? undefined)}
+            danger
+            disabled={!drained}
+            onClick={() => setAction({ kind: "delete" })}
           >
-            {t("next")}
+            {t("delete")}
           </Button>
+          {sub.delivery_state === "repair" ? (
+            <>
+              <Button
+                disabled={(sub.event_counts.processing ?? 0) > 0}
+                onClick={() => void repairForm()}
+              >
+                {t("repairSave")}
+              </Button>
+              <Button
+                disabled={
+                  (sub.event_counts.processing ?? 0) > 0 ||
+                  (sub.event_counts.failed ?? 0) > 0
+                }
+                onClick={() => setAction({ kind: "repairExit" })}
+              >
+                {t("repairExit")}
+              </Button>
+            </>
+          ) : (
+            <Button
+              disabled={
+                sub.desired_state !== "disabled" ||
+                sub.connection_state !== "stopped" ||
+                sub.activation_id === null
+              }
+              onClick={() => setAction({ kind: "repairEnter" })}
+            >
+              {t("repairEnter")}
+            </Button>
+          )}
         </Space>
-      </section>
+      )}
+      </details>
       {executionId !== null && (
         <section>
           <Button onClick={() => setExecutionId(null)}>
@@ -905,12 +865,15 @@ export default function SubscriptionWorkspace({
             </Space>
           }
         >
+          <p>{eventSummary(selectedEvent, t)}</p>
+          <details><summary>{t("ux.eventIdentity")}</summary>
           <p>
             <code>{selectedEvent.source_event_id}</code>
           </p>
           <p>
             {t("epoch")}: {selectedEvent.source_epoch}
           </p>
+          </details>
           {selectedEvent.batch_id ? (
             <Button
               onClick={() => {

@@ -40,7 +40,7 @@
       "running": "Running",
       "scheduled": "Schedule enabled",
       "stopped": "Stopped",
-      "subscriptionLocked": "Subscription locked"
+      "subscriptionLocked": "Events still need processing"
     },
     "reasons": {
       "readOnly": "This Adapter is a read-only share; editing, saving, running and schedule changes are unavailable.",
@@ -63,7 +63,7 @@
       "saveChangesFirst": "Save the current changes before enabling the schedule.",
       "runtimeDirty": "Runtime settings have unsaved changes. Save the runtime configuration first.",
       "saveRuntimeFirst": "Save the runtime configuration before enabling the schedule.",
-      "subscriptionLocked": "Disable the event subscription and settle its accepted responsibilities before running manually or editing."
+      "subscriptionLocked": "Stop receiving and settle existing events before running manually or editing."
     },
     "lockHint": "The Adapter is running; editing and runtime configuration are locked.",
     "header": {
@@ -240,7 +240,7 @@
         "seconds_other": "{{count}} seconds"
       }
     },
-    "subscriptionLockHint": "The event subscription has locked this Task. Disable its source and settle accepted responsibilities in the subscription before running manually or editing."
+    "subscriptionLockHint": "The source is receiving or existing events still need processing. Stop receiving, then inspect and resolve received events."
   },
   "webhook": {
     "status": {
@@ -313,7 +313,7 @@
   "history": {
     "activeTrigger": "Manual trigger",
     "scheduledTrigger": "Schedule trigger",
-    "subscriptionTrigger": "Event subscription",
+    "subscriptionTrigger": "Event triggered",
     "webhookTrigger": "Webhook trigger",
     "unknownTrigger": "{{trigger}}",
     "scheduledFor": "Scheduled {{time}}",
