@@ -20,6 +20,18 @@ from dlr.control.services.input_config import database_now
 from dlr.control.services.subscription_source import SourceFailure, SourceRunContext
 
 SHARD = "messages"
+# Only content rejected before custody can poison a shard. Connection/account failures
+# must remain retryable after correction, including an authentication failure during ACK.
+MESSAGE_FAILURES = frozenset(
+    {
+        "event_payload_too_large",
+        "source_properties_invalid",
+        "source_message_id_required",
+        "source_message_type_unsupported",
+        "source_message_digest_invalid",
+        "source_message_encoding_invalid",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -247,11 +259,11 @@ class QueueSourceRunner:
                 else "source_content_invalid"
             )
             failure = SourceFailure(code, "capacity" if error.status_code == 429 else "blocked")
-            if code != "subscription_owner_stale":
+            if code not in {"subscription_owner_stale", "source_shard_blocked"}:
                 record_fault(context, error, message)
         except Exception as error:
             failure = classify(error)
-            if failure.disposition == "blocked" and not context.stop_event.is_set():
+            if failure.code in MESSAGE_FAILURES and not context.stop_event.is_set():
                 record_fault(context, error, message)
         finally:
             if transport is not None:

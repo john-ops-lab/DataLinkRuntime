@@ -115,6 +115,87 @@ def test_ack_follows_committed_t1_and_ack_loss_does_not_erase_custody(rabbit_con
     assert transport.closed and counts(rabbit_context) == 1
 
 
+@pytest.mark.parametrize(
+    "phase,code",
+    [
+        ("open", "source_authentication_failed"),
+        ("open", "source_authorization_failed"),
+        ("poll", "source_authentication_failed"),
+        ("ack", "source_authentication_failed"),
+    ],
+)
+def test_account_failure_does_not_poison_messages_or_prevent_recovery(rabbit_context, phase, code):
+    class Transport:
+        closed = False
+
+        def poll(self):
+            if phase == "poll":
+                raise SourceFailure(code)
+            return message()
+
+        def ack(self, value):
+            raise SourceFailure(code)
+
+        def close(self):
+            self.closed = True
+
+    transport = Transport()
+    runner = queue.QueueSourceRunner()
+
+    def opened(*args, **kwargs):
+        if phase == "open":
+            raise SourceFailure(code)
+        return transport
+
+    runner.open = opened
+    with pytest.raises(SourceFailure) as caught:
+        runner.run(rabbit_context)
+    assert caught.value.code == code and caught.value.closed
+    assert phase == "open" or transport.closed
+    assert counts(rabbit_context) == (1 if phase == "ack" else 0)
+    with rabbit_context.session_factory() as session:
+        checkpoint = session.scalar(select(SourceCheckpoint))
+        assert checkpoint is None or checkpoint.blocked_unaccepted is None
+    # Correcting credentials can resume the same epoch and the same committed message.
+    assert queue.take_custody(rabbit_context, message())
+    assert counts(rabbit_context) == 1
+
+
+def test_existing_poison_fault_keeps_confirmed_close_and_original_diagnosis(rabbit_context):
+    with rabbit_context.session_factory.begin() as session:
+        delivery.record_rejection(
+            session,
+            rabbit_context.subscription_id,
+            rabbit_context.owner_id,
+            rabbit_context.generation,
+            queue.SHARD,
+            "source_message_id_required",
+            "original-fault",
+            {},
+        )
+
+    class Transport:
+        closed = False
+
+        def poll(self):
+            return message("later-message")
+
+        def close(self):
+            self.closed = True
+
+    transport = Transport()
+    runner = queue.QueueSourceRunner()
+    runner.open = lambda *args, **kwargs: transport
+    with pytest.raises(SourceFailure) as caught:
+        runner.run(rabbit_context)
+    assert caught.value.code == "source_shard_blocked" and caught.value.closed
+    assert transport.closed and counts(rabbit_context) == 0
+    with rabbit_context.session_factory() as session:
+        fault = session.scalar(select(SourceCheckpoint)).blocked_unaccepted
+        assert fault["code"] == "source_message_id_required"
+        assert fault["source_event_id"] == "original-fault" and fault["duplicate_count"] == 0
+
+
 def test_invalid_id_and_capacity_close_without_ack(rabbit_context, monkeypatch):
     class Transport:
         acked = False
