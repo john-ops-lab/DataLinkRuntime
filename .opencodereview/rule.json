@@ -1,0 +1,26 @@
+{
+  "include": [
+    "AGENTS.md",
+    ".opencodereview/rule.json",
+    "**/test_*.py",
+    "**/*_test.py",
+    "**/*_test.go",
+    "**/*.test.{js,jsx,ts,tsx}",
+    "**/*.spec.{js,jsx,ts,tsx}",
+    "openspec/**/*.md",
+    "docs/**/*.md"
+  ],
+  "exclude": [
+    "**/*.private.*",
+    "**/.opencodereview/config.json",
+    "**/platform-logs/**",
+    "**/.tmp-platform-logs/**"
+  ],
+  "rules": [
+    {
+      "path": "**/*",
+      "merge_system_rule": true,
+      "rule": "以简体中文报告有证据的实质问题，说明触发条件、影响、路径和行号。结合本次业务背景、相关 OpenSpec 和 AGENTS.md 判断；没有提供或无法读取的背景明确记录，不能猜测合同。审查本次变更、相关测试及必要调用方，不运行产品、不修改文件、不安装依赖、不发消息或合并。关注权限、已保存配置与草稿隔离、数据库事务、幂等、消息责任与来源确认、取消目标、旧激活隔离、连接/租约关闭及中英文用户体验。测试必须能证伪错误行为，不接受仅复述实现的断言。配置与报告不得包含私有部署地址、路径、Token、Master Key 或 API Key；默认保护不能被 include 绕过。不要把不相关风格偏好或无需求的架构重构当成阻塞问题。流程规则本身属于高风险，AI 无问题报告不等于合并授权。"
+    }
+  ]
+}
