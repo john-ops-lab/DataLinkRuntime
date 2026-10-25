@@ -5,6 +5,7 @@ import socket
 import socketserver
 import threading
 import time
+from concurrent.futures import Future
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -13,25 +14,30 @@ import pytest
 
 from ai_runtime_support import response
 from dlr.control.ai.provider_config import AiProviderError
+from dlr.control.ai.runtime.pydantic_ai import work
 from dlr.control.ai.runtime.pydantic_ai.transport import OwnedTransport
 from dlr.control.ai.runtime.pydantic_ai.work import WorkOwner
 
 
 @pytest.mark.parametrize(
-    ("phase", "setup_delay"),
+    ("phase", "setup_delay", "pause_warmup_cleanup"),
     [
-        pytest.param("headers", 0.0, id="headers"),
-        pytest.param("body", 0.0, id="body"),
-        pytest.param("keepalive_headers", 0.0, id="keepalive_headers"),
-        pytest.param("keepalive_headers", 0.35, id="keepalive_headers_slow_setup"),
+        pytest.param("headers", 0.0, False, id="headers"),
+        pytest.param("body", 0.0, False, id="body"),
+        pytest.param("keepalive_headers", 0.0, False, id="keepalive_headers"),
+        pytest.param("keepalive_headers", 0.35, False, id="keepalive_headers_slow_setup"),
+        pytest.param("keepalive_headers", 0.0, True, id="keepalive_headers_pending_cleanup"),
     ],
 )
 def test_slow_drip_releases_physical_work_before_server_stops(
-    phase: str, setup_delay: float
+    phase: str, setup_delay: float, pause_warmup_cleanup: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     release = threading.Event()
     slow_started = threading.Event()
     server_finished = threading.Event()
+    warmup_published = threading.Event()
+    release_warmup_cleanup = threading.Event()
+    warmup_slot_observed = threading.Event()
     connections: list[int] = []
     requests: list[int] = []
 
@@ -84,6 +90,28 @@ def test_slow_drip_releases_physical_work_before_server_stops(
         permits=permits,
         owner=owner,
     )
+    if pause_warmup_cleanup:
+
+        class WarmupFuture(Future[Any]):
+            def set_result(self, result: Any) -> None:
+                first = not warmup_published.is_set()
+                if first:
+                    warmup_published.set()
+                super().set_result(result)
+                if first:
+                    assert release_warmup_cleanup.wait(2), "Warmup cleanup gate was not released"
+
+        acquire = owner.slots.acquire
+
+        def observe_warmup_slot(*args: Any, **kwargs: Any) -> bool:
+            acquired = acquire(*args, **kwargs)
+            if not acquired and warmup_published.is_set():
+                warmup_slot_observed.set()
+                release_warmup_cleanup.set()
+            return acquired
+
+        monkeypatch.setattr(work, "Future", WarmupFuture)
+        monkeypatch.setattr(owner.slots, "acquire", observe_warmup_slot)
 
     # Client construction and connection warmup are setup, outside the short
     # deadline being tested. A slow runner must still reach the slow response.
@@ -96,6 +124,16 @@ def test_slow_drip_releases_physical_work_before_server_stops(
                     f"http://127.0.0.1:{httpd.server_port}", content=b"{}", timeout=2
                 )
                 assert first.status_code == 200
+                # Future completion precedes WorkOwner's finally/slot release.
+                # Drain physical warmup ownership before starting the I/O budget;
+                # otherwise capacity rejection can masquerade as a header timeout.
+                warmup_cleanup_deadline = time.monotonic() + 2
+                while not owner.slots.acquire(blocking=False):
+                    assert time.monotonic() < warmup_cleanup_deadline, "Warmup owner did not drain"
+                    await asyncio.sleep(0.005)
+                owner.slots.release()
+                with owner.lock:
+                    assert not owner.active
             transport.hard_deadline = time.monotonic() + 0.3
             with pytest.raises(AiProviderError) as caught:
                 await client.post(f"http://127.0.0.1:{httpd.server_port}", content=b"{}")
@@ -105,6 +143,8 @@ def test_slow_drip_releases_physical_work_before_server_stops(
         error = asyncio.run(execute())
         assert error.code == "ai_timeout"
         assert slow_started.is_set(), "deadline expired before the slow response started"
+        if pause_warmup_cleanup:
+            assert warmup_slot_observed.is_set()
         assert not release.is_set()
         assert transport.closed.wait(0.5), "response returned but physical header work survived"
         assert server_finished.wait(0.5)
@@ -117,6 +157,7 @@ def test_slow_drip_releases_physical_work_before_server_stops(
         assert len(connections) == 1
         assert len(requests) == (2 if phase == "keepalive_headers" else 1)
     finally:
+        release_warmup_cleanup.set()
         release.set()
         httpd.shutdown()
         httpd.server_close()
