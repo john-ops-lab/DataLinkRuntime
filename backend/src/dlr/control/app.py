@@ -19,6 +19,7 @@ from dlr.control.ai.attachment_documents import DocumentConversionError
 from dlr.control.ai.attachment_store import attachment_gc_loop
 from dlr.control.ai.tool_audit import configure_ai_tool_audit_logging
 from dlr.control.api import (
+    adapter_batches,
     adapters,
     ai,
     ai_attachments,
@@ -376,6 +377,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(users.router)
     app.include_router(adapters.router)
+    app.include_router(adapter_batches.router)
     app.include_router(templates.router)
     app.include_router(portable.router)
     app.include_router(input_configs.router)

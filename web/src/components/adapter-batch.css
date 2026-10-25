@@ -1,0 +1,25 @@
+.catalog-batch { margin-top: 6px; border-top: 1px solid var(--dlr-border); padding-top: 4px; }
+.catalog-batch-links, .catalog-batch-selection, .catalog-batch-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; justify-content: space-between; }
+.catalog-batch-selection { margin: 4px 0; }
+.catalog-batch-selection .ant-checkbox-wrapper, .catalog-batch-actions > span { font-size: 12px; }
+.catalog-batch-actions > span { margin-right: auto; }
+.catalog-batch-checkbox { flex: none; margin-left: 4px; }
+.catalog-batch-warning { font-size: 12px; margin: 6px 0 0; color: var(--ant-color-warning-text, #ad6800); }
+.adapter-batch-content { display: grid; gap: 12px; }
+.adapter-batch-summary { margin: 0; }
+.adapter-batch-items { list-style: none; padding: 0; margin: 0; }
+.adapter-batch-item { padding: 12px 0; border-bottom: 1px solid var(--dlr-border); }
+.adapter-batch-item-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.adapter-batch-item-heading strong { overflow-wrap: anywhere; min-width: 0; }
+.adapter-batch-status { flex-shrink: 0; border-radius: 4px; padding: 2px 6px; font-size: 12px; background: var(--ant-color-fill-quaternary, #f5f5f5); }
+.adapter-batch-status-failed, .adapter-batch-status-unknown { color: var(--ant-color-error-text, #a8071a); }
+.adapter-batch-status-stopping, .adapter-batch-status-pending { color: var(--ant-color-warning-text, #ad6800); }
+.adapter-batch-status-succeeded, .adapter-batch-status-no_change { color: var(--ant-color-success-text, #237804); }
+.adapter-batch-item p { margin: 6px 0; }
+.adapter-batch-reason { color: var(--dlr-text-secondary); }
+.adapter-batch-executions { margin: 8px 0; padding-left: 20px; font-size: 12px; }
+.adapter-batch-reference { color: var(--dlr-text-weak); font-size: 12px; overflow-wrap: anywhere; }
+.adapter-batch-footer { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 480px) {
+  .adapter-batch-item-heading { flex-direction: column; gap: 4px; }
+}

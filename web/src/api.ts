@@ -1,6 +1,7 @@
 /** Minimal typed client for the Control API. */
 
 import { createSubscriptionApi } from "./subscription-api";
+import { createAdapterBatchApi } from "./adapter-batch-api";
 
 import type {
   BuiltinPackage,
@@ -215,6 +216,7 @@ async function request<T>(path: string, init?: RequestInit, responseType?: "blob
 }
 
 export const api = {
+  ...createAdapterBatchApi(request),
   ...createSubscriptionApi(request),
   previewPortableFile: (file: File): Promise<PortablePackage> => request("/api/portable/preview", {
     method: "POST", body: file, headers: { "Content-Type": "application/zip" },

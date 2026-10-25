@@ -9,6 +9,8 @@ import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
 import { adapterAccessLevel, canEditAdapter, canManageAdapter } from "./adapter-access";
 import AccountApp from "./AccountApp";
 import AdapterCatalog from "./components/AdapterCatalog";
+import AdapterBatchOperationDrawer from "./components/AdapterBatchOperationDrawer";
+import { useAdapterBatchOperation } from "./hooks/useAdapterBatchOperation";
 import AdapterSettingsDrawer from "./components/AdapterSettingsDrawer";
 import AiAssistantPanel, {
   type AiCandidateDiffModalState,
@@ -852,6 +854,32 @@ export function AdapterConsole({
     }
     return list;
   }, []);
+
+  const reloadEventSubscriptions = eventSubscriptions.reload;
+  const refreshAfterBatch = useCallback(async () => {
+    const results = await Promise.allSettled([
+      refreshAdapters(), reloadEventSubscriptions(), requestRuntimeRefresh("mutation"),
+    ]);
+    if (results[0].status === "rejected") setAdapterListError(errorMessage(results[0].reason));
+  }, [refreshAdapters, reloadEventSubscriptions, requestRuntimeRefresh]);
+  const adapterBatch = useAdapterBatchOperation({
+    scope: `${currentEntryMode()}:${accountPrincipal?.id ?? "deployment"}`,
+    onChanged: refreshAfterBatch,
+  });
+  async function mutateBatch(kind: "execute" | "retry") {
+    const affectsSelected = adapterBatch.operation?.items.some(item => item.adapter_id === selectedAdapterId
+      && (kind === "execute" ? item.status === "pending" : item.status === "failed" && item.retryable));
+    // Use the existing selection-scoped protocol so old reads are invalidated
+    // and a failed follow-up does not hide a successfully submitted action.
+    const mutation = affectsSelected ? runtimeAuthority.beginRuntimeMutation() : null;
+    try {
+      await adapterBatch[kind]();
+    } finally {
+      mutation?.finish(() => setError(t("batch.runtimeRefreshFailed", { ns: "adapter" })));
+    }
+  }
+  const closeBatchOperation = adapterBatch.close;
+  useLayoutEffect(() => subscribeToBrowserLocation(closeBatchOperation), [closeBatchOperation]);
 
   const handleExecutionStarted = useCallback((adapterId: number, execution: Execution) => {
     if (selectedAdapterIdRef.current !== adapterId || execution.adapter_id !== adapterId) {
@@ -1777,6 +1805,10 @@ export function AdapterConsole({
               eventLoading={eventSubscriptions.loading}
               eventError={eventSubscriptions.error}
               eventIntentAdapterId={eventIntentAdapterId}
+              onBatchPrepare={adapterBatch.prepare}
+              batchBusy={!adapterBatch.canPrepare || selectedRuntimeMutationInFlight}
+              hasBatchOperation={adapterBatch.operationId !== null}
+              onShowBatchOperation={adapterBatch.show}
               onBrowseTemplates={() => handlePrimarySectionChange("templates")}
               versionSeqById={versionSeqById}
               workers={workers}
@@ -1799,6 +1831,20 @@ export function AdapterConsole({
               }}
               accountPrincipal={accountPrincipal}
             />}
+
+            <AdapterBatchOperationDrawer controller={{ ...adapterBatch,
+              execute: () => mutateBatch("execute"), retry: () => mutateBatch("retry"),
+            }} onInspect={(adapterId) => {
+              const target = adapters.find(adapter => adapter.id === adapterId);
+              if (!target || busy) return;
+              if (selected?.id === adapterId) {
+                adapterBatch.close();
+                setActiveTabKey("runtime");
+              } else if (confirmSubscriptionLeave() && confirmWorkspaceLeave()) {
+                adapterBatch.close();
+                void loadAdapterContent(target).then(loaded => { if (loaded) setActiveTabKey("runtime"); });
+              }
+            }} />
 
         {/*
           M5.5.4：AI 助手放在 Workbench 之前的 DOM 位置，视觉上仍通过 flex

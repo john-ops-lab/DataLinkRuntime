@@ -557,6 +557,15 @@
     "builtin_delete_failed": "Physical deletion failed; check Control storage and retry",
     "builtin_worker_upgrade_required": "Upgrade the selected Worker to support builtin packages",
     "builtin_source_invalid": "Select an existing builtin source; its kind, URL and credentials cannot be customized",
-    "subscription_draining": "The source is still receiving or older events still need processing. Stop receiving, then inspect and resolve them in received events."
+    "subscription_draining": "The source is still receiving or older events still need processing. Stop receiving, then inspect and resolve them in received events.",
+    "batch_config_conflict": "Saved configuration changed. Refresh the list, review it, and create a new operation.",
+    "batch_target_requires_attention": "This adapter needs configuration or runtime attention. Open it for details.",
+    "batch_operation_conflict": "This operation ID was used with different content. Check the original operation.",
+    "batch_operation_busy": "This operation is still being processed. Check its results again.",
+    "batch_retry_not_allowed": "This item cannot be retried now. Check its result and create a new operation if needed.",
+    "batch_result_unavailable": "You can no longer view or operate this adapter.",
+    "batch_activation_changed": "Receiving was restarted. This stop request will not affect the new session. Review it and create a new operation.",
+    "batch_not_found": "This operation was not found or is unavailable to this account.",
+    "batch_account_unavailable": "This account is disabled or its sign-in state changed. Sign in again."
   }
 }

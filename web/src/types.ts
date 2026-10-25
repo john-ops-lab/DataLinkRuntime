@@ -42,6 +42,8 @@ export interface SystemLocaleResponse {
 
 export interface Adapter {
   id: number;
+  /** Server fingerprint of saved runtime configuration; required for batch actions. */
+  batch_token?: string;
   name: string;
   description: string;
   language: AdapterLanguage;

@@ -86,6 +86,10 @@ Webhook、Task 与 Schedule 的终态 Execution 统一按部署配置的保存�
 Adapter 数量上限分批清理；`queued` / `running` / `retry_wait` 永不由 retention 删除。具体默认值、
 批量大小和平台服务日志轮转规则见 `docs/deployment/platform-logs.md`。
 
+### 3.3 目录批量操作
+
+适配器列表支持多选、全选当前可见项、清空选择及最多 100 项的批量启停。每项显示实际动作和独立结果；定时启停调度，Webhook 与事件触发启停接收，手动模式运行一次或取消准备时固定的执行。操作只使用已保存配置，不会提交或清除编辑区草稿；已接收的消息和已有执行按原规则处理。配置冲突须重新创建操作，结果未知先查询原操作。详见[批量操作说明](adapter-batch-operations.md)。
+
 ## 4. 保存与运行节点
 
 - 页面只显示“保存”；

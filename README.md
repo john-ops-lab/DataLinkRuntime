@@ -165,6 +165,8 @@ Create → Edit → Save → Run / Schedule → Observe
 
 适配器菜单支持导出 ZIP 和保存为模板，列表支持导入适配器；模板广场统一展示用户保存／导入的模板，并支持模板导入导出和创建者维护。所有导入先预览，创建独立、默认停止的新对象。详见[可移植交付包](docs/templates/portable-packages.md)。
 
+当前开发版本还支持在适配器列表多选并批量启动、停止，每批最多 100 项，逐项查看结果和重试失败项。操作只使用已保存配置，停止接收保留已接收工作。详见[批量操作说明](docs/zh-CN/adapter-batch-operations.md)。
+
 ---
 
 ## 核心能力
