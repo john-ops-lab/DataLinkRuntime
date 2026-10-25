@@ -10,14 +10,14 @@
 | Kubernetes API/config | `kubernetes==35.0.0` | 官方生成客户端，与 1.35 服务对应；复用 TLS/auth，使用有界原始传输处理 LIST/WATCH | Apache-2.0 |
 | HTTP 传输快照 | `urllib3==2.8.0` | 与现有后端锁一致；有 `HTTPResponse.read1(amt, decode_content=False)` | MIT |
 
-版本在 [requirements-clients.txt](../../../tools/subscriptions/requirements-clients.txt) 固定；B0 不向生产后端添加运行依赖。Kubernetes 35.0.0 的实际要求是 `urllib3!=2.6.0,>=1.24.2`，没有 `<2.4` 约束。初始试装 Kubernetes 34.1.0 遗留 urllib3 2.3.0，发现后已升级并对最终 2.8.0 重验，不降低原后端依赖。
+版本在 [requirements-clients.txt](../../../../tools/subscriptions/requirements-clients.txt) 固定；B0 不向生产后端添加运行依赖。Kubernetes 35.0.0 的实际要求是 `urllib3!=2.6.0,>=1.24.2`，没有 `<2.4` 约束。初始试装 Kubernetes 34.1.0 遗留 urllib3 2.3.0，发现后已升级并对最终 2.8.0 重验，不降低原后端依赖。
 
 比较与首败：
 
 - **弃选 `confluent-kafka==2.16.0 / librdkafka 2.16.0` 作为运行消费者**。安装、cluster/topic ID、assign/commit/pause 与普通关闭均成功；但真实消费组已消费后，将所有既有 TCP 连接置为黑洞，带 pending async commit 的 `Consumer.close()` 在 35 秒子进程 watchdog 到期前没有返回。阶段证据确认停在 close 本体；不是 join/accept 超时。3 秒 socket、6 秒 session、30 秒 max poll 参数不能替代公开关闭预算。首败保留，不能以普通关闭 27 毫秒替代故障结论。
 - `aiokafka` 原生 asyncio 与手动 commit/rebalance listener 可行；当前合同选择专用 owner 线程，最终 Kafka Python API 的可观察关闭预算更合适，不再维护第二套异步消费生命周期。
 - `kubernetes-asyncio` 可行，但本稿复用同步客户端的 TLS/auth 与专用线程管理。没有声称其他成熟方案无法实现合同。
-- Kafka Python **Producer** 不接受 null header 值，Consumer 实际能无损读取。因此 [requirements-fixtures.txt](../../../tools/subscriptions/requirements-fixtures.txt) 额外保留 Confluent **Producer** 仅生成测试数据；它不进入 Control 依赖，也不构成运行消费者双客户端方案。
+- Kafka Python **Producer** 不接受 null header 值，Consumer 实际能无损读取。因此 [requirements-fixtures.txt](../../../../tools/subscriptions/requirements-fixtures.txt) 额外保留 Confluent **Producer** 仅生成测试数据；它不进入 Control 依赖，也不构成运行消费者双客户端方案。
 
 ## Python、平台和支持矩阵
 

@@ -1,5 +1,11 @@
 # Proposal
 
+## 归档状态
+
+2026-10-25，维护者已确认合并 [#221](https://github.com/john-ops-lab/DataLinkRuntime/pull/221)，合并提交为 `754722b67316c709f76d9b7b07ccca3c0394c4dd`，#219 已关闭。包含后续修复的 main `8963927dbf18d5db1fdd8051fa9f032a28f985a9` 已通过四项 [main CI](https://github.com/john-ops-lab/DataLinkRuntime/actions/runs/40200720720)。维护者本次授权同步正式规格、归档并发布 v0.7.0。以下方案、授权和批次验证保留其历史阶段含义；实际通过与未验边界仍以各批记录为准。
+
+以下为各阶段形成的方案或验收记录；其中的待合并、禁止合并或待授权描述仅对应当时阶段，当前状态以上述记录为准。
+
 ## Why
 
 [Issue #219](https://github.com/john-ops-lab/DataLinkRuntime/issues/219) 需要把 Kafka、Kubernetes 等长期接收来源纳入 DLR，同时保持 Adapter 按次执行、业务逻辑由代码负责的产品边界。先固定接收责任、恢复、版本、顺序与容量合同，才能避免把“连接正常”或“已入队”误当作目标处理成功。

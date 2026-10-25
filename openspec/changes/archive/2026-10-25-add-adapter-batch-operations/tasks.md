@@ -1,5 +1,11 @@
 # Tasks
 
+## 归档状态
+
+2026-10-25，维护者在 Kimi OCR、定向验证和开发环境复核后明确确认合并 [#225](https://github.com/john-ops-lab/DataLinkRuntime/pull/225)。合并提交为 `8963927dbf18d5db1fdd8051fa9f032a28f985a9`，四项 [main CI](https://github.com/john-ops-lab/DataLinkRuntime/actions/runs/40200720720) 均在 attempt 1 成功，#223 已关闭。维护者本次授权同步正式规格、归档并发布 v0.7.0。以下批次记录保留原始验证提交和历史边界，不把后续文档收尾冒称为重跑真实业务矩阵。
+
+以下为各阶段形成的方案或验收记录；其中的待合并、禁止合并或待授权描述仅对应当时阶段，当前状态以上述记录为准。
+
 ## 1. B0 合同与审查
 
 - [x] 1.1 固定 #223 操作、权限、幂等、配置冲突、100 项与串行边界；核对 Issue 与现有单项代码，OpenSpec strict 校验通过并完成设计审查。

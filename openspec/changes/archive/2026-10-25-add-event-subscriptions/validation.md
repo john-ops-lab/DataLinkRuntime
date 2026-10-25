@@ -1,5 +1,11 @@
 # Validation
 
+## 归档状态
+
+2026-10-25，维护者已确认合并 [#221](https://github.com/john-ops-lab/DataLinkRuntime/pull/221)，合并提交为 `754722b67316c709f76d9b7b07ccca3c0394c4dd`，#219 已关闭。包含后续修复的 main `8963927dbf18d5db1fdd8051fa9f032a28f985a9` 已通过四项 [main CI](https://github.com/john-ops-lab/DataLinkRuntime/actions/runs/40200720720)。维护者本次授权同步正式规格、归档并发布 v0.7.0。以下方案、授权和批次验证保留其历史阶段含义；实际通过与未验边界仍以各批记录为准。
+
+以下为各阶段形成的方案或验收记录；其中的待合并、禁止合并或待授权描述仅对应当时阶段，当前状态以上述记录为准。
+
 ## 当前统一 PR 交付
 
 用户已追加授权将 B9–B14 更新到现有 PR #221。下述各批“不推送/不运行远端 CI”是当时范围，保留其历史事实。当前最终完整 HEAD 必须通过 `local-preview`、`backend`、`web`、`compose-smoke` 四项远端必要 CI，并与同一私有开发编排的实际版本一致；本地仅执行与改动直接相关的选择集及代表消息链路，不增加无关全量矩阵。
