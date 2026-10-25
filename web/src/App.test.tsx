@@ -1935,6 +1935,68 @@ it("Issue223 batch actions keep the editor draft and navigation and submit only 
   expect(writes.every(([url]) => String(url).startsWith("/api/adapter-batches"))).toBe(true);
 });
 
+it("Issue223 reports a selected runtime refresh failure without replacing successful batch results", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, run_mode: "schedule", batch_token: "saved-schedule" });
+  let operation: AdapterBatchOperation | null = null;
+  let written = false;
+  let holdNextRead = false;
+  let oldReadStarted = false;
+  let failedReads = 0;
+  let releaseOldRead!: (response: RouteResponse) => void;
+  const oldRead = new Promise<RouteResponse>(resolve => { releaseOldRead = resolve; });
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }), readyWorkerRoute,
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [{ ...adapter, runtime_locked: written }] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => {
+      if (holdNextRead && !written) {
+        holdNextRead = false;
+        oldReadStarted = true;
+        return oldRead;
+      }
+      if (written) {
+        failedReads += 1;
+        return { status: 503, body: { detail: { code: "runtime_read_failed", message: "fixture read failure" } } };
+      }
+      return { body: adapter };
+    } },
+    { method: "GET", match: "/api/adapters/1/schedule", respond: () => ({ body: {
+      adapter_id: 1, enabled: written, cron: "0 9 * * *", timezone: "UTC", input: null, next_run_at: null, updated_at: "",
+    } }) },
+    { method: "POST", match: "/api/adapter-batches", respond: body => {
+      const request = JSON.parse(body!) as AdapterBatchRequest;
+      operation = { id: request.id, action: "start", created_at: "", items: [{
+        adapter_id: 1, adapter_name: "adapter-a", mode: "schedule", action: "enable_schedule", status: "pending", error_code: null,
+        retryable: false, execution_ids: [], executions: [], subscription_id: null, subscription_state: null,
+      }] };
+      return { body: operation };
+    } },
+    { method: "POST", match: /\/api\/adapter-batches\/[^/]+\/execute$/, respond: () => {
+      written = true;
+      operation = { ...operation!, items: [{ ...operation!.items[0], status: "succeeded" }] };
+      return { body: operation };
+    } },
+    { method: "GET", match: /\/api\/adapter-batches\/[^/]+$/, respond: () => ({ body: operation }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await waitFor(() => expect(valueOf("code-editor")).toBe(STARTER_CODE));
+  holdNextRead = true;
+  act(() => { window.dispatchEvent(new Event("focus")); });
+  await waitFor(() => expect(oldReadStarted).toBe(true));
+  fireEvent.click(screen.getByTestId("batch-select-toggle"));
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择 adapter-a" }));
+  fireEvent.click(screen.getByRole("button", { name: "批量启动" }));
+  fireEvent.click(await screen.findByRole("button", { name: "确认执行（1 项）" }));
+  await within(await screen.findByTestId("batch-item-1")).findByText("定时已启用");
+  await act(async () => { releaseOldRead({ body: adapter }); await oldRead; });
+  await waitFor(() => expect(failedReads).toBeGreaterThan(0));
+  expect((await screen.findByTestId("error-banner")).textContent).toContain("运行状态未能刷新");
+  expect(within(screen.getByTestId("batch-item-1")).getByText("定时已启用")).toBeTruthy();
+  expect(fetchMock.mock.calls.filter(([url, init]) => init?.method === "POST" && String(url).endsWith("/execute"))).toHaveLength(1);
+});
+
 it("Issue223 batch preparation leaves an unsaved schedule form unchanged and never PUTs it", async () => {
   const adapter = makeAdapter({ latest_version_id: 10, run_mode: "schedule", batch_token: "saved-schedule" });
   const schedule = { adapter_id: 1, enabled: false, cron: "0 9 * * *", timezone: "UTC", input: null, next_run_at: null, updated_at: "" };

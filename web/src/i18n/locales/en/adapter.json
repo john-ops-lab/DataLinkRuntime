@@ -210,6 +210,7 @@
     "configureFirst": "Save the event source configuration first",
     "title": "Batch actions",
     "refresh": "Check results",
+    "runtimeRefreshFailed": "Batch results are preserved, but the current adapter's run status could not be refreshed. Try refreshing again.",
     "close": "Close",
     "confirm": "Confirm actions ({{count}})",
     "continue": "Continue pending ({{count}})",

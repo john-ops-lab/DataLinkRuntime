@@ -31,7 +31,7 @@ export function useAdapterBatchOperation(options: { scope: string; onChanged: ()
   const [unknown, setUnknown] = useState(false);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const session = useRef({ key, generation: 0, id: operationId, mutating: false, querying: false, readEpoch: 0 });
+  const session = useRef({ key, generation: 0, id: operationId, mutating: false, preparing: false, querying: false, readEpoch: 0 });
   const preparation = useRef<AdapterBatchRequest | null>(null);
   const lastObserved = useRef<string | null>(null);
   const onChanged = useRef(options.onChanged);
@@ -39,7 +39,9 @@ export function useAdapterBatchOperation(options: { scope: string; onChanged: ()
 
   const query = useCallback(async () => {
     const current = session.current;
-    if (current.id === null || current.querying) return;
+    // The new identity is not queryable until preparation commits. Progress
+    // reads during execute/retry remain useful and are guarded by readEpoch.
+    if (current.id === null || current.querying || current.preparing) return;
     const id = current.id;
     const epoch = ++current.readEpoch;
     current.querying = true;
@@ -71,7 +73,7 @@ export function useAdapterBatchOperation(options: { scope: string; onChanged: ()
   }, []);
 
   useLayoutEffect(() => {
-    const next = { key, generation: session.current.generation + 1, id: readId(key), mutating: false, querying: false, readEpoch: 0 };
+    const next = { key, generation: session.current.generation + 1, id: readId(key), mutating: false, preparing: false, querying: false, readEpoch: 0 };
     session.current = next;
     preparation.current = null;
     lastObserved.current = null;
@@ -115,6 +117,7 @@ export function useAdapterBatchOperation(options: { scope: string; onChanged: ()
     const current = session.current;
     if (current.mutating || current.id !== request.id) return;
     current.mutating = true;
+    current.preparing = true;
     current.readEpoch += 1;
     setWorking("prepare");
     setError(null);
@@ -126,12 +129,15 @@ export function useAdapterBatchOperation(options: { scope: string; onChanged: ()
       setOperation(result);
       lastObserved.current = JSON.stringify(result);
       setUnknown(false);
+      setMissing(false);
     } catch (reason) {
       if (session.current !== current) return;
+      current.readEpoch += 1;
       setError(reason);
       setUnknown(true);
     } finally {
       current.mutating = false;
+      current.preparing = false;
       if (session.current === current) setWorking(null);
     }
   }
@@ -156,8 +162,11 @@ export function useAdapterBatchOperation(options: { scope: string; onChanged: ()
       setOperation(result);
       lastObserved.current = JSON.stringify(result);
       setUnknown(false);
+      setMissing(false);
     } catch (reason) {
       if (session.current !== current) return;
+      // Reads issued before the uncertain write response cannot resolve it.
+      current.readEpoch += 1;
       setError(reason);
       setUnknown(true);
     } finally {

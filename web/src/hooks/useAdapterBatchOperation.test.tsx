@@ -15,11 +15,74 @@ function receipt(items: AdapterBatchItem[] = [item()]): AdapterBatchOperation {
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>(done => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 beforeEach(() => { localStorage.clear(); vi.spyOn(crypto, "randomUUID").mockReturnValue(id); });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); localStorage.clear(); });
+
+it("batch recovery: a lookup during preparation cannot leave a successful plan missing", async () => {
+  const preparation = deferred<AdapterBatchOperation>();
+  vi.spyOn(api, "prepareAdapterBatch").mockReturnValue(preparation.promise);
+  const get = vi.spyOn(api, "getAdapterBatch").mockRejectedValue(new ApiError(404, "batch_not_found", "not committed yet"));
+  const execute = vi.spyOn(api, "executeAdapterBatch").mockResolvedValue(receipt([item({ status: "accepted" })]));
+  const { result } = renderHook(() => useAdapterBatchOperation({ scope: "token:deployment", onChanged: vi.fn(async () => {}) }));
+  let preparing!: Promise<void>;
+  act(() => { preparing = result.current.prepare("start", targets); });
+  await act(async () => { await result.current.query(); });
+  await act(async () => { preparation.resolve(receipt()); await preparing; });
+  expect(result.current.operation?.id).toBe(id);
+  expect(result.current.missing).toBe(false);
+  expect(get).not.toHaveBeenCalled();
+  await act(async () => { await result.current.execute(); });
+  expect(execute).toHaveBeenCalledTimes(1);
+});
+
+it("batch recovery: progress queries remain available while execution is in flight", async () => {
+  const pending = receipt([item(), item({ adapter_id: 2 })]);
+  const progress = receipt([item({ status: "accepted", execution_ids: [81] }), item({ adapter_id: 2 })]);
+  const completed = receipt([item({ status: "accepted", execution_ids: [81] }), item({ adapter_id: 2, status: "accepted", execution_ids: [82] })]);
+  const execution = deferred<AdapterBatchOperation>();
+  vi.spyOn(api, "prepareAdapterBatch").mockResolvedValue(pending);
+  vi.spyOn(api, "executeAdapterBatch").mockReturnValue(execution.promise);
+  const get = vi.spyOn(api, "getAdapterBatch").mockResolvedValue(progress);
+  const { result } = renderHook(() => useAdapterBatchOperation({ scope: "token:deployment", onChanged: vi.fn(async () => {}) }));
+  await act(async () => { await result.current.prepare("start", targets); });
+  let executing!: Promise<void>;
+  act(() => { executing = result.current.execute(); });
+  await act(async () => { await result.current.query(); });
+  expect(get).toHaveBeenCalledTimes(1);
+  expect(result.current.working).toBe("execute");
+  expect(result.current.operation).toEqual(progress);
+  await act(async () => { execution.resolve(completed); await executing; });
+  expect(result.current.operation).toEqual(completed);
+});
+
+it("batch recovery: a stale progress response cannot clear an unknown execution result", async () => {
+  const execution = deferred<AdapterBatchOperation>();
+  const progress = deferred<AdapterBatchOperation>();
+  vi.spyOn(api, "prepareAdapterBatch").mockResolvedValue(receipt());
+  const execute = vi.spyOn(api, "executeAdapterBatch").mockReturnValue(execution.promise);
+  const get = vi.spyOn(api, "getAdapterBatch").mockReturnValueOnce(progress.promise);
+  const { result } = renderHook(() => useAdapterBatchOperation({ scope: "token:deployment", onChanged: vi.fn(async () => {}) }));
+  await act(async () => { await result.current.prepare("start", targets); });
+  let executing!: Promise<void>;
+  let querying!: Promise<void>;
+  act(() => { executing = result.current.execute(); });
+  act(() => { querying = result.current.query(); });
+  await act(async () => { execution.reject(new ApiError(0, "network_error", "lost response")); await executing; });
+  expect(result.current.unknown).toBe(true);
+  await act(async () => { progress.resolve(receipt()); await querying; });
+  expect(result.current.unknown).toBe(true);
+  await act(async () => { await result.current.execute(); });
+  expect(execute).toHaveBeenCalledTimes(1);
+  const recovered = receipt([item({ status: "accepted", execution_ids: [91] })]);
+  get.mockResolvedValue(recovered);
+  await act(async () => { await result.current.query(); });
+  expect(result.current.unknown).toBe(false);
+  expect(result.current.operation).toEqual(recovered);
+});
 
 it("prepares a frozen plan once on double-click and requires explicit execution", async () => {
   const pending = deferred<AdapterBatchOperation>();

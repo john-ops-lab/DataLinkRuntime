@@ -98,7 +98,7 @@ using deployment-configured age and per-Adapter count limits. `queued`, `retry_w
 
 ### 3.3 Batch actions in the catalog
 
-Select adapters, select the current visible list, clear the selection, and start or stop up to 100 items per batch. Each item shows its actual action and independent result: schedules toggle dispatch, Webhooks and event triggers toggle intake, and manual tasks run once or cancel executions fixed during preparation. Actions use saved configuration, preserve drafts and accepted work, and require a new operation after a configuration conflict. Query the original operation when its result is unconfirmed. See [batch operations](adapter-batch-operations.md).
+Select adapters, select the current visible list, clear the selection, and start or stop up to 100 items per batch. Each item shows its actual action and independent result: schedules toggle dispatch, Webhooks and event triggers toggle intake, and manual tasks run once or cancel executions fixed during preparation. Actions use saved configuration without submitting or discarding editor drafts; accepted messages and existing executions follow their original rules. Create a new operation after a configuration conflict, and query the original operation when its result is unconfirmed. See [batch operations](adapter-batch-operations.md).
 
 ## 4. Saving and the Run Node
 

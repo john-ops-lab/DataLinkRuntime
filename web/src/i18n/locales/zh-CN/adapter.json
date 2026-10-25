@@ -210,6 +210,7 @@
     "configureFirst": "请先保存事件来源配置",
     "title": "批量操作",
     "refresh": "重新查询",
+    "runtimeRefreshFailed": "批量结果已保留，但当前适配器的运行状态未能刷新，请稍后重试。",
     "close": "关闭",
     "confirm": "确认执行（{{count}} 项）",
     "continue": "继续未完成项（{{count}} 项）",

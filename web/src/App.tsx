@@ -866,6 +866,18 @@ export function AdapterConsole({
     scope: `${currentEntryMode()}:${accountPrincipal?.id ?? "deployment"}`,
     onChanged: refreshAfterBatch,
   });
+  async function mutateBatch(kind: "execute" | "retry") {
+    const affectsSelected = adapterBatch.operation?.items.some(item => item.adapter_id === selectedAdapterId
+      && (kind === "execute" ? item.status === "pending" : item.status === "failed" && item.retryable));
+    // Use the existing selection-scoped protocol so old reads are invalidated
+    // and a failed follow-up does not hide a successfully submitted action.
+    const mutation = affectsSelected ? runtimeAuthority.beginRuntimeMutation() : null;
+    try {
+      await adapterBatch[kind]();
+    } finally {
+      mutation?.finish(() => setError(t("batch.runtimeRefreshFailed", { ns: "adapter" })));
+    }
+  }
   const closeBatchOperation = adapterBatch.close;
   useLayoutEffect(() => subscribeToBrowserLocation(closeBatchOperation), [closeBatchOperation]);
 
@@ -1820,7 +1832,9 @@ export function AdapterConsole({
               accountPrincipal={accountPrincipal}
             />}
 
-            <AdapterBatchOperationDrawer controller={adapterBatch} onInspect={(adapterId) => {
+            <AdapterBatchOperationDrawer controller={{ ...adapterBatch,
+              execute: () => mutateBatch("execute"), retry: () => mutateBatch("retry"),
+            }} onInspect={(adapterId) => {
               const target = adapters.find(adapter => adapter.id === adapterId);
               if (!target || busy) return;
               if (selected?.id === adapterId) {
