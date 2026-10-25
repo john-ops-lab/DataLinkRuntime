@@ -210,7 +210,7 @@ LIST 每页最多 16 个对象、原始体 1 MiB；WATCH 每行最多 512 KiB。
 
 源码 `326dca6` 已通过 B4 后端门槛：真实 Kubernetes 1.35 API、普通 Python Adapter/Worker、RabbitMQ Attempt/Outbox 关联和独立 PostgreSQL 目标读回。仅含元数据的 fixture 有 17 个选中 Pod，分页为16+1；LIST 成员加 started/completed 共19个 Receipt，一次 WATCH 更新后共20个。全部目标 payload/hash 和 UID 匹配，更新对象有2次有效写入，其余16个各1次。停用期间再次修改 annotation，同 epoch 重新启用产生新 activation，从持久 RV 接收 WATCH，仍只有原批次、无新 LIST、总21个 Receipt，选中对象3次写入；最后监听和应用缓冲归零。
 
-最初 TypeMeta 拒绝保留为首败，随后通过窄修允许成员字段省略且不注入 payload；首败的 failed 控制业务成功后，失败批次闭合、预留归零并停用。故意请求旧 RV 只证明原生 `410` 诊断，不证明自然平台过期恢复。历史事实及其边界保留在 [B4 审查记录](../../openspec/changes/add-event-subscriptions/b4-review.md)。
+最初 TypeMeta 拒绝保留为首败，随后通过窄修允许成员字段省略且不注入 payload；首败的 failed 控制业务成功后，失败批次闭合、预留归零并停用。故意请求旧 RV 只证明原生 `410` 诊断，不证明自然平台过期恢复。历史事实及其边界保留在 [B4 审查记录](../../openspec/changes/archive/2026-10-25-add-event-subscriptions/b4-review.md)。
 
 ### B5 本地代表性验证
 
@@ -240,13 +240,13 @@ B3 已通过独立验收，以下为其原部署与容量证据；B5 的代表�
 
 既有 `DLR_RABBITMQ_RETRY_BASE_SECONDS=0.1` 已在停止应用、连接/消费者与全部消息计数连续清零的独占静默窗口下完成空开发队列维护；RabbitMQ 4.3.5 quorum 不支持条件删除，此操作不具备服务端原子空队列保护。产品默认值保持不变。
 
-修订配置固定 `d48e3f8`，同一 Adapter、四个 partition、1 秒 tick、两个配置执行槽，预热另计后，正式约 1,800 秒发送的 1,800 条全部在阶段末写入目标。独立审查逐条核对完整 payload、来源位置和一次有效写入，积压未累计增长，30 分钟稳态门槛通过；发送至目标已提交行 insert 时间的 p95 为 1.98 秒。应用缓冲峰值 3,501 字节，Control RSS 尾十分钟仍有约 32 kB/min 小幅正斜率，不能据此声称无泄漏或任意时长稳定。此结果不外推默认 1 秒重投配置或七天持续运行。有限突发后已完成触限后的 600 秒观察与显式恢复，103 条输入明确分为 71 成功、2 显式跳过、30 因历史满额未接管；观察窗口 API 均满足两倍门槛，但短突发 runtime-status 的 10 个样本 p95 曾为基线 2.604 倍，保留该波动。已接管责任排空、监听关闭；历史满额仍等待合法治理，不加配额或提前删除原文。版本、首败、增长及未验范围见 [B3 审查与验收记录](../../openspec/changes/add-event-subscriptions/b3-review.md)。
+修订配置固定 `d48e3f8`，同一 Adapter、四个 partition、1 秒 tick、两个配置执行槽，预热另计后，正式约 1,800 秒发送的 1,800 条全部在阶段末写入目标。独立审查逐条核对完整 payload、来源位置和一次有效写入，积压未累计增长，30 分钟稳态门槛通过；发送至目标已提交行 insert 时间的 p95 为 1.98 秒。应用缓冲峰值 3,501 字节，Control RSS 尾十分钟仍有约 32 kB/min 小幅正斜率，不能据此声称无泄漏或任意时长稳定。此结果不外推默认 1 秒重投配置或七天持续运行。有限突发后已完成触限后的 600 秒观察与显式恢复，103 条输入明确分为 71 成功、2 显式跳过、30 因历史满额未接管；观察窗口 API 均满足两倍门槛，但短突发 runtime-status 的 10 个样本 p95 曾为基线 2.604 倍，保留该波动。已接管责任排空、监听关闭；历史满额仍等待合法治理，不加配额或提前删除原文。版本、首败、增长及未验范围见 [B3 审查与验收记录](../../openspec/changes/archive/2026-10-25-add-event-subscriptions/b3-review.md)。
 
 B2 的 WorkerLost 探针保留原 100 秒完成等待超时：后续只读核验确认责任最终收敛，但新 Outbox 比 `next_attempt_at` 晚 125.897 秒建立，延迟位于 Control 重试调度。该延迟的根因与修复未在本批确认，后续成功不构成按时恢复通过。B5 的代码故障复验未重复 WorkerLost，不承诺统一的低延迟重试上界。
 
 ## 迁移与应用回退
 
-向前迁移 `0047_issue219_subscriptions` 增加订阅结构并扩展 trigger，`0048_issue219_kubernetes` 增加不可变来源身份和持久批次/控制/放弃计账；不自动创建订阅，也不改写既有 Adapter 输入。没有已验证身份的旧 Kubernetes 配置须显式新 epoch。首次部署先停止接收/写入、备份并验证可读，再运行迁移并更新 Control/Web；现有 protocol-v3 JSON Worker 无须增加输入类型。
+向前迁移 `0047_issue219_subscriptions` 增加订阅结构并扩展 trigger，`0048_issue219_kubernetes` 增加不可变来源身份和持久批次/控制/放弃计账，`0049_issue219_queue_sources` 扩展受控来源类型以支持 RabbitMQ/RocketMQ。这些迁移不自动创建订阅，也不改写既有 Adapter 输入。没有已验证身份的旧 Kubernetes 配置须显式新 epoch。首次部署先停止接收/写入、备份并验证可读，再运行迁移并更新 Control/Web；现有 protocol-v3 JSON Worker 无须增加输入类型。包含批量操作的 v0.7.0 还需迁移至 `0050_issue223_adapter_batches`，见[版本升级说明](releases/v0.7.0.md)。
 
 回退旧应用前必须停用全部订阅，确认监听实际回收，处理或明确保全所有 pending、非终态 Execution 和失败屏障。开关关闭仍允许已经接管的责任排空。不能把“关闭功能开关”“容器健康”或“内部队列为空”单独当作责任已清空；应核对事件、执行和持久计数。保留新表和审计，不自动数据库 downgrade/restore。迁移在已有订阅历史时拒绝降级，避免删除已确认责任。
 

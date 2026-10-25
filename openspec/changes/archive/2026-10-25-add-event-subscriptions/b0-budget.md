@@ -4,7 +4,7 @@
 
 ## 复跑与范围
 
-探针：[tools/subscriptions/budget_probe.py](../../../tools/subscriptions/budget_probe.py)。从仓库根使用已安装开发依赖的 Python 3.13 环境运行：
+探针：[tools/subscriptions/budget_probe.py](../../../../tools/subscriptions/budget_probe.py)。从仓库根使用已安装开发依赖的 Python 3.13 环境运行：
 
 ```sh
 backend/.venv/bin/python tools/subscriptions/budget_probe.py
