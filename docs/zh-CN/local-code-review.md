@@ -11,9 +11,9 @@ npm install -g @alibaba-group/open-code-review@1.13.3
 ocr version
 ```
 
-模型、API 地址和 API Key 通过本机私有配置管理，不提交到仓库。Kimi 官方 K3.1 模型 ID 为 `kimi-k3.1-pro`；第三方服务可能使用不同别名，以该服务实际提供值为准。使用 OpenAI Chat Completions 兼容协议，保留多轮工具调用所需的 `reasoning_content`；K3.1 始终思考，不套用关闭 thinking 的通用示例。
+模型、API 地址和 API Key 通过本机私有配置管理，不提交到仓库。Kimi 开放平台的 K3.1 Pro 模型 ID 为 `kimi-k3.1-pro`；Kimi Code 订阅接口对应 `k3.1-pro`，两套接口的密钥和模型 ID 不能混用。第三方服务可能使用不同别名，以该服务实际提供值为准。使用 OpenAI Chat Completions 兼容协议，保留多轮工具调用所需的 `reasoning_content`；K3.1 始终思考，不套用关闭 thinking 的通用示例。
 
-凭据建议通过 OCR 的 `api_key_cmd` 从本机私有文件或秘密管理器读取；不得把真值放到命令参数、聊天、截图、公开配置或日志中。配置的模型服务会收到所选代码和必要上下文。先做最小连接/工具调用验证，再运行真实预审；连接成功不等于审查完成。
+凭据建议通过 OCR 的 `api_key_cmd` 从本机私有文件或秘密管理器读取；不得把真值放到命令参数、聊天、截图、公开配置或日志中。配置的模型服务会收到所选代码和必要上下文。先做最小连接/工具调用验证，再运行真实预审；连接成功不等于审查完成。Kimi Code 订阅可用于第三方编程工具，连接时保留 OCR/SDK 的真实客户端身份；不得伪装其他工具的 User-Agent 绕过限制。
 
 ## 提交前流程
 
