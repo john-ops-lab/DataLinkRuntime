@@ -197,7 +197,7 @@ def list_executions(
     session: DbSession,
     limit: int = execution_service.DEFAULT_HISTORY_LIMIT,
     before_id: int | None = None,
-    trigger: Literal["manual", "schedule", "webhook"] | None = None,
+    trigger: Literal["manual", "schedule", "webhook", "subscription"] | None = None,
 ) -> ExecutionHistoryPage:
     """Cursor-paged execution history of one Adapter, newest first.
 

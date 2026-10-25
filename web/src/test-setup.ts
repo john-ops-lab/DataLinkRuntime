@@ -47,6 +47,7 @@ afterEach(() => {
   if (
     window.location.pathname.startsWith("/settings") ||
     window.location.pathname.startsWith("/templates") ||
+    window.location.pathname.startsWith("/subscriptions") ||
     window.location.pathname === "/adapters"
   ) {
     window.history.replaceState(null, "", "/");

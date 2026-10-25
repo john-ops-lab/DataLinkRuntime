@@ -62,6 +62,25 @@ class Settings(BaseSettings):
     legacy_input_compat_enabled: bool = Field(
         default=True, validation_alias="DLR_LEGACY_INPUT_COMPAT_ENABLED"
     )
+    # Sources remain unavailable until their connector batch passes acceptance.
+    # Disabling new reception never discards already accepted responsibilities.
+    event_subscriptions_enabled: bool = Field(
+        default=False, validation_alias="DLR_EVENT_SUBSCRIPTIONS_ENABLED"
+    )
+    event_subscription_tick_seconds: float = Field(
+        default=1.0,
+        ge=0.1,
+        le=60,
+        allow_inf_nan=False,
+        validation_alias="DLR_EVENT_SUBSCRIPTION_TICK_SECONDS",
+    )
+    event_subscription_quota_audit_seconds: float = Field(
+        default=60.0,
+        ge=60,
+        le=86400,
+        allow_inf_nan=False,
+        validation_alias="DLR_EVENT_SUBSCRIPTION_QUOTA_AUDIT_SECONDS",
+    )
     execution_output_max_bytes: int = Field(
         default=512 * 1024, validation_alias="DLR_EXECUTION_OUTPUT_MAX_BYTES"
     )

@@ -8,15 +8,15 @@ left to the later v3 Worker batch.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
-from dlr.control.models import Adapter, AdapterCredentialBinding, Execution, Worker
+from dlr.control.models import Adapter, AdapterCredentialBinding, AdapterVersion, Execution, Worker
 from dlr.control.services import admission, idempotency, outbox
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.execution import (
@@ -208,6 +208,106 @@ def _credential_bindings_snapshot(session: Session, adapter_id: int) -> list[dic
     ]
 
 
+def _subscription_credential_snapshot(
+    session: Session,
+    adapter: Adapter,
+    activation_id: int,
+    snapshots: Sequence[dict[str, object]],
+    *,
+    version_id: int | None,
+    worker_id: int | None,
+) -> list[dict[str, object]]:
+    """Validate frozen references without consulting today's Adapter binding set."""
+    from dlr.control.models.platform import CREDENTIAL_FIELDS, Credential
+    from dlr.control.models.subscription import (
+        ActivationCredentialReference,
+        EventSubscription,
+        SubscriptionActivation,
+    )
+    from dlr.control.services.secrets import ENV_KEY_PATTERN
+
+    def invalid() -> NoReturn:
+        raise domain_error(
+            409, "subscription_activation_invalid", "Subscription activation references are invalid"
+        )
+
+    activation = session.get(SubscriptionActivation, activation_id)
+    subscription = (
+        session.get(EventSubscription, activation.subscription_id) if activation else None
+    )
+    if (
+        activation is None
+        or subscription is None
+        or subscription.adapter_id != adapter.id
+        or activation.worker_id != worker_id
+        or version_id is None
+        or session.scalar(
+            select(AdapterVersion.id).where(
+                AdapterVersion.id == version_id, AdapterVersion.adapter_id == adapter.id
+            )
+        )
+        is None
+    ):
+        invalid()
+    frozen = list(
+        session.scalars(
+            select(ActivationCredentialReference)
+            .where(ActivationCredentialReference.activation_id == activation_id)
+            .order_by(ActivationCredentialReference.env_key)
+        )
+    )
+    validated: list[dict[str, object]] = []
+    env_keys: set[str] = set()
+    binding_ids: set[int] = set()
+    for snapshot in snapshots:
+        if not isinstance(snapshot, dict) or set(snapshot) != {
+            "binding_id",
+            "credential_id",
+            "env_key",
+            "field",
+        }:
+            invalid()
+        binding_id, credential_id = snapshot["binding_id"], snapshot["credential_id"]
+        env_key, field = snapshot["env_key"], snapshot["field"]
+        if (
+            isinstance(binding_id, bool)
+            or not isinstance(binding_id, int)
+            or binding_id <= 0
+            or isinstance(credential_id, bool)
+            or not isinstance(credential_id, int)
+            or credential_id <= 0
+            or not isinstance(env_key, str)
+            or not ENV_KEY_PATTERN.fullmatch(env_key)
+            or not isinstance(field, str)
+            or env_key in env_keys
+            or binding_id in binding_ids
+        ):
+            invalid()
+        # Narrow types explicitly after the closed-shape check above.
+        assert isinstance(credential_id, int) and isinstance(env_key, str)
+        assert isinstance(binding_id, int) and isinstance(field, str)
+        credential = session.get(Credential, credential_id)
+        if credential is None or field not in CREDENTIAL_FIELDS[credential.type]:
+            invalid()
+        env_keys.add(env_key)
+        binding_ids.add(binding_id)
+        validated.append(dict(snapshot))
+    expected = [
+        {
+            "binding_id": row.binding_id,
+            "credential_id": row.credential_id,
+            "env_key": row.env_key,
+            "field": row.field,
+        }
+        for row in frozen
+    ]
+    if sorted(validated, key=lambda row: str(row["env_key"])) != expected:
+        invalid()
+    return sorted(
+        validated, key=lambda row: (str(row["env_key"]), int(cast(int, row["binding_id"])))
+    )
+
+
 def accept_execution(
     session: Session,
     adapter: Adapter,
@@ -226,11 +326,39 @@ def accept_execution(
     version_id: int | None = None,
     dependency_check: bool = False,
     worker_id_override: int | None = None,
+    credential_bindings_override: Sequence[dict[str, object]] | None = None,
+    subscription_activation_id: int | None = None,
 ) -> Execution:
     """Atomically accept one gated RabbitMQ Execution or its idempotent hit."""
 
     from dlr.control.services import rabbitmq
 
+    if trigger != "subscription" and (
+        credential_bindings_override is not None or subscription_activation_id is not None
+    ):
+        raise domain_error(
+            409,
+            "subscription_activation_invalid",
+            "Frozen activation overrides require a subscription",
+        )
+    if trigger == "subscription" and (
+        subscription_activation_id is None
+        or credential_bindings_override is None
+        or version_id is None
+        or worker_id_override is None
+        or dependency_check
+        or input_source_type != "json"
+        or input_config_revision != 1
+        or input_snapshot != {"source_type": "json", "revision": None}
+        or artifact_ids
+        or scheduled_for is not None
+        or schedule_policy_snapshot is not None
+    ):
+        raise domain_error(
+            409,
+            "subscription_activation_invalid",
+            "Subscription acceptance requires its frozen activation",
+        )
     if not rabbitmq.ingress_configuration_ready(session):
         raise domain_error(
             503,
@@ -274,6 +402,10 @@ def accept_execution(
             )
         return existing
 
+    if trigger != "subscription":
+        from dlr.control.services.subscription_guards import require_subscription_unlocked
+
+        require_subscription_unlocked(session, adapter.id)
     worker = resolve_queue_target_worker(session, adapter, worker_id_override)
     if not rabbitmq.ingress_configuration_ready(session, worker_id=worker.id):
         raise domain_error(
@@ -282,9 +414,20 @@ def accept_execution(
             "Reliable RabbitMQ topology is not verified for the target Worker",
             {"retry_after": 1},
         )
-    credential_bindings_snapshot = (
-        [] if dependency_check else _credential_bindings_snapshot(session, adapter.id)
-    )
+    if trigger == "subscription":
+        assert subscription_activation_id is not None and credential_bindings_override is not None
+        credential_bindings_snapshot = _subscription_credential_snapshot(
+            session,
+            adapter,
+            subscription_activation_id,
+            credential_bindings_override,
+            version_id=version_id,
+            worker_id=worker_id_override,
+        )
+    else:
+        credential_bindings_snapshot = (
+            [] if dependency_check else _credential_bindings_snapshot(session, adapter.id)
+        )
     try:
         logical_bytes = admission.logical_input_bytes(
             input_source_type,

@@ -34,6 +34,8 @@ import "./operations-ux.css";
 import "./input-ux-followup.css";
 
 import ManagedInputExamples from "./ManagedInputExamples";
+import EventTriggerSettings from "./EventTriggerSettings";
+import type { EventSubscription, SubscriptionCapabilities, SubscriptionDraftState } from "../subscription-types";
 
 /** Preserve the server value; choose readable units without rounding expiry. */
 function formatRetentionDuration(seconds: number | undefined, translate: (key: string, options?: Record<string, unknown>) => string): string {
@@ -91,6 +93,17 @@ interface TaskRunSettingsPanelProps {
   onRuntimeStateChange: (state: TaskRuntimeState) => void;
   onError: (message: string | null) => void;
   readOnly?: boolean;
+  canManageSubscriptions?: boolean;
+  eventSubscription?: EventSubscription | null;
+  eventCapabilities?: SubscriptionCapabilities;
+  eventSelected?: boolean;
+  eventLoading?: boolean;
+  eventError?: string | null;
+  initialEventConfigure?: boolean;
+  initialRunMode?: TaskRunMode;
+  onSelectEventMode?: (selected: boolean) => void;
+  onEventChanged?: () => Promise<void>;
+  onEventRecords?: () => void;
 }
 
 // M5.5.11 单次执行超时合同（秒为权威值）。
@@ -311,7 +324,10 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     finish: () => undefined,
   }));
   const [workerOverride, setWorkerOverride] = useState<number | null | undefined>(undefined);
-  const [runModeOverride, setRunModeOverride] = useState<TaskRunMode | undefined>(undefined);
+  const subscriptionBound = props.eventSubscription != null;
+  const eventSelected = subscriptionBound || props.eventSelected === true;
+  const [subscriptionDraft, setSubscriptionDraft] = useState<SubscriptionDraftState>({ dirty: false, busy: false });
+  const [runModeOverride, setRunModeOverride] = useState<TaskRunMode | undefined>(props.initialRunMode);
   // M5.5.11: 表单内超时值（秒）；null = 跟随 Adapter 保存值。
   const [timeoutOverride, setTimeoutOverride] = useState<number | null>(null);
   const [timeoutCustomMode, setTimeoutCustomMode] = useState(false);
@@ -1075,6 +1091,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     (execution !== null && !isTerminal(execution.status));
   const runtimeLocked = props.adapter.runtime_locked === true || props.runtimeSynchronizing === true;
   const scheduleEnabled = schedule?.enabled === true;
+  const subscriptionRuntimeLocked = props.adapter.run_mode === "manual" && props.adapter.runtime_locked === true;
   const scheduleFieldsLocked = runtimeLocked;
   const scheduleConfigMissing =
     runMode === "schedule" && schedule === null && !loadingSchedule && !scheduleLoadFailed;
@@ -1094,7 +1111,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       retentionDraft.seconds !== inputConfig.retention.seconds
     ))
   );
-  const hasUnsavedChanges = runtimeConfigDirty || inputDirty || stagedArtifacts.length > 0;
+  const hasUnsavedChanges = runtimeConfigDirty || inputDirty || stagedArtifacts.length > 0 || subscriptionDraft.dirty || subscriptionDraft.busy;
 
   useEffect(() => {
     if (!hasUnsavedChanges) {
@@ -1177,6 +1194,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     props.adapter.latest_version_id !== null &&
     props.adapter.runtime_worker_id != null &&
     !activeExecution &&
+    !subscriptionRuntimeLocked &&
+    props.runtimeSynchronizing !== true &&
     !submitting;
   const runBlockedReason = (() => {
     if (readOnly) return t("task.reasons.readOnly");
@@ -1186,6 +1205,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     if (props.adapter.latest_version_id === null) return t("task.reasons.noVersion");
     if (props.adapter.runtime_worker_id == null) return t("task.reasons.noWorker");
     if (activeExecution) return t("task.reasons.activeRun");
+    if (subscriptionRuntimeLocked) return t("task.reasons.subscriptionLocked");
+    if (props.runtimeSynchronizing === true) return t("task.reasons.processing");
     if (submitting) return t("task.reasons.processing");
     // 防御性兜底：未来若新增 canRun 条件但遗漏对应文案，命令式入口仍保持阻断。
     return canRun ? null : t("task.reasons.unavailable");
@@ -1254,7 +1275,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   useEffect(() => {
-    const mutationInFlight = savingRuntime
+    const mutationInFlight = subscriptionDraft.busy || savingRuntime
       || savingInput
       || savingSchedule
       || submitting
@@ -1276,6 +1297,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     });
   }, [
     activeExecution,
+    subscriptionDraft.busy,
     canRun,
     cancelling,
     deletingArtifactId,
@@ -1309,11 +1331,11 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         ? t("task.input.stagedLeaveWarning")
         : t("confirm.discardChanges", { ns: "common" }),
     ),
-    confirmLeave: () => !hasUnsavedChanges || window.confirm(
+    confirmLeave: () => !subscriptionDraft.busy && (!hasUnsavedChanges || window.confirm(
       stagedArtifacts.length > 0
         ? t("task.input.stagedLeaveWarning")
         : t("confirm.discardChanges", { ns: "common" }),
-    ),
+    )),
   }));
 
   const scheduleVisible = runMode === "schedule";
@@ -1339,12 +1361,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     setScheduleTouched(true);
   }
 
-
-  return (
-    <div className="task-run-settings" data-testid="task-run-settings">
-      <section className="task-runtime-config">
-        <Typography.Title level={5}>{t("task.settings.title")}</Typography.Title>
-        <Space direction="vertical" size="middle" className="schedule-form">
+  const runtimeFields = <>
           <label className="settings-field">
             <span className="settings-field-label">{t("task.settings.worker")}</span>
             <Select
@@ -1370,22 +1387,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             />
           </label>
           {props.workersError !== null && <Alert type="error" showIcon message={props.workersError} />}
-          <div className="settings-field">
-            <span className="settings-field-label">{t("task.settings.mode")}</span>
-            <Radio.Group
-              data-testid="task-run-mode"
-              value={runMode}
-              disabled={readOnly || runtimeLocked || savingRuntime}
-              onChange={(event) => {
-                const nextRunMode = event.target.value as TaskRunMode;
-                runtimeEditEpoch.current += 1;
-                setRunModeOverride(nextRunMode);
-              }}
-            >
-              <Radio value="manual">{t("task.settings.manual")}</Radio>
-              <Radio value="schedule">{t("task.settings.schedule")}</Radio>
-            </Radio.Group>
-          </div>
           <div className="settings-field">
             <span className="settings-field-label">{t("task.settings.timeout")}</span>
             <Radio.Group
@@ -1430,6 +1431,45 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               {t("task.settings.timeoutHint")}
             </Typography.Text>
           </div>
+  </>;
+
+  return (
+    <div className={`task-run-settings${eventSelected ? " is-event" : ""}`} data-testid="task-run-settings">
+      <section className="task-runtime-config">
+        <Typography.Title level={5}>{t("task.settings.title")}</Typography.Title>
+        {props.eventError && <Alert type="warning" showIcon message={t("ux.statusUnavailable", { ns: "subscription" })} />}
+        {props.eventLoading && <Typography.Paragraph role="status" type="secondary">{t("ux.checkingStatus", { ns: "subscription" })}</Typography.Paragraph>}
+        <Space direction="vertical" size="middle" className="schedule-form">
+          <div className="settings-field">
+            <span className="settings-field-label">{t("task.settings.mode")}</span>
+            <Radio.Group
+              data-testid="task-run-mode"
+              value={eventSelected ? "event" : runMode}
+              disabled={readOnly || runtimeLocked || savingRuntime || subscriptionBound || props.eventLoading || !!props.eventError}
+              onChange={(event) => {
+                const nextRunMode = event.target.value as TaskRunMode | "event";
+                props.onSelectEventMode?.(nextRunMode === "event");
+                runtimeEditEpoch.current += 1;
+                setRunModeOverride(nextRunMode === "event" ? "manual" : nextRunMode);
+              }}
+            >
+              <Radio value="manual">{t("task.settings.manual")}</Radio>
+              <Radio value="schedule">{t("task.settings.schedule")}</Radio>
+              {props.eventCapabilities && <Radio value="event" disabled={readOnly || runtimeLocked || savingRuntime || subscriptionBound || !props.eventCapabilities.enabled || props.eventCapabilities.available_sources.length === 0 || props.eventLoading || !!props.eventError}>
+                {t("ux.mode", { ns: "subscription" })}
+              </Radio>}
+            </Radio.Group>
+            {subscriptionBound && <p className="ux-muted">{t("ux.unbindHint", { ns: "subscription" })}</p>}
+          </div>
+          {eventSelected && props.eventCapabilities && <EventTriggerSettings
+            key={adapterId} adapter={props.adapter} sub={props.eventSubscription ?? null}
+            runtimeFields={runtimeFields} initialConfigure={props.initialEventConfigure}
+            capabilities={props.eventCapabilities} readOnly={readOnly}
+            canManage={props.canManageSubscriptions === true} runtimeDirty={runtimeConfigDirty || inputDirty}
+            onDraftStateChange={setSubscriptionDraft}
+            onChanged={props.onEventChanged ?? (async () => {})} onRecords={props.onEventRecords ?? (() => {})}
+          />}
+          {!eventSelected && runtimeFields}
           {runtimeLocked && (
             <Alert
               type="warning"
@@ -1604,6 +1644,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         {t("task.settings.save")}
       </Button>
 
+      <details open={!eventSelected || undefined} className="event-input-details">
+      <summary hidden={!eventSelected}>{t("ux.manualInput", { ns: "subscription" })}</summary>
       <section className="task-input-config" data-testid="task-input-config">
         <div className="task-input-heading">
           <div>
@@ -2021,8 +2063,15 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             </Button>
           </div>
         </Form>
+        {eventSelected && <Space direction="vertical">
+          <Typography.Text type="secondary">{t("ux.manualTestHint", { ns: "subscription" })}</Typography.Text>
+          <Tooltip title={runBlockedReason ?? (runtimeConfigDirty ? t("task.reasons.runtimeDirty") : undefined)}>
+            <Button data-testid="event-manual-test" disabled={!canRun || runtimeConfigDirty}
+              onClick={() => void runOnce()}>{t("ux.manualTest", { ns: "subscription" })}</Button>
+          </Tooltip>
+        </Space>}
       </section>
-
+      </details>
 
     </div>
   );

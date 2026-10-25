@@ -94,7 +94,8 @@
     "webhookHelp": "Run when another system sends a request, such as an alert or notification.",
     "templateHint": "Start with existing code?",
     "fromTemplate": "Create from template",
-    "createNote": "Continue editing and saving after creation. Nothing runs automatically."
+    "createNote": "Continue editing and saving after creation. Nothing runs automatically.",
+    "subscriptionLocked": "Subscription locked"
   },
   "settings": {
     "title": "Adapter settings",

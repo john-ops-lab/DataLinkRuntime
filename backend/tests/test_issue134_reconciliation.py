@@ -39,7 +39,7 @@ from test_issue130_b2_runtime import (
     _rabbit_adapter,
     _ready_worker,
 )
-from test_unified_runtime_migration import _isolated_schema, _upgrade
+from test_unified_runtime_migration import HEAD_REVISION, _isolated_schema, _upgrade
 
 
 def _active_attempt(
@@ -98,8 +98,9 @@ def test_reconciliation_migration_fresh_and_upgrade_preserve_state() -> None:
             }
             assert "ck_runtime_reconciliation_cursors_bounds" in checks
             with engine.connect() as connection:
-                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                    "0046_issue166_retire_ai_history"
+                assert (
+                    connection.scalar(text("SELECT version_num FROM alembic_version"))
+                    == HEAD_REVISION
                 )
                 cursor = connection.execute(
                     text("SELECT name, after_id, upper_id FROM runtime_reconciliation_cursors")

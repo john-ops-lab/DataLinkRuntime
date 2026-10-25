@@ -15,6 +15,12 @@ from dlr.control.models.platform import (
     AiModelSetting,
     PackageSource,
 )
+from dlr.control.models.subscription import (
+    ActivationCredentialReference,
+    EventSubscription,
+    SubscriptionActivation,
+    SubscriptionConfigVersion,
+)
 from dlr.control.schemas.credential import CredentialUsageItem, CredentialUsageResponse
 from dlr.control.services import secrets
 
@@ -44,6 +50,72 @@ def get_usage(session: Session, credential_id: int) -> CredentialUsageResponse:
     )
     for adapter_id, name in webhooks:
         items.append(CredentialUsageItem(kind="webhook", name=name, adapter_id=adapter_id))
+    configurations = session.execute(
+        select(EventSubscription, SubscriptionConfigVersion, Adapter)
+        .join(
+            SubscriptionConfigVersion,
+            SubscriptionConfigVersion.subscription_id == EventSubscription.id,
+        )
+        .join(Adapter, Adapter.id == EventSubscription.adapter_id)
+        .where(SubscriptionConfigVersion.source_credential_id == credential_id)
+        .order_by(EventSubscription.id, SubscriptionConfigVersion.version)
+    )
+    for sub, config, adapter in configurations:
+        items.append(
+            CredentialUsageItem(
+                kind="subscription_source",
+                name=sub.name or adapter.name,
+                adapter_id=adapter.id,
+                detail=f"{sub.source_type} / config v{config.version}",
+            )
+        )
+    source_activations = session.execute(
+        select(EventSubscription, SubscriptionActivation, Adapter)
+        .join(
+            SubscriptionActivation, SubscriptionActivation.subscription_id == EventSubscription.id
+        )
+        .join(
+            SubscriptionConfigVersion,
+            SubscriptionConfigVersion.id == SubscriptionActivation.config_version_id,
+        )
+        .join(Adapter, Adapter.id == EventSubscription.adapter_id)
+        .where(SubscriptionConfigVersion.source_credential_id == credential_id)
+        .order_by(SubscriptionActivation.id)
+    )
+    for sub, activation, adapter in source_activations:
+        items.append(
+            CredentialUsageItem(
+                kind="subscription_activation",
+                name=sub.name or adapter.name,
+                adapter_id=adapter.id,
+                detail=f"activation {activation.id} / revision {activation.revision_id} / source",
+            )
+        )
+    activation_bindings = session.execute(
+        select(EventSubscription, SubscriptionActivation, ActivationCredentialReference, Adapter)
+        .join(
+            SubscriptionActivation, SubscriptionActivation.subscription_id == EventSubscription.id
+        )
+        .join(
+            ActivationCredentialReference,
+            ActivationCredentialReference.activation_id == SubscriptionActivation.id,
+        )
+        .join(Adapter, Adapter.id == EventSubscription.adapter_id)
+        .where(ActivationCredentialReference.credential_id == credential_id)
+        .order_by(SubscriptionActivation.id, ActivationCredentialReference.env_key)
+    )
+    for sub, activation, ref, adapter in activation_bindings:
+        items.append(
+            CredentialUsageItem(
+                kind="subscription_activation",
+                name=sub.name or adapter.name,
+                adapter_id=adapter.id,
+                detail=(
+                    f"activation {activation.id} / revision {activation.revision_id} / "
+                    f"{ref.env_key}"
+                ),
+            )
+        )
     for name in session.scalars(
         select(AiModelSetting.model).where(AiModelSetting.credential_id == credential_id)
     ):

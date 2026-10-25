@@ -496,7 +496,9 @@
       "package_source": "软件包仓库",
       "webhook": "Webhook 认证",
       "ai_model": "AI 模型",
-      "ai_custom_provider": "自定义 AI 服务"
+      "ai_custom_provider": "自定义 AI 服务",
+      "subscription_source": "订阅来源配置版本",
+      "subscription_activation": "订阅保留激活引用"
     }
   },
   "bindings": {

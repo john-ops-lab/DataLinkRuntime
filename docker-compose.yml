@@ -172,6 +172,10 @@ services:
       DLR_AI_PROVIDER_TIMEOUT_SECONDS: ${DLR_AI_PROVIDER_TIMEOUT_SECONDS:-180}
       # M5.2 Schedule Trigger: Control scheduler polling interval (0.5..300s).
       DLR_SCHEDULE_POLL_SECONDS: ${DLR_SCHEDULE_POLL_SECONDS:-5}
+      # Issue #219: opt-in reception. Turning it off still drains durable custody.
+      DLR_EVENT_SUBSCRIPTIONS_ENABLED: ${DLR_EVENT_SUBSCRIPTIONS_ENABLED:-false}
+      DLR_EVENT_SUBSCRIPTION_TICK_SECONDS: ${DLR_EVENT_SUBSCRIPTION_TICK_SECONDS:-1}
+      DLR_EVENT_SUBSCRIPTION_QUOTA_AUDIT_SECONDS: ${DLR_EVENT_SUBSCRIPTION_QUOTA_AUDIT_SECONDS:-60}
       # M5.11 Wave B: the host-side bind root is expanded by Compose; the
       # application always writes under this fixed in-container path.
       DLR_PLATFORM_LOG_ROOT: /var/lib/dlr/platform-logs

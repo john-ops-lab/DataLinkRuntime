@@ -1,5 +1,7 @@
 /** Minimal typed client for the Control API. */
 
+import { createSubscriptionApi } from "./subscription-api";
+
 import type {
   BuiltinPackage,
   BuiltinPackageKind,
@@ -213,6 +215,7 @@ async function request<T>(path: string, init?: RequestInit, responseType?: "blob
 }
 
 export const api = {
+  ...createSubscriptionApi(request),
   previewPortableFile: (file: File): Promise<PortablePackage> => request("/api/portable/preview", {
     method: "POST", body: file, headers: { "Content-Type": "application/zip" },
   }),
@@ -539,7 +542,7 @@ export const api = {
 
   listExecutions: (
     adapterId: number,
-    options: { limit?: number; before_id?: number; trigger?: "manual" | "schedule" | "webhook" } = {},
+    options: { limit?: number; before_id?: number; trigger?: "manual" | "schedule" | "webhook" | "subscription" } = {},
   ): Promise<ExecutionHistoryPage> => {
     const params = new URLSearchParams();
     params.set("limit", String(options.limit ?? 50));

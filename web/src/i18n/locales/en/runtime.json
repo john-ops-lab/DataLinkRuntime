@@ -39,7 +39,8 @@
     "status": {
       "running": "Running",
       "scheduled": "Schedule enabled",
-      "stopped": "Stopped"
+      "stopped": "Stopped",
+      "subscriptionLocked": "Events still need processing"
     },
     "reasons": {
       "readOnly": "This Adapter is a read-only share; editing, saving, running and schedule changes are unavailable.",
@@ -61,7 +62,8 @@
       "saveWorkerFirst": "Save the Runtime Worker before enabling the schedule.",
       "saveChangesFirst": "Save the current changes before enabling the schedule.",
       "runtimeDirty": "Runtime settings have unsaved changes. Save the runtime configuration first.",
-      "saveRuntimeFirst": "Save the runtime configuration before enabling the schedule."
+      "saveRuntimeFirst": "Save the runtime configuration before enabling the schedule.",
+      "subscriptionLocked": "Stop receiving and settle existing events before running manually or editing."
     },
     "lockHint": "The Adapter is running; editing and runtime configuration are locked.",
     "header": {
@@ -237,7 +239,8 @@
         "seconds_one": "{{count}} second",
         "seconds_other": "{{count}} seconds"
       }
-    }
+    },
+    "subscriptionLockHint": "The source is receiving or existing events still need processing. Stop receiving, then inspect and resolve received events."
   },
   "webhook": {
     "status": {
@@ -310,6 +313,7 @@
   "history": {
     "activeTrigger": "Manual trigger",
     "scheduledTrigger": "Schedule trigger",
+    "subscriptionTrigger": "Event triggered",
     "webhookTrigger": "Webhook trigger",
     "unknownTrigger": "{{trigger}}",
     "scheduledFor": "Scheduled {{time}}",

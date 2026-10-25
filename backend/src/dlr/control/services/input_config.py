@@ -451,6 +451,9 @@ def _require_user_runtime_unlocked(
     session: Session, adapter: Adapter, schedule: AdapterSchedule | None
 ) -> None:
     """Check runtime state after the Adapter/Schedule/Config locks are held."""
+    from dlr.control.services.subscription_guards import require_subscription_unlocked
+
+    require_subscription_unlocked(session, adapter.id)
     if (schedule is not None and schedule.enabled) or adapter_runtime.active_execution(
         session, adapter.id
     ) is not None:

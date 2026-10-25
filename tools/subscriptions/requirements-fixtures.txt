@@ -1,0 +1,4 @@
+# Local B0 test harness only; never add this producer to Control runtime.
+-r requirements-clients.txt
+# Produces real records with null header values (kafka-python Producer rejects those).
+confluent-kafka==2.16.0

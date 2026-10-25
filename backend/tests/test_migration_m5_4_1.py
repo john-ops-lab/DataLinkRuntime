@@ -3,6 +3,8 @@
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from test_unified_runtime_migration import HEAD_REVISION
+
 
 def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
     test_engine: Engine,
@@ -72,7 +74,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0046_issue166_retire_ai_history"
+    assert revision == HEAD_REVISION
     assert {
         "adapter_type",
         "run_mode",

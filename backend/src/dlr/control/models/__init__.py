@@ -63,12 +63,36 @@ from dlr.control.models.reliable_execution import (
     ScheduleDispatchOutcome,
 )
 from dlr.control.models.schedule import AdapterSchedule
+from dlr.control.models.subscription import (
+    ActivationCredentialReference,
+    DeliveryDisposition,
+    EventDelivery,
+    EventReceipt,
+    EventSubscription,
+    SourceCheckpoint,
+    SubscriptionActivation,
+    SubscriptionConfigVersion,
+    SubscriptionLease,
+    SubscriptionQuota,
+    SyncBatch,
+)
 from dlr.control.models.system import SystemSetting
 from dlr.control.models.user_template import UserTemplate
 from dlr.control.models.webhook import AdapterWebhook
 from dlr.control.models.worker_cleanup import WorkerCleanupRequest
 
 __all__ = [
+    "EventSubscription",
+    "SubscriptionConfigVersion",
+    "SubscriptionActivation",
+    "ActivationCredentialReference",
+    "SubscriptionLease",
+    "SourceCheckpoint",
+    "EventReceipt",
+    "EventDelivery",
+    "DeliveryDisposition",
+    "SubscriptionQuota",
+    "SyncBatch",
     "UserTemplate",
     "BuiltinPackage",
     "BuiltinPackageSettings",

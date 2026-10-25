@@ -6,7 +6,7 @@ export type TaskRunMode = "manual" | "schedule";
 export type SystemLocale = "zh-CN" | "en";
 
 export interface CredentialUsageItem {
-  kind: "adapter_binding" | "webhook" | "ai_model" | "ai_custom_provider" | "knowledge_source" | "package_source";
+  kind: "adapter_binding" | "webhook" | "ai_model" | "ai_custom_provider" | "knowledge_source" | "package_source" | "subscription_source" | "subscription_activation";
   name: string;
   adapter_id?: number | null;
   detail?: string | null;
@@ -199,7 +199,7 @@ export interface Execution {
   input: unknown;
   /** Issue #127: immutable input source and configuration revision at creation. */
   input_source_type?: InputSourceType;
-  input_config_revision?: number;
+  input_config_revision?: number | null;
   input_snapshot?: ExecutionInputSnapshot;
   /** C0/C3 cleanup and deadline facts; all are read-only snapshots. */
   cancel_requested?: boolean;
@@ -257,7 +257,8 @@ export interface ExecutionInputArtifactSnapshot {
  * storage reference, Worker path or credential/token field.
  */
 export type ExecutionInputSnapshot =
-  | { source_type: "none" | "json"; revision: number }
+  | { source_type: "none"; revision: number }
+  | { source_type: "json"; revision: number | null }
   | {
       source_type: "managed_files";
       revision: number;
