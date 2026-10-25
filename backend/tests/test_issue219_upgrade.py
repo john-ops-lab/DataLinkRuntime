@@ -126,7 +126,9 @@ def test_queue_source_upgrade_preserves_legacy_subscription_and_guards_downgrade
         identity = source.id
     with upgrade_database.connect() as connection:
         before = connection.scalar(text("SELECT row_to_json(s) FROM event_subscriptions s"))
-    command.upgrade(config, "head")
+    # This regression isolates the queue-source migration. Later independent
+    # migrations have their own preservation and downgrade contracts.
+    command.upgrade(config, "0049_issue219_queue_sources")
     with upgrade_database.connect() as connection:
         assert connection.scalar(text("SELECT row_to_json(s) FROM event_subscriptions s")) == before
     with Session(upgrade_database) as session, session.begin():

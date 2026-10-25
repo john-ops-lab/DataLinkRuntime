@@ -163,6 +163,8 @@ Most templates need no input: editable settings live together at the top of the 
 
 Adapter menus support ZIP export and saving as a template; the adapter list supports import. User-saved and imported templates join the same gallery with import/export and creator management. Imports preview content first and create independent, stopped objects. See [portable packages](docs/templates/portable-packages.en.md).
 
+The current development version also supports selecting up to 100 adapters for batch start or stop, with per-item results and retries for failed items. Actions use saved configuration; stopping intake preserves accepted work. See [batch operations](docs/en/adapter-batch-operations.md).
+
 ---
 
 ## Key capabilities

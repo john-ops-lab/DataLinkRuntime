@@ -146,6 +146,7 @@ class AdapterResponse(BaseModel):
     runtime_locked: bool = False
     archived_at: datetime | None
     running_execution_id: int | None = None
+    batch_token: str = ""
     created_at: datetime
     updated_at: datetime
 

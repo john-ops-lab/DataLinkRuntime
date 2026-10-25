@@ -16,6 +16,7 @@ import { useOverlayFocus } from "../hooks/useOverlayFocus";
 import { LANGUAGE_LABELS } from "../languages";
 import type { EventSubscription } from "../subscription-types";
 import { eventNeedsAttention, eventStatusKey } from "../event-trigger";
+import { ADAPTER_BATCH_LIMIT, type AdapterBatchAction, type AdapterBatchTarget } from "../adapter-batch-types";
 import type {
   AccountPrincipal,
   Adapter,
@@ -89,6 +90,10 @@ interface AdapterCatalogProps {
   eventLoading?: boolean;
   eventError?: string | null;
   eventIntentAdapterId?: number | null;
+  onBatchPrepare?: (action: AdapterBatchAction, targets: AdapterBatchTarget[]) => Promise<void>;
+  batchBusy?: boolean;
+  hasBatchOperation?: boolean;
+  onShowBatchOperation?: () => void;
 }
 
 function versionLabel(
@@ -237,6 +242,10 @@ export default function AdapterCatalog({
   eventLoading = false,
   eventError,
   eventIntentAdapterId,
+  onBatchPrepare,
+  batchBusy = false,
+  hasBatchOperation = false,
+  onShowBatchOperation,
 }: AdapterCatalogProps) {
   const { t } = useTranslation(["adapter", "common"]);
   const [creating, setCreating] = useState(false);
@@ -252,6 +261,9 @@ export default function AdapterCatalog({
   });
   const [submitting, setSubmitting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [batchSelecting, setBatchSelecting] = useState(false);
+  const [batchSelection, setBatchSelection] = useState<number[]>([]);
+  const [batchLimitReached, setBatchLimitReached] = useState(false);
   const restoreFocus = useOverlayFocus(creating, '[data-testid="show-create-form"], a[href="/adapters"]');
   const workersById = new Map(workers.map((worker) => [worker.id, worker]));
 
@@ -342,6 +354,42 @@ export default function AdapterCatalog({
     return (!eventFiltersReady || runFilter === "all" || runFilter === mode)
       && (!eventFiltersReady || !attentionOnly || (sub !== undefined && eventNeedsAttention(sub)));
   });
+  const batchEligible = visible.filter(adapter => adapterAccessLevel(adapter, accountPrincipal) !== "read"
+    && !!adapter.batch_token && !(adapter.id === eventIntentAdapterId && !eventSubscriptions?.has(adapter.id)));
+  const batchEligibleKey = batchEligible.map(adapter => adapter.id).join(",");
+  const batchSelected = batchEligible.filter(adapter => batchSelection.includes(adapter.id));
+  useEffect(() => {
+    const ids = new Set(batchEligibleKey.split(",").filter(Boolean).map(Number));
+    // Prune hidden/revoked targets; the click handler also uses the current visible intersection.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setBatchSelection(current => current.every(id => ids.has(id)) ? current : current.filter(id => ids.has(id)));
+    setBatchLimitReached(false);
+  }, [batchEligibleKey]);
+
+  function changeBatchSelection(id: number, checked: boolean) {
+    if (busy || batchBusy) return;
+    setBatchLimitReached(false);
+    if (checked && batchSelected.length >= ADAPTER_BATCH_LIMIT) {
+      setBatchLimitReached(true);
+      return;
+    }
+    setBatchSelection(checked ? [...batchSelected.map(adapter => adapter.id), id]
+      : batchSelected.filter(adapter => adapter.id !== id).map(adapter => adapter.id));
+  }
+
+  function selectBatchVisible(checked: boolean) {
+    if (batchEligible.length > ADAPTER_BATCH_LIMIT) {
+      setBatchLimitReached(true);
+      return;
+    }
+    setBatchLimitReached(false);
+    setBatchSelection(checked ? batchEligible.map(adapter => adapter.id) : []);
+  }
+
+  function prepareBatch(action: AdapterBatchAction) {
+    if (!onBatchPrepare || busy || batchBusy || batchSelected.length === 0 || batchSelected.length > ADAPTER_BATCH_LIMIT) return;
+    void onBatchPrepare(action, batchSelected.map(adapter => ({ adapter_id: adapter.id, expected_token: adapter.batch_token! })));
+  }
   const typeFilterOptions: Array<{ value: AdapterTypeFilter | "all"; label: string }> = [
     { value: "all", label: t("catalog.filterTypeAll") },
     { value: "task-manual", label: t("catalog.taskManual") },
@@ -455,6 +503,32 @@ export default function AdapterCatalog({
           </Checkbox>
         </div>}
         {eventError && <Alert type="warning" showIcon message={t("ux.statusUnavailable", { ns: "subscription" })} />}
+        {onBatchPrepare && <div className="catalog-batch" data-testid="catalog-batch">
+          <div className="catalog-batch-links">
+            <Button size="small" type="text" data-testid="batch-select-toggle" disabled={busy || batchBusy}
+              onClick={() => { setBatchSelecting(!batchSelecting); setBatchSelection([]); setBatchLimitReached(false); }}>
+              {t(batchSelecting ? "batch.exitSelection" : "batch.select")}
+            </Button>
+            {hasBatchOperation && <Button size="small" type="link" onClick={onShowBatchOperation}>{t("batch.viewResult")}</Button>}
+          </div>
+          {batchSelecting && <>
+            <div className="catalog-batch-selection">
+              <Checkbox aria-label={t("batch.selectVisible")} checked={batchEligible.length > 0 && batchSelected.length === batchEligible.length}
+                indeterminate={batchSelected.length > 0 && batchSelected.length < batchEligible.length}
+                disabled={busy || batchBusy || batchEligible.length === 0} onChange={event => selectBatchVisible(event.target.checked)}>
+                {t("batch.selectVisible")}
+              </Checkbox>
+              <Button size="small" type="link" disabled={busy || batchBusy || batchSelected.length === 0}
+                onClick={() => { setBatchSelection([]); setBatchLimitReached(false); }}>{t("batch.clear")}</Button>
+            </div>
+            <div className="catalog-batch-actions">
+              <span aria-live="polite">{t("batch.selected", { count: batchSelected.length })}</span>
+              <Button size="small" disabled={busy || batchBusy || batchSelected.length === 0} onClick={() => prepareBatch("start")}>{t("batch.start")}</Button>
+              <Button size="small" disabled={busy || batchBusy || batchSelected.length === 0} onClick={() => prepareBatch("stop")}>{t("batch.stop")}</Button>
+            </div>
+            {batchLimitReached && <p className="catalog-batch-warning" role="alert">{t("batch.limit", { count: ADAPTER_BATCH_LIMIT })}</p>}
+          </>}
+        </div>}
       </div>
 
       <div className="catalog-list" data-testid="adapter-catalog-list">
@@ -507,6 +581,13 @@ export default function AdapterCatalog({
               : `${adapter.name}，${subtitle.full.replace(runtimeStatus.fact, accessibleRuntimeFact)}`;
             return (
               <div key={adapter.id} className="catalog-row">
+                {batchSelecting && onBatchPrepare && <Checkbox className="catalog-batch-checkbox"
+                  aria-label={t("batch.selectAdapter", { name: adapter.name })}
+                  title={accessLevel === "read" ? t("batch.readOnly") : !adapter.batch_token ? t("batch.refreshFirst")
+                    : adapter.id === eventIntentAdapterId && !eventSub ? t("batch.configureFirst") : undefined}
+                  checked={batchSelected.some(item => item.id === adapter.id)}
+                  disabled={busy || batchBusy || !batchEligible.some(item => item.id === adapter.id)}
+                  onChange={event => changeBatchSelection(adapter.id, event.target.checked)} />}
                 <button
                   type="button"
                   data-testid="adapter-item"

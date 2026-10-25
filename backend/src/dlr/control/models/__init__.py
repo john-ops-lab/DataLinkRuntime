@@ -2,6 +2,7 @@
 
 from dlr.control.models.account import User, UserSession
 from dlr.control.models.adapter import Adapter, AdapterPermission, AdapterVersion
+from dlr.control.models.adapter_batch import AdapterBatch, AdapterBatchItem
 from dlr.control.models.builtin_package import (
     BuiltinPackage,
     BuiltinPackageSettings,
@@ -82,6 +83,8 @@ from dlr.control.models.webhook import AdapterWebhook
 from dlr.control.models.worker_cleanup import WorkerCleanupRequest
 
 __all__ = [
+    "AdapterBatch",
+    "AdapterBatchItem",
     "EventSubscription",
     "SubscriptionConfigVersion",
     "SubscriptionActivation",

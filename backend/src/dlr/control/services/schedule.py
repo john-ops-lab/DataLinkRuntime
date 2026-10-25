@@ -477,7 +477,9 @@ def get_schedule(session: Session, adapter_id: int) -> AdapterSchedule:
     return schedule
 
 
-def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> AdapterSchedule:
+def upsert_schedule(
+    session: Session, adapter_id: int, data: ScheduleUpsert, *, commit: bool = True
+) -> AdapterSchedule:
     """Create or fully replace the Adapter's Schedule (PUT semantics).
 
     Archived Adapters are rejected with 409 ``adapter_archived`` (read-only
@@ -614,8 +616,11 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
     schedule.last_blocked_detail = None
     schedule.last_blocked_at = None
     schedule.last_processed_due_at = None
-    session.commit()
-    session.refresh(schedule)
+    if commit:
+        session.commit()
+        session.refresh(schedule)
+    else:
+        session.flush()
     return schedule
 
 

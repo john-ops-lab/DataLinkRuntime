@@ -10,6 +10,7 @@ import App, {
   TOKEN_STORAGE_KEY,
 } from "./App";
 import { api, clearTemplateVariantCache, setAuthToken } from "./api";
+import type { AdapterBatchOperation, AdapterBatchRequest } from "./adapter-batch-types";
 import TaskRunSettingsPanel from "./components/TaskRunSettingsPanel";
 import type { TaskRunSettingsHandle } from "./components/TaskRunSettingsPanel";
 import TaskWorkbenchHeader from "./components/TaskWorkbenchHeader";
@@ -1890,6 +1891,78 @@ it("asks for confirmation before discarding unsaved changes on adapter switch", 
   // Confirmation denied: still on adapter-a with the edited content.
   expect(screen.getByRole("heading", { name: "adapter-a" })).toBeTruthy();
   expect(valueOf("code-editor")).toBe("edited");
+});
+
+it("Issue223 batch actions keep the editor draft and navigation and submit only saved target tokens", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, batch_token: "saved-version-10" });
+  const second = makeAdapter({ id: 2, name: "adapter-b", batch_token: "saved-b" });
+  let operation: AdapterBatchOperation | null = null;
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }), readyWorkerRoute,
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter, second] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    { method: "POST", match: "/api/adapter-batches", respond: body => {
+      const request = JSON.parse(body!) as AdapterBatchRequest;
+      expect(request.targets).toEqual([{ adapter_id: 1, expected_token: "saved-version-10" }]);
+      operation = { id: request.id, action: "start", created_at: "", items: [{
+        adapter_id: 1, adapter_name: "adapter-a", mode: "manual", action: "run_once", status: "pending", error_code: null,
+        retryable: false, execution_ids: [], executions: [], subscription_id: null, subscription_state: null,
+      }] };
+      return { body: operation };
+    } },
+    { method: "POST", match: /\/api\/adapter-batches\/[^/]+\/execute$/, respond: () => {
+      operation = { ...operation!, items: [{ ...operation!.items[0], status: "accepted", execution_ids: [240],
+        executions: [{ id: 240, status: "queued", cancel_requested: false }] }] };
+      return { body: operation };
+    } },
+    { method: "GET", match: /\/api\/adapter-batches\/[^/]+$/, respond: () => ({ body: operation }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await waitFor(() => expect(valueOf("code-editor")).toBe(STARTER_CODE));
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "unsaved batch draft" } });
+  fireEvent.click(screen.getByTestId("batch-select-toggle"));
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择 adapter-a" }));
+  fireEvent.click(screen.getByRole("button", { name: "批量启动" }));
+  fireEvent.click(await screen.findByRole("button", { name: "确认执行（1 项）" }));
+  await screen.findByText("已提交执行");
+  expect(valueOf("code-editor")).toBe("unsaved batch draft");
+  expect(screen.getByRole("tab", { name: "编辑" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("heading", { name: "adapter-a" })).toBeTruthy();
+  const writes = fetchMock.mock.calls.filter(([, init]) => ["POST", "PUT", "PATCH", "DELETE"].includes(init?.method ?? "GET"));
+  expect(writes).toHaveLength(2);
+  expect(writes.every(([url]) => String(url).startsWith("/api/adapter-batches"))).toBe(true);
+});
+
+it("Issue223 batch preparation leaves an unsaved schedule form unchanged and never PUTs it", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, run_mode: "schedule", batch_token: "saved-schedule" });
+  const schedule = { adapter_id: 1, enabled: false, cron: "0 9 * * *", timezone: "UTC", input: null, next_run_at: null, updated_at: "" };
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }), readyWorkerRoute,
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    { method: "GET", match: "/api/adapters/1/schedule", respond: () => ({ body: schedule }) },
+    { method: "POST", match: "/api/adapter-batches", respond: body => {
+      const request = JSON.parse(body!) as AdapterBatchRequest;
+      return { body: { id: request.id, action: "start", created_at: "", items: [{
+        adapter_id: 1, adapter_name: "adapter-a", mode: "schedule", action: "enable_schedule", status: "pending", error_code: null,
+        retryable: false, execution_ids: [], executions: [], subscription_id: null, subscription_state: null,
+      }] } };
+    } },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  fireEvent.change(await openAdvancedScheduleCron(), { target: { value: "15 8 * * *" } });
+  fireEvent.click(screen.getByTestId("batch-select-toggle"));
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择 adapter-a" }));
+  fireEvent.click(screen.getByRole("button", { name: "批量启动" }));
+  await screen.findByText("启用已有定时，不额外立即运行");
+  expect(valueOf("task-schedule-cron")).toBe("15 8 * * *");
+  expect(screen.getByRole("tab", { name: "运行设置" }).getAttribute("aria-selected")).toBe("true");
+  expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT" || init?.method === "PATCH")).toBe(false);
 });
 
 it("shows failed API responses as errors instead of pretending success", async () => {

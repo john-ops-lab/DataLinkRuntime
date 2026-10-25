@@ -116,12 +116,20 @@ def _adapter_response(
 
 
 def adapter_response(session: Session, adapter: Adapter) -> AdapterResponse:
-    return _adapter_response(adapter, adapter_runtime.runtime_state(session, adapter))
+    return adapter_responses(session, [adapter])[0]
 
 
 def adapter_responses(session: Session, adapters: list[Adapter]) -> list[AdapterResponse]:
+    from dlr.control.services.adapter_batch_config import configurations
+
     states = adapter_runtime.runtime_states(session, adapters)
-    return [_adapter_response(adapter, states[adapter.id]) for adapter in adapters]
+    configs = configurations(session, adapters)
+    responses = []
+    for adapter in adapters:
+        response = _adapter_response(adapter, states[adapter.id])
+        response.batch_token = configs[adapter.id].token
+        responses.append(response)
+    return responses
 
 
 def _add_default_demo_binding(session: Session, adapter: Adapter) -> None:

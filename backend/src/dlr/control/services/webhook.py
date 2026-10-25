@@ -164,7 +164,9 @@ def get_webhook(session: Session, adapter_id: int) -> WebhookResponse:
     return _webhook_response(session, webhook)
 
 
-def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> WebhookResponse:
+def upsert_webhook(
+    session: Session, adapter_id: int, data: WebhookUpsert, *, commit: bool = True
+) -> WebhookResponse:
     """Replace the stopped Webhook config or Start/Stop receiving.
 
     The Adapter row is locked first. Different Adapters may Start
@@ -298,9 +300,13 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
     webhook.public_id = data.public_id
     webhook.credential_id = credential.id if credential is not None else None
     try:
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
     except IntegrityError as error:
-        session.rollback()
+        if commit:
+            session.rollback()
         constraint = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
         if constraint == "uq_adapter_webhooks_enabled_public_id":
             raise domain_error(
@@ -310,7 +316,8 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
                 {"path": data.public_id},
             ) from None
         raise
-    session.refresh(webhook)
+    if commit:
+        session.refresh(webhook)
     return _webhook_response(session, webhook)
 
 
