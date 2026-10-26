@@ -840,6 +840,8 @@ class Probe:
                                     "batch_result_sha256": hashlib.sha256(_encoded(output)).hexdigest() if batch_reference else None,
                                     "payload_sha256": digest if reference else None,
                                     "journal_file_and_directory_fsynced": True,
+                                    "journal_file_sha256": journal["journal_file_sha256"],
+                                    "journal_file_bytes": journal["journal_file_bytes"],
                                     "transaction_committed": None,
                                     "result_proof_mode": arm.result_proof_mode,
                                 },
@@ -883,7 +885,15 @@ class Probe:
                                     or metadata.st_size > 8192
                                 ):
                                     raise ValueError("invalid_journal")
-                                value = json.loads(os.read(fd, 8193))
+                                raw = bytearray()
+                                while len(raw) < 8193:
+                                    chunk = os.read(fd, 8193 - len(raw))
+                                    if not chunk:
+                                        break
+                                    raw.extend(chunk)
+                                if len(raw) != metadata.st_size:
+                                    raise ValueError("invalid_journal")
+                                value = json.loads(raw)
                                 if any(
                                     value.get(key) != info["ids"][key]
                                     for key in (
@@ -905,7 +915,12 @@ class Probe:
                                 os.fsync(directory)
                             finally:
                                 os.close(directory)
-                            self._remember(self._journals, attempt_id, info)
+                            journal_info = {
+                                **info,
+                                "journal_file_sha256": hashlib.sha256(raw).hexdigest(),
+                                "journal_file_bytes": len(raw),
+                            }
+                            self._remember(self._journals, attempt_id, journal_info)
                             if arm.point == "worker_after_claim_journal":
                                 self.fire(
                                     arm,
@@ -916,6 +931,8 @@ class Probe:
                                         "journal_file_fsynced": True,
                                         "journal_directory_fsynced": True,
                                         "journal_identity_checked": True,
+                                        "journal_file_sha256": journal_info["journal_file_sha256"],
+                                        "journal_file_bytes": journal_info["journal_file_bytes"],
                                         "execution_started": False,
                                         "identity_binding": info.get(
                                             "identity_binding", "claim_input"

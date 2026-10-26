@@ -25,6 +25,15 @@ def deny_network(event,arguments):
 sys.addaudithook(deny_network)
 import fault_probe
 scenario=sys.argv[1];root=Path(sys.argv[2]);probe=fault_probe.install()
+if scenario=="worker-claim-partial-journal-read":
+ real_read=os.read
+ def partial_journal_read(fd,size):
+  journal=root/"journal/attempt-9.attempt.json"
+  if journal.exists():
+   actual,expected=os.fstat(fd),journal.stat()
+   if (actual.st_dev,actual.st_ino)==(expected.st_dev,expected.st_ino):size=min(size,7)
+  return real_read(fd,size)
+ os.read=partial_journal_read
 if sys.argv[3]=="1":
  real_open,real_fsync,real_exit=os.open,os.fsync,os._exit
  audit_sequence=0;failed_sync=False
@@ -138,10 +147,7 @@ if scenario.startswith("t1"):
    unit_module.T1Unit(session).receive(items)
   else:module.receive_event(session,11,"owner",1,envelope,"requests",{})
   if "rollback" in scenario:session.rollback()
-  try:session.commit()
-  except Exception:
-   if "commit-fails" not in scenario:raise
-   session.rollback()
+  session.commit()
  (root/"source-ack-or-http-response").write_text("returned")
 elif scenario.startswith("outbox"):
  import pika
@@ -277,6 +283,11 @@ class FaultProbeTests(unittest.TestCase):
         self.assertNotIn(str(self.root), raw)
         return json.loads(raw)
 
+    def assert_journal_byte_binding(self, proof: dict[str, object]) -> None:
+        raw = (self.root / "journal/attempt-9.attempt.json").read_bytes()
+        self.assertEqual(proof["journal_file_sha256"], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(proof["journal_file_bytes"], len(raw))
+
     def sync_events(self) -> list[dict[str, object]]:
         path = self.root / "sync-audit.jsonl"
         self.assertLessEqual(path.stat().st_size, 32 * 1024)
@@ -363,9 +374,12 @@ class FaultProbeTests(unittest.TestCase):
     def test_failed_real_commit_is_not_misreported_as_after_commit(self) -> None:
         self.arm("t1_after_commit")
         child = self.child("t1-commit-fails")
-        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertNotEqual(child.returncode, 0, child.stderr)
+        self.assertIn("sqlalchemy.exc.IntegrityError", child.stderr)
+        self.assertIn("FOREIGN KEY constraint failed", child.stderr)
         self.assertEqual(self.rows(), 0)
         self.assertFalse((self.root / "fault-test-cut.json").exists())
+        self.assertFalse((self.root / "source-ack-or-http-response").exists())
 
     def test_rollback_removes_pending_commit_cut(self) -> None:
         self.arm("t1_after_commit")
@@ -400,9 +414,17 @@ class FaultProbeTests(unittest.TestCase):
         proof = self.proof()["proof"]
         self.assertIs(proof["journal_file_fsynced"], True)
         self.assertIs(proof["journal_directory_fsynced"], True)
+        self.assert_journal_byte_binding(proof)
         self.assert_real_sync_before_cut(
             self.root / "journal/attempt-9.attempt.json", self.root / "journal"
         )
+
+    def test_journal_binding_uses_complete_bytes_across_short_fd_reads(self) -> None:
+        self.arm("worker_after_claim_journal")
+        child = self.child("worker-claim-partial-journal-read")
+        self.assertEqual(child.returncode, 137, child.stderr)
+        self.assert_journal_byte_binding(self.proof()["proof"])
+        self.assertFalse((self.root / "execution-started").exists())
 
     def test_failed_final_journal_sync_does_not_create_marker_or_exit(self) -> None:
         self.arm("worker_after_claim_journal")
@@ -437,6 +459,7 @@ class FaultProbeTests(unittest.TestCase):
         self.assertIs(proof["diagnostic_receipt_fsynced"], True)
         self.assertIs(proof["proof"]["product_result_journal"], False)
         self.assertIs(proof["proof"]["target_commit_verified"], False)
+        self.assert_journal_byte_binding(proof["proof"])
         evidence_bytes = (
             self.root / "fault-test-cut.result-evidence.json"
         ).read_bytes()
@@ -457,6 +480,7 @@ class FaultProbeTests(unittest.TestCase):
         self.assertEqual(
             json.loads(evidence)["authority"], "evidence_only_not_product_recovery"
         )
+        self.assert_journal_byte_binding(json.loads(evidence)["proof"])
 
     def test_opaque_output_requires_explicit_execution_and_independent_oracle_mode(
         self,
@@ -489,6 +513,9 @@ class FaultProbeTests(unittest.TestCase):
         self.assertIs(proof["proof"]["batch_result_validated"], True)
         self.assertIs(proof["proof"]["adapter_commit_marker_present"], False)
         self.assertIs(proof["proof"]["product_result_journal"], False)
+        self.assert_journal_byte_binding(proof["proof"])
+        evidence = json.loads((self.root / "fault-test-cut.result-evidence.json").read_bytes())
+        self.assert_journal_byte_binding(evidence["proof"])
 
     def test_batch_claim_journal_and_outbox_cuts_keep_current_real_hooks(self) -> None:
         for point, scenario in [("worker_after_claim_journal", "worker-batch"), ("outbox_after_confirm", "outbox-batch-ack")]:
@@ -501,6 +528,8 @@ class FaultProbeTests(unittest.TestCase):
                     child = self.child(scenario)
                     self.assertEqual(child.returncode, 137, child.stderr)
                     self.assertEqual(self.proof()["ids"]["batch_member_count"], 20)
+                    if point == "worker_after_claim_journal":
+                        self.assert_journal_byte_binding(self.proof()["proof"])
                 finally:
                     self.root = original
 
@@ -683,7 +712,13 @@ class FaultProbeTests(unittest.TestCase):
                 try:
                     self.arm("t1_after_commit")
                     child = self.child(scenario)
-                    self.assertEqual(child.returncode, 0, child.stderr)
+                    if "commit-fails" in scenario:
+                        self.assertNotEqual(child.returncode, 0, child.stderr)
+                        self.assertIn("sqlalchemy.exc.IntegrityError", child.stderr)
+                        self.assertIn("FOREIGN KEY constraint failed", child.stderr)
+                        self.assertFalse((self.root / "source-ack-or-http-response").exists())
+                    else:
+                        self.assertEqual(child.returncode, 0, child.stderr)
                     self.assertEqual(self.rows(), 0)
                     self.assertFalse((self.root / "fault-test-cut.json").exists())
                 finally:

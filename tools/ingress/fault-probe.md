@@ -78,6 +78,8 @@ D7.1 的 opt-in 接管小组另走 `subscription_t1_unit.T1Unit.receive`。探�
 
 第五点另有 `fault-{arm_id}.result-evidence.json`，`authority=evidence_only_not_product_recovery`；它只保存白名单证明，并在主 marker 中记录其 SHA。产品 claim/cleanup journal 内容保持原样。正常重启恢复仍依靠原数据库、租约/fencing 和产品 journal；不会读取该诊断 receipt。
 
+两个 Worker 切点的 proof 增加 `journal_file_sha256` 和 `journal_file_bytes`：它们对应同一文件描述符完整读取、核验身份并成功 fsync 的 journal 字节，文件上限仍为 8 KiB。结果回报前的诊断 receipt 保留同一摘要与字节数，便于和独立取回的真实文件核对；不保存 journal 原文，也不把这些诊断字段作为产品恢复输入。
+
 无 marker、marker 不完整、身份未关联、fsync 失败或源码/路径条件不符均为缺少故障证据，不能算切点通过，也不因此声称产品失败。marker 只能证明达到切点，不能代替来源重投、120/600 秒恢复、逐条内容、配额释放及独立目标 oracle 的验收。
 
 子进程单测使用本地 SQLite 实际事务、真实 Pika 方法配模拟 Ack/Nack、真实 Worker journal 文件和模拟 Control HTTP 响应，只验证探针机制；未连接 PostgreSQL/RabbitMQ 等外部服务，不代替 B4 的真实 20 条轮次：
