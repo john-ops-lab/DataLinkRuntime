@@ -8,8 +8,21 @@ from dlr.control.services.subscription_batch_protocol import (
     RESULT_SCHEMA,
     control_decision,
     digest,
+    encode,
     validate_result,
 )
+
+MANIFEST_ASCII = (
+    b'[{"content_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+    b'"delivery_id":20,"delivery_ordinal":1,'
+    b'"envelope_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
+    b'"member_index":0,"receipt_id":10},'
+    b'{"content_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+    b'"delivery_id":21,"delivery_ordinal":1,'
+    b'"envelope_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
+    b'"member_index":1,"receipt_id":11}]'
+)
+MANIFEST_SHA256 = "e5a426966fa2879d8100f1e24823cc951a4c2294752e06211f0265277877b580"
 
 
 def manifest(count=3):
@@ -53,6 +66,41 @@ def validate(items, raw, normalized=None, **kwargs):
         worker_truncated=kwargs.get("worker_truncated", False),
         control_truncated=kwargs.get("control_truncated", False),
     )
+
+
+def test_manifest_digest_matches_an_independent_fixed_ascii_vector():
+    items = manifest(2)
+    assert encode(items) == MANIFEST_ASCII
+    assert digest(items) == MANIFEST_SHA256
+    reordered_keys = [dict(reversed(list(item.items()))) for item in items]
+    assert encode(reordered_keys) == MANIFEST_ASCII
+    assert digest(reordered_keys) == MANIFEST_SHA256
+
+
+@pytest.mark.parametrize("changed_field", ["content_hash", "envelope_hash", "member_order"])
+def test_manifest_content_and_order_changes_reject_the_original_result_binding(changed_field):
+    original = manifest(2)
+    frozen_result = result(original)
+    assert frozen_result["manifest_hash"] == MANIFEST_SHA256
+    changed = deepcopy(original)
+    if changed_field == "member_order":
+        changed.reverse()
+    else:
+        changed[0][changed_field] = "c" * 64
+    changed_hash = digest(changed)
+    assert changed_hash != MANIFEST_SHA256
+    decision = validate_result(
+        "f" * 32,
+        changed_hash,
+        changed,
+        frozen_result,
+        frozen_result,
+        worker_truncated=False,
+        control_truncated=False,
+    )
+    assert decision.provenance == "control_unknown"
+    assert decision.counts == {"succeeded": 0, "failed": 0, "unknown": 2, "not_run": 0}
+    assert all(item["error_code"] == "batch_result_invalid" for item in decision.result["members"])
 
 
 def test_success_and_partial_failure_keep_only_valid_member_facts():

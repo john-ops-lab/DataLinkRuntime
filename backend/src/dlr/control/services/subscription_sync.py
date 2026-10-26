@@ -31,6 +31,7 @@ from dlr.control.services import subscription_accounting as accounting
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.event_envelope import canonical, event_id, validate_envelope
 from dlr.control.services.input_config import database_now
+from dlr.control.services.subscription_queue_failure import PLATFORM_RECEPTION_FAILURES
 from dlr.control.services.subscription_source import SourceRunContext
 
 KUBERNETES_SHARD = "kubernetes"
@@ -453,9 +454,9 @@ def select_batch_maintenance_candidates(
     return ids, ids[-1], upper
 
 
-def _context(
+def _source_context(
     session: Session, context: SourceRunContext
-) -> tuple[EventSubscription, SubscriptionActivation, SubscriptionConfigVersion, SourceCheckpoint]:
+) -> tuple[EventSubscription, SubscriptionActivation, SubscriptionConfigVersion]:
     from dlr.control.services import subscription_delivery as delivery
 
     _, sub = delivery.lock_subscription(session, context.subscription_id)
@@ -479,6 +480,13 @@ def _context(
         raise domain_error(409, "subscription_config_conflict", "Source activation differs")
     if not settings.event_subscriptions_enabled:
         raise domain_error(409, "source_not_available", "Source intake is disabled")
+    return sub, activation, config
+
+
+def _context(
+    session: Session, context: SourceRunContext
+) -> tuple[EventSubscription, SubscriptionActivation, SubscriptionConfigVersion, SourceCheckpoint]:
+    sub, activation, config = _source_context(session, context)
     cp = session.scalar(
         select(SourceCheckpoint)
         .where(
@@ -801,6 +809,8 @@ def receive_list_item(
     batch.resource_version = collection_rv
     batch.item_count += 1
     batch.total_bytes += size
+    if sub.last_error_code in PLATFORM_RECEPTION_FAILURES:
+        sub.last_error_code = None
     delivery.refresh_delivery_state(session, sub)
     return SyncAcceptResult(receipt.id, False, cp.next_sequence - 1)
 
@@ -968,6 +978,8 @@ def receive_watch_event(
         and cp.blocked_unaccepted.get("code") == "subscription_capacity_exceeded"
     ):
         cp.blocked_unaccepted = None
+    if sub.last_error_code in PLATFORM_RECEPTION_FAILURES:
+        sub.last_error_code = None
     delivery.refresh_delivery_state(session, sub)
     return SyncAcceptResult(receipt.id, False, cp.next_sequence - 1)
 
@@ -984,9 +996,20 @@ def advance_bookmark(
     return True
 
 
-def mark_sync_backpressure(session: Session, context: SourceRunContext) -> None:
+def mark_sync_backpressure(
+    session: Session, context: SourceRunContext, code: str = "subscription_capacity_exceeded"
+) -> None:
     from dlr.control.services import subscription_delivery as delivery
 
+    if code in PLATFORM_RECEPTION_FAILURES:
+        # A platform wait is not an unaccepted-message or quota diagnosis.
+        # Keep the same source fence without creating a checkpoint/ledger.
+        sub, _, _ = _source_context(session, context)
+        if sub.last_error_code is None or sub.last_error_code in PLATFORM_RECEPTION_FAILURES:
+            sub.last_error_code = code
+        return
+    if code != "subscription_capacity_exceeded":
+        raise ValueError("Unsupported sync backpressure code")
     sub, activation, _, cp = _context(session, context)
     rows = delivery._quotas(session, sub.id)
     # A rate/ready-control wait does not by itself justify sticky capacity

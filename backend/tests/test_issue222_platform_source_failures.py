@@ -86,10 +86,10 @@ def test_kubernetes_platform_wait_resumes_same_message_without_a_gap(monkeypatch
     monkeypatch.setattr(
         kubernetes.sync_service,
         "mark_sync_backpressure",
-        lambda session, context: pressured.append(context),
+        lambda session, context, code: pressured.append((context, code)),
     )
     runner = kubernetes.KubernetesSourceRunner()
     assert runner._receive(ctx, envelope) is result
     assert attempts == [envelope, envelope]
-    assert pressured == [ctx]
+    assert pressured == [(ctx, code)]
     assert buffer.used_bytes == 0 and buffer.peak_bytes == 8

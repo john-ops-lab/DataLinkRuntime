@@ -256,21 +256,37 @@ def test_success_partial_failure_and_retry_wait_have_distinct_facts(batch_world,
 
 
 @pytest.mark.parametrize(
-    "mutation",
+    ("mutation", "guard_message"),
     [
-        "remove_member",
-        "rewrite_input",
-        "rewrite_kind",
-        "orphan_delivery",
-        "receipt_identity",
-        "receipt_envelope",
+        pytest.param(
+            "remove_member", "batch member set differs from frozen manifest", id="remove_member"
+        ),
+        pytest.param(
+            "rewrite_input",
+            "shared batch input is immutable until whole group cleanup",
+            id="rewrite_input",
+        ),
+        pytest.param("rewrite_kind", "execution delivery kind is immutable", id="rewrite_kind"),
+        pytest.param(
+            "orphan_delivery", "batch member set differs from frozen manifest", id="orphan_delivery"
+        ),
+        pytest.param(
+            "receipt_identity", "batch receipt identity is immutable", id="receipt_identity"
+        ),
+        pytest.param(
+            "receipt_envelope",
+            "batch receipt payload is immutable before TTL",
+            id="receipt_envelope",
+        ),
     ],
 )
-def test_database_rejects_mutation_of_frozen_membership(batch_world, session_factory, mutation):
+def test_database_rejects_mutation_of_frozen_membership(
+    batch_world, session_factory, mutation, guard_message
+):
     with session_factory.begin() as session:
         ids, execution = produce(session, batch_world)
         execution_id = execution.id
-    with pytest.raises(IntegrityError), session_factory.begin() as session:
+    with pytest.raises(IntegrityError) as rejected, session_factory.begin() as session:
         execution = session.get(Execution, execution_id)
         session.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         if mutation == "remove_member":
@@ -294,6 +310,8 @@ def test_database_rejects_mutation_of_frozen_membership(batch_world, session_fac
                 select(EventDelivery).where(EventDelivery.receipt_id == receipt.id)
             )
             item.batch_execution_id = execution_id
+    assert rejected.value.orig.sqlstate == "23514"
+    assert rejected.value.orig.diag.message_primary == guard_message
 
 
 def test_terminal_requires_strict_result_and_missing_result_becomes_unknown(
@@ -302,8 +320,12 @@ def test_terminal_requires_strict_result_and_missing_result_becomes_unknown(
     with session_factory.begin() as session:
         _, execution = produce(session, batch_world)
         execution_id = execution.id
-    with pytest.raises(IntegrityError), session_factory.begin() as session:
+    with pytest.raises(IntegrityError) as rejected, session_factory.begin() as session:
         session.get(Execution, execution_id).status = "succeeded"
+    assert rejected.value.orig.sqlstate == "23514"
+    assert (
+        rejected.value.orig.diag.message_primary == "batch terminal lacks validated member result"
+    )
     with session_factory.begin() as session:
         execution = session.get(Execution, execution_id)
         execution.status = "cancelled"
@@ -472,7 +494,7 @@ def test_old_binary_cannot_accept_batch_custody_without_prepaid_member_budget(
     with session_factory.begin() as session:
         receipt = receive(session, batch_world)
         receipt_id = receipt.id
-    with pytest.raises(IntegrityError), session_factory.begin() as session:
+    with pytest.raises(IntegrityError) as rejected, session_factory.begin() as session:
         # Old T1 omits all new fields. PostgreSQL defaults must not turn that
         # write into an ACK-authorizing but unexecutable batch responsibility.
         session.execute(
@@ -483,6 +505,10 @@ def test_old_binary_cannot_accept_batch_custody_without_prepaid_member_budget(
                 retained_execution_bytes=100,
             )
         )
+    assert rejected.value.orig.sqlstate == "23514"
+    assert (
+        rejected.value.orig.diag.message_primary == "business batch requires prepaid bounded shares"
+    )
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(EventDelivery)) == 1
         assert facts(session, batch_world).pending_count == 1

@@ -647,7 +647,7 @@ class KubernetesSourceRunner:
                     }:
                         raise
                     with context.session_factory.begin() as session:
-                        sync_service.mark_sync_backpressure(session, context)
+                        sync_service.mark_sync_backpressure(session, context, failure.code)
                     context.stop_event.wait(0.25)
             raise SourceFailure("source_stopped", "backoff")
         finally:

@@ -6,13 +6,14 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from dlr.common.config import settings
 from dlr.control.api.subscriptions import serialize_event
 from dlr.control.models import (
     EventDelivery,
     EventReceipt,
+    EventSubscription,
     Execution,
     ExecutionOutbox,
     SourceCheckpoint,
@@ -25,12 +26,76 @@ from dlr.control.services import http_ingress
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services.input_config import database_now
 from dlr.control.services.subscription_batch_view import delivery_records
+from test_issue219_delivery import receive as receive_single
 from test_issue222_business_batch import batch_world as core_batch_world
 from test_issue222_business_batch import facts, produce
 from test_issue222_business_batch import world as foundation_world
 
 world = foundation_world
 batch_world = core_batch_world
+
+
+def projection(session: Any, receipt: Any, *, latest_only: bool = False) -> tuple[Any, list[str]]:
+    statements: list[str] = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        return delivery_records(session, receipt, latest_only=latest_only), statements
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+
+
+def test_delivery_view_is_one_statement_without_cross_transaction_session_cache(
+    world: Any, session_factory: Any
+) -> None:
+    with session_factory.begin() as session:
+        receipt_id = receive_single(session, world).id
+    with session_factory() as session:
+        receipt = session.get(EventReceipt, receipt_id)
+        session.info["unrelated"] = "preserve"
+        for _ in range(2):
+            rows, statements = projection(session, receipt)
+            assert len(statements) == len(rows) == 1
+            # The legacy fixture has config={}: a missing mode remains per-event.
+            assert rows[0]["processing_mode"] == "per_event"
+            assert rows[0]["effective_activation_id"] == receipt.activation_id
+            assert session.info == {"unrelated": "preserve"}
+            session.commit()
+
+
+def test_delivery_view_uses_the_replay_activation_without_adding_rows_or_queries(
+    world: Any, session_factory: Any
+) -> None:
+    with session_factory() as session:
+        receipt = receive_single(session, world)
+        session.commit()
+        delivery.skip_event(session, receipt.id, "view-initial-skip", None, "view fixture")
+        session.get(EventSubscription, world["sub"]).desired_state = "disabled"
+        session.commit()
+        replay = delivery.replay_event(
+            session,
+            receipt.id,
+            "view-current-replay",
+            None,
+            "view fixture",
+            use_current_configuration=True,
+        )
+        session.commit()
+        assert replay.activation_override_id != receipt.activation_id
+        rows, statements = projection(session, receipt)
+        assert len(statements) == 1 and len(rows) == 2
+        assert [row["ordinal"] for row in rows] == [1, 2]
+        assert [row["processing_mode"] for row in rows] == ["per_event", "per_event"]
+        assert rows[0]["effective_activation_id"] == receipt.activation_id
+        assert rows[1]["effective_activation_id"] == replay.activation_override_id
+        latest, statements = projection(session, receipt, latest_only=True)
+        assert len(statements) == len(latest) == 1
+        assert latest[0] == rows[1] and "batch_view_modes" not in session.info
 
 
 def created(factory: Any, world: Any, *, claim: bool = True) -> tuple[Any, ...]:
