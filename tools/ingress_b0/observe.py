@@ -18,6 +18,7 @@ import re
 import sys
 import threading
 import time
+import weakref
 from bisect import bisect_left
 from collections import Counter
 from pathlib import Path
@@ -118,6 +119,12 @@ _IDS: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
 _STAGE: contextvars.ContextVar[str] = contextvars.ContextVar(
     "b0_stage", default="outside"
 )
+_CURRENT_SPAN: contextvars.ContextVar[Span | None] = contextvars.ContextVar(
+    "b0_current_span", default=None
+)
+_BOUNDARY_COMMIT: contextvars.ContextVar[
+    tuple[weakref.ReferenceType[Any], dict[str, Any], str, str | None] | None
+] = contextvars.ContextVar("b0_boundary_commit", default=None)
 _ACTIVE: Observer | None = None
 
 
@@ -416,6 +423,15 @@ class Span:
         kwargs: dict[str, Any],
     ):
         self.observer, self.stage = observer, stage
+        self.parent_span = _CURRENT_SPAN.get()
+        self.session = args[0] if args else kwargs.get("session")
+        self.boundary_kind: str | None = None
+        self.boundary_commit = False
+        self.responsibility_state: str | None = None
+        # At most one already-loaded Delivery is retained until this call exits.
+        # SQLAlchemy drops its strong dirty reference after autoflush, so a
+        # weakref alone can lose the terminal state before the wrapper returns.
+        self.delivery_watch: tuple[Any, str] | None = None
         self.parent = _IDS.get()
         self.ids = dict(self.parent or {})
         for value in args[:8]:
@@ -433,12 +449,21 @@ class Span:
                 _merge(self.ids, {name: value})
             else:
                 _merge(self.ids, identifiers(value))
+        if stage == "sqlalchemy.orm.session.Session.commit":
+            pending = _BOUNDARY_COMMIT.get()
+            if pending is not None and pending[0]() is self.session:
+                self.boundary_kind = pending[2]
+                self.boundary_commit = True
+                self.responsibility_state = pending[3]
+                _merge(self.ids, pending[1])
+                _BOUNDARY_COMMIT.set(None)
 
     def __enter__(self) -> Self:
         self.start_ns = time.monotonic_ns()
         self.utc_start_ns = time.time_ns()
         self.ids_token = _IDS.set(self.ids)
         self.stage_token = _STAGE.set(self.stage)
+        self.span_token = _CURRENT_SPAN.set(self)
         self.has_begin = self.observer.detail(self.stage, self.ids)
         if self.has_begin:
             self.observer.emit(
@@ -451,7 +476,42 @@ class Span:
         return self
 
     def result(self, value: Any) -> None:
-        _merge(self.ids, identifiers(value))
+        result_ids = identifiers(value)
+        _merge(self.ids, result_ids)
+        if (
+            self.stage == "dlr.control.services.subscription_delivery.dispatch_delivery"
+            and "execution_id" in result_ids
+        ):
+            self.boundary_kind = "materialized"
+            self._remember_commit()
+        if (
+            self.stage == "dlr.control.services.subscription_delivery._delivery_context"
+            and self.parent_span is not None
+            and self.parent_span.stage
+            == "dlr.control.services.subscription_delivery.observe_terminal"
+            and type(value) is tuple
+        ):
+            for item in value[:8]:
+                if type(item).__name__ == "EventDelivery":
+                    try:
+                        data = object.__getattribute__(item, "__dict__")
+                        state = data.get("state") if type(data) is dict else None
+                        if state == "processing":
+                            self.parent_span.delivery_watch = (item, state)
+                    except Exception:  # noqa: BLE001 - diagnostics must not load ORM state
+                        self.observer.emit(
+                            "hook", target=self.stage + ".state_watch", outcome="failed"
+                        )
+
+    def _remember_commit(self) -> None:
+        try:
+            reference = weakref.ref(self.session)
+        except TypeError:
+            return
+        assert self.boundary_kind is not None
+        _BOUNDARY_COMMIT.set(
+            (reference, self.ids.copy(), self.boundary_kind, self.responsibility_state)
+        )
 
     def __exit__(
         self,
@@ -459,12 +519,37 @@ class Span:
         error: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool:
+        if self.delivery_watch is not None:
+            item, _previous_state = self.delivery_watch
+            self.delivery_watch = None
+            try:
+                if kind is None:
+                    data = object.__getattribute__(item, "__dict__")
+                    state = data.get("state") if type(data) is dict else None
+                    if state in {"succeeded", "failed"}:
+                        self.boundary_kind = "terminal"
+                        self.responsibility_state = state
+                        self._remember_commit()
+            except Exception:  # noqa: BLE001 - never load or alter an ORM attribute
+                self.observer.emit(
+                    "hook", target=self.stage + ".state_watch", outcome="failed"
+                )
+            finally:
+                # Do not retain the ORM object across the caller's commit.
+                del item
         elapsed = time.monotonic_ns() - self.start_ns
         outcome = (
             "ok" if kind is None else ("closed" if kind is GeneratorExit else "error")
         )
         self.observer.aggregate(self.stage, elapsed, outcome == "error")
-        if self.has_begin or self.observer.detail(self.stage, self.ids):
+        boundary_detail = self.boundary_kind is not None and self.observer.detail(
+            self.stage + ":boundary:" + self.boundary_kind, self.ids
+        )
+        if (
+            self.has_begin
+            or boundary_detail
+            or self.observer.detail(self.stage, self.ids)
+        ):
             self.observer.emit(
                 "span",
                 stage=self.stage,
@@ -474,10 +559,15 @@ class Span:
                 utc_start_ns=self.utc_start_ns,
                 elapsed_ns=elapsed,
                 outcome=outcome,
+                boundary_kind=self.boundary_kind,
+                boundary_commit=self.boundary_commit,
+                commit_succeeded=(kind is None) if self.boundary_commit else None,
+                responsibility_state=self.responsibility_state,
                 error_type=kind.__name__[:64] if kind else None,
             )
         _IDS.reset(self.ids_token)
         _STAGE.reset(self.stage_token)
+        _CURRENT_SPAN.reset(self.span_token)
         if self.parent is not None:
             _merge(self.parent, self.ids)
         return False

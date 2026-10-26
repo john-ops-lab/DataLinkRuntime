@@ -229,6 +229,210 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(sum(row["count"] for row in aggregates), 20)
         self.assertEqual(sum(sum(row["bucket_counts"]) for row in aggregates), 20)
 
+    def test_real_t2_and_terminal_commits_survive_prior_unchanged_scans(self):
+        class Execution:
+            def __init__(self):
+                self.id = 44
+
+        class EventDelivery:
+            def __init__(self):
+                self.id, self.receipt_id, self.execution_id = 9, 8, 44
+                self.state = "processing"
+
+            def __getattr__(self, name):
+                raise AssertionError("ORM load attempted: " + name)
+
+        class Session:
+            def __init__(self):
+                self.commits = 0
+
+            def commit(self):
+                self.commits += 1
+
+        session, delivery = Session(), EventDelivery()
+        calls = {"dispatch": 0, "observe": 0}
+
+        def dispatch(session, delivery_id):
+            calls["dispatch"] += 1
+            return Execution() if calls["dispatch"] == 8 else None
+
+        def context(session, delivery_id):
+            return (delivery,)
+
+        context = self.observer.wrap(
+            context, "dlr.control.services.subscription_delivery._delivery_context"
+        )
+
+        def observed(session, delivery_id):
+            item = context(session, delivery_id)[0]
+            calls["observe"] += 1
+            if calls["observe"] == 8:
+                item.state = "succeeded"
+
+        dispatched = self.observer.wrap(
+            dispatch, "dlr.control.services.subscription_delivery.dispatch_delivery"
+        )
+        observed = self.observer.wrap(
+            observed, "dlr.control.services.subscription_delivery.observe_terminal"
+        )
+        committed = self.observer.wrap(
+            Session.commit, "sqlalchemy.orm.session.Session.commit"
+        )
+        identity = observe._IDS.set({"delivery_id": 9, "receipt_id": 8})
+        pending = observe._BOUNDARY_COMMIT.set(None)
+        try:
+            for _ in range(8):
+                result = dispatched(session, 9)
+                if calls["dispatch"] < 8:
+                    self.assertIsNone(result)
+                else:
+                    self.assertIsInstance(result, Execution)
+                committed(session)
+            for _ in range(8):
+                self.assertIsNone(observed(session, 9))
+                committed(session)
+        finally:
+            observe._IDS.reset(identity)
+            observe._BOUNDARY_COMMIT.reset(pending)
+        self.assertEqual(session.commits, 16)
+        boundaries = [
+            row
+            for row in self.rows()
+            if row.get("phase") == "end" and row.get("boundary_kind")
+        ]
+        self.assertEqual(
+            [(row["boundary_kind"], row["boundary_commit"]) for row in boundaries],
+            [
+                ("materialized", False),
+                ("materialized", True),
+                ("terminal", False),
+                ("terminal", True),
+            ],
+        )
+        self.assertTrue(all(row["ids"]["delivery_id"] == 9 for row in boundaries))
+        self.assertTrue(all(row["ids"]["receipt_id"] == 8 for row in boundaries))
+        self.assertTrue(all(row["ids"]["execution_id"] == 44 for row in boundaries))
+        self.assertTrue(
+            all(row["commit_succeeded"] for row in boundaries if row["boundary_commit"])
+        )
+        self.assertEqual(boundaries[-1]["responsibility_state"], "succeeded")
+
+    def test_failed_boundary_commit_preserves_exception_and_never_claims_success(self):
+        class Session:
+            def commit(self):
+                raise failure
+
+        session = Session()
+        failure = RuntimeError("SECRET_COMMIT_FAILURE")
+        import weakref
+
+        pending = observe._BOUNDARY_COMMIT.set(
+            (
+                weakref.ref(session),
+                {"delivery_id": 9, "receipt_id": 8, "execution_id": 44},
+                "materialized",
+                None,
+            )
+        )
+        try:
+            committed = self.observer.wrap(
+                Session.commit, "sqlalchemy.orm.session.Session.commit"
+            )
+            with self.assertRaises(RuntimeError) as caught:
+                committed(session)
+            self.assertIs(caught.exception, failure)
+            self.assertIsNone(observe._BOUNDARY_COMMIT.get())
+        finally:
+            observe._BOUNDARY_COMMIT.reset(pending)
+        commits = [row for row in self.rows() if row.get("boundary_commit")]
+        self.assertEqual(len(commits), 1)
+        self.assertEqual(commits[0]["outcome"], "error")
+        self.assertFalse(commits[0]["commit_succeeded"])
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("sqlalchemy"), "requires existing SQLAlchemy library"
+    )
+    def test_terminal_state_survives_autoflush_without_external_model_reference(self):
+        import weakref
+
+        from sqlalchemy import Integer, String, create_engine
+        from sqlalchemy.orm import DeclarativeBase, Session, mapped_column
+
+        class Base(DeclarativeBase):
+            pass
+
+        class EventDelivery(Base):
+            __tablename__ = "b0_delivery"
+            id = mapped_column(Integer, primary_key=True)
+            receipt_id = mapped_column(Integer)
+            execution_id = mapped_column(Integer)
+            state = mapped_column(String)
+
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        references = []
+        calls = 0
+
+        def context(session, delivery_id):
+            item = session.get(EventDelivery, delivery_id)
+            references.append(weakref.ref(item))
+            return (item,)
+
+        context = self.observer.wrap(
+            context, "dlr.control.services.subscription_delivery._delivery_context"
+        )
+
+        def observed(session, delivery_id):
+            nonlocal calls
+            item = context(session, delivery_id)[0]
+            calls += 1
+            if calls == 8:
+                item.state = "succeeded"
+            session.flush()
+
+        observed = self.observer.wrap(
+            observed, "dlr.control.services.subscription_delivery.observe_terminal"
+        )
+        committed = self.observer.wrap(
+            Session.commit, "sqlalchemy.orm.session.Session.commit"
+        )
+        pending = observe._BOUNDARY_COMMIT.set(None)
+        try:
+            with Session(engine, expire_on_commit=False) as session:
+                session.add(
+                    EventDelivery(
+                        id=9, receipt_id=8, execution_id=44, state="processing"
+                    )
+                )
+                session.commit()
+                for _ in range(8):
+                    self.assertIsNone(observed(session, 9))
+                    # Nothing, including the diagnostic span, retains this row
+                    # once the original function and its wrapper have returned.
+                    self.assertIsNone(references[-1]())
+                    committed(session)
+        finally:
+            observe._BOUNDARY_COMMIT.reset(pending)
+            engine.dispose()
+        boundaries = [
+            row
+            for row in self.rows()
+            if row.get("phase") == "end" and row.get("boundary_kind") == "terminal"
+        ]
+        self.assertEqual(len(boundaries), 2)
+        self.assertEqual([row["boundary_commit"] for row in boundaries], [False, True])
+        self.assertTrue(boundaries[-1]["commit_succeeded"])
+        self.assertTrue(
+            all(row["responsibility_state"] == "succeeded" for row in boundaries)
+        )
+        self.assertFalse(
+            any(
+                row.get("outcome") == "failed"
+                for row in self.rows()
+                if row["kind"] == "hook"
+            )
+        )
+
     def test_duration_buckets_are_exact_including_boundaries_and_flush(self):
         durations = [0, 100_000, 100_001, 250_000, 5_000_000_000, 5_000_000_001]
         for duration in durations:
