@@ -2,7 +2,7 @@
 
 ## Context
 
-动机和范围见 [proposal.md](proposal.md)。基线为 `1158e413e55d92127d615d666c5d4e4bcc15514f`；用户已批准先执行 B0，正在准备隔离环境及测量夹具，后续批次未开始。具体结果以 B0 报告为准。
+动机和范围见 [proposal.md](proposal.md)。基线为 `1158e413e55d92127d615d666c5d4e4bcc15514f`；用户授权的 B0 测量和针对性验证已完成，后续批次未开始。结果、瓶颈及计时边界见 [B0 报告](b0-results.md)。
 
 已核对当前正式 `event-delivery`、`event-subscription-management` 规格，以及以下代码：
 
