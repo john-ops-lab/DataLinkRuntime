@@ -30,7 +30,7 @@ import {
   isCompletionEvent,
   subscriptionDrained,
 } from "../subscription-types";
-import { eventBytes, eventNeedsAttention, eventSourceLabel, eventStatusKey, eventSummary } from "../event-trigger";
+import { eventBytes, eventNeedsAttention, eventSourceLabel, eventStatusKey, eventSummary, eventWaitingLabel, httpIngressPath } from "../event-trigger";
 import { subscriptionErrorMessage } from "../subscription-message";
 import ExecutionHistoryPanel from "./ExecutionHistoryPanel";
 import SubscriptionConfigDialog from "./SubscriptionConfigDialog";
@@ -268,7 +268,7 @@ export default function SubscriptionWorkspace({
         sub.config_version,
       );
       setDiagnostic(
-        result.source_type === "kubernetes" && result.kubernetes
+        result.source_type === "http" ? t("http.checked") : result.source_type === "kubernetes" && result.kubernetes
           ? `${t("kubernetes.testPassed")} ${t("kubernetes.testResult", { cluster: result.cluster_id, resource: `${result.kubernetes.group || "core"}/${result.kubernetes.version}/${result.kubernetes.resource}`, namespace: result.kubernetes.namespace ?? t("kubernetes.allNamespaces"), scope: result.kubernetes.scope_fingerprint, trust: t(result.kubernetes.trust_verified ? "batch.yes" : "batch.no"), list: t(result.kubernetes.list_verified ? "batch.yes" : "batch.no"), watch: t(result.kubernetes.watch_verified ? "batch.yes" : "batch.no") })}`
           : result.source_type === "rabbitmq" || result.source_type === "rocketmq"
             ? t("queues.connectionPassed", { source: t(`ux.sourceType.${result.source_type}`), cluster: result.cluster_id })
@@ -327,14 +327,20 @@ export default function SubscriptionWorkspace({
       {error && <Alert type="error" showIcon role="alert" message={error} />}
       {!capabilities.enabled && <Alert type="warning" showIcon message={t("featureOff")} />}
       {!canEdit && <Alert type="info" message={t("readOnly")} />}
+      {sub.source_type === "http" && httpIngressPath(sub) && <div className="http-ingress-address">
+        <strong>{t("http.path")}</strong><code className="http-ingress-path">{httpIngressPath(sub)}</code>
+        <p className="ux-muted">{t("http.pathHint")}</p>
+      </div>}
       <div className="event-status-strip" role="status">
         <span>{t(`ux.status.${eventStatusKey(sub)}`)}</span>
         <span>{t("ux.pendingCount", { count: sub.quota.pending_count ?? 0 })}</span>
+        <span>{t("ux.processingCount", { count: sub.event_counts.processing ?? 0 })}</span>
         <span>{t("ux.failedCount", { count: sub.event_counts.failed ?? 0 })}</span>
+        <span>{t("ux.oldestWaiting", { duration: eventWaitingLabel(sub, t) })}</span>
       </div>
       {eventNeedsAttention(sub) && <Alert type="warning" showIcon
         message={t(`ux.status.${eventStatusKey(sub)}`)}
-        description={sub.last_error_code ? t(`${sub.source_type === "kubernetes" ? "kubernetes." : ""}errors.${sub.last_error_code}`, {
+        description={sub.last_error_code ? t(`${sub.source_type === "kubernetes" ? "kubernetes." : sub.source_type === "http" ? "http." : ""}errors.${sub.last_error_code}`, {
           defaultValue: t(`errors.${sub.last_error_code}`, { defaultValue: t("ux.problemHint") }),
         }) : t("ux.problemHint")}
         action={<Space wrap>
@@ -515,6 +521,7 @@ export default function SubscriptionWorkspace({
       ) : null}
       {(sub.source_type === "rabbitmq" || sub.source_type === "rocketmq") &&
         <Alert type="info" message={t("queues.recoveryHint")} />}
+      {sub.source_type === "http" && <><p>{t("http.sendHint")}</p><p>{t("http.retryHint")}</p></>}
       {!drained && <Alert type="info" message={t("locked")} />}
       <section>
         <h3>{t("quota")}</h3>
@@ -539,6 +546,7 @@ export default function SubscriptionWorkspace({
           {t("controlReserve")}: {sub.quota.reserved_control_count ?? 0} /{" "}
           {sub.quota.reserved_control_bytes ?? 0} B
         </p>
+        <p>{t("http.rateLimit")}: {sub.limits.rate?.toLocaleString() ?? "—"}</p>
       </section>
       <section>
         <h3>{t("counts")}</h3>
@@ -554,7 +562,7 @@ export default function SubscriptionWorkspace({
         <h3>{t("checkpoints")}</h3>
         <p>
           {t(
-            sub.source_type === "kubernetes" ? "kubernetes.gapNote" : sub.source_type === "kafka" ? "gapNote" : "queues.recoveryHint",
+            sub.source_type === "kubernetes" ? "kubernetes.gapNote" : sub.source_type === "kafka" ? "gapNote" : sub.source_type === "http" ? "http.retryHint" : "queues.recoveryHint",
           )}
         </p>
         <Table<SourceCheckpoint>
@@ -655,7 +663,7 @@ export default function SubscriptionWorkspace({
             disabled={!capabilities.enabled || testing}
             onClick={() => void testConnection()}
           >
-            {t("test")}
+            {t(sub.source_type === "http" ? "http.check" : "test")}
           </Button>
           {sub.desired_state === "disabled" ? (
             <Button
@@ -684,7 +692,7 @@ export default function SubscriptionWorkspace({
             disabled={!drained}
             onClick={() => setAction({ kind: "reset" })}
           >
-            {t("reset")}
+            {t(sub.source_type === "http" ? "http.reset" : "reset")}
           </Button>
           <Button
             danger

@@ -10,7 +10,18 @@ from dlr.common.config import settings
 
 logger = logging.getLogger("dlr.control.db")
 
-engine: Engine = create_engine(settings.database_url)
+# Ingress owns a separate eight-connection pool. All management, recovery and
+# maintenance work shares this finite reserve, without hidden overflow.
+engine: Engine = create_engine(
+    settings.database_url,
+    pool_size=4,
+    max_overflow=0,
+    pool_timeout=1,
+    connect_args={
+        "connect_timeout": 5,
+        "options": "-c statement_timeout=5000 -c lock_timeout=1000",
+    },
+)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 

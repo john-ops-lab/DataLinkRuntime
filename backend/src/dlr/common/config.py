@@ -67,6 +67,16 @@ class Settings(BaseSettings):
     event_subscriptions_enabled: bool = Field(
         default=False, validation_alias="DLR_EVENT_SUBSCRIPTIONS_ENABLED"
     )
+    # HTTP is a separate opt-in capability; the existing source feature flag
+    # continues to fence all new source custody.
+    http_ingress_enabled: bool = Field(default=False, validation_alias="DLR_HTTP_INGRESS_ENABLED")
+    # Keep raw JSON here: an invalid capacity profile must close new reception,
+    # while management and already accepted responsibility remain available.
+    ingress_capacity_profile: str | None = Field(
+        default=None, validation_alias="DLR_INGRESS_CAPACITY_PROFILE"
+    )
+    ingress_storage_root: str = Field(default="/", validation_alias="DLR_INGRESS_STORAGE_ROOT")
+
     event_subscription_tick_seconds: float = Field(
         default=1.0,
         ge=0.1,

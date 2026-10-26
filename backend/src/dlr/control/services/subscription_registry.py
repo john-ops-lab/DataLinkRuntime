@@ -6,6 +6,7 @@ from typing import Any
 
 from dlr.common.jcs import canonicalize
 from dlr.control.schemas.subscription import (
+    HttpSourceConfig,
     KafkaSourceConfig,
     KubernetesSourceConfig,
     RabbitMQSourceConfig,
@@ -49,6 +50,15 @@ class SourceDefinition:
 
 PREFIX = "dlr.control.services."
 SOURCES = {
+    "http": SourceDefinition(
+        "http",
+        HttpSourceConfig,
+        PREFIX + "subscription_http.HttpSourceRunner",
+        1,
+        "client_retry",
+        "receipt_serial",
+        identity_contract="http-raw-v1",
+    ),
     "kafka": SourceDefinition(
         "kafka",
         KafkaSourceConfig,
@@ -107,6 +117,8 @@ def configuration_identity(
     value: dict[str, Any], verified: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     definition = source_definition(value["source_type"])
+    if definition.identity_contract == "http-raw-v1":
+        return {"source_type": "http"}
     if definition.identity_contract == "kafka-v1":
         # Keep the deployed Kafka v1 identity byte-compatible.
         return {

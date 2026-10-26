@@ -27,8 +27,25 @@ export function eventSourceLabel(sub: EventSubscription): string {
     case "kubernetes": return `Kubernetes · ${config.resource}${config.namespace ? ` · ${config.namespace}` : ""}`;
     case "rabbitmq": return `RabbitMQ · ${config.queue}`;
     case "rocketmq": return `RocketMQ · ${config.topic}`;
+    case "http": return "HTTP";
     default: return "—";
   }
+}
+
+/** Only a public relative route is displayed, never a deployment origin. */
+export function httpIngressPath(sub: EventSubscription): string | null {
+  return typeof sub.ingress_path === "string" && /^\/api\/ingress\/[a-zA-Z0-9_-]{1,128}$/.test(sub.ingress_path)
+    ? sub.ingress_path : null;
+}
+
+export function eventWaitingLabel(sub: EventSubscription, translate: (key: string, values?: Record<string, unknown>) => string): string {
+  if (!sub.oldest_pending_at) return translate("ux.noWaiting");
+  const received = Date.parse(sub.oldest_pending_at);
+  if (!Number.isFinite(received)) return "—";
+  const seconds = Math.max(0, Math.floor((Date.now() - received) / 1000));
+  return translate(seconds < 60 ? "ux.waitSeconds" : "ux.waitMinutes", {
+    count: seconds < 60 ? seconds : Math.floor(seconds / 60),
+  });
 }
 
 export function eventBytes(value: number | undefined): string {
@@ -54,6 +71,7 @@ export function eventSummary(event: SubscriptionEvent, translate: (key: string, 
     return translate("queues.messageSummary", { scope: String(scope ?? "").slice(0, 128),
       id: String(position.message_id ?? "—").slice(0, 128) });
   }
+  if (source.type === "http") return translate("http.eventSummary", { id: event.source_event_id.slice(0, 128) });
   if (source.type === "kafka" && typeof position.topic === "string") return translate("ux.kafkaSummary", { topic: position.topic.slice(0, 128), partition: position.partition ?? "—", offset: position.offset ?? "—" });
   return translate("ux.recordNumber", { id: event.id });
 }

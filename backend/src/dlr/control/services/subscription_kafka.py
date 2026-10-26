@@ -42,6 +42,10 @@ from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.event_envelope import event_id, validate_envelope
 from dlr.control.services.input_config import database_now
+from dlr.control.services.subscription_queue_failure import (
+    LEGACY_LIFECYCLE_FAILURES,
+    PLATFORM_RECEPTION_FAILURES,
+)
 from dlr.control.services.subscription_source import SourceFailure, SourceRunContext
 
 CLIENT_BUDGET: dict[str, Any] = {
@@ -179,6 +183,8 @@ def classify_error(error: Exception) -> SourceFailure:
         return SourceFailure("source_record_unreadable", disposition="blocked")
     if isinstance(error, HTTPException):
         code = _code(error)
+        if code in PLATFORM_RECEPTION_FAILURES:
+            return SourceFailure(code, disposition="backoff")
         return SourceFailure(
             code,
             disposition=("capacity" if code == "subscription_capacity_exceeded" else "blocked"),
@@ -846,11 +852,11 @@ class KafkaSourceRunner:
                         )
                     except HTTPException as error:
                         code = _code(error)
-                        if code in {
-                            "subscription_owner_stale",
-                            "subscription_config_conflict",
-                            "source_not_available",
-                        }:
+                        if code in (
+                            LEGACY_LIFECYCLE_FAILURES
+                            | PLATFORM_RECEPTION_FAILURES
+                            | {"subscription_owner_stale", "subscription_activation_invalid"}
+                        ):
                             raise
                         if not self._reject(
                             context,

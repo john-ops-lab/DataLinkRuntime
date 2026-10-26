@@ -179,7 +179,10 @@
     "source_message_digest_invalid": "Message integrity verification failed. Check the source message.",
     "source_message_encoding_invalid": "Message encoding or compression is invalid. Check the source.",
     "source_queue_unavailable": "The queue is unavailable or has another consumer. Check the queue and permissions.",
-    "source_ack_failed": "The message is stored but source acknowledgement failed. Redelivery will be deduplicated."
+    "source_ack_failed": "The message is stored but source acknowledgement failed. Redelivery will be deduplicated.",
+    "ingress_capacity_unavailable": "Receiving capacity configuration is unavailable or differs from the platform. Contact the deployment administrator; existing work can continue.",
+    "ingress_disk_low": "Persistent storage is low. New reception is paused. Ask the deployment administrator to free space; saved data continues processing.",
+    "ingress_disk_unavailable": "Persistent storage cannot be checked. New reception is paused. Contact the deployment administrator."
   },
   "controlReserve": "Control reserves (count / bytes)",
   "sourceLag": "Source lag",
@@ -187,7 +190,7 @@
   "versionComparison": "Original activation config v{{original}} → current config v{{current}}",
   "sourceCredential": "Source credential reference",
   "resumeNote": "Reconnects the same frozen activation and source epoch, reading current Secret Store values for the saved source credential reference. It does not skip blocked custody or apply workbench edits.",
-  "limitsInvalid": "Enter a JSON object with positive integer values for known quota fields; the server permits tightening only.",
+  "limitsInvalid": "Enter a JSON object of supported positive integer limits within the deployment limits.",
   "previewNote": "Choose the code and review the worker and account references. A repair version changes only code and dependencies. Reprocessing with current settings is rejected if those settings have changed. Account passwords are never displayed.",
   "setting": "Setting",
   "continue": "Continue",
@@ -327,12 +330,13 @@
     },
     "createManual": "Run when you click the button",
     "createSchedule": "Run at scheduled times",
-    "createEvent": "Run when messages arrive or resources change",
+    "createEvent": "Run when data, messages, or resource changes arrive",
     "sourceType": {
       "kafka": "Kafka messages",
       "kubernetes": "Kubernetes resource changes",
       "rabbitmq": "RabbitMQ messages",
-      "rocketmq": "RocketMQ messages"
+      "rocketmq": "RocketMQ messages",
+      "http": "HTTP data push"
     },
     "connectionOptions": "Advanced connection settings",
     "saveAndTest": "Save and test connection",
@@ -381,7 +385,12 @@
     "manualTest": "Test once with saved input",
     "manualTestHint": "Use the saved manual test input below, without reading a new source event. Testing is unavailable while reception or existing work is active.",
     "statusUnknown": "Trigger mode not yet confirmed",
-    "checkingStatus": "Checking event sources. Please wait before changing the trigger mode."
+    "checkingStatus": "Checking event sources. Please wait before changing the trigger mode.",
+    "processingCount": "Processing {{count}}",
+    "oldestWaiting": "Oldest waiting: {{duration}}",
+    "noWaiting": "none",
+    "waitSeconds": "{{count}} s",
+    "waitMinutes": "{{count}} min"
   },
   "repairExitNote": "Continue processing already received events with their original code and runtime settings. The repair version applies only to the events you explicitly reprocess. Receiving new events stays off.",
   "queues": {
@@ -412,5 +421,33 @@
     "errors": {
       "source_epoch_required": "The connection scope changed. Stop receiving, settle existing events, then confirm starting again in advanced connection settings."
     }
+  },
+  "http": {
+    "hint": "Let an external system send JSON data to this adapter. DLR saves the data first, then runs the saved code in order.",
+    "saveNote": "Saving does not start receiving. Save the code and worker, then choose Start receiving.",
+    "credential": "Receiving token",
+    "credentialHint": "Select an existing token account for the sender. The token value is never shown here.",
+    "path": "Receiving path",
+    "pathHint": "The sender adds this path to the externally reachable DLR address.",
+    "sendHint": "POST uncompressed UTF-8 JSON. Send the receiving token in Authorization: Bearer and a fixed, unique data ID in Idempotency-Key.",
+    "retryHint": "202 means saved, not successfully processed. Retry with the original ID and bytes. 200 means already received; use the returned status_url to check processing.",
+    "capacityHint": "Use {} for platform defaults. These limits apply only to this source and cannot exceed deployment limits. Stop receiving and settle existing work before changing them.",
+    "capacityFields": "Supported positive integers: pending_count, pending_bytes, history_count, history_bytes, dedupe_count, rate.",
+    "checked": "Receiving configuration and token reference checked. External delivery and business processing have not been tested.",
+    "check": "Check receiving configuration",
+    "saveAndCheck": "Save and check configuration",
+    "help": "Select a receiving token and save the source, code, and worker. Then start receiving. The sender must retain each fixed data ID and original body. Stopping reception still lets saved data finish processing.",
+    "eventSummary": "HTTP data · ID {{id}}",
+    "reset": "Change receiving address",
+    "resetNote": "Stop receiving and settle existing work first. This creates a new receiving address. The old address only reads existing records with the current valid token; it cannot accept new data. Records and results remain. Update the sender address.",
+    "confirmReset": "I understand the address will change and will update the sender.",
+    "errors": {
+      "event_identity_conflict": "This ID was already received with a different body. Retry its original ID and bytes, or use a new ID for new data. Other data can still be received.",
+      "source_credential_unavailable": "The receiving token is unavailable. Check the existing token account and access.",
+      "ingress_disabled": "Reception has not started. Existing records can still be queried.",
+      "ingress_epoch_retired": "The receiving address changed. This old path only reads existing records. Update the sender address.",
+      "ingress_unavailable": "New data cannot be received temporarily. Retry later with the original ID and body."
+    },
+    "rateLimit": "Receiving limit (events/s)"
   }
 }

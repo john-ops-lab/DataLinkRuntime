@@ -179,7 +179,10 @@
     "source_message_digest_invalid": "消息完整性校验失败，请检查来源消息。",
     "source_message_encoding_invalid": "消息编码或压缩格式不受支持，请在来源检查。",
     "source_queue_unavailable": "队列不可用或已有其他接收方，请检查队列和权限。",
-    "source_ack_failed": "消息已保存，但来源确认失败，系统会在重投时去重。"
+    "source_ack_failed": "消息已保存，但来源确认失败，系统会在重投时去重。",
+    "ingress_capacity_unavailable": "接收容量配置尚未就绪或与平台不一致，请联系部署管理员；旧事件仍可继续处理。",
+    "ingress_disk_low": "持久存储可用空间不足，已暂停接收新数据。请联系部署管理员释放空间；已收到的数据会继续处理。",
+    "ingress_disk_unavailable": "无法检查持久存储，暂时停止接收新数据。请联系部署管理员。"
   },
   "controlReserve": "控制记录预留（数量 / 字节）",
   "sourceLag": "源 lag",
@@ -187,7 +190,7 @@
   "versionComparison": "原激活配置 v{{original}} → 当前配置 v{{current}}",
   "sourceCredential": "来源凭据引用",
   "resumeNote": "沿用原激活与 source epoch 恢复连接，重新读取所引用来源凭据的当前 Secret Store 值；不跳过阻塞责任，也不应用工作台草稿。",
-  "limitsInvalid": "请填写已知容量字段的正整数 JSON 对象；服务端仅允许收紧上限。",
+  "limitsInvalid": "请填写已知容量字段的正整数 JSON 对象，不能超过平台配置的上限。",
   "previewNote": "请选择用于重新处理的代码，并核对运行节点和账号引用。修复版本只替换代码和依赖；改用当前运行配置时，如配置已变化，系统会拒绝本次操作。页面不显示账号密码。",
   "setting": "配置项",
   "continue": "继续",
@@ -327,12 +330,13 @@
     },
     "createManual": "点击按钮时运行",
     "createSchedule": "按设定时间运行",
-    "createEvent": "收到消息或资源变化时运行",
+    "createEvent": "收到外部数据、消息或资源变化时运行",
     "sourceType": {
       "kafka": "Kafka 消息",
       "kubernetes": "Kubernetes 资源变化",
       "rabbitmq": "RabbitMQ 消息",
-      "rocketmq": "RocketMQ 消息"
+      "rocketmq": "RocketMQ 消息",
+      "http": "HTTP 数据推送"
     },
     "connectionOptions": "高级连接设置",
     "saveAndTest": "保存并测试连接",
@@ -381,7 +385,12 @@
     "manualTest": "使用已保存输入测试一次",
     "manualTestHint": "使用下面已保存的手动测试输入，不从事件来源读取新事件。接收或旧事件处理期间不可测试。",
     "statusUnknown": "运行方式待确认",
-    "checkingStatus": "正在查询事件来源；请稍候再切换运行方式。"
+    "checkingStatus": "正在查询事件来源；请稍候再切换运行方式。",
+    "processingCount": "处理中 {{count}} 条",
+    "oldestWaiting": "最老等待：{{duration}}",
+    "noWaiting": "无等待",
+    "waitSeconds": "{{count}} 秒",
+    "waitMinutes": "{{count}} 分钟"
   },
   "repairExitNote": "继续处理已收到的旧事件，仍使用各事件接收时固定的代码和运行配置。修复版本只用于您明确选中的重新处理，不会自动开启来源接收。",
   "queues": {
@@ -412,5 +421,33 @@
     "errors": {
       "source_epoch_required": "连接范围已改变。请先停止接收并结清旧事件，再在高级连接设置中确认重新开始。"
     }
+  },
+  "http": {
+    "hint": "让外部系统向这个适配器推送 JSON 数据。系统先保存收到的数据，再按顺序运行处理代码。",
+    "saveNote": "保存配置不会开启接收。保存代码和运行节点后，再点击“开启接收”。",
+    "credential": "接收令牌",
+    "credentialHint": "选择已有的令牌账号，发送方使用对应令牌。页面不会显示令牌内容。",
+    "path": "接收地址路径",
+    "pathHint": "发送方使用 DLR 的对外访问地址加上此路径。",
+    "sendHint": "使用 POST 发送未压缩的 UTF-8 JSON；Authorization: Bearer 携带接收令牌，Idempotency-Key 携带该条数据唯一且固定的编号。",
+    "retryHint": "202 表示已保存，不表示处理成功。重试保留原编号和原文；200 表示已接收过，可使用返回的 status_url 查询当前处理状态。",
+    "capacityHint": "留空对象 {} 沿用平台默认额度。修改只影响此来源，不能超过部署管理员配置的上限；停止接收并处理完旧事件后才能修改。",
+    "capacityFields": "可设置 pending_count、pending_bytes、history_count、history_bytes、dedupe_count、rate，值须为正整数。",
+    "checked": "接收配置和令牌引用检查通过；尚未验证外部系统发送，也未执行业务。",
+    "check": "检查接收配置",
+    "saveAndCheck": "保存并检查配置",
+    "help": "选择接收令牌并保存来源配置，保存处理代码和运行节点，再开启接收。发送方保留每条数据的固定编号和原文。停止接收后，已保存的数据仍会继续处理。",
+    "eventSummary": "HTTP 数据 · 编号 {{id}}",
+    "reset": "更换接收地址",
+    "resetNote": "请先停止接收并处理完旧事件。此操作会生成新的接收地址；旧地址仅允许使用当前有效令牌查询或读回已收到的记录，不能接收新的数据。旧记录和处理结果会保留。请同步更新发送方地址。",
+    "confirmReset": "我已了解接收地址会改变，确认更换并同步发送方。",
+    "errors": {
+      "event_identity_conflict": "这个编号已收到过，但正文不同。请使用原编号和原文重试，或给新数据使用新编号；其他数据仍可正常接收。",
+      "source_credential_unavailable": "接收令牌不可用，请检查已有令牌账号和授权。",
+      "ingress_disabled": "尚未开启接收；已收到的记录仍可查询。",
+      "ingress_epoch_retired": "接收地址已更换。此旧地址只能读回已有记录，请更新发送方地址。",
+      "ingress_unavailable": "暂时不能接收新数据，请稍后保留原编号和原文重试。"
+    },
+    "rateLimit": "接收速率上限（条/秒）"
   }
 }

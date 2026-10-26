@@ -105,7 +105,7 @@ export default function SubscriptionActionDialog({
     skip: "skipNote",
     skipUnaccepted: "skipNote",
     reset:
-      sub.source_type === "kubernetes" ? "kubernetes.resetNote" : sub.source_type === "kafka" ? "resetNote" : "queues.resetNote",
+      sub.source_type === "kubernetes" ? "kubernetes.resetNote" : sub.source_type === "kafka" ? "resetNote" : sub.source_type === "http" ? "http.resetNote" : "queues.resetNote",
     repairEnter: "repairNote",
     repairSave: "repairNote",
     repairExit: "repairExitNote",
@@ -202,7 +202,7 @@ export default function SubscriptionActionDialog({
       )
         setError(
           reason instanceof ApiError
-            ? `${t(`${sub.source_type === "kubernetes" ? "kubernetes." : ""}errors.${reason.code}`, { defaultValue: t(`errors.${reason.code}`, { defaultValue: t("operationFailed") }) })} (${reason.code})`
+            ? `${t(`${sub.source_type === "kubernetes" ? "kubernetes." : sub.source_type === "http" ? "http." : ""}errors.${reason.code}`, { defaultValue: t(`errors.${reason.code}`, { defaultValue: t("operationFailed") }) })} (${reason.code})`
             : userErrorMessage(reason),
         );
     } finally {
@@ -308,7 +308,7 @@ export default function SubscriptionActionDialog({
     <Modal
       open
       width={action === "repairSave" || action === "replay" ? 820 : 620}
-      title={t(action)}
+      title={t(action === "reset" && sub.source_type === "http" ? "http.reset" : action)}
       maskClosable={false}
       confirmLoading={busy}
       onOk={() => void submit()}
@@ -320,7 +320,7 @@ export default function SubscriptionActionDialog({
         danger: ["skip", "skipUnaccepted", "reset", "delete"].includes(action),
         disabled: !submitted && controlForbidden,
       }}
-      okText={t(action)}
+      okText={t(action === "reset" && sub.source_type === "http" ? "http.reset" : action)}
       cancelText={submitted ? t("newRequest") : t("cancel")}
     >
       <Alert
@@ -453,7 +453,7 @@ export default function SubscriptionActionDialog({
               },
             ]}
           >
-            <Checkbox>{t(sub.config.source_type === "kubernetes" ? "kubernetes.confirmReset" : "queues.confirmReset")}</Checkbox>
+            <Checkbox>{t(sub.config.source_type === "kubernetes" ? "kubernetes.confirmReset" : sub.config.source_type === "http" ? "http.confirmReset" : "queues.confirmReset")}</Checkbox>
           </Form.Item>
         ) : null}
         {action === "repairSave" && (

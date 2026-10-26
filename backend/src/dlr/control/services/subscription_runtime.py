@@ -128,7 +128,18 @@ class SubscriptionRuntimeManager:
 
     def start_once(self, subscription_id: int) -> bool:
         """No thread is created unless both a local permit and a DB lease are acquired."""
-        if not settings.event_subscriptions_enabled or not self._claim(subscription_id):
+        if not settings.event_subscriptions_enabled:
+            return False
+        from dlr.control.services.ingress_capacity import activate_profile
+        from dlr.control.services.subscription_activation_policy import legacy_policy_gate
+
+        try:
+            with self.session_factory.begin() as session:
+                if not legacy_policy_gate(session) or not activate_profile(session):
+                    return False
+        except Exception:
+            return False
+        if not self._claim(subscription_id):
             return False
         owner: _Owner | None = None
         try:
@@ -137,6 +148,7 @@ class SubscriptionRuntimeManager:
                 runner = self.registry.get(sub.source_type)
                 if (
                     runner is None
+                    or (sub.source_type == "http" and not settings.http_ingress_enabled)
                     or sub.desired_state != "enabled"
                     or (
                         sub.connection_state == "blocked"
@@ -386,6 +398,11 @@ class SubscriptionRuntimeManager:
                 lease = session.get(SubscriptionLease, subscription_id)
                 if (
                     not settings.event_subscriptions_enabled
+                    or (
+                        sub is not None
+                        and sub.source_type == "http"
+                        and not settings.http_ingress_enabled
+                    )
                     or sub is None
                     or sub.deleted_at is not None
                     or sub.desired_state != "enabled"

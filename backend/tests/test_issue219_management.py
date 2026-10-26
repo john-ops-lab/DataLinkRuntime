@@ -673,6 +673,7 @@ def test_deleted_subscription_keeps_bounded_retention_gc(api_client, monkeypatch
     baseline = datetime.now(UTC)
     monkeypatch.setattr(delivery, "database_now", lambda session: baseline + timedelta(days=8))
     monkeypatch.setattr(management, "_subscription_cursor", 0)
+    monkeypatch.setattr(management, "_last_history_pass", 0.0)
     management.maintenance_tick()
     with session_factory() as session:
         assert session.get(Adapter, adapter["id"]) is not None
@@ -682,6 +683,7 @@ def test_deleted_subscription_keeps_bounded_retention_gc(api_client, monkeypatch
     assert api_client.delete(f"/api/credentials/{source_credential['id']}").status_code == 409
     monkeypatch.setattr(delivery, "database_now", lambda session: baseline + timedelta(days=31))
     monkeypatch.setattr(management, "_subscription_cursor", 0)
+    monkeypatch.setattr(management, "_last_history_pass", 0.0)
     management.maintenance_tick()
     with session_factory() as session:
         assert session.get(Adapter, adapter["id"]) is not None

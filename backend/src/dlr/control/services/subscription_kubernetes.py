@@ -35,6 +35,7 @@ from dlr.control.services.subscription_kubernetes_identity import (
     identity_with_ca,
     source_identity,
 )
+from dlr.control.services.subscription_queue_failure import PLATFORM_RECEPTION_FAILURES
 from dlr.control.services.subscription_source import (
     ApplicationBufferBudget,
     ScopedBufferBudget,
@@ -88,6 +89,8 @@ def classify_error(error: Exception) -> SourceFailure:
     if isinstance(error, HTTPException):
         detail = error.detail
         code = detail.get("code", "source_database_unavailable") if isinstance(detail, dict) else ""
+        if code in PLATFORM_RECEPTION_FAILURES:
+            return SourceFailure(code, "backoff")
         return SourceFailure(
             code or "source_database_unavailable",
             "capacity" if code == "subscription_capacity_exceeded" else "blocked",
@@ -639,7 +642,9 @@ class KubernetesSourceRunner:
                     return result
                 except HTTPException as error:
                     failure = classify_error(error)
-                    if failure.code != "subscription_capacity_exceeded":
+                    if failure.code not in PLATFORM_RECEPTION_FAILURES | {
+                        "subscription_capacity_exceeded"
+                    }:
                         raise
                     with context.session_factory.begin() as session:
                         sync_service.mark_sync_backpressure(session, context)

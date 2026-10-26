@@ -33,6 +33,7 @@ from dlr.control.models import (
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services import subscription_management as management
 from dlr.control.services.event_envelope import canonical
+from dlr.control.services.subscription_activation_policy import snapshot_policy
 from dlr.control.services.subscription_queue import Message, classify, take_custody
 from dlr.control.services.subscription_rabbitmq import RabbitMQSourceRunner
 from dlr.control.services.subscription_rocketmq import RocketMQSourceRunner
@@ -154,6 +155,7 @@ def world(request, api_client, session_factory, monkeypatch):
             config_version_id=cv.id,
             revision_id=revision.id,
             worker_id=worker.id,
+            execution_policy_snapshot=snapshot_policy(adapter),
         )
         session.add(activation)
         session.flush()

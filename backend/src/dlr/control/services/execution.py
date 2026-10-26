@@ -10,7 +10,7 @@ import logging
 from collections import Counter
 from collections.abc import Sequence
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
@@ -185,6 +185,26 @@ def _create_pending_execution_locked(
                 "builtin_worker_upgrade_required",
                 "Upgrade the selected Worker for builtin package support",
             )
+    if trigger == "subscription":
+        # The caller validated the Activation policy. Keep these top-level
+        # metadata copies consistent with the same profile that Worker receives.
+        assert resource_profile_snapshot is not None
+        runtime_profile = resource_profile_snapshot
+        timeout_seconds = cast(int, runtime_profile["execution_timeout_seconds"])
+        grace_seconds = cast(int, runtime_profile["recovery_grace_seconds"])
+        cleanup_attempt_seconds = cast(
+            int, runtime_profile["workspace_cleanup_attempt_timeout_seconds"]
+        )
+        cleanup_total_seconds = cast(
+            int, runtime_profile["workspace_cleanup_total_timeout_seconds"]
+        )
+        claim_seconds = cast(int, runtime_profile["claim_timeout_seconds"])
+    else:
+        timeout_seconds = adapter.timeout_seconds
+        grace_seconds = settings.execution_recovery_grace_seconds
+        cleanup_attempt_seconds = settings.workspace_cleanup_attempt_timeout_seconds
+        cleanup_total_seconds = settings.workspace_cleanup_total_timeout_seconds
+        claim_seconds = settings.execution_claim_timeout_seconds
     execution = Execution(
         builtin_package_snapshot=dependency_snapshot,
         dependency_check=dependency_check,
@@ -208,17 +228,13 @@ def _create_pending_execution_locked(
         input_source_type=input_source_type,
         input_config_revision=input_config_revision,
         input_snapshot=input_snapshot,
-        timeout_seconds_snapshot=adapter.timeout_seconds,
-        recovery_grace_seconds_snapshot=settings.execution_recovery_grace_seconds,
-        workspace_cleanup_attempt_timeout_seconds_snapshot=(
-            settings.workspace_cleanup_attempt_timeout_seconds
-        ),
-        workspace_cleanup_total_timeout_seconds_snapshot=(
-            settings.workspace_cleanup_total_timeout_seconds
-        ),
+        timeout_seconds_snapshot=timeout_seconds,
+        recovery_grace_seconds_snapshot=grace_seconds,
+        workspace_cleanup_attempt_timeout_seconds_snapshot=cleanup_attempt_seconds,
+        workspace_cleanup_total_timeout_seconds_snapshot=cleanup_total_seconds,
         workspace_cleanup_status="pending",
         # Freeze the bounded Claim handshake budget in the immutable snapshot.
-        claim_deadline_at=created_at + timedelta(seconds=settings.execution_claim_timeout_seconds),
+        claim_deadline_at=created_at + timedelta(seconds=claim_seconds),
         target_worker_id=target_worker_id,
         scheduled_for=scheduled_for,
         locale=get_system_locale(session),

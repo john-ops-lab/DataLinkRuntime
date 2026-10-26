@@ -32,6 +32,7 @@ from dlr.control.models import (
     SubscriptionQuota,
     SyncBatch,
 )
+from dlr.control.services import subscription_accounting as accounting
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.event_envelope import validate_envelope
 from dlr.control.services.input_config import database_now
@@ -81,24 +82,22 @@ def refresh_delivery_state(session: Session, sub: EventSubscription) -> None:
     # current configuration. Do not build the read-only Batch DTO on this path.
     if sub.delivery_state == "repair":
         return
-    counts = {
-        state: count
-        for state, count in session.execute(
-            select(EventReceipt.state, func.count())
-            .where(EventReceipt.subscription_id == sub.id)
-            .group_by(EventReceipt.state)
-        ).all()
-    }
-    unfinished = bool(session.scalar(select(unfinished_sync_predicate(sub.id))))
-    if counts.get("failed", 0):
+    failed, pending, processing, unfinished = session.execute(
+        select(
+            *[
+                exists().where(EventReceipt.subscription_id == sub.id, EventReceipt.state == state)
+                for state in ("failed", "pending", "processing")
+            ],
+            unfinished_sync_predicate(sub.id),
+        )
+    ).one()
+    if failed:
         sub.delivery_state = "blocked"
-    elif sub.desired_state == "disabled" and (
-        counts.get("pending", 0) or counts.get("processing", 0) or unfinished
-    ):
+    elif sub.desired_state == "disabled" and (pending or processing or unfinished):
         sub.delivery_state = "draining"
-    elif counts.get("processing", 0):
+    elif processing:
         sub.delivery_state = "processing"
-    elif counts.get("pending", 0) or unfinished:
+    elif pending or unfinished:
         sub.delivery_state = "pending"
     else:
         sub.delivery_state = "idle"
@@ -176,8 +175,12 @@ def renew_lease(
 def _quotas(session: Session, subscription_id: int) -> list[SubscriptionQuota]:
     result = []
     for scope in (f"sub:{subscription_id}", "global"):
-        session.execute(insert(SubscriptionQuota).values(scope=scope).on_conflict_do_nothing())
         row = session.get(SubscriptionQuota, scope, with_for_update=True, populate_existing=True)
+        if row is None:
+            session.execute(insert(SubscriptionQuota).values(scope=scope).on_conflict_do_nothing())
+            row = session.get(
+                SubscriptionQuota, scope, with_for_update=True, populate_existing=True
+            )
         assert row is not None
         result.append(row)
     return result
@@ -186,14 +189,15 @@ def _quotas(session: Session, subscription_id: int) -> list[SubscriptionQuota]:
 def _limits(session: Session, activation: SubscriptionActivation) -> dict[str, int]:
     config = session.get(SubscriptionConfigVersion, activation.config_version_id)
     assert config is not None
-    values = dict(DEFAULT_LIMITS)
-    for key, value in config.config.get("limits", {}).items():
-        if key not in values or isinstance(value, bool) or not isinstance(value, int):
-            raise domain_error(422, "subscription_config_invalid", "Invalid capacity limit")
-        if value < 1 or value > values[key]:
-            raise domain_error(422, "subscription_config_invalid", "Capacity may only be tightened")
-        values[key] = value
-    return values
+    from dlr.control.services.ingress_capacity import runtime_subscription_limits
+
+    return runtime_subscription_limits(session, config.config)
+
+
+def _global_limits(session: Session) -> dict[str, int]:
+    from dlr.control.services.ingress_capacity import global_limits
+
+    return global_limits(session)
 
 
 def _reserve(
@@ -204,6 +208,10 @@ def _reserve(
             429, "subscription_capacity_exceeded", "Ready control owns the next token"
         )
     rows = _quotas(session, sub.id)
+    from dlr.control.services.ingress_capacity import require_active_profile, require_disk_capacity
+
+    require_active_profile(session)
+    require_disk_capacity()
     limits = _limits(session, activation)
     now = database_now(session)
     oldest = session.scalar(
@@ -213,7 +221,7 @@ def _reserve(
     )
     if oldest is not None and now - oldest >= timedelta(minutes=30):
         raise domain_error(429, "subscription_capacity_exceeded", "Oldest pending exceeded limit")
-    for quota, maximum in zip(rows, (limits, GLOBAL_LIMITS), strict=True):
+    for quota, maximum in zip(rows, (limits, _global_limits(session)), strict=True):
         if quota.blocked_reason is not None:
             below_low_water = all(
                 getattr(quota, key)
@@ -272,6 +280,10 @@ def receive_event(
     position: dict[str, Any],
     assignment_generation: int | None = None,
     batch_id: int | None = None,
+    *,
+    source_raw_body: bytes | None = None,
+    content_hash_override: str | None = None,
+    prevent_conflict_block: bool = False,
 ) -> tuple[EventReceipt | None, bool]:
     """T1. Source commit is allowed only after the caller commits this entire transaction."""
     if envelope.get("source", {}).get("type") == "kubernetes":
@@ -281,6 +293,22 @@ def receive_event(
             "Kubernetes intake requires the batch protocol",
         )
     content_hash, size = validate_envelope(envelope)
+    envelope_size = size
+    if (
+        envelope.get("source", {}).get("type") == "http"
+        or source_raw_body is not None
+        or content_hash_override is not None
+        or prevent_conflict_block
+    ):
+        if (
+            envelope.get("source", {}).get("type") != "http"
+            or source_raw_body is None
+            or content_hash_override != hashlib.sha256(source_raw_body).hexdigest()
+            or len(source_raw_body) > 64 * 1024
+        ):
+            raise domain_error(422, "event_payload_invalid", "Invalid HTTP original body")
+        content_hash = content_hash_override
+    size = accounting.responsibility_bytes(envelope_size, len(source_raw_body or b""))
     if envelope["source"]["type"] == "kafka" and position.get("offset") != str(
         int(envelope["source"]["position"]["offset"]) + 1
     ):
@@ -346,6 +374,11 @@ def receive_event(
         raise domain_error(409, "subscription_activation_missing", "Activation is unavailable")
     config = session.get(SubscriptionConfigVersion, activation.config_version_id)
     assert config is not None
+    from dlr.control.services.subscription_activation_policy import ensure_policy
+
+    adapter = session.get(Adapter, sub.adapter_id)
+    assert adapter is not None
+    ensure_policy(session, activation, adapter)
     if (
         envelope["source"]["type"] != sub.source_type
         or str(envelope["subscription"]["id"]) != str(sub.id)
@@ -392,6 +425,7 @@ def receive_event(
         source_event_id=envelope["event"]["id"],
         content_hash=content_hash,
         envelope=envelope,
+        source_raw_body=source_raw_body,
         payload_bytes=size,
         shard=shard,
         sequence=checkpoint.next_sequence,
@@ -400,9 +434,12 @@ def receive_event(
         first_received_at=now,
         last_seen_at=now,
     )
+    accounting.receipt_budget(receipt, envelope_size, len(source_raw_body or b""))
     session.add(receipt)
     session.flush()
-    session.add(EventDelivery(receipt_id=receipt.id, ordinal=1, state="pending"))
+    first_delivery = EventDelivery(receipt_id=receipt.id, ordinal=1, state="pending")
+    accounting.delivery_budget(first_delivery, envelope_size)
+    session.add(first_delivery)
     checkpoint.next_sequence += 1
     checkpoint.position = position
     if (
@@ -484,6 +521,10 @@ def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
         return None
     if receipt.envelope is None:
         raise domain_error(409, "event_payload_expired", "Event payload expired")
+    if delivery.retained_execution_bytes < accounting.compact_bytes(receipt.envelope):
+        raise domain_error(
+            409, "event_input_reserve_invalid", "Retained execution input reserve is unavailable"
+        )
     activation = session.get(
         SubscriptionActivation, delivery.activation_override_id or receipt.activation_id
     )
@@ -627,6 +668,7 @@ def current_replay_context(session: Session, sub: EventSubscription) -> tuple[di
     """Read-only reference preview. Call under the Adapter lock when accepting replay."""
     from dlr.control.services.event_envelope import canonical
     from dlr.control.services.reliable_execution import resolve_queue_target_worker
+    from dlr.control.services.subscription_activation_policy import snapshot_policy
 
     adapter = session.get(Adapter, sub.adapter_id)
     assert adapter is not None
@@ -646,6 +688,7 @@ def current_replay_context(session: Session, sub: EventSubscription) -> tuple[di
         "revision_id": adapter.latest_version_id,
         "worker_id": worker.id,
         "source_credential_id": config.source_credential_id,
+        "execution_policy_snapshot": snapshot_policy(adapter),
         "credential_refs": [
             {"credential_id": row.credential_id, "env_key": row.env_key, "field": row.field}
             for row in session.scalars(
@@ -746,6 +789,7 @@ def replay_event(
             config_version_id=current_config.id,
             revision_id=context["revision_id"],
             worker_id=context["worker_id"],
+            execution_policy_snapshot=context["execution_policy_snapshot"],
         )
         session.add(activation)
         session.flush()
@@ -767,13 +811,15 @@ def replay_event(
     # Every replay also consumes retained history budget for its execution/audit chain.
     rows = _quotas(session, sub.id)
     limits = _limits(session, activation)
-    for quota, maximum in zip(rows, (limits, GLOBAL_LIMITS), strict=True):
+    replay_input_bytes = accounting.compact_bytes(receipt.envelope)
+    replay_history_bytes = replay_input_bytes + accounting.DELIVERY_METADATA_BYTES
+    for quota, maximum in zip(rows, (limits, _global_limits(session)), strict=True):
         if (
             quota.pending_count + 1 + quota.reserved_control_count > maximum["pending_count"]
             or quota.pending_bytes + receipt.payload_bytes + quota.reserved_control_bytes
             > maximum["pending_bytes"]
             or quota.history_count + 1 + quota.reserved_control_count > maximum["history_count"]
-            or quota.history_bytes + receipt.payload_bytes + quota.reserved_control_bytes
+            or quota.history_bytes + replay_history_bytes + quota.reserved_control_bytes
             > maximum["history_bytes"]
         ):
             raise domain_error(429, "subscription_capacity_exceeded", "Replay Inbox full")
@@ -781,7 +827,7 @@ def replay_event(
         quota.pending_count += 1
         quota.pending_bytes += receipt.payload_bytes
         quota.history_count += 1
-        quota.history_bytes += receipt.payload_bytes
+        quota.history_bytes += replay_history_bytes
     delivery = EventDelivery(
         receipt_id=receipt.id,
         ordinal=previous.ordinal + 1,
@@ -789,6 +835,7 @@ def replay_event(
         revision_override_id=revision_id,
         activation_override_id=override_id,
     )
+    accounting.delivery_budget(delivery, replay_input_bytes)
     session.add(delivery)
     receipt.state = "pending"
     receipt.terminal_at = None
@@ -912,7 +959,14 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
             EventReceipt.state.in_(TERMINAL),
             EventReceipt.terminal_at <= now - timedelta(days=7),
             EventReceipt.envelope.is_not(None)
-            | (EventReceipt.terminal_at <= now - timedelta(days=30)),
+            | (EventReceipt.terminal_at <= now - timedelta(days=30))
+            | exists(
+                select(EventDelivery.id).where(
+                    EventDelivery.receipt_id == EventReceipt.id,
+                    EventDelivery.execution_id.is_(None),
+                    EventDelivery.retained_execution_bytes > 0,
+                )
+            ).correlate(EventReceipt),
             EventReceipt.id.not_in(protected),
             ~active_batch,
             ~unresolved_member,
@@ -997,22 +1051,62 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
             quota.dedupe_count -= 1
     expired = deleted = 0
     for receipt in eligible:
+        retained_deliveries = list(
+            session.scalars(
+                select(EventDelivery)
+                .where(EventDelivery.receipt_id == receipt.id)
+                .with_for_update()
+            )
+        )
+        previous_count = sum(
+            1
+            for item in retained_deliveries
+            if receipt.retained_payload_bytes > 0 or item.retained_execution_bytes > 0
+        )
+        released_bytes = 0
         if receipt.envelope is not None:
+            released_bytes += receipt.retained_payload_bytes
             receipt.envelope = None
+            receipt.source_raw_body = None
+            receipt.retained_payload_bytes = 0
             receipt.payload_expired_at = now
-            for quota in quotas:
-                copies = (
-                    session.scalar(
-                        select(func.count())
-                        .select_from(EventDelivery)
-                        .where(EventDelivery.receipt_id == receipt.id)
-                    )
-                    or 0
-                )
-                quota.history_count -= copies
-                quota.history_bytes -= receipt.payload_bytes * copies
             expired += 1
+        for item in retained_deliveries:
+            if item.execution_id is None or session.get(Execution, item.execution_id) is None:
+                released_bytes += item.retained_execution_bytes
+                item.retained_execution_bytes = 0
+        remaining_count = sum(
+            1
+            for item in retained_deliveries
+            if receipt.retained_payload_bytes > 0 or item.retained_execution_bytes > 0
+        )
+        for quota in quotas:
+            quota.history_count -= previous_count - remaining_count
+            quota.history_bytes -= released_bytes
         if receipt.terminal_at is not None and receipt.terminal_at <= now - timedelta(days=30):
+            # Execution input is a real retained copy. Clearing the Receipt
+            # alone cannot release its budget while that copy remains stored.
+            for item in retained_deliveries:
+                if item.execution_id is not None:
+                    execution = session.get(Execution, item.execution_id, with_for_update=True)
+                    if execution is not None:
+                        execution.input = None
+            remaining_count = sum(
+                1
+                for item in retained_deliveries
+                if receipt.retained_payload_bytes > 0 or item.retained_execution_bytes > 0
+            )
+            remaining_bytes = (
+                receipt.retained_payload_bytes
+                + receipt.retained_metadata_bytes
+                + sum(
+                    item.retained_execution_bytes + item.retained_metadata_bytes
+                    for item in retained_deliveries
+                )
+            )
+            for quota in quotas:
+                quota.history_count -= remaining_count
+                quota.history_bytes -= remaining_bytes
             audits = session.execute(
                 select(
                     func.count(), func.coalesce(func.sum(DeliveryDisposition.audit_bytes), 0)
@@ -1425,24 +1519,18 @@ def _current_limits(session: Session, sub: EventSubscription) -> dict[str, int]:
             SubscriptionConfigVersion.version == sub.config_version,
         )
     )
-    values = dict(DEFAULT_LIMITS)
-    if config is not None:
-        for key, value in config.config.get("limits", {}).items():
-            if key not in values or isinstance(value, bool) or not isinstance(value, int):
-                raise domain_error(422, "subscription_config_invalid", "Invalid capacity limit")
-            if not 1 <= value <= values[key]:
-                raise domain_error(
-                    422, "subscription_config_invalid", "Capacity may only be tightened"
-                )
-            values[key] = value
-    return values
+    from dlr.control.services.ingress_capacity import runtime_subscription_limits
+
+    return runtime_subscription_limits(session, config.config if config else {})
 
 
 def reserve_disposition_metadata(session: Session, subscription_id: int) -> None:
     """Bound audit rows without a source Receipt (reset, quota repair, poison skip)."""
     _, sub = lock_subscription(session, subscription_id)
     rows = _quotas(session, sub.id)
-    for quota, maximum in zip(rows, (_current_limits(session, sub), GLOBAL_LIMITS), strict=True):
+    for quota, maximum in zip(
+        rows, (_current_limits(session, sub), _global_limits(session)), strict=True
+    ):
         if quota.dedupe_count + quota.reserved_control_count + 1 > maximum["dedupe_count"]:
             raise domain_error(
                 429, "subscription_capacity_exceeded", "Disposition metadata budget full"
@@ -1472,7 +1560,9 @@ def audit_quota(session: Session, subscription_id: int, *, repair: bool = False)
             )
         local, global_quota = _quotas(session, sub.id)
     pending = EventDelivery.state == "pending"
-    retained = EventReceipt.envelope.is_not(None)
+    retained = (EventReceipt.retained_payload_bytes > 0) | (
+        EventDelivery.retained_execution_bytes > 0
+    )
     stats = (
         select(
             func.coalesce(func.sum(case((pending, 1), else_=0)), 0).label("pending_count"),
@@ -1480,9 +1570,12 @@ def audit_quota(session: Session, subscription_id: int, *, repair: bool = False)
                 "pending_bytes"
             ),
             func.coalesce(func.sum(case((retained, 1), else_=0)), 0).label("history_count"),
-            func.coalesce(func.sum(case((retained, EventReceipt.payload_bytes), else_=0)), 0).label(
-                "history_bytes"
-            ),
+            func.coalesce(
+                func.sum(
+                    EventDelivery.retained_execution_bytes + EventDelivery.retained_metadata_bytes
+                ),
+                0,
+            ).label("history_bytes"),
         )
         .select_from(EventDelivery)
         .join(EventReceipt)
@@ -1492,6 +1585,18 @@ def audit_quota(session: Session, subscription_id: int, *, repair: bool = False)
     receipt_count = (
         select(func.count())
         .select_from(EventReceipt)
+        .where(EventReceipt.subscription_id == subscription_id)
+        .scalar_subquery()
+    )
+    receipt_bytes = (
+        select(
+            func.coalesce(
+                func.sum(
+                    EventReceipt.retained_payload_bytes + EventReceipt.retained_metadata_bytes
+                ),
+                0,
+            )
+        )
         .where(EventReceipt.subscription_id == subscription_id)
         .scalar_subquery()
     )
@@ -1535,7 +1640,7 @@ def audit_quota(session: Session, subscription_id: int, *, repair: bool = False)
         stats.c.pending_count.label("expected_pending_count"),
         stats.c.pending_bytes.label("expected_pending_bytes"),
         (stats.c.history_count + audit_count).label("expected_history_count"),
-        (stats.c.history_bytes + audit_bytes).label("expected_history_bytes"),
+        (stats.c.history_bytes + receipt_bytes + audit_bytes).label("expected_history_bytes"),
         (receipt_count + disposition_count + audit_count).label("expected_dedupe_count"),
         reserve_count.label("expected_reserved_control_count"),
         reserve_bytes.label("expected_reserved_control_bytes"),

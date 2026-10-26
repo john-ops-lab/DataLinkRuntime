@@ -17,6 +17,7 @@ from dlr.control.models.cache_governance import (
     WorkerCacheSnapshotItem,
 )
 from dlr.control.models.execution import Execution, ExecutionInputArtifactLease, Worker
+from dlr.control.models.ingress_capacity import IngressCapacityAudit, IngressCapacityConfiguration
 from dlr.control.models.input_config import (
     AdapterInputConfig,
     AdapterInputRetentionMode,
@@ -70,6 +71,7 @@ from dlr.control.models.subscription import (
     EventDelivery,
     EventReceipt,
     EventSubscription,
+    HttpIngressRoute,
     SourceCheckpoint,
     SubscriptionActivation,
     SubscriptionConfigVersion,
@@ -86,6 +88,9 @@ __all__ = [
     "AdapterBatch",
     "AdapterBatchItem",
     "EventSubscription",
+    "HttpIngressRoute",
+    "IngressCapacityConfiguration",
+    "IngressCapacityAudit",
     "SubscriptionConfigVersion",
     "SubscriptionActivation",
     "ActivationCredentialReference",

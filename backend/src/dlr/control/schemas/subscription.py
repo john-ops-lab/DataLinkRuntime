@@ -163,8 +163,20 @@ class RocketMQSourceConfig(QueueSourceConfig):
         return self
 
 
+class HttpSourceConfig(SourceModel):
+    source_type: Literal["http"] = "http"
+    credential_id: int = Field(gt=0)
+    mode: Literal["per_event"] = "per_event"
+    ordering: Literal["receipt_serial"] = "receipt_serial"
+    limits: dict[str, StrictInt] = Field(default_factory=dict)
+
+
 SourceConfig = Annotated[
-    KafkaSourceConfig | KubernetesSourceConfig | RabbitMQSourceConfig | RocketMQSourceConfig,
+    KafkaSourceConfig
+    | KubernetesSourceConfig
+    | RabbitMQSourceConfig
+    | RocketMQSourceConfig
+    | HttpSourceConfig,
     Field(discriminator="source_type"),
 ]
 
@@ -394,6 +406,7 @@ class SubscriptionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     latest_batch: SyncBatchSummary | None = None
+    ingress_path: str | None = None
 
 
 class SubscriptionPage(BaseModel):
@@ -482,7 +495,7 @@ class KubernetesConnectionDiagnostic(ClosedModel):
 
 
 class SourceConnectionResponse(BaseModel):
-    source_type: Literal["kafka", "kubernetes", "rabbitmq", "rocketmq"]
+    source_type: Literal["kafka", "kubernetes", "rabbitmq", "rocketmq", "http"]
     cluster_id: str = Field(min_length=1, max_length=256)
     topic_count: int | None = Field(default=None, ge=1, le=16, strict=True)
     partition_count: int | None = Field(default=None, ge=1, le=16, strict=True)

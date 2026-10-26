@@ -49,17 +49,26 @@ export interface RocketMQSourceConfig extends QueueSourceConfig {
   topic: string;
   group_id: string;
 }
+export interface HttpSourceConfig {
+  source_type: "http";
+  credential_id: number;
+  mode: "per_event";
+  ordering: "receipt_serial";
+  limits: Record<string, number>;
+}
 export type SubscriptionSourceConfig =
   | KafkaSourceConfig
   | KubernetesSourceConfig
   | RabbitMQSourceConfig
-  | RocketMQSourceConfig;
+  | RocketMQSourceConfig
+  | HttpSourceConfig;
 export type SubscriptionSourceType = SubscriptionSourceConfig["source_type"];
 export const implementedSourceTypes: SubscriptionSourceType[] = [
   "kafka",
   "kubernetes",
   "rabbitmq",
   "rocketmq",
+  "http",
 ];
 
 export interface SyncBatchSummary {
@@ -167,6 +176,7 @@ export interface EventSubscription {
   access_level?: "admin" | "owner" | "edit" | "read" | null;
   created_at: string;
   updated_at: string;
+  ingress_path?: string | null;
 }
 
 export interface SubscriptionCapabilities {

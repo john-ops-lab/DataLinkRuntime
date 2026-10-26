@@ -81,6 +81,8 @@
 }
 .event-trigger-settings { display: flex; flex-direction: column; gap: 12px; width: 100%; }
 .event-trigger-settings p { margin: 0; }
+.http-ingress-address { display: flex; flex-direction: column; gap: 8px; }
+.http-ingress-path { overflow-wrap: anywhere; }
 .event-source-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .event-source-row > span { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
 .event-status-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; background: var(--ant-color-fill-quaternary, #f7f8fa); border-radius: 6px; padding: 10px 14px; }

@@ -30,6 +30,7 @@ from dlr.control.api import (
     events,
     executions,
     health,
+    ingress,
     input_configs,
     knowledge_sources,
     locale,
@@ -119,6 +120,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await source_runtime.aclose()
+        from dlr.control.api.ingress import shutdown_ingress_resources
+
+        await asyncio.to_thread(shutdown_ingress_resources)
         for background_task in (
             task,
             ai_attachment_task,
@@ -230,7 +234,7 @@ def create_app() -> FastAPI:
         # Token superadmin requests deliberately bypass this check so the
         # legacy entry remains compatible even when account cookies exist for
         # the same host on another port.
-        is_public_hook = request.scope["path"].startswith("/api/hooks/")
+        is_public_hook = request.scope["path"].startswith(("/api/hooks/", "/api/ingress/"))
         if (
             request.scope["dlr_entry_mode"] == "account"
             and not is_public_hook
@@ -396,6 +400,7 @@ def create_app() -> FastAPI:
     app.include_router(knowledge_sources.router)
     app.include_router(schedules.router)
     app.include_router(subscriptions.router)
+    app.include_router(ingress.router)
     app.include_router(webhooks.router)
     # M5.4.3: the external Webhook ingress has its own Bearer authentication
     # and must never require the admin token.

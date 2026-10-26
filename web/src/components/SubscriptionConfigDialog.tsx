@@ -10,6 +10,7 @@ import type {
 import KafkaSubscriptionConfig from "./KafkaSubscriptionConfig";
 import KubernetesSubscriptionConfig from "./KubernetesSubscriptionConfig";
 import QueueSubscriptionConfig from "./QueueSubscriptionConfig";
+import HttpSubscriptionConfig from "./HttpSubscriptionConfig";
 
 export default function SubscriptionConfigDialog(props: {
   subscription?: EventSubscription;
@@ -52,5 +53,7 @@ export default function SubscriptionConfigDialog(props: {
     <KubernetesSubscriptionConfig {...shared} />
   ) : source === "rabbitmq" || source === "rocketmq" ? (
     <QueueSubscriptionConfig key={source} sourceType={source} {...shared} />
+  ) : source === "http" ? (
+    <HttpSubscriptionConfig {...shared} />
   ) : null;
 }

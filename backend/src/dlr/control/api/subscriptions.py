@@ -163,7 +163,8 @@ def serialize_batch_detail(view: sync.SyncBatchView) -> SyncBatchDetail:
 def serialize(
     session: Session, subscription: EventSubscription, principal: Principal
 ) -> SubscriptionResponse:
-    from dlr.control.services.subscription_delivery import DEFAULT_LIMITS, GLOBAL_LIMITS
+    from dlr.control.services.http_ingress import ingress_path
+    from dlr.control.services.ingress_capacity import global_limits, runtime_subscription_limits
 
     current = management.current_config(session, subscription)
     quota = session.get(SubscriptionQuota, f"sub:{subscription.id}")
@@ -207,8 +208,9 @@ def serialize(
         repair_revision_id=subscription.repair_revision_id,
         last_error_code=subscription.last_error_code,
         config=current.config,
-        limits={**DEFAULT_LIMITS, **current.config.get("limits", {})},
-        global_limits=dict(GLOBAL_LIMITS),
+        limits=runtime_subscription_limits(session, current.config),
+        global_limits=global_limits(session),
+        ingress_path=ingress_path(session, subscription),
         quota={
             key: getattr(quota, key) if quota else 0
             for key in (
@@ -255,7 +257,9 @@ def capabilities() -> dict[str, Any]:
         sorted(
             name
             for name in management.AVAILABLE_SOURCES
-            if name in SOURCES and SOURCES[name].implemented
+            if name in SOURCES
+            and SOURCES[name].implemented
+            and (name != "http" or settings.http_ingress_enabled)
         )
         if settings.event_subscriptions_enabled
         else []

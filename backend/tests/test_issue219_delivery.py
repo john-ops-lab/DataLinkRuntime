@@ -623,8 +623,28 @@ def test_current_config_replay_is_independent_and_gc_charges_all_history(world, 
         session.commit()
         service.cleanup_history(session, world["sub"])
         session.commit()
-        assert session.get(SubscriptionQuota, "global").history_count == 0
-        assert session.get(SubscriptionQuota, "global").history_bytes == 0
+        # Receipt payload TTL does not erase the immutable Execution input.
+        # The skipped first Delivery releases its unused input reservation;
+        # the replay's actual input and both bounded metadata rows remain.
+        import json
+
+        expected_input_bytes = len(
+            json.dumps(execution.input, ensure_ascii=False, separators=(",", ":")).encode()
+        )
+        rows = session.scalars(
+            select(EventDelivery)
+            .where(EventDelivery.receipt_id == receipt.id)
+            .order_by(EventDelivery.ordinal)
+        ).all()
+        assert receipt.envelope is None and receipt.retained_payload_bytes == 0
+        assert receipt.retained_metadata_bytes == 4096
+        assert [row.retained_execution_bytes for row in rows] == [0, expected_input_bytes]
+        assert [row.retained_metadata_bytes for row in rows] == [512, 512]
+        quota = session.get(SubscriptionQuota, "global")
+        assert quota.history_count == 1
+        assert quota.history_bytes == 4096 + 2 * 512 + expected_input_bytes
+        assert service.audit_quota(session, world["sub"])["differences"] == {}
+        assert service.audit_global_quota(session)["differences"] == {}
 
 
 def test_checkpoint_prevents_recreating_expired_kafka_history(world, session_factory):
@@ -680,9 +700,14 @@ def test_purge_deleted_subscription_returns_global_retained_capacity(world, sess
 
 
 def test_gc_pages_do_not_stall_on_expired_payload_shells(world, session_factory, monkeypatch):
-    monkeypatch.setitem(service.DEFAULT_LIMITS, "rate", 1000)
-    monkeypatch.setitem(service.GLOBAL_LIMITS, "rate", 1000)
+    monkeypatch.setattr(
+        settings,
+        "ingress_capacity_profile",
+        '{"global":{"rate":1000},"subscription_max":{"rate":1000}}',
+    )
     with session_factory() as session:
+        config = session.get(SubscriptionConfigVersion, world["config"])
+        config.config = {"limits": {"rate": 1000}}
         for offset in range(101):
             receipt = receive(session, world, offset)
             service.skip_event(session, receipt.id, f"skip-{offset}", None, "reviewed")

@@ -3,6 +3,7 @@
 import copy
 import threading
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -444,6 +445,8 @@ def test_public_candidate_sources_match_implementation_and_remain_default_off(
     api_client, monkeypatch, session_factory
 ):
     assert Settings.model_fields["event_subscriptions_enabled"].default is False
+    assert Settings.model_fields["http_ingress_enabled"].default is False
+    monkeypatch.setattr(settings, "http_ingress_enabled", False)
     assert (
         management.AVAILABLE_SOURCES
         == frozenset(runtime.implemented_sources())
@@ -452,6 +455,7 @@ def test_public_candidate_sources_match_implementation_and_remain_default_off(
             "kubernetes",
             "rabbitmq",
             "rocketmq",
+            "http",
         }
     )
     monkeypatch.setattr(settings, "event_subscriptions_enabled", False)
@@ -699,6 +703,11 @@ def test_control_maintenance_is_dedicated_bounded_and_runs_with_feature_off(
     monkeypatch.setattr(settings, "event_subscriptions_enabled", False)
     monkeypatch.setattr(management, "_subscription_cursor", 999)
     monkeypatch.setattr(management, "_subscription_upper", 999)
+    monkeypatch.setattr(management, "_batch_cursor", 0)
+    monkeypatch.setattr(management, "_batch_upper", 0)
+    # This case verifies isolation/order after one failed responsibility. The
+    # scheduler budget tests separately verify the real 50ms stop boundary.
+    monkeypatch.setattr(management, "time", SimpleNamespace(monotonic=lambda: 100.0))
     calls = []
     sessions = []
     now = datetime.now(UTC)
@@ -708,8 +717,11 @@ def test_control_maintenance_is_dedicated_bounded_and_runs_with_feature_off(
     ]
 
     def candidates(session, cursor, upper, limit):
-        assert limit == 100
-        return [11, 12], 0, 0
+        assert limit == 1
+        if (cursor, upper) == (0, 0):
+            return [11], 11, 12
+        assert (cursor, upper) == (11, 12)
+        return [12], 0, 0
 
     def maintain(session, batch_id):
         session.execute(select(1))

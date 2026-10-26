@@ -137,6 +137,10 @@ services:
       DLR_EXECUTION_OUTPUT_PREVIEW_MAX_BYTES: ${DLR_EXECUTION_OUTPUT_PREVIEW_MAX_BYTES:-16384}
       # M2 static shared tokens; must come from the environment / .env file,
       # never hardcoded here (see .env.example).
+      DLR_EVENT_SUBSCRIPTIONS_ENABLED: ${DLR_EVENT_SUBSCRIPTIONS_ENABLED:-false}
+      DLR_HTTP_INGRESS_ENABLED: ${DLR_HTTP_INGRESS_ENABLED:-false}
+      DLR_INGRESS_CAPACITY_PROFILE: ${DLR_INGRESS_CAPACITY_PROFILE:-}
+      DLR_INGRESS_STORAGE_ROOT: ${DLR_INGRESS_STORAGE_ROOT:-/var/lib/dlr/artifacts}
       DLR_ADMIN_TOKEN: ${DLR_ADMIN_TOKEN:?set DLR_ADMIN_TOKEN (see .env.example)}
       DLR_WORKER_TOKEN: ${DLR_WORKER_TOKEN:?set DLR_WORKER_TOKEN (see .env.example)}
       # M4.1 effective-online timeout; must stay above the Worker heartbeat interval.

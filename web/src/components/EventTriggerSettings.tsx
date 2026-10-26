@@ -5,7 +5,7 @@ import { api } from "../api";
 import type { Adapter } from "../types";
 import type { EventSubscription, SubscriptionCapabilities, SubscriptionDraftState } from "../subscription-types";
 import { implementedSourceTypes, subscriptionDrained } from "../subscription-types";
-import { eventNeedsAttention, eventSourceLabel, eventStatusKey } from "../event-trigger";
+import { eventNeedsAttention, eventSourceLabel, eventStatusKey, eventWaitingLabel, httpIngressPath } from "../event-trigger";
 import { subscriptionErrorMessage } from "../subscription-message";
 import SubscriptionActionDialog from "./SubscriptionActionDialog";
 import SubscriptionConfigDialog from "./SubscriptionConfigDialog";
@@ -61,7 +61,7 @@ export default function EventTriggerSettings({ adapter, sub, capabilities, readO
   async function test() {
     if (!sub) return;
     setTesting(true); setError(null); setFeedback(null);
-    try { await api.testSubscriptionConnection(sub.id, sub.config_version); setFeedback(t("ux.testPassed")); }
+    try { await api.testSubscriptionConnection(sub.id, sub.config_version); setFeedback(t(sub.source_type === "http" ? "http.checked" : "ux.testPassed")); }
     catch (reason) { setError(subscriptionErrorMessage(reason, sub.source_type)); }
     finally { setTesting(false); }
   }
@@ -73,6 +73,10 @@ export default function EventTriggerSettings({ adapter, sub, capabilities, readO
       {!readOnly && <Button type="link" disabled={!canConfigure || !capabilities.enabled || available.length === 0 || (sub != null && !available.some(source => source === sub.source_type))}
         onClick={() => { setConfigSnapshot(sub ? structuredClone(sub) : undefined); setConfiguring(true); }}>{t(sub ? "ux.changeSource" : "ux.configureSource")}</Button>}
     </div>
+    {sub?.source_type === "http" && httpIngressPath(sub) && <div className="http-ingress-address">
+      <strong>{t("http.path")}</strong><code className="http-ingress-path">{httpIngressPath(sub)}</code>
+      <p className="ux-muted">{t("http.pathHint")}</p>
+    </div>}
     {runtimeFields}
     <p className="ux-muted">{t("ux.eventInput")}</p>
     {runtimeDirty && <Alert type="info" message={t("ux.saveSettingsFirst")} />}
@@ -81,11 +85,13 @@ export default function EventTriggerSettings({ adapter, sub, capabilities, readO
     {sub && <div className="event-status-strip" role="status">
       <span>{t(`ux.status.${eventStatusKey(sub)}`)}</span>
       <span>{t("ux.pendingCount", { count: sub.quota.pending_count ?? 0 })}</span>
+      <span>{t("ux.processingCount", { count: sub.event_counts.processing ?? 0 })}</span>
       <span>{t("ux.failedCount", { count: sub.event_counts.failed ?? 0 })}</span>
+      <span>{t("ux.oldestWaiting", { duration: eventWaitingLabel(sub, t) })}</span>
       <Button type="link" onClick={onRecords}>{t(eventNeedsAttention(sub) ? "ux.viewProblem" : "ux.viewRecords")}</Button>
     </div>}
-    <Space wrap><Button loading={testing} disabled={readOnly || !sub || !capabilities.enabled || testing} onClick={() => void test()}>{t("test")}</Button>
-      <Button onClick={() => setFeedback(t("ux.help"))}>{t("ux.helpLabel")}</Button></Space>
+    <Space wrap><Button loading={testing} disabled={readOnly || !sub || !capabilities.enabled || testing} onClick={() => void test()}>{t(sub?.source_type === "http" ? "http.check" : "test")}</Button>
+      <Button onClick={() => setFeedback(t(sub?.source_type === "http" ? "http.help" : "ux.help"))}>{t("ux.helpLabel")}</Button></Space>
     {sub && <Collapse items={[{ key: "advanced", label: t("ux.advanced"), children: <>
       <p>{t("ux.unbindHint")}</p><Button danger disabled={readOnly || !subscriptionDrained(sub)} onClick={() => setDeleting(true)}>{t("ux.unbind")}</Button>
     </> }]} />}
