@@ -1,7 +1,9 @@
 """HTTP cohort isolation, real commit ambiguity and shared-waiter cancellation."""
 
 import asyncio
+import hashlib
 import threading
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +14,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
 from dlr.control.api import ingress
-from dlr.control.models import AdapterVersion, EventReceipt, SubscriptionConfigVersion
+from dlr.control.models import (
+    AdapterVersion,
+    EventDelivery,
+    EventReceipt,
+    SubscriptionConfigVersion,
+    SubscriptionQuota,
+)
 from dlr.control.services import http_ingress as service
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services.http_ingress_group import HttpInput
@@ -109,6 +117,29 @@ def test_stale_hint_does_not_change_per_event_mode(http_world, session_factory):
 def test_group_commit_loss_never_exposes_success_before_known_commit(
     group_world, session_factory, after_commit
 ):
+    def snapshot(session):
+        receipts = {
+            row.source_event_id: {
+                "id": row.id,
+                "content_hash": row.content_hash,
+                "raw": row.source_raw_body,
+                "envelope": deepcopy(row.envelope),
+            }
+            for row in session.scalars(select(EventReceipt))
+        }
+        quotas = {}
+        for scope in (f"sub:{group_world['sub']}", "global"):
+            quota = session.get(SubscriptionQuota, scope)
+            quotas[scope] = (
+                {
+                    key: getattr(quota, key)
+                    for key in (*delivery.QUOTA_FACT_KEYS, "rate_count", "rate_window_at")
+                }
+                if quota is not None
+                else None
+            )
+        return receipts, quotas
+
     class BrokenCommit(Session):
         def commit(self):
             if after_commit:
@@ -122,19 +153,50 @@ def test_group_commit_loss_never_exposes_success_before_known_commit(
         ),
     )
     try:
+        bodies = [f'{{ "value": {i} }}\n'.encode() for i in range(4)]
         requests = [
-            SimpleNamespace(authorization="Bearer source-token", key=str(i), body=b"{}")
+            SimpleNamespace(authorization="Bearer source-token", key=str(i), body=bodies[i])
             for i in range(4)
         ]
+        with session_factory() as session:
+            before = snapshot(session)
         with pytest.raises(HTTPException) as error:
             ingress._run_group_sync(pool, group_world["public_id"], requests)
         assert error.value.status_code == 503
+        assert error.value.detail["code"] == "ingress_unavailable"
         with session_factory() as session:
             assert session.scalar(select(func.count()).select_from(EventReceipt)) == 4 * int(
                 after_commit
             )
-        retry = accept(session_factory, group_world, [item(str(i)) for i in range(4)])
+            assert session.scalar(select(func.count()).select_from(EventDelivery)) == 4 * int(
+                after_commit
+            )
+            committed = snapshot(session)
+            if not after_commit:
+                assert committed == before
+        retry = accept(session_factory, group_world, [item(str(i), bodies[i]) for i in range(4)])
         assert [r[0] for r in retry] == [200 if after_commit else 202] * 4
+        retry_ids = {str(i): result[1]["receipt_id"] for i, result in enumerate(retry)}
+        assert len(set(retry_ids.values())) == 4
+        with session_factory() as session:
+            assert session.scalar(select(func.count()).select_from(EventReceipt)) == 4
+            assert session.scalar(select(func.count()).select_from(EventDelivery)) == 4
+            after = snapshot(session)
+            assert {key: row["id"] for key, row in after[0].items()} == retry_ids
+            for i, body in enumerate(bodies):
+                row = after[0][str(i)]
+                assert row["raw"] == body
+                assert row["content_hash"] == hashlib.sha256(body).hexdigest()
+                assert row["envelope"]["event"]["id"] == str(i)
+                assert row["envelope"]["data"]["payload"] == {"value": i}
+            if after_commit:
+                assert after == committed  # Original IDs, frozen Envelopes and both quota rows.
+            for scope in (f"sub:{group_world['sub']}", "global"):
+                assert after[1][scope]["pending_count"] == 4
+                assert after[1][scope]["history_count"] == 4
+                assert after[1][scope]["dedupe_count"] == 4
+            assert delivery.audit_quota(session, group_world["sub"])["differences"] == {}
+            assert delivery.audit_global_quota(session)["differences"] == {}
     finally:
         pool.close()
 
@@ -194,19 +256,61 @@ def test_cancel_one_waiter_keeps_group_and_other_results(monkeypatch):
     asyncio.run(run())
 
 
-def test_sparse_group_timer_never_waits_in_native_thread():
+def test_sparse_group_timer_never_waits_in_native_thread(monkeypatch):
     async def run():
-        from dlr.control.services.http_ingress_group import HttpCollector
+        parent = ApplicationBufferBudget()
+        pool = ingress.IngressResources(buffer=parent, session_factory=lambda: None)
+        started, unblock = threading.Event(), threading.Event()
+        added, sizes = [], []
+        original_add = pool.collector.add
 
-        called = asyncio.Event()
-        sizes = []
-        collector = HttpCollector(lambda _public, items: (sizes.append(len(items)), called.set()))
-        future = asyncio.get_running_loop().create_future()
-        collector.add("route", HttpInput(None, "one", b"{}", lambda: None, future))
-        assert sizes == []
-        async with asyncio.timeout(0.1):
-            await called.wait()
-        assert sizes == [1] and not collector.pending
+        def observe_add(public_id, item):
+            assert pool.work.used == 0 and not started.is_set()
+            original_add(public_id, item)
+            added.append(item.key)
+            assert pool.work.used == 0 and not started.is_set()
+
+        def blocked(_pool, _public, items):
+            sizes.append(len(items))
+            started.set()
+            assert unblock.wait(5)
+            return [(202, {"receipt_id": 1})]
+
+        monkeypatch.setattr(ingress, "resources", lambda: pool)
+        monkeypatch.setattr(ingress, "_run_group_sync", blocked)
+        monkeypatch.setattr(pool.collector, "add", observe_add)
+        from dlr.control.services import subscription_runtime
+
+        monkeypatch.setattr(
+            subscription_runtime,
+            "get_runtime",
+            lambda: SimpleNamespace(http_batch_hint=lambda _: True),
+        )
+        task = asyncio.create_task(
+            ingress._request(
+                "route",
+                request([b"{}"], [(b"content-type", b"application/json")]),
+                "Bearer source-token",
+                "one",
+            )
+        )
+        try:
+            async with asyncio.timeout(5):
+                while not started.is_set():
+                    await asyncio.sleep(0.001)
+                assert added == ["one"] and sizes == [1] and not pool.collector.pending
+                assert pool.work.used == 1 and pool.requests._value == 31
+                assert parent.used_bytes == ingress.BODY_RESERVATION and not task.done()
+                unblock.set()
+                assert (await task).status_code == 202
+                while parent.used_bytes or pool.work.used:
+                    await asyncio.sleep(0.001)
+                assert pool.requests._value == 32
+        finally:
+            unblock.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            pool.close()
 
     asyncio.run(run())
 

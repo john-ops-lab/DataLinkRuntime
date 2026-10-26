@@ -222,6 +222,18 @@ async def _read_body(request: Request) -> bytes:
     return b"".join(chunks)
 
 
+def _notify_committed_delivery_work() -> None:
+    """Wake only after a known new commit; the durable fallback remains authority."""
+    try:
+        from dlr.control.services.subscription_scheduler import notify_delivery_work
+
+        notify_delivery_work()
+    except Exception:
+        # A best-effort hint cannot turn committed custody into a failed or
+        # unknown response. The existing <=1s durable scan still finds it.
+        pass
+
+
 def _run_sync(
     pool: IngressResources,
     public_id: str,
@@ -237,6 +249,8 @@ def _run_sync(
             assert body is not None
             status, result = service.receive(session, public_id, authorization, key, body)
             session.commit()
+            if status == 202:
+                _notify_committed_delivery_work()
             return status, result
         except SQLAlchemyError:
             # Commit failure can be ambiguous. The caller must retain the same
@@ -261,6 +275,8 @@ def _run_group_sync(
             )
             if result is not None:
                 session.commit()
+                if any(not isinstance(item, HTTPException) and item[0] == 202 for item in result):
+                    _notify_committed_delivery_work()
                 return [_response_result(item) for item in result]
             session.rollback()
         except SQLAlchemyError:
