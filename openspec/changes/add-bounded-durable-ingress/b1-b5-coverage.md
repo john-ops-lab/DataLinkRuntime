@@ -120,5 +120,7 @@ E2 的核心文件 SHA-256 为 `cf4a2c134ee6217d08256333b46d0ce2a1522857c5118c2d
 | E28 | E23候选Outbox真实确认后退出，各20条的新轮与首败 | r1真实Basic.Ack切点成立，但私有cut DTO未转换UUID，输出截断；另存仅UUID修正的只读切面后恢复并完成20条双oracle，原轮仍记harness FAIL。新v2工具保留旧证据、完整编码后原子无覆盖输出；全新r2通过实际切点、双oracle、历史fencing/无重叠/admission、Broker0、正常停源恢复，完整责任保守上界64.999101秒。 |
 | E29 | E23候选的Kimi小范围复审，OCR1.13.3 / `k3.1-pro` | 3项选中，manifest2完成、1预算失败，终态partial；另有grace未完成warning与一项completed状态存在张力，不作无保留通过。确认启动前rate0仍退避及真实速率测试依赖现实1秒窗口两项问题；修复/受影响验证与最终完整覆盖仍待闭合，不把旧头或摘要计数拼成最终全审。 |
 | E30 | 启动限流、受控测试时钟及待处理年龄查询修复 | 四个相关测试文件共55项通过，包含真实PG速率窗口、精确五分钟边界、跨订阅、终态及真实replay；独立测试库已清除。纯检查、Ruff及queue严格mypy通过，另有只读代码复核。未改变T1/ACK/资源上限，无新增索引；新的正式容量和Kimi复审仍待执行，不能用旧一万条结果宣布新候选达标。 |
+| E31 | E23候选Worker Claim/journal写盘后退出，20条 | 真实Agent/UID、原两槽和两个SDK消费者、实际journal文件及目录fsync切点成立；保持Worker退出137时读取真实journal、平台与独立目标切面，再同CID恢复。历史Attempt/fencing/admission、目标/平台/Broker对账及正常Worker恢复通过，完整责任保守上界74.822318秒，Control CID未变。 |
+| E32 | E23候选目标提交后、结果RPC前退出r1及诊断工具修复 | 独立Target确认实际batch已提交，Worker实际退出137，但诊断SHA遗漏落盘追加的newline，原轮记harness FAIL。保留原文件，另存精确匹配原marker的canonical副本，完成切面核验后同CID恢复；20条目标/平台双oracle与Broker0成立，正常停源恢复，不改写原时限。工具修复仅将newline计入实际文件SHA，30项本机工具/SQLite子进程测试通过；新真实故障轮次待验。 |
 
 运行前增加本机空间检查；不足20GiB暂停新增重型轮次。本轮已清理未引用的DLR旧镜像/相关构建缓存并回收稀疏虚拟盘空闲块，原运行容器、数据卷、密钥、首败证据和主目录保留。该宿主保护不改变平台容量profile或5/60/600秒验收标准。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -329,7 +330,15 @@ class FaultProbeTests(unittest.TestCase):
         self.assertIs(proof["diagnostic_receipt_fsynced"], True)
         self.assertIs(proof["proof"]["product_result_journal"], False)
         self.assertIs(proof["proof"]["target_commit_verified"], False)
-        evidence = (self.root / "fault-test-cut.result-evidence.json").read_text()
+        evidence_bytes = (
+            self.root / "fault-test-cut.result-evidence.json"
+        ).read_bytes()
+        self.assertTrue(evidence_bytes.endswith(b"\n"))
+        self.assertEqual(
+            proof["diagnostic_receipt_sha256"],
+            hashlib.sha256(evidence_bytes).hexdigest(),
+        )
+        evidence = evidence_bytes.decode()
         self.assertNotIn("never-log", evidence)
         self.assertNotIn("private_body", evidence)
         self.assertEqual(

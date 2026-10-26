@@ -420,7 +420,7 @@ class Probe:
                     directory, f"fault-{arm.arm_id}.result-evidence.json", encoded
                 )
                 record["diagnostic_receipt_sha256"] = hashlib.sha256(
-                    encoded
+                    encoded + b"\n"  # _exclusive_write persists this final newline too.
                 ).hexdigest()
                 record["diagnostic_receipt_fsynced"] = True
             encoded = json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
