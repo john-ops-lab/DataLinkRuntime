@@ -15,7 +15,7 @@ def formal_profile() -> str:
         {
             "global": {
                 "pending_count": 24000,
-                "pending_bytes": 128 * 1024**2,
+                "pending_bytes": 512 * 1024**2,
                 "history_count": 60000,
                 "history_bytes": 512 * 1024**2,
                 "dedupe_count": 200000,
@@ -23,7 +23,7 @@ def formal_profile() -> str:
             },
             "subscription_max": {
                 "pending_count": 12000,
-                "pending_bytes": 64 * 1024**2,
+                "pending_bytes": 256 * 1024**2,
                 "history_count": 30000,
                 "history_bytes": 256 * 1024**2,
                 "dedupe_count": 100000,
