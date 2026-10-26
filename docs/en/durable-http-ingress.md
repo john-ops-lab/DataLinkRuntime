@@ -66,6 +66,8 @@ The body limit is 64 KiB and the complete event limit is 256 KiB. JSON depth is 
 
 HTTP permits at most 32 requests and 8 MiB of combined body/event reservations, within the shared 64 MiB source buffer budget. HTTP parsing and database work permit at most 8 concurrent native jobs. HTTP and native event sources share one `intake` database pool of at most 8 connections; management and recovery have a separate reserve of at most 4 connections. Neither pool allows overflow connections. Exhaustion rejects rather than queues without bounds. Cancellation retains the permit until native work actually ends.
 
+Each request reserves 320 KiB for the body and complete event limits, so the byte budget can hold at most 25 such reservations. When existing byte budgets are already insufficient, new reception requests can receive the same 429 before body reading. Status and management requests keep their original paths; early refusal or client cancellation does not release another request's reservation.
+
 Raw inputs default to 7 days and deduplication metadata to 30 days. Unfinished, failed, or recovery-referenced data remains protected. The sender's agreed retry horizon must fit the advertised deduplication window; permanent deduplication is not promised outside it. Original bytes, complete events, and required retained copies count toward capacity.
 
 ## Reception groups and business batches

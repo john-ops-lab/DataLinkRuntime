@@ -99,6 +99,23 @@ _resources: IngressResources | None = None
 _resources_lock = threading.Lock()
 
 
+def body_capacity_busy() -> bool:
+    """Conservative admission hint, never a reservation or a pool initializer.
+
+    The original request path still performs the authoritative acquire. Each
+    snapshot can become stale after a native job completes; neither reading
+    nor refusing a new request changes the lifetime of that job's reservation.
+    """
+    current = _resources
+    if current is None:
+        return False
+    buffer = current.buffer
+    return (
+        buffer.used_bytes + BODY_RESERVATION > buffer.limit_bytes
+        or buffer.parent.used_bytes + BODY_RESERVATION > buffer.parent.limit_bytes
+    )
+
+
 def resources() -> IngressResources:
     global _resources
     with _resources_lock:

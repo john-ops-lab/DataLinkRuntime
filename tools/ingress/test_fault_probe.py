@@ -18,6 +18,9 @@ ACTOR = r"""
 import base64,json,os,sys,types,uuid
 from pathlib import Path
 from types import SimpleNamespace
+def deny_network(event,arguments):
+ if event in {"socket.connect","socket.getaddrinfo","socket.bind"}:raise AssertionError("network_disabled_in_fault_probe_test")
+sys.addaudithook(deny_network)
 import fault_probe
 scenario=sys.argv[1];root=Path(sys.argv[2]);probe=fault_probe.install()
 envelope={"subscription":{"id":"11"},"source":{"type":"http"},"data":{"payload":{"run_id":"fault-unit","message_id":"000001","private_body":"never-log-this-body"}}}
@@ -60,6 +63,7 @@ if scenario.startswith("t1"):
  class T1Unit:
   def __init__(self,session):
    self.session=session;self.subscription=SimpleNamespace(id=11);self.source_type=envelope["source"]["type"]
+   if "unknown-source" in scenario:self.source_type="kafka"
   def receive(self,inputs):
    outcomes=[]
    if "dup-only" in scenario:self.session.execute(text("INSERT INTO outcome(note) VALUES ('old')"))
@@ -74,13 +78,17 @@ if scenario.startswith("t1"):
     rowid=1 if duplicate else self.session.execute(text("INSERT INTO outcome(note) VALUES ('retained')")).lastrowid
     outcomes.append(SimpleNamespace(index=item.index,error=None,duplicate=duplicate,status_code=200 if duplicate else 202,receipt_id=rowid))
    if "commit-fails" in scenario:self.session.execute(text("INSERT INTO child(id) VALUES (999)"))
+   if "extra-outcome" in scenario:outcomes.append(SimpleNamespace(index=0,error=None,duplicate=False,status_code=202,receipt_id=1))
+   if "foreign-outcome-index" in scenario:outcomes[-1].index=999
+   if "duplicate-outcome-index" in scenario:outcomes[-1].index=outcomes[0].index
    return SimpleNamespace(outcomes=tuple(reversed(outcomes)) if "reversed" in scenario else tuple(outcomes))
  unit_module.T1Unit=T1Unit
  if probe:probe.patch(unit_module)
  with Session(engine) as session:
   if scenario.startswith("t1-unit"):
    items=[]
-   for index in range(4):
+   count=17 if "-17" in scenario else 16 if "-16" in scenario else 5 if "-5" in scenario else 4
+   for index in range(count):
     value=json.loads(json.dumps(envelope))
     if value["source"]["type"]=="http":value["data"]["payload"]["message_id"]="unit-"+str(index+1)
     else:
@@ -88,6 +96,7 @@ if scenario.startswith("t1"):
      item["message_id"]="unit-"+str(index+1)
      value["data"]["value"]=base64.b64encode(json.dumps(item).encode()).decode()
     items.append(SimpleNamespace(index=index,envelope=value))
+   if "duplicate-input-index" in scenario:items[-1].index=items[0].index
    unit_module.T1Unit(session).receive(items)
   else:module.receive_event(session,11,"owner",1,envelope,"requests",{})
   if "rollback" in scenario:session.rollback()
@@ -423,8 +432,77 @@ class FaultProbeTests(unittest.TestCase):
                 finally:
                     self.root = original
 
+    def test_t1_unit_rabbit_sixteen_members_cut_only_at_the_matching_session_commit(self) -> None:
+        for point, expected in [("t1_before_commit", 0), ("t1_after_commit", 16)]:
+            with self.subTest(point=point), tempfile.TemporaryDirectory() as directory:
+                original = self.root
+                self.root = Path(directory)
+                self.root.chmod(0o700)
+                try:
+                    self.arm(point, message_id="unit-16")
+                    child = self.child("t1-unit-rabbit-16-reversed")
+                    self.assertEqual(child.returncode, 137, child.stderr)
+                    self.assertEqual(self.rows(), expected)
+                    proof = self.proof()
+                    self.assertEqual(proof["ids"]["message_id"], "unit-16")
+                    self.assertEqual(proof["ids"]["receipt_id"], 16)
+                    self.assertEqual(proof["proof"]["reception_path"], "T1Unit.receive")
+                    self.assertEqual(proof["proof"]["t1_unit_new_items"], 16)
+                    self.assertEqual(proof["proof"]["t1_unit_outcomes"], 16)
+                    self.assertIs(
+                        proof["proof"]["transaction_committed"], point == "t1_after_commit"
+                    )
+                    self.assertFalse((self.root / "source-ack-or-http-response").exists())
+                finally:
+                    self.root = original
+
+    def test_t1_unit_source_bounds_and_unknown_source_never_create_a_marker(self) -> None:
+        scenarios = [
+            ("t1-unit-rabbit-17", 17),
+            ("t1-unit-http-5", 5),
+            ("t1-unit-unknown-source", 4),
+        ]
+        for scenario, expected in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                original = self.root
+                self.root = Path(directory)
+                self.root.chmod(0o700)
+                try:
+                    self.arm("t1_after_commit")
+                    child = self.child(scenario)
+                    self.assertEqual(child.returncode, 0, child.stderr)
+                    self.assertEqual(self.rows(), expected)
+                    self.assertFalse((self.root / "fault-test-cut.json").exists())
+                    self.assertTrue((self.root / "source-ack-or-http-response").exists())
+                finally:
+                    self.root = original
+
+    def test_t1_unit_mismatched_outcomes_never_create_a_marker(self) -> None:
+        for variant in (
+            "extra-outcome",
+            "foreign-outcome-index",
+            "duplicate-outcome-index",
+            "duplicate-input-index",
+        ):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as directory:
+                original = self.root
+                self.root = Path(directory)
+                self.root.chmod(0o700)
+                try:
+                    self.arm("t1_after_commit", message_id="unit-1")
+                    child = self.child("t1-unit-rabbit-16-" + variant)
+                    self.assertEqual(child.returncode, 0, child.stderr)
+                    self.assertEqual(self.rows(), 16)
+                    self.assertFalse((self.root / "fault-test-cut.json").exists())
+                finally:
+                    self.root = original
+
     def test_t1_unit_prefix_and_http_error_only_mark_successful_new_items(self) -> None:
-        for scenario, expected in [("t1-unit-rabbit-prefix", 1), ("t1-unit-independent", 3)]:
+        for scenario, expected in [
+            ("t1-unit-rabbit-prefix", 1),
+            ("t1-unit-rabbit-16-prefix", 1),
+            ("t1-unit-independent", 3),
+        ]:
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
                 original = self.root
                 self.root = Path(directory)

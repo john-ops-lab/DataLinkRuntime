@@ -48,6 +48,7 @@ from dlr.control.security import require_csrf
 from dlr.control.services import accounts as account_service
 from dlr.control.services.admission import admission_reconciler_loop
 from dlr.control.services.attempt import attempt_reconciler_loop
+from dlr.control.services.http_ingress_admission import HttpIngressAdmission
 from dlr.control.services.infrastructure_dlq import infrastructure_dlq_loop
 from dlr.control.services.managed_input_gc import artifact_gc_loop, orphan_audit_loop
 from dlr.control.services.outbox import outbox_relay_loop
@@ -413,4 +414,7 @@ def create_app() -> FastAPI:
     app.include_router(workers.admin_router)
     app.include_router(cache_admin.router)
     app.include_router(events.router)
+    # Last registered user middleware is outermost: reject only known-full
+    # ingress body budgets before BaseHTTPMiddleware allocates request tasks.
+    app.add_middleware(HttpIngressAdmission, busy=ingress.body_capacity_busy)
     return app

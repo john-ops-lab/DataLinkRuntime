@@ -477,10 +477,28 @@ class Probe:
                         if arm is None or arm.point not in {"t1_before_commit", "t1_after_commit"}:
                             return result
                         fields = _loaded(unit)
-                        if fields.get("source_type") not in {"http", "rabbitmq"}:
+                        source_type = fields.get("source_type")
+                        if not isinstance(source_type, str):
+                            return result
+                        maximum = {"http": 4, "rabbitmq": 16}.get(source_type)
+                        if maximum is None:
                             return result
                         outcomes = _loaded(result).get("outcomes")
-                        if not isinstance(inputs, (list, tuple)) or not 1 <= len(inputs) <= 4 or not isinstance(outcomes, (list, tuple)) or not 1 <= len(outcomes) <= 4:
+                        if (
+                            not isinstance(inputs, (list, tuple))
+                            or not 1 <= len(inputs) <= maximum
+                            or not isinstance(outcomes, (list, tuple))
+                            or not 1 <= len(outcomes) <= len(inputs)
+                        ):
+                            return result
+                        input_indexes = [_loaded(item).get("index") for item in inputs]
+                        outcome_indexes = [_loaded(item).get("index") for item in outcomes]
+                        if (
+                            any(type(index) is not int for index in input_indexes + outcome_indexes)
+                            or len(set(input_indexes)) != len(input_indexes)
+                            or len(set(outcome_indexes)) != len(outcome_indexes)
+                            or not set(outcome_indexes).issubset(input_indexes)
+                        ):
                             return result
                         by_index = {_loaded(item).get("index"): item for item in inputs}
                         new_outcomes = [
