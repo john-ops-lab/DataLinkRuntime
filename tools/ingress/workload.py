@@ -42,6 +42,7 @@ KINDS = {
 MANIFEST_MAX_BYTES = 40 * 1024 * 1024
 HTTP_LOG_MAX_BYTES = 64 * 1024 * 1024
 HTTP_CONCURRENCY = 128
+HTTP_FOLLOWUP_STARTS_PER_SECOND = 500
 RESULT_MAX_BYTES = 4 * 1024 * 1024
 MAX_ATTEMPTS = 64
 MAX_EVIDENCE_BYTES = 64 * 1024 * 1024
@@ -388,6 +389,8 @@ class HttpSender:
             raise FixtureError("invalid_http_concurrency")
         self.concurrency = concurrency
         self.slots = asyncio.Semaphore(concurrency)
+        self.followup_start_lock = asyncio.Lock()
+        self.followup_next_start = None
         self.route = urlsplit(config["ingress_url"]).path
         self.first_round_done = asyncio.Event()
         self.first_accounted: set[int] = set()
@@ -432,6 +435,38 @@ class HttpSender:
         if len(self.first_accounted) == len(self.inputs):
             self.first_round_done.set()
 
+    async def _acquire_start(self, *, first, deadline):
+        # Only follow-ups are paced. One waiting lock owner, no stored tokens,
+        # and no request slot held during the wait. Always rebase on the real
+        # start so an idle period or slow event loop cannot cause catch-up.
+        paced = not first
+        if paced:
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                raise TimeoutError
+            await asyncio.wait_for(self.followup_start_lock.acquire(), remaining)
+        try:
+            if paced and self.followup_next_start is not None:
+                while self.clock() < self.followup_next_start:
+                    delay = self.followup_next_start - self.clock()
+                    if delay >= deadline - self.clock():
+                        raise TimeoutError
+                    await self.sleep(delay)
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                raise TimeoutError
+            await asyncio.wait_for(self.slots.acquire(), remaining)
+            started = self.clock()
+            if started >= deadline:
+                self.slots.release()
+                raise TimeoutError
+            if paced:
+                self.followup_next_start = started + 1 / HTTP_FOLLOWUP_STARTS_PER_SECOND
+            return started
+        finally:
+            if paced:
+                self.followup_start_lock.release()
+
     async def _request(self, method, row, receipt_id=None, *, first=False, timing=None):
         # Waiting for the first round or backoff never consumes an in-flight
         # HTTP slot. Queries and retries cannot overtake any first POST.
@@ -441,14 +476,8 @@ class HttpSender:
         if not first:
             await asyncio.wait_for(self.first_round_done.wait(), timeout=remaining)
         deadline = min(self.deadline, self.first_deadline) if first else self.deadline
-        remaining = deadline - self.clock()
-        if remaining <= 0:
-            raise TimeoutError
-        await asyncio.wait_for(self.slots.acquire(), timeout=remaining)
+        started = await self._acquire_start(first=first, deadline=deadline)
         try:
-            started = self.clock()
-            if started >= deadline:
-                raise TimeoutError
             if first:
                 self._mark_first(row, started)
             if timing is not None:
@@ -457,10 +486,11 @@ class HttpSender:
             self.active += 1
             self.peak = max(self.peak, self.active)
             try:
-                return await asyncio.wait_for(
-                    self.send(method, row, receipt_id),
-                    timeout=min(5.0, self.deadline - started),
-                )
+                # Invoke transport in this task immediately after admission;
+                # a separately scheduled Task could compress actual starts
+                # after an event-loop stall despite spaced admission times.
+                async with asyncio.timeout(min(5.0, self.deadline - started)):
+                    return await self.send(method, row, receipt_id)
             finally:
                 self.active -= 1
                 if timing is not None:
@@ -738,6 +768,7 @@ class HttpSender:
             "scheduler": {
                 "request_tasks_peak": self.request_tasks_peak,
                 "deferred_items_peak": self.deferred_items_peak,
+                "followup_start_limit_per_second": HTTP_FOLLOWUP_STARTS_PER_SECOND,
             },
             "id_outcomes": outcomes,
             "dlr_acceptance_verified": False,

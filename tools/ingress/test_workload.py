@@ -7,12 +7,14 @@ import json
 import sys
 import tempfile
 import unittest
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from tools.ingress.workload import (
     BODY_BYTES,
+    HTTP_FOLLOWUP_STARTS_PER_SECOND,
     KINDS,
     MANIFEST_MAX_BYTES,
     FixtureError,
@@ -444,6 +446,188 @@ class HttpCoordinatorTests(unittest.TestCase):
         self.assertEqual(sender.active, 0)
         self.assertEqual(sender.slots._value, 3)
         self.assertEqual(sender.counts["post_requests"], 3)
+
+
+class HttpFollowupPacingTests(unittest.TestCase):
+    make = HttpTests.make
+
+    def test_first_posts_bypass_followup_pacing_and_keep_the_original_cutoff(self):
+        clock = Clock()
+        starts = []
+
+        async def send(method, row, receipt_id):
+            starts.append(clock.value)
+            return reply(row["seq"])
+
+        sender, _ = self.make(send, count=20, clock=clock, concurrency=3)
+        sender.followup_next_start = 1000
+        result = asyncio.run(sender.run())
+        self.assertEqual(starts, [0] * 20)
+        self.assertTrue(result["burst_window_passed"])
+        self.assertEqual(sender.first_deadline, 5)
+        self.assertEqual(sender.deadline, 60)
+
+    def test_actual_followup_starts_are_spaced_and_never_catch_up_after_a_stall(self):
+        clock = Clock()
+        starts = []
+
+        async def send(method, row, receipt_id):
+            starts.append(clock.value)
+            if len(starts) == 1:
+                clock.value = 10  # No tokens may accumulate during this stall.
+            return reply(row["seq"])
+
+        sender, _ = self.make(send, count=625, clock=clock, concurrency=125)
+        sender.first_round_done.set()
+
+        async def run():
+            await asyncio.gather(
+                *(sender._request("POST", row) for row in sender.inputs)
+            )
+
+        asyncio.run(run())
+        self.assertEqual(starts[:2], [0, 10])
+        for before, after in pairwise(starts):
+            self.assertGreaterEqual(
+                after - before, 1 / HTTP_FOLLOWUP_STARTS_PER_SECOND - 1e-10
+            )
+        # In every half-open one-second sliding window, at most 500 starts.
+        for index, start in enumerate(starts):
+            self.assertLessEqual(
+                sum(start <= other < start + 1 - 1e-10 for other in starts[index:]),
+                HTTP_FOLLOWUP_STARTS_PER_SECOND,
+            )
+        self.assertEqual(sender.slots._value, 125)
+
+    def test_pacing_wait_owns_no_http_slot_and_cancel_releases_the_start_lock(self):
+        async def run():
+            sleeping = asyncio.Event()
+
+            async def pause(seconds):
+                sleeping.set()
+                await asyncio.Event().wait()
+
+            async def send(*args):
+                raise AssertionError("waiting request cannot reach transport")
+
+            sender, _ = self.make(send, clock=Clock(), concurrency=3)
+            sender.first_round_done.set()
+            sender.followup_next_start = 1
+            sender.sleep = pause
+            task = asyncio.create_task(sender._request("POST", sender.inputs[0]))
+            await sleeping.wait()
+            self.assertEqual(sender.slots._value, 3)
+            self.assertEqual(sender.active, 0)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertFalse(sender.followup_start_lock.locked())
+            self.assertEqual(sender.slots._value, 3)
+
+        asyncio.run(run())
+
+    def test_retry_after_is_the_earliest_start_and_eligible_ids_remain_fair(self):
+        clock = Clock()
+        starts, counts = {}, {}
+
+        async def send(method, row, receipt_id):
+            seq = row["seq"]
+            counts[seq] = counts.get(seq, 0) + 1
+            starts.setdefault(seq, []).append(clock.value)
+            if counts[seq] == 1:
+                return HttpReply(429, retry_after="30" if seq == 1 else "1")
+            return reply(seq)
+
+        sender, _ = self.make(send, count=20, clock=clock, concurrency=3)
+        result = asyncio.run(sender.run())
+        self.assertTrue(result["all_responses_accepted"])
+        self.assertGreaterEqual(starts[1][1], 30)
+        self.assertTrue(all(1 <= starts[seq][1] < 2 for seq in range(2, 21)))
+        self.assertEqual(counts, dict.fromkeys(range(1, 21), 2))
+        self.assertEqual(sender.start, 0)
+
+    def test_legal_deadline_tail_starts_but_no_followup_starts_at_or_after_sixty(self):
+        clock = Clock()
+        starts = []
+
+        async def send(*args):
+            starts.append(clock.value)
+            return reply()
+
+        sender, _ = self.make(send, clock=clock, concurrency=1)
+        sender.first_round_done.set()
+        clock.value = 59.997
+        sender.followup_next_start = 59.998
+
+        async def run():
+            await sender._request("POST", sender.inputs[0])
+            with self.assertRaises(TimeoutError):
+                await sender._request("POST", sender.inputs[0])
+
+        asyncio.run(run())
+        self.assertEqual(starts, [59.998])
+        self.assertEqual(sender.counts["post_requests"], 1)
+        self.assertEqual(sender.deadline, 60)
+        self.assertEqual(sender.slots._value, 1)
+
+    def test_request_timeout_uses_remaining_window_and_cleans_up_in_this_task(self):
+        async def run():
+            clock = Clock()
+
+            async def send(*args):
+                await asyncio.Event().wait()
+
+            sender, _ = self.make(send, clock=clock, concurrency=1)
+            sender.first_round_done.set()
+            clock.value = 59.99
+            with self.assertRaises(TimeoutError):
+                await sender._request("POST", sender.inputs[0])
+            self.assertEqual(sender.counts["post_requests"], 1)
+            self.assertEqual(sender.active, 0)
+            self.assertEqual(sender.slots._value, 1)
+            self.assertFalse(sender.followup_start_lock.locked())
+            self.assertEqual(sender.deadline, 60)
+
+        asyncio.run(run())
+
+    def test_many_unknowns_retain_original_id_body_and_do_not_invent_queries(self):
+        clock = Clock()
+        seen = {}
+
+        async def send(method, row, receipt_id):
+            self.assertEqual(method, "POST")
+            self.assertIsNone(receipt_id)
+            identity = (row["message_id"], row["raw_base64"])
+            previous = seen.setdefault(row["seq"], [])
+            previous.append(identity)
+            if len(previous) == 1:
+                raise TimeoutError("never serialize this endpoint or error")
+            return reply(row["seq"])
+
+        sender, sink = self.make(send, count=20, clock=clock, concurrency=3)
+        result = asyncio.run(sender.run())
+        self.assertTrue(result["all_responses_accepted"])
+        self.assertTrue(all(rows[0] == rows[1] for rows in seen.values()))
+        self.assertEqual(result["counts"]["query_requests"], 0)
+        self.assertEqual(result["counts"]["post_requests"], 40)
+        self.assertNotIn("never serialize", json.dumps(sink.rows))
+
+    def test_known_receipt_queries_share_the_same_followup_start_limit(self):
+        clock = Clock()
+        queried = []
+
+        async def send(method, row, receipt_id):
+            if method == "POST":
+                return HttpReply(202, b'{"receipt_id":9}')
+            self.assertEqual(receipt_id, 9)
+            queried.append(clock.value)
+            return HttpReply(200, reply(9).body)
+
+        sender, _ = self.make(send, count=20, clock=clock, concurrency=3)
+        result = asyncio.run(sender.run())
+        self.assertTrue(result["all_responses_accepted"])
+        self.assertEqual(len(queried), 20)
+        self.assertTrue(all(b - a >= 0.002 - 1e-10 for a, b in pairwise(queried)))
 
 
 class HttpTransportTests(unittest.TestCase):
