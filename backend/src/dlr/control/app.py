@@ -168,13 +168,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        await source_runtime.aclose()
+        native_closed = await source_runtime.aclose()
         from dlr.control.api.ingress import flush_ingress_resources, shutdown_ingress_resources
         from dlr.control.services.ingress_database import close_intake_database
 
         flush_ingress_resources()
         await asyncio.to_thread(shutdown_ingress_resources)
-        await asyncio.to_thread(close_intake_database)
+        await asyncio.to_thread(close_intake_database, native_closed=native_closed)
         for background_task in (
             task,
             ai_attachment_task,

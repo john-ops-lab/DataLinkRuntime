@@ -134,3 +134,14 @@ The system SHALL preserve token/account entry trust, private-prefix path/raw_pat
 - **WHEN** 某等待者取消或Control关闭且存在就绪/已提交组
 - **THEN** 单个等待者取消不撤销已交给collector的共享组；仅尚未调用submit的就绪组可因到期或关闭等已知拒绝归还原额度，提交调用已开始及实际native仍按原最终结果释放，不能取消共享事务或提前清active
 - **AND** 关闭/定时器/submit拒绝及回调竞态 MUST 恰一次收尾；原鉴权、配置/lease/开关检查、T1绑定和提交未知语义不变
+
+### Requirement: 共享接收池只在全部使用者真实结束后关闭
+Control关闭 SHALL 保持原15秒有界的原生来源等待；关闭回执 MUST 区分真实结束和仍在关闭或未知。HTTP原生executor实际排空后，只有同锁下原生owners/probes/starting均空且stop-manager线程结束，才允许dispose并清除共享接收engine/factory；不能因HTTP已排空就推定全部来源结束。
+
+#### Scenario: 原生来源关闭超时或未知
+- **WHEN** 关闭期限已到，但原生责任仍活、关闭未确认或回执不是明确成功
+- **THEN** 保留原engine、pool和factory身份供原工作使用，维持共享8连接上限；不先清globals、不新开另一池、不提前释放责任或增加无限等待
+
+#### Scenario: 两类接收工作均确认结束
+- **WHEN** 原生来源真实结束且HTTP原生executor已真正排空
+- **THEN** 才可dispose和清除原共享接收factory；管理/恢复保留池及持久责任规则不变

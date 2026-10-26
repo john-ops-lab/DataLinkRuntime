@@ -534,7 +534,7 @@ class SubscriptionRuntimeManager:
             except Exception:
                 logger.warning("source lease maintenance unavailable")
 
-    async def aclose(self, timeout: float = 15) -> None:
+    async def aclose(self, timeout: float = 15) -> bool:
         self._shutdown.set()
         if self._supervisor is None:
             # Directly started owners share the same shutdown contract. DB work
@@ -547,11 +547,13 @@ class SubscriptionRuntimeManager:
         while time.monotonic() < deadline:
             with self._lock:
                 active = bool(self._owners or self._probes or self._starting)
-            if not active and not (self._supervisor and self._supervisor.is_alive()):
-                return
+                supervisor_alive = bool(self._supervisor and self._supervisor.is_alive())
+            if not active and not supervisor_alive:
+                return True
             await asyncio.sleep(0.02)
         # Native operations keep their permits until returning, even during shutdown.
         logger.warning("source shutdown awaiting native close")
+        return False
 
     async def test_connection(
         self,

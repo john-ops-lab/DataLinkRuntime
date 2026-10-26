@@ -37,10 +37,13 @@ def intake_sessions(url: str | URL) -> sessionmaker[Session]:
         return _factory
 
 
-def close_intake_database() -> None:
-    """Only after native owners and HTTP jobs have actually finished."""
+def close_intake_database(*, native_closed: bool | None = None) -> bool:
+    """Drain HTTP jobs first; retain the shared pool until native close is confirmed."""
     global _engine, _factory
     with _lock:
-        engine, _engine, _factory = _engine, None, None
-    if engine is not None:
-        engine.dispose()
+        if native_closed is not True:
+            return False
+        if _engine is not None:
+            _engine.dispose()
+        _engine, _factory = None, None
+        return True
