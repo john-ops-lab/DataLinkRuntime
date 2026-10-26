@@ -1,4 +1,4 @@
-"""ASGI refusal is only a read-only shortcut around the existing body gate."""
+"""ASGI refusal is only a read-only shortcut around existing body and native-work gates."""
 
 import asyncio
 import threading
@@ -55,7 +55,7 @@ async def invoke(app, request_scope):
 def test_uninitialized_capacity_hint_does_not_initialize(monkeypatch):
     monkeypatch.setattr(ingress, "_resources", None)
     monkeypatch.setattr(ingress, "resources", forbidden)
-    assert not ingress.body_capacity_busy()
+    assert not ingress.admission_capacity_busy()
     assert ingress._resources is None
 
 
@@ -65,7 +65,7 @@ def test_known_full_local_budget_refuses_before_inner_or_receive(pool, monkeypat
     before = snapshot(pool)
     monkeypatch.setattr(ingress, "resources", forbidden)
     path = ("/__dlr_account" if account else "") + "/api/ingress/route"
-    app = HttpIngressAdmission(forbidden, busy=ingress.body_capacity_busy)
+    app = HttpIngressAdmission(forbidden, busy=ingress.admission_capacity_busy)
     response = asyncio.run(invoke(app, scope(path)))
     assert response == [
         {
@@ -92,10 +92,44 @@ def test_global_scope_can_refuse_without_changing_other_owner(pool):
     external = pool.buffer.parent.scope(pool.buffer.parent.limit_bytes)
     assert external.reserve(external.limit_bytes - ingress.BODY_RESERVATION + 1)
     before, external_before = snapshot(pool), external.used_bytes
-    app = HttpIngressAdmission(forbidden, busy=ingress.body_capacity_busy)
+    app = HttpIngressAdmission(forbidden, busy=ingress.admission_capacity_busy)
     assert asyncio.run(invoke(app, scope()))[0]["status"] == 429
     assert snapshot(pool) == before and external.used_bytes == external_before
     assert pool.buffer.used_bytes == 0
+
+
+@pytest.mark.parametrize("account", [False, True])
+def test_native_work_full_refuses_before_body_or_inner(pool, monkeypatch, account):
+    for _ in range(8):
+        assert pool.work.acquire()
+    before = snapshot(pool)
+    monkeypatch.setattr(ingress, "resources", forbidden)
+    path = ("/__dlr_account" if account else "") + "/api/ingress/route"
+    app = HttpIngressAdmission(forbidden, busy=ingress.admission_capacity_busy)
+    response = asyncio.run(invoke(app, scope(path)))
+    assert response[0]["status"] == 429
+    assert (b"retry-after", b"1") in response[0]["headers"]
+    assert b'"code":"ingress_capacity_exceeded"' in response[1]["body"]
+    assert snapshot(pool) == before and pool.buffer.used_bytes == 0
+    assert pool.work.used == 8
+    for _ in range(8):
+        pool.work.release()
+    assert not ingress.admission_capacity_busy()
+
+
+def test_native_snapshot_neither_reserves_nor_changes_authoritative_limit(pool):
+    for _ in range(7):
+        assert pool.work.acquire()
+    assert pool.work.used == 7 and not ingress.admission_capacity_busy()
+    assert pool.work.acquire()
+    assert pool.work.saturated and ingress.admission_capacity_busy()
+    assert not pool.work.acquire()
+    assert pool.work.used == 8
+    for _ in range(8):
+        pool.work.release()
+    with pytest.raises(ValueError):
+        pool.work.release()
+    assert pool.work.used == 0 and not pool.work.saturated
 
 
 @pytest.mark.parametrize("global_scope", [False, True])
@@ -105,7 +139,7 @@ def test_exact_remaining_bytes_are_not_treated_as_full(pool, global_scope):
     )
     assert target.reserve(target.limit_bytes - ingress.BODY_RESERVATION)
     before = snapshot(pool)
-    assert not ingress.body_capacity_busy()
+    assert not ingress.admission_capacity_busy()
     assert snapshot(pool) == before
 
 
@@ -155,9 +189,21 @@ def test_available_target_is_not_rewritten_or_received_by_shortcut():
     assert seen == [request_scope]
 
 
-def test_app_wiring_is_outside_basehttp_and_matches_original_busy_response(pool):
+@pytest.mark.parametrize("gate", ["body", "native"])
+def test_app_wiring_is_outside_basehttp_and_matches_original_busy_response(pool, monkeypatch, gate):
     async def run():
-        assert pool.buffer.reserve(25 * ingress.BODY_RESERVATION)
+        if gate == "body":
+            assert pool.buffer.reserve(25 * ingress.BODY_RESERVATION)
+        else:
+            for _ in range(8):
+                assert pool.work.acquire()
+            from dlr.control.services import subscription_runtime
+
+            monkeypatch.setattr(
+                subscription_runtime,
+                "get_runtime",
+                lambda: SimpleNamespace(http_batch_hint=lambda _: False),
+            )
         before = snapshot(pool)
         app = create_app()
         assert app.user_middleware[0].cls is HttpIngressAdmission
@@ -170,18 +216,32 @@ def test_app_wiring_is_outside_basehttp_and_matches_original_busy_response(pool)
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=target), base_url="http://test"
             ) as client:
-                responses.append(await client.post("/api/ingress/route", content=b"not JSON"))
+                responses.append(
+                    await client.post(
+                        "/api/ingress/route",
+                        content=b"{}",
+                        headers={"Idempotency-Key": "id", "Content-Type": "application/json"},
+                    )
+                )
+            if target is app:
+                assert snapshot(pool) == before
         shortcut, old = responses
         assert shortcut.status_code == old.status_code == 429
         assert shortcut.content == old.content and shortcut.headers == old.headers
-        assert snapshot(pool) == before
+        assert snapshot(pool)[:2] == before[:2]
+        assert pool.buffer.parent.peak_bytes == max(before[2], ingress.BODY_RESERVATION)
 
     asyncio.run(run())
 
 
-def test_full_ingress_keeps_existing_cookie_auth_and_csrf_for_other_paths(pool, monkeypatch):
+@pytest.mark.parametrize("gate", ["body", "native"])
+def test_full_ingress_keeps_existing_cookie_auth_and_csrf_for_other_paths(pool, monkeypatch, gate):
     async def run():
-        assert pool.buffer.reserve(25 * ingress.BODY_RESERVATION)
+        if gate == "body":
+            assert pool.buffer.reserve(25 * ingress.BODY_RESERVATION)
+        else:
+            for _ in range(8):
+                assert pool.work.acquire()
         app = create_app()
         app.dependency_overrides[db.get_session] = lambda: object()
         seen = []
@@ -253,7 +313,7 @@ def test_cancelling_passed_request_retains_native_body_reservation(pool, monkeyp
         async def inner(request_scope, receive, send):
             await ingress._request("route", Request(request_scope, receive), "Bearer token", "id")
 
-        app = HttpIngressAdmission(inner, busy=ingress.body_capacity_busy)
+        app = HttpIngressAdmission(inner, busy=ingress.admission_capacity_busy)
         task = asyncio.create_task(app(scope(), receive, send))
         try:
             async with asyncio.timeout(5):
@@ -270,5 +330,168 @@ def test_cancelling_passed_request_retains_native_body_reservation(pool, monkeyp
                 assert pool.buffer.parent.used_bytes == 0
         finally:
             unblock.set()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("mode", ["single", "status", "group"])
+def test_cancelled_native_work_keeps_busy_hint_until_real_future_finishes(pool, monkeypatch, mode):
+    async def run():
+        started, unblock = threading.Event(), threading.Event()
+        for _ in range(7):
+            assert pool.work.acquire()
+
+        def blocked(*args):
+            started.set()
+            assert unblock.wait(5)
+            return [(202, {"receipt_id": 1})] if mode == "group" else (202, {"receipt_id": 1})
+
+        monkeypatch.setattr(ingress, "_run_group_sync" if mode == "group" else "_run_sync", blocked)
+        from dlr.control.services import subscription_runtime
+
+        monkeypatch.setattr(
+            subscription_runtime,
+            "get_runtime",
+            lambda: SimpleNamespace(http_batch_hint=lambda _: mode == "group"),
+        )
+
+        async def receive():
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        task = asyncio.create_task(
+            ingress._request(
+                "route",
+                Request(scope(), receive),
+                "Bearer token",
+                "id",
+                receipt_id=1 if mode == "status" else None,
+            )
+        )
+        reservation = 0 if mode == "status" else ingress.BODY_RESERVATION
+        try:
+            async with asyncio.timeout(5):
+                while not started.is_set():
+                    await asyncio.sleep(0.001)
+                assert pool.work.used == 8 and ingress.admission_capacity_busy()
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert pool.work.used == 8 and ingress.admission_capacity_busy()
+                assert pool.buffer.used_bytes == reservation
+                response = await invoke(
+                    HttpIngressAdmission(forbidden, busy=ingress.admission_capacity_busy), scope()
+                )
+                assert response[0]["status"] == 429
+                assert pool.work.used == 8 and pool.buffer.used_bytes == reservation
+                unblock.set()
+                while pool.work.used != 7 or pool.buffer.used_bytes:
+                    await asyncio.sleep(0.001)
+                assert not ingress.admission_capacity_busy()
+        finally:
+            unblock.set()
+            pool.close()
+            for _ in range(7):
+                pool.work.release()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("group", [False, True])
+def test_native_submit_failure_returns_work_and_request_reservations(pool, monkeypatch, group):
+    async def run():
+        from dlr.control.services import subscription_runtime
+
+        monkeypatch.setattr(
+            subscription_runtime,
+            "get_runtime",
+            lambda: SimpleNamespace(http_batch_hint=lambda _: group),
+        )
+        pool.close()  # The real executor now raises its closing RuntimeError on submit.
+
+        async def receive():
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        with pytest.raises(Exception) as raised:
+            await ingress._request("route", Request(scope(), receive), "Bearer token", "id")
+        if group:
+            assert isinstance(raised.value, ingress.HTTPException)
+            assert raised.value.status_code == 503
+        else:
+            assert isinstance(raised.value, RuntimeError)
+        assert pool.work.used == 0 and pool.buffer.used_bytes == 0
+        for _ in range(32):
+            assert pool.requests.acquire(blocking=False)
+        assert not pool.requests.acquire(blocking=False)
+        for _ in range(32):
+            pool.requests.release()
+        assert not ingress.admission_capacity_busy()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("group", [False, True])
+def test_native_failure_returns_work_only_after_the_real_future_ends(pool, monkeypatch, group):
+    async def run():
+        from dlr.control.services import subscription_runtime
+
+        monkeypatch.setattr(
+            subscription_runtime,
+            "get_runtime",
+            lambda: SimpleNamespace(http_batch_hint=lambda _: group),
+        )
+
+        def failed(*args):
+            raise RuntimeError("native work failed")
+
+        monkeypatch.setattr(ingress, "_run_group_sync" if group else "_run_sync", failed)
+
+        async def receive():
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        with pytest.raises(Exception) as raised:
+            await ingress._request("route", Request(scope(), receive), "Bearer token", "id")
+        if group:
+            assert isinstance(raised.value, ingress.HTTPException)
+            assert raised.value.status_code == 503
+        else:
+            assert isinstance(raised.value, RuntimeError)
+        assert pool.work.used == 0 and pool.buffer.used_bytes == 0
+        assert not ingress.admission_capacity_busy()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("mode", ["single", "status", "group"])
+def test_authoritative_native_acquire_still_refuses_if_snapshot_was_available(
+    pool, monkeypatch, mode
+):
+    async def run():
+        assert not ingress.admission_capacity_busy()
+        for _ in range(8):
+            assert pool.work.acquire()
+        from dlr.control.services import subscription_runtime
+
+        monkeypatch.setattr(
+            subscription_runtime,
+            "get_runtime",
+            lambda: SimpleNamespace(http_batch_hint=lambda _: mode == "group"),
+        )
+
+        async def receive():
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        with pytest.raises(ingress.HTTPException) as raised:
+            await ingress._request(
+                "route",
+                Request(scope(), receive),
+                "Bearer token",
+                "id",
+                receipt_id=1 if mode == "status" else None,
+            )
+        assert raised.value.status_code == 429
+        assert raised.value.headers == {"Retry-After": "1"}
+        assert pool.work.used == 8 and pool.buffer.used_bytes == 0
+        for _ in range(8):
+            pool.work.release()
 
     asyncio.run(run())

@@ -286,7 +286,7 @@ def test_http_disable_does_not_release_or_cancel_real_ingress_native_work(
                 manager._finish_owner(owner, None)
                 assert state.sub.connection_state == "stopped" and manager.active_count == 0
                 assert manager.buffer.used_bytes == pool.buffer.used_bytes == held
-                assert pool.work._value == 7 and pool.requests._value == 28
+                assert pool.work.used == 1 and pool.requests._value == 28
                 assert all(not task.done() for task in tasks)
                 unblock.set()
                 assert [response.status_code for response in await asyncio.gather(*tasks)] == [
@@ -294,7 +294,7 @@ def test_http_disable_does_not_release_or_cancel_real_ingress_native_work(
                 ] * 4
                 while manager.buffer.used_bytes:
                     await asyncio.sleep(0.001)
-                assert pool.work._value == 8 and pool.requests._value == 32
+                assert pool.work.used == 0 and pool.requests._value == 32
         finally:
             unblock.set()
             await asyncio.gather(*tasks, return_exceptions=True)

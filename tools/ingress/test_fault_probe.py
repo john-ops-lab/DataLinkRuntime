@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TOOLS = ROOT / "tools" / "ingress"
 
 ACTOR = r"""
-import base64,json,os,sys,types,uuid
+import base64,json,os,stat,sys,types,uuid
 from pathlib import Path
 from types import SimpleNamespace
 def deny_network(event,arguments):
@@ -24,6 +25,42 @@ def deny_network(event,arguments):
 sys.addaudithook(deny_network)
 import fault_probe
 scenario=sys.argv[1];root=Path(sys.argv[2]);probe=fault_probe.install()
+if sys.argv[3]=="1":
+ real_open,real_fsync,real_exit=os.open,os.fsync,os._exit
+ audit_sequence=0;failed_sync=False
+ def identity(fd):
+  value=os.fstat(fd)
+  return {"dev":value.st_dev,"ino":value.st_ino,"kind":"directory" if stat.S_ISDIR(value.st_mode) else "file"}
+ def audit(event,**fields):
+  global audit_sequence
+  audit_sequence+=1
+  raw=(json.dumps({"sequence":audit_sequence,"event":event,**fields})+"\n").encode()
+  fd=real_open(root/"sync-audit.jsonl",os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
+  try:
+   while raw:
+    written=os.write(fd,raw)
+    if written<=0:raise OSError("sync_audit_write_failed")
+    raw=raw[written:]
+  finally:os.close(fd)
+ def audited_open(path,flags,*args,**kwargs):
+  fd=real_open(path,flags,*args,**kwargs)
+  if flags&os.O_CREAT and os.fsdecode(path).rsplit("/",1)[-1]=="fault-test-cut.json":
+   audit("marker_created",**identity(fd))
+  return fd
+ def audited_fsync(fd):
+  global failed_sync
+  info=identity(fd);journal=root/"journal/attempt-9.attempt.json"
+  if sys.argv[4]=="1" and not failed_sync and info["kind"]=="file" and journal.exists():
+   value=journal.stat()
+   if (info["dev"],info["ino"])==(value.st_dev,value.st_ino):
+    failed_sync=True;audit("sync_failed",**info)
+    raise OSError("injected_final_journal_fsync_failure")
+  real_fsync(fd)
+  audit("sync_returned",**info)
+ def audited_exit(code):
+  audit("exit_requested",status=code)
+  real_exit(code)
+ os.open,os.fsync,os._exit=audited_open,audited_fsync,audited_exit
 envelope={"subscription":{"id":"11"},"source":{"type":"http"},"data":{"payload":{"run_id":"fault-unit","message_id":"000001","private_body":"never-log-this-body"}}}
 if "rabbit" in scenario:
  envelope["source"]["type"]="rabbitmq"
@@ -182,7 +219,13 @@ class FaultProbeTests(unittest.TestCase):
         (self.root / "arm.json").chmod(0o600)
 
     def child(
-        self, scenario: str, *, enabled: bool = True, observe: bool = False
+        self,
+        scenario: str,
+        *,
+        enabled: bool = True,
+        observe: bool = False,
+        audit_sync: bool = False,
+        fail_journal_sync: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ)
         for key in list(env):
@@ -210,7 +253,15 @@ class FaultProbeTests(unittest.TestCase):
                 DLR_B0_ROLE=role, DLR_B0_DIAGNOSTICS_DIR=str(self.root / "observation")
             )
         return subprocess.run(
-            [sys.executable, "-c", ACTOR, scenario, str(self.root)],
+            [
+                sys.executable,
+                "-c",
+                ACTOR,
+                scenario,
+                str(self.root),
+                str(int(audit_sync)),
+                str(int(fail_journal_sync)),
+            ],
             env=env,
             capture_output=True,
             text=True,
@@ -225,6 +276,43 @@ class FaultProbeTests(unittest.TestCase):
         self.assertNotIn("private-message-body", raw)
         self.assertNotIn(str(self.root), raw)
         return json.loads(raw)
+
+    def sync_events(self) -> list[dict[str, object]]:
+        path = self.root / "sync-audit.jsonl"
+        self.assertLessEqual(path.stat().st_size, 32 * 1024)
+        events = [json.loads(line) for line in path.read_text().splitlines()]
+        self.assertLessEqual(len(events), 128)
+        self.assertEqual([row["sequence"] for row in events], list(range(1, len(events) + 1)))
+        return events
+
+    def assert_real_sync_before_cut(self, *paths: Path) -> None:
+        events = self.sync_events()
+        marker_events = [row for row in events if row["event"] == "marker_created"]
+        exit_events = [row for row in events if row["event"] == "exit_requested"]
+        self.assertEqual(len(marker_events), 1)
+        self.assertEqual(len(exit_events), 1)
+        marker, exit_event = marker_events[0], exit_events[0]
+        self.assertEqual(exit_event["status"], 137)
+        self.assertLess(marker["sequence"], exit_event["sequence"])
+
+        def synced(path: Path, after: int, before: int) -> None:
+            info = path.stat()
+            kind = "directory" if stat.S_ISDIR(info.st_mode) else "file"
+            self.assertTrue(
+                any(
+                    row["event"] == "sync_returned"
+                    and (row["dev"], row["ino"], row["kind"]) == (info.st_dev, info.st_ino, kind)
+                    and after < row["sequence"] < before
+                    for row in events
+                ),
+                "Missing successful real fsync before the cut boundary",
+            )
+
+        for path in paths:
+            synced(path, 0, marker["sequence"])
+        # The marker itself and its parent must also be durable before exit.
+        synced(self.root / "fault-test-cut.json", marker["sequence"], exit_event["sequence"])
+        synced(self.root, marker["sequence"], exit_event["sequence"])
 
     def rows(self) -> int:
         with sqlite3.connect(self.root / "database.sqlite") as connection:
@@ -305,13 +393,32 @@ class FaultProbeTests(unittest.TestCase):
 
     def test_claim_cut_follows_actual_journal_file_and_directory_sync(self) -> None:
         self.arm("worker_after_claim_journal")
-        child = self.child("worker-claim")
+        child = self.child("worker-claim", audit_sync=True)
         self.assertEqual(child.returncode, 137, child.stderr)
         self.assertTrue((self.root / "journal/attempt-9.attempt.json").is_file())
         self.assertFalse((self.root / "execution-started").exists())
         proof = self.proof()["proof"]
         self.assertIs(proof["journal_file_fsynced"], True)
         self.assertIs(proof["journal_directory_fsynced"], True)
+        self.assert_real_sync_before_cut(
+            self.root / "journal/attempt-9.attempt.json", self.root / "journal"
+        )
+
+    def test_failed_final_journal_sync_does_not_create_marker_or_exit(self) -> None:
+        self.arm("worker_after_claim_journal")
+        child = self.child("worker-claim", audit_sync=True, fail_journal_sync=True)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertTrue((self.root / "journal/attempt-9.attempt.json").is_file())
+        self.assertFalse((self.root / "fault-test-cut.json").exists())
+        events = self.sync_events()
+        failures = [row for row in events if row["event"] == "sync_failed"]
+        self.assertEqual(len(failures), 1)
+        journal = (self.root / "journal/attempt-9.attempt.json").stat()
+        self.assertEqual(
+            (failures[0]["dev"], failures[0]["ino"], failures[0]["kind"]),
+            (journal.st_dev, journal.st_ino, "file"),
+        )
+        self.assertFalse(any(row["event"] in {"marker_created", "exit_requested"} for row in events))
 
     def test_journal_without_execute_claim_does_not_qualify(self) -> None:
         self.arm("worker_after_claim_journal")
@@ -323,7 +430,7 @@ class FaultProbeTests(unittest.TestCase):
         self,
     ) -> None:
         self.arm("target_after_commit_before_result")
-        child = self.child("worker-result")
+        child = self.child("worker-result", audit_sync=True)
         self.assertEqual(child.returncode, 137, child.stderr)
         self.assertFalse((self.root / "control-result-rpc-started").exists())
         proof = self.proof()
@@ -337,6 +444,12 @@ class FaultProbeTests(unittest.TestCase):
         self.assertEqual(
             proof["diagnostic_receipt_sha256"],
             hashlib.sha256(evidence_bytes).hexdigest(),
+        )
+        self.assert_real_sync_before_cut(
+            self.root / "journal/attempt-9.attempt.json",
+            self.root / "journal",
+            self.root / "fault-test-cut.result-evidence.json",
+            self.root,
         )
         evidence = evidence_bytes.decode()
         self.assertNotIn("never-log", evidence)

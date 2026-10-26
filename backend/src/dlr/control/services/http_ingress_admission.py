@@ -1,4 +1,4 @@
-"""Cheap refusal of known-full HTTP body budgets, before request middleware.
+"""Cheap refusal of known-full HTTP body/native-work budgets before middleware.
 
 This is only a read-only hint for the existing gate. It neither receives a
 body nor creates resources, and admitted requests retain their original path.

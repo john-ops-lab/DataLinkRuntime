@@ -144,12 +144,12 @@ def test_cancelled_request_keeps_native_work_and_bytes_bounded(
             with pytest.raises(asyncio.CancelledError):
                 await task
             assert parent.used_bytes == ingress.BODY_RESERVATION
-            assert pool.work._value == 7
+            assert pool.work.used == 1
             release.set()
             while parent.used_bytes:
                 await asyncio.sleep(0.001)
             assert ended.is_set()
-            assert pool.work._value == 8 and pool.requests._value == 32
+            assert pool.work.used == 0 and pool.requests._value == 32
         finally:
             release.set()
             pool.close()

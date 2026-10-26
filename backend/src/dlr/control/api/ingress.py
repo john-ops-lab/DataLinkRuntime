@@ -28,6 +28,38 @@ router = APIRouter()
 BODY_RESERVATION = service.MAX_BODY_BYTES + service.MAX_ENVELOPE_BYTES
 
 
+class NativeWorkBudget:
+    """Nonblocking permits and their read-only snapshot share one lock."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._used = 0
+        self._semaphore = threading.BoundedSemaphore(limit)
+        self._lock = threading.Lock()
+
+    def acquire(self) -> bool:
+        with self._lock:
+            if not self._semaphore.acquire(blocking=False):
+                return False
+            self._used += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            self._semaphore.release()
+            self._used -= 1
+
+    @property
+    def used(self) -> int:
+        with self._lock:
+            return self._used
+
+    @property
+    def saturated(self) -> bool:
+        with self._lock:
+            return self._used == self._limit
+
+
 class IngressResources:
     def __init__(
         self,
@@ -36,7 +68,7 @@ class IngressResources:
         session_factory: Callable[[], Session] | None = None,
     ) -> None:
         self.requests = threading.BoundedSemaphore(32)
-        self.work = threading.BoundedSemaphore(8)
+        self.work = NativeWorkBudget(8)
         self.buffer = buffer.scope(8 * 1024**2)
         self.executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="dlr-ingress")
         if session_factory is None:
@@ -54,7 +86,7 @@ class IngressResources:
 
     def dispatch(self, public_id: str, items: list[HttpInput]) -> None:
         loop = asyncio.get_running_loop()
-        if not self.work.acquire(blocking=False):
+        if not self.work.acquire():
             for item in items:
                 item.release()
                 complete(
@@ -99,7 +131,7 @@ _resources: IngressResources | None = None
 _resources_lock = threading.Lock()
 
 
-def body_capacity_busy() -> bool:
+def admission_capacity_busy() -> bool:
     """Conservative admission hint, never a reservation or a pool initializer.
 
     The original request path still performs the authoritative acquire. Each
@@ -111,7 +143,8 @@ def body_capacity_busy() -> bool:
         return False
     buffer = current.buffer
     return (
-        buffer.used_bytes + BODY_RESERVATION > buffer.limit_bytes
+        current.work.saturated
+        or buffer.used_bytes + BODY_RESERVATION > buffer.limit_bytes
         or buffer.parent.used_bytes + BODY_RESERVATION > buffer.parent.limit_bytes
     )
 
@@ -315,7 +348,7 @@ async def _request(
                 handed_off = True
                 status, result = await asyncio.shield(result_future)
                 return JSONResponse(result, status_code=status)
-        if not pool.work.acquire(blocking=False):
+        if not pool.work.acquire():
             _busy()
         work_acquired = True
         future = pool.executor.submit(

@@ -415,6 +415,6 @@ def create_app() -> FastAPI:
     app.include_router(cache_admin.router)
     app.include_router(events.router)
     # Last registered user middleware is outermost: reject only known-full
-    # ingress body budgets before BaseHTTPMiddleware allocates request tasks.
-    app.add_middleware(HttpIngressAdmission, busy=ingress.body_capacity_busy)
+    # ingress resources before BaseHTTPMiddleware allocates request tasks.
+    app.add_middleware(HttpIngressAdmission, busy=ingress.admission_capacity_busy)
     return app

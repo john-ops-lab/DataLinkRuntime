@@ -180,13 +180,13 @@ def test_cancel_one_waiter_keeps_group_and_other_results(monkeypatch):
                 with pytest.raises(asyncio.CancelledError):
                     await tasks[0]
                 assert parent.used_bytes == 4 * ingress.BODY_RESERVATION
-                assert pool.work._value == 7 and pool.requests._value == 28
+                assert pool.work.used == 1 and pool.requests._value == 28
                 unblock.set()
                 assert [r.status_code for r in await asyncio.gather(*tasks[1:])] == [202] * 3
                 while parent.used_bytes:
                     await asyncio.sleep(0.001)
                 assert groups == [4]
-                assert pool.work._value == 8 and pool.requests._value == 32
+                assert pool.work.used == 0 and pool.requests._value == 32
         finally:
             unblock.set()
             pool.close()
