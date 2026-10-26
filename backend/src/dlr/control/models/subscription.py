@@ -322,6 +322,23 @@ class EventDelivery(Base):
     __table_args__ = (
         UniqueConstraint("receipt_id", "ordinal", name="uq_receipt_delivery_ordinal"),
         UniqueConstraint("execution_id", name="uq_delivery_execution"),
+        UniqueConstraint(
+            "id", "receipt_id", "batch_execution_id", name="uq_delivery_batch_identity"
+        ),
+        CheckConstraint(
+            "execution_id IS NULL OR batch_execution_id IS NULL", name="ck_delivery_single_or_batch"
+        ),
+        CheckConstraint("retained_batch_bytes BETWEEN 0 AND 8192", name="ck_delivery_batch_bytes"),
+        Index(
+            "ix_delivery_batch_execution",
+            "batch_execution_id",
+            postgresql_where=text("batch_execution_id IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "batch_member_outcome IS NULL OR batch_member_outcome IN "
+            "('succeeded','failed','unknown','not_run')",
+            name="ck_delivery_batch_outcome",
+        ),
         Index("ix_subscription_delivery_state", "state", "id"),
         CheckConstraint(
             "retained_execution_bytes >= 0 AND retained_metadata_bytes BETWEEN 0 AND 512",
@@ -332,6 +349,15 @@ class EventDelivery(Base):
     receipt_id: Mapped[int] = reference("event_receipts")
     ordinal: Mapped[int] = mapped_column(BigInteger, default=1)
     execution_id: Mapped[int | None] = reference("executions", nullable=True, ondelete="SET NULL")
+    batch_execution_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "subscription_execution_batches.execution_id", deferrable=True, initially="DEFERRED"
+        ),
+    )
+    batch_member_outcome: Mapped[str | None] = mapped_column(String(16))
+    batch_member_code: Mapped[str | None] = mapped_column(String(64))
+    retained_batch_bytes: Mapped[int] = counter()
     state: Mapped[str] = mapped_column(String(32), default="pending")
     activation_override_id: Mapped[int | None] = reference(
         "subscription_activations", nullable=True

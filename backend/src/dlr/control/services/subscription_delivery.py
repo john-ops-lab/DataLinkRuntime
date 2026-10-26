@@ -28,6 +28,8 @@ from dlr.control.models import (
     SourceCheckpoint,
     SubscriptionActivation,
     SubscriptionConfigVersion,
+    SubscriptionExecutionBatch,
+    SubscriptionExecutionBatchMember,
     SubscriptionLease,
     SubscriptionQuota,
     SyncBatch,
@@ -416,6 +418,15 @@ def receive_event(
         and assignment_generation != checkpoint.assignment_generation
     ):
         raise domain_error(409, "subscription_owner_stale", "Partition assignment expired")
+    from dlr.control.services import subscription_business_batch as business_batch
+
+    batch_budget = (
+        accounting.batch_budget(envelope, len(source_raw_body or b""))
+        if business_batch.activation_mode(session, activation) == "business_batch"
+        else None
+    )
+    if batch_budget is not None:
+        size = batch_budget.total_bytes
     _reserve(session, sub, activation, size)
     now = database_now(session)
     receipt = EventReceipt(
@@ -434,11 +445,13 @@ def receive_event(
         first_received_at=now,
         last_seen_at=now,
     )
-    accounting.receipt_budget(receipt, envelope_size, len(source_raw_body or b""))
+    accounting.receipt_budget(
+        receipt, envelope_size, len(source_raw_body or b""), batch=batch_budget
+    )
     session.add(receipt)
     session.flush()
     first_delivery = EventDelivery(receipt_id=receipt.id, ordinal=1, state="pending")
-    accounting.delivery_budget(first_delivery, envelope_size)
+    accounting.delivery_budget(first_delivery, envelope_size, batch=batch_budget)
     session.add(first_delivery)
     checkpoint.next_sequence += 1
     checkpoint.position = position
@@ -487,8 +500,11 @@ def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
     from dlr.control.services.reliable_execution import accept_execution
 
     adapter, sub, checkpoint, receipt, delivery = _delivery_context(session, delivery_id)
-    if delivery.execution_id is not None:
-        return session.get(Execution, delivery.execution_id)
+    from dlr.control.services import subscription_business_batch as business_batch
+
+    assigned_id = business_batch.effective_execution_id(delivery)
+    if assigned_id is not None:
+        return session.get(Execution, assigned_id)
     if delivery.state != "pending":
         return None
     if sub.delivery_state == "repair" and (
@@ -529,6 +545,8 @@ def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
         SubscriptionActivation, delivery.activation_override_id or receipt.activation_id
     )
     assert activation is not None
+    if business_batch.activation_mode(session, activation) == "business_batch":
+        return business_batch.materialize_batch(session, delivery_id)
     refs = session.scalars(
         select(ActivationCredentialReference).where(
             ActivationCredentialReference.activation_id == activation.id
@@ -578,6 +596,11 @@ def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
 
 def observe_terminal(session: Session, delivery_id: int) -> None:
     _, sub, checkpoint, receipt, delivery = _delivery_context(session, delivery_id)
+    if delivery.batch_execution_id is not None:
+        from dlr.control.services.subscription_business_batch import settle_batch
+
+        settle_batch(session, delivery.batch_execution_id)
+        return
     if delivery.execution_id is None or delivery.state != "processing":
         return
     execution = session.get(Execution, delivery.execution_id)
@@ -629,8 +652,10 @@ def execution_protected() -> Exists:
         select(EventDelivery.id)
         .join(EventReceipt)
         .where(
-            EventDelivery.execution_id == Execution.id,
-            (EventReceipt.state.not_in(TERMINAL))
+            (EventDelivery.execution_id == Execution.id)
+            | (EventDelivery.batch_execution_id == Execution.id),
+            (EventDelivery.batch_execution_id.is_not(None))
+            | (EventReceipt.state.not_in(TERMINAL))
             | (EventReceipt.envelope.is_not(None))
             | (EventReceipt.terminal_at > func.now() - timedelta(days=30)),
         )
@@ -808,11 +833,30 @@ def replay_event(
                     field=binding.field,
                 )
             )
+    from dlr.control.services import subscription_business_batch as business_batch
+
+    original_mode = business_batch.mode_for_delivery(session, receipt, previous)
+    replay_mode = business_batch.activation_mode(session, activation)
+    if (original_mode == "business_batch") != (replay_mode == "business_batch"):
+        raise domain_error(
+            409, "subscription_replay_mode_conflict", "Replay processing mode differs"
+        )
+    if replay_mode == "business_batch":
+        business_batch.require_revision_schema(session, revision_id or activation.revision_id)
+    batch_budget = (
+        accounting.batch_budget(receipt.envelope, len(receipt.source_raw_body or b""))
+        if replay_mode == "business_batch"
+        else None
+    )
     # Every replay also consumes retained history budget for its execution/audit chain.
     rows = _quotas(session, sub.id)
     limits = _limits(session, activation)
     replay_input_bytes = accounting.compact_bytes(receipt.envelope)
-    replay_history_bytes = replay_input_bytes + accounting.DELIVERY_METADATA_BYTES
+    replay_history_bytes = (
+        batch_budget.input_bytes + batch_budget.batch_bytes + accounting.DELIVERY_METADATA_BYTES
+        if batch_budget
+        else replay_input_bytes + accounting.DELIVERY_METADATA_BYTES
+    )
     for quota, maximum in zip(rows, (limits, _global_limits(session)), strict=True):
         if (
             quota.pending_count + 1 + quota.reserved_control_count > maximum["pending_count"]
@@ -835,7 +879,7 @@ def replay_event(
         revision_override_id=revision_id,
         activation_override_id=override_id,
     )
-    accounting.delivery_budget(delivery, replay_input_bytes)
+    accounting.delivery_budget(delivery, replay_input_bytes, batch=batch_budget)
     session.add(delivery)
     receipt.state = "pending"
     receipt.terminal_at = None
@@ -894,8 +938,9 @@ def skip_event(
             quota.pending_bytes -= receipt.payload_bytes
     delivery.state = receipt.state = "skipped"
     delivery.completed_at = receipt.terminal_at = database_now(session)
-    if checkpoint.blocked_receipt_id == receipt.id:
-        checkpoint.blocked_receipt_id = None
+    from dlr.control.services.subscription_business_batch import recompute_blocker
+
+    recompute_blocker(session, sub.id, checkpoint)
     if receipt.source_phase is not None:
         from dlr.control.services.subscription_sync import after_skip
 
@@ -918,7 +963,10 @@ def skip_event(
 
 
 def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
+    from dlr.control.services.subscription_batch_retention import cleanup_batches
+
     _, sub = lock_subscription(session, subscription_id)
+    cleanup_batches(session, subscription_id)
     checkpoints = session.scalars(
         select(SourceCheckpoint)
         .where(
@@ -952,6 +1000,11 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
             member.batch_id == EventReceipt.batch_id, member.state.not_in(TERMINAL)
         )
     ).correlate(EventReceipt)
+    business_member = exists(
+        select(SubscriptionExecutionBatchMember.delivery_id).where(
+            SubscriptionExecutionBatchMember.receipt_id == EventReceipt.id
+        )
+    ).correlate(EventReceipt)
     receipts = session.scalars(
         select(EventReceipt)
         .where(
@@ -959,11 +1012,12 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
             EventReceipt.state.in_(TERMINAL),
             EventReceipt.terminal_at <= now - timedelta(days=7),
             EventReceipt.envelope.is_not(None)
-            | (EventReceipt.terminal_at <= now - timedelta(days=30))
+            | ((EventReceipt.terminal_at <= now - timedelta(days=30)) & ~business_member)
             | exists(
                 select(EventDelivery.id).where(
                     EventDelivery.receipt_id == EventReceipt.id,
                     EventDelivery.execution_id.is_(None),
+                    EventDelivery.batch_execution_id.is_(None),
                     EventDelivery.retained_execution_bytes > 0,
                 )
             ).correlate(EventReceipt),
@@ -990,7 +1044,11 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
     deleting_receipts = [
         receipt.id
         for receipt in receipts
-        if receipt.terminal_at is not None and receipt.terminal_at <= now - timedelta(days=30)
+        if receipt.terminal_at is not None
+        and receipt.terminal_at <= now - timedelta(days=30)
+        and not session.scalar(
+            select(exists().where(SubscriptionExecutionBatchMember.receipt_id == receipt.id))
+        )
     ]
     deleted_old = sub.deleted_at is not None and sub.deleted_at <= now - timedelta(days=30)
     receipt_ref = exists(
@@ -1014,6 +1072,11 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
             SubscriptionActivation.created_at <= now - timedelta(days=30),
             ~receipt_ref,
             ~override_ref,
+            ~exists(
+                select(SubscriptionExecutionBatch.execution_id).where(
+                    SubscriptionExecutionBatch.activation_id == SubscriptionActivation.id
+                )
+            ).correlate(SubscriptionActivation),
             ~exists(
                 select(SyncBatch.id).where(SyncBatch.activation_id == SubscriptionActivation.id)
             ).correlate(SubscriptionActivation),
@@ -1072,7 +1135,9 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
             receipt.payload_expired_at = now
             expired += 1
         for item in retained_deliveries:
-            if item.execution_id is None or session.get(Execution, item.execution_id) is None:
+            if item.batch_execution_id is None and (
+                item.execution_id is None or session.get(Execution, item.execution_id) is None
+            ):
                 released_bytes += item.retained_execution_bytes
                 item.retained_execution_bytes = 0
         remaining_count = sum(
@@ -1083,7 +1148,7 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
         for quota in quotas:
             quota.history_count -= previous_count - remaining_count
             quota.history_bytes -= released_bytes
-        if receipt.terminal_at is not None and receipt.terminal_at <= now - timedelta(days=30):
+        if receipt.id in deleting_receipts:
             # Execution input is a real retained copy. Clearing the Receipt
             # alone cannot release its budget while that copy remains stored.
             for item in retained_deliveries:
@@ -1100,7 +1165,9 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
                 receipt.retained_payload_bytes
                 + receipt.retained_metadata_bytes
                 + sum(
-                    item.retained_execution_bytes + item.retained_metadata_bytes
+                    item.retained_execution_bytes
+                    + item.retained_metadata_bytes
+                    + item.retained_batch_bytes
                     for item in retained_deliveries
                 )
             )
@@ -1182,6 +1249,8 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
 
 def purge_deleted_adapter_history(session: Session, adapter_id: int) -> None:
     """Called only by guarded permanent Adapter deletion; never an online TTL shortcut."""
+    from dlr.control.services.subscription_batch_retention import purge_batches
+
     subs = session.scalars(
         select(EventSubscription)
         .where(EventSubscription.adapter_id == adapter_id)
@@ -1197,6 +1266,8 @@ def purge_deleted_adapter_history(session: Session, adapter_id: int) -> None:
             raise domain_error(
                 409, "subscription_draining", "Delete the drained subscription first"
             )
+        while purge_batches(session, sub.id)["batches"]:
+            pass
         receipt_ids = select(EventReceipt.id).where(EventReceipt.subscription_id == sub.id)
         activation_ids = select(SubscriptionActivation.id).where(
             SubscriptionActivation.subscription_id == sub.id
@@ -1572,7 +1643,9 @@ def audit_quota(session: Session, subscription_id: int, *, repair: bool = False)
             func.coalesce(func.sum(case((retained, 1), else_=0)), 0).label("history_count"),
             func.coalesce(
                 func.sum(
-                    EventDelivery.retained_execution_bytes + EventDelivery.retained_metadata_bytes
+                    EventDelivery.retained_execution_bytes
+                    + EventDelivery.retained_metadata_bytes
+                    + EventDelivery.retained_batch_bytes
                 ),
                 0,
             ).label("history_bytes"),

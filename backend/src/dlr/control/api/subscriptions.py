@@ -827,11 +827,10 @@ def _event(session: Session, subscription_id: int, receipt_id: int) -> EventRece
 
 
 def serialize_event(session: Session, receipt: EventReceipt) -> EventResponse:
-    deliveries = session.scalars(
-        select(EventDelivery)
-        .where(EventDelivery.receipt_id == receipt.id)
-        .order_by(EventDelivery.ordinal)
-    ).all()
+    from dlr.control.services.subscription_batch_view import delivery_records
+
+    records = delivery_records(session, receipt)
+    latest = records[-1] if records else {}
     return EventResponse(
         id=receipt.id,
         source_event_id=receipt.source_event_id,
@@ -844,18 +843,13 @@ def serialize_event(session: Session, receipt: EventReceipt) -> EventResponse:
         payload_expired=receipt.payload_expired_at is not None,
         first_received_at=receipt.first_received_at,
         duplicate_count=receipt.duplicate_count,
-        deliveries=[
-            {
-                "id": item.id,
-                "ordinal": item.ordinal,
-                "execution_id": item.execution_id,
-                "state": item.state,
-                "revision_override_id": item.revision_override_id,
-                "activation_override_id": item.activation_override_id,
-                "effective_activation_id": item.activation_override_id or receipt.activation_id,
-            }
-            for item in deliveries
-        ],
+        deliveries=records,
+        processing_mode=cast(Any, latest.get("processing_mode", "per_event")),
+        batch_execution_id=latest.get("batch_execution_id"),
+        batch_member_index=latest.get("batch_member_index"),
+        batch_member_count=latest.get("batch_member_count"),
+        batch_member_outcome=latest.get("batch_member_outcome"),
+        batch_member_code=latest.get("batch_member_code"),
         batch_id=receipt.batch_id,
         source_phase=cast(SourcePhase | None, receipt.source_phase),
         coalesced_count=receipt.coalesced_count,
@@ -939,7 +933,10 @@ def replay_event(
         expected_config_version=payload.expected_config_version,
     )
     commit(session)
-    return {"delivery_id": delivery.id, "execution_id": delivery.execution_id}
+    return {
+        "delivery_id": delivery.id,
+        "execution_id": delivery.execution_id or delivery.batch_execution_id,
+    }
 
 
 @router.post("/api/event-subscriptions/{subscription_id}/events/{receipt_id}/skip")

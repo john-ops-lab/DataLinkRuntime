@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import Editor, { loader } from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
 import { Alert, Button, Collapse, Input, message, Modal, Result, Segmented, Select, Tabs, Tooltip, Typography } from "antd";
+import EventBatchCodeDeclaration from "./components/EventBatchCodeDeclaration";
 import { DiffOutlined, FullscreenExitOutlined, FullscreenOutlined, MessageOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
@@ -2083,6 +2084,13 @@ export function AdapterConsole({
                                 </div>
                               ),
                             },
+                            ...(selected.adapter_type === "task" ? [{
+                              key: "event-batch-support",
+                              label: t("businessBatch.editorTitle", { ns: "subscription" }),
+                              children: <EventBatchCodeDeclaration value={snapshot.runtimeConfigText}
+                                disabled={busy || !selectedCanEdit || !contentReady || !!selected.archived_at || selectedRuntimeLocked}
+                                onChange={value => setSnapshot(current => ({ ...current, runtimeConfigText: value }))} />,
+                            }] : []),
                           ]}
                         />
                       </div>

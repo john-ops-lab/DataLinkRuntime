@@ -182,7 +182,9 @@
     "source_ack_failed": "The message is stored but source acknowledgement failed. Redelivery will be deduplicated.",
     "ingress_capacity_unavailable": "Receiving capacity configuration is unavailable or differs from the platform. Contact the deployment administrator; existing work can continue.",
     "ingress_disk_low": "Persistent storage is low. New reception is paused. Ask the deployment administrator to free space; saved data continues processing.",
-    "ingress_disk_unavailable": "Persistent storage cannot be checked. New reception is paused. Contact the deployment administrator."
+    "ingress_disk_unavailable": "Persistent storage cannot be checked. New reception is paused. Contact the deployment administrator.",
+    "subscription_batch_code_required": "Save code that supports multi-event input, select This code supports several events per run in the editor, and save a new version before starting reception.",
+    "subscription_replay_mode_conflict": "The current processing mode differs from this event’s original mode. Process it again with the original runtime settings instead."
   },
   "controlReserve": "Control reserves (count / bytes)",
   "sourceLag": "Source lag",
@@ -449,5 +451,54 @@
       "ingress_unavailable": "New data cannot be received temporarily. Retry later with the original ID and body."
     },
     "rateLimit": "Receiving limit (events/s)"
+  },
+  "businessBatch": {
+    "mode": "Processing mode",
+    "modeHint": "Stop receiving and settle existing work before changing this. Saving does not start reception.",
+    "single": "One event per run (default)",
+    "multiple": "Several events per run (code support required)",
+    "codeRequired": "Save code that supports multiple inputs before starting reception.",
+    "savedOnly": "This only saves the mode. It does not change code or convert ordinary code into a multi-event handler.",
+    "codeHelp": "Writing multi-event code",
+    "markerHint": "After checking the code, expand Multi-event code support in the editor, select This code supports several events per run, and save a new version. API callers can use the equivalent Runtime parameters marker below. The declaration does not change code.",
+    "exampleHint": "This Python example only shows ordering and the result format. Replace process_one with a real, idempotent write for each event. Until then it reports failure rather than claiming success.",
+    "orderHint": "Report success only after each business write completes. Stop at the first failure or unknown result and mark later events as not processed. Cancellation affects all unfinished events in this run.",
+    "receivingHint": "A run may process several events together; each event keeps its own result.",
+    "group": "Shared run",
+    "groupCount": "This run processes {{count}} events",
+    "sharedExecution": "View shared run",
+    "cancelHint": "These events share one run. Cancelling it affects every unfinished event in the run. Confirmed successes are preserved.",
+    "unknownHint": "The result is unconfirmed and the target may already have been written. Check the target before processing the original ID and body again; do not assume it never ran.",
+    "notRunHint": "An earlier event did not succeed, so this event was not processed. Resolve the earlier problem before processing this one again.",
+    "notStartedHint": "This run was cancelled before it started. This event was not processed and can be processed again using its original mode.",
+    "memberPosition": "Event {{position}} in this run",
+    "outcomes": {
+      "succeeded": "Processing succeeded",
+      "failed": "Processing failed",
+      "unknown": "Result unconfirmed",
+      "not_run": "Not processed"
+    },
+    "failedHint": "Inspect the execution, resolve the cause, then process the original ID again. The original failure remains.",
+    "codes": {
+      "business_error": "The processing code reported failure. Inspect the execution.",
+      "target_unavailable": "The target is unavailable. Check the target service before processing again.",
+      "target_permission_denied": "The target account lacks permission. Check the bound account and target access.",
+      "target_identity_conflict": "The target has this ID with different content. Verify the target before making changes.",
+      "target_invalid_data": "The target rejected this data. Check its fields and types.",
+      "target_retry_exhausted": "The target retry budget is exhausted. Confirm recovery before processing again.",
+      "target_commit_unknown": "The target commit is unconfirmed. Check the target before processing the original ID again.",
+      "execution_cancelled": "The run was cancelled. Unconfirmed effects need verification.",
+      "execution_timeout": "The run timed out. Check whether the target was written before processing again.",
+      "worker_lost": "The worker disconnected. Check its state and the target result.",
+      "result_unavailable": "The complete result is unavailable. Check the target before processing again.",
+      "batch_result_invalid": "The code returned an invalid per-event result. Fix the code before processing again.",
+      "batch_output_truncated": "The per-event result was too large to retain completely. Reduce the returned data.",
+      "predecessor_failed": "An earlier event did not succeed. This event was not processed.",
+      "execution_not_started": "The run did not start. This event was not processed."
+    },
+    "editorTitle": "Multi-event code support",
+    "codeDeclaration": "This code supports several events per run",
+    "declarationHint": "Select this only when the code processes events in order and returns a result for each event. Save a new version before starting reception. This declaration neither changes code nor starts a run.",
+    "invalidConfig": "Runtime parameters are not a valid JSON object. Restore a valid version first; this control will not overwrite the draft."
   }
 }

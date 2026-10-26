@@ -23,7 +23,19 @@ def test_request_identity_is_printable_ascii(value: str | None) -> None:
 
 @pytest.mark.parametrize(
     "body",
-    [b'{"a":1,"a":2}', b'"\\u0000"', b'"\\ud800"', b"NaN", b"1e309", b"\xff", b"9007199254740992"],
+    [
+        b'{"a":1,"a":2}',
+        b'"\\u0000"',
+        b'"\\ud800"',
+        b"NaN",
+        b"1e309",
+        b"\xff",
+        b"9007199254740992",
+        b"1e20",
+        b"-1e20",
+        b"1e308",
+        b"9007199254740992.0",
+    ],
 )
 def test_unstorable_json_never_gets_normalized(body: bytes) -> None:
     with pytest.raises(HTTPException) as raised:
@@ -143,3 +155,9 @@ def test_cancelled_request_keeps_native_work_and_bytes_bounded(
             pool.close()
 
     asyncio.run(run())
+
+
+def test_http_float_storage_safe_boundaries() -> None:
+    assert parse_body(b"9007199254740991.0") == 9007199254740991
+    assert parse_body(b"-9007199254740991.0") == -9007199254740991
+    assert parse_body(b"1e-308") == 1e-308

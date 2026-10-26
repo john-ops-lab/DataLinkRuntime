@@ -138,6 +138,10 @@ def test_upgrade_preserves_pending_failed_and_kubernetes_control(upgrade_databas
         for row in after["event_deliveries"]:
             row.pop("retained_execution_bytes")
             row.pop("retained_metadata_bytes")
+            assert row.pop("retained_batch_bytes") == 0
+            assert row.pop("batch_execution_id") is None
+            assert row.pop("batch_member_outcome") is None
+            assert row.pop("batch_member_code") is None
         for row in after["subscription_activations"]:
             assert row.pop("execution_policy_snapshot") is None
         assert after == before
@@ -175,7 +179,7 @@ def test_fresh_http_schema_and_downgrade_preserve_permanent_route_marker(upgrade
     with upgrade_database.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0051_issue222_durable_http"
+            == "0052_issue222_business_batches"
         )
         assert (
             connection.scalar(
@@ -221,17 +225,25 @@ def test_migration_adds_old_execution_and_control_reserve_deltas_without_reset(
             ),
             {"sub": sub.id, "cv": cv.id, "revision": version.id, "worker": worker.id},
         )
-        execution = Execution(
-            adapter_id=adapter.id,
-            version_id=version.id,
-            trigger="subscription",
-            status="succeeded",
-            input={"legacy": [None, False, 42]},
-            locale="zh-CN",
+        # Build the genuine old schema row; the current ORM deliberately has
+        # additional columns that are not present before this upgrade.
+        execution_id = session.scalar(
+            text(
+                "INSERT INTO executions(adapter_id,version_id,trigger,status,input,locale,"
+                "input_source_type,input_config_revision,input_snapshot) "
+                "VALUES (:adapter,:version,'subscription','succeeded',"
+                "CAST(:input AS jsonb),'zh-CN',"
+                "'json',1,CAST(:snapshot AS jsonb)) "
+                "RETURNING id"
+            ),
+            {
+                "adapter": adapter.id,
+                "version": version.id,
+                "input": json.dumps({"legacy": [None, False, 42]}),
+                "snapshot": json.dumps({"source_type": "json", "revision": 1}),
+            },
         )
-        session.add(execution)
-        session.flush()
-        sub_id, execution_id = sub.id, execution.id
+        sub_id = sub.id
     with upgrade_database.begin() as connection:
         receipt_id = connection.scalar(
             text("""
@@ -272,6 +284,7 @@ def test_migration_adds_old_execution_and_control_reserve_deltas_without_reset(
     command.upgrade(config, "head")
     with Session(upgrade_database) as session:
         assert session.get(Execution, execution_id).input == input_before
+        assert session.get(Execution, execution_id).subscription_delivery_kind == "single"
         row = session.execute(
             text("SELECT source_event_id,content_hash,envelope FROM event_receipts WHERE id=:id"),
             {"id": receipt_id},

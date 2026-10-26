@@ -79,6 +79,7 @@ export default function EventTriggerSettings({ adapter, sub, capabilities, readO
     </div>}
     {runtimeFields}
     <p className="ux-muted">{t("ux.eventInput")}</p>
+    {sub?.config.mode === "business_batch" && <p className="ux-muted">{t("businessBatch.receivingHint")}</p>}
     {runtimeDirty && <Alert type="info" message={t("ux.saveSettingsFirst")} />}
     {error && <Alert type="error" message={error} />}
     {feedback && <Alert type="success" showIcon message={feedback} />}

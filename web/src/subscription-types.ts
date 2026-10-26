@@ -34,7 +34,6 @@ interface QueueSourceConfig {
   server: string;
   credential_id?: number | null;
   ca_pem?: string | null;
-  mode: "per_event";
   ordering: "receipt_serial";
   limits: Record<string, number>;
 }
@@ -43,16 +42,18 @@ export interface RabbitMQSourceConfig extends QueueSourceConfig {
   vhost: string;
   queue: string;
   credential_id: number;
+  mode: "per_event" | "business_batch";
 }
 export interface RocketMQSourceConfig extends QueueSourceConfig {
   source_type: "rocketmq";
   topic: string;
   group_id: string;
+  mode: "per_event";
 }
 export interface HttpSourceConfig {
   source_type: "http";
   credential_id: number;
-  mode: "per_event";
+  mode: "per_event" | "business_batch";
   ordering: "receipt_serial";
   limits: Record<string, number>;
 }
@@ -183,7 +184,7 @@ export interface SubscriptionCapabilities {
   enabled: boolean;
   available_sources: string[];
   sources?: { type: string; ordering: string; recovery: string; batches: boolean;
-    skip_unaccepted: boolean; max_shards: number }[];
+    skip_unaccepted: boolean; max_shards: number; processing_modes?: string[] }[];
 }
 export interface SubscriptionPage {
   items: EventSubscription[];
@@ -213,6 +214,12 @@ export interface SubscriptionEvent {
   coalesced_count?: number;
   first_source_event_id?: string | null;
   superseded_by_id?: number | null;
+  processing_mode?: "per_event" | "business_batch";
+  batch_execution_id?: number | null;
+  batch_member_index?: number | null;
+  batch_member_outcome?: "succeeded" | "failed" | "unknown" | "not_run" | null;
+  batch_member_code?: string | null;
+  batch_member_count?: number | null;
   deliveries: {
     id: number;
     ordinal: number;
@@ -221,6 +228,12 @@ export interface SubscriptionEvent {
     revision_override_id: number | null;
     activation_override_id: number | null;
     effective_activation_id: number;
+    processing_mode?: "per_event" | "business_batch";
+    batch_execution_id?: number | null;
+    batch_member_index?: number | null;
+    batch_member_outcome?: "succeeded" | "failed" | "unknown" | "not_run" | null;
+    batch_member_code?: string | null;
+    batch_member_count?: number | null;
   }[];
 }
 export interface SubscriptionEventPage {

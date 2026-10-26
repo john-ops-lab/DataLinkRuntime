@@ -149,6 +149,7 @@ def _create_pending_execution_locked(
     resource_class: str | None = None,
     version_id_override: int | None = None,
     dependency_check: bool = False,
+    subscription_delivery_kind: str | None = None,
 ) -> Execution:
     """Create a fully initialized queued Execution under the Adapter lock.
 
@@ -211,6 +212,9 @@ def _create_pending_execution_locked(
         adapter_id=adapter.id,
         version_id=version_id,
         trigger=trigger,
+        subscription_delivery_kind=(subscription_delivery_kind or "single")
+        if trigger == "subscription"
+        else None,
         status="queued",
         dispatch_backend=dispatch_backend,
         dispatch_generation=dispatch_generation,
@@ -495,6 +499,9 @@ def cancel_execution_locked(
         )
     request_cancellation(execution)
     if execution.status == "cancelled":
+        from dlr.control.services.subscription_business_batch import finalize_on_terminal
+
+        finalize_on_terminal(session, execution, not_started=execution.attempt_count == 0)
         release_execution_leases(session, execution.id)
         if execution.dispatch_backend == "rabbitmq":
             from dlr.control.services import admission, outbox

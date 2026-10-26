@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from dlr.control.models import EventDelivery, EventReceipt, SubscriptionQuota
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services.event_envelope import event_id, validate_envelope
+from dlr.control.services.ingress_capacity import global_limits, runtime_subscription_limits
 from dlr.control.services.input_config import database_now
 from dlr.control.services.subscription_queue_failure import (
     CONFIGURATION_FAILURES,
@@ -143,10 +144,10 @@ def capacity_ready(context: SourceRunContext) -> bool:
         )
         if oldest is not None and oldest <= now - timedelta(minutes=5):
             return False
-        limits = {**delivery.DEFAULT_LIMITS, **context.source_config.get("limits", {})}
+        limits = runtime_subscription_limits(session, context.source_config)
         for scope, values in (
             (f"sub:{context.subscription_id}", limits),
-            ("global", delivery.GLOBAL_LIMITS),
+            ("global", global_limits(session)),
         ):
             quota = session.get(SubscriptionQuota, scope)
             if quota is None:

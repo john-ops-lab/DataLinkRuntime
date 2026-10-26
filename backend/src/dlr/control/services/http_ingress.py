@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 from dlr.common.config import settings
 from dlr.control.models import Credential, Execution
 from dlr.control.models.subscription import (
-    EventDelivery,
     EventReceipt,
     EventSubscription,
     HttpIngressRoute,
@@ -74,13 +73,22 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _parse_http_float(text: str) -> float:
+    value = _parse_finite_float(text)
+    # JSONB expands positive exponents to integers on readback. Values outside
+    # JCS's safe integer domain would then fail T2 despite a successful T1.
+    if value.is_integer() and abs(value) > 9007199254740991:
+        raise ValueError("JSON number cannot round-trip through the event storage domain")
+    return value
+
+
 def parse_body(body: bytes) -> Any:
     if len(body) > MAX_BODY_BYTES:
         raise domain_error(413, "ingress_body_too_large", "JSON body exceeds 64 KiB")
     try:
         payload = json.loads(
             body.decode("utf-8"),
-            parse_float=_parse_finite_float,
+            parse_float=_parse_http_float,
             parse_constant=_reject_non_standard_constant,
             object_pairs_hook=_unique_object,
         )
@@ -147,23 +155,33 @@ def _authenticated(
 
 
 def _status(session: Session, public_id: str, receipt: EventReceipt) -> dict[str, Any]:
-    latest = session.scalar(
-        select(EventDelivery)
-        .where(EventDelivery.receipt_id == receipt.id)
-        .order_by(EventDelivery.ordinal.desc())
-        .limit(1)
-    )
-    execution = (
-        session.get(Execution, latest.execution_id) if latest and latest.execution_id else None
-    )
+    from dlr.control.services.subscription_batch_view import delivery_records
+
+    records = delivery_records(session, receipt, latest_only=True)
+    latest = records[0] if records else {}
+    execution_id = latest.get("execution_id")
+    execution = session.get(Execution, execution_id) if execution_id else None
     error_code = (execution.error_code or execution.last_error_code) if execution else None
+    if latest.get("processing_mode") == "business_batch":
+        error_code = latest.get("batch_member_code")
     if error_code is not None and not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_code):
         error_code = "execution_failed"
     return {
         "receipt_id": receipt.id,
         "received_at": receipt.first_received_at.isoformat(),
         "processing_status": receipt.state,
-        "execution_id": latest.execution_id if latest else None,
+        "execution_id": execution_id,
+        **{
+            key: latest.get(key)
+            for key in (
+                "processing_mode",
+                "batch_execution_id",
+                "batch_member_index",
+                "batch_member_count",
+                "batch_member_outcome",
+                "batch_member_code",
+            )
+        },
         "error_code": error_code,
         "status_url": f"/api/ingress/{public_id}/receipts/{receipt.id}",
         "dedupe_retention_seconds": 30 * 86400,

@@ -2,9 +2,9 @@
 
 ## Status and Decision Gate
 
-**状态：专项候选，待最终单条 200 条真实测量触发；未实现，不代表容量通过。** 本文固定供专项审查的最小业务批次合同，不宣告 B2 已验、B3 已触发或任何一万条目标已通过。当前 DLR 仍采用每条事件一个 Execution；Kubernetes 的 `SyncBatch` 是全量同步资格协议，不是本文的业务执行批次。
+**状态：B2 真实 200 条测量已触发，专项审查修正已纳入，正在实施；不代表容量通过。** 本文固定实施中的最小业务批次合同；一万条目标仍须完成独立容量验证。旧默认路径仍采用每条事件一个 Execution；Kubernetes 的 `SyncBatch` 是全量同步资格协议，不是本文的业务执行批次。
 
-最终单条测量须使用约定资源、真实 Worker/沙箱和独立目标，对实际积压窗口完成计数、时长和阶段成本形成证据。仅在该证据表明单条路线需要业务批次时，主 Agent 才将已审查决议同步到 design、delta specs 和 tasks。不能用均值或 P50 的倒数代替真实完整节拍，也不提前放宽容量判据。
+单条触发证据使用约定资源、真实 Worker/沙箱和独立目标，实际积压窗口与四方逐 ID 对账已记录于 design D9。已审查决议同步到 design、delta specs 和 tasks；不能用均值或 P50 的倒数代替真实完整节拍，也不提前放宽容量判据。
 
 ## Opt-In and Immutable Binding
 
@@ -28,7 +28,7 @@
 数据库还 MUST 保证以下跨表不变量，不能只依赖两个独立唯一索引或逐行 CHECK：
 
 1. 成员引用的 receipt_id、delivery_id 和 batch_execution_id 必须来自同一 Delivery；采用复合外键/唯一键或等价的数据库约束保护。
-2. 同一 Execution 不能既有普通单条 Delivery 又登记为业务批次。批次登记及普通关联写入必须在同一 Execution 行锁下互斥检查，数据库守卫覆盖二者，避免并发事务各自看不到对方。
+2. 同一 Execution 不能既有普通单条 Delivery 又登记为业务批次。批次登记及普通关联写入必须在同一 Execution 行锁下更新并核验不可变的 `single/batch` 判别，数据库守卫覆盖二者并产生真实写冲突；不能只靠互斥 EXISTS，让 Repeatable Read 的旧快照漏掉对方。
 3. 实际成员集合必须与固定 count、manifest、连续索引 `0..count-1` 完全相等；不足、额外、重复 Receipt 或改写集合均拒绝提交。可用延迟约束触发器或等价的数据库约束实现，专项实现审查必须验证其事务与并发行为。
 4. 已绑定的成员身份/索引/批次不得原地重写。replay 新建 Delivery ordinal，不能借更新旧关联替换原失败责任。合法历史清理须依保护和预算合同整体处理，不以级联删除绕过。
 
@@ -46,11 +46,11 @@ Slot 0 及原 Claim/fencing/Attempt 协议继续是执行并发权威；一批�
 
 输入为显式 `dlr.event.batch.v1`，含固定批次/订阅标识、manifest 哈希和有序 members；每个成员含数字 receipt_id、delivery_id、delivery_ordinal、member_index 及完整原 Envelope。不放原始 HTTP token、认证请求头或凭据真值。仅显式支持该协议的保存代码可用于此 mode；普通返回值不自动解释为成员结果。
 
-结果为有界 `dlr.event.batch.result.v1`，精确覆盖同一 manifest 的全部成员及顺序。成员状态为 `succeeded`、`failed`、`unknown`、`not_run`；安全码来自固定允许集合，不将任意用户错误文本写入外部 HTTP 状态。额外字段、错/重复/遗漏 ID、错索引、超限或不匹配 manifest 均无效。
+结果为 `dlr.event.batch.result.v1`，完整结果上限为 `min(64 KiB, 512 + N×512 bytes)`，精确覆盖同一 manifest 的全部成员及顺序。成员状态为 `succeeded`、`failed`、`unknown`、`not_run`；安全码来自固定允许集合，不将任意用户错误文本写入外部 HTTP 状态。额外字段、错/重复/遗漏 ID、错索引、超限或不匹配 manifest 均无效。
 
 合法业务结果只有两类：全部 succeeded；或 succeeded 前缀，随后恰一个 failed/unknown，余下全部 not_run。不得在失败后声称后继成功。取消前可证实从未启动的全体 not_run 是 Control 处置事实，不是用户代码可借来绕过合法结果规则的通道。
 
-`finish_attempt` MUST 在终态提交及释放 Admission 之前验证：实际 owner/Claim Token/fencing/权威 Attempt、原成员集合、完整 schema/大小/顺序、Worker 原 `output_truncated` 及 Control 规范化后的截断状态。脱敏、预览或截断破坏的协议不可由日志补猜。任何无效/缺失结果都使全体成员成为 unknown，不从不可信对象保留“成功前缀”。
+`finish_attempt` MUST 在终态提交及释放 Admission 之前验证：实际 owner/Claim Token/fencing/权威 Attempt、原成员集合、完整 schema/大小/顺序、Worker 原 `output_truncated` 及 Control 规范化后的截断状态。脱敏、预览或截断破坏的协议不可由日志补猜。当逻辑 Execution 最终结束或成功回报的协议无效时，无效/缺失结果使全体成员成为 unknown，不从不可信对象保留“成功前缀”。基础设施故障仍应进入 `retry_wait` 的 Attempt 不封存最终成员结果、不释放 Admission；原 processing 成员随固定 Execution 输入恢复。
 
 可信成员结果、其权威 Attempt 和安全计数与共享 Execution 终态一起持久提交，重复回报仅读回原事实。全部成员成功才允许 Execution succeeded；任一非成功则为明确的业务失败终态及固定批次错误码，保留合法成员结果。不得先提交共享 succeeded、释放 Admission，再由维护循环事后翻案。原业务错误分类和基础设施恢复策略不全局改变。
 
@@ -61,7 +61,7 @@ Receipt 仍使用兼容的 pending/processing/succeeded/failed 等状态；Deliv
 成员结算是一个有界事务，明确成功者独立结清，其余责任保留。Checkpoint blocker 始终重算为最早未结清成员；结算、replay 完成及 skip 都不得沿用“单条成功直接清空 blocker”的旧假设。结算重入、重复 finish、重启和部分数据库异常不得重复释放或覆盖原结果。
 
 - Worker/进程丢失、目标提交后未回报等不明情况，沿原 Execution 的固定输入、成员身份和平台恢复策略处理。重复外部效果由业务稳定键核验解决，不能把未知写成成功，也不将普通 business_error 改为自动 platform_transient。
-- 正在运行的共享 Execution 取消影响全部未完成成员，界面显示范围。只保留 **Control 已校验并持久记录** 的成功事实；其余按可证事实为 unknown，明确从未启动才可为 not_run。目标写入或日志存在不等于平台已经确认。取消与 finish 竞态在原锁序内裁决。
+- 正在运行的共享 Execution 取消影响全部未完成成员，界面显示范围。只保留 **Control 已校验并持久记录** 的成功事实；其余按可证事实为 unknown，明确从未启动才可为 not_run。目标写入或日志存在不等于平台已经确认。取消与 finish 竞态在原锁序内裁决；保留原取消优先级，因此取消请求与合法全成功结果同时到达时，Execution 可记为 cancelled，但已经确认的全部成员仍记为 succeeded，不因取消改写业务事实。反向约束仍成立：Execution 只有在全部成员成功时才可 succeeded。
 - 首版保留逐成员 replay/repair/skip，不新增批量处置 API。每次操作保留原 Receipt 和旧失败 Delivery，新增 Delivery ordinal、独立审计及真实预算。批次成员即使单独 replay 仍使用单成员 batch 输入，不悄悄切回 per_event。
 - `use_current_configuration` 跨 per_event/business_batch 模式明确返回 409；同 mode 也须遵守原停止/排空、预览与绑定门禁。repair 只处理明确选中的最早阻塞责任，不自动将失败后缀重新成功化。
 - 手工恢复可能需要逐成员操作，交付文案与验收如实说明；不宣称普通业务失败后整批自动恢复。
@@ -76,7 +76,7 @@ Receipt 仍使用兼容的 pending/processing/succeeded/failed 等状态；Deliv
 
 ## Capacity, Retention and Upgrade
 
-复用 B1 的 pending/history/dedupe、控制预留及保留副本账本。T1 保守预留可序列化的单成员包装、成员关联和安全结果上限；T2 在原事务内转为真实批次分摊，差额只释放一次。批次固定包装、manifest、关联、结果均有明确字节上限和计费，须在实际有效 profile 下核对余量，不能为通过容量临时调大额度。
+复用 B1 的 pending/history/dedupe、控制预留及保留副本账本。T1 保守预留可序列化的单成员包装、成员关联和安全结果上限；T2 保守保持各成员已预付的 singleton 输入份额和每成员 8 KiB 批次结构/结果预算；份额合计须覆盖真实共享输入、manifest、关联及有界结果的双份保留。未退差额明确仍是预留，不虚报释放；整组合法清理后一次归还。批次固定包装、manifest、关联、结果均有明确字节上限和计费，须在实际有效 profile 下核对余量，不能为通过容量临时调大额度。
 
 共享 `Execution.input` 的每成员副本以及批次元数据/结果必须有唯一、可审计的保留预算归属。Receipt 原文过期、一个成员清理或一个 replay 成功，都不能把其他成员仍需恢复的共享输入记为已释放。任何成员未结清或仍受恢复/留存引用时，整个共享 Execution、固定成员集合及 Activation 继续受保护。只有全部相关保护解除时才整体清理共享副本并幂等释放相应预算。
 

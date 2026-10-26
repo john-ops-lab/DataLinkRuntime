@@ -409,3 +409,23 @@ def test_saved_http_routes_reset_clone_and_recreation_are_distinct(
         )
     finally:
         pool.close()
+
+
+def test_numeric_body_remains_canonical_after_actual_jsonb_roundtrip(
+    api_client, http_world, session_factory
+):
+    # PostgreSQL may render an exponent as an integer. Do not accept a float
+    # which becomes an out-of-domain integer before T2 canonicalization.
+    from dlr.control.services.event_envelope import validate_envelope
+
+    for index, raw in enumerate([b'{"value":9007199254740991.0}', b'{"value":1e-308}']):
+        response = post(api_client, http_world, key=f"safe-number-{index}", body=raw)
+        assert response.status_code == 202, response.text
+        with session_factory() as session:
+            receipt = session.get(EventReceipt, response.json()["receipt_id"])
+            validate_envelope(receipt.envelope)
+    for index, raw in enumerate([b'{"value":1e20}', b'{"value":-1e20}', b'{"value":1e308}']):
+        response = post(api_client, http_world, key=f"unsafe-number-{index}", body=raw)
+        assert response.status_code == 422
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(EventReceipt)) == 2

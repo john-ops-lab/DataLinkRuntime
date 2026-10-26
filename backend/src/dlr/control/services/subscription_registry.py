@@ -31,6 +31,7 @@ class SourceDefinition:
     identity_contract: str = "message-id-v1"
     scope_fields: tuple[str, ...] = ()
     attribute_fields: frozenset[str] = frozenset()
+    processing_modes: tuple[str, ...] = ("per_event",)
 
     def runner(self) -> SourceRunner:
         module, name = self.runner_class.rsplit(".", 1)
@@ -45,6 +46,7 @@ class SourceDefinition:
             "batches": self.batches,
             "skip_unaccepted": self.skip_unaccepted,
             "max_shards": self.max_shards,
+            "processing_modes": list(self.processing_modes),
         }
 
 
@@ -58,6 +60,7 @@ SOURCES = {
         "client_retry",
         "receipt_serial",
         identity_contract="http-raw-v1",
+        processing_modes=("per_event", "business_batch"),
     ),
     "kafka": SourceDefinition(
         "kafka",
@@ -78,6 +81,7 @@ SOURCES = {
         "scope_serial",
         batches=True,
         identity_contract="kubernetes-v1",
+        processing_modes=("per_event", "state_sync"),
     ),
     "rabbitmq": SourceDefinition(
         "rabbitmq",
@@ -90,6 +94,7 @@ SOURCES = {
         attribute_fields=frozenset(
             {"cluster_id", "vhost", "queue", "exchange", "routing_key", "properties"}
         ),
+        processing_modes=("per_event", "business_batch"),
     ),
     "rocketmq": SourceDefinition(
         "rocketmq",

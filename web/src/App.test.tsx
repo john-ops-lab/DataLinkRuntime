@@ -8229,6 +8229,49 @@ it.each(["task", "webhook"] as const)("only saves changed code and dependencies 
   expect(fetchMock.mock.calls.filter(([, init]) => ["PATCH", "PUT"].includes(init?.method ?? ""))).toHaveLength(0);
 });
 
+it("keeps business batch declaration in the draft until code save and preserves other version configuration", async () => {
+  let adapter = makeAdapter({ adapter_type: "task", latest_version_id: 10 });
+  const inherited = { retained: { arbitrary: [1, true, null] }, custom_flag: "unchanged" };
+  let version = makeVersion({ runtime_config: inherited });
+  const originalCode = version.code;
+  const savedBodies: unknown[] = [];
+  stubFetch([
+    healthRoute({ status: "ok", database: true }), readyWorkerRoute,
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [version] }) },
+    { method: "GET", match: /\/api\/adapters\/1\/versions\/\d+$/, respond: () => ({ body: version }) },
+    { method: "POST", match: "/api/adapters/1/versions", respond: body => {
+      const payload = JSON.parse(body ?? "{}");
+      savedBodies.push(payload);
+      version = makeVersion({ id: 11, seq: 2, ...payload });
+      adapter = { ...adapter, latest_version_id: version.id };
+      return { status: 201, body: version };
+    } },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByText("多条事件代码支持"));
+  const declaration = await screen.findByLabelText("这段代码支持一次处理多条事件");
+  const save = () => screen.getByRole("button", { name: "保存代码" }) as HTMLButtonElement;
+  expect(save().disabled).toBe(true);
+  fireEvent.click(declaration);
+  expect(save().disabled).toBe(false);
+  expect(savedBodies).toEqual([]);
+  expect(valueOf("code-editor")).toBe(originalCode);
+  fireEvent.click(declaration);
+  expect(save().disabled).toBe(true);
+  expect(savedBodies).toEqual([]);
+  fireEvent.click(declaration);
+  fireEvent.click(save());
+  await screen.findByText("适配器已保存");
+  await waitFor(() => expect(save().disabled).toBe(true));
+  expect(savedBodies).toEqual([{
+    code: originalCode, requirements: "",
+    runtime_config: { ...inherited, event_batch_schema: "dlr.event.batch.v1" },
+  }]);
+});
+
 it.each(["task", "webhook"] as const)("allows the first unsaved starter version for %s without typing, then disables save", async (adapterType) => {
   let adapter = makeAdapter({ adapter_type: adapterType });
   const versions: VersionDetail[] = [];

@@ -11,7 +11,7 @@ import json
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from dlr.control.models import (
@@ -113,7 +113,11 @@ def ensure_policy(
         return validate_policy(activation.execution_policy_snapshot)
     previous = session.scalar(
         select(Execution)
-        .join(EventDelivery, EventDelivery.execution_id == Execution.id)
+        .join(
+            EventDelivery,
+            func.coalesce(EventDelivery.execution_id, EventDelivery.batch_execution_id)
+            == Execution.id,
+        )
         .join(EventReceipt, EventDelivery.receipt_id == EventReceipt.id)
         .where(
             or_(

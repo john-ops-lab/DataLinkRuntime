@@ -328,6 +328,7 @@ def accept_execution(
     worker_id_override: int | None = None,
     credential_bindings_override: Sequence[dict[str, object]] | None = None,
     subscription_activation_id: int | None = None,
+    subscription_delivery_kind: str | None = None,
 ) -> Execution:
     """Atomically accept one gated RabbitMQ Execution or its idempotent hit."""
 
@@ -480,6 +481,7 @@ def accept_execution(
         resource_class=RESOURCE_PROFILE_CLASS,
         version_id_override=version_id,
         dependency_check=dependency_check,
+        subscription_delivery_kind=subscription_delivery_kind,
     )
     # Keep the DB clock as the accepted-at source for all generated facts.
     execution.queued_at = now

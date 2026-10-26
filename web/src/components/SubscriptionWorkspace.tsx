@@ -66,6 +66,14 @@ export function SubscriptionState({ value }: { value: string }) {
   );
 }
 
+export function EventProcessingState({ event }: { event: Pick<SubscriptionEvent, "state" | "batch_member_outcome"> }) {
+  const { t } = useTranslation("subscription");
+  if (!event.batch_member_outcome) return <SubscriptionState value={event.state} />;
+  return <Tag color={event.batch_member_outcome === "succeeded" ? "success" : event.batch_member_outcome === "failed" ? "error" : "warning"}>
+    {t(`businessBatch.outcomes.${event.batch_member_outcome}`)}
+  </Tag>;
+}
+
 export default function SubscriptionWorkspace({
   id,
   adapter,
@@ -242,6 +250,7 @@ export default function SubscriptionWorkspace({
   const hasKubernetesEvents = events.items.some(
     (item) => item.source_phase != null || item.batch_id != null,
   );
+  const hasBusinessBatchEvents = events.items.some(item => item.processing_mode === "business_batch" || item.batch_execution_id != null);
   const canEdit =
     (sub?.access_level ?? adapter.access_level ?? "read") !== "read";
   const canManage = ["admin", "owner"].includes(
@@ -400,7 +409,9 @@ export default function SubscriptionWorkspace({
                 data-testid={`event-record-${row.id}`} onClick={() => setSelectedEvent(row)}>{eventSummary(row, t)}</Button> },
             ...(sub.source_type === "kubernetes" || hasKubernetesEvents ? [{ title: t("ux.batch"), render: (_: unknown, row: SubscriptionEvent) =>
               row.batch_id ? <Button type="link" onClick={() => setSelectedBatchId(row.batch_id!)}>#{row.batch_id}</Button> : "—" }] : []),
-            { title: t("ux.result"), render: (_, row) => <SubscriptionState value={row.state} /> },
+            ...(hasBusinessBatchEvents ? [{ title: t("businessBatch.group"), render: (_: unknown, row: SubscriptionEvent) =>
+              row.batch_execution_id ? <Button type="link" onClick={() => setExecutionId(row.batch_execution_id!)}>{row.batch_member_count != null ? t("businessBatch.groupCount", { count: row.batch_member_count }) : t("businessBatch.sharedExecution")}</Button> : "—" }] : []),
+            { title: t("ux.result"), render: (_, row) => <EventProcessingState event={row} /> },
             { title: t("ux.actions"), render: (_, row) => {
               const execution = row.deliveries.filter(item => item.execution_id !== null).at(-1);
               return <Space wrap><Button type="link" onClick={() => setSelectedEvent(row)}>{t("ux.viewEvent")}</Button>
@@ -885,6 +896,8 @@ export default function SubscriptionWorkspace({
           <p>
             {t("epoch")}: {selectedEvent.source_epoch}
           </p>
+          {selectedEvent.batch_member_index != null && <p>{t("businessBatch.memberPosition", { position: selectedEvent.batch_member_index + 1 })}</p>}
+          {selectedEvent.batch_member_code && <p>{t("ux.lastErrorCode")}: <code>{selectedEvent.batch_member_code}</code></p>}
           </details>
           {selectedEvent.batch_id ? (
             <Button
@@ -937,6 +950,15 @@ export default function SubscriptionWorkspace({
             {t("activation")} #{selectedEvent.activation_id}
           </Button>
           <p>{t("originalState")}</p>
+          {selectedEvent.processing_mode === "business_batch" && <>
+            <EventProcessingState event={selectedEvent} />
+            {selectedEvent.batch_member_outcome === "failed" && <Alert type="warning" showIcon message={selectedEvent.batch_member_code ? t(`businessBatch.codes.${selectedEvent.batch_member_code}`, { defaultValue: t("businessBatch.failedHint") }) : t("businessBatch.failedHint")} />}
+            {selectedEvent.batch_member_outcome === "unknown" && <Alert type="warning" showIcon message={t("businessBatch.unknownHint")} />}
+            {selectedEvent.batch_member_outcome === "not_run" && <Alert type="info" showIcon message={t(selectedEvent.batch_member_code === "execution_not_started" ? "businessBatch.notStartedHint" : "businessBatch.notRunHint")} />}
+            {selectedEvent.batch_execution_id && <Alert type="info" showIcon
+              message={selectedEvent.batch_member_count != null ? t("businessBatch.groupCount", { count: selectedEvent.batch_member_count }) : t("businessBatch.sharedExecution")}
+              description={t("businessBatch.cancelHint")} />}
+          </>}
           <Table
             rowKey="id"
             size="small"
@@ -946,7 +968,7 @@ export default function SubscriptionWorkspace({
               { title: t("ordinal"), dataIndex: "ordinal" },
               {
                 title: t("state"),
-                render: (_, row) => <SubscriptionState value={row.state} />,
+                render: (_, row) => <EventProcessingState event={row} />,
               },
               {
                 title: t("revision"),

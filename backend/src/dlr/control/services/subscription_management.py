@@ -396,7 +396,8 @@ def _nonterminal(session: Session, subscription: EventSubscription) -> bool:
                 exists().where(
                     EventDelivery.receipt_id == EventReceipt.id,
                     EventReceipt.subscription_id == subscription.id,
-                    EventDelivery.execution_id == Execution.id,
+                    func.coalesce(EventDelivery.execution_id, EventDelivery.batch_execution_id)
+                    == Execution.id,
                     Execution.status.in_(NONTERMINAL),
                 )
             )
@@ -422,6 +423,11 @@ def _activate(session: Session, subscription: EventSubscription) -> Subscription
     _validate_adapter(adapter)
     if adapter.latest_version_id is None:
         raise domain_error(409, "adapter_has_no_version", "Save an Adapter Revision first")
+    config = current_config(session, subscription)
+    if config.config.get("mode") == "business_batch":
+        from dlr.control.services.subscription_business_batch import require_revision_schema
+
+        require_revision_schema(session, adapter.latest_version_id)
     worker = resolve_queue_target_worker(session, adapter)
     activation = SubscriptionActivation(
         subscription_id=subscription.id,

@@ -182,7 +182,9 @@
     "source_ack_failed": "消息已保存，但来源确认失败，系统会在重投时去重。",
     "ingress_capacity_unavailable": "接收容量配置尚未就绪或与平台不一致，请联系部署管理员；旧事件仍可继续处理。",
     "ingress_disk_low": "持久存储可用空间不足，已暂停接收新数据。请联系部署管理员释放空间；已收到的数据会继续处理。",
-    "ingress_disk_unavailable": "无法检查持久存储，暂时停止接收新数据。请联系部署管理员。"
+    "ingress_disk_unavailable": "无法检查持久存储，暂时停止接收新数据。请联系部署管理员。",
+    "subscription_batch_code_required": "请先保存支持多条输入的代码，在编辑页勾选“这段代码支持一次处理多条事件”并保存新版本，再开启接收。",
+    "subscription_replay_mode_conflict": "当前处理方式与这条数据原来的方式不同。请使用原运行配置重新处理，不要直接改用当前配置。"
   },
   "controlReserve": "控制记录预留（数量 / 字节）",
   "sourceLag": "源 lag",
@@ -449,5 +451,54 @@
       "ingress_unavailable": "暂时不能接收新数据，请稍后保留原编号和原文重试。"
     },
     "rateLimit": "接收速率上限（条/秒）"
+  },
+  "businessBatch": {
+    "mode": "处理方式",
+    "modeHint": "修改前需停止接收并处理完旧事件。保存配置不会自动开启接收。",
+    "single": "逐条运行（默认）",
+    "multiple": "一次处理多条（代码需支持）",
+    "codeRequired": "请先保存能够处理多条输入的代码，再开启接收。",
+    "savedOnly": "选择此项只保存处理方式，不会自动修改代码，也不会把普通代码变成多条处理。",
+    "codeHelp": "多条处理代码说明",
+    "markerHint": "确认代码支持后，在编辑页展开“多条事件代码支持”，勾选“这段代码支持一次处理多条事件”并保存新版本。接口调用者可在运行参数中加入下列等价标记。仅勾选或添加标记不会修改代码。",
+    "exampleHint": "以下Python示例只展示顺序和结果格式。请将process_one替换为真实的逐条幂等写入；未替换时会明确失败，不会假报成功。",
+    "orderHint": "每条数据完成业务写入后才能报告成功；遇到失败或结果不明立即停止，后面的数据标为尚未处理。取消会影响这次运行里所有尚未完成的数据。",
+    "receivingHint": "每次运行可一起处理多条数据，每条处理结果仍单独记录。",
+    "group": "同次运行",
+    "groupCount": "本次一起处理 {{count}} 条",
+    "sharedExecution": "查看同次运行",
+    "cancelHint": "这些数据共用一次运行。取消运行会影响其中所有尚未完成的数据；已确认成功的结果不会撤销。",
+    "unknownHint": "本条的处理结果尚未确认，可能已经写入目标。请先核对目标，再用原编号和原文重新处理，不要当作未执行。",
+    "notRunHint": "前面的数据没有成功，本条尚未处理。请先解决前面的问题，再补处理本条。",
+    "notStartedHint": "这次运行尚未开始就已取消，本条尚未处理。需要时可按原方式补处理。",
+    "memberPosition": "本次第 {{position}} 条",
+    "outcomes": {
+      "succeeded": "处理成功",
+      "failed": "处理失败",
+      "unknown": "结果未确认",
+      "not_run": "尚未处理"
+    },
+    "failedHint": "请查看执行详情，确认原因并修复后，再按原编号补处理；原失败记录会保留。",
+    "codes": {
+      "business_error": "处理代码报告失败，请查看执行详情。",
+      "target_unavailable": "目标暂时不可用，请检查目标服务后补处理。",
+      "target_permission_denied": "目标账号没有所需权限，请检查绑定的账号和目标授权。",
+      "target_identity_conflict": "目标已存在同编号但内容不同的数据，请先核对目标，不能直接覆盖。",
+      "target_invalid_data": "目标不接受这条数据，请检查字段和类型。",
+      "target_retry_exhausted": "目标重试次数或时间已用完，请确认目标恢复后再补处理。",
+      "target_commit_unknown": "目标提交结果未确认，请先核对目标后再按原编号处理。",
+      "execution_cancelled": "这次运行已取消，尚未确认的处理结果需要核对。",
+      "execution_timeout": "这次运行超时，请核对目标是否已写入后再处理。",
+      "worker_lost": "运行节点失去连接，请核对目标结果及节点状态。",
+      "result_unavailable": "未能取得完整处理结果，请核对目标后再处理。",
+      "batch_result_invalid": "代码返回的逐条结果格式不符合要求，请修复代码后再处理。",
+      "batch_output_truncated": "逐条处理结果过大，未能完整保存。请减小返回内容后再处理。",
+      "predecessor_failed": "前面的数据没有成功，本条尚未处理。",
+      "execution_not_started": "运行尚未开始，本条未被处理。"
+    },
+    "editorTitle": "多条事件代码支持",
+    "codeDeclaration": "这段代码支持一次处理多条事件",
+    "declarationHint": "仅在代码能按顺序处理每条数据并返回逐条结果时勾选。请保存新版本后再开启接收；此声明不会修改代码或自动运行。",
+    "invalidConfig": "当前运行参数不是有效JSON对象，请先恢复有效版本；此处不会覆盖原草稿。"
   }
 }

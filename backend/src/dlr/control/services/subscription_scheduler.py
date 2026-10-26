@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sqlalchemy import Select, func, or_, select, union_all
+from sqlalchemy import Select, case, func, or_, select, union_all
 from sqlalchemy.orm import Session, aliased
 
 from dlr.control.models import (
@@ -74,17 +74,48 @@ class PassResult:
 def _candidate_query(kind: Kind) -> Select[Any]:
     if kind == "processing":
         # A full page of pending/running work can never hide completed work.
-        eligible = (
+        # A shared Execution is one settlement transaction, even with 100
+        # members. Deduplicate before assigning the per-subscription fair rank.
+        ready_executions = (
             select(
-                EventDelivery.id.label("delivery_id"),
+                func.min(EventDelivery.id).label("delivery_id"),
                 EventReceipt.subscription_id,
-                EventReceipt.payload_bytes,
+                EventDelivery.batch_execution_id,
+                func.sum(EventReceipt.payload_bytes).label("single_payload_bytes"),
             )
             .join(EventReceipt, EventReceipt.id == EventDelivery.receipt_id)
-            .join(Execution, Execution.id == EventDelivery.execution_id)
+            .join(
+                Execution,
+                Execution.id
+                == func.coalesce(EventDelivery.execution_id, EventDelivery.batch_execution_id),
+            )
             .where(
                 EventDelivery.state == "processing",
                 Execution.status.in_(delivery.EXECUTION_TERMINAL),
+            )
+            .group_by(
+                Execution.id,
+                EventReceipt.subscription_id,
+                EventDelivery.batch_execution_id,
+            )
+        ).subquery()
+        # One complete batch consumes the entire logical processing-byte pass.
+        # Materialize/settle defer source_raw_body: bounded Envelope prefix and
+        # shared Execution input are each <=256 KiB, result <=64 KiB, leaving
+        # room for <=100 immutable manifest/member records within 1 MiB.
+        # Neither prepaid copies/metadata nor retained-but-unread HTTP raw bytes
+        # can make a legitimate batch permanently larger than this pass budget.
+        eligible = (
+            select(
+                ready_executions.c.delivery_id,
+                ready_executions.c.subscription_id,
+                case(
+                    (
+                        ready_executions.c.batch_execution_id.is_not(None),
+                        MAX_PAYLOAD_BYTES,
+                    ),
+                    else_=ready_executions.c.single_payload_bytes,
+                ).label("payload_bytes"),
             )
         ).subquery()
     else:
@@ -137,7 +168,16 @@ def _candidate_query(kind: Kind) -> Select[Any]:
         )
         possible = union_all(heads, closings).subquery()
         eligible = (
-            select(possible.c.delivery_id, possible.c.subscription_id, possible.c.payload_bytes)
+            select(
+                possible.c.delivery_id,
+                possible.c.subscription_id,
+                # Reserve one entire pass for a complete batch, using the same
+                # bounded logical-work upper bound as terminal settlement.
+                case(
+                    (EventDelivery.retained_batch_bytes > 0, MAX_PAYLOAD_BYTES),
+                    else_=possible.c.payload_bytes,
+                ).label("payload_bytes"),
+            )
             .join(EventDelivery, EventDelivery.id == possible.c.delivery_id)
             .join(EventSubscription, EventSubscription.id == possible.c.subscription_id)
             .where(

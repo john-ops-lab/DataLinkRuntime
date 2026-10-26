@@ -1,12 +1,13 @@
 """PostgreSQL head/fairness and bounded publisher recovery regressions."""
 
+import json
 import threading
 import time
 from datetime import timedelta
 
 import pika
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from dlr.common.config import settings
 from dlr.control.models import (
@@ -20,12 +21,19 @@ from dlr.control.models import (
     SourceCheckpoint,
     SubscriptionActivation,
     SubscriptionConfigVersion,
+    SubscriptionExecutionBatch,
     Worker,
 )
 from dlr.control.services import outbox, rabbitmq
 from dlr.control.services import subscription_scheduler as scheduler
+from dlr.control.services.ingress_capacity import DEFAULT_GLOBAL_LIMITS, DEFAULT_SUBSCRIPTION_LIMITS
 from dlr.control.services.input_config import database_now
 from test_issue130_b1_runtime import _fake_dispatch_outbox_row, _HangingConnection
+from test_issue222_business_batch import world as business_batch_foundation
+from test_issue222_http_ingress import http_world as http_custody_world
+
+world = business_batch_foundation
+http_world = http_custody_world
 
 
 def _subscription(session, number):
@@ -107,6 +115,111 @@ def test_full_pending_page_cannot_hide_a_terminal_execution(api_client, session_
         assert session.get(EventDelivery, expected).state == "succeeded"
 
 
+def test_shared_terminal_settles_once_despite_large_retained_raw_and_rotates(
+    http_world, session_factory, monkeypatch
+):
+    from dlr.control.services import http_ingress
+    from dlr.control.services import subscription_business_batch as batch
+    from dlr.control.services import subscription_delivery as delivery
+
+    monkeypatch.setattr(
+        settings,
+        "ingress_capacity_profile",
+        json.dumps(
+            {
+                "global": DEFAULT_GLOBAL_LIMITS | {"rate": 1000},
+                "subscription_max": DEFAULT_SUBSCRIPTION_LIMITS | {"rate": 1000},
+            }
+        ),
+    )
+    with session_factory.begin() as session:
+        config = session.get(SubscriptionConfigVersion, http_world["config"])
+        config.config = config.config | {"mode": "business_batch", "limits": {"rate": 1000}}
+        session.get(AdapterVersion, http_world["revision"]).runtime_config = {
+            "event_batch_schema": "dlr.event.batch.v1"
+        }
+        payload = b'{"value":1}'
+        raw = payload + b" " * (64 * 1024 - len(payload))
+        ids = [
+            http_ingress.receive(
+                session, http_world["public_id"], "Bearer source-token", f"large-raw-{index}", raw
+            )[1]["receipt_id"]
+            for index in range(100)
+        ]
+        head = session.scalar(
+            select(func.min(EventDelivery.id)).where(EventDelivery.receipt_id.in_(ids))
+        )
+        execution = batch.materialize_batch(session, head)
+        group = session.get(SubscriptionExecutionBatch, execution.id)
+        assert group.member_count == 100
+        assert group.input_bytes < 256 * 1024
+        prepaid = session.scalar(
+            select(func.sum(EventReceipt.payload_bytes)).where(EventReceipt.id.in_(ids))
+        )
+        retained = session.scalar(
+            select(func.sum(EventReceipt.retained_payload_bytes)).where(EventReceipt.id.in_(ids))
+        )
+        assert prepaid > scheduler.MAX_PAYLOAD_BYTES
+        assert retained > 6 * scheduler.MAX_PAYLOAD_BYTES
+        execution.status = "cancelled"
+        batch.finalize_on_terminal(session, execution)
+        batch_execution_id = execution.id
+        batch_hint_id = session.scalar(
+            select(func.min(EventDelivery.id)).where(
+                EventDelivery.batch_execution_id == execution.id
+            )
+        )
+        other, activation = _subscription(session, 99)
+        _, single = _receipt(session, other, activation, 0, state="processing")
+        completed = Execution(
+            adapter_id=other.adapter_id,
+            version_id=activation.revision_id,
+            trigger="subscription",
+            input={},
+            status="succeeded",
+        )
+        session.add(completed)
+        session.flush()
+        single.execution_id = completed.id
+        single_id = single.id
+    with session_factory() as session:
+        found = scheduler.select_candidates(session, "processing", scheduler.FairCursor())
+        assert [candidate.delivery_id for candidate in found] == [batch_hint_id, single_id]
+        assert found[0].payload_bytes == scheduler.MAX_PAYLOAD_BYTES
+
+    # The batch's 100 members consume one candidate/transaction. The next
+    # subscription waits only for the next bounded pass, not for another visit
+    # for each member. The byte budget is still enforced before that transaction.
+    cursor = scheduler.FairCursor()
+    first = scheduler.run_delivery_pass(
+        session_factory, "processing", cursor, monotonic=lambda: 0.0
+    )
+    assert first.selected == 2
+    assert first.attempted == first.progressed == 1
+    assert first.budget_exhausted
+    with session_factory() as session:
+        members = list(
+            session.scalars(
+                select(EventDelivery).where(
+                    EventDelivery.batch_execution_id == batch_execution_id
+                )
+            )
+        )
+        assert len(members) == 100
+        assert all(
+            item.state == "failed" and item.batch_member_outcome == "unknown" for item in members
+        )
+        assert session.get(EventDelivery, single_id).state == "processing"
+        assert delivery.audit_quota(session, http_world["sub"])["differences"] == {}
+    second = scheduler.run_delivery_pass(
+        session_factory, "processing", cursor, monotonic=lambda: 0.0
+    )
+    assert second.attempted == second.progressed == 1
+    with session_factory() as session:
+        assert session.get(EventDelivery, single_id).state == "succeeded"
+        assert scheduler.select_candidates(session, "processing", scheduler.FairCursor()) == []
+
+
 def test_failed_shard_does_not_fill_page_or_hide_another_shard(api_client, session_factory):
     with session_factory.begin() as session:
         sub, activation = _subscription(session, 1)
@@ -159,6 +272,45 @@ def test_delayed_head_preserves_order_instead_of_dispatching_its_successor(
         _receipt(session, sub, activation, 1)
     with session_factory() as session:
         assert scheduler.select_candidates(session, "pending", scheduler.FairCursor()) == []
+
+
+def test_ten_batch_entries_dispatch_one_per_bounded_pass_without_tail_starvation(
+    api_client, session_factory, monkeypatch
+):
+    identities = []
+    with session_factory.begin() as session:
+        for number in range(10):
+            sub, activation = _subscription(session, number)
+            _, item = _receipt(session, sub, activation, 0)
+            # T1's immutable opt-in budget distinguishes a potential complete
+            # batch from an ordinary single-event head; no mutable config read.
+            item.retained_batch_bytes = 8192
+            identities.append(item.id)
+    with session_factory() as session:
+        candidates = scheduler.select_candidates(session, "pending", scheduler.FairCursor())
+        assert [candidate.payload_bytes for candidate in candidates] == [1024 * 1024] * 10
+    calls = []
+
+    def dispatch(session, identity):
+        calls.append(identity)
+        session.get(EventDelivery, identity).state = "processing"
+        return object()
+
+    monkeypatch.setattr(scheduler.delivery, "dispatch_delivery", dispatch)
+    cursor = scheduler.FairCursor()
+    clock = [0.0]
+    for index in range(10):
+        result = scheduler.run_delivery_pass(
+            session_factory, "pending", cursor, monotonic=lambda: clock[0]
+        )
+        assert result.attempted == result.progressed == 1
+        assert result.continue_immediately
+        assert calls == identities[: index + 1]
+        # Simulate a complete 50 ms scheduling budget per pass. The progress
+        # signal requests the next pass immediately, with no 1 s idle fallback.
+        clock[0] += scheduler.MAX_PASS_SECONDS
+    assert clock[0] < 2.0
+    assert calls == identities
 
 
 def test_dispatch_pass_stops_before_starting_another_transaction_at_deadline(

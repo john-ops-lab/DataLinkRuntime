@@ -6,10 +6,12 @@ import type { Credential } from "../types";
 import type { EventSubscription, HttpSourceConfig, SubscriptionDraftState } from "../subscription-types";
 import { httpIngressPath } from "../event-trigger";
 import { subscriptionErrorMessage } from "../subscription-message";
+import EventBatchModeFields from "./EventBatchModeFields";
 
 interface Values {
   credential_id?: number;
   limits: string;
+  mode: "per_event" | "business_batch";
 }
 
 export default function HttpSubscriptionConfig({
@@ -73,7 +75,7 @@ export default function HttpSubscriptionConfig({
       setBusy(true); setError(null);
       await onSave({
         name: subscription?.name ?? "", description: subscription?.description ?? "",
-        config: { source_type: "http", credential_id: values.credential_id!, mode: "per_event",
+        config: { source_type: "http", credential_id: values.credential_id!, mode: values.mode ?? "per_event",
           ordering: "receipt_serial", limits: limits as Record<string, number> },
         new_epoch: false,
       }, test);
@@ -96,7 +98,8 @@ export default function HttpSubscriptionConfig({
     {error && <Alert type="error" showIcon message={error} />}
     <Form form={form} layout="vertical" disabled={readOnly || busy}
       onValuesChange={() => { setDirty(true); setChecked(false); }}
-      initialValues={{ credential_id: config?.credential_id, limits: JSON.stringify(config?.limits ?? {}, null, 2) }}>
+      initialValues={{ credential_id: config?.credential_id, mode: config?.mode ?? "per_event",
+        limits: JSON.stringify(config?.limits ?? {}, null, 2) }}>
       <Form.Item name="credential_id" label={t("http.credential")} extra={t("http.credentialHint")}
         rules={[{ required: true, message: t("required") }]}>
         <Select options={options} />
@@ -104,6 +107,7 @@ export default function HttpSubscriptionConfig({
       {path && <p>{t("http.path")}: <code className="http-ingress-path">{path}</code></p>}
       <details className="event-form-advanced" ref={advanced}>
         <summary>{t("ux.advanced")}</summary>
+        <EventBatchModeFields />
         <p>{t("http.capacityHint")}</p>
         <Form.Item name="limits" label={t("quota")} extra={t("http.capacityFields")}>
           <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} />
