@@ -20,7 +20,7 @@ Configuration stays inside the adapter. No separate subscription navigation is a
 - `Authorization: Bearer <source token>` using the current credential. The administrator token cannot replace it.
 - `Content-Type: application/json`, optionally specifying UTF-8. Only uncompressed UTF-8 bodies are accepted.
 - `Idempotency-Key`: a stable upstream message ID of 1–128 printable ASCII bytes.
-- A single JSON value. Objects, arrays, strings, numbers, booleans, and `null` are supported. Adapter code reads the complete parsed value from `input.data.payload`; it is not silently cleaned or truncated.
+- A single JSON value. Objects, arrays, strings, numbers, booleans, and `null` are supported. In per-event processing, adapter code reads the complete parsed value from `input.data.payload`; business-batch input is described below. Values are not silently cleaned or truncated.
 
 The variables below are placeholders. Retain the original file rather than reserializing it for each attempt:
 
@@ -64,9 +64,17 @@ Application 429/503 responses supply a bounded 1–30 second `Retry-After`; the 
 
 The body limit is 64 KiB and the complete event limit is 256 KiB. JSON depth is at most 32 and total nodes at most 4,096, including object member names. Duplicate object members, nonstandard/nonfinite numbers, and strings or numbers that cannot be stored losslessly are rejected. Reading has a 5 second total and 2 second idle limit, including unknown-length bodies. Compression is unsupported.
 
-HTTP permits at most 32 requests and 8 MiB of combined body/event reservations, within the shared 64 MiB source buffer budget. Parsing/database work has at most 8 concurrent workers and a separate pool of at most 8 database connections. Exhaustion rejects rather than queues without bounds. Cancellation retains the permit until native work actually ends. Management and recovery retain separate database capacity.
+HTTP permits at most 32 requests and 8 MiB of combined body/event reservations, within the shared 64 MiB source buffer budget. HTTP parsing and database work permit at most 8 concurrent native jobs. HTTP and native event sources share one `intake` database pool of at most 8 connections; management and recovery have a separate reserve of at most 4 connections. Neither pool allows overflow connections. Exhaustion rejects rather than queues without bounds. Cancellation retains the permit until native work actually ends.
 
 Raw inputs default to 7 days and deduplication metadata to 30 days. Unfinished, failed, or recovery-referenced data remains protected. The sender's agreed retry horizon must fit the advertised deduplication window; permanent deduplication is not promised outside it. Original bytes, complete events, and required retained copies count toward capacity.
+
+## Reception groups and business batches
+
+When HTTP or RabbitMQ explicitly uses business-batch processing, the runtime may combine at most 4 messages into one reception transaction, with at most 1 MiB of original bodies plus complete events and at most 5 ms of additional collection waiting. This reception optimization, called MicroT1, needs no additional setting. The 5 ms bounds additional waiting; individual decoding and validation still count toward reception time. Ordinary per-event processing keeps its existing path.
+
+Every message retains its own identity, receipt, and processing responsibility. HTTP sends 202/200 only after a confirmed transaction commit and reports each request's errors independently. RabbitMQ ACKs only the durably accepted, contiguous valid prefix after confirmed commit; an uncertain commit permits no ACK. Safe retries, deduplication, and individual confirmation rules remain unchanged.
+
+[Business batches](event-business-batch.md) define how adapter code handles multiple inputs in one execution, with at most 100 members, a complete input of at most 256 KiB, and a result for every member. Reception groups reduce repeated reception-transaction work and may contain different members from an execution batch. A reception commit does not establish business success for any member.
 
 ## Upgrade and rollback
 

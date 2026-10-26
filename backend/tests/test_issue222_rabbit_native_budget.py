@@ -420,7 +420,7 @@ class ManualLoop:
         self.waits = []
 
     def call_later(self, seconds, callback):
-        assert seconds <= 0.2
+        assert 0 <= seconds <= 3
         self.waits.append(seconds)
         self.callback = callback
         return "native-timer"
@@ -650,6 +650,8 @@ def test_transport_enables_four_credits_only_for_checked_opt_in_sdk(
 ):
     connection = SelectConnection.__new__(SelectConnection)
     connection._frame_buffer = b""
+    constructor_loop = ManualLoop([])
+    connection._nbio = SimpleNamespace(get_native_ioloop=lambda: constructor_loop)
     channel = pika.channel.Channel.__new__(pika.channel.Channel)
     channel.channel_number = 1
     channel._state = pika.channel.Channel.OPEN

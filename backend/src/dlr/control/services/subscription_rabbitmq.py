@@ -171,17 +171,35 @@ class RabbitMQTransport:
 
     @contextmanager
     def deadline(self) -> Iterator[None]:
-        def abort() -> None:
-            self.connection._impl._terminate_stream(
-                pika.exceptions.StreamLostError("source operation deadline")
-            )
+        connection = self.connection
+        native = connection._impl
+        loop = native.ioloop
+        expired = False
 
-        timer = self.connection.call_later(3, abort)
+        def abort() -> None:
+            nonlocal expired
+            if not connection.is_closed:
+                expired = True
+                native._terminate_stream(
+                    pika.exceptions.StreamLostError("source operation deadline")
+                )
+
+        # BlockingConnection.call_later defers its callback until after a
+        # blocked output flush returns. Native timers run inside that flush.
+        timer = loop.call_later(3, abort)
         try:
             yield
+            # Abort clears pending output before its asynchronous close
+            # notification. A zero-wait flush can return in that gap; it must
+            # still report an unknown ACK, rather than releasing native tags.
+            if expired:
+                raise pika.exceptions.StreamLostError("source operation deadline")
         finally:
-            if not self.connection.is_closed:
-                self.connection.remove_timeout(timer)
+            # Cancel on the captured owner even if the caller moved on. Pika
+            # clears callbacks when a timer fires or its loop closes; avoid
+            # interacting with that already-closed loop in those cases.
+            if getattr(timer, "callback", True) is not None:
+                loop.remove_timeout(timer)
 
     def diagnostic(self) -> dict[str, Any]:
         return {
