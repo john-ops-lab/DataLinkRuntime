@@ -403,6 +403,7 @@ class SubscriptionResponse(BaseModel):
     oldest_pending_at: datetime | None
     event_counts: dict[str, int]
     available: bool
+    capacity_paused: bool = False
     access_level: Literal["admin", "owner", "edit", "read"] | None = None
     created_at: datetime
     updated_at: datetime

@@ -209,3 +209,24 @@ def test_sparse_group_timer_never_waits_in_native_thread():
         assert sizes == [1] and not collector.pending
 
     asyncio.run(run())
+
+
+def test_delayed_timer_cannot_admit_a_request_after_collection_deadline():
+    async def run():
+        import time
+
+        from dlr.control.services.http_ingress_group import HttpCollector
+
+        groups = []
+        collector = HttpCollector(lambda _public, items: groups.append([i.key for i in items]))
+        loop = asyncio.get_running_loop()
+        collector.add("route", HttpInput(None, "first", b"{}", lambda: None, loop.create_future()))
+        # Simulate an event-loop stall: the due timer has not run when the
+        # next request arrives. It must start a new group rather than join it.
+        time.sleep(0.02)
+        collector.add("route", HttpInput(None, "later", b"{}", lambda: None, loop.create_future()))
+        assert groups == [["first"]]
+        collector.close()
+        assert groups == [["first"], ["later"]]
+
+    asyncio.run(run())

@@ -174,6 +174,7 @@ export interface EventSubscription {
   oldest_pending_at: string | null;
   event_counts: Record<string, number>;
   available: boolean;
+  capacity_paused?: boolean;
   access_level?: "admin" | "owner" | "edit" | "read" | null;
   created_at: string;
   updated_at: string;

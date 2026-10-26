@@ -56,12 +56,44 @@ if scenario.startswith("t1"):
   return SimpleNamespace(id=result.lastrowid),False
  module.receive_event=receive_event
  if probe:probe.patch(module)
+ unit_module=types.ModuleType("dlr.control.services.subscription_t1_unit")
+ class T1Unit:
+  def __init__(self,session):
+   self.session=session;self.subscription=SimpleNamespace(id=11);self.source_type=envelope["source"]["type"]
+  def receive(self,inputs):
+   outcomes=[]
+   if "dup-only" in scenario:self.session.execute(text("INSERT INTO outcome(note) VALUES ('old')"))
+   for item in inputs:
+    if "error-only" in scenario:
+     outcomes.append(SimpleNamespace(index=item.index,error=RuntimeError("private_body"),duplicate=False,status_code=422,receipt_id=None));continue
+    if "prefix" in scenario and item.index==1:
+     outcomes.append(SimpleNamespace(index=item.index,error=RuntimeError("private_body"),duplicate=False,status_code=422,receipt_id=None));break
+    if "independent" in scenario and item.index==1:
+     outcomes.append(SimpleNamespace(index=item.index,error=RuntimeError("private_body"),duplicate=False,status_code=401,receipt_id=None));continue
+    duplicate="dup-only" in scenario
+    rowid=1 if duplicate else self.session.execute(text("INSERT INTO outcome(note) VALUES ('retained')")).lastrowid
+    outcomes.append(SimpleNamespace(index=item.index,error=None,duplicate=duplicate,status_code=200 if duplicate else 202,receipt_id=rowid))
+   if "commit-fails" in scenario:self.session.execute(text("INSERT INTO child(id) VALUES (999)"))
+   return SimpleNamespace(outcomes=tuple(reversed(outcomes)) if "reversed" in scenario else tuple(outcomes))
+ unit_module.T1Unit=T1Unit
+ if probe:probe.patch(unit_module)
  with Session(engine) as session:
-  module.receive_event(session,11,"owner",1,envelope,"requests",{})
-  if scenario=="t1-rollback":session.rollback()
+  if scenario.startswith("t1-unit"):
+   items=[]
+   for index in range(4):
+    value=json.loads(json.dumps(envelope))
+    if value["source"]["type"]=="http":value["data"]["payload"]["message_id"]="unit-"+str(index+1)
+    else:
+     item=json.loads(base64.b64decode(value["data"]["value"]))
+     item["message_id"]="unit-"+str(index+1)
+     value["data"]["value"]=base64.b64encode(json.dumps(item).encode()).decode()
+    items.append(SimpleNamespace(index=index,envelope=value))
+   unit_module.T1Unit(session).receive(items)
+  else:module.receive_event(session,11,"owner",1,envelope,"requests",{})
+  if "rollback" in scenario:session.rollback()
   try:session.commit()
   except Exception:
-   if scenario!="t1-commit-fails":raise
+   if "commit-fails" not in scenario:raise
    session.rollback()
  (root/"source-ack-or-http-response").write_text("returned")
 elif scenario.startswith("outbox"):
@@ -368,6 +400,71 @@ class FaultProbeTests(unittest.TestCase):
                     child = self.child("t1-rabbit")
                     self.assertEqual(child.returncode, 137, child.stderr)
                     self.assertFalse((self.root / "source-ack-or-http-response").exists())
+                finally:
+                    self.root = original
+
+    def test_t1_unit_four_members_bind_selected_new_outcome_to_same_commit(self) -> None:
+        for point, expected in [("t1_before_commit", 0), ("t1_after_commit", 4)]:
+            with self.subTest(point=point), tempfile.TemporaryDirectory() as directory:
+                original = self.root
+                self.root = Path(directory)
+                self.root.chmod(0o700)
+                try:
+                    self.arm(point, message_id="unit-4")
+                    child = self.child("t1-unit-reversed")
+                    self.assertEqual(child.returncode, 137, child.stderr)
+                    self.assertEqual(self.rows(), expected)
+                    proof = self.proof()
+                    self.assertEqual(proof["ids"]["message_id"], "unit-4")
+                    self.assertEqual(proof["ids"]["receipt_id"], 4)
+                    self.assertEqual(proof["proof"]["reception_path"], "T1Unit.receive")
+                    self.assertEqual(proof["proof"]["t1_unit_new_items"], 4)
+                    self.assertFalse((self.root / "source-ack-or-http-response").exists())
+                finally:
+                    self.root = original
+
+    def test_t1_unit_prefix_and_http_error_only_mark_successful_new_items(self) -> None:
+        for scenario, expected in [("t1-unit-rabbit-prefix", 1), ("t1-unit-independent", 3)]:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                original = self.root
+                self.root = Path(directory)
+                self.root.chmod(0o700)
+                try:
+                    self.arm("t1_after_commit")
+                    child = self.child(scenario)
+                    self.assertEqual(child.returncode, 137, child.stderr)
+                    self.assertEqual(self.rows(), expected)
+                    self.assertEqual(self.proof()["proof"]["t1_unit_new_items"], expected)
+                finally:
+                    self.root = original
+
+    def test_t1_unit_duplicates_and_errors_never_arm_a_new_responsibility_fault(self) -> None:
+        for scenario, rows in [("t1-unit-dup-only", 1), ("t1-unit-error-only", 0)]:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                original = self.root
+                self.root = Path(directory)
+                self.root.chmod(0o700)
+                try:
+                    self.arm("t1_after_commit")
+                    child = self.child(scenario)
+                    self.assertEqual(child.returncode, 0, child.stderr)
+                    self.assertEqual(self.rows(), rows)
+                    self.assertFalse((self.root / "fault-test-cut.json").exists())
+                finally:
+                    self.root = original
+
+    def test_t1_unit_commit_failure_and_rollback_never_mark_after_commit(self) -> None:
+        for scenario in ("t1-unit-commit-fails", "t1-unit-rollback"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                original = self.root
+                self.root = Path(directory)
+                self.root.chmod(0o700)
+                try:
+                    self.arm("t1_after_commit")
+                    child = self.child(scenario)
+                    self.assertEqual(child.returncode, 0, child.stderr)
+                    self.assertEqual(self.rows(), 0)
+                    self.assertFalse((self.root / "fault-test-cut.json").exists())
                 finally:
                     self.root = original
 

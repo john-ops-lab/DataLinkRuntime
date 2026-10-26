@@ -39,7 +39,7 @@ arm 路径必须绝对；父目录属于运行进程 UID 且权限 `0700`，arm 
 
 | point | role | 精确边界与证据 |
 | --- | --- | --- |
-| `t1_before_commit` | control | `receive_event` 新责任返回后，捕获同一 Session；仅在其真实 `Session.commit` 调用前退出。该事务尚未提交，来源 ACK/HTTP 响应未发生。rollback/close 清除关联，重复读回不触发。 |
+| `t1_before_commit` | control | `receive_event` 或显式 opt-in `T1Unit.receive` 新责任返回后，捕获同一 Session；仅在其真实 `Session.commit` 调用前退出。该事务尚未提交，来源 ACK/HTTP 响应未发生。rollback/close 清除关联，重复读回不触发。 |
 | `t1_after_commit` | control | 同一 Session 的原 `commit` 成功返回后、调用方继续执行前退出。提交失败不会被当成功；RabbitMQ `take_custody` 尚未返回、HTTP `_run_sync` 尚未返回，因此还没 ACK/响应。 |
 | `outbox_after_confirm` | control | 仅在已检查的 Pika **1.3.2** 路径中，实际观察到 `Basic.Ack` 回调且 `basic_publish` 成功返回、confirm/mandatory/persistent 均满足时退出，位于 `mark_outbox_published` 之前。Nack、无确认返回或失败不算确认。 |
 | `worker_after_claim_journal` | worker | 关联 `claim_v3` 的 EXECUTE 响应和同 Attempt；`write_attempt_journal` 成功后验证真实文件中的 ID，并严格 fsync 文件和父目录，再在执行用户代码前退出。普通日志写入不代替 fsync，未观察到 EXECUTE 响应不触发。 |
@@ -68,7 +68,9 @@ marker 会记录由冻结输入解析出的实际 Execution、Attempt、batch、
 
 其他输出可用 `result_proof_mode=external-oracle`。对可解析的单条或批次输入，同样可以按 subscription+run 提前 arm；若输入无法解析，必须显式指定具体 `execution_id` 和 `run_id` 才允许后备匹配，并登记 `explicit_execution_scope_requires_ledger_oracle`。后备模式必须另用平台账本验证 Execution 与来源/run 的关系，不能只信 arm 自述。所有模式均不宣称目标已经提交或存在产品 result journal。
 
-当前真实路径已逐一核对：HTTP `_run_sync` 和队列 `take_custody` 仍在 `receive_event` 后显式调用同 Session 的 `commit`；`per_event`/`business_batch` 只影响后续 T2，不改变 T1 hook。当前 Outbox 缓存 publisher 仍经 `_publish_row` 调用 Pika 1.3.2 的确认发布；Worker 仍在 EXECUTE 后先写真实 Attempt journal，执行结束后通过 `ControlClient.result_attempt` 发结果。版本或路径变化必须重新检查，未安装/未匹配不能当作实际切点。
+已检查的原单条路径中，HTTP `_run_sync` 和队列 `take_custody` 仍在 `receive_event` 后显式调用同 Session 的 `commit`；`per_event` 保持这一路径。当前 Outbox 缓存 publisher 仍经 `_publish_row` 调用 Pika 1.3.2 的确认发布；Worker 仍在 EXECUTE 后先写真实 Attempt journal，执行结束后通过 `ControlClient.result_attempt` 发结果。版本或路径变化必须重新检查，未安装/未匹配不能当作实际切点。
+
+D7.1 的 opt-in 接管小组另走 `subscription_t1_unit.T1Unit.receive`。探针在该原方法正常返回后，按 `outcome.index` 映射输入 Envelope；只有 `error=null`、`duplicate=false`、`status_code=202` 且有有效 `receipt_id` 的新责任才登记同一 `unit.session`。不将预检、错误项或 duplicate-only 组当作新接管。匹配仍可指定组内任一新项的 message/receipt ID，marker 增加 `reception_path=T1Unit.receive`、本组新项和 outcome 数量，不保存正文。RabbitMQ 连续前缀和 HTTP 逐项错误均按原返回事实计数；若 Caller 随后 rollback/close，关联清除；真实 commit 失败不出 after marker。before/after 仍围绕原 Session.commit，不在批量 INSERT/flush 或解析阶段提前触发，不新增产品持久恢复状态。
 
 ## marker 与判定
 

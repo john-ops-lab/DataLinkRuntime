@@ -328,7 +328,8 @@
       "stopped": "Reception stopped",
       "receiving": "Receiving events",
       "reconnecting": "Reconnecting",
-      "starting": "Connecting to source"
+      "starting": "Connecting to source",
+      "capacityPaused": "Waiting for capacity"
     },
     "createManual": "Run when you click the button",
     "createSchedule": "Run at scheduled times",
@@ -392,7 +393,9 @@
     "oldestWaiting": "Oldest waiting: {{duration}}",
     "noWaiting": "none",
     "waitSeconds": "{{count}} s",
-    "waitMinutes": "{{count}} min"
+    "waitMinutes": "{{count}} min",
+    "capacityPausedHint": "Received messages continue processing and existing records are retained. View the received records or capacity details, wait for retained capacity to be released, or stop reception before changing this source’s limits.",
+    "viewCapacity": "View capacity details"
   },
   "repairExitNote": "Continue processing already received events with their original code and runtime settings. The repair version applies only to the events you explicitly reprocess. Receiving new events stays off.",
   "queues": {

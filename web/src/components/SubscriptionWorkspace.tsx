@@ -30,7 +30,7 @@ import {
   isCompletionEvent,
   subscriptionDrained,
 } from "../subscription-types";
-import { eventBytes, eventNeedsAttention, eventSourceLabel, eventStatusKey, eventSummary, eventWaitingLabel, httpIngressPath } from "../event-trigger";
+import { eventBytes, eventCapacityPaused, eventNeedsAttention, eventSourceLabel, eventStatusKey, eventSummary, eventWaitingLabel, httpIngressPath } from "../event-trigger";
 import { subscriptionErrorMessage } from "../subscription-message";
 import ExecutionHistoryPanel from "./ExecutionHistoryPanel";
 import SubscriptionConfigDialog from "./SubscriptionConfigDialog";
@@ -347,7 +347,12 @@ export default function SubscriptionWorkspace({
         <span>{t("ux.failedCount", { count: sub.event_counts.failed ?? 0 })}</span>
         <span>{t("ux.oldestWaiting", { duration: eventWaitingLabel(sub, t) })}</span>
       </div>
-      {eventNeedsAttention(sub) && <Alert type="warning" showIcon
+      {eventCapacityPaused(sub) && <Alert type="warning" showIcon
+        message={t("ux.status.capacityPaused")} description={t("ux.capacityPausedHint")}
+        action={<Button onClick={() => { if (technicalRef.current) technicalRef.current.open = true; }}>
+          {t("ux.viewCapacity")}
+        </Button>} />}
+      {!eventCapacityPaused(sub) && eventNeedsAttention(sub) && <Alert type="warning" showIcon
         message={t(`ux.status.${eventStatusKey(sub)}`)}
         description={sub.last_error_code ? t(`${sub.source_type === "kubernetes" ? "kubernetes." : sub.source_type === "http" ? "http." : ""}errors.${sub.last_error_code}`, {
           defaultValue: t(`errors.${sub.last_error_code}`, { defaultValue: t("ux.problemHint") }),

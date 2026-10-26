@@ -35,6 +35,7 @@ POINTS = {
 _TARGETS = {
     "sqlalchemy.orm.session",
     "dlr.control.services.subscription_delivery",
+    "dlr.control.services.subscription_t1_unit",
     "dlr.control.services.outbox",
     "pika.adapters.blocking_connection",
     "dlr.worker.client",
@@ -466,7 +467,54 @@ class Probe:
 
     def patch(self, module: ModuleType) -> None:
         name = module.__name__
-        if name == "dlr.control.services.subscription_delivery":
+        if name == "dlr.control.services.subscription_t1_unit":
+
+            def receive_unit(original: Any) -> Any:
+                def call(unit: Any, inputs: Any, *args: Any, **kwargs: Any) -> Any:
+                    result = original(unit, inputs, *args, **kwargs)
+                    try:
+                        arm = self.arm()
+                        if arm is None or arm.point not in {"t1_before_commit", "t1_after_commit"}:
+                            return result
+                        fields = _loaded(unit)
+                        if fields.get("source_type") not in {"http", "rabbitmq"}:
+                            return result
+                        outcomes = _loaded(result).get("outcomes")
+                        if not isinstance(inputs, (list, tuple)) or not 1 <= len(inputs) <= 4 or not isinstance(outcomes, (list, tuple)) or not 1 <= len(outcomes) <= 4:
+                            return result
+                        by_index = {_loaded(item).get("index"): item for item in inputs}
+                        new_outcomes = [
+                            item for item in outcomes
+                            if _loaded(item).get("error") is None
+                            and _loaded(item).get("duplicate") is False
+                            and _loaded(item).get("status_code") == 202
+                            and _integer(_loaded(item).get("receipt_id")) is not None
+                        ]
+                        for outcome in new_outcomes:
+                            item = by_index.get(_loaded(outcome).get("index"))
+                            ids = {
+                                **_envelope_ids(_loaded(item).get("envelope")),
+                                "subscription_id": _loaded(fields.get("subscription")).get("id"),
+                                "receipt_id": _integer(_loaded(outcome).get("receipt_id")),
+                            }
+                            if _matches(arm, ids):
+                                with self._lock:
+                                    self._pending[fields["session"]] = {
+                                        "arm": arm,
+                                        "ids": ids,
+                                        "reception_path": "T1Unit.receive",
+                                        "t1_unit_new_items": len(new_outcomes),
+                                        "t1_unit_outcomes": len(outcomes),
+                                    }
+                                break
+                    except Exception:  # noqa: BLE001, S110 - missing instrumentation is not a counted fault
+                        pass
+                    return result
+
+                return call
+
+            self._wrap(module.T1Unit, "receive", receive_unit)
+        elif name == "dlr.control.services.subscription_delivery":
 
             def receive(original: Any) -> Any:
                 def call(
@@ -519,6 +567,9 @@ class Probe:
                                 arm,
                                 ids,
                                 {
+                                    "reception_path": pending.get("reception_path", "receive_event"),
+                                    "t1_unit_new_items": pending.get("t1_unit_new_items"),
+                                    "t1_unit_outcomes": pending.get("t1_unit_outcomes"),
                                     "transaction_committed": False,
                                     "authority": "same_session_before_commit",
                                     "source_ack_or_http_response": False,
@@ -535,6 +586,9 @@ class Probe:
                                 arm,
                                 ids,
                                 {
+                                    "reception_path": pending.get("reception_path", "receive_event"),
+                                    "t1_unit_new_items": pending.get("t1_unit_new_items"),
+                                    "t1_unit_outcomes": pending.get("t1_unit_outcomes"),
                                     "transaction_committed": True,
                                     "authority": "same_session_commit_returned_successfully",
                                     "source_ack_or_http_response": False,

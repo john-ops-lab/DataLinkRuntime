@@ -328,7 +328,8 @@
       "stopped": "已停止接收",
       "receiving": "正在接收",
       "reconnecting": "正在重新连接",
-      "starting": "正在连接来源"
+      "starting": "正在连接来源",
+      "capacityPaused": "额度不足，暂缓接收"
     },
     "createManual": "点击按钮时运行",
     "createSchedule": "按设定时间运行",
@@ -392,7 +393,9 @@
     "oldestWaiting": "最老等待：{{duration}}",
     "noWaiting": "无等待",
     "waitSeconds": "{{count}} 秒",
-    "waitMinutes": "{{count}} 分钟"
+    "waitMinutes": "{{count}} 分钟",
+    "capacityPausedHint": "已接收的消息继续处理，既有记录保持保留。可在下方查看接收记录，或展开容量详情；等待留存额度释放，或停止接收后调整来源额度。",
+    "viewCapacity": "查看容量详情"
   },
   "repairExitNote": "继续处理已收到的旧事件，仍使用各事件接收时固定的代码和运行配置。修复版本只用于您明确选中的重新处理，不会自动开启来源接收。",
   "queues": {

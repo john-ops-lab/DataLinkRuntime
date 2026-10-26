@@ -164,14 +164,32 @@ def serialize(
     session: Session, subscription: EventSubscription, principal: Principal
 ) -> SubscriptionResponse:
     from dlr.control.services.http_ingress import ingress_path
-    from dlr.control.services.ingress_capacity import global_limits, runtime_subscription_limits
+    from dlr.control.services.ingress_capacity import (
+        effective_profile,
+        global_limits,
+        runtime_limits_for_profile,
+    )
+    from dlr.control.services.subscription_capacity_view import capacity_paused
 
     current = management.current_config(session, subscription)
     quota = session.get(SubscriptionQuota, f"sub:{subscription.id}")
-    pending = session.scalar(
-        select(func.min(EventReceipt.first_received_at)).where(
-            EventReceipt.subscription_id == subscription.id, EventReceipt.state == "pending"
+    global_quota = session.get(SubscriptionQuota, "global")
+    profile = effective_profile(session)
+    limits = runtime_limits_for_profile(profile, current.config)
+    platform_limits = global_limits(profile=profile)
+    now, pending = session.execute(
+        select(
+            func.clock_timestamp(),
+            select(func.min(EventReceipt.first_received_at))
+            .where(
+                EventReceipt.subscription_id == subscription.id, EventReceipt.state == "pending"
+            )
+            .scalar_subquery(),
         )
+    ).one()
+    available = (
+        settings.event_subscriptions_enabled
+        and subscription.source_type in management.AVAILABLE_SOURCES
     )
     counts = {
         state: count
@@ -208,8 +226,8 @@ def serialize(
         repair_revision_id=subscription.repair_revision_id,
         last_error_code=subscription.last_error_code,
         config=current.config,
-        limits=runtime_subscription_limits(session, current.config),
-        global_limits=global_limits(session),
+        limits=limits,
+        global_limits=platform_limits,
         ingress_path=ingress_path(session, subscription),
         quota={
             key: getattr(quota, key) if quota else 0
@@ -226,8 +244,16 @@ def serialize(
         },
         oldest_pending_at=pending,
         event_counts=counts,
-        available=settings.event_subscriptions_enabled
-        and subscription.source_type in management.AVAILABLE_SOURCES,
+        available=available,
+        capacity_paused=capacity_paused(
+            receiving=available and subscription.desired_state == "enabled",
+            local=quota,
+            global_quota=global_quota,
+            local_limits=limits,
+            global_limits=platform_limits,
+            oldest_pending_at=pending,
+            now=now,
+        ),
         access_level=adapter_access.require_adapter_access(
             session, subscription.adapter_id, principal
         ).level,

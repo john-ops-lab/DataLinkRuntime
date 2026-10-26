@@ -1,10 +1,20 @@
 import type { EventSubscription, SubscriptionEvent } from "./subscription-types";
 
 /** Current operational problems, rather than failures retained for audit. */
-export function eventNeedsAttention(sub: EventSubscription): boolean {
+function eventHasProblem(sub: EventSubscription): boolean {
   return ["blocked", "repair"].includes(sub.delivery_state)
     || sub.connection_state === "blocked"
     || (sub.desired_state === "enabled" && sub.last_error_code !== null);
+}
+
+/** Optional read-only backend projection; old backends preserve their status. */
+export function eventCapacityPaused(sub: EventSubscription): boolean {
+  return sub.capacity_paused === true && sub.desired_state === "enabled"
+    && sub.connection_state === "listening" && !eventHasProblem(sub);
+}
+
+export function eventNeedsAttention(sub: EventSubscription): boolean {
+  return eventHasProblem(sub) || eventCapacityPaused(sub);
 }
 
 export function eventStatusKey(sub: EventSubscription): string {
@@ -16,6 +26,7 @@ export function eventStatusKey(sub: EventSubscription): string {
     return sub.delivery_state !== "idle" || (sub.quota.pending_count ?? 0) > 0
       ? "stoppedWithWork" : sub.activation_id === null ? "notStarted" : "stopped";
   }
+  if (eventCapacityPaused(sub)) return "capacityPaused";
   return sub.connection_state === "listening" ? "receiving"
     : sub.connection_state === "reconnecting" ? "reconnecting" : "starting";
 }

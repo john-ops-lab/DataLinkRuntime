@@ -23,6 +23,7 @@ class HttpInput:
 class _Group:
     items: list[HttpInput] = field(default_factory=list)
     timer: asyncio.TimerHandle | None = None
+    deadline: float = 0
 
 
 class HttpCollector:
@@ -33,8 +34,13 @@ class HttpCollector:
     def add(self, public_id: str, item: HttpInput) -> None:
         loop = asyncio.get_running_loop()
         group = self.pending.get(public_id)
+        if group is not None and loop.time() >= group.deadline:
+            # A delayed event-loop timer cannot extend the collection window
+            # by admitting a fresh request before its callback gets a turn.
+            self.flush(public_id)
+            group = None
         if group is None:
-            group = self.pending[public_id] = _Group()
+            group = self.pending[public_id] = _Group(deadline=loop.time() + 0.005)
             group.timer = loop.call_later(0.005, self.flush, public_id)
         group.items.append(item)
         if len(group.items) == 4:
