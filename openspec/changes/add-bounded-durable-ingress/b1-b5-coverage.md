@@ -1,12 +1,12 @@
-# B1–B5 需求与证据覆盖稿
+# B1–B5 需求与证据覆盖稿（2026-10-27）
 
-**状态：实施与验收进行中，尚不能归档或提交 PR。** 本稿用于定位已实现路径、已经发生的验证以及剩余门禁，不代替 [tasks.md](tasks.md) 的完成判定。本文未修改任务勾选，不以测试文件存在、代码可构建或 OpenSpec 校验通过宣布功能或容量通过。
+**状态：实施与验收进行中，尚不能归档或提交 PR。** 本稿用于定位已实现路径、已经发生的验证以及剩余门禁，不代替 [tasks.md](tasks.md) 的完成判定。本文不修改任务勾选，不以测试文件存在、代码可构建或 OpenSpec 校验通过宣布功能或容量通过。
 
-记录日期：2026-10-26。最新已测 HTTP 与调度候选为 `e01d8555d0d02428381d84553144367ca808533e`；RabbitMQ r6 的正常容量与完整观察绑定 `d38904f200cbc525019f663738253a5df0e374a6`。后续文档提交不改写运行所绑定的源码 SHA。E0–E17 保留早期核对基线 `68900ca7eebd5275239de4bf93fa554642b8d66b` 及其以前候选的历史证据，各轮首败继续保留，不能将不同候选拼成一次最终通过。RabbitMQ r6、约定七个准确故障切点及 e01 三项真实调度 SLA 已取得各自范围的通过证据；HTTP 正式容量及完整观察仍待取得最终结果。
+记录日期：2026-10-27。最新实测候选为 `d689792b8670af5da99104d2eac52c467d4ae8ec`。RabbitMQ 正式 r6 的容量与完整600秒观察仍绑定 `d38904f200cbc525019f663738253a5df0e374a6`，e01 的三项真实调度 SLA 保留历史记录；d689 的独立 SLA r6 三轮已通过，HTTP 正式 R7 仍失败（E50/E51）。E0–E42 保留各历史候选及首败，后续文档更新或小样本通过不改写其运行源码 SHA，也不能拼成一次最终通过。
 
-E36–E42 分别补齐七项既有数据库回归、真实 Worker 负结果、两个合同缺口、执行池关闭拒绝、HTTP 审查补强、提交后唤醒与三项真实调度 SLA。原生工作名额早拒绝和新接管提交后唤醒已在 e01 部署，HTTP20/200 双 oracle 通过；不能借小样本或 RabbitMQ 的容量结果宣布 HTTP 达标。完整 Kimi 覆盖及复审、完整 UI 创建/取消等流程回执和正式 HTTP 结果仍待收口，任务不勾完、规格不归档，B1–B5 不作整体完成判定。
+e01 HTTP R5 是 producer 前、实际零接管的就绪预检失败；独立 R6 已实际发送并失败，原10000条期望的两个 oracle 均未通过，缺失6390条，未完成600秒观察（E43）。d689 旧 RabbitMQ 200条出现14个结果未知并保留首败（E48）；夹具修正后的 ns1 四个小样本另有双 oracle 通过（E49），不以此裁定原失败根因或宣布正式容量通过。
 
-最新 HTTP 正式准备中的来源就绪预检曾在 producer 启动前失败：本轮实际接管为 0、资源采样未启动，来源已正常停用，原预检失败回执保留。这是准备阶段未满足就绪门禁，不是容量失败；后续须使用新独立运行清单，不改首次发送后的计时门槛，也不预填后续结果。
+新增保护、时钟/字节边界、Kubernetes、批次投影/协议、SQL、HTTP16条/25ms及严格数据库拒绝断言的定向证据分列 E44–E47；各项绑定各自回执与源码，不相加成一个总通过数。截至冻结 d689 的161条变更路径，81条已有与当前内容绑定的审查链，80条仍缺覆盖，且已有审查链不等于全部意见已批准。Kimi 审查受服务额度阻塞，完整复审未完成；完整 UI 创建/取消/保存/明确开启流程仍缺回执，访问工具限制已使该次尝试停止。必要门禁未闭合，B1–B5 不作整体完成判定，不归档、不勾完任务、不提交 PR。
 
 ## 证据口径
 
@@ -47,8 +47,8 @@ E2 的核心文件 SHA-256 为 `cf4a2c134ee6217d08256333b46d0ce2a1522857c5118c2d
 - **容量、绑定与账本**：`services/ingress_capacity.py`、`subscription_activation_policy.py`、`subscription_accounting.py`、`subscription_delivery.py`、`subscription_sync.py`；验证入口为 `test_ingress_capacity*.py`、`test_issue222_capacity_queries.py`、`test_issue222_queue_capacity_profile.py`、`test_issue222_activation_policy.py`、`test_issue222_input_ledger.py`、`test_issue222_ingress_upgrade.py`。
 - **推进与发布**：`services/subscription_scheduler.py`、`subscription_runtime.py`、`ingress_database.py`、`outbox.py`；验证入口为 `test_issue222_scheduler.py`、`test_issue222_intake_pool.py` 及相关既有运行器回归。
 - **业务批次**：`models/subscription_business_batch.py`，`services/subscription_business_batch.py`、`subscription_batch_protocol.py`、`subscription_batch_retention.py`、`subscription_batch_view.py`，以及 `attempt.py`、`reliable_execution.py`、`execution.py`；验证入口为 `test_issue222_business_batch.py`、`test_issue222_batch_protocol.py`、`test_issue222_batch_lifecycle.py`、`test_issue222_batch_declarations.py`、`test_issue222_batch_guard_json.py`。
-- **T1 合并**：`services/subscription_t1_unit.py`、HTTP 收集/共享池、`subscription_rabbitmq.py`、`subscription_rabbit_budget.py`、`subscription_rabbit_metadata.py`；验证入口为 `test_issue222_t1_unit.py`、HTTP groups、pool、`test_issue222_rabbit_native_budget.py`、`test_issue222_rabbit_micro_t1.py`、`test_issue222_rabbit16_reader.py`。MicroT1 按来源分限：HTTP 最多 4 条、RabbitMQ 最多 16 条；原文加完整事件仍最多 1 MiB/额外收集等待 5 ms，保留逐条责任与提交后确认；T2 的业务批次上限为 100 条/完整输入 256 KiB，二者不等同。
-- **迁移**：`backend/alembic/versions/0051_issue222_durable_http.py`、`0052_issue222_business_batches.py`、`0053_issue222_batch_guard_json.py`；旧单条关联唯一约束保留。后续优化不能以修改已发布迁移取代前向迁移。
+- **T1 合并**：`services/subscription_t1_unit.py`、HTTP 收集/共享池、`subscription_rabbitmq.py`、`subscription_rabbit_budget.py`、`subscription_rabbit_metadata.py`；验证入口为 `test_issue222_t1_unit.py`、HTTP groups、pool、`test_issue222_rabbit_native_budget.py`、`test_issue222_rabbit_micro_t1.py`、`test_issue222_rabbit16_reader.py`。MicroT1 当前最多16条/完整原文加事件1 MiB；HTTP 额外收集等待最多25 ms，RabbitMQ 仍最多5 ms，保留逐条责任与提交后确认；T2 的业务批次上限为 100 条/完整输入 256 KiB，二者不等同。
+- **迁移**：`backend/alembic/versions/0051_issue222_durable_http.py`、`0052_issue222_business_batches.py`、`0053_issue222_batch_guard_json.py`、`0054_issue222_receipt_ttl_guard.py`；旧单条关联唯一约束保留，0054 前向修复空终态时间不能放行 TTL 清理。后续优化不能以修改已发布迁移取代前向迁移。
 - **界面**：`web/src/components/HttpSubscriptionConfig.tsx`、`EventBatchModeFields.tsx`、`EventBatchCodeDeclaration.tsx`、`SubscriptionWorkspace.tsx`、`ExecutionBatchNotice.tsx`，相关中英文 locale、schema/registry/management/ACL；验证入口为 `HttpSubscriptions.test.tsx`、`BusinessBatchSubscriptions.test.tsx`、`EventBatchCodeDeclaration.test.tsx` 及 App 测试。
 - **独立夹具**：`tools/ingress/workload.py`、`target.sql`、`reference_adapter.py`、`management_probe.py`、`fault_probe.py` 及其测试/说明；参考目标与平台账本分别核验。工具存在、synthetic 自检或故障点配置不等于真实故障轮次发生。
 
@@ -56,35 +56,35 @@ E2 的核心文件 SHA-256 为 `cf4a2c134ee6217d08256333b46d0ce2a1522857c5118c2d
 
 | 任务 | 实现与必要验证映射 | 已发生的证据 | 当前缺口与判定 |
 | --- | --- | --- | --- |
-| 2.1 HTTP 登记、路由与升级 | HTTP source/schema/registry、`HttpIngressRoute`、0051–0053；旧 pending/failed/control 数据升级、不可复用标记和降级保护 | E1 记录旧责任升级范围；E36 的三个明确 nodeid 已实跑升级和原计数增量迁移，E38 验证保存路由、reset、克隆及删除重建的不同身份 | 这些明确路径已有逐项绑定；不据此宣布全部路由/回退与 B1 完成，最终候选审查仍须归集 |
+| 2.1 HTTP 登记、路由与升级 | HTTP source/schema/registry、`HttpIngressRoute`、0051–0054；旧 pending/failed/control 数据升级、不可复用标记和降级保护 | E1/E36 的明确升级及原计数增量路径；E38 的路由身份边界；E44 的0054保护与升级代表回归 | 这些明确路径已有逐项绑定；不据此宣布全部路由/回退与 B1 完成，最终候选审查仍须归集 |
 | 2.2 当前 token、安全查询与 ACL | HTTP `_authenticated` / `receipt_status`、管理 API ACL；错/撤销 token、跨来源、旧地址、删除/重建、原 Webhook 两模式 | E1 的旧候选功能边界；E3 当前 HTTP 定向回执 | 原 Webhook 两模式及管理 ACL 的适用最终回执须逐项归集，当前用户流程仍需 UI 验证 |
-| 2.3 持久接管与固定输入 | HTTP `receive` / `receive_group`、T1Unit、Receipt/Delivery/Activation、原始 bytes SHA；提交前后故障和重复 | E2/E3 的原文、202/200/409 与计费回归；E27 四个真实 T1 切点；E40 的提交前后未知 PG；E41 的 e01 HTTP20/200 双 oracle | 明确功能及恢复路径已有实证；HTTP 正式 R5 尚未结束，不用 E4/E8 早期最终正确覆盖其接管超时 |
-| 2.4 生命周期及运行锁 | `subscription_management`、runtime/lease、平台错误分类、冻结策略、replay/repair/skip | E2 的 stop/binding/租约回滚；E3 runtime/pool；E27 真实 T1 恢复，E39 原生提交已关闭时的503/释放，E42 重建 Control 后按持久状态正常推进 | 旧 E21 生命周期失败保留；不同 SHA 的通过按受影响路径核对，3 项历史 skip 不倒推为通过 |
+| 2.3 持久接管与固定输入 | HTTP `receive` / `receive_group`、T1Unit、Receipt/Delivery/Activation、原始 bytes SHA；提交前后故障和重复 | E2/E3 的原文、202/200/409 与计费回归；E27 四个真实 T1 切点；E40 的提交前后未知 PG；E41 的 e01 HTTP20/200 双 oracle | e01 R5 预检失败与 R6 正式失败分别见E43；d689 小样本及旧200条首败见E48/E49，均不替代HTTP正式容量 |
+| 2.4 生命周期及运行锁 | `subscription_management`、runtime/lease、平台错误分类、冻结策略、replay/repair/skip | E2/E3 的 stop/binding/租约/运行器范围；E27真实T1恢复、E39关闭执行池拒绝、E42调度恢复；E45 Kubernetes平台错误分类定向回归 | E21旧生命周期失败保留；不同SHA的通过按受影响路径核对，不据定向回归宣布所有旧来源或历史skip通过 |
 | 2.5 部署容量与管理边界 | `ingress_capacity`、fingerprint/audit、管理 limits；无效配置、并发采用、下调保留、入口排空 | E2 的 profile/锁定范围；E36 原计数正常及已有137余量时只追加迁移增量；E38 真实旧 owner 排空后切换 profile、下调保留原计数 | 公开配置说明与最终权限/未排空拒绝审查仍须归集；配置提高或下调保护不等于容量通过 |
 | 2.6 资源隔离与拒绝释放 | HTTP 32 请求/8 MiB/8 原生工作；HTTP 与原生来源共享 intake 8 连接、管理/恢复另 4 连接，均无 overflow；64 MiB 来源父预算与磁盘迟滞 | E2/E3 逐项拒绝/释放；E17/E18 的16条受检 SDK 边界；E33 RabbitMQ 完整根资源与600秒观察；E39 的70项纯检查及 E40 的真实共享事务提交未知 | HTTP 正式轮次的同步资源和完整观察仍待验证；历史 E9 管理一致性失败保留，不以旧轮峰值替代最终受影响路径 |
-| 2.7 完整计费、T2 与留存 | Receipt 原文/元数据、Delivery 未来输入/批次份额、控制预留、30 天整组 GC；原子 T2、回滚、审计 | E1/E2；E36 真实 PG 核验 7/30 天输入保留、重放新增副本计费、skip 后 TTL 释放、未处置失败不失效、重叠重放各自份额 GC；E37 核验终态共享 Admission 释放而输入/manifest/失败预算仍保留 | E36 按用例推进终态时间，不是连续 30 天观察；E37 的终态账本不证明历史释放写入次数。其余适用的计费/恢复及最终审查继续按影响范围归集 |
-| 2.8 两来源 20 条链路与本批审查 | `workload`、真实 Worker/目标、平台与目标独立 oracle、HTTP/事件文档 | E1 旧单条20条；E18 16条Rabbit路线20/200双oracle；E41 的 e01 HTTP20/200双oracle | 各结果绑定实际候选及范围，不能拼成同一 SHA 的全量通过；最终文档/OCR仍未完，小样本不等于容量验收 |
+| 2.7 完整计费、T2 与留存 | Receipt 原文/元数据、Delivery 未来输入/批次份额、控制预留、30 天整组 GC；原子 T2、回滚、审计 | E1/E2；E36的7/30天、重放新增副本、skip后TTL、失败保留及重叠GC；E37的Admission/保留预算分层；E44空terminal_at保护与升级代表 | 按用例推进终态时间不等于连续30天观察；各自计费/恢复回执不相加，最终审查仍未完成 |
+| 2.8 两来源 20 条链路与本批审查 | `workload`、真实 Worker/目标、平台与目标独立 oracle、HTTP/事件文档 | E1旧单条20条；E18的Rabbit路线20/200；E41的e01 HTTP20/200；E48/E49的d689独立小样本 | 保留d689旧Rabbit200首败；新ns1小样本不能替代一万条、600秒观察或最终OCR，不跨候选拼成全部通过 |
 | 3.1 依据实测选择优化 | B0/B1/B2 结果、调度/Outbox、容量重复读、0053 JSON 一次展开、D7.1 | E0/E1；E4/E8 两次正式接管失败；E7 为后续选择提供组大小事实 | 最终差异审查/OCR待完成；不得把旧瓶颈假设或诊断含观测开销的耗时当作收益 |
-| 3.2 有界公平推进 | scheduler 的 pending/processing 分离、轮转、轻量头部、补偿通知；10 入口/阻塞页/重启场景 | E42：e01 的 ten、实际失败头+150pending、真实丢10次结果通知三轮；两类持久推进上界均≤2秒，双oracle/Broker0通过 | D389 R3 的2.0318–2.0449秒首败保留；e01 修复后重新测三轮，不复用旧ten。该SLA不外推任意入口数或容量 |
+| 3.2 有界公平推进 | scheduler 的 pending/processing 分离、轮转、轻量头部、补偿通知；10 入口/阻塞页/重启场景 | E42：e01 的 ten、实际失败头+150pending、真实丢10次结果通知三轮；两类持久推进上界均≤2秒，双oracle/Broker0通过 | D389 R3首败保留；E42只证明e01三轮。E45的9项SQL PG不代替真实SLA；d689独立r6结果见E50 |
 | 3.3 受限发布与确认 | `outbox` 的线程归属连接/channel 复用、确认窗口、return/nack/超时/丢连接；逐行未知恢复 | E1 发布链路与代表性确认测试；E28 真实Outbox确认后退出新轮通过，E31/E34跨Worker恢复时核对原Outbox及历史fencing | 该精确切点已实测，不能扩称全部Broker故障组合；最终源码与适用部分确认/超时回执仍按影响归集 |
 | 3.4 单条完整链路比较 | 不变沙箱、执行策略/凭据快照、准备成本与参考 Adapter | E1：B0→B2 200 条比较及逐项 oracle，触发 B3 | 比较支持路线选择，不是最终批次吞吐结论；当前候选的必要回归/OCR待完成 |
 | 3.5 参考目标有界恢复 | `reference_adapter`、单条/批次重试白名单、共享 deadline/额外重试预算、独立成员事务 | E14 已真实中断目标60秒并自动完成1000条；E34 目标提交后结果丢失由稳定身份恢复，无重复有效写入 | 两轮均绑定其冻结候选与参考目标；权限/重试预算的适用回执继续核对，不宣称任意Adapter自动恢复 |
 | 3.6 B2 路线裁决 | `b1-b2-results`、D9、`b3-contract` 与业务批次 delta | E1 已用完整 200 条真实积压窗口触发 B3 | 路线依据已记录；最终代码/OCR和 B4 门禁未完成，不以分位数倒数裁决容量 |
-| 3.7 T1 接管合并 | T1Unit、async HTTP collector、共享 intake 8 连接、Rabbit header 前置预算/最多16 credit、首条工作区保护与受限剩余收集窗口 | E2/E3/E7 支持原合并边界；E18/E25 是后续16条路线实测，E30为启动限流/年龄查询回归，E33为最新RabbitMQ正式容量 | 早期r2失败不改写；HTTP正式容量及完整OCR尚未闭合，不以prefetch16推定每组满16或HTTP也达标 |
+| 3.7 T1 接管合并 | T1Unit、async HTTP collector、共享 intake 8 连接、Rabbit header 前置预算/最多16 credit、首条工作区保护与受限剩余收集窗口 | E2/E3/E7的原合并边界；E30启动限流/年龄查询；E33的D389 Rabbit正式容量；E44 T1时钟/字节、E47 HTTP16条/25ms定向验证 | HTTP正式容量未通过；d689旧Rabbit200失败及新ns1小样本分列E48/E49，不由prefetch/组上限推定容量 |
 | 4.1 B3 专项合同 | [b3-contract](b3-contract.md)、business-event-batch delta、D9；精确 Activation/override、结果/取消/留存规则 | E1 的触发证据；专项合同及 delta 已存在且可核对 | 最终合同与代码/文档的审查仍须收齐；没有用户界面声明或整批进程成功替代成员证明的例外 |
-| 4.2 有界执行与逐条结算 | Batch/Member 模型、0052/0053、strict finish、Slot/Attempt、replay/skip、整体 GC | E33 正常10000条、E34 Worker恢复；E36 重叠重放份额GC；E37 三种真实Worker负结果和独立目标效果；E42 两类调度SLA | 明确三种负结果已实测，不扩称全部取消/异常矩阵；显式unknown不是网络提交未知。HTTP容量和完整OCR仍未完成，不整项打勾 |
+| 4.2 有界执行与逐条结算 | Batch/Member 模型、0052/0053、strict finish、Slot/Attempt、replay/skip、整体 GC | E33/E34正常与恢复；E36共享GC；E37真实Worker负结果；E42两类SLA；E46投影/协议及严格数据库拒绝断言的独立回执 | 不扩称全部异常/取消矩阵；E48结果未知首败原因仍在诊断，HTTP容量和完整OCR未完成，不整项打勾 |
 | 4.3 批次说明与比较 | 中英文业务批次指南、版本 marker、输入/结果 schema、逐条投影与技术详情 | E4/E6/E8 的逐项正确结果；中英文 HTTP 指南已区分 MicroT1 与业务批次 | 最终前后对照、UI 实际操作及 OCR 未完；文档更新不代表用户流程或容量通过 |
-| 5.1 界面与原操作习惯 | HTTP来源抽屉、处理方式及代码声明、接收记录、共享执行提示、中英文资源 | E14 桌面容量暂停、处理中停止接收后原责任排空已真实验证；相应组件定向检查已有记录 | 完整创建/取消/保存/明确开启、权限及中英文交互/视觉回执仍待归集；既有390px拥挤布局不称移动端通过 |
-| 5.2 正式夹具与预冻结 | `workload` / target / management probe、容量 profile、原文/业务哈希、空闲接口基线 | E0/E1 方法、E23 同预算发生器资格；E33 正式RabbitMQ完整清单；e01 HTTP20/200及后续正式轮次的独立冻结 | 正式HTTP结果尚未产生，不提前填成功；实际profile/输入账单/资源/空闲p95均绑定各轮清单，不运行中加额 |
-| 5.3 两来源各一万条 | 独立目标与平台 oracle；5/60/600 秒分别核验 | E4/E8/E15/E18/E25 保留历次Rabbit接管失败；E33 D389 r6 正式10000条通过44.867576秒接管/167.047143秒接管后完成及双oracle | RabbitMQ该轮已通过；e01 HTTP正式结果仍待取得，不能代用Rabbit结果。后继差异按路径核对，不跨SHA拼一次最终通过 |
-| 5.4 管理面、资源及10分钟 | management/resource probe、根 cgroup、并发/队列/账本、排空后600 s | E33 的2502次正确管理请求、每接口601个post样本、839个完整根资源样本及完整600秒观察通过 | 早期142.984秒、≤2.065秒及分页一致性首败保留，未跨轮累加；HTTP正式轮次管理/资源和完整观察仍待验证 |
+| 5.1 界面与原操作习惯 | HTTP来源抽屉、处理方式及代码声明、接收记录、共享执行提示、中英文资源 | E14 桌面容量暂停、处理中停止接收后原责任排空已真实验证；相应组件定向检查已有记录 | 完整创建/取消/保存/明确开启流程仍缺回执，访问工具限制后已停止该次尝试；不能据此判UI通过或产品失败，既有390px布局也不称移动端通过 |
+| 5.2 正式夹具与预冻结 | `workload` / target / management probe、容量 profile、原文/业务哈希、空闲接口基线 | E0/E1方法、E23发生器资格、E33正式Rabbit清单；E43保留e01预检与正式首败，E49另核新ns1夹具 | 每轮profile、输入、资源和时钟绑定各自冻结清单；夹具资格或小样本不替代正式一万条，运行中不加额 |
+| 5.3 两来源各一万条 | 独立目标与平台 oracle；5/60/600 秒分别核验 | 历次Rabbit接管首败保留；E33只证明D389正式r6；E43的e01 HTTP R6失败，E48/E49分列d689旧200首败与ns1后继小样本 | 尚无最终候选两来源各一万条完整通过；实际已接管项成功不缩小原期望，新小样本不覆盖旧首败 |
+| 5.4 管理面、资源及10分钟 | management/resource probe、根 cgroup、并发/队列/账本、排空后600 s | E33 的2502次正确管理请求、每接口601个post样本、839个完整根资源样本及完整600秒观察通过 | 早期短观察及分页首败保留；E43管理压力p95约650–683ms不判过，HTTP仍缺正式同步管理/资源及完整600秒观察 |
 | 5.5 目标中断60秒 | 独立 RabbitMQ1,000 条故障轮次；失败/恢复/逐项幂等、无人工处置 | E14：参考目标真实关闭至少60.000263秒、11次真实连接失败，1000条双oracle通过，恢复后完整责任核验上界25.192795秒 | 约定参考目标范围已有通过；不替代正常容量或任意Adapter恢复，最终候选变化仍须按影响核验 |
 | 5.6 精确故障点 | HTTP/Rabbit T1 前后、代表性 Outbox、Claim/journal、目标提交后回报前；每点20条 | E27 四个HTTP/Rabbit T1切点、E28 Outbox、E31 Claim/journal、E34 目标提交后结果前，七个独立20条准确切点均有真实通过 | 各自candidate/切面/120与600秒/最终双oracle均保留；E21/E28/E32旧harness或生命周期失败不改写，后继HTTP变化做影响核对 |
 | 5.7 背压、权限与旧来源 | 容量/磁盘、身份/绑定、管理锁、旧来源 ACK/开关、K8s 完成与放弃 | E1/E2/E3；E36 七个逐项PG含旧pending/failed/Kubernetes控制责任与计费升级；E38路由/profile合同；E39有界HTTP拒绝释放 | 这些是明确路径证据，不是所有旧来源SDK/权限/开关全矩阵；旧50/179聚合selectors与skip原因不倒推 |
-| 5.8 公开报告与复审 | 本稿、测量报告、中英文指南、运维/故障说明 | 本稿分列已通过Rabbit容量/七故障/SLA与所有首败，中英文指南同步有界资源和持久配额幂等读回边界 | HTTP正式结果、完整UI及最终OCR/复审仍待完成；文档存在不将未完成门槛改成通过 |
-| 6.1 需求逐项闭合 | 本覆盖表、五能力 delta、Issue 验收与实际证据 | 本稿已映射E14、E27/E28/E31/E34、E33及E36–E42的实际范围 | 仍为draft：HTTP正式容量/完整观察、完整UI及最终审查未闭合，不申请Issue完结；不再否认已取得的Rabbit/故障/SLA证据 |
-| 6.2 规格/文档与检查 | active change、HTTP/业务批次指南、配置/迁移/回退、必要静态检查 | 已登记静态检查与报告；本次仅澄清D3/D6、HTTP delta、双语说明及本覆盖表，保留数据/迁移/回退合同 | 文档与OpenSpec校验不替代业务验收；正式规格同步与归档仍待全部必要门禁完成 |
-| 6.3 最终审查与交付 | AGENTS规定的 OCR preview/coverage/终态、修复验证、精确 base/head | 固定OCR1.13.3/Kimi的逐scope审查与已核实修复持续归集；E22/E29 的partial、预算及过滤边界保留 | 尚无覆盖最终全部差异且无未决实质问题的完整回执；最终manifest/复审、干净候选通过后通知用户，停在PR前，不推送或自动合并 |
+| 5.8 公开报告与复审 | 本稿、测量报告、中英文指南、运维/故障说明 | 本稿保留Rabbit正式容量、七故障、e01 SLA与所有首败，新增E43–E52区分独立定向回归、夹具、小样本、SLA及正式HTTP首败 | HTTP正式容量、完整UI及最终Kimi覆盖/复审未完成，报告与规格校验不能改写验收结论 |
+| 6.1 需求逐项闭合 | 本覆盖表、五能力 delta、Issue 验收与实际证据 | 本稿映射历史E0–E42及新增E43–E49的实际范围 | 仍为draft：正式容量/完整观察、完整UI和审查缺口未闭合，不申请Issue完结或归档 |
+| 6.2 规格/文档与检查 | active change、HTTP/业务批次指南、配置/迁移/回退、必要静态检查 | 本次仅将覆盖稿同步到d689已发生证据；各升级、合同说明与源码仍按独立回执绑定 | 文档和OpenSpec校验不替代验收；正式规格同步、任务完成及归档等待全部必要门禁 |
+| 6.3 最终审查与交付 | AGENTS规定的 OCR preview/coverage/终态、修复验证、精确 base/head | 固定OCR1.13.3/Kimi逐scope与组合修复链；冻结d689共161路径，81有当前内容审查链、80缺覆盖 | 服务额度阻塞、完整审查未完成；保留partial/失败/工具局限和未决意见，不把审查链计数当质量批准。门禁闭合后先通知用户，停在PR前 |
 
 ## 五能力 delta 对照
 
@@ -92,20 +92,20 @@ E2 的核心文件 SHA-256 为 `cf4a2c134ee6217d08256333b46d0ce2a1522857c5118c2d
 | --- | --- | --- |
 | [durable-http-ingress](specs/durable-http-ingress/spec.md)：旧 Webhook区分、持久身份/状态、原始正文、固定绑定、入口资源、安全重试、当前 token/路由留存、HTTP 独立合并错误 | HTTP、容量/绑定、T1 合并；2.1–2.8、3.7、5.1 | E27真实T1切点、E38路由、E39/E40/E41拒绝/取消/未知提交及新hint支持明确范围；完整UI/ACL与HTTP正式容量待最终核验，幂等读回仍受前置有限请求资源约束 |
 | [event-delivery](specs/event-delivery/spec.md)：稳定首次输入、各层容量/责任释放、两类有界推进、发布确认、参考目标恢复、T1逐条责任/确认 | 账本、scheduler/outbox、reference Adapter、T1Unit；2.3–2.7、3.1–3.7、5.5–5.7 | E33 RabbitMQ容量与资源、E27/E28/E31/E34准确故障、E36保留账本、E42两类调度SLA已分列证明；E4/E8等接管首败保留，不扩称全矩阵 |
-| [business-event-batch](specs/business-event-batch/spec.md)：显式选择/固定绑定、原子成员集合、strict结果、逐成员处置/共享取消、共享副本保护 | Batch/Member、0052/0053、finish/Admission/Slot、replay/skip/GC、Web声明；4.1–4.3 | E33/E34 支持对应正常与恢复轮次；E36 支持重叠重放份额 GC；E37 支持真实 Worker 三种负结果、目标效果与共享 Admission/保留预算分层结算，不扩大为全部异常或取消矩阵通过 |
+| [business-event-batch](specs/business-event-batch/spec.md)：显式选择/固定绑定、原子成员集合、strict结果、逐成员处置/共享取消、共享副本保护 | Batch/Member、0052–0054、finish/Admission/Slot、replay/skip/GC、Web声明；4.1–4.3 | E33/E34 支持对应正常与恢复轮次；E36 支持重叠重放份额 GC；E37 支持真实 Worker 三种负结果、目标效果与共享 Admission/保留预算分层结算，不扩大为全部异常或取消矩阵通过 |
 | [event-subscription-management](specs/event-subscription-management/spec.md)：保存不自动开启、平台/入口权限和生效、被动来源所有权、适配器内普通用户呈现 | management/schema/registry、runtime/lease、Web/i18n；2.2、2.4–2.6、5.1、5.7 | E2/E3提供生命周期/池/认证，E14桌面容量/停止排空、E38路由/profile合同已实际验证；完整创建/取消、ACL及最终双语UI回执仍待归集 |
 | [ingress-capacity-validation](specs/ingress-capacity-validation/spec.md)：B0、同资源、分阶段成本、正式两来源5/60/600、管理/长期责任、准确故障、B3前置 | 测量清单与双oracle、资源/管理/故障探针；3.6、4.1、5.2–5.8、6.1–6.3 | B0/B2路线已记录；历史Rabbit接管及分页首败保留，E33 r6容量/600秒和七准确切点已通过各自范围；HTTP正式容量、完整UI/最终审查仍未闭合 |
 
 ## 最终关闭前的必要收口
 
-1. RabbitMQ 当前受检路线是最多16 credit，不再以早期4条候选描述现状；E33 已完成真实一万条及完整600秒观察。保留历次失败，按最终差异核对该来源证据的适用资格，不以prefetch上限推定每组满16或按诊断外推吞吐。
-2. e01 的 HTTP20/200 双oracle及三项真实调度SLA已通过；正式 HTTP 结果仍待取得，须核对一万条原期望、5/60/600秒及全部拒绝/重试/未知结果核验，不能用小样本或 RabbitMQ 通过替代。
-3. E33 的管理p95/分页一致性/根cgroup资源与排空后600秒已有完整证据；HTTP仍须等本轮同步门禁结束。早期142.984秒、≤2.065秒不补写或跨轮累加，已完成的RabbitMQ观察也不再写作未测。
-4. E14 的1000条目标中断60秒及E27/E28/E31/E34七个精确20条切点已有各自冻结候选通过；后继改动只按影响复核，保留准确切面、自动恢复、逐条效果、Attempt/fencing/释放边界及所有首败，不能拼成同一SHA的一轮。
-5. 完成适配器内完整创建/取消/保存/明确开启等UI与权限回执。容量暂停及停止排空的已有桌面验证与尚缺流程分别记，不据构建或文案宣布全部UI通过。
-6. 最终规格/文档、Kimi逐文件覆盖与终态、修复及复审仍绑定最终候选；partial/过滤/预算边界不能忽略。必要工作未完成不归档、不勾完tasks；全部通过后先通知用户，停在提交PR之前。后续PR四项CI、main集成、部署和用户验收仍是独立门禁。
+1. E33 的D389 RabbitMQ一万条及完整600秒观察保留为该候选通过；E48的d689旧200条首败也保留。E49新ns1小样本通过不证明旧ID或inode假设，不覆盖原首败；后继差异的资格仍按路径核对。
+2. e01 HTTP R5只在发送前预检失败，R6则实际发送后未达到原10000条期望（E43）。d689 HTTP16条/25ms定向检查和20/200小样本不代替正式5/60/600秒；d689 SLA r5在瞬时队列收尾检查中断，r6三轮真实推进通过见E50；d689 HTTP正式R7仍失败见E51。
+3. 不将短观察拼成600秒，不将排空后空闲段的分位数代替压力窗口。E43管理压力p95约650–683ms不判过，最终HTTP同步管理/资源与完整观察门禁仍缺。
+4. E14目标中断60秒、E27/E28/E31/E34七个准确切点和E42 e01三项SLA已有各自证据；保留原切面、时限和首败，后继改动仅按影响核验，不拼成同一SHA的一轮。
+5. 完整UI创建/取消/保存/明确开启等实际流程尚缺，访问工具限制后已停止该次尝试；已有容量暂停/停止排空证据保持其范围，不据组件测试或构建宣布UI全通过。
+6. 冻结d689的161路径中81有当前内容审查链、80缺覆盖，Kimi服务额度阻塞尚未完成；本次或后续内容变化仍须绑定新差异。任务不勾完、规格不归档、不提交PR；全部必要门禁通过后先通知用户。PR四项CI、main集成、部署和用户审查仍是后续独立门禁。
 
-## 2026-10-26 后续核验补记
+## 后续核验补记（更新至2026-10-27）
 
 本节覆盖此前表内的待验事实，不将不同候选合成最终通过；前面的旧轮首败继续保留。
 
@@ -137,6 +137,21 @@ E2 的核心文件 SHA-256 为 `cf4a2c134ee6217d08256333b46d0ce2a1522857c5118c2d
 | E40 | OCR B3审查组的HTTP取消/timer/提交不明断言补强，后纳入e01 | 4项纯检查 / 0.65秒通过，核对取消真实未释放及timer不占native/不越收集截止；另2项真实PG / 2.78秒核对提交前失败、提交后结果不明均不提前返回成功。独立库已按大小写折叠核对清理。最初混合大小写库标识在setup阶段失败，发生在业务用例之前；原首败与清理回执保留，改全小写新库通过，无产品修改。不是业务批次全异常矩阵。 |
 | E41 | `e01d8555d0d02428381d84553144367ca808533e` 的HTTP提交后唤醒与真实小样本 | 14项纯检查 / 0.05秒通过；只在已知commit成功且有202新项后提示一次，dup/GET/拒绝/失败或未知不提示，提示异常不改变已知响应或native预算。E40的2项真实提交未知PG针对新ingress文件哈希复核；不重复计数。HTTP20/200目标与平台独立oracle均通过，宿主启动至观察成功上界3.102369/7.219195秒，不当正式吞吐。 |
 | E42 | e01 `b222-b2-sla-e01-r4` 三个独立新库真实调度轮次 | ten、真实失败头+150pending、丢失10次结果提示三轮，pending持久推进上界最大0.920662693/1.111773483/1.026526534秒，terminal确认上界最大0.240696539/0.188926412/0.985250738秒。29健康ID的独立Target/Control oracle、每轮Broker0、observer0错、正常停10源及恢复原资源/基线均通过；失败头与150pending留存。使用同Control单调时钟包围真实root commit，观察器有界元数据读取开销未扣除。D389先前ten独立通过与blocked R3首败2.031808743–2.044867208秒保留，e01未复用旧结果而重测三轮；不代替容量或完整OCR。 |
+| E43 | e01 HTTP正式 R5预检与独立R6首败 | R5在producer及资源采样启动前就绪失败，实际接管0，正常停源；不当容量失败。独立R6首发9004/10000，996未发，28560次POST；客户端确认3594、拒绝24949、未知17。实际3610项全部业务成功，但原10000期望的目标/平台两oracle均失败、缺失6390；未完成600秒观察。管理压力窗口p95约650–683ms不判过，不合并空闲段替代压力结果，不缩小期望或抹去任何首败。 |
+| E44 | 0054保护与T1时钟/字节边界的独立PG回执 | 0054空terminal_at不能放行批次Receipt TTL：4项guard PG及另1项升级代表通过，旧0053复现首败保留；旧0052/0053文件未被改写。T1另6项PG通过，覆盖受控1秒速率窗口、真实原文加完整Envelope恰1MiB与+1边界。不同回执与源码哈希分别保留，不累加成全体升级或B1通过。 |
+| E45 | Kubernetes平台分类与调度SQL的独立定向范围 | K8s回执24项通过，区分平台容量配置不可用、磁盘保护等待与坏消息，保留原配额/内容故障优先级；不称全SDK/全权限矩阵。SQL优化另9项PG通过，核查询预算与推进语义；不以数据库测试替代d689真实调度SLA。 |
+| E46 | 批次视图/协议与严格拒绝断言 | view另3项PG通过，核单Session跨事务不增加模式缓存、每次单SELECT、实际重放override/顺序/latest及逐成员展示；protocol另23项纯检查含独立固定ASCII/SHA和内容/顺序变更拒绝原绑定，产品digest未改。既有8个数据库拒绝变体另经真实PG核SQLSTATE23514与各自精确guard消息，既有40001并发检查未改。各回执独立，不重复累加。 |
+| E47 | d689所含HTTP16条/25ms收集候选 | 39项纯检查与13项真实PG通过，覆盖有界收集/提交/取消及字节边界，沿用既有请求、原生工作、字节和连接预算；RabbitMQ16条/5ms及普通单条路径不扩大。不是正式一万条、600秒观察或完整UI验收。 |
+| E48 | d689初轮小样本与RabbitMQ200条首败 | HTTP20/200及RabbitMQ20的两个独立oracle通过。随后RabbitMQ200条实际接管200、业务成功186、14项unknown，成员错误码result_unavailable；执行288记录workspace_cleanup_unknown。来源正常停用，14项失败与原200期望保留，两个原200 oracle均失败。原因仍在诊断，不将猜测当已证实；后继成功不抹去本轮首败。 |
+| E49 | 同d689的新ns1夹具与四个独立小样本 | 仅夹具避免执行标识复用：两条序列使用1000000–1999999号段、NO CYCLE，13项纯检查及fresh ns1序号PG成立，67表含alembic的数据哈希不变，产品源码未改；分配登记作为受保护夹具状态保留。新ns1 RabbitMQ20/200的宿主启动至观察成功上界约2.0454/5.1607秒；HTTP20/200分别2.049059583/6.167612秒。四轮目标与平台full oracle核精确ID/数量/成员均通过、Admission归零且正常停源。旧14项失败离线保留，不据此认定历史inode/ID是原失败根因；不代替一万条、完整观察或正式容量；新的独立SLA结果见E50。 |
+
+| E50 | d689 独立SLA r5首败与r6三轮 | r5普通10入口通过；阻塞场景的目标、平台及原始2秒推进记录通过，但瞬时队列仍有5条待消费而流程attention，后续只读观察为0，原记录不改pass。夹具只将业务完成后的队列检查改为45秒绝对期限等待，保持原T0/2秒/目标与平台判据，不purge或重发；新r6三轮全部通过：pending上界0.691932780/1.103422588/0.677319045秒，完成确认上界0.101641021/0.189308037/1.015495612秒；通知丢失恰10次，observer errors为0。目标独立核10/9/10项及完整平台oracle通过，来源停用、队列排空、正常配置恢复；有意失败头及150项pending保存在独立数据库，不以SLA结果代替容量或OCR。 |
+| E51 | d689 HTTP正式R7，原10000期望 | 首发9278，722未发；29215次POST，客户端确认6732、拒绝22454、未知29，Retry-After校验无异常。实际6759项全部成功，目标6759次有效写入/尝试，平台逐项核6759成员、80批次/尝试，原10000期望两oracle仍失败且缺3241；Admission计数/字节与active全0，来源正常停用。管理867次均200、无漏采或超时，实际发压代理窗p95三项约342/390/347ms，不冒充完整10000的正式phase。293个资源样本无新增OOM/限流；Control自身最忙约59秒均0.930核，跨VM窗口不做精确对齐。排空后仅观察约121秒，不算600秒通过；故障标准、原期望和首败均保留。 |
+| E52 | R7只读分组与配额边界 | 6759个新项落在1066个Delivery事务时间戳桶，平均6.34、最大16，满16的桶13个；仅为含新项事务的条件估计，不包括纯重复/拒绝事务，也不能排除同微秒碰撞，不称总cohort数。最终来源历史字节占51.53%、全局29.44%，pending/阻塞与控制预留归零；最终快照不能排除先前瞬时门禁。新项状态已经纯内存生成，没有待消除的新项逐条详情SELECT；下一优化须以实际热点与拒绝分类为依据，不增加资源或降低标准。 |
+
+| E53 | d689 HTTP1000项的有界外置诊断及入口模型 | 同配置1000项目标/平台全对账通过，3774次POST精确闭合为1000个202及2774个429，所有拒绝均为`ingress_capacity_exceeded`，无transport error或unknown；该客户端计数及15秒/50Hz/GIL采样只作诊断。419个有效样本中Main153、原生入口142、维护88、AnyIO34，包含调用栈重叠不累加。实际Admission的125并发无网络模型显示BaseHTTP让125个请求都先通过提示再由内层拒绝100个；直接ASGI链让100个在外层被拒绝，均25成功/100拒绝、峰值25/最终0。模型含刻意hold屏障，不推真实吞吐；D7.3须另验认证、取消及原正式容量。 |
+
+| E54 | D7.3入口层等价改写的定向核验 | 106项禁网络纯检查通过，涵盖新边界36项、原Admission42项、大小限制25项及collector/cancel3项；另8项真实PG以账号/CSRF/跨入口、旧Webhook及持久HTTP认证/重复/冲突/状态查询为范围，8 passed、0 skip/0fail、13.492秒，运行前后源码哈希不变，独立测试库已清理。宿主独立差异审查未见确定问题；随后只补强一个既有真实native Future取消代表，实际穿过新边界：取消时字节与work名额保留，实际工作结束才归零，1项纯检查通过。两来源小样本、SLA及新正式HTTP尚未执行，OCR仍有额度与覆盖缺口，不将本轮当最终通过。 |
 
 ### E36 / E37 可复核索引
 
@@ -162,3 +177,18 @@ E37 三场景收尾索引 SHA-256 为 `7d23826c87b8411509dc8d6a378f3df196b1f65f5
 - E40 的四项为 `test_cancelled_request_keeps_native_work_and_bytes_bounded`、`test_cancel_one_waiter_keeps_group_and_other_results`、`test_sparse_group_timer_never_waits_in_native_thread`、`test_delayed_timer_cannot_admit_a_request_after_collection_deadline`；提交未知两项为 `test_group_commit_loss_never_exposes_success_before_known_commit[False/True]`。它们是新的明确selectors，不倒推旧聚合回执。
 - E41 绑定 `backend/src/dlr/control/api/ingress.py` SHA-256 `e56bb8d6136d0d432b14ddd5188be3b1d7fde18ce4b8f8a9e77fd9af78d18256`、`backend/tests/test_issue222_http_commit_notification.py` SHA-256 `2253467749619a0fc711c76a85f0b35ee408c1a997f0b3037148b904cbb3390b`。
 - E42 完整三轮/恢复汇总 SHA-256 为 `7f969161690ead2c374cdcdd093c13513a10bc44389f2604c5e879a0ebfce0c9`，首次producer前scope为 `4a3492bdeb44f1bd44238dd8cf55ff6283c7109b910d75f385c55cd7d5aaef86`，收回原始观察器/请求/Target证据索引为 `3026f60c5a65af61d064392062c07f94d18869e466b19b5fd76232df3a254c71`。一次性PG测试库已按其回执清理；容量、故障及SLA证据库按保留策略留存，不能混称已全部删除。
+
+### E43–E49 最新范围索引
+
+以下是各自独立回执的SHA-256，不将测试次数、旧候选或不同运行合并成最终通过；完整材料留在私有证据目录，本文不披露路径、地址、账户或凭据。
+
+- E43：R5发送前预检关闭回执 `0d60bd91e3c4914eff0a39f4c5e25fde73e75f6439d943e8499b6fb00371f371`；R6发生器结果 `cb371470e7f9b063ffb46e55057a268f90befb6fa5d2c62c46b5a46787bace9b`、原10000期望的Target核验 `460dd07a60f26ef12c10eaeaf9b189c2ab9048a319faf909f6b217c7fb726468` 与平台核验 `d9efd0908f4a11ae0e76ee2c14146f08cdfe315266930024ec968481bcf5835f`；管理原始采样 `f2213049a50b66f02688e1601cd8bbb9bdfcc5e6ac7b3ee8b38d725bf3b8e025`。压力窗口与空闲段分开，不用合并分位数改写压力结论。
+- E44：0054四项guard回执 `b7fd7786f11d319b8a550db7715085bf9856f30a340d4788441e6fcafed872eb`、另一个升级代表回执 `f428d915b1e00dcb383a7ea0329fd0ae602c2e031a50d3c5597b2b8f38b16e87`；T1六项时钟/字节PG `83a3433430e0b0df224bcb6dbd710af7302645a76177c9bafafd04a4139bbaad`。旧失败及各轮源码/测试哈希均由对应索引固定。
+- E45：Kubernetes平台分类回执 `5b0d073e5b2925f486295cf10b487cdfc66ae41781cc3bace0d4c6eaec20421d`；调度SQL九项PG `75a345c4693c0ed4d06889435d37db058f6084a426eb82b07a8900d8787f4d74`。
+- E46：批次view三项PG/protocol二十三项纯检查 `c3316f7266776360ea41190bd9f5eb4e04b6578dd9b27983797b05c2aeb65cdc`；八个严格23514/guard断言PG `7ca8437e2ef4d8c001e96727f7d8735df4bdce663dd6280117e5dc5ab452807c`。一次性测试库均按各自回执清理，不混同需保留的失败证据库。
+- E47：HTTP16条/25ms定向检查 `de00a3929f499570b2c124f1e6ffe5b5f6695b46afbac087dc78119f0b4e0725`；39项纯检查与13项PG分开记录，修复后只复跑受影响边界，未据此宣布负载通过。
+- E48：旧Rabbit200原期望及两oracle首败 `86081282f06f2b06ca31f803f97b75e4aa799012f7aad22f092f9f9186450de6`、执行错误读回 `30be527f79fc94ed9c124662c9457d2765f8a11fed797f323f12e1c1363ce783`、正常停止与失败保留 `c8d4fb4a1c014690860efef2d476ac69c969a736a694069df920785abe827f41`；不把机器错误码当根因证明。
+- E49：ns1夹具独立资格 `de4db1bb1c406e3ae76e8b95fd47bbcf6ebaf03ddf6dfdaedd9a1e918c6fe226`；四个小样本的full oracle与停止读回 `d7ecde7101bcbe8cb012ca3a6ebff04c3ee9617b51068c0b03c68cc1a08e838e`，明确保留旧失败且正式容量未通过。
+- 冻结d689的当前内容审查链/缺口清单 `fcc6c7239deb9abe1c37f2d6427a050bc5fb8ad790b5edab2f06c6080cb6d78e`；完整UI流程受工具限制停止的回执 `5b0204f56597627064f4ca5625b8040cba9f5697bd8ce7f377562f361c90aaa0`。两者均不是完成或批准回执。
+
+- E53诊断采样 `8c50ca2c6c66a6f830878138141decd7f384ebbb9f942ee893b0047d337cc250`，宿主离线分析 `8f044ac701edcdaf26a6053191650458bb9bc77fb6a44ad34e8e7526c0f260e3`；E54完整定向回执 `31b729c5123fc30252d23d0aab8adbd7eb4fddd2081ed99acadd593575d8c154`。

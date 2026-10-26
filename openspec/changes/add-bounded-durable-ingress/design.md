@@ -151,6 +151,19 @@ HTTP `e01d855` 正式 R6 失败：原期望 10,000，实际接管并完成 3,610
 
 有界等待摊薄固定请求成本的思路可对照 [Apache Kafka batching/linger说明](https://kafka.apache.org/41/configuration/producer-configs/#producerconfigs_linger.ms)；16条/25ms是DLR本轮待验证选择，不引用Kafka吞吐作为DLR结果。
 
+### D7.3 HTTP 入口层的等价 ASGI 改写
+
+R7在原标准下仍失败：原10000期望仅6759项实际接管并全部结清，两个full oracle仍缺3241；首发9278/10000、管理压力代理窗已低于500ms，不能据此判整轮通过。固定d689的1000项外置诊断中，3774次POST精确闭合为1000个202和2774个429，拒绝均为`ingress_capacity_exceeded`；该诊断含客户端机器码计数和采样开销，不能替代正式验收。419个GIL样本中Main为153个，BaseHTTP任务层与路由包含样本重叠，不累加为可节省CPU。
+
+以实际`HttpIngressAdmission`与125并发的无网络有界模型验证任务切换：原BaseHTTP路径125个请求均在内层预留前通过外层提示，随后仅25个取得等价正文名额、100个在内层拒绝；直接ASGI链仍为25个接收、100个拒绝、峰值25且最终0，但100个在外层被拒绝。模型有刻意hold屏障，不能从模型耗时外推真实吞吐。
+
+- 只将现有`_entry_boundary`从BaseHTTP请求/响应接口等价改为直接ASGI调用链，`HttpIngressAdmission`仍是最外层用户中间件；不绕过FastAPI、来源凭据、T1或原资源权威检查，不新增外层permit、线程、队列或缓存。
+- 可信入口仍仅由原反向代理私有URI前缀判定，按原规则原地处理`path`与bytes类型`raw_path`；bare prefix仍404，普通token入口不采用客户端声明的账号模式。仅account入口的非safe、非public-hook/ingress请求执行原double-submit CSRF。原错误内容、前缀边界与Webhook豁免不变；非HTTP scope原样透传，不读正文。
+- 取消、慢请求、读取超时、提交未知、旧记录查询及预算释放继续由原请求路径负责；不改变原32请求/8MiB、8原生工作、8+4连接、body/Envelope上限、HTTP16条/25ms或原5/60/600及600秒观察标准。
+- 先核token/account/prefix/raw_path/CSRF等价、普通与两种旧Webhook/public-ingress代表路径、并发忙提示及取消释放，再用新候选两来源20/200与受影响真实入口验证；只在必要检查和差异审查完成后重验正式HTTP。新实现存在或模型通过不代表容量、UI或完整OCR通过。
+
+直接ASGI中间件的调用方式参照 [Starlette官方说明](https://starlette.dev/middleware/#pure-asgi-middleware)；项目的具体开销与提示迟滞以本轮采样及有界模型为依据，不把框架文档当性能保证。
+
 ### D8. 参考目标的自动恢复策略
 
 首轮选择 **参考 Python Adapter 内有界重试**，避免本单把全部 business_error 改成平台重试。只对白名单连接错误、SQLSTATE 08 类、40001 和 40P01 重试；唯一键内容冲突、语法/权限/数据错误立即明确失败。结果不明通过同稳定键的幂等写入与内容核验恢复，不盲目增加业务副作用。

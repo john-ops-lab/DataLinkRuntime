@@ -109,3 +109,13 @@ HTTP 多条模式的收集 SHALL 在 async 层有界完成，不让原生线程�
 #### Scenario: 进程退出后停用被动 HTTP 来源
 - **WHEN** HTTP 持久租约仍由已退出进程的旧 owner 占有，而管理员停用来源
 - **THEN** 在原锁与 fence 下同事务使该被动租约失效并显示已停止，无须等本地不存在的 SDK 回调；原已接管责任继续排空，未结束请求工作及其独立预算不能提前释放，MQ 仍依原生关闭事实确认结束
+
+### Requirement: Preserve the trusted entry boundary during HTTP middleware optimization
+The system SHALL preserve token/account entry trust, private-prefix path/raw_path handling, bare-prefix rejection, existing double-submit CSRF and public-hook/ingress exemptions when replacing the boundary with direct ASGI calls. Non-HTTP scopes SHALL pass through unchanged.
+
+#### Scenario: Equivalent busy rejection without changing responsibility
+- **WHEN** concurrent HTTP calls encounter exhausted existing request or body capacity
+- **THEN** the system MAY avoid unnecessary middleware task allocation before returning the same bounded refusal
+- **AND** accepted calls SHALL retain the original reservation ownership until the underlying work ends, including cancellation and unknown commit cases
+- **AND** the optimization SHALL keep the FastAPI route, source authentication, T1 and commit-before-success checks and all existing budgets, without an additional permit or queue
+- **AND** model tests SHALL NOT replace real functional or capacity acceptance.

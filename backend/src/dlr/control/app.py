@@ -3,14 +3,14 @@
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from dlr.common.config import settings, validate_deployment_configuration
 from dlr.common.platform_logging import configure_platform_logging
@@ -64,6 +64,54 @@ from dlr.control.services.subscription_runtime import get_runtime
 from dlr.control.template_catalog import get_template_catalog
 
 logger = logging.getLogger("dlr.control.app")
+
+
+class _EntryBoundary:
+    """Assign account mode only from the private reverse-proxy URI prefix.
+
+    The account Nginx server rewrites public ``/api/...`` requests to
+    ``/__dlr_account/api/...``. That prefix is not proxied by the token
+    server and Control itself is not published as a host port, so this
+    boundary does not trust a client-controlled request header.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        account_prefix = "/__dlr_account"
+        path = scope["path"]
+        if path == account_prefix or path.startswith(f"{account_prefix}/"):
+            if path == account_prefix:
+                response = JSONResponse(status_code=404, content={"detail": "Not found"})
+                await response(scope, receive, send)
+                return
+            scope["dlr_entry_mode"] = "account"
+            scope["path"] = path[len(account_prefix) :]
+            raw_path = scope.get("raw_path")
+            if isinstance(raw_path, bytes):
+                scope["raw_path"] = raw_path[len(account_prefix) :]
+        else:
+            scope["dlr_entry_mode"] = "token"
+        # Account writes use the existing cookie/header double-submit check.
+        # Public Webhook and durable ingress retain their own Bearer auth;
+        # token entry keeps bypassing CSRF even when account cookies exist.
+        is_public_hook = scope["path"].startswith(("/api/hooks/", "/api/ingress/"))
+        if (
+            scope["dlr_entry_mode"] == "account"
+            and not is_public_hook
+            and scope["method"].upper() not in {"GET", "HEAD", "OPTIONS"}
+        ):
+            try:
+                require_csrf(Request(scope, receive=receive))
+            except HTTPException as exc:
+                response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 async def _demo_bootstrap_loop() -> None:
@@ -206,49 +254,7 @@ def create_app() -> FastAPI:
             content={"detail": detail},
         )
 
-    @app.middleware("http")
-    async def _entry_boundary(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        """Assign account mode only from the private reverse-proxy URI prefix.
-
-        The account Nginx server rewrites public ``/api/...`` requests to
-        ``/__dlr_account/api/...``. That prefix is not proxied by the token
-        server and Control itself is not published as a host port, so this
-        boundary does not trust a client-controlled request header.
-        """
-        account_prefix = "/__dlr_account"
-        path = request.scope["path"]
-        if path == account_prefix or path.startswith(f"{account_prefix}/"):
-            if path == account_prefix:
-                return JSONResponse(status_code=404, content={"detail": "Not found"})
-            request.scope["dlr_entry_mode"] = "account"
-            request.scope["path"] = path[len(account_prefix) :]
-            raw_path = request.scope.get("raw_path")
-            if isinstance(raw_path, bytes):
-                request.scope["raw_path"] = raw_path[len(account_prefix) :]
-        else:
-            request.scope["dlr_entry_mode"] = "token"
-        # Every non-safe request arriving through the account reverse-proxy
-        # boundary is cookie-authenticated and must carry the double-submit
-        # token. The public Webhook ingress is the exception: it is Bearer
-        # token-authenticated by the referenced Credential and is intentionally
-        # reachable through the account entry so copied hook URLs keep working.
-        # Token superadmin requests deliberately bypass this check so the
-        # legacy entry remains compatible even when account cookies exist for
-        # the same host on another port.
-        is_public_hook = request.scope["path"].startswith(("/api/hooks/", "/api/ingress/"))
-        if (
-            request.scope["dlr_entry_mode"] == "account"
-            and not is_public_hook
-            and request.method.upper() not in {"GET", "HEAD", "OPTIONS"}
-        ):
-            try:
-                require_csrf(request)
-            except HTTPException as exc:
-                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-        return await call_next(request)
+    app.add_middleware(_EntryBoundary)
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error_handler(
@@ -415,6 +421,6 @@ def create_app() -> FastAPI:
     app.include_router(cache_admin.router)
     app.include_router(events.router)
     # Last registered user middleware is outermost: reject only known-full
-    # ingress resources before BaseHTTPMiddleware allocates request tasks.
+    # ingress resources before entry checks and route work.
     app.add_middleware(HttpIngressAdmission, busy=ingress.admission_capacity_busy)
     return app

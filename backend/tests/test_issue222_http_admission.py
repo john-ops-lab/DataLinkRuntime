@@ -12,7 +12,7 @@ from starlette.requests import Request
 
 from dlr.control import db, security
 from dlr.control.api import ingress
-from dlr.control.app import create_app
+from dlr.control.app import _EntryBoundary, create_app
 from dlr.control.services.http_ingress_admission import HttpIngressAdmission
 from dlr.control.services.subscription_source import ApplicationBufferBudget
 
@@ -311,9 +311,10 @@ def test_cancelling_passed_request_retains_native_body_reservation(pool, monkeyp
             pass
 
         async def inner(request_scope, receive, send):
+            assert request_scope["dlr_entry_mode"] == "token"
             await ingress._request("route", Request(request_scope, receive), "Bearer token", "id")
 
-        app = HttpIngressAdmission(inner, busy=ingress.admission_capacity_busy)
+        app = HttpIngressAdmission(_EntryBoundary(inner), busy=ingress.admission_capacity_busy)
         task = asyncio.create_task(app(scope(), receive, send))
         try:
             async with asyncio.timeout(5):
@@ -324,10 +325,12 @@ def test_cancelling_passed_request_retains_native_body_reservation(pool, monkeyp
                     await task
                 assert pool.buffer.used_bytes == ingress.BODY_RESERVATION
                 assert pool.buffer.parent.used_bytes == ingress.BODY_RESERVATION
+                assert pool.work.used == 1
                 unblock.set()
                 while pool.buffer.used_bytes:
                     await asyncio.sleep(0.001)
                 assert pool.buffer.parent.used_bytes == 0
+                assert pool.work.used == 0
         finally:
             unblock.set()
 
