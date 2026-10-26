@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import heapq
 import json
 import logging
 import os
@@ -40,6 +41,7 @@ KINDS = {
 }
 MANIFEST_MAX_BYTES = 40 * 1024 * 1024
 HTTP_LOG_MAX_BYTES = 64 * 1024 * 1024
+HTTP_CONCURRENCY = 128
 RESULT_MAX_BYTES = 4 * 1024 * 1024
 MAX_ATTEMPTS = 64
 MAX_EVIDENCE_BYTES = 64 * 1024 * 1024
@@ -354,6 +356,16 @@ class HttpReply:
     retry_after: str | None = None
 
 
+@dataclass(slots=True)
+class _HttpItem:
+    index: int
+    row: dict[str, Any]
+    attempts: int = 0
+    receipt_id: int | None = None
+    event: dict[str, Any] | None = None
+    delay: int = 1
+
+
 def retry_after_seconds(value: str | None) -> tuple[int, bool]:
     """Only the contract's integer 1..30 seconds is valid, never wall-clock math."""
     if value is not None and value.isascii() and value.isdigit():
@@ -371,10 +383,12 @@ class HttpSender:
     ):
         self.config, self.inputs, self.sink, self.send = config, inputs, sink, send
         self.clock, self.sleep = clock, sleep
-        concurrency = config.get("http_concurrency", 128)
-        if type(concurrency) is not int or not 1 <= concurrency <= 128:
+        concurrency = config.get("http_concurrency", HTTP_CONCURRENCY)
+        if type(concurrency) is not int or not 1 <= concurrency <= HTTP_CONCURRENCY:
             raise FixtureError("invalid_http_concurrency")
+        self.concurrency = concurrency
         self.slots = asyncio.Semaphore(concurrency)
+        self.route = urlsplit(config["ingress_url"]).path
         self.first_round_done = asyncio.Event()
         self.first_accounted: set[int] = set()
         self.start = self.clock()
@@ -405,6 +419,7 @@ class HttpSender:
         self.first_statuses: Counter[str] = Counter()
         self.first_starts: list[float] = []
         self.last_accepted_at: float | None = None
+        self.request_tasks_peak = self.deferred_items_peak = 0
 
     def _mark_first(self, row, started=None):
         if row["seq"] in self.first_accounted:
@@ -465,7 +480,6 @@ class HttpSender:
         identity = value["receipt_id"]
         if identity < 1:
             return None, False
-        route = urlsplit(self.config["ingress_url"]).path
         valid_status = value.get("processing_status") in {
             "pending",
             "processing",
@@ -477,114 +491,227 @@ class HttpSender:
         }
         return identity, valid_status and value.get(
             "status_url"
-        ) == f"{route}/receipts/{identity}"
+        ) == f"{self.route}/receipts/{identity}"
 
-    async def _one(self, row):
-        count = 0
-        for attempt in range(1, 21):
-            if self.clock() >= (self.first_deadline if attempt == 1 else self.deadline):
-                if attempt == 1:
-                    self._mark_first(row)
-                break
-            delay = 1
-            identity = None
-            retry = False
-            status = 0
-            post_timing, query_timing = {}, {}
-            query_status = 0
-            invalid_retry_after = False
-            try:
-                reply = await self._request(
-                    "POST", row, first=attempt == 1, timing=post_timing
-                )
-                status = reply.status
-                self.statuses[str(status)] += 1
-                identity, valid = self._receipt(reply)
-                if status in {200, 202} and valid:
-                    outcome = initial_outcome = "accepted"
-                elif status in {429, 503}:
-                    delay, valid_header = retry_after_seconds(reply.retry_after)
-                    invalid_retry_after = not valid_header
-                    self.counts["invalid_retry_after"] += invalid_retry_after
-                    outcome, initial_outcome, retry = "rejected", "rejected", True
-                    self.counts["rejected"] += 1
-                elif status in {200, 202}:
-                    outcome, initial_outcome, retry = "unknown", "unknown", True
-                    if identity is not None:
-                        # The POST slot was released before this query waits
-                        # for all first IDs to be started or marked not_sent.
-                        query = await self._request(
-                            "GET", row, identity, timing=query_timing
-                        )
-                        query_status = query.status
-                        self.query_statuses[str(query_status)] += 1
-                        returned, valid = self._receipt(query)
-                        if query.status == 200 and valid and returned == identity:
-                            outcome, retry = "accepted", False
-                        elif query.status in {429, 503}:
-                            delay, valid_header = retry_after_seconds(query.retry_after)
-                            invalid_retry_after = not valid_header
-                            self.counts["invalid_retry_after"] += invalid_retry_after
-                else:
-                    outcome = initial_outcome = "permanent_rejection"
-                    self.counts["permanent_rejection"] += 1
-            except Exception:  # noqa: BLE001 - never log client exceptions or URLs
-                if "started" not in post_timing:
-                    if attempt == 1:
-                        self._mark_first(row)
-                    break
-                outcome, initial_outcome, retry = "unknown", "unknown", True
-            count = attempt
-            if initial_outcome == "unknown":
-                self.counts["unknown"] += 1
-            if attempt == 1:
-                self.first_statuses[str(status)] += 1
-                self.counts[f"first_{initial_outcome}"] += 1
-            event = {
-                "kind": "http_attempt",
-                "seq": row["seq"],
-                "attempt": attempt,
-                "started_ns": int(post_timing["started"] * 10**9),
-                "ended_ns": int(post_timing["ended"] * 10**9),
-                "status": status,
-                "outcome": outcome,
-                "queried": "started" in query_timing,
-            }
-            if invalid_retry_after:
-                event["invalid_retry_after"] = True
-            if "started" in query_timing:
-                event["query_status"] = query_status
-                event["query_started_ns"] = int(query_timing["started"] * 10**9)
-                event["query_ended_ns"] = int(query_timing["ended"] * 10**9)
-            self.sink.append(event)
-            if outcome == "accepted":
-                self.last_accepted_at = self.clock()
-                self.counts["accepted"] += 1
-                return {
-                    "seq": row["seq"],
-                    "attempts": count,
-                    "receipt_id": identity,
-                    "outcome": "accepted",
-                }
-            if not retry:
-                return {
-                    "seq": row["seq"],
-                    "attempts": count,
-                    "receipt_id": None,
-                    "outcome": outcome,
-                }
-            if self.clock() + delay >= self.deadline:
-                break
-            await self.sleep(delay)
+    def _outcome(self, item, outcome="deadline_or_attempts_exhausted"):
         return {
-            "seq": row["seq"],
-            "attempts": count,
-            "receipt_id": None,
-            "outcome": "deadline_or_attempts_exhausted",
+            "seq": item.row["seq"],
+            "attempts": item.attempts,
+            "receipt_id": item.receipt_id if outcome == "accepted" else None,
+            "outcome": outcome,
         }
 
+    def _emit(self, item):
+        if item.event is not None:
+            self.sink.append(item.event)
+            item.event = None
+
+    def _accepted(self, item):
+        self._emit(item)
+        self.last_accepted_at = self.clock()
+        self.counts["accepted"] += 1
+        return "done", 0, self._outcome(item, "accepted")
+
+    def _retry(self, item):
+        self._emit(item)
+        due = self.clock() + item.delay
+        if item.attempts >= 20 or due >= self.deadline:
+            return "done", 0, self._outcome(item)
+        return "post", due, None
+
+    async def _post(self, item):
+        attempt = item.attempts + 1
+        timing = {}
+        status, identity, valid = 0, None, False
+        retry, initial_outcome, item.delay = True, "unknown", 1
+        invalid_retry_after = False
+        try:
+            reply = await self._request(
+                "POST", item.row, first=attempt == 1, timing=timing
+            )
+            status = reply.status
+            self.statuses[str(status)] += 1
+            identity, valid = self._receipt(reply)
+            if status in {200, 202} and valid:
+                initial_outcome = "accepted"
+            elif status in {429, 503}:
+                item.delay, valid_header = retry_after_seconds(reply.retry_after)
+                invalid_retry_after = not valid_header
+                self.counts["invalid_retry_after"] += invalid_retry_after
+                initial_outcome = "rejected"
+                self.counts["rejected"] += 1
+            elif status not in {200, 202}:
+                initial_outcome, retry = "permanent_rejection", False
+                self.counts["permanent_rejection"] += 1
+        except Exception:  # noqa: BLE001 - never log client exceptions or URLs
+            if "started" not in timing:
+                if attempt == 1:
+                    self._mark_first(item.row)
+                return "done", 0, self._outcome(item)
+        item.attempts, item.receipt_id = attempt, identity
+        if initial_outcome == "unknown":
+            self.counts["unknown"] += 1
+        if attempt == 1:
+            self.first_statuses[str(status)] += 1
+            self.counts[f"first_{initial_outcome}"] += 1
+        item.event = {
+            "kind": "http_attempt",
+            "seq": item.row["seq"],
+            "attempt": attempt,
+            "started_ns": int(timing["started"] * 10**9),
+            "ended_ns": int(timing["ended"] * 10**9),
+            "status": status,
+            "outcome": initial_outcome,
+            "queried": False,
+        }
+        if invalid_retry_after:
+            item.event["invalid_retry_after"] = True
+        if initial_outcome == "accepted":
+            return self._accepted(item)
+        if initial_outcome == "unknown" and identity is not None:
+            # Store one small state record instead of parking a per-ID Task
+            # at the first-round barrier. The request slot is already free.
+            return "query", self.clock(), None
+        if not retry:
+            self._emit(item)
+            return "done", 0, self._outcome(item, initial_outcome)
+        return self._retry(item)
+
+    async def _query(self, item):
+        timing = {}
+        status, accepted = 0, False
+        try:
+            reply = await self._request("GET", item.row, item.receipt_id, timing=timing)
+            status = reply.status
+            self.query_statuses[str(status)] += 1
+            returned, valid = self._receipt(reply)
+            accepted = status == 200 and valid and returned == item.receipt_id
+            if status in {429, 503}:
+                item.delay, valid_header = retry_after_seconds(reply.retry_after)
+                self.counts["invalid_retry_after"] += not valid_header
+                if not valid_header:
+                    item.event["invalid_retry_after"] = True
+        except Exception:  # noqa: BLE001, S110 - unknown queries never invent acceptance
+            pass
+        if "started" in timing:
+            item.event.update(
+                queried=True,
+                query_status=status,
+                query_started_ns=int(timing["started"] * 10**9),
+                query_ended_ns=int(timing["ended"] * 10**9),
+            )
+        if accepted:
+            item.event["outcome"] = "accepted"
+            return self._accepted(item)
+        return self._retry(item)
+
     async def run(self):
-        outcomes = await asyncio.gather(*(self._one(row) for row in self.inputs))
+        # There is one row state per finite manifest entry and C persistent
+        # workers. Backoff/query state has no Task, timer or HTTP slot.
+        items = [_HttpItem(index, row) for index, row in enumerate(self.inputs)]
+        outcomes = [None] * len(items)
+        cursor = 0
+        active, deferred = {}, []
+        ready = asyncio.Queue(maxsize=self.concurrency)
+        completed = asyncio.Queue(maxsize=self.concurrency)
+
+        async def worker():
+            while True:
+                stage, item = await ready.get()
+                try:
+                    result = await (
+                        self._post(item) if stage == "post" else self._query(item)
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:  # noqa: BLE001 - relay unchanged after bounded cleanup
+                    completed.put_nowait((item, None, error))
+                    return
+                else:
+                    completed.put_nowait((item, result, None))
+
+        workers = [
+            asyncio.create_task(worker())
+            for _ in range(min(self.concurrency, len(items)))
+        ]
+        try:
+            while cursor < len(items) or active or deferred:
+                now = self.clock()
+                if now >= self.first_deadline and not self.first_round_done.is_set():
+                    for item in items[cursor:]:
+                        self._mark_first(item.row)
+                        outcomes[item.index] = self._outcome(item)
+                    cursor = len(items)
+                    # A Task created before the cutoff may not have run yet.
+                    # _request still checks the actual start and cannot send
+                    # it late; do not strand the global first-round barrier.
+                    for item in active.values():
+                        self._mark_first(item.row)
+                if now >= self.deadline:
+                    while deferred:
+                        _, _, _, item = heapq.heappop(deferred)
+                        self._emit(item)
+                        outcomes[item.index] = self._outcome(item)
+                while len(active) < self.concurrency and now < self.deadline:
+                    if cursor < len(items):
+                        item, cursor = items[cursor], cursor + 1
+                        stage = "post"
+                    elif (
+                        self.first_round_done.is_set()
+                        and deferred
+                        and deferred[0][0] <= now
+                    ):
+                        _, _, stage, item = heapq.heappop(deferred)
+                    else:
+                        break
+                    ready.put_nowait((stage, item))
+                    active[item.index] = item
+                    self.request_tasks_peak = max(self.request_tasks_peak, len(active))
+                    now = self.clock()
+                if not active:
+                    if deferred:
+                        await self.sleep(
+                            max(0, min(deferred[0][0], self.deadline) - self.clock())
+                        )
+                    continue
+                wake = []
+                if not self.first_round_done.is_set() and now < self.first_deadline:
+                    wake.append(self.first_deadline)
+                if (
+                    self.first_round_done.is_set()
+                    and deferred
+                    and len(active) < self.concurrency
+                ):
+                    wake.append(deferred[0][0])
+                timeout = max(0, min(wake) - now) if wake else None
+                try:
+                    result = (
+                        await completed.get()
+                        if timeout is None
+                        else await asyncio.wait_for(completed.get(), timeout)
+                    )
+                except TimeoutError:
+                    continue
+                done = [result]
+                while not completed.empty():
+                    done.append(completed.get_nowait())
+                for item, result, error in done:
+                    active.pop(item.index)
+                    if error is not None:
+                        raise error
+                    stage, due, outcome = result
+                    if stage == "done":
+                        outcomes[item.index] = outcome
+                    else:
+                        heapq.heappush(deferred, (due, item.index, stage, item))
+                        self.deferred_items_peak = max(
+                            self.deferred_items_peak, len(deferred)
+                        )
+        finally:
+            for task in workers:
+                task.cancel()
+            if workers:
+                await asyncio.gather(*workers, return_exceptions=True)
         first = min(self.first_starts) if self.first_starts else None
         window = max(self.first_starts) - first if first is not None else None
         return {
@@ -608,15 +735,17 @@ class HttpSender:
             and self.last_accepted_at - first <= 60,
             "request_amplification": self.counts["post_requests"] / len(self.inputs),
             "retry_after_contract_passed": self.counts["invalid_retry_after"] == 0,
+            "scheduler": {
+                "request_tasks_peak": self.request_tasks_peak,
+                "deferred_items_peak": self.deferred_items_peak,
+            },
             "id_outcomes": outcomes,
             "dlr_acceptance_verified": False,
             "timing_scope": "producer-local monotonic only; platform arrival/commit measured separately",
         }
 
 
-async def http_send(config):
-    import httpx
-
+def _http_configuration(config):
     parsed = urlsplit(config["ingress_url"])
     token = config.get("token")
     if (
@@ -633,47 +762,117 @@ async def http_send(config):
         or not token.isprintable()
     ):
         raise FixtureError("invalid_private_http_configuration")
+    concurrency = config.get("http_concurrency", HTTP_CONCURRENCY)
+    if type(concurrency) is not int or not 1 <= concurrency <= HTTP_CONCURRENCY:
+        raise FixtureError("invalid_http_concurrency")
+    return config["ingress_url"], token, concurrency
+
+
+class HttpTransport:
+    """Pinned pooled HTTP/1.1 client; also used by isolated loopback diagnostics."""
+
+    def __init__(self, config):
+        self.url, self.token, self.concurrency = _http_configuration(config)
+        self.client = None
+
+    async def __aenter__(self):
+        import aiohttp
+
+        if aiohttp.__version__ != "3.14.5":
+            raise FixtureError("pinned_http_client_required")
+        connector = aiohttp.TCPConnector(
+            limit=self.concurrency,
+            limit_per_host=self.concurrency,
+            keepalive_timeout=5,
+            ttl_dns_cache=30,
+            timeout_ceil_threshold=60,
+        )
+        try:
+            self.client = aiohttp.ClientSession(
+                connector=connector,
+                timeout=aiohttp.ClientTimeout(
+                    total=5, connect=5, sock_connect=5, sock_read=5, ceil_threshold=60
+                ),
+                cookie_jar=aiohttp.DummyCookieJar(),
+                trust_env=False,
+                auto_decompress=False,
+                read_bufsize=16384,
+                max_line_size=8190,
+                max_field_size=8190,
+                max_headers=128,
+            )
+        except BaseException:
+            await connector.close()
+            raise
+        return self.send
+
+    async def __aexit__(self, *_args):
+        if self.client is not None:
+            await self.client.close()
+
+    async def send(self, method, row, receipt_id):
+        url = self.url
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept-Encoding": "identity",
+        }
+        body, middlewares = None, ()
+        if method == "GET":
+            if type(receipt_id) is not int or receipt_id < 1:
+                raise FixtureError("known_http_receipt_required")
+            url += f"/receipts/{receipt_id}"
+            sent = False
+
+            async def once(request, handler):
+                # aiohttp retries stale keepalive GETs by default. Its public
+                # per-request middleware runs for each attempt: a second
+                # dispatch stays unknown, without an uncounted wire request.
+                nonlocal sent
+                if sent:
+                    raise FixtureError("http_query_connection_lost")
+                sent = True
+                return await handler(request)
+
+            middlewares = (once,)
+        elif method == "POST":
+            body = base64.b64decode(row["raw_base64"], validate=True)
+            headers.update(
+                {
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": row["message_id"],
+                }
+            )
+        else:
+            raise FixtureError("unsupported_http_method")
+        async with self.client.request(
+            method,
+            url,
+            headers=headers,
+            data=body,
+            allow_redirects=False,
+            middlewares=middlewares,
+        ) as response:
+            if response.content_length is not None and response.content_length > 16384:
+                raise FixtureError("http_response_too_large")
+            raw = bytearray()
+            async for chunk in response.content.iter_chunked(16384):
+                if len(raw) + len(chunk) > 16384:
+                    raise FixtureError("http_response_too_large")
+                raw.extend(chunk)
+            return HttpReply(
+                response.status, bytes(raw), response.headers.get("Retry-After")
+            )
+
+
+async def http_send(config):
+    _http_configuration(config)
     inputs = read_inputs(config)
     sink = PrivateLog(
         _private_path(config["output_path"]) / f"{config['run_id']}-http.private.jsonl",
         max_bytes=HTTP_LOG_MAX_BYTES,
     )
     try:
-        async with httpx.AsyncClient(
-            timeout=5,
-            follow_redirects=False,
-            trust_env=False,
-            limits=httpx.Limits(max_connections=128, max_keepalive_connections=128),
-        ) as client:
-
-            async def send(method, row, receipt_id):
-                url = config["ingress_url"]
-                if method == "GET":
-                    url += f"/receipts/{receipt_id}"
-                headers = {"Authorization": f"Bearer {token}"}
-                body = None
-                if method == "POST":
-                    body = base64.b64decode(row["raw_base64"], validate=True)
-                    headers.update(
-                        {
-                            "Content-Type": "application/json",
-                            "Idempotency-Key": row["message_id"],
-                        }
-                    )
-                async with client.stream(
-                    method, url, headers=headers, content=body
-                ) as response:
-                    raw = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        if len(raw) + len(chunk) > 16384:
-                            raise FixtureError("http_response_too_large")
-                        raw.extend(chunk)
-                    return HttpReply(
-                        response.status_code,
-                        bytes(raw),
-                        response.headers.get("Retry-After"),
-                    )
-
+        async with HttpTransport(config) as send:
             return await HttpSender(config, inputs, sink, send).run()
     finally:
         sink.close()

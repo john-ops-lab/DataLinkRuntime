@@ -4,10 +4,12 @@ import asyncio
 import base64
 import hashlib
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from tools.ingress.workload import (
     BODY_BYTES,
@@ -16,6 +18,7 @@ from tools.ingress.workload import (
     FixtureError,
     HttpReply,
     HttpSender,
+    HttpTransport,
     PrivateLog,
     Publisher,
     generate,
@@ -147,9 +150,8 @@ class HttpTests(unittest.TestCase):
     def make(self, send, *, count=1, clock=None, concurrency=128):
         cfg = config(Path("/tmp/not-used"))
         cfg["http_concurrency"] = concurrency
-        inputs = [
-            input_record("test-run", i, kind="warmup") for i in range(1, count + 1)
-        ]
+        kind = "warmup" if count <= 20 else "capacity"
+        inputs = [input_record("test-run", i, kind=kind) for i in range(1, count + 1)]
         sink = MemorySink()
         kwargs = {"clock": clock.now, "sleep": clock.sleep} if clock else {}
         return HttpSender(cfg, inputs, sink, send, **kwargs), sink
@@ -344,6 +346,233 @@ class HttpTests(unittest.TestCase):
         self.assertFalse(result["burst_window_passed"])
         self.assertFalse(result["all_responses_accepted"])
         self.assertEqual(sender.start, 0)
+
+
+class HttpCoordinatorTests(unittest.TestCase):
+    make = HttpTests.make
+
+    def test_ten_thousand_ids_have_only_the_frozen_number_of_request_tasks(self):
+        seen_tasks = []
+
+        async def send(method, row, receipt_id):
+            if not seen_tasks:
+                seen_tasks.append(len(asyncio.all_tasks()))
+            await asyncio.sleep(0)
+            return reply(row["seq"])
+
+        sender, sink = self.make(send, count=10000, concurrency=125)
+        result = asyncio.run(sender.run())
+        self.assertTrue(result["all_responses_accepted"])
+        self.assertLessEqual(seen_tasks[0], 127)
+        self.assertEqual(result["scheduler"]["request_tasks_peak"], 125)
+        self.assertEqual(result["scheduler"]["deferred_items_peak"], 0)
+        self.assertEqual(result["concurrency_peak"], 125)
+        self.assertEqual(len(sink.rows), 10000)
+
+    def test_all_rejected_firsts_do_not_park_workers_or_overtake_first_round(self):
+        first, attempts = set(), {}
+
+        async def send(method, row, receipt_id):
+            seq = row["seq"]
+            attempts[seq] = attempts.get(seq, 0) + 1
+            if attempts[seq] == 1:
+                first.add(seq)
+                return HttpReply(429, retry_after="1")
+            self.assertEqual(len(first), 500)
+            return reply(seq)
+
+        sender, _ = self.make(send, count=500, concurrency=3, clock=Clock())
+        result = asyncio.run(sender.run())
+        self.assertTrue(result["all_responses_accepted"])
+        self.assertEqual(result["counts"]["first_rejected"], 500)
+        self.assertEqual(result["counts"]["post_requests"], 1000)
+        self.assertEqual(result["scheduler"]["request_tasks_peak"], 3)
+        self.assertLessEqual(result["scheduler"]["deferred_items_peak"], 500)
+
+    def test_many_known_receipts_wait_as_state_until_all_first_requests_started(self):
+        first = set()
+
+        async def send(method, row, receipt_id):
+            if method == "POST":
+                first.add(row["seq"])
+                return HttpReply(202, b'{"receipt_id":9}')
+            self.assertEqual(len(first), 250)
+            self.assertEqual(receipt_id, 9)
+            return HttpReply(200, reply(9).body)
+
+        sender, _ = self.make(send, count=250, concurrency=3)
+        result = asyncio.run(sender.run())
+        self.assertTrue(result["all_responses_accepted"])
+        self.assertEqual(result["counts"]["query_requests"], 250)
+        self.assertEqual(result["counts"]["first_unknown"], 250)
+        self.assertEqual(result["scheduler"]["request_tasks_peak"], 3)
+
+    def test_cancel_drains_only_bounded_active_requests_and_releases_their_slots(self):
+        async def run():
+            started = asyncio.Event()
+
+            async def send(*args):
+                started.set()
+                await asyncio.Event().wait()
+
+            sender, _ = self.make(send, count=1000, concurrency=3)
+            task = asyncio.create_task(sender.run())
+            await started.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual(sender.active, 0)
+            self.assertEqual(sender.slots._value, 3)
+            self.assertLessEqual(sender.request_tasks_peak, 3)
+            self.assertEqual(sender.counts["post_requests"], 3)
+
+        asyncio.run(run())
+
+    def test_evidence_budget_failure_stops_and_cleans_up_other_requests(self):
+        async def send(*args):
+            await asyncio.sleep(0)
+            return reply()
+
+        class FullSink:
+            def append(self, value):
+                raise FixtureError("evidence_limit_reached")
+
+        sender, _ = self.make(send, count=500, concurrency=3)
+        sender.sink = FullSink()
+        with self.assertRaisesRegex(FixtureError, "evidence_limit_reached"):
+            asyncio.run(sender.run())
+        self.assertEqual(sender.active, 0)
+        self.assertEqual(sender.slots._value, 3)
+        self.assertEqual(sender.counts["post_requests"], 3)
+
+
+class HttpTransportTests(unittest.TestCase):
+    def client(self, chunks=(b"{}",), *, length=None):
+        calls = []
+
+        class Response:
+            status = 202
+            content_length = length
+
+            def __init__(self):
+                self.content = self
+                self.headers = {"Retry-After": "2"}
+
+            def iter_chunked(self, size):
+                assert size == 16384
+
+                async def iterate():
+                    for chunk in chunks:
+                        yield chunk
+
+                return iterate()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        class Client:
+            closed = False
+
+            def request(self, method, url, **kwargs):
+                calls.append((method, url, kwargs))
+                return Response()
+
+            async def close(self):
+                self.closed = True
+
+        return Client(), calls
+
+    def transport(self, client):
+        cfg = config(Path("/tmp/not-used"))
+        cfg.update(token="synthetic-token", http_concurrency=125)
+        transport = HttpTransport(cfg)
+        transport.client = client
+        return transport
+
+    def test_bytes_identity_pooling_and_redirect_policy_use_the_public_client(self):
+        client, calls = self.client()
+        transport = self.transport(client)
+        row = input_record("test-run", 1, kind="warmup")
+        result = asyncio.run(transport.send("POST", row, None))
+        self.assertEqual(result, HttpReply(202, b"{}", "2"))
+        method, url, options = calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(url, transport.url)
+        self.assertEqual(options["data"], base64.b64decode(row["raw_base64"]))
+        self.assertEqual(options["headers"]["Idempotency-Key"], row["message_id"])
+        self.assertEqual(options["headers"]["Accept-Encoding"], "identity")
+        self.assertIs(options["allow_redirects"], False)
+        self.assertEqual(options["middlewares"], ())
+
+    def test_known_length_and_streamed_responses_remain_within_16k(self):
+        row = input_record("test-run", 1, kind="warmup")
+        for chunks, length in (((b"unused",), 16385), ((b"x" * 16384, b"y"), None)):
+            client, _ = self.client(chunks, length=length)
+            with self.assertRaisesRegex(FixtureError, "http_response_too_large"):
+                asyncio.run(self.transport(client).send("POST", row, None))
+        client, _ = self.client((b"x" * 16384,), length=16384)
+        self.assertEqual(
+            len(asyncio.run(self.transport(client).send("POST", row, None)).body), 16384
+        )
+
+    def test_get_middleware_blocks_a_library_retry_before_a_second_dispatch(self):
+        async def run():
+            client, calls = self.client()
+            transport = self.transport(client)
+            await transport.send("GET", {}, 9)
+            method, url, options = calls[0]
+            self.assertEqual((method, url), ("GET", transport.url + "/receipts/9"))
+            (middleware,) = options["middlewares"]
+            dispatched = []
+
+            async def handler(request):
+                dispatched.append(request)
+                return "one response"
+
+            self.assertEqual(await middleware("one", handler), "one response")
+            with self.assertRaisesRegex(FixtureError, "http_query_connection_lost"):
+                await middleware("two", handler)
+            self.assertEqual(dispatched, ["one"])
+
+        asyncio.run(run())
+
+    def test_pinned_session_config_is_bounded_and_closed(self):
+        client, _ = self.client()
+        recorded = {}
+
+        class Connector:
+            def __init__(self, **kwargs):
+                recorded["connector"] = kwargs
+
+        def session(**kwargs):
+            recorded["session"] = kwargs
+            return client
+
+        fake = SimpleNamespace(
+            __version__="3.14.5",
+            TCPConnector=Connector,
+            ClientTimeout=lambda **kwargs: kwargs,
+            DummyCookieJar=lambda: object(),
+            ClientSession=session,
+        )
+
+        async def run():
+            async with self.transport(None) as send:
+                self.assertTrue(callable(send))
+            self.assertTrue(client.closed)
+
+        with patch.dict(sys.modules, {"aiohttp": fake}):
+            asyncio.run(run())
+        self.assertEqual(recorded["connector"]["limit"], 125)
+        self.assertEqual(recorded["connector"]["limit_per_host"], 125)
+        self.assertFalse(recorded["session"]["auto_decompress"])
+        self.assertFalse(recorded["session"]["trust_env"])
+        self.assertEqual(recorded["session"]["timeout"]["total"], 5)
+        self.assertEqual(recorded["session"]["timeout"]["ceil_threshold"], 60)
+        self.assertEqual(recorded["session"]["read_bufsize"], 16384)
 
 
 class OracleTests(unittest.TestCase):
