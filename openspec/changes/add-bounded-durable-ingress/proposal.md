@@ -11,7 +11,7 @@ DLR 已有可靠事件接收和批量启停，但尚无证据证明在固定单�
 - 先完成 B0：已有 RabbitMQ 业务来源、一个 Python Adapter、200 条独立 2 KiB JSON、真实 Worker/沙箱、独立幂等目标。资源、输入、计时、观测、判据与停止条件固定在 [B0 测量计划](b0-measurement-plan.md)。
 - 增加显式选择的 HTTP 持久接收来源，复用 Subscription/Activation、Receipt/Delivery 和统一执行链路；接收后返回 `receipt_id`，区别于创建执行或业务完成。原 Webhook `accepted/completed` 保持原合同。
 - 增加部署级容量上限，保留入口/订阅配额、同事务记账、低水位恢复及历史/失败责任保护。接收资源与管理、恢复资源分别预算。
-- 根据测量优化就绪选择、完成确认、Outbox 发布与重复准备成本；继续固定 Worker、每 Adapter 一个 active Attempt 和真实沙箱。
+- 根据测量优化就绪选择、完成确认、Outbox 发布与重复准备成本；继续固定 Worker、每 Adapter 一个 active Attempt 和真实沙箱。 一万条首轮接管超时后，按 D7.1 仅为显式 HTTP/RabbitMQ 多条模式增加最多 4 条/1 MiB/5 ms 的事务外收集及同事务接管复用；逐条身份、提交后确认和资源上限保持。
 - 首轮采用参考 Adapter 中显式、有时限的目标数据库重试，验证目标暂时不可用 60 秒后自动继续；不更改普通业务错误的默认平台分类。
 - B2 真实单条测量触发业务小批次专项合同：HTTP/RabbitMQ 显式选择，仍逐条身份、结果、幂等与配额；共用一次 Execution 不把整批执行结果当作每条业务成功。
 - 正式分别验收 HTTP 与 RabbitMQ 的 10,000 条突发：首次到达/发布窗口 ≤5 秒、全部持久接管 ≤60 秒、最后接管后全部处理 ≤600 秒；同时核验资源、管理面、恢复和独立目标结果。

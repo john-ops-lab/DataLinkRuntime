@@ -10,6 +10,8 @@ import hashlib
 import json
 import re
 import secrets
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -42,6 +44,151 @@ MAX_BODY_BYTES = 64 * 1024
 MAX_ENVELOPE_BYTES = 256 * 1024
 MAX_DEPTH = 32
 MAX_NODES = 4096
+
+
+def _valid_token(provided: str | None, expected: Any) -> bool:
+    # compare_digest(str, str) rejects non-ASCII text with TypeError. Invalid
+    # credentials must remain an authentication result for this request only.
+    return (
+        bool(provided)
+        and isinstance(provided, str)
+        and provided.isascii()
+        and isinstance(expected, str)
+        and bool(expected)
+        and expected.isascii()
+        and secrets.compare_digest(provided, expected)
+    )
+
+
+@dataclass(frozen=True)
+class HttpReception:
+    authorization: str | None
+    key: str | None
+    body: bytes
+
+
+def receive_group(
+    session: Session, public_id: str, requests: Sequence[HttpReception]
+) -> list[tuple[int, dict[str, Any]] | HTTPException] | None:
+    """One locked batch binding; no commit or success response in this function.
+
+    None means the runtime scheduling hint is stale: use the original per-event
+    path in separate transactions. Authentication remains per request.
+    """
+    from dlr.control.services.subscription_t1_unit import T1Input, T1Unit
+
+    route = session.get(HttpIngressRoute, public_id)
+    if route is None or route.subscription_id is None:
+        raise domain_error(404, "ingress_not_found", "Ingress is unavailable")
+    unit = T1Unit(
+        session,
+        route.subscription_id,
+        source_type="http",
+        source_epoch=route.source_epoch,
+        shard="requests",
+    )
+    sub = unit.subscription
+    if sub.deleted_at is not None or sub.source_type != "http":
+        raise domain_error(404, "ingress_not_found", "Ingress is unavailable")
+    config = management.current_config(session, sub)
+    if config.config.get("mode") != "business_batch":
+        return None
+    credential = (
+        session.get(Credential, config.source_credential_id, with_for_update=True)
+        if config.source_credential_id
+        else None
+    )
+    try:
+        expected = (
+            decrypt_fields(credential.ciphertext).get("token")
+            if credential and credential.type == "token"
+            else None
+        )
+    except Exception:
+        expected = None
+    results: dict[int, tuple[int, dict[str, Any]] | HTTPException] = {}
+    inputs = []
+    for index, request in enumerate(requests):
+        try:
+            provided = _bearer_token(request.authorization)
+            if not _valid_token(provided, expected):
+                raise domain_error(401, "unauthorized", "Invalid or missing bearer token")
+            identity = require_key(request.key)
+        except HTTPException as auth_error:
+            results[index] = auth_error
+            continue
+        envelope, error = None, None
+        try:
+            payload = parse_body(request.body)
+            envelope = {
+                "schema": "dlr.event.v1",
+                "subscription": {
+                    "id": str(sub.id),
+                    "config_version": config.version,
+                    "source_epoch": route.source_epoch,
+                },
+                "event": {"id": identity, "kind": "message", "object_key": None},
+                "source": {
+                    "type": "http",
+                    "identity": public_id,
+                    "position": {"idempotency_key": identity},
+                    "attributes": {"public_id": public_id},
+                },
+                "received_at": datetime.now(UTC).isoformat(),
+                "data": {
+                    "encoding": "json",
+                    "content_type": "application/json",
+                    "payload": payload,
+                },
+                "sync": None,
+            }
+            if (
+                len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode())
+                > MAX_ENVELOPE_BYTES
+            ):
+                raise domain_error(
+                    413, "ingress_envelope_too_large", "Complete event exceeds 256 KiB"
+                )
+        except HTTPException as caught:
+            error = caught
+        inputs.append(
+            T1Input(
+                index=index,
+                identity=identity,
+                envelope=envelope,
+                position={"idempotency_key": identity},
+                raw_body=request.body,
+                error=error,
+            )
+        )
+    if inputs:
+        answer = unit.receive(inputs)
+        for outcome in answer.outcomes:
+            if outcome.error is not None:
+                error = outcome.error
+                code = error.detail.get("code") if isinstance(error.detail, dict) else None
+                if code in {
+                    "subscription_owner_stale",
+                    "subscription_config_conflict",
+                    "subscription_activation_missing",
+                    "source_not_available",
+                }:
+                    error = domain_error(
+                        503, "ingress_unavailable", "Reception configuration is not ready"
+                    )
+                results[outcome.index] = error
+            else:
+                assert outcome.status is not None and outcome.receipt_id is not None
+                results[outcome.index] = (
+                    outcome.status_code,
+                    {
+                        **outcome.status,
+                        "status_url": f"/api/ingress/{public_id}/receipts/{outcome.receipt_id}",
+                        "dedupe_retention_seconds": 30 * 86400,
+                        "raw_retention_seconds": 7 * 86400,
+                    },
+                )
+    return [results[index] for index in range(len(requests))]
 
 
 def ingress_path(session: Session, subscription: EventSubscription) -> str | None:
@@ -149,7 +296,7 @@ def _authenticated(
         )
     except Exception:
         expected = None
-    if not provided or not expected or not secrets.compare_digest(provided, expected):
+    if not _valid_token(provided, expected):
         raise domain_error(401, "unauthorized", "Invalid or missing bearer token")
     return route, sub
 

@@ -123,6 +123,7 @@ class SourceRunContext:
     buffer: ScopedBufferBudget = field(repr=False)
     connected: Callable[[], None] = field(repr=False)
     identity_snapshot: dict[str, Any] | None = field(default=None, repr=False)
+    public_id: str | None = None
 
 
 class SourceRunner(Protocol):

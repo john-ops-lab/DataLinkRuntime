@@ -14,15 +14,14 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import Engine, create_engine
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 from starlette.requests import ClientDisconnect
 
-from dlr.common.config import settings
 from dlr.control.security import AuthorizationHeader
 from dlr.control.services import http_ingress as service
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.http_ingress_group import HttpCollector, HttpInput, complete
 from dlr.control.services.subscription_source import ApplicationBufferBudget
 
 router = APIRouter()
@@ -40,34 +39,60 @@ class IngressResources:
         self.work = threading.BoundedSemaphore(8)
         self.buffer = buffer.scope(8 * 1024**2)
         self.executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="dlr-ingress")
-        self.engine: Engine | None = None
         if session_factory is None:
-            self.engine = create_engine(
-                settings.database_url,
-                pool_size=8,
-                max_overflow=0,
-                pool_timeout=1,
-                pool_pre_ping=True,
-                connect_args={
-                    "connect_timeout": 5,
-                    "options": "-c statement_timeout=5000 -c lock_timeout=1000",
-                    "keepalives": 1,
-                    "keepalives_idle": 2,
-                    "keepalives_interval": 1,
-                    "keepalives_count": 3,
-                    "tcp_user_timeout": 5000,
-                },
-            )
-            self.session_factory: Callable[[], Session] = sessionmaker(
-                bind=self.engine, expire_on_commit=False
-            )
+            from dlr.control.services.subscription_runtime import get_runtime
+
+            self.session_factory: Callable[[], Session] = get_runtime().intake_session_factory
+            self.engine = get_runtime().intake_session_factory.kw["bind"]
         else:
             self.session_factory = session_factory
+            self.engine = None
+        self.collector = HttpCollector(self.dispatch)
 
     def close(self) -> None:
         self.executor.shutdown(wait=True, cancel_futures=False)
-        if self.engine:
-            self.engine.dispose()
+
+    def dispatch(self, public_id: str, items: list[HttpInput]) -> None:
+        loop = asyncio.get_running_loop()
+        if not self.work.acquire(blocking=False):
+            for item in items:
+                item.release()
+                complete(
+                    item,
+                    domain_error(429, "ingress_capacity_exceeded", "Reception resources are busy"),
+                )
+            return
+        try:
+            native = self.executor.submit(_run_group_sync, self, public_id, items)
+        except RuntimeError:
+            self.work.release()
+            for item in items:
+                item.release()
+                complete(item, domain_error(503, "ingress_unavailable", "Reception is closing"))
+            return
+
+        def finished(future: Future[list[tuple[int, dict[str, Any]] | HTTPException]]) -> None:
+            try:
+                results = future.result()
+            except Exception:
+                results = [
+                    domain_error(
+                        503,
+                        "ingress_unavailable",
+                        "Reception is temporarily unavailable; retry with the same ID and bytes",
+                    )
+                    for _ in items
+                ]
+            finally:
+                self.work.release()
+                for item in items:
+                    item.body = b""
+                    item.release()
+            for item, result in zip(items, results, strict=True):
+                if not loop.is_closed():
+                    loop.call_soon_threadsafe(complete, item, result)
+
+        native.add_done_callback(finished)
 
 
 _resources: IngressResources | None = None
@@ -91,6 +116,11 @@ def shutdown_ingress_resources() -> None:
         _resources = None
     if current is not None:
         current.close()
+
+
+def flush_ingress_resources() -> None:
+    if _resources is not None:
+        _resources.collector.close()
 
 
 def _busy() -> None:
@@ -169,6 +199,62 @@ def _run_sync(
             ) from None
 
 
+def _run_group_sync(
+    pool: IngressResources, public_id: str, items: list[HttpInput]
+) -> list[tuple[int, dict[str, Any]] | HTTPException]:
+    with pool.session_factory() as session:
+        try:
+            result = service.receive_group(
+                session,
+                public_id,
+                [service.HttpReception(item.authorization, item.key, item.body) for item in items],
+            )
+            if result is not None:
+                session.commit()
+                return [_response_result(item) for item in result]
+            session.rollback()
+        except SQLAlchemyError:
+            session.rollback()
+            raise domain_error(
+                503,
+                "ingress_unavailable",
+                "Reception is temporarily unavailable; retry with the same ID and bytes",
+            ) from None
+        except HTTPException as error:
+            session.rollback()
+            code = error.detail.get("code") if isinstance(error.detail, dict) else None
+            if code in {
+                "subscription_owner_stale",
+                "subscription_config_conflict",
+                "subscription_activation_missing",
+                "source_not_available",
+            }:
+                error = domain_error(
+                    503, "ingress_unavailable", "Reception configuration is not ready"
+                )
+            return [_response_result(error) for _ in items]
+    # A stale hint cannot change per-event transaction/response semantics.
+    results: list[tuple[int, dict[str, Any]] | HTTPException] = []
+    for item in items:
+        try:
+            results.append(
+                _run_sync(pool, public_id, item.authorization, item.body, item.key, None)
+            )
+        except HTTPException as error:
+            results.append(_response_result(error))
+    return results
+
+
+def _response_result(
+    result: tuple[int, dict[str, Any]] | HTTPException,
+) -> tuple[int, dict[str, Any]] | HTTPException:
+    # Do not retain a native validation traceback (and its parsed bodies) in
+    # a client future after the corresponding body reservation is released.
+    if isinstance(result, HTTPException):
+        return HTTPException(result.status_code, result.detail, result.headers)
+    return result
+
+
 async def _request(
     public_id: str,
     request: Request,
@@ -192,6 +278,26 @@ async def _request(
             _require_media(request)
             service.require_key(key)
             body = await _read_body(request)
+            from dlr.control.services.subscription_runtime import get_runtime
+
+            if get_runtime().http_batch_hint(public_id):
+                loop = asyncio.get_running_loop()
+                result_future: asyncio.Future[tuple[int, dict[str, Any]]] = loop.create_future()
+                result_future.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception()
+                )
+
+                def release_request() -> None:
+                    pool.buffer.release(reservation)
+                    pool.requests.release()
+
+                pool.collector.add(
+                    public_id, HttpInput(authorization, key, body, release_request, result_future)
+                )
+                body = None
+                handed_off = True
+                status, result = await asyncio.shield(result_future)
+                return JSONResponse(result, status_code=status)
         if not pool.work.acquire(blocking=False):
             _busy()
         work_acquired = True

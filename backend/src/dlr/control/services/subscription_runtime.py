@@ -21,6 +21,7 @@ from dlr.common.config import settings
 from dlr.control.models import Credential
 from dlr.control.models.subscription import (
     EventSubscription,
+    HttpIngressRoute,
     SourceCheckpoint,
     SubscriptionActivation,
     SubscriptionConfigVersion,
@@ -82,10 +83,12 @@ class SubscriptionRuntimeManager:
         buffer_limit_bytes: int = 64 * 1024**2,
         clock: Callable[[], float] = time.monotonic,
         jitter: Callable[[float, float], float] = random.uniform,
+        intake_session_factory: sessionmaker[Session] | None = None,
     ) -> None:
         if not 1 <= max_listeners <= 16:
             raise ValueError("Invalid source owner limit")
         self.session_factory = session_factory
+        self.intake_session_factory = intake_session_factory or session_factory
         self.registry = dict(implemented_sources() if registry is None else registry)
         self.buffer = ApplicationBufferBudget(buffer_limit_bytes)
         self._permits = threading.BoundedSemaphore(max_listeners)
@@ -199,10 +202,20 @@ class SubscriptionRuntimeManager:
                     source_config=copy.deepcopy(config.config),
                     credential_fields=values,
                     stop_event=threading.Event(),
-                    session_factory=self.session_factory,
+                    session_factory=self.intake_session_factory,
                     buffer=self.buffer.scope(),
                     connected=lambda: self._connected(subscription_id),
                     identity_snapshot=copy.deepcopy(config.source_identity),
+                    public_id=(
+                        session.scalar(
+                            select(HttpIngressRoute.public_id).where(
+                                HttpIngressRoute.subscription_id == sub.id,
+                                HttpIngressRoute.source_epoch == config.source_epoch,
+                            )
+                        )
+                        if sub.source_type == "http"
+                        else None
+                    ),
                 )
                 sub.connection_state = "starting"
             owner = _Owner(context, runner)
@@ -235,6 +248,17 @@ class SubscriptionRuntimeManager:
         else:
             self._release_start(subscription_id)
         return False
+
+    def http_batch_hint(self, public_id: str) -> bool:
+        """A scheduling hint only; T1 rechecks the locked authoritative binding."""
+        with self._lock:
+            return any(
+                owner.context.public_id == public_id
+                and owner.context.source_config.get("mode") == "business_batch"
+                and not owner.context.stop_event.is_set()
+                and not owner.native_closed
+                for owner in self._owners.values()
+            )
 
     def _connected(self, subscription_id: int) -> None:
         with self._lock:
@@ -582,6 +606,11 @@ def get_runtime() -> SubscriptionRuntimeManager:
     global _runtime
     if _runtime is None:
         from dlr.control import db
+        from dlr.control.services.ingress_database import intake_sessions
 
-        _runtime = SubscriptionRuntimeManager(db.SessionLocal)
+        # Respect the active factory binding (including isolated test overrides).
+        bind = db.SessionLocal.kw["bind"]
+        _runtime = SubscriptionRuntimeManager(
+            db.SessionLocal, intake_session_factory=intake_sessions(bind.url)
+        )
     return _runtime

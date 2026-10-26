@@ -69,3 +69,14 @@
 #### Scenario: 权限错误或重试预算耗尽
 - **WHEN** 目标返回非白名单权限/数据错误，或达到 20 次/120 秒预算中的先到者
 - **THEN** 形成明确失败与对应顺序屏障，不自动改成 platform_transient；无关可运行入口仍获得处理机会
+
+### Requirement: 接管合并保持逐条责任和确认边界
+显式 HTTP/RabbitMQ business_batch 模式 MAY 在事务外最多收集 4 条、原文加 Envelope 合计 1 MiB、最多等待 5 ms，再在一个事务内复用同 scope/lease/checkpoint/精确 Activation/CV/profile。每条 MUST 保留独立身份、Receipt/Delivery、完整计费及首次绑定；无跨事务缓存，RETURNING 按身份映射，原单条路径不变。每个新项仍检查磁盘、租约时间、速率和控制优先权，不得留下拒绝项的局部扣额。
+
+#### Scenario: RabbitMQ 第二条不能接管
+- **WHEN** 同组第二条发生内容故障或容量不足
+- **THEN** 仅合法连续前缀可提交，确认提交后才 ACK 该前缀；故障及后继不 ACK，沿原分类处置；数据库或提交未知时整组不确认，重投不重复记账
+
+#### Scenario: 接收资源与有限预取
+- **WHEN** 多条模式授予最多 4 个原生 credit 或收到 content header
+- **THEN** 固定帧及逐正文装配峰值在分配前计入原 owner/global 预算，不能可靠安装受检门禁则保持旧单条读取；不足时停止并退避而非生成 poison，关闭未确认不提前回收，原大小及总资源上限不扩大
