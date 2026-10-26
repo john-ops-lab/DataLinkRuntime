@@ -263,17 +263,24 @@ class _CapacityDecision:
 def _capacity_decision(context: SourceRunContext) -> _CapacityDecision:
     """One advisory snapshot; locked T1 still checks every item's real limits."""
     with context.session_factory() as session:
-        oldest_pending = (
-            select(func.min(EventDelivery.created_at))
-            .join(EventReceipt, EventDelivery.receipt_id == EventReceipt.id)
+        clock = select(func.clock_timestamp().label("now")).cte("capacity_clock")
+        aged_pending = (
+            select(EventDelivery.id)
             .where(
-                EventReceipt.subscription_id == context.subscription_id,
                 EventDelivery.state == "pending",
+                EventDelivery.created_at <= clock.c.now - timedelta(minutes=5),
+                select(EventReceipt.id)
+                .where(
+                    EventReceipt.id == EventDelivery.receipt_id,
+                    EventReceipt.subscription_id == context.subscription_id,
+                )
+                .exists(),
             )
-            .scalar_subquery()
+            .correlate(clock)
+            .exists()
         )
-        now, oldest = session.execute(select(func.clock_timestamp(), oldest_pending)).one()
-        if oldest is not None and oldest <= now - timedelta(minutes=5):
+        now, has_aged_pending = session.execute(select(clock.c.now, aged_pending)).one()
+        if has_aged_pending:
             return _CapacityDecision(False, 0)
         profile = effective_profile(session)
         limits = runtime_limits_for_profile(profile, context.source_config)
@@ -331,6 +338,29 @@ def capacity_ready(context: SourceRunContext) -> bool:
 def _wait_for_rate(context: SourceRunContext, seconds: float) -> bool:
     """No SDK/DB work or credit release while the current owner waits."""
     return context.stop_event.wait(seconds)
+
+
+def _capacity_after_rate_wait(context: SourceRunContext) -> _CapacityDecision | None:
+    """Wait on rate alone; do not retain a DB transaction or change ownership."""
+    deadline: float | None = None
+    while not context.stop_event.is_set():
+        decision = _capacity_decision(context)
+        if not decision.hard_ready:
+            raise SourceFailure("subscription_capacity_exceeded", "capacity")
+        if decision.rate_tokens > 0:
+            return decision
+        now = time.monotonic()
+        if deadline is None:
+            deadline = now + 1
+        wait = min(decision.wait_seconds, deadline - now)
+        if wait <= 0:
+            # Bound each continuous pause so an open Pika IOLoop cannot be
+            # starved by repeated global-rate contention. DB calls retain
+            # their existing timeout and are not preempted by this deadline.
+            raise SourceFailure("subscription_capacity_exceeded", "capacity")
+        if _wait_for_rate(context, wait):
+            return None
+    return None
 
 
 def take_custody(context: SourceRunContext, message: Message) -> bool:
@@ -404,15 +434,21 @@ class QueueSourceRunner:
         custody_committed = False
         micro_path = False
         try:
-            if not capacity_ready(context):
+            requested_micro = (
+                context.source_config.get("source_type") == "rabbitmq"
+                and context.source_config.get("mode") == "business_batch"
+            )
+            if requested_micro:
+                # SDK compatibility is only known after opening. Wait before
+                # allocating it; unsupported SDKs still take the original
+                # per-item capacity check and single-message path below.
+                if _capacity_after_rate_wait(context) is None:
+                    return
+            elif not capacity_ready(context):
                 raise SourceFailure("subscription_capacity_exceeded", "capacity")
             transport = self.open_context(context)
             context.connected()
-            if (
-                context.source_config.get("source_type") == "rabbitmq"
-                and context.source_config.get("mode") == "business_batch"
-                and getattr(transport, "micro_t1", False)
-            ):
+            if requested_micro and getattr(transport, "micro_t1", False):
                 micro_path = True
                 self._run_micro(context, cast(MicroTransport, transport))
             else:
@@ -470,29 +506,11 @@ class QueueSourceRunner:
         prepared: _MicroPrepared | None = None
         failure: Exception | None = None
         failed_message: Message | None = None
-        rate_deadline: float | None = None
         try:
             while not context.stop_event.is_set():
-                decision = _capacity_decision(context)
-                if not decision.hard_ready:
-                    failure = SourceFailure("subscription_capacity_exceeded", "capacity")
+                decision = _capacity_after_rate_wait(context)
+                if decision is None:
                     break
-                if decision.rate_tokens == 0:
-                    now = time.monotonic()
-                    if rate_deadline is None:
-                        rate_deadline = now + 1
-                    wait = min(decision.wait_seconds, rate_deadline - now)
-                    if wait <= 0:
-                        # Repeated global-rate contention must not starve the
-                        # dedicated Pika IOLoop/heartbeat indefinitely. Retain
-                        # the original close/backoff once this bounded pause
-                        # is exhausted, including all unaccepted SDK credits.
-                        failure = SourceFailure("subscription_capacity_exceeded", "capacity")
-                        break
-                    if _wait_for_rate(context, wait):
-                        break
-                    continue
-                rate_deadline = None
                 max_items = min(16, decision.rate_tokens)
                 started: float | None = None
                 total_bytes = 0

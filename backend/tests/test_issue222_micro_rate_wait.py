@@ -7,9 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import DateTime, func, literal, select
 
 from dlr.control.models import EventReceipt, SourceCheckpoint, SubscriptionLease, SubscriptionQuota
+from dlr.control.services import input_config, subscription_t1_unit
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services import subscription_queue as queue
 from dlr.control.services.input_config import database_now
@@ -48,7 +49,7 @@ def quota(scope, *, rate=0, window=None, **values):
     )
 
 
-def decision_context(monkeypatch, rows, *, oldest=None, global_rate=1000):
+def decision_context(monkeypatch, rows, *, aged_pending=False, global_rate=1000):
     queries = []
 
     class Session:
@@ -59,8 +60,8 @@ def decision_context(monkeypatch, rows, *, oldest=None, global_rate=1000):
             pass
 
         def execute(self, statement):
-            queries.append("clock/oldest")
-            return SimpleNamespace(one=lambda: (NOW, oldest))
+            queries.append("clock/aged_pending")
+            return SimpleNamespace(one=lambda: (NOW, aged_pending))
 
         def scalars(self, statement):
             queries.append("quotas")
@@ -89,7 +90,7 @@ def test_advisory_tokens_use_minimum_of_source_and_global_without_writes(
     before = copy.deepcopy([vars(row) for row in rows])
     context, queries = decision_context(monkeypatch, rows)
     assert queue._capacity_decision(context) == queue._CapacityDecision(True, remaining)
-    assert queries == ["clock/oldest", "quotas"]
+    assert queries == ["clock/aged_pending", "quotas"]
     assert [vars(row) for row in rows] == before
 
 
@@ -135,9 +136,9 @@ def test_reserved_hard_capacity_and_oldest_pending_keep_original_gate(monkeypatc
         [quota("sub:7", pending_count=80, reserved_control_count=1)],
     )
     assert not queue._capacity_decision(context).hard_ready
-    context, queries = decision_context(monkeypatch, [], oldest=NOW - timedelta(minutes=5))
+    context, queries = decision_context(monkeypatch, [], aged_pending=True)
     assert queue._capacity_decision(context) == queue._CapacityDecision(False, 0)
-    assert queries == ["clock/oldest"]
+    assert queries == ["clock/aged_pending"]
 
 
 @pytest.fixture
@@ -159,9 +160,110 @@ def owner(monkeypatch):
     return context
 
 
+def test_initial_rate_zero_waits_before_allocating_or_opening_sdk(owner, monkeypatch):
+    decisions = iter([queue._CapacityDecision(True, 0, 0.25)])
+    monkeypatch.setattr(
+        queue, "_capacity_decision", lambda _: next(decisions, queue._CapacityDecision(True, 16))
+    )
+    order, transports = [], []
+
+    def wait(context, seconds):
+        assert not transports and context.generation == 9
+        order.append(("wait", seconds))
+        return False
+
+    def open_context(context):
+        assert order == [("wait", 0.25)]
+        order.append(("open", None))
+        transports.append(MemoryTransport(context))
+        return transports[-1]
+
+    monkeypatch.setattr(queue, "_wait_for_rate", wait)
+    monkeypatch.setattr(queue, "_receive_micro", lambda _, group: (len(group), None, None))
+    runner = queue.QueueSourceRunner()
+    runner.open_context = open_context
+    runner.run(owner)
+    assert transports[0].acked == [1, 2, 3, 4] and transports[0].closed
+    assert transports[0].wire.scope.used_bytes == 0 and owner.generation == 9
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_initial_starvation_or_stop_never_opens_sdk(owner, monkeypatch, cancel):
+    monkeypatch.setattr(
+        queue, "_capacity_decision", lambda _: queue._CapacityDecision(True, 0, 0.4)
+    )
+    elapsed, waits = [0.0], []
+    monkeypatch.setattr(queue, "time", SimpleNamespace(monotonic=lambda: elapsed[0]))
+
+    def wait(context, seconds):
+        waits.append(seconds)
+        elapsed[0] += seconds
+        if cancel:
+            context.stop_event.set()
+        return cancel
+
+    monkeypatch.setattr(queue, "_wait_for_rate", wait)
+    monkeypatch.setattr(queue, "record_fault", lambda *_: pytest.fail("Rate wait is not poison"))
+    runner = queue.QueueSourceRunner()
+    runner.open_context = lambda _: pytest.fail("SDK must not open before readiness")
+    if cancel:
+        runner.run(owner)
+        assert waits == [0.4]
+    else:
+        with pytest.raises(SourceFailure, match="subscription_capacity_exceeded"):
+            runner.run(owner)
+        assert sum(waits) == pytest.approx(1)
+    assert owner.generation == 9
+
+
+def test_initial_hard_refusal_does_not_wait_or_open(owner, monkeypatch):
+    monkeypatch.setattr(queue, "_capacity_decision", lambda _: queue._CapacityDecision(False, 0))
+    monkeypatch.setattr(queue, "_wait_for_rate", lambda *_: pytest.fail("Hard limits cannot wait"))
+    runner = queue.QueueSourceRunner()
+    runner.open_context = lambda _: pytest.fail("Hard limits cannot open SDK")
+    with pytest.raises(SourceFailure, match="subscription_capacity_exceeded"):
+        runner.run(owner)
+
+
+def test_unknown_sdk_after_startup_wait_retains_single_item_capacity_gate(owner, monkeypatch):
+    decisions = iter([queue._CapacityDecision(True, 0, 0.25)])
+    monkeypatch.setattr(
+        queue, "_capacity_decision", lambda _: next(decisions, queue._CapacityDecision(True, 16))
+    )
+    order = []
+    monkeypatch.setattr(queue, "_wait_for_rate", lambda *_: order.append("wait") or False)
+    monkeypatch.setattr(queue, "capacity_ready", lambda _: order.append("legacy-check") or False)
+    transport = SimpleNamespace(
+        poll=lambda: pytest.fail("Legacy capacity refusal must precede poll"),
+        close=lambda: order.append("close"),
+    )
+    runner = queue.QueueSourceRunner()
+    runner.open_context = lambda _: order.append("open") or transport
+    with pytest.raises(SourceFailure, match="subscription_capacity_exceeded"):
+        runner.run(owner)
+    assert order == ["wait", "open", "legacy-check", "close"]
+
+
+@pytest.mark.parametrize(
+    ("source_type", "mode"), [("rabbitmq", "per_event"), ("rocketmq", "business_batch")]
+)
+def test_other_sources_and_per_event_keep_original_startup_gate(
+    owner, monkeypatch, source_type, mode
+):
+    owner.source_config.update(source_type=source_type, mode=mode)
+    monkeypatch.setattr(queue, "capacity_ready", lambda _: False)
+    monkeypatch.setattr(
+        queue, "_capacity_after_rate_wait", lambda _: pytest.fail("Only requested micro waits")
+    )
+    runner = queue.QueueSourceRunner()
+    runner.open_context = lambda _: pytest.fail("Original capacity refusal must precede open")
+    with pytest.raises(SourceFailure, match="subscription_capacity_exceeded"):
+        runner.run(owner)
+
+
 def test_remaining_ten_tokens_forms_ten_then_six_without_rate_failure(owner, monkeypatch):
     groups = []
-    decisions = iter([queue._CapacityDecision(True, 10), queue._CapacityDecision(True, 6)])
+    decisions = iter([queue._CapacityDecision(True, 10)] * 2 + [queue._CapacityDecision(True, 6)])
     monkeypatch.setattr(
         queue, "_capacity_decision", lambda _: next(decisions, queue._CapacityDecision(True, 16))
     )
@@ -180,7 +282,7 @@ def test_remaining_ten_tokens_forms_ten_then_six_without_rate_failure(owner, mon
 
 
 def test_rate_pause_keeps_credit_and_owner_until_same_connection_resumes(owner, monkeypatch):
-    decisions = iter([queue._CapacityDecision(True, 0, 0.25)])
+    decisions = iter([queue._CapacityDecision(True, 16), queue._CapacityDecision(True, 0, 0.25)])
     monkeypatch.setattr(
         queue, "_capacity_decision", lambda _: next(decisions, queue._CapacityDecision(True, 16))
     )
@@ -204,11 +306,14 @@ def test_rate_pause_keeps_credit_and_owner_until_same_connection_resumes(owner, 
 
 
 def test_continuous_global_rate_starvation_closes_after_one_total_second(owner, monkeypatch):
+    decisions = iter([queue._CapacityDecision(True, 16)])
     monkeypatch.setattr(
-        queue, "_capacity_decision", lambda _: queue._CapacityDecision(True, 0, 0.4)
+        queue,
+        "_capacity_decision",
+        lambda _: next(decisions, queue._CapacityDecision(True, 0, 0.4)),
     )
     clock = [0.0]
-    monkeypatch.setattr(queue.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(queue, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     transport = MemoryTransport(owner, count=16)
     before = transport.wire.scope.used_bytes
     waits = []
@@ -230,7 +335,13 @@ def test_continuous_global_rate_starvation_closes_after_one_total_second(owner, 
 
 
 def test_new_hard_refusal_after_rate_pause_closes_without_polling(owner, monkeypatch):
-    decisions = iter([queue._CapacityDecision(True, 0, 0.25), queue._CapacityDecision(False, 0)])
+    decisions = iter(
+        [
+            queue._CapacityDecision(True, 16),
+            queue._CapacityDecision(True, 0, 0.25),
+            queue._CapacityDecision(False, 0),
+        ]
+    )
     monkeypatch.setattr(queue, "_capacity_decision", lambda _: next(decisions))
     transport = MemoryTransport(owner, count=16)
     waits = []
@@ -243,7 +354,12 @@ def test_new_hard_refusal_after_rate_pause_closes_without_polling(owner, monkeyp
 
 
 def test_stop_interrupts_rate_wait_without_polling_or_custody(owner, monkeypatch):
-    monkeypatch.setattr(queue, "_capacity_decision", lambda _: queue._CapacityDecision(True, 0, 1))
+    decisions = iter([queue._CapacityDecision(True, 16)])
+    monkeypatch.setattr(
+        queue,
+        "_capacity_decision",
+        lambda _: next(decisions, queue._CapacityDecision(True, 0, 1)),
+    )
     transport = MemoryTransport(owner, count=16)
     waiting = threading.Event()
     original = owner.stop_event.wait
@@ -298,14 +414,38 @@ def seed_rate(context, scope, count):
         row.rate_count, row.rate_window_at = count, database_now(session)
 
 
+@pytest.fixture
+def controlled_clock(micro_context, monkeypatch):
+    # This case tests rate windows with real PostgreSQL transactions, not
+    # wall-clock lease expiry. Keep all owner checks within the fixture lease.
+    with micro_context.session_factory() as session:
+        lease = session.get(SubscriptionLease, micro_context.subscription_id)
+        now = lease.lease_until - timedelta(seconds=15)
+    clock = SimpleNamespace(now=now, elapsed=0.0)
+
+    class Functions:
+        def clock_timestamp(self):
+            return literal(clock.now, type_=DateTime(timezone=True))
+
+        def __getattr__(self, name):
+            return getattr(func, name)
+
+    # Only these module-local SQL function proxies change; global SQLAlchemy
+    # functions and the production database clock implementation stay intact.
+    for module in (queue, subscription_t1_unit, input_config):
+        monkeypatch.setattr(module, "func", Functions())
+    monkeypatch.setattr(queue, "time", SimpleNamespace(monotonic=lambda: clock.elapsed))
+    return clock
+
+
 @pytest.mark.parametrize("global_scope", [False, True])
 def test_real_database_ten_tokens_wait_then_commit_six_on_same_owner(
-    micro_context, monkeypatch, global_scope
+    micro_context, monkeypatch, global_scope, controlled_clock
 ):
     scope = "global" if global_scope else f"sub:{micro_context.subscription_id}"
     seed_rate(micro_context, scope, 990)
     groups, waits, committed = [], [], []
-    original_receive, original_wait = queue._receive_micro, queue._wait_for_rate
+    original_receive = queue._receive_micro
     transport = MemoryTransport(micro_context, count=16)
 
     def receive(context, group):
@@ -320,9 +460,10 @@ def test_real_database_ten_tokens_wait_then_commit_six_on_same_owner(
             lease = session.get(SubscriptionLease, context.subscription_id)
             assert lease.owner_id == context.owner_id and lease.generation == context.generation
         waits.append(seconds)
-        result = original_wait(context, seconds)
+        controlled_clock.now += timedelta(seconds=seconds)
+        controlled_clock.elapsed += seconds
         assert transport.wire.scope.used_bytes == before
-        return result
+        return context.stop_event.is_set()
 
     def before_ack(tags):
         with micro_context.session_factory() as session:
@@ -333,7 +474,7 @@ def test_real_database_ten_tokens_wait_then_commit_six_on_same_owner(
     monkeypatch.setattr(queue, "_wait_for_rate", wait)
     run(micro_context, transport)
     assert groups == [10, 6] and committed == [10, 16]
-    assert waits and 0 < sum(waits) <= 1
+    assert waits == [1] and controlled_clock.elapsed == 1
     assert transport.acked == list(range(1, 17)) and transport.closed
     with micro_context.session_factory() as session:
         assert delivery.audit_quota(session, micro_context.subscription_id)["differences"] == {}
@@ -343,7 +484,7 @@ def test_real_database_ten_tokens_wait_then_commit_six_on_same_owner(
 
 
 def test_real_database_concurrent_rate_change_keeps_authoritative_prefix(
-    micro_context, monkeypatch
+    micro_context, monkeypatch, controlled_clock
 ):
     original = queue._receive_micro
     groups = []
