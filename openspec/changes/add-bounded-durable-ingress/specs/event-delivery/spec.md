@@ -31,7 +31,7 @@
 ## ADDED Requirements
 
 ### Requirement: 各层容量仅在责任合法交接后释放
-接收、内存、执行、历史、去重、重试/补处理及控制/诊断预留 SHALL 分层计账。T2 MUST 在 Admission、Execution、Outbox 和关联同事务提交后才释放 pending；历史和去重保持各自保护。重复回报、重启或处置 MUST NOT 重复释放、伪造余量或静默删除旧责任；原生工作未结束不得提前归还资源。
+接收、内存、执行、历史、去重、重试/补处理及控制/诊断预留 SHALL 分层计账。T2 MUST 在同一事务中完成 Admission、Execution、Outbox、关联写入及退出 pending/扣减相应占用，全部随事务提交整体生效；失败回滚保持原责任。历史和去重保持各自保护。重复回报、重启或处置 MUST NOT 重复释放、伪造余量或静默删除旧责任；原生工作未结束不得提前归还资源。
 
 #### Scenario: T2 事务失败后重新调度
 - **WHEN** 执行/Outbox 创建或责任交接在提交前失败
