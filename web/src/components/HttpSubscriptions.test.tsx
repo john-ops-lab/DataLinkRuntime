@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { Form } from "antd";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ApiError, api } from "../api";
 import { applyUiLocale } from "../i18n";
@@ -92,6 +93,98 @@ it("cannot switch or close an HTTP form during save", async () => {
   expect(close).not.toHaveBeenCalled();
   await act(async () => { finish(); });
   expect(close).toHaveBeenCalledOnce();
+});
+
+it.each([false, true])("keeps checking busy but clears only the persisted HTTP draft after check failure (existing=%s)", async existing => {
+  const saved = sub({ config_version: existing ? 2 : 1, config: { source_type: "http", credential_id: 44,
+    mode: "per_event", ordering: "receipt_serial", limits: { pending_count: 10, rate: 20 } } });
+  vi.spyOn(api, "createSubscription").mockResolvedValue(saved);
+  vi.spyOn(api, "updateSubscription").mockResolvedValue(saved);
+  let failCheck: (reason: unknown) => void = () => {};
+  const check = vi.spyOn(api, "testSubscriptionConnection").mockImplementation(() => new Promise((_resolve, reject) => {
+    failCheck = reject;
+  }));
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const draft = vi.fn();
+  render(<EventTriggerSettings {...settingsProps} sub={existing ? sub() : null} initialConfigure={!existing}
+    onDraftStateChange={draft} />);
+  if (existing) fireEvent.click(screen.getByRole("button", { name: "Change source" }));
+  else {
+    fireEvent.mouseDown(screen.getByLabelText("Receiving token"));
+    fireEvent.click(await screen.findByText("Sender token (#44)"));
+  }
+  fireEvent.change(screen.getByLabelText("Capacity"), { target: { value: ' { "rate": 20, "pending_count": 10 } ' } });
+  fireEvent.click(screen.getByRole("button", { name: "Save and check configuration" }));
+  await waitFor(() => expect(check).toHaveBeenCalledExactlyOnceWith(4, saved.config_version));
+  expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: /Save and check configuration/ }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByLabelText("Receiving token") as HTMLInputElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(confirm).not.toHaveBeenCalled();
+  await waitFor(() => expect(draft).toHaveBeenLastCalledWith({ dirty: false, busy: true }));
+  await act(async () => { failCheck(new ApiError(409, "source_not_available", "private upstream detail")); });
+  await screen.findByText(subscriptionErrorMessage(new Error("check failed"), "http"));
+  await waitFor(() => expect(draft).toHaveBeenLastCalledWith({ dirty: false, busy: false }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(confirm).not.toHaveBeenCalled();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+it("keeps the HTTP draft dirty when saving itself fails", async () => {
+  const failure = new ApiError(409, "subscription_configuration_stale", "private upstream detail");
+  vi.spyOn(api, "updateSubscription").mockRejectedValue(failure);
+  const check = vi.spyOn(api, "testSubscriptionConnection");
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const draft = vi.fn();
+  render(<EventTriggerSettings {...settingsProps} onDraftStateChange={draft} />);
+  fireEvent.click(screen.getByRole("button", { name: "Change source" }));
+  fireEvent.change(screen.getByLabelText("Capacity"), { target: { value: '{"rate":20}' } });
+  fireEvent.click(screen.getByRole("button", { name: "Save and check configuration" }));
+  await screen.findByText(subscriptionErrorMessage(failure, "http"));
+  expect(check).not.toHaveBeenCalled();
+  await waitFor(() => expect(draft).toHaveBeenLastCalledWith({ dirty: true, busy: false }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(confirm).toHaveBeenCalledExactlyOnceWith("There are unsaved changes. Discard them?");
+  expect(screen.getByRole("dialog")).toBeTruthy();
+});
+
+it.each([false, true])("does not clear a programmatically changed HTTP draft that differs from the saved snapshot (edited=%s)", async edited => {
+  const originalUseForm = Form.useForm;
+  let currentForm: ReturnType<typeof Form.useForm>[0] | undefined;
+  vi.spyOn(Form, "useForm").mockImplementation(form => {
+    const result = originalUseForm(form);
+    currentForm = result[0];
+    return result;
+  });
+  const savedLimits: Record<string, number> = edited ? { rate: 20 } : {};
+  vi.spyOn(api, "updateSubscription").mockResolvedValue(sub({ config_version: 2,
+    config: { source_type: "http", credential_id: 44, mode: "per_event", ordering: "receipt_serial", limits: savedLimits } }));
+  const failure = new ApiError(409, "source_not_available", "private upstream detail");
+  let failCheck: (reason: unknown) => void = () => {};
+  const check = vi.spyOn(api, "testSubscriptionConnection").mockImplementation(() => new Promise((_resolve, reject) => {
+    failCheck = reject;
+  }));
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const draft = vi.fn();
+  render(<EventTriggerSettings {...settingsProps} onDraftStateChange={draft} />);
+  fireEvent.click(screen.getByRole("button", { name: "Change source" }));
+  if (edited) fireEvent.change(screen.getByLabelText("Capacity"), { target: { value: '{"rate":20}' } });
+  fireEvent.click(screen.getByRole("button", { name: "Save and check configuration" }));
+  await waitFor(() => expect(check).toHaveBeenCalledOnce());
+  await waitFor(() => expect(draft).toHaveBeenLastCalledWith({ dirty: false, busy: true }));
+  expect(currentForm).toBeDefined();
+  await act(async () => { currentForm!.setFieldsValue({ mode: undefined }); });
+  expect(draft).toHaveBeenLastCalledWith({ dirty: false, busy: true });
+  await act(async () => { currentForm!.setFieldsValue({ limits: '{"rate":30}' }); });
+  await waitFor(() => expect(draft).toHaveBeenLastCalledWith({ dirty: true, busy: true }));
+  await act(async () => { failCheck(failure); });
+  await screen.findByText(subscriptionErrorMessage(new Error("check failed"), "http"));
+  expect((screen.getByLabelText("Capacity") as HTMLTextAreaElement).value).toBe('{"rate":30}');
+  await waitFor(() => expect(draft).toHaveBeenLastCalledWith({ dirty: true, busy: false }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(confirm).toHaveBeenCalledOnce();
+  expect(screen.getByRole("dialog")).toBeTruthy();
 });
 
 it("preserves the existing credential reference for read-only viewing", () => {

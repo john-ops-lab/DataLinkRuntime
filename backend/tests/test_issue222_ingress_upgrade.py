@@ -179,7 +179,7 @@ def test_fresh_http_schema_and_downgrade_preserve_permanent_route_marker(upgrade
     with upgrade_database.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0053_issue222_batch_guard_json"
+            == "0054_issue222_receipt_ttl_guard"
         )
         assert (
             connection.scalar(

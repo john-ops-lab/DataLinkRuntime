@@ -14,6 +14,25 @@ interface Values {
   mode: "per_event" | "business_batch";
 }
 
+function parseLimits(value: string | undefined): Record<string, number> | null {
+  let limits: unknown;
+  try { limits = JSON.parse(value || "{}"); } catch { return null; }
+  if (!limits || typeof limits !== "object" || Array.isArray(limits) ||
+    Object.entries(limits).some(([key, amount]) =>
+      !["pending_count", "pending_bytes", "history_count", "history_bytes", "dedupe_count", "rate"].includes(key)
+      || !Number.isSafeInteger(amount) || amount <= 0)) return null;
+  return limits as Record<string, number>;
+}
+
+function matchesSavedConfig(values: Values | undefined, config: HttpSourceConfig): boolean {
+  if (!values || values.credential_id !== config.credential_id ||
+    (values.mode ?? "per_event") !== (config.mode ?? "per_event")) return false;
+  const limits = parseLimits(values.limits);
+  const savedLimits = config.limits ?? {};
+  return limits !== null && Object.keys(limits).length === Object.keys(savedLimits).length &&
+    Object.entries(limits).every(([key, amount]) => savedLimits[key] === amount);
+}
+
 export default function HttpSubscriptionConfig({
   subscription, adapterId, canManage, readOnly = false, canTest = false,
   sourceSelector, onDraftStateChange, onClose, onSave,
@@ -32,13 +51,19 @@ export default function HttpSubscriptionConfig({
 }) {
   const { t } = useTranslation("subscription");
   const [form] = Form.useForm<Values>();
+  const values: Values | undefined = Form.useWatch([], form);
+  const [openedSnapshot] = useState(() => ({ id: subscription?.id, version: subscription?.config_version }));
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [busy, setBusy] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  const [edited, setEdited] = useState(false);
   const [checked, setChecked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const advanced = useRef<HTMLDetailsElement>(null);
   const config = subscription?.config.source_type === "http" ? subscription.config : undefined;
+  const savedSinceOpened = subscription != null &&
+    (subscription.id !== openedSnapshot.id || subscription.config_version !== openedSnapshot.version);
+  // A persisted update acknowledges only the matching draft, independently of its later check.
+  const dirty = savedSinceOpened && config ? !matchesSavedConfig(values, config) : edited;
   const path = subscription ? httpIngressPath(subscription) : null;
   useEffect(() => { onDraftStateChange?.({ dirty, busy }); }, [dirty, busy, onDraftStateChange]);
   useEffect(() => () => onDraftStateChange?.({ dirty: false, busy: false }), [onDraftStateChange]);
@@ -62,24 +87,24 @@ export default function HttpSubscriptionConfig({
     setChecked(false);
     try {
       const values = await form.validateFields();
-      let limits: unknown;
-      try { limits = JSON.parse(values.limits || "{}"); } catch { limits = null; }
-      if (!limits || typeof limits !== "object" || Array.isArray(limits) ||
-        Object.entries(limits).some(([key, amount]) =>
-          !["pending_count", "pending_bytes", "history_count", "history_bytes", "dedupe_count", "rate"].includes(key)
-          || !Number.isSafeInteger(amount) || amount <= 0)) {
+      const limits = parseLimits(values.limits);
+      if (limits === null) {
         if (advanced.current) advanced.current.open = true;
         form.setFields([{ name: "limits", errors: [t("limitsInvalid")] }]);
         return;
       }
       setBusy(true); setError(null);
+      const submittedConfig: HttpSourceConfig = { source_type: "http", credential_id: values.credential_id!,
+        mode: values.mode ?? "per_event", ordering: "receipt_serial", limits };
       await onSave({
         name: subscription?.name ?? "", description: subscription?.description ?? "",
-        config: { source_type: "http", credential_id: values.credential_id!, mode: values.mode ?? "per_event",
-          ordering: "receipt_serial", limits: limits as Record<string, number> },
+        config: submittedConfig,
         new_epoch: false,
       }, test);
-      if (test) { setDirty(false); setChecked(true); } else onClose();
+      if (test) {
+        const unchanged = matchesSavedConfig(form.getFieldsValue(), submittedConfig);
+        setEdited(!unchanged); setChecked(unchanged);
+      } else onClose();
     } catch (reason) {
       const fields = (reason as { errorFields?: { name: (string | number)[] }[] })?.errorFields;
       if (fields?.length) {
@@ -97,7 +122,7 @@ export default function HttpSubscriptionConfig({
     <Alert type="info" showIcon message={t("http.saveNote")} />
     {error && <Alert type="error" showIcon message={error} />}
     <Form form={form} layout="vertical" disabled={readOnly || busy}
-      onValuesChange={() => { setDirty(true); setChecked(false); }}
+      onValuesChange={() => { setEdited(true); setChecked(false); }}
       initialValues={{ credential_id: config?.credential_id, mode: config?.mode ?? "per_event",
         limits: JSON.stringify(config?.limits ?? {}, null, 2) }}>
       <Form.Item name="credential_id" label={t("http.credential")} extra={t("http.credentialHint")}

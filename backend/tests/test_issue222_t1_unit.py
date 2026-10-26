@@ -1,5 +1,6 @@
 """Bounded T1 custody uses real PostgreSQL, original identities and actual commits."""
 
+import base64
 import hashlib
 import json
 from dataclasses import replace
@@ -26,6 +27,7 @@ from dlr.control.services import subscription_accounting as accounting
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services import subscription_t1_unit as service
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.event_envelope import validate_envelope
 from dlr.control.services.input_config import database_now
 from dlr.control.services.subscription_t1_unit import T1Input, T1Unit
 from test_issue219_delivery import world as foundation_world
@@ -247,22 +249,38 @@ def test_queue_existing_duplicate_still_requires_current_owner(batch_world, sess
         assert session.scalar(select(EventReceipt)).duplicate_count == 0
 
 
+@pytest.mark.parametrize("elapsed_microseconds", [999999, 1000000])
 def test_queue_capacity_failure_keeps_prefix_and_does_not_spend_rejected_local_rate(
-    batch_world, session_factory
+    batch_world, session_factory, monkeypatch, elapsed_microseconds
 ):
     with session_factory.begin() as session:
         assert ingress_capacity.activate_profile(session)
         global_quota = session.get(SubscriptionQuota, "global")
         global_quota.rate_count = 999
-        global_quota.rate_window_at = database_now(session)
+        baseline = database_now(session)
+        global_quota.rate_window_at = baseline
+    fixed_now = baseline + timedelta(microseconds=elapsed_microseconds)
+    monkeypatch.setattr(T1Unit, "_clock", lambda _self: (fixed_now, False))
+    expected = 1 if elapsed_microseconds < 1000000 else 3
     with session_factory.begin() as session:
         result = unit(session, batch_world).receive([mq_input(batch_world, i) for i in range(3)])
-        assert [out.status_code for out in result.outcomes] == [202, 429]
-        assert result.accepted_prefix_count == 1
+        assert [out.status_code for out in result.outcomes] == (
+            [202, 429] if expected == 1 else [202, 202, 202]
+        )
+        assert result.accepted_prefix_count == expected
+        assert result.stopped_index == (1 if expected == 1 else None)
     with session_factory() as session:
-        assert facts(session, batch_world).pending_count == 1
-        assert session.get(SubscriptionQuota, f"sub:{batch_world['sub']}").rate_count == 1
-        assert session.get(SubscriptionQuota, "global").rate_count == 1000
+        local = facts(session, batch_world)
+        global_quota = session.get(SubscriptionQuota, "global")
+        assert local.pending_count == local.history_count == local.dedupe_count == expected
+        assert local.rate_count == expected and local.rate_window_at == fixed_now
+        assert global_quota.rate_count == (1000 if expected == 1 else 3)
+        assert global_quota.rate_window_at == (baseline if expected == 1 else fixed_now)
+        receipts = session.scalars(select(EventReceipt).order_by(EventReceipt.sequence)).all()
+        assert len(receipts) == expected
+        assert (
+            local.pending_bytes == local.history_bytes == sum(row.payload_bytes for row in receipts)
+        )
 
 
 def test_large_http_rejection_does_not_prevent_smaller_follower(http_world, session_factory):
@@ -339,6 +357,76 @@ def test_unit_bounds_are_checked_before_any_custody(batch_world, session_factory
     assert failure.value.detail["code"] == "t1_unit_bounds_exceeded"
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(EventReceipt)) == 0
+
+
+@pytest.mark.parametrize("extra_byte", [0, 1])
+def test_exact_one_mib_unit_boundary_uses_five_individually_legal_envelopes(
+    batch_world, session_factory, extra_byte
+):
+    inputs = [mq_input(batch_world, i, body=b"x" * 89000) for i in range(5)]
+    inputs[-1].envelope["source"]["attributes"]["properties"]["padding"] = ""
+    target = 1024**2 + extra_byte
+    padding = target - sum(
+        accounting.compact_bytes(item.envelope) + item.raw_size for item in inputs
+    )
+    assert 0 <= padding < 64 * 1024
+    inputs[-1].envelope["source"]["attributes"]["properties"]["padding"] = "x" * padding
+    envelope_sizes = [validate_envelope(item.envelope)[1] for item in inputs]
+    raw_sizes = [
+        len(base64.b64decode(item.envelope["data"]["value"], validate=True)) for item in inputs
+    ]
+    assert raw_sizes == [item.raw_size for item in inputs] == [89000] * 5
+    assert all(size < 256 * 1024 for size in envelope_sizes)
+    assert all(accounting.batch_budget(item.envelope).input_bytes < 256 * 1024 for item in inputs)
+    assert sum(envelope_sizes) + sum(raw_sizes) == target
+    columns = (
+        "scope",
+        "pending_count",
+        "pending_bytes",
+        "history_count",
+        "history_bytes",
+        "dedupe_count",
+        "rate_count",
+        "rate_window_at",
+    )
+    with session_factory.begin() as session:
+        assert ingress_capacity.activate_profile(session)
+        before = [
+            tuple(getattr(row, column) for column in columns)
+            for row in session.scalars(select(SubscriptionQuota).order_by(SubscriptionQuota.scope))
+        ]
+    if extra_byte:
+        with pytest.raises(HTTPException) as failure, session_factory.begin() as session:
+            unit(session, batch_world).receive(inputs)
+        assert failure.value.detail["code"] == "t1_unit_bounds_exceeded"
+        with session_factory() as session:
+            assert session.scalar(select(func.count()).select_from(EventReceipt)) == 0
+            assert session.scalar(select(func.count()).select_from(EventDelivery)) == 0
+            assert session.scalar(select(func.count()).select_from(SourceCheckpoint)) == 0
+            assert [
+                tuple(getattr(row, column) for column in columns)
+                for row in session.scalars(
+                    select(SubscriptionQuota).order_by(SubscriptionQuota.scope)
+                )
+            ] == before
+            assert delivery.audit_quota(session, batch_world["sub"])["differences"] == {}
+            assert delivery.audit_global_quota(session)["differences"] == {}
+    else:
+        with session_factory.begin() as session:
+            result = unit(session, batch_world).receive(inputs)
+            assert [out.status_code for out in result.outcomes] == [202] * 5
+            assert result.accepted_prefix_count == 5 and result.stopped_index is None
+        with session_factory() as session:
+            quota = facts(session, batch_world)
+            assert quota.pending_count == quota.history_count == quota.dedupe_count == 5
+            assert (
+                quota.pending_bytes
+                == quota.history_bytes
+                == sum(accounting.batch_budget(item.envelope).total_bytes for item in inputs)
+            )
+            assert quota.rate_count == session.get(SubscriptionQuota, "global").rate_count == 5
+            assert session.scalar(select(func.count()).select_from(EventDelivery)) == 5
+            assert session.scalar(select(SourceCheckpoint)).position == inputs[-1].position
 
 
 def test_http_unit_remains_four_requests_before_any_custody(http_world, session_factory):

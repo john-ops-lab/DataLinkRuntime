@@ -41,23 +41,23 @@ Content equality uses SHA-256 of the original body bytes. `{"value":1}` and `{"v
 | Response | Meaning and sender action |
 | --- | --- |
 | `202` | The first receipt committed durably. Retain `receipt_id` and the relative `status_url`, then query processing status. `execution_id` may still be `null`. |
-| `200` | The same ID and original bytes read back the existing receipt and its current status. No new initial responsibility or capacity charge is created. |
+| `200` | With bounded request resources available and current authentication and byte comparison successful, the same ID and original bytes read back the existing receipt and status. No new initial responsibility or capacity charge is created. |
 | `401` / `404` | Authentication is invalid or the route/record is not visible. Check the source credential and address. |
 | `409 event_identity_conflict` | The ID already identifies different original bytes. Investigate ID reuse; do not blindly assign a fresh ID to bypass it. This HTTP rejection does not permanently block other valid messages. |
 | `409 ingress_disabled` | New reception is stopped. Wait for explicit enablement; accepted messages continue draining. |
 | `410 ingress_epoch_retired` | The address is retired and contains no existing receipt for this ID. Use the current address for new messages. |
 | `413` / `415` / `422` | Size/structure, format/compression, JSON, or ID is invalid. Correct the request. |
-| `429` / `503` | Capacity or temporary platform availability prevents reception. Respect `Retry-After` and retry the same ID and original bytes within a finite budget. |
+| `429` / `503` | Request resources, durable reception capacity, or platform availability are temporarily insufficient. A duplicate can hit a resource 429 before readback. Respect `Retry-After` and retry the same ID and original bytes within a finite budget; this does not prove the ID was never accepted. |
 | Timeout/disconnect | This does not prove the transaction failed to commit. Retain and retry the same ID/body; query if a receipt ID is known. |
 
-Application 429/503 responses supply a bounded 1–30 second `Retry-After`; the current implementation uses 1 second. Senders need durable pending storage, finite concurrency, retry deadlines, and alerting. Remove a message from the unconfirmed sender queue only after a durable receipt response or successful readback. Business success remains a separate result.
+Application 429/503 responses supply a bounded 1–30 second `Retry-After`; the current implementation uses 1 second. Senders need durable pending storage, finite concurrency, retry deadlines, and alerting. Full durable pending/history quotas never recharge an existing message or discard its responsibility. However, a duplicate POST can first receive 429 when request, body, or native-work resources are full. Retain the same ID and original bytes for retries, or query a known `receipt_id`. Remove a message from the unconfirmed sender queue only after a durable receipt response or successful readback. Business success remains a separate result.
 
 `GET /api/ingress/{public_id}/receipts/{receipt_id}` uses the route's current valid source token. It returns receipt time, processing state, execution association, and a safe error code. It exposes no raw input, code, business output, or credentials. `pending` means waiting, `processing` means in progress, and `succeeded` / `failed` and other states describe the retained responsibility.
 
 ## Routing, credentials, and bindings
 
 - A generated address permanently identifies its original subscription and source epoch. It cannot be reassigned, and deleted addresses are never reused.
-- Stopping reception preserves readback of original IDs/bodies and status lookup. Full quotas, a disabled feature, or unavailable internal RabbitMQ do not invalidate existing receipts.
+- With bounded request resources available and current authentication valid, stopping reception preserves original-ID/body readback and status lookup. Full durable pending/history quotas, a disabled feature, or an unavailable worker, internal broker, or reception owner do not change this rule, recharge the message, or discard its responsibility.
 - Explicit reset creates a new address. During retention, the old address only reads back existing receipts; an unknown ID returns 410 instead of becoming a new-epoch responsibility. Deletion closes external access. A non-reusable marker survives permanent adapter history deletion.
 - Token rotation revokes the old token for historical lookup too. Ordinary source/credential changes require stopping, confirmed closure, and drained responsibility. Changing the token reference in an HTTP configuration does not itself require a new address.
 - Each accepted message retains its immutable revision, fixed worker, credential references, and activation policy. Waiting or recovery does not silently switch to current code. Credential plaintext is absent from messages and snapshots.
@@ -68,7 +68,7 @@ The body limit is 64 KiB and the complete event limit is 256 KiB. JSON depth is 
 
 HTTP permits at most 32 requests and 8 MiB of combined body/event reservations, within the shared 64 MiB source buffer budget. HTTP parsing and database work permit at most 8 concurrent native jobs. HTTP and native event sources share one `intake` database pool of at most 8 connections; management and recovery have a separate reserve of at most 4 connections. Neither pool allows overflow connections. Exhaustion rejects rather than queues without bounds. Cancellation retains the permit until native work actually ends.
 
-Each request reserves 320 KiB for the body and complete event limits, so the byte budget can hold at most 25 such reservations. When existing byte budgets are already insufficient, new reception requests can receive the same 429 before body reading. Status and management requests keep their original paths; early refusal or client cancellation does not release another request's reservation.
+Each request reserves 320 KiB for the body and complete event limits, so the byte budget can hold at most 25 such reservations. When existing request, byte, or native-work limits are full, a reception POST, including a duplicate, can receive `429 ingress_capacity_exceeded` with `Retry-After: 1` before authentication, byte comparison, or durable readback. These limits already exist in the request path; the ASGI shortcut only returns the same refusal earlier. It does not use the key to bypass authentication or byte comparison, add a pool, or queue without bounds. Status and management requests keep their original paths. GET lookup still has bounded request and native-work capacity; it is not an unlimited bypass. Early refusal or client cancellation does not release another request's reservation.
 
 Raw inputs default to 7 days and deduplication metadata to 30 days. Unfinished, failed, or recovery-referenced data remains protected. The sender's agreed retry horizon must fit the advertised deduplication window; permanent deduplication is not promised outside it. Original bytes, complete events, and required retained copies count toward capacity.
 
