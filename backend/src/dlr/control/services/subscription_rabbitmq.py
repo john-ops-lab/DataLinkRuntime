@@ -142,10 +142,10 @@ class RabbitMQTransport:
             with self.deadline():
                 self.channel = self.connection.channel()
             if self._native is not None and NativeBudget.compatible(
-                self.connection._impl, self.channel._impl
+                self.connection._impl, self.channel._impl, require_reader=True
             ):
                 self._native.channel = self.channel._impl
-                self._native.install(self.connection._impl)
+                self._native.install(self.connection._impl, protect_head=True)
                 self.micro_t1 = True
             else:
                 if self._native is not None:
@@ -216,6 +216,7 @@ class RabbitMQTransport:
         if token is None or len(self._raw_ready) >= MAX_CREDIT or len(body) != token.raw_size:
             self._native.fail("source_buffer_capacity", capacity=True)
         self._raw_ready.append(_RawDelivery(method, properties, body, token))
+        self._native.captured()
 
     def poll_bounded(self, timeout_seconds: float) -> Message | None:
         if not self.micro_t1:
@@ -260,6 +261,7 @@ class RabbitMQTransport:
         """Bounded native wait; never wait for output after a body is ready."""
         if self._raw_ready or self._pending_failure is not None:
             return
+        expires = time.monotonic() + max(0, timeout_seconds)
         timer = None
         loop = self.connection._impl.ioloop
         try:
@@ -276,7 +278,11 @@ class RabbitMQTransport:
                     on_message_callback=self._capture,
                 )
                 self._consumer_started = True
-            expires = time.monotonic() + max(0, timeout_seconds)
+            if self.connection._impl._frame_buffer and not self._native.head_pending:
+                # A prior reader pause can leave complete wire frames already
+                # in Pika. Drain them under the same preallocation guard; don't
+                # wait for another packet that may never arrive.
+                self.connection._impl._on_data_available(b"")
             expired = False
 
             def expire() -> None:
@@ -285,7 +291,7 @@ class RabbitMQTransport:
 
             # Native timers bound poll(); BlockingConnection.call_later would
             # enqueue a timer event requiring an unrelated blocking dispatch.
-            timer = loop.call_later(max(0, timeout_seconds), expire)
+            timer = loop.call_later(max(0, expires - time.monotonic()), expire)
             while (
                 not self._raw_ready
                 and not expired
@@ -293,6 +299,8 @@ class RabbitMQTransport:
                 and not self.connection.is_closed
                 and not self.connection._closed_result.ready
                 and not self.channel._impl.is_closed
+                and not self._native.soft_blocked
+                and not self._native.head_pending
             ):
                 loop.poll()
                 loop.process_timeouts()
@@ -396,7 +404,8 @@ class RabbitMQTransport:
         assert self._native is not None
         for tag in tags:
             self._native.retiring(tag)
-        self._native.resume_io()
+        self._native.before_ack()
+        self._native.resume_io(receiving=False)
         with self.deadline():
             for tag in tags:
                 self.channel._impl.basic_ack(delivery_tag=tag, multiple=False)

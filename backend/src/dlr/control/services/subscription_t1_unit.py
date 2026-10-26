@@ -45,7 +45,8 @@ from dlr.control.services.subscription_activation_policy import ensure_policy
 from dlr.control.services.subscription_batch_view import delivery_records
 from dlr.control.services.subscription_registry import source_definition
 
-MAX_ITEMS = 4
+MAX_ITEMS = 16
+HTTP_MAX_ITEMS = 4
 MAX_PAYLOAD_BYTES = 1024**2
 SourceType = Literal["http", "rabbitmq"]
 
@@ -600,9 +601,10 @@ class T1Unit:
         if self._used:
             raise domain_error(409, "subscription_owner_stale", "T1 unit was already consumed")
         self._used = True
-        if not 1 <= len(inputs) <= MAX_ITEMS or len({item.index for item in inputs}) != len(inputs):
+        maximum = HTTP_MAX_ITEMS if self.source_type == "http" else MAX_ITEMS
+        if not 1 <= len(inputs) <= maximum or len({item.index for item in inputs}) != len(inputs):
             raise domain_error(
-                422, "t1_unit_bounds_exceeded", "T1 unit requires at most four distinct items"
+                422, "t1_unit_bounds_exceeded", "T1 unit exceeds its source member bound"
             )
         if (
             self.subscription.source_type != self.source_type

@@ -102,8 +102,9 @@ def facts(session, world):
     return session.get(SubscriptionQuota, f"sub:{world['sub']}")
 
 
-def test_four_items_are_independent_receipts_and_one_bulk_insert_per_table(
-    batch_world, session_factory
+@pytest.mark.parametrize("count", [4, 16])
+def test_items_are_independent_receipts_and_one_bulk_insert_per_table(
+    batch_world, session_factory, count
 ):
     with session_factory.begin() as session:
         assert ingress_capacity.activate_profile(session)
@@ -117,11 +118,11 @@ def test_four_items_are_independent_receipts_and_one_bulk_insert_per_table(
     try:
         with session_factory.begin() as session:
             result = unit(session, batch_world).receive(
-                [mq_input(batch_world, i) for i in range(4)]
+                [mq_input(batch_world, i) for i in range(count)]
             )
-            assert [item.status_code for item in result.outcomes] == [202] * 4
-            assert len({item.receipt_id for item in result.outcomes}) == 4
-            assert result.accepted_prefix_count == 4 and result.stopped_index is None
+            assert [item.status_code for item in result.outcomes] == [202] * count
+            assert len({item.receipt_id for item in result.outcomes}) == count
+            assert result.accepted_prefix_count == count and result.stopped_index is None
             assert all(item.status["processing_status"] == "pending" for item in result.outcomes)
             ids = [item.receipt_id for item in result.outcomes]
     finally:
@@ -135,14 +136,14 @@ def test_four_items_are_independent_receipts_and_one_bulk_insert_per_table(
             "clock_timestamp()" in sql and "subscription_sync_batches.ready_kind" in sql
             for sql in statements
         )
-        == 4
+        == count
     )
     with session_factory() as session:
         quota = facts(session, batch_world)
-        assert quota.pending_count == quota.history_count == quota.dedupe_count == 4
+        assert quota.pending_count == quota.history_count == quota.dedupe_count == count
         rows = session.scalars(select(EventReceipt).order_by(EventReceipt.sequence)).all()
         assert [row.id for row in rows] == ids
-        assert [row.sequence for row in rows] == [1, 2, 3, 4]
+        assert [row.sequence for row in rows] == list(range(1, count + 1))
         assert sum(row.payload_bytes for row in rows) == quota.history_bytes
         assert all(row.source_raw_body is None for row in rows)
 
@@ -329,12 +330,20 @@ def test_bulk_delivery_insert_failure_cannot_leave_receipts_or_counters(
 @pytest.mark.parametrize("kind", ["count", "bytes"])
 def test_unit_bounds_are_checked_before_any_custody(batch_world, session_factory, kind):
     inputs = (
-        [mq_input(batch_world, i) for i in range(5)]
+        [mq_input(batch_world, i) for i in range(17)]
         if kind == "count"
         else [mq_input(batch_world, i, body=b"x" * 170000) for i in range(3)]
     )
     with pytest.raises(HTTPException) as failure, session_factory.begin() as session:
         unit(session, batch_world).receive(inputs)
+    assert failure.value.detail["code"] == "t1_unit_bounds_exceeded"
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(EventReceipt)) == 0
+
+
+def test_http_unit_remains_four_requests_before_any_custody(http_world, session_factory):
+    with pytest.raises(HTTPException) as failure, session_factory.begin() as session:
+        unit(session, http_world, "http").receive([http_input(http_world, i) for i in range(5)])
     assert failure.value.detail["code"] == "t1_unit_bounds_exceeded"
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(EventReceipt)) == 0

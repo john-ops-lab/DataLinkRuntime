@@ -146,7 +146,8 @@ def test_native_deadline_interrupts_actual_blocked_ack_flush_before_user_timer_d
         owner.transport.channel = SimpleNamespace(_impl=implementation)
         owner.transport._native = SimpleNamespace(
             retiring=lambda tag: None,
-            resume_io=lambda: None,
+            before_ack=lambda: None,
+            resume_io=lambda **kwargs: None,
             released=lambda tag: released.append(tag),
             pause_io=lambda implementation: None,
         )

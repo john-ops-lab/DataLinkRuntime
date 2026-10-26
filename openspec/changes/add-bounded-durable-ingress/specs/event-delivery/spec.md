@@ -71,12 +71,20 @@
 - **THEN** 形成明确失败与对应顺序屏障，不自动改成 platform_transient；无关可运行入口仍获得处理机会
 
 ### Requirement: 接管合并保持逐条责任和确认边界
-显式 HTTP/RabbitMQ business_batch 模式 MAY 在事务外最多收集 4 条、原文加 Envelope 合计 1 MiB、最多等待 5 ms，再在一个事务内复用同 scope/lease/checkpoint/精确 Activation/CV/profile。每条 MUST 保留独立身份、Receipt/Delivery、完整计费及首次绑定；无跨事务缓存，RETURNING 按身份映射，原单条路径不变。每个新项仍检查磁盘、租约时间、速率和控制优先权，不得留下拒绝项的局部扣额。
+显式 business_batch 模式 MAY 在事务外按来源分限收集：HTTP 最多 4 条、RabbitMQ 最多 16 条，原文加 Envelope 合计仍为 1 MiB、最多额外等待 5 ms，再在一个事务内复用同 scope/lease/checkpoint/精确 Activation/CV/profile。截止后 RabbitMQ MAY 仅以零等待排出已 complete ready 的消息，不再原生 I/O 或等待，无 ready 即结束，仍受 16 条/1 MiB 限制；准备 CPU 耗时计入真实接管时间。每条 MUST 保留独立身份、Receipt/Delivery、完整计费及首次绑定；无跨事务缓存，RETURNING 按身份映射，原单条路径不变。每个新项仍检查磁盘、租约时间、速率和控制优先权，不得留下拒绝项的局部扣额。
 
 #### Scenario: RabbitMQ 第二条不能接管
 - **WHEN** 同组第二条发生内容故障或容量不足
 - **THEN** 仅合法连续前缀可提交，确认提交后才 ACK 该前缀；故障及后继不 ACK，沿原分类处置；数据库或提交未知时整组不确认，重投不重复记账
 
 #### Scenario: 接收资源与有限预取
-- **WHEN** 多条模式授予最多 4 个原生 credit 或收到 content header
+- **WHEN** RabbitMQ 多条模式授予最多 16 个原生 credit 或收到 content header
 - **THEN** 固定帧及逐正文装配峰值在分配前计入原 owner/global 预算，不能可靠安装受检门禁则保持旧单条读取；不足时停止并退避而非生成 poison，关闭未确认不提前回收，原大小及总资源上限不扩大
+
+#### Scenario: 合法大消息的首次准备及下一窗口
+- **WHEN** 一个新收集窗口首次收到完整消息，或提交后的 ACK 补充下一窗口
+- **THEN** 在首条准备确实取得工作区之前暂停该专用 SDK reader 与后继解码；已有合法连续前缀可进展，不能因原文预取占满 owner 而永久零进展，最多 16 个 retiring 身份与新预取共用原 2 MiB owner/64 MiB global，其他连接不受 reader 控制影响
+
+#### Scenario: 后继读取预算不足时先确认已提交前缀
+- **WHEN** 已有准备完成的合法连续前缀，而下一次帧读取或正文分配不能取得预算
+- **THEN** 保留未解码帧并暂停后继读取；只有前缀确认提交后才在接收仍暂停时 ACK，实际释放预算后才恢复读取，不能先关闭连接使同一前缀永久重投；预算不足不写坏消息屏障

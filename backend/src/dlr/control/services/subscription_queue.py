@@ -385,20 +385,20 @@ class QueueSourceRunner:
             ):
                 micro_path = True
                 self._run_micro(context, cast(MicroTransport, transport))
-                return
-            while not context.stop_event.is_set():
-                message = None
-                custody_committed = False
-                if not capacity_ready(context):
-                    raise SourceFailure("subscription_capacity_exceeded", "capacity")
-                message = transport.poll()
-                if message is None:
-                    continue
-                if not take_custody(context, message):
-                    break
-                custody_committed = True
-                # The committed receipt survives even if this ACK fails or ownership changes.
-                transport.ack(message)
+            else:
+                while not context.stop_event.is_set():
+                    message = None
+                    custody_committed = False
+                    if not capacity_ready(context):
+                        raise SourceFailure("subscription_capacity_exceeded", "capacity")
+                    message = transport.poll()
+                    if message is None:
+                        continue
+                    if not take_custody(context, message):
+                        break
+                    custody_committed = True
+                    # The committed receipt survives even if this ACK fails or ownership changes.
+                    transport.ack(message)
         except Exception as error:
             failure = classify(error)
             if micro_path:
@@ -449,9 +449,7 @@ class QueueSourceRunner:
                 total_bytes = 0
                 deferred: Exception | None = None
                 deferred_message: Message | None = None
-                while len(group) < 4 and not context.stop_event.is_set():
-                    if started is not None and time.monotonic() - started >= 0.005:
-                        break
+                while len(group) < 16 and not context.stop_event.is_set():
                     try:
                         if carry is not None:
                             message, carry = carry, None

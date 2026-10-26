@@ -10,6 +10,7 @@ import hashlib
 import inspect
 import struct
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
@@ -26,8 +27,11 @@ from dlr.control.services.subscription_source import ScopedBufferBudget, SourceF
 Channel = pika.channel.Channel
 ContentFrameAssembler = pika.channel.ContentFrameAssembler
 Connection = pika.connection.Connection
+_AsyncTransportBase = pika.adapters.utils.io_services_utils._AsyncTransportBase
+_AsyncPlaintextTransport = pika.adapters.utils.io_services_utils._AsyncPlaintextTransport
+_AsyncSSLTransport = pika.adapters.utils.io_services_utils._AsyncSSLTransport
 
-MAX_CREDIT = 4
+MAX_CREDIT = 16
 FRAME_MAX = 131072
 RECV_BYTES = 4096
 FRAME_WORKSPACE = 2 * FRAME_MAX + 2 * RECV_BYTES
@@ -36,6 +40,7 @@ MAX_INLINE = 256 * 1024
 FRAGMENT_OVERHEAD = 64
 METADATA_FACTOR = 128
 TOKEN_OVERHEAD = 4096
+CONSUME_BYTES = 102400
 
 # These are the inspected upstream 1.3.2 source functions, not a runtime cache
 # of whatever an installed SDK happens to contain. A vendor patch, unavailable
@@ -52,6 +57,11 @@ _SDK_DIGESTS = (
     "7af144e51539c7489298149a411dda8d898f05fe93e9617174df711149447b51",
     "365b750e2b9f263076181e30dfb88f65cb5dc9e4f0c6c00d33f6b2ca9c46bed0",
     "6bfb1e1ab9ed36f1ba22c5d34600ce9d4246c2fffc9b05281a6157f7e03afac2",
+    "2be978e5ce5b4e944de69d10ad6cf91e24798b71fdf993eac2393472ed443aba",
+    "dad75a6c1bfbf5df9033ed3bc88c8953bc14167d9f0645447268128b6ecffd37",
+    "ba149ba5b699c8523329c7ca06780d0cb283fe651d8c13d9ad642c57efa6d9c3",
+    "14dbc82ba3b0b32dabaa82f4a3d00de4f89ef17d85a1da8d5bb2cb9326b4db33",
+    "1ba3396e8b474fd84be1e396f4c59b921175be5d645ec336d7f42bf62608e6cc",
 )
 
 
@@ -88,6 +98,7 @@ class NativeToken:
     assembled: bool = False
     working: int = 0
     retiring: bool = False
+    on_prepared: Callable[[], None] | None = None
 
     def prepare_properties(self, properties: Any, method: Any) -> bool:
         assert self.raw_size is not None
@@ -123,6 +134,8 @@ class NativeToken:
         if not self.reservation.resize(self.metadata + self.raw_size + working):
             return False
         self.working = working
+        if self.on_prepared is not None:
+            self.on_prepared()
         return True
 
     def end_processing(self) -> None:
@@ -130,6 +143,50 @@ class NativeToken:
             assert self.raw_size is not None
             self.reservation.resize(self.metadata + self.raw_size)
             self.working = 0
+
+
+class NativeReader:
+    """Pause only this transport; stop the current consume turn as well."""
+
+    def __init__(self, connection: Any):
+        self.connection = connection
+        self.transport = connection._transport
+        self.paused = False
+
+    @staticmethod
+    def compatible(connection: Any) -> bool:
+        try:
+            value = connection._transport
+            expected = type(value)
+            return bool(
+                expected in {_AsyncPlaintextTransport, _AsyncSSLTransport}
+                and value._MAX_CONSUME_BYTES == CONSUME_BYTES
+                and getattr(value._consume, "__func__", None) is expected._consume
+                and getattr(value._on_socket_readable, "__func__", None)
+                is expected._on_socket_readable
+                and callable(value._nbio.remove_reader)
+                and callable(value._nbio.set_reader)
+                and value._sock.fileno() >= 0
+            )
+        except (AttributeError, TypeError, OSError):
+            return False
+
+    def pause(self) -> None:
+        # _consume checks this after each recv/protocol callback. Thus a first
+        # complete body stops its current turn, not just the next selector turn.
+        self.transport._MAX_CONSUME_BYTES = 0
+        self.transport._nbio.remove_reader(self.transport._sock.fileno())
+        self.paused = True
+
+    def resume(self) -> None:
+        if self.transport._state != self.transport._STATE_ACTIVE:
+            return
+        self.transport._MAX_CONSUME_BYTES = CONSUME_BYTES
+        if self.paused:
+            self.transport._nbio.set_reader(
+                self.transport._sock.fileno(), self.transport._on_socket_readable
+            )
+            self.paused = False
 
 
 class NativeBudget:
@@ -140,6 +197,10 @@ class NativeBudget:
         self.current: NativeToken | None = None
         self.fault: SourceFailure | None = None
         self._provisional: Reservation | None = None
+        self.reader: NativeReader | None = None
+        self.head_prepared = False
+        self.head_pending = False
+        self.soft_blocked = False
         if not self.fixed.resize(FRAME_WORKSPACE):
             self.fail("source_buffer_capacity", capacity=True)
 
@@ -152,12 +213,49 @@ class NativeBudget:
         # Keep the actual incomplete wire frame, release ended read/copy peaks.
         self.fixed.resize(len(connection._frame_buffer) + 2 * RECV_BYTES)
 
-    def resume_io(self) -> None:
+    def resume_io(self, *, receiving: bool = True) -> None:
+        if not receiving and self.reader is not None:
+            # ACK output keeps the reader paused. No new Python receive/frame
+            # copies can be allocated, so retain the actual paused wire charge
+            # instead of stealing a full next-read workspace from its prefix.
+            assert self.reader.paused
+            return
         if not self.fixed.resize(FRAME_WORKSPACE):
-            self.fail("source_buffer_capacity", capacity=True)
+            self.byte_refused()
+            return
+        if receiving and self.reader is not None and not self.head_pending:
+            self.soft_blocked = False
+            self.reader.resume()
+
+    def prepared(self) -> None:
+        self.head_prepared = True
+        self.head_pending = False
+
+    def captured(self) -> None:
+        if self.reader is not None and not self.head_prepared:
+            self.head_pending = True
+            self.reader.pause()
+
+    def before_ack(self) -> None:
+        self.head_prepared = False
+        self.head_pending = any(
+            token.assembled and not token.retiring and not token.working
+            for token in self.tokens.values()
+        )
+        if self.reader is not None:
+            self.reader.pause()
+
+    def byte_refused(self) -> tuple[int, None]:
+        if self.reader is not None and self.head_prepared:
+            # Keep the current frame undecoded, so the caller can commit/ACK
+            # its prepared prefix before the broker connection is destroyed.
+            self.soft_blocked = True
+            self.reader.pause()
+            return 0, None
+        self.fail("source_buffer_capacity", capacity=True)
 
     @staticmethod
-    def compatible(connection: Any, channel: Any) -> bool:
+    def compatible(connection: Any, channel: Any, *, require_reader: bool = False) -> bool:
         try:
             functions = (
                 frame.decode_frame,
@@ -171,6 +269,11 @@ class NativeBudget:
                 pika.data.decode_value,
                 pika.data.decode_table,
                 pika.data.decode_short_string,
+                _AsyncTransportBase._consume,
+                _AsyncPlaintextTransport._on_socket_readable,
+                _AsyncSSLTransport._on_socket_readable,
+                _AsyncSSLTransport._consume,
+                _AsyncSSLTransport._produce,
             )
             return bool(
                 pika.__version__ == "1.3.2"
@@ -183,6 +286,7 @@ class NativeBudget:
                 and pika.adapters.utils.io_services_utils._AsyncTransportBase._MAX_RECV_BYTES
                 == RECV_BYTES
                 and callable(channel.basic_consume)
+                and (not require_reader or NativeReader.compatible(connection))
                 and all(
                     hashlib.sha256(inspect.getsource(function).encode()).hexdigest() == expected
                     for function, expected in zip(functions, _SDK_DIGESTS, strict=True)
@@ -191,11 +295,15 @@ class NativeBudget:
         except (AttributeError, TypeError, OSError):
             return False
 
-    def install(self, connection: Any) -> None:
+    def install(self, connection: Any, *, protect_head: bool = False) -> None:
+        if protect_head:
+            self.reader = NativeReader(connection)
         original_read = connection._read_frame
         original_content = self.channel._handle_content_frame
 
         def read() -> Any:
+            if self.reader is not None and (self.head_pending or self.soft_blocked):
+                return 0, None
             data = connection._frame_buffer
             if len(data) < 7 or data.startswith(b"AMQP"):
                 return original_read()
@@ -214,13 +322,13 @@ class NativeBudget:
                     charge = TOKEN_OVERHEAD + payload * METADATA_FACTOR
                     lease = Reservation(self.scope)
                     if not lease.resize(charge):
-                        self.fail("source_buffer_capacity", capacity=True)
+                        return self.byte_refused()
                     self._provisional = lease
                     consumed, value = original_read()
                     tag = value.method.delivery_tag
                     if tag in self.tokens:
                         self.fail("source_buffer_capacity", capacity=True)
-                    created = NativeToken(tag, lease, charge, payload)
+                    created = NativeToken(tag, lease, charge, payload, on_prepared=self.prepared)
                     self.tokens[tag] = self.current = created
                     self._provisional = None
                     return consumed, value
@@ -236,7 +344,7 @@ class NativeBudget:
                 except SourceFailure as error:
                     self.fail(error.code)
                 if not token.reservation.resize(token.metadata + extra + 2 * raw_size):
-                    self.fail("source_buffer_capacity", capacity=True)
+                    return self.byte_refused()
                 token.metadata += extra
                 token.wire_metadata += payload
                 token.raw_size = raw_size
@@ -250,7 +358,7 @@ class NativeBudget:
                 ):
                     self.fail("source_buffer_capacity", capacity=True)
                 if not token.reservation.resize(token.reservation.amount + FRAGMENT_OVERHEAD):
-                    self.fail("source_buffer_capacity", capacity=True)
+                    return self.byte_refused()
                 token.fragments += 1
             return original_read()
 
@@ -287,10 +395,12 @@ class NativeBudget:
         # Caller first clears actual ready/content/frame references and proves
         # native close. There is no release operation for an unknown close.
         for token in self.tokens.values():
+            token.on_prepared = None
             token.reservation.release()
         self.tokens.clear()
         if self._provisional is not None:
             self._provisional.release()
             self._provisional = None
         self.current = None
+        self.reader = None
         self.fixed.release()

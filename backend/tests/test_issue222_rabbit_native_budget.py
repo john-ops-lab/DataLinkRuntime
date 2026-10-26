@@ -192,23 +192,23 @@ def test_overrun_and_oversized_wire_frame_are_rejected_before_decode(monkeypatch
 
 def test_current_and_next_window_share_budget_and_retiring_tags_are_not_live_credit():
     wire = NativeWire()
-    for tag in range(1, 5):
+    for tag in range(1, 17):
         wire.delivery(tag, b"data")
     before = wire.scope.used_bytes
     wire.received.clear()  # owner has dropped real bodies before ACK handoff
-    for tag in range(1, 5):
+    for tag in range(1, 17):
         wire.native.retiring(tag)
     assert wire.scope.used_bytes < before
-    for tag in range(5, 9):
+    for tag in range(17, 33):
         wire.delivery(tag, b"next")
-    assert len(wire.native.tokens) == 8
-    assert sum(not token.retiring for token in wire.native.tokens.values()) == 4
+    assert len(wire.native.tokens) == 32
+    assert sum(not token.retiring for token in wire.native.tokens.values()) == 16
     with pytest.raises(SourceFailure, match="source_buffer_capacity"):
-        wire.method(9)
+        wire.method(33)
     assert wire.parent.peak_bytes <= wire.scope.limit_bytes
-    for tag in range(1, 5):
+    for tag in range(1, 17):
         wire.native.released(tag)
-    assert set(wire.native.tokens) == {5, 6, 7, 8}
+    assert set(wire.native.tokens) == set(range(17, 33))
     wire.close()
     assert wire.parent.used_bytes == 0
 
@@ -486,7 +486,8 @@ def test_collection_remaining_window_completes_partial_next_body_without_flush()
     assert first.body == b"first" and loop.polls == 1
     second = value.poll_bounded(0.003)
     assert second.body == b"next" and second.handle == 2
-    assert loop.polls == 2 and loop.waits == [0.2, 0.003]
+    assert loop.polls == 2 and len(loop.waits) == 2
+    assert all(0 <= actual <= cap for actual, cap in zip(loop.waits, [0.2, 0.003], strict=True))
     assert loop.removed == ["native-timer"] * 2
     assert wire.parent.peak_bytes <= wire.scope.limit_bytes
     first = second = None
@@ -504,11 +505,12 @@ def test_collection_ready_or_expired_or_faulted_never_waits_and_positive_wait_is
     message = value.poll_bounded(0.004)
     assert message.body == b"ready" and loop.polls == 0 and loop.waits == []
     assert value.poll_bounded(1) is None
-    assert loop.polls == 1 and loop.waits == [0.005]
+    assert loop.polls == 1 and len(loop.waits) == 1 and 0 <= loop.waits[0] <= 0.005
+    waits = list(loop.waits)
     value._pending_failure = SourceFailure("source_buffer_capacity", "backoff")
     with pytest.raises(SourceFailure, match="source_buffer_capacity"):
         value.poll_bounded(0.003)
-    assert loop.polls == 1 and loop.waits == [0.005]
+    assert loop.polls == 1 and loop.waits == waits
     message = None
     value.connection.is_closed = True
     value._close()
@@ -521,10 +523,29 @@ def test_collection_deadline_stops_partial_body_without_ack_or_extra_read():
     wire.header(4)
     wire.feed(frame.Body(1, b"pa"))
     assert value.poll_bounded(0.002) is None
-    assert loop.waits == [0.002] and loop.polls == 1
+    assert len(loop.waits) == 1 and 0 <= loop.waits[0] <= 0.002 and loop.polls == 1
     assert wire.native.tokens[1].assembled is False
     assert wire.native.tokens[1].raw_size == 4
     assert value.poll_bounded(0) is None and loop.polls == 1
+    value.connection.is_closed = True
+    value._close()
+
+
+def test_collection_preparation_cannot_restart_the_remaining_io_deadline(monkeypatch):
+    wire = NativeWire()
+    value, loop = polling_transport(wire, [])
+    clock = [0.0]
+    monkeypatch.setattr(source.time, "monotonic", lambda: clock[0])
+    resume = wire.native.resume_io
+
+    def delayed_resume():
+        resume()
+        clock[0] += 0.006
+
+    monkeypatch.setattr(wire.native, "resume_io", delayed_resume)
+    assert value.poll_bounded(0.005) is None
+    assert loop.polls == 0 and loop.waits == [0]
+    assert value._pending_failure is None and wire.native.fault is None
     value.connection.is_closed = True
     value._close()
 
@@ -542,7 +563,8 @@ def test_collection_next_header_fault_keeps_prior_message_and_safe_fault_code():
         value.poll_bounded(0.004)
     assert first.body == b"prefix" and first.handle == 1
     assert error.value.code == "event_payload_too_large" and error.value.disposition == "blocked"
-    assert loop.polls == 2 and loop.waits == [0.2, 0.004]
+    assert loop.polls == 2 and len(loop.waits) == 2
+    assert all(0 <= actual <= cap for actual, cap in zip(loop.waits, [0.2, 0.004], strict=True))
     first = None
     value.connection.is_closed = True
     value._close()
@@ -643,15 +665,22 @@ def test_ack_flush_can_admit_next_window_while_retiring_only_identity_credits():
 
 @pytest.mark.parametrize(
     "version,mode,credit",
-    [("1.3.2", "business_batch", 4), ("unknown", "business_batch", 1), ("1.3.2", "per_event", 1)],
+    [("1.3.2", "business_batch", 16), ("unknown", "business_batch", 1), ("1.3.2", "per_event", 1)],
 )
-def test_transport_enables_four_credits_only_for_checked_opt_in_sdk(
+def test_transport_enables_sixteen_credits_only_for_checked_opt_in_sdk(
     monkeypatch, version, mode, credit
 ):
     connection = SelectConnection.__new__(SelectConnection)
     connection._frame_buffer = b""
     constructor_loop = ManualLoop([])
     connection._nbio = SimpleNamespace(get_native_ioloop=lambda: constructor_loop)
+    from pika.adapters.utils.io_services_utils import _AsyncPlaintextTransport
+
+    transport = _AsyncPlaintextTransport.__new__(_AsyncPlaintextTransport)
+    transport._state = transport._STATE_ACTIVE
+    transport._sock = SimpleNamespace(fileno=lambda: 1)
+    transport._nbio = SimpleNamespace(remove_reader=lambda fd: None, set_reader=lambda fd, cb: None)
+    connection._transport = transport
     channel = pika.channel.Channel.__new__(pika.channel.Channel)
     channel.channel_number = 1
     channel._state = pika.channel.Channel.OPEN
@@ -693,8 +722,8 @@ def test_transport_enables_four_credits_only_for_checked_opt_in_sdk(
         budget=scope,
     )
     assert qos == [credit]
-    assert value.micro_t1 == (credit == 4)
-    assert len(consumers) == (0 if credit == 4 else 1)
+    assert value.micro_t1 == (credit == 16)
+    assert len(consumers) == (0 if credit == 16 else 1)
     value.close()
     assert scope.used_bytes == 0
 

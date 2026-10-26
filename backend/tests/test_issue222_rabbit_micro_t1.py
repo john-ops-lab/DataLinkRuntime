@@ -108,7 +108,10 @@ def mocked_context():
     )
 
 
-def test_four_native_messages_form_one_unit_and_drop_bodies_before_ack(mocked_context, monkeypatch):
+@pytest.mark.parametrize("count", [4, 16])
+def test_native_messages_form_one_unit_and_drop_bodies_before_ack(
+    mocked_context, monkeypatch, count
+):
     monkeypatch.setattr(queue, "capacity_ready", lambda context: True)
     groups = []
 
@@ -117,9 +120,10 @@ def test_four_native_messages_form_one_unit_and_drop_bodies_before_ack(mocked_co
         return len(group), None, None
 
     monkeypatch.setattr(queue, "_receive_micro", receive)
-    transport = MemoryTransport(mocked_context)
+    transport = MemoryTransport(mocked_context, count=count)
     run(mocked_context, transport)
-    assert groups == [[1, 2, 3, 4]] and transport.acked == [1, 2, 3, 4]
+    assert groups == [list(range(1, count + 1))]
+    assert transport.acked == list(range(1, count + 1))
     assert transport.closed and transport.wire.scope.used_bytes == 0
 
 
@@ -203,7 +207,7 @@ def test_byte_refused_second_member_is_carried_after_committing_existing_prefix(
     assert transport.wire.scope.used_bytes == 0
 
 
-def test_collection_stops_at_five_milliseconds_before_taking_another_ready_message(
+def test_collection_deadline_only_drains_ready_without_extending_io_wait(
     mocked_context, monkeypatch
 ):
     monkeypatch.setattr(queue, "capacity_ready", lambda context: True)
@@ -224,9 +228,18 @@ def test_collection_stops_at_five_milliseconds_before_taking_another_ready_messa
         return len(group), None, None
 
     monkeypatch.setattr(queue, "_receive_micro", receive)
-    transport = MemoryTransport(mocked_context)
+    transport = MemoryTransport(mocked_context, count=16)
+    waits = []
+    original_poll = transport.poll_bounded
+
+    def bounded(seconds):
+        waits.append(seconds)
+        return original_poll(seconds)
+
+    transport.poll_bounded = bounded
     run(mocked_context, transport)
-    assert groups == [1] * 4 and transport.acked == [1, 2, 3, 4]
+    assert groups == [16] and transport.acked == list(range(1, 17))
+    assert waits == [0] * 15
 
 
 def test_later_sdk_fault_still_commits_and_acks_captured_valid_prefix(mocked_context, monkeypatch):
@@ -302,35 +315,40 @@ def assert_ledger(context):
         assert delivery.audit_global_quota(session)["differences"] == {}
 
 
-def test_real_database_four_commit_before_ack_and_redelivery_deduplicates(micro_context):
+@pytest.mark.parametrize("count", [4, 16])
+def test_real_database_commit_before_ack_and_redelivery_deduplicates(micro_context, count):
     def committed(tags):
-        assert receipts(micro_context) == 4
+        assert receipts(micro_context) == count
 
-    first = MemoryTransport(micro_context, before_ack=committed)
+    first = MemoryTransport(micro_context, count=count, before_ack=committed)
     run(micro_context, first)
-    assert first.acked == [1, 2, 3, 4] and receipts(micro_context) == 4
+    assert first.acked == list(range(1, count + 1)) and receipts(micro_context) == count
     micro_context.stop_event.clear()
-    second = MemoryTransport(micro_context, before_ack=committed)
+    second = MemoryTransport(micro_context, count=count, before_ack=committed)
     run(micro_context, second)
-    assert second.acked == [1, 2, 3, 4] and receipts(micro_context) == 4
+    assert second.acked == list(range(1, count + 1)) and receipts(micro_context) == count
     assert_ledger(micro_context)
 
 
-def test_real_database_second_bad_item_preserves_committed_prefix(micro_context, monkeypatch):
+@pytest.mark.parametrize("bad_index,count", [(2, 4), (9, 16)])
+def test_real_database_bad_item_preserves_committed_prefix(
+    micro_context, monkeypatch, bad_index, count
+):
     original = queue._prepare_micro
 
     def prepare(context, message):
         result = original(context, message)
-        if message.handle == 2:
+        if message.handle == bad_index:
             result.value = None
             result.error = HTTPException(422, {"code": "event_payload_too_large"})
         return result
 
     monkeypatch.setattr(queue, "_prepare_micro", prepare)
-    transport = MemoryTransport(micro_context)
+    transport = MemoryTransport(micro_context, count=count)
     with pytest.raises(SourceFailure, match="event_payload_too_large"):
         run(micro_context, transport)
-    assert transport.acked == [1] and receipts(micro_context) == 1
+    assert transport.acked == list(range(1, bad_index))
+    assert receipts(micro_context) == bad_index - 1
     with micro_context.session_factory() as session:
         checkpoint = session.scalar(
             select(SourceCheckpoint).where(
@@ -371,7 +389,7 @@ def test_real_database_commit_error_rolls_back_every_member(micro_context, monke
         return session
 
     context = replace(micro_context, session_factory=sessions)
-    transport = MemoryTransport(context)
+    transport = MemoryTransport(context, count=16)
     with pytest.raises(SourceFailure, match="source_unavailable"):
         run(context, transport)
     assert not transport.acked and receipts(micro_context) == 0
@@ -393,11 +411,11 @@ def test_real_database_lost_commit_response_does_not_ack_and_redelivery_recovers
         return session
 
     context = replace(micro_context, session_factory=sessions)
-    first = MemoryTransport(context)
+    first = MemoryTransport(context, count=16)
     with pytest.raises(SourceFailure, match="source_unavailable"):
         run(context, first)
-    assert not first.acked and receipts(micro_context) == 4
-    second = MemoryTransport(micro_context)
+    assert not first.acked and receipts(micro_context) == 16
+    second = MemoryTransport(micro_context, count=16)
     run(micro_context, second)
-    assert second.acked == [1, 2, 3, 4] and receipts(micro_context) == 4
+    assert second.acked == list(range(1, 17)) and receipts(micro_context) == 16
     assert_ledger(micro_context)
