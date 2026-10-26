@@ -328,7 +328,7 @@ def test_legal_large_metadata_single_message_preserves_original_envelope_limit(
     assert wire.scope.used_bytes == 0
 
 
-def test_property_scanner_matches_all_upstream_types_and_independent_property_flags():
+def test_property_scanner_matches_encoder_types_and_independent_property_flags():
     wire = NativeWire()
     wire.method(1)
     nested = {
@@ -359,6 +359,89 @@ def test_property_scanner_matches_all_upstream_types_and_independent_property_fl
     assert wire.native.tokens[1].assembled
     assert wire.received[0][1].properties.headers["integer"] == 2**63 - 1
     wire.close()
+
+
+FIXED_FIELD_VALUES = [
+    pytest.param(b"t", b"\x01", True, id="bool-t"),
+    pytest.param(b"b", b"\xfe", 254, id="byte-b"),
+    pytest.param(b"B", b"\xfe", -2, id="signed-byte-B"),
+    pytest.param(b"U", b"\xff\xfe", -2, id="signed-short-U"),
+    pytest.param(b"u", b"\xff\xfe", 65534, id="unsigned-short-u"),
+    pytest.param(b"s", b"\xff\xfe", -2, id="legacy-short-s"),
+    pytest.param(b"I", b"\xff\xff\xff\xfe", -2, id="signed-int-I"),
+    pytest.param(b"i", b"\xff\xff\xff\xfe", 4294967294, id="unsigned-int-i"),
+    pytest.param(b"L", b"\xff\xff\xff\xff\xff\xff\xff\xfe", -2, id="signed-long-L"),
+    pytest.param(
+        b"l",
+        b"\xff\xff\xff\xff\xff\xff\xff\xfe",
+        18446744073709551614,
+        id="unsigned-long-l",
+    ),
+    # Pika 1.3.2 intentionally returns int(decoded_float) for both wire types.
+    pytest.param(b"f", b"\x3f\xc0\x00\x00", 1, id="float-f"),
+    pytest.param(b"d", b"\x40\x0c\x00\x00\x00\x00\x00\x00", 3, id="double-d"),
+    pytest.param(b"D", b"\x02\x00\x00\x00\x19", Decimal("0.25"), id="decimal-D"),
+    pytest.param(
+        b"T", b"\x00\x00\x00\x00\x00\x00\x00\x01", datetime(1970, 1, 1, 0, 0, 1), id="time-T"
+    ),
+    pytest.param(b"V", b"", None, id="void-V"),
+]
+
+
+def manual_property_header(tag, encoded, *, trailing=True):
+    """Literal AMQP field bytes, independent of Pika's encoder/type choices."""
+    field = b"\x05probe" + tag + encoded
+    if trailing:
+        field += b"\x04tailS\x00\x00\x00\x03end"
+    properties = (b"\x20\x08" if trailing else b"\x20\x00") + struct.pack(">I", len(field)) + field
+    if trailing:
+        properties += b"\x05after"  # app_id, after the complete headers table
+    payload = b"\x00\x3c\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01" + properties
+    return struct.pack(">BHI", spec.FRAME_HEADER, 1, len(payload)) + payload + b"\xce"
+
+
+@pytest.mark.parametrize("tag,encoded,expected", FIXED_FIELD_VALUES)
+def test_property_scanner_accepts_every_fixed_wire_tag_and_preserves_frame_boundary(
+    tag, encoded, expected
+):
+    wire = NativeWire()
+    wire.method(1)
+    header = manual_property_header(tag, encoded)
+    body = frame.Body(1, b"x").marshal()
+    wire.connection._frame_buffer = header + body
+    consumed, decoded = wire.connection._read_frame()
+    assert consumed == len(header)
+    assert decoded.properties.headers == {"probe": expected, "tail": "end"}
+    assert decoded.properties.app_id == "after"
+    wire.channel._handle_content_frame(decoded)
+    wire.connection._frame_buffer = wire.connection._frame_buffer[consumed:]
+    consumed, decoded = wire.connection._read_frame()
+    assert consumed == len(body)
+    wire.connection._frame_buffer = b""
+    wire.channel._handle_content_frame(decoded)
+    assert wire.native.tokens[1].assembled
+    assert wire.received[0][2] == b"x"
+    assert wire.parent.peak_bytes <= wire.scope.limit_bytes
+    wire.close()
+    assert wire.parent.used_bytes == 0
+
+
+@pytest.mark.parametrize("tag,encoded,expected", FIXED_FIELD_VALUES[:-1])
+def test_property_scanner_rejects_short_fixed_field_before_sdk_decode(
+    monkeypatch, tag, encoded, expected
+):
+    wire = NativeWire()
+    wire.method(1)
+    decoded = []
+    monkeypatch.setattr(frame, "decode_frame", lambda data: decoded.append(True))
+    wire.connection._frame_buffer = manual_property_header(tag, encoded[:-1], trailing=False)
+    with pytest.raises(SourceFailure, match="source_properties_invalid"):
+        wire.connection._read_frame()
+    assert decoded == []
+    assert wire.native.tokens[1].raw_size is None
+    assert wire.channel._content_assembler._header_frame is None
+    wire.close()
+    assert wire.parent.used_bytes == 0
 
 
 def test_property_preview_preserves_twelve_level_contract_and_4096_value_budget():
