@@ -417,9 +417,11 @@ class ManualLoop:
         self.callback = None
         self.removed = []
         self.polls = 0
+        self.waits = []
 
     def call_later(self, seconds, callback):
         assert seconds <= 0.2
+        self.waits.append(seconds)
         self.callback = callback
         return "native-timer"
 
@@ -464,8 +466,84 @@ def test_first_poll_returns_on_complete_body_without_waiting_for_backpressured_o
     message = value.poll()
     assert message.body == b"ready" and loop.polls == 1
     assert loop.removed == ["native-timer"]
-    assert value.poll_bounded(0.005) is None and loop.polls == 1
+    assert value.poll_bounded(0) is None and loop.polls == 1
     message = None
+    value.connection.is_closed = True
+    value._close()
+
+
+def test_collection_remaining_window_completes_partial_next_body_without_flush():
+    wire = NativeWire()
+
+    def initial_read():
+        wire.delivery(1, b"first")
+        wire.method(2)
+        wire.header(4)
+        wire.feed(frame.Body(1, b"ne"))
+
+    value, loop = polling_transport(wire, [initial_read, lambda: wire.feed(frame.Body(1, b"xt"))])
+    first = value.poll()
+    assert first.body == b"first" and loop.polls == 1
+    second = value.poll_bounded(0.003)
+    assert second.body == b"next" and second.handle == 2
+    assert loop.polls == 2 and loop.waits == [0.2, 0.003]
+    assert loop.removed == ["native-timer"] * 2
+    assert wire.parent.peak_bytes <= wire.scope.limit_bytes
+    first = second = None
+    value.connection.is_closed = True
+    value._close()
+
+
+def test_collection_ready_or_expired_or_faulted_never_waits_and_positive_wait_is_capped():
+    wire = NativeWire()
+    value, loop = polling_transport(wire, [])
+    assert value.poll_bounded(0) is None
+    assert value.poll_bounded(-1) is None
+    assert loop.polls == 0 and loop.waits == []
+    wire.delivery(1, b"ready")
+    message = value.poll_bounded(0.004)
+    assert message.body == b"ready" and loop.polls == 0 and loop.waits == []
+    assert value.poll_bounded(1) is None
+    assert loop.polls == 1 and loop.waits == [0.005]
+    value._pending_failure = SourceFailure("source_buffer_capacity", "backoff")
+    with pytest.raises(SourceFailure, match="source_buffer_capacity"):
+        value.poll_bounded(0.003)
+    assert loop.polls == 1 and loop.waits == [0.005]
+    message = None
+    value.connection.is_closed = True
+    value._close()
+
+
+def test_collection_deadline_stops_partial_body_without_ack_or_extra_read():
+    wire = NativeWire()
+    value, loop = polling_transport(wire, [])
+    wire.method(1)
+    wire.header(4)
+    wire.feed(frame.Body(1, b"pa"))
+    assert value.poll_bounded(0.002) is None
+    assert loop.waits == [0.002] and loop.polls == 1
+    assert wire.native.tokens[1].assembled is False
+    assert wire.native.tokens[1].raw_size == 4
+    assert value.poll_bounded(0) is None and loop.polls == 1
+    value.connection.is_closed = True
+    value._close()
+
+
+def test_collection_next_header_fault_keeps_prior_message_and_safe_fault_code():
+    wire = NativeWire()
+
+    def bad_header():
+        wire.method(2)
+        wire.header(512 * 1024 + 1)
+
+    value, loop = polling_transport(wire, [lambda: wire.delivery(1, b"prefix"), bad_header])
+    first = value.poll()
+    with pytest.raises(SourceFailure) as error:
+        value.poll_bounded(0.004)
+    assert first.body == b"prefix" and first.handle == 1
+    assert error.value.code == "event_payload_too_large" and error.value.disposition == "blocked"
+    assert loop.polls == 2 and loop.waits == [0.2, 0.004]
+    first = None
     value.connection.is_closed = True
     value._close()
 

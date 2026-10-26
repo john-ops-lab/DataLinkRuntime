@@ -4,9 +4,9 @@ from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 from starlette.concurrency import run_in_threadpool
 
 from dlr.common.config import settings
@@ -893,14 +893,31 @@ def list_events(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> EventPage:
     management.get_subscription(session, subscription_id, principal)
-    query = select(EventReceipt).where(EventReceipt.subscription_id == subscription_id)
-    total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
+    scope = EventReceipt.subscription_id == subscription_id
+    total = (
+        select(func.count().label("total"))
+        .select_from(EventReceipt)
+        .where(scope)
+        .cte("event_receipt_total")
+    )
+    page = select(EventReceipt.id).where(scope)
     if before_id is not None:
-        query = query.where(EventReceipt.id < before_id)
-    rows = list(session.scalars(query.order_by(EventReceipt.id.desc()).limit(limit + 1)))
+        page = page.where(EventReceipt.id < before_id)
+    page_ids = page.order_by(EventReceipt.id.desc()).limit(limit + 1).cte("event_receipt_page")
+    # One PostgreSQL statement fixes count and page to the same MVCC snapshot.
+    # The count side always has one row, retaining total even for an empty page.
+    result = session.execute(
+        select(total.c.total, EventReceipt)
+        .select_from(total)
+        .outerjoin(page_ids, true())
+        .outerjoin(EventReceipt, EventReceipt.id == page_ids.c.id)
+        .options(defer(EventReceipt.source_raw_body))
+        .order_by(EventReceipt.id.desc())
+    ).all()
+    rows = [receipt for _, receipt in result if receipt is not None]
     return EventPage(
         items=[serialize_event(session, item) for item in rows[:limit]],
-        total=total,
+        total=result[0][0],
         next_before_id=rows[limit - 1].id if len(rows) > limit else None,
     )
 

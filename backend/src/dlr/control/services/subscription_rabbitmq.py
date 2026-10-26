@@ -202,9 +202,11 @@ class RabbitMQTransport:
     def poll_bounded(self, timeout_seconds: float) -> Message | None:
         if not self.micro_t1:
             raise SourceFailure("source_unavailable", "backoff")
-        # A cohort only drains already complete messages. Zero wait is inside
-        # the <=5ms collection bound, even when heartbeat/output is backpressured.
-        # In particular, process_data_events(0) still waits for an outbound flush.
+        # Ready bodies never wait. If a read ended on a partial next frame,
+        # use only the caller's remaining cohort window to complete that body.
+        # Native polling does not require a backpressured outbound flush.
+        if not self._raw_ready and self._pending_failure is None and timeout_seconds > 0:
+            self._poll_native(min(timeout_seconds, 0.005))
         if self._native is not None:
             self._native.pause_io(self.connection._impl)
         if self._raw_ready:
@@ -237,7 +239,7 @@ class RabbitMQTransport:
         return None
 
     def _poll_native(self, timeout_seconds: float) -> None:
-        """First-message wait only; never wait for output after a body is ready."""
+        """Bounded native wait; never wait for output after a body is ready."""
         if self._raw_ready or self._pending_failure is not None:
             return
         timer = None
