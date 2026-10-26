@@ -1,16 +1,18 @@
 """Real Pika decoding/assembly, without a socket, before any payload allocation."""
 
 import json
+import os
 import struct
 from collections import deque
 from datetime import UTC, datetime
 from decimal import Decimal
+from threading import Lock
 from types import SimpleNamespace
 
 import pika
 import pytest
 from pika import frame, spec
-from pika.adapters.select_connection import SelectConnection
+from pika.adapters.select_connection import IOLoop, SelectConnection
 
 from dlr.control.services import subscription_rabbit_budget as budget
 from dlr.control.services import subscription_rabbitmq as source
@@ -231,11 +233,13 @@ def transport_shell(wire, *, closed):
     value._raw_ready = deque()
     value.failed_message = None
     value._native = wire.native
+    value._native_cleaned = False
     value.channel = SimpleNamespace(_impl=wire.channel, _pending_events=deque())
     value.connection = SimpleNamespace(
         is_closed=closed,
         _impl=wire.connection,
         _closed_result=SimpleNamespace(reset=lambda: None),
+        _cleanup=lambda: None,
     )
     return value
 
@@ -588,6 +592,7 @@ def test_transport_enables_four_credits_only_for_checked_opt_in_sdk(
         call_later=lambda *args: 1,
         remove_timeout=lambda timer: None,
         process_data_events=lambda **kwargs: None,
+        _cleanup=lambda: None,
     )
     connection._terminate_stream = lambda error: setattr(blocking, "is_closed", True)
     monkeypatch.setattr(pika, "__version__", version)
@@ -612,3 +617,69 @@ def test_transport_enables_four_credits_only_for_checked_opt_in_sdk(
     assert len(consumers) == (0 if credit == 4 else 1)
     value.close()
     assert scope.used_bytes == 0
+
+
+def loop_fds(loop):
+    loop._poller.activate_poller()
+    result = [loop._poller._r_interrupt.fileno(), loop._poller._w_interrupt.fileno()]
+    selector = getattr(loop._poller, "_kqueue", None) or getattr(loop._poller, "_poll", None)
+    if hasattr(selector, "fileno"):
+        result.append(selector.fileno())
+    return result
+
+
+def fd_open(fd):
+    try:
+        os.fstat(fd)
+        return True
+    except OSError:
+        return False
+
+
+@pytest.mark.parametrize("closed_case", ["ordinary", "fault", "sdk_already_cleaned", "unknown"])
+def test_real_ioloop_close_releases_only_own_fds_after_native_close_authority(
+    closed_case, monkeypatch
+):
+    wire = NativeWire()
+    wire.delivery(1, b"unacknowledged")
+    wire.received.clear()
+    loop, other_loop = IOLoop(), IOLoop()
+    own_fds, other_fds = loop_fds(loop), loop_fds(other_loop)
+    wire.connection._nbio = SimpleNamespace(get_native_ioloop=lambda: loop)
+    wire.connection.connection_state = pika.connection.Connection.CONNECTION_CLOSED
+    blocking = pika.BlockingConnection.__new__(pika.BlockingConnection)
+    blocking._impl = wire.connection
+    blocking._cleanup_mutex = Lock()
+    blocking._ready_events = deque()
+    blocking._closed_result = SimpleNamespace(reset=lambda: None)
+    value = transport_shell(wire, closed=True)
+    value.connection = blocking
+    try:
+        assert all(fd_open(fd) for fd in own_fds + other_fds)
+        if closed_case == "fault":
+            wire.native.fault = SourceFailure("event_payload_too_large")
+            wire.channel._closing_reason = SourceFailure("event_payload_too_large")
+        elif closed_case == "sdk_already_cleaned":
+            blocking._cleanup()
+        elif closed_case == "unknown":
+            wire.connection.connection_state = pika.connection.Connection.CONNECTION_OPEN
+            wire.connection._terminate_stream = lambda error: None
+            clock = iter([0, 3])
+            monkeypatch.setattr(source.time, "monotonic", lambda: next(clock))
+            before = wire.scope.used_bytes
+            with pytest.raises(SourceFailure) as error:
+                value._close()
+            assert not error.value.closed and error.value.code == "source_close_unconfirmed"
+            assert wire.scope.used_bytes == before and not value._native_cleaned
+            assert all(fd_open(fd) for fd in own_fds + other_fds)
+            wire.connection.connection_state = pika.connection.Connection.CONNECTION_CLOSED
+        value._close()
+        assert not any(fd_open(fd) for fd in own_fds)
+        assert all(fd_open(fd) for fd in other_fds)
+        assert loop._timer._timeout_heap is None and wire.scope.used_bytes == 0
+        assert value._native_cleaned
+        value._close()  # repeated owner cleanup is idempotent
+        assert all(fd_open(fd) for fd in other_fds)
+    finally:
+        blocking._cleanup()
+        other_loop.close()

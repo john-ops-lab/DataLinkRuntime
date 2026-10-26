@@ -130,6 +130,7 @@ class RabbitMQTransport:
         self._pending_failure: SourceFailure | None = None
         self.failed_message: Message | None = None
         self._consumer_started = False
+        self._native_cleaned = False
         try:
             if (
                 not diagnostic
@@ -415,6 +416,13 @@ class RabbitMQTransport:
         if self._native is None:
             return
         if self.connection is not None:
+            if not self._native_cleaned:
+                # Native polling can observe a closed stream before entering
+                # BlockingConnection._flush_output's usual cleanup finally.
+                # Close this dedicated connection's selector/timer resources,
+                # as well as TCP, before releasing its owner byte credits.
+                self.connection._cleanup()
+                self._native_cleaned = True
             self.connection._impl._frame_buffer = b""
             self.connection._impl._error = None
             self.connection._closed_result.reset()
