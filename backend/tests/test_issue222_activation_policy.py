@@ -119,6 +119,7 @@ def test_original_replay_keeps_policy_and_current_replay_explicitly_selects_new_
         receipt_id = receipt.id
         initial = delivery.dispatch_delivery(session, delivery_id(session, receipt))
         old_policy = deepcopy(initial.resource_profile_snapshot)
+        old_retry_policy = deepcopy(initial.retry_policy_snapshot)
         initial.status = "succeeded"
         session.flush()
         delivery.observe_terminal(session, delivery_id(session, receipt))
@@ -131,6 +132,7 @@ def test_original_replay_keeps_policy_and_current_replay_explicitly_selects_new_
         )
         original = delivery.dispatch_delivery(session, replay.id)
         assert original.resource_profile_snapshot == old_policy
+        assert original.retry_policy_snapshot == old_retry_policy
         assert original.timeout_seconds_snapshot == 17
         original.status = "succeeded"
         session.flush()
@@ -189,6 +191,7 @@ def test_legacy_upgrade_prefers_recorded_execution_and_freezes_no_execution_once
         receipt = receive(session, world)
         execution = delivery.dispatch_delivery(session, delivery_id(session, receipt))
         recorded = deepcopy(execution.resource_profile_snapshot)
+        recorded_retry_policy = deepcopy(execution.retry_policy_snapshot)
         sub = session.get(EventSubscription, world["sub"])
         activation = session.get(SubscriptionActivation, sub.activation_id)
         activation.execution_policy_snapshot = None
@@ -208,6 +211,7 @@ def test_legacy_upgrade_prefers_recorded_execution_and_freezes_no_execution_once
         assert policy.freeze_legacy_policies(session, limit=1) == 1
         old = session.get(SubscriptionActivation, historical_id).execution_policy_snapshot
         assert old["resource_profile"] == recorded
+        assert old["retry_policy"] == recorded_retry_policy
         assert old["captured_from"] == "legacy_execution"
         assert old["execution_id"] == execution.id
         assert (
