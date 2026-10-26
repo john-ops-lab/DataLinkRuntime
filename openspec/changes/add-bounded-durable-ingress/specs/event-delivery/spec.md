@@ -71,7 +71,7 @@
 - **THEN** 形成明确失败与对应顺序屏障，不自动改成 platform_transient；无关可运行入口仍获得处理机会
 
 ### Requirement: 接管合并保持逐条责任和确认边界
-显式 business_batch 模式 MAY 在事务外按来源分限收集：HTTP 最多 4 条、RabbitMQ 最多 16 条，原文加 Envelope 合计仍为 1 MiB、最多额外等待 5 ms，再在一个事务内复用同 scope/lease/checkpoint/精确 Activation/CV/profile。截止后 RabbitMQ MAY 仅以零等待排出已 complete ready 的消息，不再原生 I/O 或等待，无 ready 即结束，仍受 16 条/1 MiB 限制；准备 CPU 耗时计入真实接管时间。每条 MUST 保留独立身份、Receipt/Delivery、完整计费及首次绑定；无跨事务缓存，RETURNING 按身份映射，原单条路径不变。每个新项仍检查磁盘、租约时间、速率和控制优先权，不得留下拒绝项的局部扣额。
+显式 business_batch 模式 MAY 在事务外按来源分限收集：HTTP 最多 16 条/额外等待 25 ms、RabbitMQ 最多 16 条/额外等待 5 ms，原文加 Envelope 合计仍为 1 MiB，再在一个事务内复用同 scope/lease/checkpoint/精确 Activation/CV/profile。截止后 RabbitMQ MAY 仅以零等待排出已 complete ready 的消息，不再原生 I/O 或等待，无 ready 即结束，仍受 16 条/1 MiB 限制；准备 CPU 耗时计入真实接管时间。每条 MUST 保留独立身份、Receipt/Delivery、完整计费及首次绑定；无跨事务缓存，RETURNING 按身份映射，原单条路径不变。每个新项仍检查磁盘、租约时间、速率和控制优先权，不得留下拒绝项的局部扣额。
 
 #### Scenario: RabbitMQ 第二条不能接管
 - **WHEN** 同组第二条发生内容故障或容量不足

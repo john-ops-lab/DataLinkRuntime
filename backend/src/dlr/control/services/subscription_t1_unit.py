@@ -46,7 +46,7 @@ from dlr.control.services.subscription_batch_view import delivery_records
 from dlr.control.services.subscription_registry import source_definition
 
 MAX_ITEMS = 16
-HTTP_MAX_ITEMS = 4
+HTTP_MAX_ITEMS = 16
 MAX_PAYLOAD_BYTES = 1024**2
 SourceType = Literal["http", "rabbitmq"]
 

@@ -12,9 +12,10 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal
 
-from sqlalchemy import Select, case, func, or_, select, union_all
+from sqlalchemy import BigInteger, Integer, Select, bindparam, case, func, or_, select, union_all
 from sqlalchemy.orm import Session, aliased
 
 from dlr.control.models import (
@@ -112,7 +113,7 @@ def _candidate_query(kind: Kind) -> Select[Any]:
                 case(
                     (
                         ready_executions.c.batch_execution_id.is_not(None),
-                        MAX_PAYLOAD_BYTES,
+                        bindparam("batch_payload_budget", type_=BigInteger()),
                     ),
                     else_=ready_executions.c.single_payload_bytes,
                 ).label("payload_bytes"),
@@ -174,7 +175,10 @@ def _candidate_query(kind: Kind) -> Select[Any]:
                 # Reserve one entire pass for a complete batch, using the same
                 # bounded logical-work upper bound as terminal settlement.
                 case(
-                    (EventDelivery.retained_batch_bytes > 0, MAX_PAYLOAD_BYTES),
+                    (
+                        EventDelivery.retained_batch_bytes > 0,
+                        bindparam("batch_payload_budget", type_=BigInteger()),
+                    ),
                     else_=possible.c.payload_bytes,
                 ).label("payload_bytes"),
             )
@@ -199,6 +203,22 @@ def _candidate_query(kind: Kind) -> Select[Any]:
     )
 
 
+@lru_cache(maxsize=2)
+def _selection_statement(kind: Kind) -> Select[Any]:
+    """Reuse SQL structure only; every execution binds fresh cursor/budgets."""
+    ranked = _candidate_query(kind).subquery()
+    return (
+        select(ranked.c.delivery_id, ranked.c.subscription_id, ranked.c.payload_bytes)
+        .where(
+            ranked.c.subscription_rank == 1,
+            ranked.c.subscription_id > bindparam("after_subscription_id", type_=BigInteger()),
+            ranked.c.subscription_id <= bindparam("upper_subscription_id", type_=BigInteger()),
+        )
+        .order_by(ranked.c.subscription_id)
+        .limit(bindparam("candidate_limit", type_=Integer()))
+    )
+
+
 def select_candidates(session: Session, kind: Kind, cursor: FairCursor) -> list[Candidate]:
     """One ready head per subscription, over a finite rotating subscription sweep."""
     if kind not in {"pending", "processing"}:
@@ -209,16 +229,14 @@ def select_candidates(session: Session, kind: Kind, cursor: FairCursor) -> list[
         )
     if not cursor.upper_subscription_id:
         return []
-    ranked = _candidate_query(kind).subquery()
     rows = session.execute(
-        select(ranked.c.delivery_id, ranked.c.subscription_id, ranked.c.payload_bytes)
-        .where(
-            ranked.c.subscription_rank == 1,
-            ranked.c.subscription_id > cursor.after_subscription_id,
-            ranked.c.subscription_id <= cursor.upper_subscription_id,
-        )
-        .order_by(ranked.c.subscription_id)
-        .limit(MAX_CANDIDATES)
+        _selection_statement(kind),
+        {
+            "after_subscription_id": cursor.after_subscription_id,
+            "upper_subscription_id": cursor.upper_subscription_id,
+            "candidate_limit": MAX_CANDIDATES,
+            "batch_payload_budget": MAX_PAYLOAD_BYTES,
+        },
     ).all()
     return [Candidate(int(row[0]), int(row[1]), int(row[2])) for row in rows]
 

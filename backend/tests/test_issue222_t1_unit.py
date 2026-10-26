@@ -429,9 +429,9 @@ def test_exact_one_mib_unit_boundary_uses_five_individually_legal_envelopes(
             assert session.scalar(select(SourceCheckpoint)).position == inputs[-1].position
 
 
-def test_http_unit_remains_four_requests_before_any_custody(http_world, session_factory):
+def test_http_unit_rejects_seventeen_requests_before_any_custody(http_world, session_factory):
     with pytest.raises(HTTPException) as failure, session_factory.begin() as session:
-        unit(session, http_world, "http").receive([http_input(http_world, i) for i in range(5)])
+        unit(session, http_world, "http").receive([http_input(http_world, i) for i in range(17)])
     assert failure.value.detail["code"] == "t1_unit_bounds_exceeded"
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(EventReceipt)) == 0

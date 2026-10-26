@@ -67,6 +67,34 @@ class HttpReception:
     body: bytes
 
 
+def _build_envelope(
+    subscription_id: int,
+    config_version: int,
+    source_epoch: str,
+    public_id: str,
+    identity: str,
+    payload: Any,
+) -> dict[str, Any]:
+    return {
+        "schema": "dlr.event.v1",
+        "subscription": {
+            "id": str(subscription_id),
+            "config_version": config_version,
+            "source_epoch": source_epoch,
+        },
+        "event": {"id": identity, "kind": "message", "object_key": None},
+        "source": {
+            "type": "http",
+            "identity": public_id,
+            "position": {"idempotency_key": identity},
+            "attributes": {"public_id": public_id},
+        },
+        "received_at": datetime.now(UTC).isoformat(),
+        "data": {"encoding": "json", "content_type": "application/json", "payload": payload},
+        "sync": None,
+    }
+
+
 def receive_group(
     session: Session, public_id: str, requests: Sequence[HttpReception]
 ) -> list[tuple[int, dict[str, Any]] | HTTPException] | None:
@@ -120,28 +148,9 @@ def receive_group(
         envelope, error = None, None
         try:
             payload = parse_body(request.body)
-            envelope = {
-                "schema": "dlr.event.v1",
-                "subscription": {
-                    "id": str(sub.id),
-                    "config_version": config.version,
-                    "source_epoch": route.source_epoch,
-                },
-                "event": {"id": identity, "kind": "message", "object_key": None},
-                "source": {
-                    "type": "http",
-                    "identity": public_id,
-                    "position": {"idempotency_key": identity},
-                    "attributes": {"public_id": public_id},
-                },
-                "received_at": datetime.now(UTC).isoformat(),
-                "data": {
-                    "encoding": "json",
-                    "content_type": "application/json",
-                    "payload": payload,
-                },
-                "sync": None,
-            }
+            envelope = _build_envelope(
+                sub.id, config.version, route.source_epoch, public_id, identity, payload
+            )
             if (
                 len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode())
                 > MAX_ENVELOPE_BYTES
@@ -150,6 +159,9 @@ def receive_group(
                     413, "ingress_envelope_too_large", "Complete event exceeds 256 KiB"
                 )
         except HTTPException as caught:
+            # Rejected preparation must not inflate the shared unit's payload
+            # bound; raw identity still permits an existing-ID readback first.
+            envelope = None
             error = caught
         inputs.append(
             T1Input(
@@ -400,24 +412,9 @@ def receive(
     ):
         raise domain_error(503, "ingress_unavailable", "Reception owner is not ready")
     payload = parse_body(body)
-    envelope = {
-        "schema": "dlr.event.v1",
-        "subscription": {
-            "id": str(sub.id),
-            "config_version": config.version,
-            "source_epoch": route.source_epoch,
-        },
-        "event": {"id": identity, "kind": "message", "object_key": None},
-        "source": {
-            "type": "http",
-            "identity": public_id,
-            "position": {"idempotency_key": identity},
-            "attributes": {"public_id": public_id},
-        },
-        "received_at": datetime.now(UTC).isoformat(),
-        "data": {"encoding": "json", "content_type": "application/json", "payload": payload},
-        "sync": None,
-    }
+    envelope = _build_envelope(
+        sub.id, config.version, route.source_epoch, public_id, identity, payload
+    )
     if (
         len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode())
         > MAX_ENVELOPE_BYTES

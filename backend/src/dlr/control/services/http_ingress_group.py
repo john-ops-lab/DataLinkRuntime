@@ -9,6 +9,20 @@ from typing import Any
 
 from fastapi import HTTPException
 
+MAX_ITEMS = 16
+MAX_PAYLOAD_BYTES = 1024**2
+MAX_WAIT_SECONDS = 0.025
+
+
+def estimated_input_bytes(raw_bytes: int) -> int:
+    """Bound raw plus the fixed HTTP Envelope without parsing on the loop.
+
+    Accepted JSON float tokens use >=3 bytes and encode to <=24 bytes;
+    other JSON tokens do not grow. Fixed metadata fits within 16 KiB.
+    The existing native 256 KiB Envelope limit remains authoritative.
+    """
+    return raw_bytes + min(256 * 1024, 8 * raw_bytes + 16 * 1024)
+
 
 @dataclass
 class HttpInput:
@@ -22,6 +36,7 @@ class HttpInput:
 @dataclass
 class _Group:
     items: list[HttpInput] = field(default_factory=list)
+    estimated_bytes: int = 0
     timer: asyncio.TimerHandle | None = None
     deadline: float = 0
 
@@ -39,11 +54,16 @@ class HttpCollector:
             # by admitting a fresh request before its callback gets a turn.
             self.flush(public_id)
             group = None
+        size = estimated_input_bytes(len(item.body))
+        if group is not None and group.estimated_bytes + size > MAX_PAYLOAD_BYTES:
+            self.flush(public_id)
+            group = None
         if group is None:
-            group = self.pending[public_id] = _Group(deadline=loop.time() + 0.005)
-            group.timer = loop.call_later(0.005, self.flush, public_id)
+            group = self.pending[public_id] = _Group(deadline=loop.time() + MAX_WAIT_SECONDS)
+            group.timer = loop.call_later(MAX_WAIT_SECONDS, self.flush, public_id)
         group.items.append(item)
-        if len(group.items) == 4:
+        group.estimated_bytes += size
+        if len(group.items) == MAX_ITEMS or group.estimated_bytes >= MAX_PAYLOAD_BYTES:
             self.flush(public_id)
 
     def flush(self, public_id: str) -> None:

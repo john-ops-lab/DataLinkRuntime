@@ -200,9 +200,7 @@ def test_shared_terminal_settles_once_despite_large_retained_raw_and_rotates(
     with session_factory() as session:
         members = list(
             session.scalars(
-                select(EventDelivery).where(
-                    EventDelivery.batch_execution_id == batch_execution_id
-                )
+                select(EventDelivery).where(EventDelivery.batch_execution_id == batch_execution_id)
             )
         )
         assert len(members) == 100
@@ -260,6 +258,43 @@ def test_ten_subscriptions_rotate_without_continuously_growing_tail_starvation(
     with session_factory() as session:
         again = scheduler.select_candidates(session, "pending", scheduler.FairCursor())
         assert [item.delivery_id for item in again] == expected[:3]
+
+
+def test_reused_selection_binds_current_budgets_cursor_and_database_state(
+    api_client, session_factory, monkeypatch
+):
+    identities = []
+    with session_factory.begin() as session:
+        for number in range(3):
+            sub, activation = _subscription(session, number)
+            _, item = _receipt(session, sub, activation, 0)
+            item.retained_batch_bytes = 8192
+            identities.append((sub.id, item.id))
+    statement = scheduler._selection_statement("pending")
+    monkeypatch.setattr(scheduler, "MAX_CANDIDATES", 1)
+    monkeypatch.setattr(scheduler, "MAX_PAYLOAD_BYTES", 4096)
+    with session_factory() as session:
+        first = scheduler.select_candidates(session, "pending", scheduler.FairCursor())
+        assert [(item.delivery_id, item.payload_bytes) for item in first] == [
+            (identities[0][1], 4096)
+        ]
+    monkeypatch.setattr(scheduler, "MAX_CANDIDATES", 2)
+    monkeypatch.setattr(scheduler, "MAX_PAYLOAD_BYTES", 8192)
+    cursor = scheduler.FairCursor(identities[0][0], identities[2][0])
+    with session_factory() as session:
+        page = scheduler.select_candidates(session, "pending", cursor)
+        assert [(item.delivery_id, item.payload_bytes) for item in page] == [
+            (identity[1], 8192) for identity in identities[1:]
+        ]
+    with session_factory.begin() as session:
+        head = session.get(EventDelivery, identities[1][1])
+        head.retry_after = database_now(session) + timedelta(seconds=60)
+    with session_factory() as session:
+        ready = scheduler.select_candidates(session, "pending", cursor)
+        assert [item.delivery_id for item in ready] == [identities[2][1]]
+        cursor.upper_subscription_id = identities[1][0]
+        assert scheduler.select_candidates(session, "pending", cursor) == []
+    assert scheduler._selection_statement("pending") is statement
 
 
 def test_delayed_head_preserves_order_instead_of_dispatching_its_successor(

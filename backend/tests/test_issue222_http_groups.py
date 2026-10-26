@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import threading
 from copy import deepcopy
 from types import SimpleNamespace
@@ -106,6 +107,83 @@ def test_non_ascii_bearer_is_401_without_rejecting_other_group_members(
 def test_four_maximum_http_bodies_fit_the_actual_unit_boundary(group_world, session_factory, body):
     result = accept(session_factory, group_world, [item(str(i), body) for i in range(4)])
     assert [r[0] for r in result] == [202] * 4
+
+
+def test_sixteen_small_http_requests_commit_with_independent_identities(
+    group_world, session_factory, monkeypatch
+):
+    # This fixture explicitly permits 16 new items in one rate window. The
+    # ordinary entry default remains 10; larger groups must not bypass it.
+    monkeypatch.setattr(
+        settings, "ingress_capacity_profile", json.dumps({"subscription_max": {"rate": 16}})
+    )
+    with session_factory.begin() as session:
+        config = session.get(SubscriptionConfigVersion, group_world["config"])
+        config.config = {**config.config, "limits": {"rate": 16}}
+    result = accept(session_factory, group_world, [item(str(i)) for i in range(16)])
+    assert [r[0] for r in result] == [202] * 16
+    assert len({r[1]["receipt_id"] for r in result}) == 16
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(EventReceipt)) == 16
+        assert session.scalar(select(func.count()).select_from(EventDelivery)) == 16
+        assert delivery.audit_quota(session, group_world["sub"])["differences"] == {}
+        assert delivery.audit_global_quota(session)["differences"] == {}
+
+
+def test_actual_one_mib_http_guard_rejects_whole_oversized_unit(group_world, session_factory):
+    # Each body/Envelope is individually legal, while their actual total is
+    # above the unchanged native unit limit. Collection normally splits them.
+    body = b'"' + b"x" * 65534 + b'"'
+    with pytest.raises(HTTPException) as failure:
+        accept(session_factory, group_world, [item(str(i), body) for i in range(8)])
+    assert failure.value.detail["code"] == "t1_unit_bounds_exceeded"
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(EventReceipt)) == 0
+        assert session.scalar(select(func.count()).select_from(EventDelivery)) == 0
+        assert delivery.audit_quota(session, group_world["sub"])["differences"] == {}
+        assert delivery.audit_global_quota(session)["differences"] == {}
+
+
+def test_rejected_oversized_envelopes_keep_individual_error_and_old_readback(
+    group_world, session_factory, monkeypatch
+):
+    original_id = accept(session_factory, group_world, [item("old")])[0][1]["receipt_id"]
+    with session_factory() as session:
+        original = session.get(EventReceipt, original_id)
+        frozen = (deepcopy(original.envelope), original.source_raw_body, original.content_hash)
+    original_builder = service._build_envelope
+
+    def oversized_metadata(*args):
+        envelope = original_builder(*args)
+        if envelope["data"]["payload"] == {}:
+            # Defensive fault injection: current fixed metadata/node bounds
+            # cannot produce this from a normal legal HTTP request.
+            envelope["received_at"] += "x" * service.MAX_ENVELOPE_BYTES
+        return envelope
+
+    monkeypatch.setattr(service, "_build_envelope", oversized_metadata)
+    result = accept(
+        session_factory,
+        group_world,
+        [item("old"), *[item(f"reject-{i}") for i in range(4)], item("valid", b"[]")],
+    )
+    assert [r.status_code if isinstance(r, HTTPException) else r[0] for r in result] == [
+        200,
+        413,
+        413,
+        413,
+        413,
+        202,
+    ]
+    assert result[0][1]["receipt_id"] == original_id
+    assert all(r.detail["code"] == "ingress_envelope_too_large" for r in result[1:-1])
+    with session_factory() as session:
+        original = session.get(EventReceipt, original_id)
+        assert (original.envelope, original.source_raw_body, original.content_hash) == frozen
+        assert session.scalar(select(func.count()).select_from(EventReceipt)) == 2
+        assert session.scalar(select(func.count()).select_from(EventDelivery)) == 2
+        assert delivery.audit_quota(session, group_world["sub"])["differences"] == {}
+        assert delivery.audit_global_quota(session)["differences"] == {}
 
 
 def test_stale_hint_does_not_change_per_event_mode(http_world, session_factory):
@@ -327,7 +405,7 @@ def test_delayed_timer_cannot_admit_a_request_after_collection_deadline():
         collector.add("route", HttpInput(None, "first", b"{}", lambda: None, loop.create_future()))
         # Simulate an event-loop stall: the due timer has not run when the
         # next request arrives. It must start a new group rather than join it.
-        time.sleep(0.02)
+        time.sleep(0.03)
         collector.add("route", HttpInput(None, "later", b"{}", lambda: None, loop.create_future()))
         assert groups == [["first"]]
         collector.close()
