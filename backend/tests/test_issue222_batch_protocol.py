@@ -122,3 +122,16 @@ def test_normalization_difference_and_control_not_started_are_conservative():
     assert validate(items, raw, normalized).counts["unknown"] == 3
     decision = control_decision("f" * 32, digest(items), items, not_started=True)
     assert decision.counts["not_run"] == 3 and decision.provenance == "control_not_started"
+
+
+def test_deeply_nested_members_are_invalid_instead_of_interrupting_settlement():
+    items = manifest()
+    raw = result(items)
+    nested = []
+    for _ in range(1500):
+        nested = [nested]
+    raw["members"] = nested
+    decision = validate(items, raw)
+    assert decision.provenance == "control_unknown"
+    assert decision.counts == {"succeeded": 0, "failed": 0, "unknown": 3, "not_run": 0}
+    assert all(item["error_code"] == "batch_result_invalid" for item in decision.result["members"])

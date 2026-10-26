@@ -181,15 +181,14 @@ def serialize(
         select(
             func.clock_timestamp(),
             select(func.min(EventReceipt.first_received_at))
-            .where(
-                EventReceipt.subscription_id == subscription.id, EventReceipt.state == "pending"
-            )
+            .where(EventReceipt.subscription_id == subscription.id, EventReceipt.state == "pending")
             .scalar_subquery(),
         )
     ).one()
     available = (
         settings.event_subscriptions_enabled
         and subscription.source_type in management.AVAILABLE_SOURCES
+        and (subscription.source_type != "http" or settings.http_ingress_enabled)
     )
     counts = {
         state: count

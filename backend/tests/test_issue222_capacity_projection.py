@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
+from dlr.common.config import settings
 from dlr.control.models import (
     EventReceipt,
     EventSubscription,
@@ -36,6 +37,28 @@ def view(api_client, http_world):
     response = api_client.get(f"/api/event-subscriptions/{http_world['sub']}")
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def test_disabled_http_feature_is_unavailable_instead_of_capacity_paused(
+    api_client, http_world, session_factory, monkeypatch
+):
+    with session_factory.begin() as session:
+        config = session.get(SubscriptionConfigVersion, http_world["config"])
+        config.config = {**config.config, "limits": {"pending_count": 1}}
+    first = post(api_client, http_world)
+    assert first.status_code == 202, first.text
+    assert view(api_client, http_world)["capacity_paused"] is True
+    with session_factory() as session:
+        before = [snapshot(session, scope) for scope in ("global", f"sub:{http_world['sub']}")]
+    monkeypatch.setattr(settings, "http_ingress_enabled", False)
+    result = view(api_client, http_world)
+    assert result["desired_state"] == "enabled"
+    assert result["available"] is False and result["capacity_paused"] is False
+    with session_factory() as session:
+        assert [
+            snapshot(session, scope) for scope in ("global", f"sub:{http_world['sub']}")
+        ] == before
+        assert session.get(EventReceipt, first.json()["receipt_id"]).state == "pending"
 
 
 def test_full_http_can_read_original_without_poison_or_quota_changes(

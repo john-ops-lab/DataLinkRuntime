@@ -230,5 +230,5 @@ def validate_result(
             "worker_validated",
             deepcopy(normalized),
         )
-    except (ValueError, TypeError, KeyError, OverflowError, UnicodeError):
+    except (ValueError, TypeError, KeyError, OverflowError, UnicodeError, RecursionError):
         return control_decision(batch_id, manifest_hash, manifest, bad_code)
