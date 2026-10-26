@@ -7,6 +7,7 @@ import contextlib
 import copy
 import logging
 import random
+import re
 import threading
 import time
 import uuid
@@ -14,6 +15,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -30,6 +32,7 @@ from dlr.control.models.subscription import (
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services import subscription_management as management
 from dlr.control.services.secrets import decrypt_fields
+from dlr.control.services.subscription_http import HttpSourceRunner
 from dlr.control.services.subscription_queue_failure import LEGACY_LIFECYCLE_FAILURES
 from dlr.control.services.subscription_source import (
     ApplicationBufferBudget,
@@ -293,9 +296,19 @@ class SubscriptionRuntimeManager:
                 owner.runner.run(owner.context)
         except SourceFailure as error:
             failure = error
-        except Exception:
-            # A broken connector cannot assert resource reclamation implicitly.
-            failure = SourceFailure("source_runtime_error", closed=False)
+        except Exception as error:
+            if type(owner.runner) is HttpSourceRunner:
+                # This built-in passive runner owns no SDK. Its returned thread
+                # is finished; HTTP request jobs retain their separate credits.
+                code = "source_runtime_error"
+                if isinstance(error, HTTPException) and isinstance(error.detail, dict):
+                    value = error.detail.get("code")
+                    if isinstance(value, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value):
+                        code = value
+                failure = SourceFailure(code, "backoff")
+            else:
+                # A broken connector cannot assert resource reclamation implicitly.
+                failure = SourceFailure("source_runtime_error", closed=False)
         self._finish_owner(owner, failure)
 
     def _finish_owner(self, owner: _Owner, failure: SourceFailure | None) -> None:
@@ -372,7 +385,10 @@ class SubscriptionRuntimeManager:
                 if lease is not None and lease.owner_id == context.owner_id:
                     if lease.generation == context.generation:
                         management._fence(session, sub)
-                    if sub.connection_state != "blocked":
+                    if (
+                        not management._close_disabled_http_lease(session, sub, lease)
+                        and sub.connection_state != "blocked"
+                    ):
                         sub.connection_state = (
                             "stopping" if sub.desired_state == "disabled" else "starting"
                         )

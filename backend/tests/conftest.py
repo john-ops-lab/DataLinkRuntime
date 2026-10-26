@@ -8,6 +8,7 @@ table contents between tests.
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from alembic import command
@@ -38,6 +39,22 @@ TEST_MASTER_KEY = "test-master-key"
 settings.admin_token = ADMIN_TOKEN
 settings.worker_token = WORKER_TOKEN
 settings.master_key = TEST_MASTER_KEY
+
+
+@pytest.fixture(scope="session")
+def test_ingress_storage_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return tmp_path_factory.mktemp("ingress-storage")
+
+
+@pytest.fixture(autouse=True)
+def configure_test_ingress_storage(
+    monkeypatch: pytest.MonkeyPatch, test_ingress_storage_root: Path
+) -> None:
+    # Host tests have no Compose PGDATA mount. Supply an explicit test anchor,
+    # while preserving intentional private-runner/deployment overrides. Tests
+    # may still replace the setting or disk_usage for their own failure cases.
+    if "DLR_INGRESS_STORAGE_ROOT" not in os.environ:
+        monkeypatch.setattr(settings, "ingress_storage_root", str(test_ingress_storage_root))
 
 
 def _base_url() -> URL:

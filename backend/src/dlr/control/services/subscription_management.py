@@ -529,10 +529,30 @@ def disable_subscription(
     subscription.desired_state = "disabled"
     # Native owners acknowledge stopping only after their clients actually close.
     lease = session.get(SubscriptionLease, subscription.id)
-    subscription.connection_state = "stopping" if lease and lease.owner_id else "stopped"
+    if not _close_disabled_http_lease(session, subscription, lease):
+        subscription.connection_state = "stopping" if lease and lease.owner_id else "stopped"
     refresh_delivery_state(session, subscription)
     subscription.updated_at = database_now(session)
     return subscription
+
+
+def _close_disabled_http_lease(
+    session: Session, subscription: EventSubscription, lease: SubscriptionLease | None
+) -> bool:
+    """HTTP has no native SDK client to close; its request jobs own separate credits.
+
+    Callers hold the Adapter/Subscription locks and fence before this operation.
+    Clearing this passive lease does not cancel or release any ingress job,
+    request permit, byte reservation or accepted responsibility.
+    """
+    if subscription.source_type != "http" or subscription.desired_state != "disabled":
+        return False
+    if lease is not None:
+        lease.owner_id = ""
+        lease.closing_generation = None
+        lease.lease_until = database_now(session)
+    subscription.connection_state = "stopped"
+    return True
 
 
 def delete_subscription(

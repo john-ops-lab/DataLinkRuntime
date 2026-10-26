@@ -209,6 +209,19 @@ def _lock_global_quota(session: Session) -> None:
     assert row is not None
 
 
+def _storage_free_bytes() -> int:
+    """Observe the configured database capacity domain, never a fallback path.
+
+    Compose supplies a read-only mount of its actual PGDATA volume. Other
+    deployments must explicitly supply an equivalent directory; creating an
+    absent anchor here would silently measure the application's filesystem.
+    """
+    root = Path(settings.ingress_storage_root)
+    if not root.is_absolute() or not root.is_dir():
+        raise OSError("Persistent storage root must be an existing absolute directory")
+    return shutil.disk_usage(root).free
+
+
 def _storage_budget_available(profile: CapacityProfile) -> bool:
     """Reserve the 5 GiB stop margin before adopting a retained-byte ceiling.
 
@@ -217,8 +230,8 @@ def _storage_budget_available(profile: CapacityProfile) -> bool:
     unrelated growth; this is not a promise that the ceiling reserves space.
     """
     try:
-        free_bytes = shutil.disk_usage(Path(settings.ingress_storage_root)).free
-    except OSError:
+        free_bytes = _storage_free_bytes()
+    except (OSError, ValueError):
         return False
     return free_bytes - DISK_STOP_BYTES >= profile.global_limits["history_bytes"]
 
@@ -311,8 +324,8 @@ _disk_guard = DiskCapacityGuard()
 
 def require_disk_capacity() -> None:
     try:
-        free_bytes = shutil.disk_usage(Path(settings.ingress_storage_root)).free
-    except OSError as error:
+        free_bytes = _storage_free_bytes()
+    except (OSError, ValueError) as error:
         raise domain_error(
             503, "ingress_disk_unavailable", "Persistent storage is unavailable"
         ) from error

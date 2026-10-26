@@ -75,7 +75,9 @@ class Settings(BaseSettings):
     ingress_capacity_profile: str | None = Field(
         default=None, validation_alias="DLR_INGRESS_CAPACITY_PROFILE"
     )
-    ingress_storage_root: str = Field(default="/", validation_alias="DLR_INGRESS_STORAGE_ROOT")
+    ingress_storage_root: str = Field(
+        default="/var/lib/dlr/ingress-storage", validation_alias="DLR_INGRESS_STORAGE_ROOT"
+    )
 
     event_subscription_tick_seconds: float = Field(
         default=1.0,

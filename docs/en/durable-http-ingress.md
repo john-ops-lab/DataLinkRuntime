@@ -13,6 +13,8 @@ This is separate from the existing Webhook interface. `/api/hooks/{public_id}` r
 
 Configuration stays inside the adapter. No separate subscription navigation is added. The source token permits reception and safe status lookup for its own source only; it grants no management, replay, skip, or reset access.
 
+Stopping HTTP reception invalidates its passive lease in the same transaction, including a lease left by a crashed process. Accepted records continue processing. Unfinished request jobs retain their original permits and memory until they actually end. Existing code, credential and source configuration locks remain while responsibility is unfinished.
+
 ## Send one JSON value
 
 `POST /api/ingress/{public_id}` requires:
@@ -69,6 +71,14 @@ HTTP permits at most 32 requests and 8 MiB of combined body/event reservations, 
 Each request reserves 320 KiB for the body and complete event limits, so the byte budget can hold at most 25 such reservations. When existing byte budgets are already insufficient, new reception requests can receive the same 429 before body reading. Status and management requests keep their original paths; early refusal or client cancellation does not release another request's reservation.
 
 Raw inputs default to 7 days and deduplication metadata to 30 days. Unfinished, failed, or recovery-referenced data remains protected. The sender's agreed retry horizon must fit the advertised deduplication window; permanent deduplication is not promised outside it. Original bytes, complete events, and required retained copies count toward capacity.
+
+## Database storage observation
+
+Default Compose mounts the same `dlr_pg_data` volume used by PostgreSQL read-only at `/var/lib/dlr/ingress-storage` in Control. `DLR_INGRESS_STORAGE_ROOT` defaults to that anchor. Observation reads free space without initializing, writing, or changing permissions on database files. Free space in the artifact volume is not a substitute for database capacity.
+
+Standalone Control or an external database requires an explicitly configured, existing absolute directory that demonstrably represents the database's actual capacity domain. Overriding the PostgreSQL data volume or database address also requires checking Control's observation mount and this setting; changing a path string alone does not establish capacity equivalence. A missing, empty, relative, non-directory, or unreadable path closes new reception as storage unavailable. The application neither creates the directory nor falls back to its working directory or root filesystem. Existing responsibility still drains and original receipts remain readable. Explicit old `.env` values pointing to artifacts or other paths are preserved; review and update them during upgrade.
+
+The default topology keeps data and WAL together. Custom WAL, tablespaces, separate disks, and managed database quotas require coverage of every relevant capacity domain. An arbitrary local directory cannot establish remote database free space. Keep new reception disabled without a proven equivalent mount or authoritative capacity source. The 5 GiB stop and 6 GiB resume thresholds remain unchanged; a path setting is not capacity acceptance.
 
 ## Reception groups and business batches
 
