@@ -182,6 +182,71 @@ class ObservationTests(unittest.TestCase):
             all(row["elapsed_ns"] >= 0 for row in rows if row.get("phase") == "end")
         )
 
+    def test_secondary_inherited_ids_do_not_multiply_responsibility_details(self):
+        def original(delivery_id, **secondary):
+            return None
+
+        wrapped = self.observer.wrap(original, "stable-responsibility")
+        for n in range(12):
+            wrapped(9, execution_id=100 + n, attempt_id=200 + n, outbox_id=300 + n)
+        rows = self.rows()
+        spans = [row for row in rows if row["kind"] == "span"]
+        self.assertEqual(len([row for row in spans if row["phase"] == "begin"]), 2)
+        self.assertEqual(len([row for row in spans if row["phase"] == "end"]), 2)
+        self.assertTrue(all(row["ids"]["delivery_id"] == 9 for row in spans))
+        aggregate = [row for row in rows if row["kind"] == "aggregate"]
+        self.assertEqual(sum(row["count"] for row in aggregate), 12)
+        self.assertEqual(sum(sum(row["bucket_counts"]) for row in aggregate), 12)
+
+    def test_sql_details_are_global_per_class_with_complete_stage_aggregates(self):
+        callbacks = {}
+        module = types.ModuleType("sqlalchemy")
+        module.event = types.SimpleNamespace(
+            listen=lambda engine, name, callback: callbacks.update({name: callback})
+        )
+        module.engine = types.SimpleNamespace(Engine=object())
+        with patch.dict(sys.modules, {"sqlalchemy": module}):
+            observe._sql_events(self.observer)
+        statement = "SELECT id FROM event_receipts FOR UPDATE"
+        for n in range(20):
+            identity = observe._IDS.set({"delivery_id": n + 1, "execution_id": n + 200})
+            stage = observe._STAGE.set("phase-" + str(n % 2))
+            try:
+                context = types.SimpleNamespace()
+                callbacks["before_cursor_execute"](
+                    None, None, statement, None, context, None
+                )
+                callbacks["after_cursor_execute"](
+                    None, None, statement, None, context, None
+                )
+            finally:
+                observe._IDS.reset(identity)
+                observe._STAGE.reset(stage)
+        rows = self.rows()
+        self.assertEqual(len([row for row in rows if row["kind"] == "sql"]), 2)
+        aggregates = [row for row in rows if row["kind"] == "aggregate"]
+        self.assertEqual(len(aggregates), 2)
+        self.assertEqual(sum(row["count"] for row in aggregates), 20)
+        self.assertEqual(sum(sum(row["bucket_counts"]) for row in aggregates), 20)
+
+    def test_duration_buckets_are_exact_including_boundaries_and_flush(self):
+        durations = [0, 100_000, 100_001, 250_000, 5_000_000_000, 5_000_000_001]
+        for duration in durations:
+            self.observer.aggregate("timing", duration, False)
+        self.observer.flush()
+        self.observer.aggregate("timing", 1_000_000, True)
+        aggregates = [row for row in self.rows() if row["kind"] == "aggregate"]
+        first, last = aggregates
+        self.assertEqual(first["count"], len(durations))
+        self.assertEqual(first["sum_ns"], sum(durations))
+        self.assertEqual(first["bucket_counts"][0], 2)
+        self.assertEqual(first["bucket_counts"][1], 2)
+        self.assertEqual(first["bucket_counts"][-2:], [1, 1])
+        self.assertEqual(sum(first["bucket_counts"]), len(durations))
+        self.assertEqual(last["count"], 1)
+        self.assertEqual(last["errors"], 1)
+        self.assertEqual(sum(last["bucket_counts"]), 1)
+
     def test_role_budget_is_shared_by_writers_and_has_explicit_marker(self):
         left = observe.Writer(self.temp.name, "control", max_bytes=1536)
         right = observe.Writer(self.temp.name, "control", max_bytes=1536)

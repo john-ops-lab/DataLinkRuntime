@@ -18,6 +18,7 @@ import re
 import sys
 import threading
 import time
+from bisect import bisect_left
 from collections import Counter
 from pathlib import Path
 from types import ModuleType, TracebackType
@@ -26,7 +27,24 @@ from typing import Any, Self
 ROLE_LIMIT = 12 * 1024 * 1024
 DETAIL_PER_KEY = 2
 MAX_DETAIL_KEYS = 12_000
-SUMMARY_SECONDS = 5
+SUMMARY_SECONDS = 30
+DURATION_BUCKETS_NS = (
+    100_000,
+    250_000,
+    500_000,
+    1_000_000,
+    2_000_000,
+    5_000_000,
+    10_000_000,
+    25_000_000,
+    50_000_000,
+    100_000_000,
+    250_000_000,
+    500_000_000,
+    1_000_000_000,
+    2_000_000_000,
+    5_000_000_000,
+)
 _ID_KEYS = frozenset(
     {
         "subscription_id",
@@ -219,7 +237,7 @@ class Observer:
         self.writer = writer
         self._lock = threading.RLock()
         self._details: Counter[tuple[Any, ...]] = Counter()
-        self._aggregates: dict[str, dict[str, int]] = {}
+        self._aggregates: dict[str, dict[str, Any]] = {}
         self._last_summary = time.monotonic()
         self.wrappers: dict[Any, Any] = {}
         self.patched: set[str] = set()
@@ -241,7 +259,27 @@ class Observer:
     def detail(
         self, stage: str, ids: dict[str, Any], extra: tuple[Any, ...] = ()
     ) -> bool:
-        key = (stage, tuple(sorted(ids.items())), *extra)
+        # Prefer the durable responsibility, not an ever-changing combination
+        # of inherited IDs from earlier attempts/Outbox rows in a scan loop.
+        identity: tuple[Any, ...] = ()
+        for name in (
+            "delivery_id",
+            "receipt_id",
+            "execution_id",
+            "source_event_id",
+            "message_id",
+            "attempt_id",
+            "outbox_id",
+            "subscription_id",
+            "adapter_id",
+            "worker_id",
+        ):
+            if name in ids:
+                identity = (name, ids[name])
+                if name in {"source_event_id", "message_id"}:
+                    identity += (ids.get("subscription_id"),)
+                break
+        key = (stage, identity, *extra)
         with self._lock:
             if key not in self._details and len(self._details) >= MAX_DETAIL_KEYS:
                 return False
@@ -258,6 +296,7 @@ class Observer:
                     "min_ns": elapsed_ns,
                     "max_ns": elapsed_ns,
                     "errors": 0,
+                    "bucket_counts": [0] * (len(DURATION_BUCKETS_NS) + 1),
                 },
             )
             item["count"] += 1
@@ -265,6 +304,7 @@ class Observer:
             item["min_ns"] = min(item["min_ns"], elapsed_ns)
             item["max_ns"] = max(item["max_ns"], elapsed_ns)
             item["errors"] += int(error)
+            item["bucket_counts"][bisect_left(DURATION_BUCKETS_NS, elapsed_ns)] += 1
             if time.monotonic() - self._last_summary >= SUMMARY_SECONDS:
                 self.flush()
 
@@ -424,7 +464,7 @@ class Span:
             "ok" if kind is None else ("closed" if kind is GeneratorExit else "error")
         )
         self.observer.aggregate(self.stage, elapsed, outcome == "error")
-        if self.has_begin or self.observer.detail(self.stage + ":end", self.ids):
+        if self.has_begin or self.observer.detail(self.stage, self.ids):
             self.observer.emit(
                 "span",
                 stage=self.stage,
@@ -585,17 +625,17 @@ def _sql_events(observer: Observer) -> None:
         del context._dlr_b0_observation
         start, utc_start, parent, ids, classification = data
         elapsed = time.monotonic_ns() - start
-        category = (
-            "sql:"
-            + parent
-            + ":"
-            + classification["operation"]
+        safe_class = (
+            classification["operation"]
             + ":"
             + ",".join(classification["tables"])
             + (":for_update" if classification["for_update"] else "")
         )
+        category = "sql:" + parent + ":" + safe_class
         observer.aggregate(category, elapsed, error)
-        if observer.detail(category, ids):
+        # Details are globally sampled by safe SQL classification. Exact
+        # per-stage totals/histograms still account for every observed query.
+        if observer.detail("sql_detail:" + safe_class, {}):
             observer.emit(
                 "sql",
                 stage=parent,
@@ -726,7 +766,10 @@ def install() -> Observer | None:
         "configuration",
         detail_per_identity=DETAIL_PER_KEY,
         sql_detail_sampled=True,
+        sql_detail_scope="classification_global",
+        span_detail_scope="stable_primary_identity",
         aggregate_exact=True,
+        duration_bucket_upper_ns=[*DURATION_BUCKETS_NS, None],
         summary_seconds=SUMMARY_SECONDS,
         max_bytes=ROLE_LIMIT,
     )
