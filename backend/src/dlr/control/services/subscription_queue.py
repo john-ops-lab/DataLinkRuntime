@@ -16,8 +16,11 @@ from sqlalchemy import func, select
 from dlr.control.models import EventDelivery, EventReceipt, SubscriptionQuota
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services.event_envelope import event_id, validate_envelope
-from dlr.control.services.ingress_capacity import global_limits, runtime_subscription_limits
-from dlr.control.services.input_config import database_now
+from dlr.control.services.ingress_capacity import (
+    effective_profile,
+    global_limits,
+    runtime_limits_for_profile,
+)
 from dlr.control.services.subscription_queue_failure import (
     CONFIGURATION_FAILURES,
     MESSAGE_FAILURES,
@@ -133,23 +136,33 @@ def envelope(context: SourceRunContext, message: Message) -> dict[str, Any]:
 
 def capacity_ready(context: SourceRunContext) -> bool:
     with context.session_factory() as session:
-        now = database_now(session)
-        oldest = session.scalar(
+        oldest_pending = (
             select(func.min(EventDelivery.created_at))
             .join(EventReceipt, EventDelivery.receipt_id == EventReceipt.id)
             .where(
                 EventReceipt.subscription_id == context.subscription_id,
                 EventDelivery.state == "pending",
             )
+            .scalar_subquery()
         )
+        now, oldest = session.execute(select(func.clock_timestamp(), oldest_pending)).one()
         if oldest is not None and oldest <= now - timedelta(minutes=5):
             return False
-        limits = runtime_subscription_limits(session, context.source_config)
+        profile = effective_profile(session)
+        limits = runtime_limits_for_profile(profile, context.source_config)
+        quota_rows = {
+            row.scope: row
+            for row in session.scalars(
+                select(SubscriptionQuota).where(
+                    SubscriptionQuota.scope.in_((f"sub:{context.subscription_id}", "global"))
+                )
+            )
+        }
         for scope, values in (
             (f"sub:{context.subscription_id}", limits),
-            ("global", global_limits(session)),
+            ("global", global_limits(profile=profile)),
         ):
-            quota = session.get(SubscriptionQuota, scope)
+            quota = quota_rows.get(scope)
             if quota is None:
                 continue
             for key, maximum in values.items():

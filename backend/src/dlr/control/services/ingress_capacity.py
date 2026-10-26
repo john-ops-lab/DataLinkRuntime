@@ -175,7 +175,12 @@ def effective_profile(session: Session) -> CapacityProfile:
 
 def runtime_subscription_limits(session: Session, config: dict[str, Any]) -> dict[str, int]:
     """Read retained configuration after a deployment reduction without rejecting it."""
-    maximum = effective_profile(session).subscription_max
+    return runtime_limits_for_profile(effective_profile(session), config)
+
+
+def runtime_limits_for_profile(profile: CapacityProfile, config: dict[str, Any]) -> dict[str, int]:
+    """Pure entry calculation from one already-read durable profile."""
+    maximum = profile.subscription_max
     result = {key: min(value, maximum[key]) for key, value in DEFAULT_SUBSCRIPTION_LIMITS.items()}
     for key, value in config.get("limits", {}).items():
         if key in maximum and type(value) is int and value > 0:
@@ -183,7 +188,11 @@ def runtime_subscription_limits(session: Session, config: dict[str, Any]) -> dic
     return result
 
 
-def global_limits(session: Session | None = None) -> dict[str, int]:
+def global_limits(
+    session: Session | None = None, *, profile: CapacityProfile | None = None
+) -> dict[str, int]:
+    if profile is not None:
+        return dict(profile.global_limits)
     if session is not None:
         return dict(effective_profile(session).global_limits)
     try:
@@ -258,7 +267,7 @@ def activate_profile(session: Session) -> bool:
     return True
 
 
-def require_active_profile(session: Session) -> None:
+def require_active_profile(session: Session) -> CapacityProfile:
     """Called after locking quotas in T1, and only for a genuinely new event."""
     try:
         profile = configured_profile()
@@ -274,6 +283,10 @@ def require_active_profile(session: Session) -> None:
         raise domain_error(
             503, "ingress_capacity_unavailable", "Capacity profile does not match deployment"
         )
+    # T1 holds the global quota lock until commit. Every legitimate adoption
+    # takes that same lock, so this freshly-read row governs both ceilings for
+    # this custody transaction. No profile state survives the transaction.
+    return parse_profile(json.dumps(row.profile))
 
 
 class DiskCapacityGuard:

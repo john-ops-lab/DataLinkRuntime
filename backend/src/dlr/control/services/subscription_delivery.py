@@ -7,7 +7,7 @@ No source RPC, broker ACK, sleep or user code runs in these transactions.
 
 import hashlib
 from datetime import timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 from sqlalchemy import case, delete, exists, func, select, true
@@ -40,6 +40,9 @@ from dlr.control.services.event_envelope import validate_envelope
 from dlr.control.services.input_config import database_now
 from dlr.control.services.subscription_queue_failure import LEGACY_LIFECYCLE_FAILURES
 from dlr.control.services.subscription_registry import source_definition
+
+if TYPE_CHECKING:
+    from dlr.control.services.ingress_capacity import CapacityProfile
 
 DEFAULT_LIMITS = {
     "pending_count": 1000,
@@ -188,18 +191,25 @@ def _quotas(session: Session, subscription_id: int) -> list[SubscriptionQuota]:
     return result
 
 
-def _limits(session: Session, activation: SubscriptionActivation) -> dict[str, int]:
+def _limits(
+    session: Session, activation: SubscriptionActivation, profile: "CapacityProfile | None" = None
+) -> dict[str, int]:
     config = session.get(SubscriptionConfigVersion, activation.config_version_id)
     assert config is not None
-    from dlr.control.services.ingress_capacity import runtime_subscription_limits
+    from dlr.control.services.ingress_capacity import (
+        runtime_limits_for_profile,
+        runtime_subscription_limits,
+    )
 
+    if profile is not None:
+        return runtime_limits_for_profile(profile, config.config)
     return runtime_subscription_limits(session, config.config)
 
 
-def _global_limits(session: Session) -> dict[str, int]:
+def _global_limits(session: Session, profile: "CapacityProfile | None" = None) -> dict[str, int]:
     from dlr.control.services.ingress_capacity import global_limits
 
-    return global_limits(session)
+    return global_limits(session, profile=profile)
 
 
 def _reserve(
@@ -212,9 +222,9 @@ def _reserve(
     rows = _quotas(session, sub.id)
     from dlr.control.services.ingress_capacity import require_active_profile, require_disk_capacity
 
-    require_active_profile(session)
+    profile = require_active_profile(session)
     require_disk_capacity()
-    limits = _limits(session, activation)
+    limits = _limits(session, activation, profile)
     now = database_now(session)
     oldest = session.scalar(
         select(func.min(EventReceipt.first_received_at)).where(
@@ -223,7 +233,7 @@ def _reserve(
     )
     if oldest is not None and now - oldest >= timedelta(minutes=30):
         raise domain_error(429, "subscription_capacity_exceeded", "Oldest pending exceeded limit")
-    for quota, maximum in zip(rows, (limits, _global_limits(session)), strict=True):
+    for quota, maximum in zip(rows, (limits, _global_limits(session, profile)), strict=True):
         if quota.blocked_reason is not None:
             below_low_water = all(
                 getattr(quota, key)
