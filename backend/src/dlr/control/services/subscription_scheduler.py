@@ -115,7 +115,13 @@ def _candidate_query(kind: Kind) -> Select[Any]:
                         ready_executions.c.batch_execution_id.is_not(None),
                         bindparam("batch_payload_budget", type_=BigInteger()),
                     ),
-                    else_=ready_executions.c.single_payload_bytes,
+                    # Prepaid storage includes multiple copies/metadata. A
+                    # legal indivisible single event can consume a full pass
+                    # without its durable bill becoming a permanent barrier.
+                    else_=func.least(
+                        ready_executions.c.single_payload_bytes,
+                        bindparam("batch_payload_budget", type_=BigInteger()),
+                    ),
                 ).label("payload_bytes"),
             )
         ).subquery()
@@ -179,7 +185,10 @@ def _candidate_query(kind: Kind) -> Select[Any]:
                         EventDelivery.retained_batch_bytes > 0,
                         bindparam("batch_payload_budget", type_=BigInteger()),
                     ),
-                    else_=possible.c.payload_bytes,
+                    else_=func.least(
+                        possible.c.payload_bytes,
+                        bindparam("batch_payload_budget", type_=BigInteger()),
+                    ),
                 ).label("payload_bytes"),
             )
             .join(EventDelivery, EventDelivery.id == possible.c.delivery_id)
