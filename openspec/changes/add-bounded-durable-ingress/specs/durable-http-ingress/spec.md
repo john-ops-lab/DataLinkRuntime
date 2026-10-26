@@ -88,7 +88,7 @@
 - **THEN** 在当前合法认证及留存窗口内只读回原记录，未命中则返回 410 ingress_epoch_retired；不按新 epoch 再接管一次；订阅已删除时不继续开放外部查询
 
 ### Requirement: HTTP 接管合并不连带拒绝其他合法请求
-HTTP 多条模式的收集 SHALL 在 async 层有界完成，不让原生线程等待其他请求。 每组 SHALL 最多16条、额外收集不超过25ms，按正文长度的保守原文加Envelope估计累计不超过1MiB，满组、字节上界或期限先到即派发；超期新请求不得进入旧组。估计不解析正文或读DB，T1仍按实际完整尺寸强制原1MiB。原 32 请求/8 MiB、8 原生工作和 8 接收连接 MUST 保持，与 MQ 共享接收连接预算而非另加 pool。组内同 ID 同原文的首次/重复分别返回已提交的 202/200；错误 token、坏 JSON 或 409 冲突仅影响对应请求，不生成来源屏障。取消等待者不得取消共享工作或提前释放预算。
+HTTP 多条模式的收集 SHALL 在 async 层有界完成，不让原生线程等待其他请求。 每组 SHALL 最多16条、额外收集不超过25ms，按正文长度的保守原文加Envelope估计累计不超过1MiB，满组、字节上界或期限先到即封组并进入有界原生就绪调度；超期新请求不得进入旧组。估计不解析正文或读DB，T1仍按实际完整尺寸强制原1MiB。原 32 请求/8 MiB、8 原生工作和 8 接收连接 MUST 保持，与 MQ 共享接收连接预算而非另加 pool。组内同 ID 同原文的首次/重复分别返回已提交的 202/200；错误 token、坏 JSON 或 409 冲突仅影响对应请求，不生成来源屏障。取消等待者不得取消共享工作或提前释放预算。
 
 #### Scenario: 合法请求与错误请求同组
 - **WHEN** 同组含合法请求、坏 JSON、已撤销 token 或相同 ID 不同原文
@@ -119,3 +119,18 @@ The system SHALL preserve token/account entry trust, private-prefix path/raw_pat
 - **AND** accepted calls SHALL retain the original reservation ownership until the underlying work ends, including cancellation and unknown commit cases
 - **AND** the optimization SHALL keep the FastAPI route, source authentication, T1 and commit-before-success checks and all existing budgets, without an additional permit or queue
 - **AND** model tests SHALL NOT replace real functional or capacity acceptance.
+
+
+### Requirement: 有界HTTP组按路由获得原生工作
+显式business_batch的封闭组 SHALL 同public_id最多一个未结束native组，同路由FIFO、跨可运行路由轮转，并共享原8 native/8接收连接。所有等待成员 MUST 持有原32请求/8MiB额度，不新增正文副本或无界路由/任务缓存；旧单条和GET路径 MUST 保持。
+
+#### Scenario: 同路由繁忙时等候、到期与其他路由推进
+- **WHEN** 封组后该路由尚有native组未结束或原全局native额度已满
+- **THEN** 该封闭组在原额度内等待最多额外1秒，不延长25ms收集窗口或追加新成员
+- **AND** 未提交native即到期者返回原429/Retry-After，不产生接管/配额或坏消息，其他可运行路由获得轮转机会
+- **AND** 原有native释放包括GET/旧单条 SHALL 触发有限就绪提示，避免无新POST时挂起
+
+#### Scenario: 等待者取消或关闭时保留实际责任
+- **WHEN** 某等待者取消或Control关闭且存在就绪/已提交组
+- **THEN** 单个等待者取消不撤销已交给collector的共享组；仅尚未调用submit的就绪组可因到期或关闭等已知拒绝归还原额度，提交调用已开始及实际native仍按原最终结果释放，不能取消共享事务或提前清active
+- **AND** 关闭/定时器/submit拒绝及回调竞态 MUST 恰一次收尾；原鉴权、配置/lease/开关检查、T1绑定和提交未知语义不变

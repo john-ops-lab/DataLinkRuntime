@@ -10,6 +10,7 @@ import asyncio
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import suppress
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -22,6 +23,7 @@ from dlr.control.security import AuthorizationHeader
 from dlr.control.services import http_ingress as service
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.http_ingress_group import HttpCollector, HttpInput, complete
+from dlr.control.services.http_ingress_ready import GroupResults, HttpReadyQueue, ReadyGroup
 from dlr.control.services.subscription_source import ApplicationBufferBudget
 
 router = APIRouter()
@@ -31,8 +33,9 @@ BODY_RESERVATION = service.MAX_BODY_BYTES + service.MAX_ENVELOPE_BYTES
 class NativeWorkBudget:
     """Nonblocking permits and their read-only snapshot share one lock."""
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, released: Callable[[], None] | None = None) -> None:
         self._limit = limit
+        self._released = released
         self._used = 0
         self._semaphore = threading.BoundedSemaphore(limit)
         self._lock = threading.Lock()
@@ -48,6 +51,8 @@ class NativeWorkBudget:
         with self._lock:
             self._semaphore.release()
             self._used -= 1
+        if self._released is not None:
+            self._released()
 
     @property
     def used(self) -> int:
@@ -68,7 +73,7 @@ class IngressResources:
         session_factory: Callable[[], Session] | None = None,
     ) -> None:
         self.requests = threading.BoundedSemaphore(32)
-        self.work = NativeWorkBudget(8)
+        self.work = NativeWorkBudget(8, self._wake_ready)
         self.buffer = buffer.scope(8 * 1024**2)
         self.executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="dlr-ingress")
         if session_factory is None:
@@ -79,52 +84,55 @@ class IngressResources:
         else:
             self.session_factory = session_factory
             self.engine = None
+        self.ready = HttpReadyQueue(self.work.acquire, self._submit_group, self._finish_group)
         self.collector = HttpCollector(self.dispatch)
 
+    def _wake_ready(self) -> None:
+        self.ready.wake()
+
+    def begin_close(self) -> None:
+        self.ready.close()
+        self.collector.close()
+
     def close(self) -> None:
+        self.begin_close()
         self.executor.shutdown(wait=True, cancel_futures=False)
 
     def dispatch(self, public_id: str, items: list[HttpInput]) -> None:
-        loop = asyncio.get_running_loop()
-        if not self.work.acquire():
-            for item in items:
-                item.release()
-                complete(
-                    item,
-                    domain_error(429, "ingress_capacity_exceeded", "Reception resources are busy"),
-                )
-            return
+        self.ready.enqueue(public_id, items)
+
+    def _submit_group(self, group: ReadyGroup) -> Future[GroupResults]:
+        return self.executor.submit(_run_group_sync, self, group.public_id, group.items)
+
+    def _finish_group(
+        self, group: ReadyGroup, result: Future[GroupResults] | HTTPException, claimed: bool
+    ) -> None:
         try:
-            native = self.executor.submit(_run_group_sync, self, public_id, items)
-        except RuntimeError:
-            self.work.release()
-            for item in items:
-                item.release()
-                complete(item, domain_error(503, "ingress_unavailable", "Reception is closing"))
-            return
-
-        def finished(future: Future[list[tuple[int, dict[str, Any]] | HTTPException]]) -> None:
-            try:
-                results = future.result()
-            except Exception:
-                results = [
-                    domain_error(
-                        503,
-                        "ingress_unavailable",
-                        "Reception is temporarily unavailable; retry with the same ID and bytes",
-                    )
-                    for _ in items
-                ]
-            finally:
+            if isinstance(result, HTTPException):
+                results: GroupResults = [result for _ in group.items]
+            else:
+                try:
+                    results = result.result()
+                except Exception:
+                    results = [
+                        domain_error(
+                            503,
+                            "ingress_unavailable",
+                            "Reception is temporarily unavailable; "
+                            "retry with the same ID and bytes",
+                        )
+                        for _ in group.items
+                    ]
+        finally:
+            if claimed:
                 self.work.release()
-                for item in items:
-                    item.body = b""
-                    item.release()
-            for item, result in zip(items, results, strict=True):
-                if not loop.is_closed():
-                    loop.call_soon_threadsafe(complete, item, result)
-
-        native.add_done_callback(finished)
+            for item in group.items:
+                item.body = b""
+                item.release()
+        for item, answer in zip(group.items, results, strict=True):
+            if not group.loop.is_closed():
+                with suppress(RuntimeError):
+                    group.loop.call_soon_threadsafe(complete, item, answer)
 
 
 _resources: IngressResources | None = None
@@ -170,7 +178,7 @@ def shutdown_ingress_resources() -> None:
 
 def flush_ingress_resources() -> None:
     if _resources is not None:
-        _resources.collector.close()
+        _resources.begin_close()
 
 
 def _busy() -> None:

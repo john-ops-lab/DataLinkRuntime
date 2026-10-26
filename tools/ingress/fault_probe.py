@@ -480,7 +480,7 @@ class Probe:
                         source_type = fields.get("source_type")
                         if not isinstance(source_type, str):
                             return result
-                        maximum = {"http": 4, "rabbitmq": 16}.get(source_type)
+                        maximum = {"http": 16, "rabbitmq": 16}.get(source_type)
                         if maximum is None:
                             return result
                         outcomes = _loaded(result).get("outcomes")

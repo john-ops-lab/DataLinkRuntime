@@ -554,15 +554,25 @@ class FaultProbeTests(unittest.TestCase):
                 finally:
                     self.root = original
 
-    def test_t1_unit_rabbit_sixteen_members_cut_only_at_the_matching_session_commit(self) -> None:
-        for point, expected in [("t1_before_commit", 0), ("t1_after_commit", 16)]:
-            with self.subTest(point=point), tempfile.TemporaryDirectory() as directory:
+    def test_t1_unit_sixteen_members_cut_only_at_the_matching_session_commit(
+        self,
+    ) -> None:
+        scenarios = [
+            (f"t1-unit-{source}-16-reversed", point, expected)
+            for source in ("http", "rabbit")
+            for point, expected in [("t1_before_commit", 0), ("t1_after_commit", 16)]
+        ]
+        for scenario, point, expected in scenarios:
+            with (
+                self.subTest(scenario=scenario, point=point),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 original = self.root
                 self.root = Path(directory)
                 self.root.chmod(0o700)
                 try:
                     self.arm(point, message_id="unit-16")
-                    child = self.child("t1-unit-rabbit-16-reversed")
+                    child = self.child(scenario)
                     self.assertEqual(child.returncode, 137, child.stderr)
                     self.assertEqual(self.rows(), expected)
                     proof = self.proof()
@@ -572,16 +582,19 @@ class FaultProbeTests(unittest.TestCase):
                     self.assertEqual(proof["proof"]["t1_unit_new_items"], 16)
                     self.assertEqual(proof["proof"]["t1_unit_outcomes"], 16)
                     self.assertIs(
-                        proof["proof"]["transaction_committed"], point == "t1_after_commit"
+                        proof["proof"]["transaction_committed"],
+                        point == "t1_after_commit",
                     )
-                    self.assertFalse((self.root / "source-ack-or-http-response").exists())
+                    self.assertFalse(
+                        (self.root / "source-ack-or-http-response").exists()
+                    )
                 finally:
                     self.root = original
 
     def test_t1_unit_source_bounds_and_unknown_source_never_create_a_marker(self) -> None:
         scenarios = [
             ("t1-unit-rabbit-17", 17),
-            ("t1-unit-http-5", 5),
+            ("t1-unit-http-17", 17),
             ("t1-unit-unknown-source", 4),
         ]
         for scenario, expected in scenarios:
@@ -600,19 +613,27 @@ class FaultProbeTests(unittest.TestCase):
                     self.root = original
 
     def test_t1_unit_mismatched_outcomes_never_create_a_marker(self) -> None:
-        for variant in (
-            "extra-outcome",
-            "foreign-outcome-index",
-            "duplicate-outcome-index",
-            "duplicate-input-index",
-        ):
-            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as directory:
+        scenarios = [
+            f"t1-unit-{source}-16-{variant}"
+            for source in ("http", "rabbit")
+            for variant in (
+                "extra-outcome",
+                "foreign-outcome-index",
+                "duplicate-outcome-index",
+                "duplicate-input-index",
+            )
+        ]
+        for scenario in scenarios:
+            with (
+                self.subTest(scenario=scenario),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 original = self.root
                 self.root = Path(directory)
                 self.root.chmod(0o700)
                 try:
                     self.arm("t1_after_commit", message_id="unit-1")
-                    child = self.child("t1-unit-rabbit-16-" + variant)
+                    child = self.child(scenario)
                     self.assertEqual(child.returncode, 0, child.stderr)
                     self.assertEqual(self.rows(), 16)
                     self.assertFalse((self.root / "fault-test-cut.json").exists())

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -45,9 +46,17 @@ class HttpCollector:
     def __init__(self, dispatch: Callable[[str, list[HttpInput]], None]) -> None:
         self.dispatch = dispatch
         self.pending: dict[str, _Group] = {}
+        self.closed = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._close_lock = threading.Lock()
+        self._close_scheduled = False
 
     def add(self, public_id: str, item: HttpInput) -> None:
         loop = asyncio.get_running_loop()
+        self._loop = loop
+        if self.closed:
+            self.dispatch(public_id, [item])
+            return
         group = self.pending.get(public_id)
         if group is not None and loop.time() >= group.deadline:
             # A delayed event-loop timer cannot extend the collection window
@@ -75,7 +84,26 @@ class HttpCollector:
         self.dispatch(public_id, group.items)
 
     def close(self) -> None:
-        """Flush admitted bodies before the executor is shut down."""
+        """Seal remaining members after the owner has closed ready admission."""
+        with self._close_lock:
+            self.closed = True
+            if self._close_scheduled:
+                return
+            self._close_scheduled = True
+            loop = self._loop
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if loop is None or loop.is_closed() or current is loop:
+            self._flush_closed()
+        else:
+            try:
+                loop.call_soon_threadsafe(self._flush_closed)
+            except RuntimeError:
+                self._flush_closed()
+
+    def _flush_closed(self) -> None:
         for public_id in tuple(self.pending):
             self.flush(public_id)
 
