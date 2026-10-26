@@ -351,9 +351,12 @@ async def _request(
         if not pool.work.acquire():
             _busy()
         work_acquired = True
-        future = pool.executor.submit(
-            _run_sync, pool, public_id, authorization, body, key, receipt_id
-        )
+        try:
+            future = pool.executor.submit(
+                _run_sync, pool, public_id, authorization, body, key, receipt_id
+            )
+        except RuntimeError:
+            raise domain_error(503, "ingress_unavailable", "Reception is closing") from None
 
         def release(_: Future[tuple[int, dict[str, Any]]]) -> None:
             pool.work.release()

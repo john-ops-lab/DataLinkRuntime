@@ -396,29 +396,42 @@ def test_cancelled_native_work_keeps_busy_hint_until_real_future_finishes(pool, 
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("group", [False, True])
-def test_native_submit_failure_returns_work_and_request_reservations(pool, monkeypatch, group):
+@pytest.mark.parametrize("mode", ["single", "status", "group"])
+def test_native_submit_failure_returns_work_and_request_reservations(pool, monkeypatch, mode):
     async def run():
         from dlr.control.services import subscription_runtime
 
         monkeypatch.setattr(
             subscription_runtime,
             "get_runtime",
-            lambda: SimpleNamespace(http_batch_hint=lambda _: group),
+            lambda: SimpleNamespace(http_batch_hint=lambda _: mode == "group"),
         )
         pool.close()  # The real executor now raises its closing RuntimeError on submit.
 
         async def receive():
             return {"type": "http.request", "body": b"{}", "more_body": False}
 
-        with pytest.raises(Exception) as raised:
-            await ingress._request("route", Request(scope(), receive), "Bearer token", "id")
-        if group:
-            assert isinstance(raised.value, ingress.HTTPException)
-            assert raised.value.status_code == 503
-        else:
-            assert isinstance(raised.value, RuntimeError)
+        with pytest.raises(ingress.HTTPException) as raised:
+            await ingress._request(
+                "route",
+                Request(scope(method="GET" if mode == "status" else "POST"), receive),
+                "Bearer token",
+                "id",
+                receipt_id=1 if mode == "status" else None,
+            )
+        assert raised.value.status_code == 503
+        assert raised.value.detail == {
+            "code": "ingress_unavailable",
+            "message": "Reception is closing",
+        }
+        assert raised.value.headers == {"Retry-After": "1"}
         assert pool.work.used == 0 and pool.buffer.used_bytes == 0
+        assert pool.buffer.parent.used_bytes == 0
+        for _ in range(8):
+            assert pool.work.acquire()
+        assert not pool.work.acquire()
+        for _ in range(8):
+            pool.work.release()
         for _ in range(32):
             assert pool.requests.acquire(blocking=False)
         assert not pool.requests.acquire(blocking=False)
@@ -429,28 +442,34 @@ def test_native_submit_failure_returns_work_and_request_reservations(pool, monke
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("group", [False, True])
-def test_native_failure_returns_work_only_after_the_real_future_ends(pool, monkeypatch, group):
+@pytest.mark.parametrize("mode", ["single", "status", "group"])
+def test_native_failure_returns_work_only_after_the_real_future_ends(pool, monkeypatch, mode):
     async def run():
         from dlr.control.services import subscription_runtime
 
         monkeypatch.setattr(
             subscription_runtime,
             "get_runtime",
-            lambda: SimpleNamespace(http_batch_hint=lambda _: group),
+            lambda: SimpleNamespace(http_batch_hint=lambda _: mode == "group"),
         )
 
         def failed(*args):
             raise RuntimeError("native work failed")
 
-        monkeypatch.setattr(ingress, "_run_group_sync" if group else "_run_sync", failed)
+        monkeypatch.setattr(ingress, "_run_group_sync" if mode == "group" else "_run_sync", failed)
 
         async def receive():
             return {"type": "http.request", "body": b"{}", "more_body": False}
 
         with pytest.raises(Exception) as raised:
-            await ingress._request("route", Request(scope(), receive), "Bearer token", "id")
-        if group:
+            await ingress._request(
+                "route",
+                Request(scope(method="GET" if mode == "status" else "POST"), receive),
+                "Bearer token",
+                "id",
+                receipt_id=1 if mode == "status" else None,
+            )
+        if mode == "group":
             assert isinstance(raised.value, ingress.HTTPException)
             assert raised.value.status_code == 503
         else:
