@@ -93,7 +93,10 @@ def run(context, transport):
 
 
 @pytest.fixture
-def mocked_context():
+def mocked_context(monkeypatch):
+    monkeypatch.setattr(
+        queue, "_capacity_decision", lambda context: queue._CapacityDecision(True, 16)
+    )
     return SimpleNamespace(
         source_config={
             "source_type": "rabbitmq",

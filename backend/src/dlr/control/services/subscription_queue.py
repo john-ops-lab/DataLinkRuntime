@@ -253,7 +253,15 @@ def envelope(
     return result
 
 
-def capacity_ready(context: SourceRunContext) -> bool:
+@dataclass(frozen=True)
+class _CapacityDecision:
+    hard_ready: bool
+    rate_tokens: int
+    wait_seconds: float = 0
+
+
+def _capacity_decision(context: SourceRunContext) -> _CapacityDecision:
+    """One advisory snapshot; locked T1 still checks every item's real limits."""
     with context.session_factory() as session:
         oldest_pending = (
             select(func.min(EventDelivery.created_at))
@@ -266,7 +274,7 @@ def capacity_ready(context: SourceRunContext) -> bool:
         )
         now, oldest = session.execute(select(func.clock_timestamp(), oldest_pending)).one()
         if oldest is not None and oldest <= now - timedelta(minutes=5):
-            return False
+            return _CapacityDecision(False, 0)
         profile = effective_profile(session)
         limits = runtime_limits_for_profile(profile, context.source_config)
         quota_rows = {
@@ -277,30 +285,52 @@ def capacity_ready(context: SourceRunContext) -> bool:
                 )
             )
         }
-        for scope, values in (
+        scopes = (
             (f"sub:{context.subscription_id}", limits),
             ("global", global_limits(profile=profile)),
-        ):
+        )
+        # A transient rate pause must never hide any original hard/high-water
+        # refusal, even if an earlier scope has already used its rate tokens.
+        for scope, values in scopes:
             quota = quota_rows.get(scope)
             if quota is None:
                 continue
             for key, maximum in values.items():
-                if key == "rate":
-                    if (
-                        quota.rate_window_at is not None
-                        and quota.rate_window_at > now - timedelta(seconds=1)
-                        and quota.rate_count >= maximum
-                    ):
-                        return False
-                else:
+                if key != "rate":
                     reserved = (
                         quota.reserved_control_count
                         if key in {"pending_count", "history_count", "dedupe_count"}
                         else quota.reserved_control_bytes
                     )
                     if getattr(quota, key) + reserved > maximum * 0.8:
-                        return False
-        return True
+                        return _CapacityDecision(False, 0)
+        tokens = min(values["rate"] for _, values in scopes)
+        wait_seconds = 0.0
+        for scope, values in scopes:
+            quota = quota_rows.get(scope)
+            if (
+                quota is not None
+                and quota.rate_window_at is not None
+                and quota.rate_window_at > now - timedelta(seconds=1)
+            ):
+                remaining = max(0, values["rate"] - quota.rate_count)
+                tokens = min(tokens, remaining)
+                if remaining == 0:
+                    wait_seconds = max(
+                        wait_seconds,
+                        (quota.rate_window_at + timedelta(seconds=1) - now).total_seconds(),
+                    )
+        return _CapacityDecision(True, tokens, min(1.0, wait_seconds))
+
+
+def capacity_ready(context: SourceRunContext) -> bool:
+    decision = _capacity_decision(context)
+    return decision.hard_ready and decision.rate_tokens > 0
+
+
+def _wait_for_rate(context: SourceRunContext, seconds: float) -> bool:
+    """No SDK/DB work or credit release while the current owner waits."""
+    return context.stop_event.wait(seconds)
 
 
 def take_custody(context: SourceRunContext, message: Message) -> bool:
@@ -440,16 +470,35 @@ class QueueSourceRunner:
         prepared: _MicroPrepared | None = None
         failure: Exception | None = None
         failed_message: Message | None = None
+        rate_deadline: float | None = None
         try:
             while not context.stop_event.is_set():
-                if not capacity_ready(context):
+                decision = _capacity_decision(context)
+                if not decision.hard_ready:
                     failure = SourceFailure("subscription_capacity_exceeded", "capacity")
                     break
+                if decision.rate_tokens == 0:
+                    now = time.monotonic()
+                    if rate_deadline is None:
+                        rate_deadline = now + 1
+                    wait = min(decision.wait_seconds, rate_deadline - now)
+                    if wait <= 0:
+                        # Repeated global-rate contention must not starve the
+                        # dedicated Pika IOLoop/heartbeat indefinitely. Retain
+                        # the original close/backoff once this bounded pause
+                        # is exhausted, including all unaccepted SDK credits.
+                        failure = SourceFailure("subscription_capacity_exceeded", "capacity")
+                        break
+                    if _wait_for_rate(context, wait):
+                        break
+                    continue
+                rate_deadline = None
+                max_items = min(16, decision.rate_tokens)
                 started: float | None = None
                 total_bytes = 0
                 deferred: Exception | None = None
                 deferred_message: Message | None = None
-                while len(group) < 16 and not context.stop_event.is_set():
+                while len(group) < max_items and not context.stop_event.is_set():
                     try:
                         if carry is not None:
                             message, carry = carry, None
