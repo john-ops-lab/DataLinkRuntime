@@ -1,4 +1,4 @@
-"""Bounded scheduling of sealed HTTP groups; members keep their original permits."""
+"""Bounded scheduling of ready HTTP prefixes; members keep their original permits."""
 
 from __future__ import annotations
 
@@ -14,7 +14,12 @@ from typing import Any, Literal
 
 from fastapi import HTTPException
 
-from dlr.control.services.http_ingress_group import HttpInput
+from dlr.control.services.http_ingress_group import (
+    MAX_ITEMS,
+    MAX_PAYLOAD_BYTES,
+    HttpInput,
+    estimated_input_bytes,
+)
 
 READY_WAIT_SECONDS = 1.0
 GroupResults = list[tuple[int, dict[str, Any]] | HTTPException]
@@ -135,11 +140,43 @@ class HttpReadyQueue:
                 # Claim before submit. Close/expiry cannot release this group
                 # while submit is in progress, even before a Future is returned.
                 group.state = "submitting"
+                self._repack(group, route, now)
                 route.active = group
                 if route.ready:
                     self._order.append(key)
                 return group, expired
         return None, expired
+
+    @staticmethod
+    def _repack(group: ReadyGroup, route: _Route, now: float) -> None:
+        """Move only an available FIFO prefix, retaining each tail's deadline.
+
+        The caller holds the queue lock and the original native permit. A
+        consumed donor loses only metadata: its item permits now belong to
+        this submitted unit and remain held until its real completion.
+        """
+        size = sum(estimated_input_bytes(len(item.body)) for item in group.items)
+        while route.ready and len(group.items) < MAX_ITEMS:
+            donor = route.ready[0]
+            if (
+                donor.deadline <= now
+                or donor.public_id != group.public_id
+                or donor.loop is not group.loop
+            ):
+                break
+            taken = 0
+            for item in donor.items:
+                amount = estimated_input_bytes(len(item.body))
+                if len(group.items) == MAX_ITEMS or size + amount > MAX_PAYLOAD_BYTES:
+                    break
+                group.items.append(item)
+                size += amount
+                taken += 1
+            del donor.items[:taken]
+            if donor.items:
+                break
+            route.ready.popleft()
+            donor.state = "done"
 
     def _pump(self) -> None:
         with self._lock:
@@ -163,9 +200,7 @@ class HttpReadyQueue:
                 future.add_done_callback(partial(self._settle, group))
         self._arm_timer()
 
-    def _settle(
-        self, group: ReadyGroup, result: Future[GroupResults] | HTTPException
-    ) -> None:
+    def _settle(self, group: ReadyGroup, result: Future[GroupResults] | HTTPException) -> None:
         with self._lock:
             if group.state == "done":
                 return
