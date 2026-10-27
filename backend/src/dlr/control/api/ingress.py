@@ -22,7 +22,12 @@ from starlette.requests import ClientDisconnect
 from dlr.control.security import AuthorizationHeader
 from dlr.control.services import http_ingress as service
 from dlr.control.services.adapter import domain_error
-from dlr.control.services.http_ingress_group import HttpCollector, HttpInput, complete
+from dlr.control.services.http_ingress_group import (
+    HttpCollector,
+    HttpInput,
+    complete,
+    estimated_input_bytes,
+)
 from dlr.control.services.http_ingress_ready import GroupResults, HttpReadyQueue, ReadyGroup
 from dlr.control.services.subscription_source import ApplicationBufferBudget
 
@@ -84,8 +89,34 @@ class IngressResources:
         else:
             self.session_factory = session_factory
             self.engine = None
-        self.ready = HttpReadyQueue(self.work.acquire, self._submit_group, self._finish_group)
-        self.collector = HttpCollector(self.dispatch)
+        self.collector = collector = HttpCollector(self.dispatch)
+
+        def prepare(public_id: str, remaining_items: int, remaining_bytes: int) -> None:
+            if self.ready is not ready or self.collector is not collector:
+                return
+            loop = asyncio.get_running_loop()
+            if (
+                ready._closed
+                or collector.closed
+                or ready._loop is not loop
+                or collector._loop is not loop
+                or self.work.saturated
+            ):
+                return
+            pending = collector.pending.get(public_id)
+            if (
+                pending is None
+                or not pending.items
+                or pending.deadline <= loop.time()
+                or remaining_items < 1
+                or estimated_input_bytes(len(pending.items[0].body)) > remaining_bytes
+            ):
+                return
+            collector.flush(public_id)
+
+        self.ready = ready = HttpReadyQueue(
+            self.work.acquire, self._submit_group, self._finish_group, prepare=prepare
+        )
 
     def _wake_ready(self) -> None:
         self.ready.wake()

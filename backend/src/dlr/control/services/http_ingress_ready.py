@@ -54,8 +54,11 @@ class HttpReadyQueue:
         acquire: Callable[[], bool],
         submit: Callable[[ReadyGroup], Future[GroupResults]],
         finish: Callable[[ReadyGroup, Future[GroupResults] | HTTPException, bool], None],
+        *,
+        prepare: Callable[[str, int, int], None] | None = None,
     ) -> None:
         self._acquire, self._submit, self._finish = acquire, submit, finish
+        self._prepare = prepare
         self._lock = threading.Lock()
         self._routes: dict[str, _Route] = {}
         self._order: deque[str] = deque()
@@ -178,10 +181,49 @@ class HttpReadyQueue:
             route.ready.popleft()
             donor.state = "done"
 
+    def _prepare_next(self) -> None:
+        """Preview the original claim order; the optional callback owns no permit."""
+        prepare = self._prepare
+        if prepare is None:
+            return
+        with self._lock:
+            if self._closed or self._loop is None:
+                return
+            now = self._loop.time()
+            # Leave all expiry handling to the original take/finish path.
+            if any(
+                group.deadline <= now for route in self._routes.values() for group in route.ready
+            ):
+                return
+            for key in self._order:
+                route = self._routes[key]
+                if route.active is not None:
+                    continue
+                remaining_items, remaining_bytes = MAX_ITEMS, MAX_PAYLOAD_BYTES
+                for group in route.ready:
+                    for item in group.items:
+                        amount = estimated_input_bytes(len(item.body))
+                        if remaining_items == 0 or amount > remaining_bytes:
+                            # An earlier ready remainder forbids borrowing
+                            # from the later collector, even if it is smaller.
+                            return
+                        remaining_items -= 1
+                        remaining_bytes -= amount
+                if remaining_items == 0 or remaining_bytes == 0:
+                    return
+                break
+            else:
+                return
+        # This controlled optimization must not strand the original ready
+        # work or its timer. Never retry a possibly completed handoff.
+        with suppress(Exception):
+            prepare(key, remaining_items, remaining_bytes)
+
     def _pump(self) -> None:
         with self._lock:
             self._scheduled = False
         while True:
+            self._prepare_next()
             group, expired = self._take()
             for old in expired:
                 self._finish(old, self._busy(), False)
