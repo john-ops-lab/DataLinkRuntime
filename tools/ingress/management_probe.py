@@ -594,7 +594,7 @@ def producer_evidence(config: dict[str, Any], ready: dict[str, Any], domain: dic
     for receipt in (start, end):
         if receipt.get("run_id") != config["run_id"] or receipt.get("stage") != config["stage"] or receipt.get("clock_domain") != domain or receipt.get("workload_sha256") != WORKLOAD_SHA256 or any(receipt.get(key) != value for key, value in binding_witness(config).items()) or receipt.get("producer_config_sha256") != producer_config_sha256 or receipt.get("sampler_identity_sha256") != owner_digest:
             raise ProbeError("producer_clock_provenance_mismatch")
-    if end.get("returncode") != 0 or "sampler_error" not in end or end["sampler_error"] is not None or end.get("log_sha256") != file_digest(log) or end.get("result_sha256") != file_digest(result_path):
+    if end.get("returncode") != 0 or end.get("returncode_known") is not True or end.get("evidence_error_codes") != [] or end.get("frozen_config_sha256") != producer_config_sha256 or "sampler_error" not in end or end["sampler_error"] is not None or end.get("log_sha256") != file_digest(log) or end.get("result_sha256") != file_digest(result_path):
         raise ProbeError("producer_did_not_finish_unchanged")
     if start.get("monotonic_ns", 0) < ready["monotonic_ns"] or end.get("monotonic_ns", 0) <= start["monotonic_ns"]:
         raise ProbeError("producer_not_started_after_ready")
@@ -751,6 +751,51 @@ def wait_ready(config: dict[str, Any], timeout: int) -> dict[str, Any]:
     raise ProbeError("ready_deadline_exceeded")
 
 
+def finish_producer(config: dict[str, Any], witness: dict[str, Any], frozen_config: Path, producer_raw: bytes, ready: dict[str, Any], returncode: int, *, returncode_known: bool) -> None:
+    """Preserve known child facts even if independent evidence reads fail."""
+    first_error: BaseException | None = None
+    errors: list[str] = []
+
+    def failed(code: str, error: BaseException) -> None:
+        nonlocal first_error
+        errors.append(code)
+        if first_error is None:
+            first_error = error
+        else:
+            first_error.add_note(f"secondary evidence failure: {code} ({type(error).__name__})")
+
+    frozen_digest = None
+    try:
+        raw = _json_snapshot(frozen_config)[1]
+        frozen_digest = hashlib.sha256(raw).hexdigest()
+        if raw != producer_raw:
+            raise ProbeError("producer_configuration_changed")
+    except BaseException as error:
+        failed("producer_configuration_changed" if isinstance(error, ProbeError) and str(error) == "producer_configuration_changed" else "producer_configuration_unavailable", error)
+    sampler_error = None
+    try:
+        assert_sampler_active(config, ready, witness["clock_domain"], before_producer=False, expected_owner=witness["sampler_identity_sha256"])
+    except BaseException as error:
+        sampler_error = str(error) if isinstance(error, ProbeError) else "probe_liveness_unproven"
+        failed("producer_sampler_unavailable", error)
+    digests: dict[str, str | None] = {}
+    for name in ("log", "result"):
+        digests[name + "_sha256"] = None
+        try:
+            digests[name + "_sha256"] = file_digest(private_path(config["producer_" + name + "_path"]))
+        except BaseException as error:
+            failed("producer_" + name + "_unavailable", error)
+    result = {**witness, "monotonic_ns": time.monotonic_ns(), "returncode": returncode, "returncode_known": returncode_known, "sampler_error": sampler_error, "evidence_error_codes": errors, "frozen_config_sha256": frozen_digest, **digests}
+    try:
+        write_private(paths(config)["producer_end"], result)
+    except BaseException as error:
+        if first_error is None:
+            raise
+        first_error.add_note(f"producer_end write failed: {type(error).__name__}")
+    if first_error is not None:
+        raise first_error
+
+
 def run_producer(config: dict[str, Any], workload_config_path: Path, stage: str) -> dict[str, Any]:
     workload_path = Path(__file__).with_name("workload.py")
     if file_digest(workload_path) != WORKLOAD_SHA256:
@@ -798,22 +843,13 @@ def run_producer(config: dict[str, Any], workload_config_path: Path, stage: str)
         assert_sampler_active(config, ready, domain, before_producer=True, expected_owner=owner_digest)
         witness = {"schema": SCHEMA, "run_id": config["run_id"], "stage": stage, "clock_domain": domain, "workload_sha256": WORKLOAD_SHA256, **binding_witness(config), "producer_config_sha256": producer_config_sha256, "sampler_identity_sha256": owner_digest}
         write_private(paths(config)["producer_start"], {**witness, "monotonic_ns": time.monotonic_ns()})
+        returncode_known = True
         try:
             completed = subprocess.run([sys.executable, str(workload_path), stage, "--config", str(frozen_config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90, check=False)
             returncode = completed.returncode
         except subprocess.TimeoutExpired:
-            returncode = -1
-        if _json_snapshot(frozen_config)[1] != producer_raw:
-            raise ProbeError("producer_configuration_changed")
-        sampler_error = None
-        try:
-            assert_sampler_active(config, ready, domain, before_producer=False, expected_owner=owner_digest)
-        except Exception as error:  # noqa: BLE001
-            sampler_error = str(error) if isinstance(error, ProbeError) else "probe_liveness_unproven"
-        result = {**witness, "monotonic_ns": time.monotonic_ns(), "returncode": returncode, "sampler_error": sampler_error, "log_sha256": file_digest(private_path(config["producer_log_path"])) if Path(config["producer_log_path"]).exists() else None, "result_sha256": file_digest(private_path(config["producer_result_path"])) if Path(config["producer_result_path"]).exists() else None}
-        write_private(paths(config)["producer_end"], result)
-        if sampler_error is not None:
-            raise ProbeError(sampler_error)
+            returncode, returncode_known = -1, False  # Legacy timeout sentinel, not an OS exit code.
+        finish_producer(config, witness, frozen_config, producer_raw, ready, returncode, returncode_known=returncode_known)
     except BaseException as failure:
         original_error = failure
         raise

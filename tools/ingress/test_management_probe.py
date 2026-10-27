@@ -40,6 +40,13 @@ def producer_fixture(conf):
     return path
 
 
+def producer_artifacts(conf, returncode=0):
+    # Only the mocked child creates these evidence files; no real sender runs.
+    for key in ("producer_log_path", "producer_result_path"):
+        Path(conf[key]).write_bytes(b"{}\n")
+    return SimpleNamespace(returncode=returncode)
+
+
 def rabbit_config(root):
     value = config(root)
     value.update(stage="publish", publisher_origin="amqp://publisher-private:5672")
@@ -363,7 +370,7 @@ class LifecycleTests(unittest.TestCase):
 
             def finish_child(*_args, **_kwargs):
                 names["stop"].touch()
-                return SimpleNamespace(returncode=0)
+                return producer_artifacts(conf)
 
             with patch.object(probe.subprocess, "run", side_effect=finish_child) as run:
                 with self.assertRaisesRegex(probe.ProbeError, "probe_stopped"):
@@ -388,7 +395,7 @@ class LifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(probe.ProbeError, "observation_window_insufficient"):
                 probe.assert_sampler_active(conf, ready, DOMAIN, before_producer=True)
             self.clock.return_value = 20 * probe.NS
-            with patch.object(probe.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+            with patch.object(probe.subprocess, "run", side_effect=lambda *_args, **_kwargs: producer_artifacts(conf)) as run:
                 self.assertEqual(probe.run_producer(conf, path, "http")["returncode"], 0)
                 run.assert_called_once()
             for key in ("producer_start", "producer_end"):
@@ -429,6 +436,151 @@ class LifecycleTests(unittest.TestCase):
                 with self.subTest(suffix=suffix[:12], count=count, limit=limit), self.assertRaisesRegex(probe.ProbeError, code):
                     probe._read_active_rows(path, limit, count)
 
+    def test_completion_keeps_config_failure_and_independent_sampler_facts(self):
+        for mode in ("corrupt", "missing", "changed", "corrupt_stopped"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                conf = config(Path(directory))
+                sampler_fixture(conf)
+                path, names = producer_fixture(conf), probe.paths(conf)
+
+                def child(argv, **_kwargs):
+                    result = producer_artifacts(conf, 23)
+                    frozen = Path(argv[-1])
+                    if mode == "missing":
+                        frozen.unlink()
+                    else:
+                        frozen.write_bytes(b'{"changed":true}' if mode == "changed" else b"invalid-private-contents")
+                    if mode == "corrupt_stopped":
+                        names["stop"].touch()
+                    return result
+
+                expected = FileNotFoundError if mode == "missing" else probe.ProbeError
+                with patch.object(probe.subprocess, "run", side_effect=child) as run:
+                    with self.assertRaises(expected) as failure:
+                        probe.run_producer(conf, path, "http")
+                    run.assert_called_once()
+                end = probe.bounded_json(names["producer_end"])
+                self.assertEqual(end["returncode"], 23)
+                self.assertTrue(end["returncode_known"])
+                self.assertEqual(end["sampler_error"], "probe_stopped" if mode == "corrupt_stopped" else None)
+                code = "producer_configuration_changed" if mode == "changed" else "producer_configuration_unavailable"
+                self.assertEqual(end["evidence_error_codes"][0], code)
+                self.assertEqual(end["frozen_config_sha256"] is None, mode != "changed")
+                self.assertTrue(end["log_sha256"] and end["result_sha256"])
+                self.assertNotIn("invalid-private-contents", probe.encoded(end).decode())
+                if mode == "corrupt_stopped":
+                    self.assertEqual(str(failure.exception), "invalid_json_file")
+                    self.assertEqual(end["evidence_error_codes"], [code, "producer_sampler_unavailable"])
+
+    def test_completion_hash_failures_keep_actual_exit_and_other_evidence(self):
+        for kind in ("log", "result"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                conf = config(Path(directory))
+                sampler_fixture(conf)
+                path, names = producer_fixture(conf), probe.paths(conf)
+                error, digest = OSError("private-address-must-not-leak"), probe.file_digest
+
+                def read_digest(value):
+                    if Path(value).resolve() == Path(conf["producer_" + kind + "_path"]).resolve():
+                        raise error
+                    return digest(value)
+
+                with patch.object(probe.subprocess, "run", side_effect=lambda *_args, **_kwargs: producer_artifacts(conf, 17)), patch.object(probe, "file_digest", side_effect=read_digest):
+                    with self.assertRaises(OSError) as failure:
+                        probe.run_producer(conf, path, "http")
+                self.assertIs(failure.exception, error)
+                end = probe.bounded_json(names["producer_end"])
+                self.assertEqual(end["returncode"], 17)
+                self.assertIsNone(end["sampler_error"])
+                self.assertEqual(end["evidence_error_codes"], ["producer_" + kind + "_unavailable"])
+                self.assertIsNone(end[kind + "_sha256"])
+                self.assertTrue(end[("result" if kind == "log" else "log") + "_sha256"])
+                self.assertNotIn("private-address", probe.encoded(end).decode())
+
+    def test_post_sampler_interrupt_records_end_then_propagates_same_exception(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conf = config(Path(directory))
+            sampler_fixture(conf)
+            path, names = producer_fixture(conf), probe.paths(conf)
+            active, error = probe.assert_sampler_active, KeyboardInterrupt()
+
+            def check(*args, **kwargs):
+                if not kwargs["before_producer"]:
+                    raise error
+                return active(*args, **kwargs)
+
+            with patch.object(probe, "assert_sampler_active", side_effect=check), patch.object(probe.subprocess, "run", side_effect=lambda *_args, **_kwargs: producer_artifacts(conf)):
+                with self.assertRaises(KeyboardInterrupt) as failure:
+                    probe.run_producer(conf, path, "http")
+            self.assertIs(failure.exception, error)
+            end = probe.bounded_json(names["producer_end"])
+            self.assertEqual(end["returncode"], 0)
+            self.assertEqual(end["sampler_error"], "probe_liveness_unproven")
+            self.assertEqual(end["evidence_error_codes"], ["producer_sampler_unavailable"])
+            self.assertTrue(end["frozen_config_sha256"] and end["log_sha256"] and end["result_sha256"])
+
+    def test_end_write_and_cleanup_errors_do_not_replace_primary_error(self):
+        for primary in (False, True):
+            with self.subTest(primary=primary), tempfile.TemporaryDirectory() as directory:
+                conf = config(Path(directory))
+                sampler_fixture(conf)
+                path, names = producer_fixture(conf), probe.paths(conf)
+                read_error, end_error = OSError("private-read-error"), OSError("private-end-error")
+                digest, write, unlink = probe.file_digest, probe.write_private, Path.unlink
+
+                def read_digest(value):
+                    if primary and Path(value).resolve() == Path(conf["producer_log_path"]).resolve():
+                        raise read_error
+                    return digest(value)
+
+                def write_receipt(value, receipt):
+                    if value == names["producer_end"]:
+                        raise end_error
+                    return write(value, receipt)
+
+                def cleanup(value, *args, **kwargs):
+                    if "-producer-config-" in value.name:
+                        raise OSError("private-cleanup-error")
+                    return unlink(value, *args, **kwargs)
+
+                with patch.object(probe.subprocess, "run", side_effect=lambda *_args, **_kwargs: producer_artifacts(conf)), patch.object(probe, "file_digest", side_effect=read_digest), patch.object(probe, "write_private", side_effect=write_receipt), patch.object(Path, "unlink", new=cleanup):
+                    with self.assertRaises(OSError) as failure:
+                        probe.run_producer(conf, path, "http")
+                self.assertIs(failure.exception, read_error if primary else end_error)
+                self.assertFalse(names["producer_end"].exists())
+                self.assertIn("owned-config cleanup failed: OSError", failure.exception.__notes__)
+                if primary:
+                    self.assertIn("producer_end write failed: OSError", failure.exception.__notes__)
+
+    def test_spawn_failure_is_not_a_known_exit_and_timeout_remains_a_sentinel(self):
+        for timeout in (False, True):
+            with self.subTest(timeout=timeout), tempfile.TemporaryDirectory() as directory:
+                conf = config(Path(directory))
+                sampler_fixture(conf)
+                path, names = producer_fixture(conf), probe.paths(conf)
+                error = probe.subprocess.TimeoutExpired("private-command", 90) if timeout else OSError("private-spawn-error")
+
+                def child(*_args, **_kwargs):
+                    if timeout:
+                        producer_artifacts(conf)
+                    raise error
+
+                with patch.object(probe.subprocess, "run", side_effect=child) as run:
+                    if timeout:
+                        self.assertEqual(probe.run_producer(conf, path, "http")["returncode"], -1)
+                    else:
+                        with self.assertRaises(OSError) as failure:
+                            probe.run_producer(conf, path, "http")
+                        self.assertIs(failure.exception, error)
+                    run.assert_called_once()
+                self.assertTrue(names["producer_start"].exists())
+                if timeout:
+                    end = probe.bounded_json(names["producer_end"])
+                    self.assertEqual(end["returncode"], -1)
+                    self.assertFalse(end["returncode_known"])
+                else:
+                    self.assertFalse(names["producer_end"].exists())
+
 
 class AnalysisTests(unittest.TestCase):
     def setUp(self):
@@ -467,7 +619,7 @@ class AnalysisTests(unittest.TestCase):
                     self.assertNotEqual(frozen_inode, original_inode)
                     if mode == "same_inode":
                         path.write_bytes(original)
-                    return SimpleNamespace(returncode=0)
+                    return producer_artifacts(conf)
 
                 with patch.object(probe, "clock_domain", return_value=DOMAIN), patch.object(probe.subprocess, "run", side_effect=replace_while_child_reads):
                     self.assertEqual(probe.run_producer(conf, path, "http")["returncode"], 0)
@@ -545,7 +697,7 @@ class AnalysisTests(unittest.TestCase):
                 valid = {"run_id": conf["run_id"], "kind": "capacity", "count": 10000, "output_path": str(case), "http_concurrency": 125, "ingress_url": "https://private.example/api/ingress/private-route", "queue": "private-queue", "amqp_url": "amqp://private-user:private-password@publisher-private:5672/private%2Fvhost+"}
                 mutations = (("ingress_url", "https://other.example/api/ingress/private-route"), ("ingress_url", "https://private.example/api/ingress/other"), ("ingress_url", None)) if stage == "http" else (("queue", "other"), ("amqp_url", "amqp://publisher-private:5672/other"), ("amqp_url", "amqp://other:5672/private%2Fvhost+"))
                 path = Path(conf["producer_config_path"])
-                with patch.object(probe, "clock_domain", return_value=DOMAIN), patch.object(probe.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+                with patch.object(probe, "clock_domain", return_value=DOMAIN), patch.object(probe.subprocess, "run", side_effect=lambda *_args, **_kwargs: producer_artifacts(conf)) as run:
                     for key, value in mutations:
                         path.write_bytes(probe.encoded({**valid, key: value}))
                         with self.subTest(stage=stage, key=key), self.assertRaises(probe.ProbeError):
@@ -668,7 +820,7 @@ class AnalysisTests(unittest.TestCase):
             with Path(conf["producer_log_path"]).open("wb") as output:
                 output.writelines(probe.encoded({"kind": "http_attempt", "seq": seq, "attempt": 1, "started_ns": 20 * probe.NS + seq * 1000}) + b"\n" for seq in range(1, 10001))
             probe.write_private(Path(conf["producer_result_path"]), {"run_id": conf["run_id"], "stage": "http", "count": 10000, "concurrency_peak": 125, "burst_window_passed": True, "all_responses_accepted": True, "retry_after_contract_passed": True, "local_response_deadline_passed": True})
-            probe.write_private(names["producer_end"], {**witness, "monotonic_ns": 30 * probe.NS, "returncode": 0, "sampler_error": None, "log_sha256": probe.file_digest(Path(conf["producer_log_path"])), "result_sha256": probe.file_digest(Path(conf["producer_result_path"]))})
+            probe.write_private(names["producer_end"], {**witness, "monotonic_ns": 30 * probe.NS, "returncode": 0, "returncode_known": True, "evidence_error_codes": [], "frozen_config_sha256": witness["producer_config_sha256"], "sampler_error": None, "log_sha256": probe.file_digest(Path(conf["producer_log_path"])), "result_sha256": probe.file_digest(Path(conf["producer_result_path"]))})
             result = probe.producer_evidence(conf, ready, DOMAIN)
             self.assertEqual(result["sender_begin_ns"], 20 * probe.NS + 1000)
             self.assertEqual(result["first_request_count"], 10000)
@@ -681,7 +833,9 @@ class AnalysisTests(unittest.TestCase):
                         probe.producer_evidence(conf, ready, DOMAIN)
                 path.write_bytes(probe.encoded(receipt))
             end = probe.bounded_json(names["producer_end"])
-            for value in ({key: item for key, item in end.items() if key != "sampler_error"}, {**end, "sampler_error": "probe_stopped"}, {**end, "monotonic_ns": 1800 * probe.NS}):
+            invalid_ends = [{key: item for key, item in end.items() if key != missing} for missing in ("sampler_error", "returncode_known", "evidence_error_codes", "frozen_config_sha256")]
+            invalid_ends += [{**end, "sampler_error": "probe_stopped"}, {**end, "monotonic_ns": 1800 * probe.NS}, {**end, "returncode_known": False}, {**end, "evidence_error_codes": ["producer_log_unavailable"]}, {**end, "frozen_config_sha256": "0" * 64}]
+            for value in invalid_ends:
                 names["producer_end"].write_bytes(probe.encoded(value))
                 with self.subTest(end=value), self.assertRaises(probe.ProbeError):
                     probe.producer_evidence(conf, ready, DOMAIN)
