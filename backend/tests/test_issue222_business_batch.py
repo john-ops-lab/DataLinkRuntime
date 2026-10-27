@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import timedelta
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
@@ -484,6 +485,30 @@ def test_member_replay_isolated_from_new_pending_preserves_fifo_and_normal_batch
         facts(session, batch_world)
 
 
+def test_cleanup_reports_member_budget_too_small_without_losing_progress(
+    batch_world, session_factory
+):
+    with session_factory.begin() as session:
+        ids, execution = produce(session, batch_world)
+        finish(session, execution)
+        execution_id = execution.id
+        for identity in ids:
+            session.get(EventReceipt, identity).terminal_at = database_now(session) - timedelta(
+                days=31
+            )
+    for _ in range(2):
+        with session_factory.begin() as session:
+            with pytest.raises(HTTPException) as error:
+                batch.cleanup_batches(session, batch_world["sub"], limit=2)
+            assert error.value.detail["code"] == "batch_cleanup_budget_too_small"
+            assert session.get(SubscriptionExecutionBatch, execution_id) is not None
+            facts(session, batch_world)
+    with session_factory.begin() as session:
+        assert batch.cleanup_batches(session, batch_world["sub"], limit=3)["members"] == 3
+        assert session.get(SubscriptionExecutionBatch, execution_id) is None
+        facts(session, batch_world)
+
+
 def test_replay_projection_survives_cleanup_while_older_batch_is_protected(
     batch_world, session_factory
 ):
@@ -515,10 +540,58 @@ def test_replay_projection_survives_cleanup_while_older_batch_is_protected(
         delivery.skip_event(session, ids[1], "resolve-second", None, "close fixture")
         session.get(EventReceipt, ids[1]).terminal_at = database_now(session) - timedelta(days=31)
         result = batch.cleanup_batches(session, batch_world["sub"])
-        assert result["batches"] == 2 and result["members"] == 3
+        assert result["batches"] == 1 and result["members"] == 2
         assert session.get(SubscriptionExecutionBatch, original_id) is None
+        assert session.get(SubscriptionExecutionBatch, replay_id) is not None
+        facts(session, batch_world)
+    with session_factory.begin() as session:
+        result = batch.cleanup_batches(session, batch_world["sub"])
+        assert result["batches"] == result["members"] == 1
         assert session.get(SubscriptionExecutionBatch, replay_id) is None
         facts(session, batch_world)
+
+
+def test_three_replay_generations_cleanup_in_order_after_old_blocker_resolves(
+    batch_world, session_factory
+):
+    from dlr.control.services import http_ingress
+
+    with session_factory.begin() as session:
+        ids, original = produce(session, batch_world, count=2)
+        finish(session, original, [("failed", "business_error"), ("not_run", "predecessor_failed")])
+        replay1 = delivery.replay_event(session, ids[0], "first-replay", None, "repair")
+        second = delivery.dispatch_delivery(session, replay1.id)
+        finish(session, second)
+        session.get(EventSubscription, batch_world["sub"]).desired_state = "disabled"
+        replay2 = delivery.replay_event(session, ids[0], "second-replay", None, "reconcile")
+        third = delivery.dispatch_delivery(session, replay2.id)
+        finish(session, third)
+        execution_ids = [original.id, second.id, third.id]
+        session.get(EventReceipt, ids[0]).terminal_at = database_now(session) - timedelta(days=31)
+
+    with session_factory.begin() as session:
+        assert batch.cleanup_batches(session, batch_world["sub"])["batches"] == 0
+        current = http_ingress._status(session, "fixture", session.get(EventReceipt, ids[0]))
+        assert current["execution_id"] == execution_ids[-1]
+        assert current["batch_member_outcome"] == "succeeded" and current["error_code"] is None
+        delivery.skip_event(session, ids[1], "resolve-second-generation", None, "close fixture")
+        session.get(EventReceipt, ids[1]).terminal_at = database_now(session) - timedelta(days=31)
+        facts(session, batch_world)
+
+    for index, execution_id in enumerate(execution_ids):
+        with session_factory.begin() as session:
+            assert batch.cleanup_batches(session, batch_world["sub"])["batches"] == 1
+            assert session.get(SubscriptionExecutionBatch, execution_id) is None
+            if index < len(execution_ids) - 1:
+                current = http_ingress._status(
+                    session, "fixture", session.get(EventReceipt, ids[0])
+                )
+                assert current["execution_id"] == execution_ids[-1]
+                assert current["batch_member_outcome"] == "succeeded"
+            facts(session, batch_world)
+    with session_factory.begin() as session:
+        assert batch.cleanup_batches(session, batch_world["sub"])["batches"] == 0
+        assert delivery.audit_quota(session, batch_world["sub"])["differences"] == {}
 
 
 def test_overlapping_replay_groups_gc_their_own_shares_without_deleting_shared_receipt(

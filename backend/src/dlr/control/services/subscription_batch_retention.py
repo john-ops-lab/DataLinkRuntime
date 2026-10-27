@@ -3,7 +3,7 @@
 from datetime import timedelta
 
 from sqlalchemy import delete, exists, func, select
-from sqlalchemy.orm import Session, defer
+from sqlalchemy.orm import Session, aliased, defer
 
 from dlr.control.models import (
     DeliveryDisposition,
@@ -39,6 +39,7 @@ def _cleanup(
         )
     now = database_now(session)
     cutoff = now - timedelta(days=30)
+    member_budget = max(1, min(limit, 100))
     protected = exists(
         select(SubscriptionExecutionBatchMember.delivery_id)
         .join(EventReceipt, EventReceipt.id == SubscriptionExecutionBatchMember.receipt_id)
@@ -50,6 +51,27 @@ def _cleanup(
             | ((EventReceipt.terminal_at > cutoff) if not permanent else False),
         )
     ).correlate(SubscriptionExecutionBatch)
+    member = aliased(SubscriptionExecutionBatchMember)
+    current = aliased(EventDelivery)
+    older = aliased(EventDelivery)
+    older_delivery = (
+        exists(
+            select(older.id).where(
+                older.receipt_id == current.receipt_id, older.ordinal < current.ordinal
+            )
+        )
+        .correlate(current)
+    )
+    has_older_delivery = (
+        exists(
+            select(member.delivery_id)
+            .join(current, current.id == member.delivery_id)
+            .where(
+                member.execution_id == SubscriptionExecutionBatch.execution_id, older_delivery
+            )
+        )
+        .correlate(SubscriptionExecutionBatch)
+    )
     candidates = session.scalars(
         select(SubscriptionExecutionBatch)
         .join(Execution, Execution.id == SubscriptionExecutionBatch.execution_id)
@@ -58,15 +80,20 @@ def _cleanup(
             Execution.status.in_(delivery_service.EXECUTION_TERMINAL),
             SubscriptionExecutionBatch.result.is_not(None),
             ~protected,
+            ~has_older_delivery,
         )
         .order_by(SubscriptionExecutionBatch.created_at, SubscriptionExecutionBatch.execution_id)
-        .limit(max(1, min(limit, 100)))
+        .limit(member_budget)
         .with_for_update(of=SubscriptionExecutionBatch)
     ).all()
     result = empty
     quotas = delivery_service._quotas(session, sub.id)
     for batch in candidates:
-        if result["members"] + batch.member_count > max(1, min(limit, 100)):
+        if result["members"] + batch.member_count > member_budget:
+            if not result["members"] and batch.member_count > member_budget:
+                raise domain_error(
+                    409, "batch_cleanup_budget_too_small", "Cleanup budget cannot fit a batch"
+                )
             break
         rows = session.execute(
             select(SubscriptionExecutionBatchMember, EventDelivery, EventReceipt)
