@@ -88,7 +88,7 @@
 - **THEN** 在当前合法认证及留存窗口内只读回原记录，未命中则返回 410 ingress_epoch_retired；不按新 epoch 再接管一次；订阅已删除时不继续开放外部查询
 
 ### Requirement: HTTP 接管合并不连带拒绝其他合法请求
-HTTP 多条模式的收集 SHALL 在 async 层有界完成，不让原生线程等待其他请求。 每个收集组 SHALL 最多16条、额外收集不超过25ms，按正文长度的保守原文加Envelope估计累计不超过1MiB，满组、字节上界或期限先到即封组并进入有界原生就绪调度；超期新请求不得进入旧收集组。原生claim时 MAY 只从已有未过期同路由ready前缀重包为最多16条/估算1MiB的实际T1单元，不等待新项或重置原期限。估计不解析正文或读DB，T1仍按实际完整尺寸强制原1MiB。原 32 请求/8 MiB、8 原生工作和 8 接收连接 MUST 保持，与 MQ 共享接收连接预算而非另加 pool。组内同 ID 同原文的首次/重复分别返回已提交的 202/200；错误 token、坏 JSON 或 409 冲突仅影响对应请求，不生成来源屏障。取消等待者不得取消共享工作或提前释放预算。
+HTTP 多条模式的收集 SHALL 在 async 层有界完成，不让原生线程等待其他请求。 每个收集组 SHALL 最多16条、额外收集不超过25ms，按正文长度的保守原文加Envelope估计累计不超过1MiB，满组、字节上界或期限先到即封组并进入有界原生就绪调度；超期新请求不得进入旧收集组。原生claim时 MAY 只从已有未过期同路由ready前缀重包为最多16条/估算1MiB的实际T1单元，不直接借未封组成员、不等待新项或重置原期限；机会性提前封组 SHALL 先通过原flush完整进入ready，再按原claim裁决。估计不解析正文或读DB，T1仍按实际完整尺寸强制原1MiB。原 32 请求/8 MiB、8 原生工作和 8 接收连接 MUST 保持，与 MQ 共享接收连接预算而非另加 pool。组内同 ID 同原文的首次/重复分别返回已提交的 202/200；错误 token、坏 JSON 或 409 冲突仅影响对应请求，不生成来源屏障。取消等待者不得取消共享工作或提前释放预算。
 
 #### Scenario: 合法请求与错误请求同组
 - **WHEN** 同组含合法请求、坏 JSON、已撤销 token 或相同 ID 不同原文
@@ -126,7 +126,7 @@ The system SHALL preserve token/account entry trust, private-prefix path/raw_pat
 
 #### Scenario: 同路由繁忙时等候、到期与其他路由推进
 - **WHEN** 封组后该路由尚有native组未结束或原全局native额度已满
-- **THEN** 各成员在原额度内保留封组时起最多额外1秒的原就绪期限，不延长25ms收集窗口；原生claim时仅可转交已ready且未过期的同路由FIFO前缀，不读取collector或已提交成员，也不等待新项
+- **THEN** 各成员在原额度内保留封组时起最多额外1秒的原就绪期限，不延长25ms收集窗口；原生claim时仅可转交已ready且未过期的同路由FIFO前缀，不直接拆借collector或已提交成员，也不等待新项；提前封组另按锁外准备场景，不能延长原ready期限
 - **AND** 未提交native即到期者返回原429/Retry-After，不产生接管/配额或坏消息，其他可运行路由获得轮转机会
 - **AND** 原有native释放包括GET/旧单条 SHALL 触发有限就绪提示，避免无新POST时挂起
 
@@ -135,6 +135,23 @@ The system SHALL preserve token/account entry trust, private-prefix path/raw_pat
 - **THEN** MAY 取前16条组成一个实际T1单元，后4条仍保持原顺序、Future、预留与原deadline；估算字节先到上限则只取可容纳前缀，不越过头部挑项
 - **AND** 移空的等待组只清元数据，不能归还已转交成员的预算；该原生单元只取得一次native名额，每项由原实际完成或已知未提交拒绝路径恰一次释放
 - **AND** 关闭/到期不能提前释放已提交成员，单个等待者取消不连带取消共享单元；逐项鉴权、T1责任及提交后才返回成功的规则保持
+
+
+#### Scenario: 同路由collector在潜在claim前整体提前封组
+- **WHEN** 原轮转的首个可claim候选已有未过期ready，模拟全体已有ready前缀后尚有条数及字节余量、无剩余nonfit或partial ready尾挡头，且同路由collector已有尚未到期且首项可容纳的FIFO前缀
+- **THEN** MAY 在原owner loop锁内只预览候选、释放ready锁后核当前owner/未关闭和非预留native提示，再用原flush将collector整个组提前封组、取消原timer，通过原dispatch/enqueue进入ready；不直接拆借未封组成员、不为新项等待
+- **AND** 任一路由已有到期ready须先由原_take/finish处理，首候选已满或不适配不能换挑后面较空路由；原_take SHALL 重新按原RR/期限/一次native名额裁决，提示变陈不算已预留或提交，至多留下原预算内的有界ready工作，不增加claim次数或绕过其他路由
+
+#### Scenario: 提前封组保留原期限与所有权
+- **WHEN** collector整体提前seal后，实际原生单元只取其部分成员，或准备时遇到期、更早ready阻挡、关闭、活跃路由或额度提示不足
+- **THEN** 已有ready与donor尾项的原deadline MUST 不变；新组从这次实际seal起最多1秒，余项保留同一deadline和原Future/请求/字节预留，不推迟到原25ms截止后重新计时
+- **AND** 无合法机会不促封；到期ready先按原路径处置，collector原截止检查保持。关闭竞态经原enqueue拒绝时恰一次释放，已开始submit或真实native不得早释；单个取消不撤销共享组
+
+
+#### Scenario: 受控prepare异常仍推进原就绪工作
+- **WHEN** 内部prepare优化钩子在副作用前或已成功enqueue后抛出普通异常
+- **THEN** 异常 MUST 不逸出原pump而跳过原_take推进或最终_arm_timer；原head与已在ready的原/新组按原规则各恰一次推进
+- **AND** MUST 不自动重试flush、回填collector或提前释放可能已转交的预算；此合同不声称任意外部插件或pop至enqueue中间任意异常/OOM无损
 
 #### Scenario: 等待者取消或关闭时保留实际责任
 - **WHEN** 某等待者取消或Control关闭且存在就绪/已提交组

@@ -78,6 +78,12 @@
 - **THEN** MAY 将其FIFO前缀组成最多16条/保守估算1MiB的实际原生单元，不等待新项、延长25ms收集或重置任何成员的原1秒就绪期限
 - **AND** 部分转交后的剩余条目保留原顺序及期限，所有原Future与字节/请求预算恰一次转交和释放；MQ收集与确认规则保持
 
+
+#### Scenario: HTTP机会性早seal仍先建立ready所有权
+- **WHEN** 同owner-loop中已有ready候选未满，且同路由collector当前已有可填前缀，原非预留名额提示可用
+- **THEN** MAY 先在ready锁外用原flush把collector整个组封入ready，再由原_take/repack按16条/估算1MiB与FIFO裁决；不能在持ready锁时调flush，也不能直接借未seal项或把提示当一次claim
+- **AND** 已有ready的任何nonfit/partial尾不能越过，collector首项不fit也不促封；本轮任意到期ready先由原_take处置，不能为后面较空路由提前flush；已有deadline不变，新提前封组从当次seal起原1秒，部分余项保原deadline和逐成员预算；关闭/取消/提交未知、逐项认证/fresh clock/计费与MQ确认规则不变
+
 #### Scenario: RabbitMQ 第二条不能接管
 - **WHEN** 同组第二条发生内容故障或容量不足
 - **THEN** 仅合法连续前缀可提交，确认提交后才 ACK 该前缀；故障及后继不 ACK，沿原分类处置；数据库或提交未知时整组不确认，重投不重复记账

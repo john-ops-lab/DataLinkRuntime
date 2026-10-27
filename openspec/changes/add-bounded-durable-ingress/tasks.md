@@ -62,7 +62,9 @@
 
 - [ ] 3.16 按D7.10仅在claim时重包已有未过期同route FIFO前缀至原16条/1MiB，尾组保原期限、所有权恰一次转交，不新等待/加资源；真实Future边界、跨ready组PG及独立审查通过后，以实际native单元计时完成同资源20/200/忙闲链，再按证据决定原正式轮次，保留全部首败。 前半功能资格已完成：E78的19纯/3融合PG及独立审查、E80–E82的同资源HTTP20/实际native200/忙闲代表链均通过；正式R10仍缺1764条（E83），正式容量、完整观察与最后候选门禁仍pending，暂不勾选。
 
-- [ ] 3.17 按D7.11只固定一次额外200条metadata诊断，在原`_take`返回后的同owner loop观测实际claimed单元、剩余更早ready及collector absent/open/expired/unknown，记录合法FIFO可放前缀标量，不flush、不读SQL、不等待或改业务。纯边界及GPT独立审查后，核同资源实际检查点且零发送，再唯一200/双oracle/正常停源/原普通环境恢复/零引用观测卷清理；有机会才进入早seal专项设计，未触发或未知如实保留，不自动重跑正式轮次/矩阵或标容量通过。
+- [x] 3.17 按D7.11只固定一次额外200条metadata诊断，在原`_take`返回后的同owner loop观测实际claimed单元、剩余更早ready及collector absent/open/expired/unknown，记录合法FIFO可放前缀标量，不flush、不读SQL、不等待或改业务。纯边界及GPT独立审查后，核同资源实际检查点且零发送，再唯一200/双oracle/正常停源/原普通环境恢复/零引用观测卷清理；有机会才进入早seal专项设计，未触发或未知如实保留，不自动重跑正式轮次/矩阵或标容量通过。实际唯一200/21native/5次collector前缀机会及完整恢复见E84；本项只完成诊断，未实施早seal或证明容量。
+
+- [ ] 3.18 按D7.12仅在原owner-loop潜在claim前有合法填充机会时，锁内预览原RR候选与ready FIFO余量，锁外通过可选prepare回调用原flush整体提前封collector，再由原dispatch/enqueue和原_take/repack权威裁决；不直接借未封组成员、不新增等待/预留/资源。原ready/donor期限不变，新提前封组从当次seal起原1秒；保留close/hint变陈/同路由单active与逐项T1裁决。先必要新纯边界（含prepare副作用前/成功enqueue后抛错仍推进原take与定时器，禁止重试flush/回填/早释）＋受影响原19项，真实collector+ready正常/提交前后未知3PG和独立GPT审查，再同资源HTTP20/200/忙闲重叠链及实际native统计/双oracle/正常恢复，据证据决定原正式标准一次重验；不重复旧ready-only3PG或无依据扩大SLA/MQ故障矩阵，最终OCR仍待全部开发验证完毕。
 
 ## 4. B3 — 仅在测量证明必要时启用业务小批次
 

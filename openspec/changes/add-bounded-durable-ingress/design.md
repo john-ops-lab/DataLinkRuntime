@@ -244,7 +244,7 @@ D7.8的独立差异审查未找到可直接删除、足以解释容量缺口的D
 
 D7.9实测显示每个小单元重复的scope、容量冷加载及commit成本；原始事件还有16次claim时，头组不足16且后方已经有可填充的ready条目。重复快照不能相加为节省量，27→13也只是忽略到达与期限的理论下界；证据只支持以下小范围优化试验，不保证60秒达标。本批不同时改共享锁SQL、全局Python线程切换间隔或尺寸缓存。
 
-- 区分25ms收集组与实际T1原生单元：收集仍16条/保守估算1MiB/25ms先到封组，超期新POST不能进入旧收集组。取得原native名额后，仅在原队列锁内把当前同public_id、同loop、已ready且未过期的FIFO前缀组成最多16条/保守估算1MiB的原生单元；不读取collector或submitting/running成员，不等新消息、不重置任何就绪期限。这明确修订D7.6中封闭组不可追加的内部安排，不新增HTTP批量协议或资源。
+- 区分25ms收集组与实际T1原生单元：收集仍16条/保守估算1MiB/25ms先到封组，超期新POST不能进入旧收集组。取得原native名额后，仅在原队列锁内把当前同public_id、同loop、已ready且未过期的FIFO前缀组成最多16条/保守估算1MiB的原生单元；重包操作不直接拆借collector或submitting/running成员，不等新消息、不重置任何就绪期限；D7.12另行限定claim前整体提前封为ready的步骤。这明确修订D7.6中封闭组不可追加的内部安排，不新增HTTP批量协议或资源。
 - 可转交后组的部分前缀以填当前单元，剩余条目保留原顺序和原deadline。遇到超时或不能容纳的头部不越过它挑后方小项；到期仍按原429路径处置，不能借合并延命。原生单元仅取得一次原native名额，同路由仍最多一个active，跨路由轮转、GET/旧单条释放唤醒、空路由删除及单到期timer保持。
 - 所有权在同锁claim中恰一次转交；只复制有限引用列表，不复制正文，不新增permit、pool或无界缓存。移空的等待组只清元数据，不能释放已经转交的HttpInput；部分尾组仍只拥有其剩余项。每项原Future、正文及请求/字节预留保持，由原完成/已知未提交拒绝路径各释放一次；取消、关闭、提前完成、submit失败及提交未知不能双释、早释或失去成员。
 - 返回按原生单元的FIFO索引逐项映射回原HttpInput。每项当前鉴权、原文hash、重复/冲突/独立错误、配置/owner/epoch和实际尺寸门禁及fresh clock仍由原T1事务裁决；不缓存门禁值，不改200/202必须提交后响应或原503同ID原文核对。普通per_event/GET及MQ路径保持。
@@ -253,13 +253,29 @@ D7.9实测显示每个小单元重复的scope、容量冷加载及commit成本�
 
 ### D7.11 R10失败后只观测claim当刻的collector前缀机会
 
-D7.10的19项纯检查、3项真实融合PG及HTTP20/实际native200/忙闲代表链已完成（E78–E82），但同产品的正式R10仍失败（E83）：10000条首发窗4.878964219秒通过，60秒内仅实际接管8236条，原期望缺1764条。29534次POST中8212个202、21298个429、24次未知；原24个未知均已有平台记录，不能当成数据丢失或未接管。677个server-default创建时间条件桶不能当actual native次数；既有200的native间隙也未记录collector状态，不足以选择早seal或断言25ms是主要损耗。因此先固定一次额外200条窄metadata诊断，不直接改产品调度。
+D7.10的19项纯检查、3项真实融合PG及HTTP20/实际native200/忙闲代表链已完成（E78–E82），但同产品的正式R10仍失败（E83）：10000条首发窗4.878964219秒通过，60秒接管门未达标，最终仅实际接管8236条，原期望缺1764条。29534次POST中客户端截止前确认8212个202、21298个429、24次未知；原24个未知均已有平台记录，但各自提交是否跨60秒尚未证明，不能当成数据丢失或未接管。677个server-default创建时间条件桶不能当actual native次数；既有200的native间隙也未记录collector状态，不足以选择早seal或断言25ms是主要损耗。因此先固定一次额外200条窄metadata诊断，不直接改产品调度。
 
 - 复用D7.10实际native gid与透明分段观测，只在原`_take`恰一次返回后、实际原生入口之前的同一owner loop读取有限元数据。绑定实际已claim头部人数/估算字节、队列中剩余更早ready是否阻挡、collector状态和可放前缀数/估算字节；不flush/seal/move成员，不解析正文或输出正文、凭据及来源ID，不增加SQL、等待、task、线程、回调或输入副本。
 - 六个运行时源码逐字哈希保持：`api/ingress.py`及`services/http_ingress_group.py`、`http_ingress_ready.py`、`http_ingress.py`、`subscription_t1_unit.py`、`subscription_delivery.py`。实际进程、配置、路由及原生分支继续核验；接收仍32请求/8MiB、8 native/共享8接收连接，管理保留池4、收集25ms/ready1秒及所有逐项T1/fresh clock/SQL/认证/提交和释放语义不变。
 - 固定区分collector `absent/open/expired/unknown`，总状态另区分已知无余量。只有同资源owner仍为当前queue、queue/collector/group在当前loop且未关闭、读取后owner/关闭/pending身份仍一致，才允许记录known；不确定字段为null，不能以0代未知。只记录人数、估算字节、同loop剩余期限及布尔标量，不保留HttpInput/body/Future引用。absent前缀为0；expired、更早ready阻挡、人数/字节已满时合法前缀也为0，不越过FIFO头部挑小项，严格沿原16条/估算1MiB计算。
 - 先以4–6项直接相关纯边界及GPT独立只读审查验证观察透明、unknown/到期/更早ready/容量与身份变化；本轮不调用OCR。沿原私有资产和资源，核实际checkpoint、六源码与零发送后才运行唯一200条。原日志仍有界，观测缺失/超界令诊断失效而不影响产品；双完整oracle、正常停源/Admission/Broker归零、原普通环境恢复及零引用临时卷清理后，才解读实际机会。
 - 若实际出现可合法放入的collector前缀，只能据证据进入后继早seal/交接的专项设计及必要实现验证，不能在本轮偷偷改变D7.10只取ready的合同。没有出现则明确本200样本未触发；unknown不支持排除机会，未触发也不能排除10000条负载下的机制。本轮不是正式容量，不直接重跑一万条或扩大MQ/全来源矩阵，5/60/600及完整600秒观察门槛不变。
+
+
+2026-10-27唯一D7.11诊断已完成，候选`6fdca919273ec98b405acb5c71ee71f2e8f64a1a`的六个运行时源码与e1fd相同（E84）。实际21个native单元/200个新接管，21次commit正常返回、fresh clock200次，旧ready融合6次/其中1次partial、provenance与collector未知均0。5个实际单元存在可放的collector前缀：prefix1三次、5一次、3一次；对应claimed人数8/7/8/5/5、collector人数1/1/1/5/3，剩余收集期限约24/24/25/4/2ms。open6/absent15、已满5和更早ready阻挡1是不同且可重叠维度，不能相加或把重复观察当独立可省消息。双完整oracle、正常停源/Admission/Broker归零、停止原Control后先导出final、原普通环境精确恢复及零引用临时卷清理均通过。证据只支持以下专项设计，不证明该机会是主要根因、优化收益或正式容量通过。
+
+### D7.12 有机会才将collector整体提前封为ready
+
+仅为显式HTTP business_batch增加一个可选的同步准备步骤，继续由原`_take`/`_repack`执行权威claim；不同时改共享SQL、fresh clock、GIL设置、接收协议或资源。原收集组仍最多16条/保守估算1MiB/额外25ms先到封组；提前封组只缩短本轮收集，不能等待新项或使后来请求进入旧窗口。
+
+- 原owner-loop的pump每次潜在claim前，最多准备一次。先在原ready锁内只读预览原轮转顺序的第一个可claim候选，以及已有未过期同路由FIFO前缀按原16条/估算1MiB组合后的余量；不改变队列顺序、active、成员或permit；余量须模拟所有已ready的可容纳FIFO前缀。只要留下任何更早nonfit成员或partial ready尾，就不能越过它促封collector。本轮任一路由有须先按原路径处置的到期ready，或首候选仍active、组合已满/不适配时，不促seal；不能改挑后面较空的路由或collector。没有已有ready候选时也不因空闲名额单独催封collector，避免把本可正常凑组的输入切碎。
+- 释放ready锁后，才允许可选prepare回调由IngressResources在同一owner loop同步检查当前resource/queue/collector身份、未关闭状态和原NativeWorkBudget的非预留可用提示。回调可只接收所选public_id与`remaining_items`/`remaining_estimated_bytes`两个余量标量，不把候选组或成员引用传出锁；pool检查collector首项不fit时也不得flush。只有候选仍有效、同路由collector窗口尚未到期且已收到的FIFO前缀确能填入上述余量，才用原`HttpCollector.flush`把这个收集组**整体**提前封组、取消原timer，再由原dispatch/enqueue进入ready。不能持ready锁调flush，否则dispatch/enqueue会重取同一锁；不能直接读走、拆借或追加尚未封组的HttpInput，也不为促封而新增异步回调、线程、SQL、等待、reserve或native名额。旧三参数队列无prepare回调时维持原路径。
+- 内部可选prepare是受控优化钩子，其普通异常不得逸出`_pump`而跳过原ready推进或最终`_arm_timer`；异常后继续原`_take`处理当前已ready工作，绝不自动重试flush、把成员补回collector或提前释放可能已转交的预算。至少验证副作用前抛错与已成功enqueue后抛错，原head及原/新ready仍各恰一次推进；不承诺任意外部插件或pop至enqueue中间任意异常/OOM无损，不扩展为通用恢复框架。
+- 之后仍调用原`_take`一次，由原锁内RR、到期判断、同route单active、一次原native acquire及`_repack`重新裁决。提示过期或其他native抢先使用名额时，至多留下已封组的ready工作按原有界规则等待；不得把提示当预留/claim/submit，不多claim一次或绕过其他可运行路由。collector已过期时不通过新钩子提升，仍由原timer/add截止检查封组；预览不延命到期ready。
+- 已有ready头部和donor尾部的顺序、deadline及预留完全不变。新提前封组的整个collector组保留原Input/Future/body和请求/字节预留，从**这次实际提前seal**起获得原最多1秒ready期限，不晚于等原25ms截止再封组的期限，不重新打开收集窗口；后续部分转交后的余项保留该同一deadline。移空组仍只退元数据，已转交成员的额度由原实际完成或已知未提交拒绝恰一次释放。
+- 单等待者取消不撤组；close、stale owner、饱和提示或无合法前缀不复活工作。检查后发生关闭的竞争仍走原dispatch/enqueue已知503拒绝，不能双释；一旦调用submit则保持原native/Future所有权至真实结束。原32请求/8MiB、8native、共享接收池8/管理保留4、25ms/1秒上限、跨route轮转和GET/旧单条释放提示、T1逐项认证/配置/epoch/实际尺寸/fresh clock/配额/200或202提交后响应及提交未知规则保持。
+- 验证只覆盖此次变化：构造真实早seal、有限prefix/字节/FIFO、更早ready/到期/活跃或满组不促封、旧deadline不重置、原timer取消、close及native hint变陈、取消/submit拒绝/早完成与跨route公平的纯边界，并复验受影响原19项；不全量后端。3项PG须真实collector加已有ready进入同一native，分别覆盖正常混合认证/重复/冲突，以及真实提交前/提交后错误后的原ID原文重试和账本不重复，替代旧ready-only3项而非重复它们。
+- 独立GPT差异审查后，按影响完成同资源HTTP20、200及一个实际忙闲重叠代表链，保留实际native单位/人数、双完整oracle、正常停源与普通环境恢复。新PG与纯边界可强制证明earlyseal分支；普通小链自然是否发生按原件报告，不凭单元数量差推出收益，也不另造一套促封测量框架。原3SLA和HTTP提交前后故障保留接口/源码适用范围，不无依据重跑矩阵；若实现确实改变其计时/切点/所有权接口，才补相应最小用例。小链通过后再据证据决定原正式标准的一次重验，最终统一OCR仍在全部开发验证完成后，容量门和最终MQ正常轮继续pending。
 
 ### D8. 参考目标的自动恢复策略
 
@@ -325,6 +341,7 @@ HTTP 首发后的 POST/已知记录查询采用共同的 500 次实际开始/秒
 ## References
 
 - [Issue #222](https://github.com/john-ops-lab/DataLinkRuntime/issues/222)，读取于 2026-10-26；首轮目标和边界的来源。
+- [Python 3.13 asyncio concurrency and multithreading](https://docs.python.org/3.13/library/asyncio-dev.html#concurrency-and-multithreading)，读取于 2026-10-27；事件循环任务与回调在所属线程执行，跨线程须使用线程安全投递。这里只支持owner-loop与同步准备的设计边界，不证明DLR吞吐。
 - [RabbitMQ Consumer Acknowledgements and Publisher Confirms](https://www.rabbitmq.com/docs/confirms)，读取于 2026-10-26；来源确认、发布确认和业务完成是不同事实，确认不明必须保留重发/去重责任。在线文档为 4.4，本项目保持锁定 4.3.5，具体客户端实现仍需定向验证。
 - [AWS Builders' Library: Making retries safe with idempotent APIs](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/)，读取于 2026-10-26；调用方稳定请求身份、同身份不同参数冲突及有限去重窗口的参考。
 
