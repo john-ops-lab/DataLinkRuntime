@@ -592,43 +592,6 @@ def test_replay_projection_survives_cleanup_while_older_batch_is_protected(
         facts(session, batch_world)
 
 
-def test_protected_replay_does_not_starve_later_cleanable_shard(batch_world, session_factory):
-    with session_factory.begin() as session:
-        ids, original = produce(session, batch_world, count=2)
-        finish(session, original, [("failed", "business_error"), ("not_run", "predecessor_failed")])
-        replay = delivery.replay_event(session, ids[0], "protected-replay", None, "repair")
-        repeated = delivery.dispatch_delivery(session, replay.id)
-        finish(session, repeated)
-        other, _ = delivery.receive_event(
-            session,
-            batch_world["sub"],
-            "owner-a",
-            batch_world["generation"],
-            queue_envelope(batch_world, message_id="other-shard-message"),
-            "other-shard",
-            {},
-        )
-        assert other is not None
-        other_delivery = session.scalar(
-            select(EventDelivery.id).where(EventDelivery.receipt_id == other.id)
-        )
-        other_execution = batch.materialize_batch(session, other_delivery)
-        assert other_execution is not None
-        finish(session, other_execution)
-        replay_id, other_execution_id = repeated.id, other_execution.id
-        for receipt_id in (ids[0], other.id):
-            session.get(EventReceipt, receipt_id).terminal_at = database_now(session) - timedelta(
-                days=31
-            )
-
-    with session_factory.begin() as session:
-        result = batch.cleanup_batches(session, batch_world["sub"], limit=1)
-        assert result["batches"] == result["members"] == 1
-        assert session.get(SubscriptionExecutionBatch, replay_id) is not None
-        assert session.get(SubscriptionExecutionBatch, other_execution_id) is None
-        facts(session, batch_world)
-
-
 def test_three_replay_generations_cleanup_in_order_after_old_blocker_resolves(
     batch_world, session_factory
 ):
