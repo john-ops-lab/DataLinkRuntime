@@ -1,10 +1,12 @@
 """The 0053 JSON expansion preserves real PostgreSQL batch custody and guards."""
 
+from contextlib import contextmanager
 from copy import deepcopy
 from typing import Any
 
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from sqlalchemy import event, func, select, text
 from sqlalchemy.exc import IntegrityError
 
@@ -31,6 +33,20 @@ def migration(
     monkeypatch.delenv("DATABASE_URL", raising=False)
     config = migration_config(factory.kw["bind"])
     (command.downgrade if down else command.upgrade)(config, revision)
+
+
+@contextmanager
+def restore_migration_head(factory: Any, monkeypatch: pytest.MonkeyPatch):
+    try:
+        yield
+    finally:
+        migration(factory, monkeypatch, "head")
+
+
+def assert_migration_head(factory: Any) -> None:
+    head = ScriptDirectory.from_config(migration_config(factory.kw["bind"])).get_current_head()
+    with factory() as session:
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == head
 
 
 def snapshot(factory: Any) -> dict[str, list[Any]]:
@@ -79,29 +95,47 @@ def test_fresh_guard_keeps_hundred_large_members_and_all_trigger_bindings(
 def test_0052_upgrade_preserves_large_accepted_batch_and_validates_guard(
     batch_world: Any, session_factory: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    migration(session_factory, monkeypatch, "0052_issue222_business_batches", down=True)
-    with session_factory.begin() as session:
-        _, execution = produce(session, batch_world, 100, b"x" * 1024)
-        execution_id = execution.id
-        function_oid = session.scalar(
-            text("SELECT 'dlr_batch_validate(bigint)'::regprocedure::oid")
-        )
-    before = snapshot(session_factory)
-    with session_factory.begin() as session:
-        session.execute(text("SELECT dlr_batch_validate(:identity)"), {"identity": execution_id})
-    migration(session_factory, monkeypatch, "0053_issue222_batch_guard_json")
-    assert snapshot(session_factory) == before
-    with session_factory.begin() as session:
-        session.execute(text("SELECT dlr_batch_validate(:identity)"), {"identity": execution_id})
-        assert (
-            session.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0053_issue222_batch_guard_json"
-        )
-        assert (
-            session.scalar(text("SELECT 'dlr_batch_validate(bigint)'::regprocedure::oid"))
-            == function_oid
-        )
-        facts(session, batch_world)
+    with restore_migration_head(session_factory, monkeypatch):
+        migration(session_factory, monkeypatch, "0052_issue222_business_batches", down=True)
+        with session_factory.begin() as session:
+            _, execution = produce(session, batch_world, 100, b"x" * 1024)
+            execution_id = execution.id
+            function_oid = session.scalar(
+                text("SELECT 'dlr_batch_validate(bigint)'::regprocedure::oid")
+            )
+        before = snapshot(session_factory)
+        with session_factory.begin() as session:
+            session.execute(
+                text("SELECT dlr_batch_validate(:identity)"), {"identity": execution_id}
+            )
+        migration(session_factory, monkeypatch, "0053_issue222_batch_guard_json")
+        assert snapshot(session_factory) == before
+        with session_factory.begin() as session:
+            session.execute(
+                text("SELECT dlr_batch_validate(:identity)"), {"identity": execution_id}
+            )
+            assert (
+                session.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0053_issue222_batch_guard_json"
+            )
+            assert (
+                session.scalar(text("SELECT 'dlr_batch_validate(bigint)'::regprocedure::oid"))
+                == function_oid
+            )
+            facts(session, batch_world)
+    assert_migration_head(session_factory)
+
+
+def test_guard_migration_restores_head_after_failure(
+    api_client: Any, session_factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with (
+        pytest.raises(RuntimeError, match="injected failure"),
+        restore_migration_head(session_factory, monkeypatch),
+    ):
+        migration(session_factory, monkeypatch, "0052_issue222_business_batches", down=True)
+        raise RuntimeError("injected failure")
+    assert_migration_head(session_factory)
 
 
 @pytest.mark.parametrize(
