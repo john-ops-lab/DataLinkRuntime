@@ -15,11 +15,13 @@ from dlr.control.models import SubscriptionConfigVersion, SubscriptionQuota
 from dlr.control.models.ingress_capacity import IngressCapacityConfiguration
 from dlr.control.services import ingress_capacity as capacity
 from dlr.control.services import subscription_delivery as delivery
+from dlr.control.services import subscription_queue as queue
 from dlr.control.services.input_config import database_now
 from dlr.control.services.subscription_queue import capacity_ready
 from test_ingress_capacity import formal_profile
 from test_issue219_delivery import receive
 from test_issue219_delivery import world as foundation_world
+from test_issue222_capacity_pending_age import ControlledFunctions
 from test_issue222_queue_capacity_profile import context
 
 pytestmark = pytest.mark.usefixtures("deterministic_capacity_space")
@@ -108,10 +110,13 @@ def test_bulk_precheck_preserves_both_scope_rate_and_reserved_low_water_guards(
             quota = SubscriptionQuota(scope=scope)
             session.add(quota)
         if reason == "rate":
-            quota.rate_count, quota.rate_window_at = maximum["rate"], database_now(session)
+            fixed_now = database_now(session)
+            quota.rate_count, quota.rate_window_at = maximum["rate"], fixed_now
         else:
             quota.pending_count = int(maximum["pending_count"] * 0.8)
             quota.reserved_control_count = 1
+    if reason == "rate":
+        monkeypatch.setattr(queue, "func", ControlledFunctions(fixed_now))
     assert capacity_ready(context(session_factory, {})) is False
 
 
