@@ -66,6 +66,8 @@
 
 - [ ] 3.18 按D7.12仅在原owner-loop潜在claim前有合法填充机会时，锁内预览原RR候选与ready FIFO余量，锁外通过可选prepare回调用原flush整体提前封collector，再由原dispatch/enqueue和原_take/repack权威裁决；不直接借未封组成员、不新增等待/预留/资源。原ready/donor期限不变，新提前封组从当次seal起原1秒；保留close/hint变陈/同路由单active与逐项T1裁决。先必要新纯边界（含prepare副作用前/成功enqueue后抛错仍推进原take与定时器，禁止重试flush/回填/早释）＋受影响原19项，真实collector+ready正常/提交前后未知3PG和独立GPT审查，再同资源HTTP20/200/忙闲重叠链及实际native统计/双oracle/正常恢复，据证据决定原正式标准一次重验；不重复旧ready-only3PG或无依据扩大SLA/MQ故障矩阵，最终OCR仍待全部开发验证完毕。 实现与针对性功能资格已完成：E85的36纯/实际collector三项PG及GPT独立审查、E86的同资源HTTP20/native200/忙闲代表链通过；原正式万条、完整观察与最终统一OCR仍待，保留未勾选状态，不据此勾完B1–B5。
 
+- [ ] 3.19 按D7.13仅在batchhint正文完整读取后、collector.add前同步归还未用raw差额`64KiB-len(body)`，余下`len(body)+256KiB`持至原真实工作结束；读取前320KiB与outer hint、非batch/GET/读失败/最大正文、stalehint回退和原资源/期限/所有权不变。先真实_request核2KiB正文31项及第32读前拒绝、64KiB仍25项、读取完成后取消与既有close/submit失败/真实Future结束的实际held恰一次归还及fallback；只跑受影响API纯代表/静态与GPT审查，不重跑未变Ready36/PG3/T1/SLA/故障矩阵。复用原20/实际200/忙闲薄载体后据证据决定原正式标准一次重验，保留R11首败E87；实施、验证、正式容量及最终OCR均未据计划提前完成。
+
 ## 4. B3 — 仅在测量证明必要时启用业务小批次
 
 本组是条件分支。若 B2 选择继续逐条，在路线记录说明依据，并通过 OpenSpec 更新移除不适用的实施任务；不把“未实现”标记为批次功能已完成。若单条路线在 B4 未达标，回到本决策门，保留首次失败。
