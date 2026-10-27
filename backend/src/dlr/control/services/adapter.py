@@ -7,7 +7,7 @@ from datetime import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import JSON, delete, func, null, select
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.control.models import (
@@ -523,27 +523,78 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
     from dlr.control.services import managed_input_gc
 
     managed_input_gc.ensure_no_active_upload(session, adapter.id)
+    # A rejected delete must not leak a successful history purge into a
+    # caller's later commit. The Adapter lock predates both savepoints.
+    for _ in range(2):
+        with session.begin_nested() as deletion:
+            deleted = _delete_adapter_attempt(session, adapter_id, stop=stop)
+            if deleted is None:
+                deletion.rollback()
+        if deleted is not None:
+            result, deletion_job_id = deleted
+            session.commit()
+            managed_input_gc.record_audit_event(
+                "adapter_delete", "success", adapter_id=adapter_id, deletion_job_id=deletion_job_id
+            )
+            return result
+
+        # Rollback released Quota/Admission/Execution locks and restored all
+        # purged rows. Re-read cancellation state; never use the old running ID.
+        with session.begin_nested() as cancellation:
+            waiting = _stop_adapter_delete_wait(session, adapter_id)
+            if waiting is None:
+                cancellation.rollback()
+        if waiting is not None:
+            session.commit()
+            return waiting
+        # Fresh state no longer has a running row. Admission locks must be
+        # released before retrying the Quota-first deletion path once.
+    raise domain_error(
+        409, "adapter_runtime_locked", "Adapter runtime changed during deletion; retry the request"
+    )
+
+
+def _stop_adapter_delete_wait(session: Session, adapter_id: int) -> AdapterDeleteResult | None:
+    """Cancel only fresh locked runtime rows; historical input is untouched."""
+    from dlr.control.services import admission
+
+    if admission.lock_admission_scope(session, adapter_id) is None:  # pragma: no cover
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
+    adapter = session.get(Adapter, adapter_id)
+    assert adapter is not None
+    nonterminal = lock_nonterminal_executions(session, adapter_id)
+    running = [execution for execution in nonterminal if execution.status == "running"]
+    if not running:
+        return None
+    _require_running_execution_workers_online(session, running)
+    _disable_trigger_for_delete(session, adapter)
+    for execution in nonterminal:
+        if execution.status == "running":
+            request_cancellation(execution)
+        else:
+            _cancel_queued_execution_for_delete(session, execution)
+    return AdapterDeleteResult(waiting_for_worker=True, active_execution_id=running[0].id)
+
+
+def _delete_adapter_attempt(
+    session: Session, adapter_id: int, *, stop: bool
+) -> tuple[AdapterDeleteResult, int | None] | None:
+    """One savepoint owns all history, quota and permanent-delete mutations."""
+    from dlr.control.services import managed_input_gc
     from dlr.control.services.subscription_delivery import purge_deleted_adapter_history
 
-    # The batch delete guard requires an archived parent. Keep this temporary
-    # authorization inside the existing Quota-before-Admission lock order,
-    # and restore it before a stop request can commit its waiting response.
+    adapter = session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
+    if adapter is None or adapter.archived_at is not None:  # pragma: no cover
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
+    # The temporary archive satisfies the DB batch guard. On any failure the
+    # surrounding savepoint restores both database and ORM state; never write
+    # a replacement flag into an already-failed SQL transaction.
     archived_at = adapter.archived_at
-    sql_failed = False
-    try:
-        adapter.archived_at = worker_availability.current_time(session)
-        session.flush()
-        purge_deleted_adapter_history(session, adapter.id)
-    except DBAPIError:
-        # A statement failure may leave Session.is_active true even though
-        # PostgreSQL requires rollback. Do not mask its original SQL error.
-        sql_failed = True
-        raise
-    finally:
-        adapter.archived_at = archived_at
-        if session.is_active and not sql_failed:
-            session.flush()
-
+    adapter.archived_at = worker_availability.current_time(session)
+    session.flush()
+    purge_deleted_adapter_history(session, adapter.id)
+    adapter.archived_at = archived_at
+    session.flush()
     # Acquire the RabbitMQ Admission scope before locking any Execution.  The
     # scope is harmless for a legacy-only Adapter and makes stop/delete follow
     # the same Adapter -> AdapterAdmission -> Global -> Execution/Outbox order
@@ -563,22 +614,11 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
             )
         adapter_runtime.require_runtime_unlocked(session, adapter)
     else:
-        running = [execution for execution in nonterminal if execution.status == "running"]
-        # Validate every running Worker before changing any queued responsibility;
-        # this keeps a failed stop request free of partial cancellation effects.
-        _require_running_execution_workers_online(session, running)
+        if any(execution.status == "running" for execution in nonterminal):
+            return None
         _disable_trigger_for_delete(session, adapter)
         for execution in nonterminal:
-            if execution.status == "running":
-                request_cancellation(execution)
-            else:
-                _cancel_queued_execution_for_delete(session, execution)
-        if running:
-            session.commit()
-            return AdapterDeleteResult(
-                waiting_for_worker=True,
-                active_execution_id=running[0].id,
-            )
+            _cancel_queued_execution_for_delete(session, execution)
 
     cleanup_worker_ids = _require_cleanup_workers(session, adapter)
     _settle_terminal_rabbitmq_responsibilities(session, adapter.id)
@@ -619,14 +659,10 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
         session.flush()
         if cleanup_request_id is None:
             cleanup_request_id = cleanup.id
-    session.commit()
-    managed_input_gc.record_audit_event(
-        "adapter_delete",
-        "success",
-        adapter_id=adapter.id,
-        deletion_job_id=deletion_job_ids[0] if deletion_job_ids else None,
+    return (
+        AdapterDeleteResult(cleanup_request_id=cleanup_request_id),
+        deletion_job_ids[0] if deletion_job_ids else None,
     )
-    return AdapterDeleteResult(cleanup_request_id=cleanup_request_id)
 
 
 def list_versions(session: Session, adapter_id: int) -> list[AdapterVersion]:

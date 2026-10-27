@@ -170,6 +170,7 @@ def test_stop_wait_commit_restores_archive_before_returning(retired_batch, sessi
         running.started_at = database_now(session)
         identity = running.id
         count = session.get(GlobalExecutionAdmission, "global").outstanding_count
+        before = quota_values(session, retired_batch)
     with session_factory() as session:
         result = adapters.delete_adapter(session, retired_batch["adapter"], stop=True)
         assert result.waiting_for_worker and result.active_execution_id == identity
@@ -179,7 +180,7 @@ def test_stop_wait_commit_restores_archive_before_returning(retired_batch, sessi
         running = session.get(Execution, identity)
         assert running.status == "running" and running.cancel_requested
         assert session.get(GlobalExecutionAdmission, "global").outstanding_count == count
-        assert session.get(SubscriptionExecutionBatch, retired_batch["execution"]) is None
+        assert_retained(session, retired_batch, before)
 
 
 def test_rejected_delete_does_not_commit_batch_history_purge(retired_batch, session_factory):
@@ -253,7 +254,116 @@ def test_purge_failure_preserves_original_error_and_rolls_back_custody(
                 "22012" if failure == "sql_statement" else "23505"
             )
             if failure == "sql_flush":
-                assert isinstance(caught.value, IntegrityError) and not session.is_active
-        session.rollback()
+                assert isinstance(caught.value, IntegrityError)
+        # The service's savepoint has already restored custody, even if this
+        # caller handles a business/SQL error and commits its outer transaction.
+        assert session.is_active
+        session.commit()
     with session_factory() as session:
         assert_retained(session, retired_batch, before)
+
+
+def add_running_manual(session, scope):
+    adapter = session.get(Adapter, scope["adapter"])
+    execution = reliable_execution.accept_execution(
+        session,
+        adapter,
+        trigger="manual",
+        runtime_input=None,
+        input_source_type="none",
+        input_config_revision=1,
+        input_snapshot={"source_type": "none", "revision": 1},
+    )
+    execution.status = "running"
+    execution.worker_id = adapter.runtime_worker_id
+    execution.started_at = database_now(session)
+    session.flush()
+    return execution.id
+
+
+@pytest.mark.parametrize("fresh_state", ["succeeded", "queued"])
+def test_stop_delete_retries_from_quota_after_running_state_changes(
+    retired_batch, session_factory, monkeypatch, fresh_state
+):
+    with session_factory.begin() as session:
+        identity = add_running_manual(session, retired_batch)
+    with session_factory() as session:
+        begin = session.begin_nested
+        boundaries = []
+
+        def begin_after_state_change():
+            boundaries.append(len(boundaries) + 1)
+            if len(boundaries) == 2:
+                # Change at the exited-delete/next-cancel boundary, outside
+                # either savepoint, rather than fake a stale ORM return value.
+                session.get(Execution, identity).status = fresh_state
+                session.flush()
+            return begin()
+
+        monkeypatch.setattr(session, "begin_nested", begin_after_state_change)
+        result = adapters.delete_adapter(session, retired_batch["adapter"], stop=True)
+        assert not result.waiting_for_worker
+        assert boundaries == [1, 2, 3]
+    with session_factory() as session:
+        assert session.get(Adapter, retired_batch["adapter"]) is None
+        assert session.get(Execution, identity) is None
+        assert delivery.audit_global_quota(session)["differences"] == {}
+        counter = session.get(GlobalExecutionAdmission, "global")
+        assert (counter.outstanding_count, counter.outstanding_bytes) == (0, 0)
+
+
+def test_stop_wait_uses_newly_locked_running_identity(retired_batch, session_factory, monkeypatch):
+    with session_factory.begin() as session:
+        original_id = add_running_manual(session, retired_batch)
+        before = quota_values(session, retired_batch)
+    with session_factory() as session:
+        begin = session.begin_nested
+        boundaries = []
+        new_ids = []
+
+        def begin_with_new_running():
+            boundaries.append(len(boundaries) + 1)
+            if len(boundaries) == 2:
+                session.get(Execution, original_id).status = "queued"
+                new_ids.append(add_running_manual(session, retired_batch))
+            return begin()
+
+        monkeypatch.setattr(session, "begin_nested", begin_with_new_running)
+        result = adapters.delete_adapter(session, retired_batch["adapter"], stop=True)
+        assert result.waiting_for_worker
+        assert result.active_execution_id == new_ids[0] != original_id
+        assert boundaries == [1, 2]
+    with session_factory() as session:
+        assert_retained(session, retired_batch, before)
+        assert session.get(Execution, original_id).status == "cancelled"
+        assert session.get(Execution, new_ids[0]).cancel_requested
+
+
+def test_stop_delete_bounds_repeated_fresh_state_changes(
+    retired_batch, session_factory, monkeypatch
+):
+    with session_factory.begin() as session:
+        identity = add_running_manual(session, retired_batch)
+        before = quota_values(session, retired_batch)
+    original_lock = adapters.lock_nonterminal_executions
+    observations = []
+
+    def changing_observation(session, adapter_id):
+        rows = original_lock(session, adapter_id)
+        observations.append(len(observations) + 1)
+        # Force the rare changing-observation branch while retaining actual
+        # PostgreSQL locking and savepoint effects in every phase.
+        return [] if len(observations) % 2 == 0 else rows
+
+    monkeypatch.setattr(adapters, "lock_nonterminal_executions", changing_observation)
+    with session_factory() as session:
+        with pytest.raises(HTTPException) as caught:
+            adapters.delete_adapter(session, retired_batch["adapter"], stop=True)
+        assert caught.value.status_code == 409
+        assert caught.value.detail["code"] == "adapter_runtime_locked"
+        assert observations == [1, 2, 3, 4]
+        session.commit()
+    with session_factory() as session:
+        assert_retained(session, retired_batch, before)
+        assert session.get(Execution, identity).status == "running"
+        assert not session.get(Execution, identity).cancel_requested
