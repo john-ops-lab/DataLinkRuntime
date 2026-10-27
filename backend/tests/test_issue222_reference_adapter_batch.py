@@ -220,6 +220,35 @@ def test_overall_deadline_does_not_restart_after_successful_prefix(
     assert result["members"][1]["error_code"] == "execution_timeout"
 
 
+def test_batch_members_share_the_original_absolute_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock, deadlines, attempted = [0.0], [], []
+
+    async def write(
+        _driver: Any, _options: Any, item: Any, _marks: Any, deadline: float, _state: Any
+    ) -> dict[str, Any]:
+        attempted.append(item[2])
+        deadlines.append(deadline)
+        clock[0] = 6.0 if item[2] == 1 else 10.0
+        return committed(item)
+
+    monkeypatch.setattr(reference, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(reference, "RETRY_SECONDS", 10.0)
+    monkeypatch.setattr(reference, "_batch_write_once", write)
+    source = frame()
+    result = asyncio.run(reference._run_batch(Context(), source, psycopg, marks()))
+
+    assert_valid(source, result)
+    assert attempted == [1, 2]
+    assert deadlines == [10.0, 10.0]
+    assert [(item["status"], item["error_code"]) for item in result["members"]] == [
+        ("succeeded", None),
+        ("succeeded", None),
+        ("unknown", "execution_timeout"),
+    ]
+
+
 def test_deadline_before_next_member_does_not_inherit_previous_commit_phase(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
