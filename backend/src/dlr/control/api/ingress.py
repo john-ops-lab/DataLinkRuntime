@@ -256,8 +256,8 @@ def _require_media(request: Request) -> None:
 
 
 async def _read_body(request: Request) -> bytes:
-    chunks: list[bytes] = []
-    total = 0
+    body = bytearray()
+    chunks_since_yield = 0
     stream = request.stream().__aiter__()
     try:
         async with asyncio.timeout(5):
@@ -266,17 +266,21 @@ async def _read_body(request: Request) -> bytes:
                     chunk = await asyncio.wait_for(anext(stream), timeout=2)
                 except StopAsyncIteration:
                     break
-                total += len(chunk)
-                if total > service.MAX_BODY_BYTES:
+                if len(body) + len(chunk) > service.MAX_BODY_BYTES:
                     raise domain_error(413, "ingress_body_too_large", "JSON body exceeds 64 KiB")
-                chunks.append(chunk)
+                body.extend(chunk)
+                chunks_since_yield += 1
+                if chunks_since_yield == 64:
+                    # Let the loop discard cancelled idle timers for fragmented streams.
+                    chunks_since_yield = 0
+                    await asyncio.sleep(0)
     except TimeoutError:
         raise domain_error(
             408, "ingress_read_timeout", "Request body exceeded the read deadline"
         ) from None
     except ClientDisconnect:
         raise domain_error(499, "ingress_disconnected", "The sender disconnected") from None
-    return b"".join(chunks)
+    return bytes(body)
 
 
 def _notify_committed_delivery_work() -> None:

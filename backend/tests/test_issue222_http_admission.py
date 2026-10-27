@@ -465,9 +465,10 @@ def test_native_failure_returns_work_only_after_the_real_future_ends(pool, monke
             lambda: SimpleNamespace(http_batch_hint=lambda _: mode == "group"),
         )
 
+        observed_buffer = []
+
         def failed(*args):
-            if mode == "group":
-                assert pool.buffer.used_bytes == len(b"{}") + ingress.service.MAX_ENVELOPE_BYTES
+            observed_buffer.append(pool.buffer.used_bytes)
             raise RuntimeError("native work failed")
 
         monkeypatch.setattr(ingress, "_run_group_sync" if mode == "group" else "_run_sync", failed)
@@ -486,8 +487,10 @@ def test_native_failure_returns_work_only_after_the_real_future_ends(pool, monke
         if mode == "group":
             assert isinstance(raised.value, ingress.HTTPException)
             assert raised.value.status_code == 503
+            assert observed_buffer == [len(b"{}") + ingress.service.MAX_ENVELOPE_BYTES]
         else:
             assert isinstance(raised.value, RuntimeError)
+            assert len(observed_buffer) == 1
         assert pool.work.used == 0 and pool.buffer.used_bytes == 0
         assert not ingress.admission_capacity_busy()
 

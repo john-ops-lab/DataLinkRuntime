@@ -3,6 +3,7 @@
 import asyncio
 import json
 import threading
+import tracemalloc
 from typing import Any
 
 import httptools
@@ -83,6 +84,32 @@ def test_unknown_length_stream_is_bounded() -> None:
         with pytest.raises(HTTPException) as raised:
             await ingress._read_body(request([b"a" * 65536, b"a"]))
         assert raised.value.status_code == 413
+
+    asyncio.run(run())
+
+
+def test_fragmented_stream_does_not_retain_per_chunk_overhead() -> None:
+    async def run() -> None:
+        count = 16_384
+        remaining = count
+
+        async def receive() -> dict[str, Any]:
+            nonlocal remaining
+            remaining -= 1
+            return {"type": "http.request", "body": b"x", "more_body": remaining > 0}
+
+        req = Request(
+            {"type": "http", "method": "POST", "path": "/api/ingress/test", "headers": []},
+            receive,
+        )
+        tracemalloc.start()
+        try:
+            body = await ingress._read_body(req)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert body == b"x" * count
+        assert peak < 256 * 1024
 
     asyncio.run(run())
 
