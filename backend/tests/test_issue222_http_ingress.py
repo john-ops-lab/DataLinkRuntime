@@ -153,6 +153,7 @@ def test_current_credential_authentication_and_cross_source_query(
     api_client, http_world, session_factory
 ):
     accepted = post(api_client, http_world)
+    assert accepted.status_code == 202
     for token in ["wrong", "test-admin-token"]:
         assert post(api_client, http_world, token=token).status_code == 401
         assert (
@@ -161,6 +162,7 @@ def test_current_credential_authentication_and_cross_source_query(
             ).status_code
             == 401
         )
+    second_adapter = create_adapter(api_client, name="second-http-source")
     with session_factory.begin() as session:
         credential = session.get(Credential, http_world["credential"])
         credential.ciphertext = encrypt_fields({"token": "rotated-token"})
@@ -169,11 +171,67 @@ def test_current_credential_authentication_and_cross_source_query(
         )
         session.add(other)
         other_path = f"/api/ingress/{other.public_id}/receipts/{accepted.json()['receipt_id']}"
+        first_subscription = session.get(EventSubscription, http_world["sub"])
+        second_credential = Credential(
+            name="second-http-source-token",
+            type="token",
+            ciphertext=encrypt_fields({"token": "second-source-token"}),
+        )
+        second_subscription = EventSubscription(
+            adapter_id=second_adapter["id"],
+            source_type="http",
+            name="second-http-source",
+            # Epochs are scoped to a subscription. Keep it equal so the epoch
+            # filter cannot mask a missing subscription-isolation predicate.
+            source_epoch=first_subscription.source_epoch,
+        )
+        session.add_all([second_credential, second_subscription])
+        session.flush()
+        assert second_subscription.id != first_subscription.id
+        second_config = SubscriptionConfigVersion(
+            subscription_id=second_subscription.id,
+            version=1,
+            source_epoch=second_subscription.source_epoch,
+            source_credential_id=second_credential.id,
+            config={
+                "source_type": "http",
+                "credential_id": second_credential.id,
+                "mode": "per_event",
+                "ordering": "receipt_serial",
+                "limits": {},
+            },
+        )
+        second_route = HttpIngressRoute(
+            public_id=uuid4().hex,
+            subscription_id=second_subscription.id,
+            source_epoch=second_subscription.source_epoch,
+        )
+        session.add_all([second_config, second_route])
+        second_path = (
+            f"/api/ingress/{second_route.public_id}/receipts/{accepted.json()['receipt_id']}"
+        )
     assert post(api_client, http_world).status_code == 401
     assert post(api_client, http_world, token="rotated-token").status_code == 200
     assert (
         api_client.get(other_path, headers={"Authorization": "Bearer rotated-token"}).status_code
         == 404
+    )
+    own_status = api_client.get(
+        accepted.json()["status_url"], headers={"Authorization": "Bearer rotated-token"}
+    )
+    assert own_status.status_code == 200
+    assert own_status.json()["receipt_id"] == accepted.json()["receipt_id"]
+    cross_source = api_client.get(
+        second_path, headers={"Authorization": "Bearer second-source-token"}
+    )
+    assert cross_source.status_code == 404
+    assert cross_source.json()["detail"]["code"] == "ingress_receipt_not_found"
+    assert (
+        api_client.get(
+            accepted.json()["status_url"],
+            headers={"Authorization": "Bearer second-source-token"},
+        ).status_code
+        == 401
     )
     # External credentials cannot obtain Adapter administrative access.
     assert (
