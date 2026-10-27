@@ -561,9 +561,8 @@ def test_three_replay_generations_cleanup_in_order_after_old_blocker_resolves(
         finish(session, original, [("failed", "business_error"), ("not_run", "predecessor_failed")])
         replay1 = delivery.replay_event(session, ids[0], "first-replay", None, "repair")
         second = delivery.dispatch_delivery(session, replay1.id)
-        finish(session, second)
-        session.get(EventSubscription, batch_world["sub"]).desired_state = "disabled"
-        replay2 = delivery.replay_event(session, ids[0], "second-replay", None, "reconcile")
+        finish(session, second, [("failed", "business_error")])
+        replay2 = delivery.replay_event(session, ids[0], "second-replay", None, "repair again")
         third = delivery.dispatch_delivery(session, replay2.id)
         finish(session, third)
         execution_ids = [original.id, second.id, third.id]
