@@ -178,6 +178,8 @@ def test_global_quota_lock_prevents_profile_change_between_two_t1_limit_calculat
     def adopt_new():
         local.profile = new
         with session_factory.begin() as session:
+            session.execute(text("SET LOCAL lock_timeout = '8s'"))
+            session.execute(text("SET LOCAL statement_timeout = '10s'"))
             return capacity.activate_profile(session)
 
     with session_factory() as custody, ThreadPoolExecutor(max_workers=1) as executor:

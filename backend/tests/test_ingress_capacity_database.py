@@ -1,14 +1,15 @@
 """Capacity adoption uses the real quota lock and preserves retained responsibility."""
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from threading import Barrier
+from threading import Event
 from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
@@ -159,16 +160,37 @@ def test_concurrent_first_adoption_serializes_on_real_global_quota(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "ingress_capacity_profile", formal_profile())
-    barrier = Barrier(2)
+    entered = Event()
+    worker_pids = []
 
     def adopt() -> bool:
-        barrier.wait(timeout=5)
         with session_factory.begin() as session:
+            session.execute(text("SET LOCAL lock_timeout = '8s'"))
+            session.execute(text("SET LOCAL statement_timeout = '10s'"))
+            worker_pids.append(session.scalar(text("SELECT pg_backend_pid()")))
+            entered.set()
             return capacity.activate_profile(session)
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(lambda _: adopt(), range(2)))
-    assert results == [True, True]
+    with session_factory() as first, ThreadPoolExecutor(max_workers=1) as executor:
+        assert capacity.activate_profile(first)
+        first_pid = first.scalar(text("SELECT pg_backend_pid()"))
+        future = executor.submit(adopt)
+        try:
+            assert entered.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while True:
+                blockers = first.scalar(
+                    text("SELECT pg_blocking_pids(:pid)"), {"pid": worker_pids[0]}
+                )
+                if first_pid in blockers:
+                    break
+                assert not future.done(), "first adoption did not block the second transaction"
+                assert time.monotonic() < deadline, "first adoption lock wait was not observed"
+                time.sleep(0.05)
+            first.commit()
+        finally:
+            first.rollback()
+        assert future.result(timeout=5)
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(IngressCapacityAudit)) == 1
         row = session.get(IngressCapacityConfiguration, 1)
