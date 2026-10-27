@@ -565,6 +565,98 @@ def test_persistent_relay_failure_preserves_each_row_and_rebuilds_for_retry(
         publisher.close()
 
 
+def test_persistent_relay_keeps_confirmed_prefix_and_retries_only_unconfirmed_suffix(
+    api_client, session_factory, monkeypatch
+):
+    monkeypatch.setattr(settings, "rabbitmq_url", "amqp://unused-local-test")
+    monkeypatch.setattr(outbox, "_schedule_confirm_deadline", lambda *args: None)
+    monkeypatch.setattr(outbox, "_remove_confirm_deadline", lambda *args: None)
+    monkeypatch.setattr(rabbitmq, "bootstrap_worker_topology", lambda *args: None)
+    identities = []
+    with session_factory.begin() as session:
+        sub, activation = _subscription(session, 1)
+        due = database_now(session) - timedelta(seconds=3)
+        for index in range(3):
+            execution = Execution(
+                adapter_id=sub.adapter_id,
+                version_id=activation.revision_id,
+                target_worker_id_snapshot=activation.worker_id,
+                resource_class="standard",
+                trigger="subscription",
+                input={},
+            )
+            session.add(execution)
+            session.flush()
+            row = outbox.create_dispatch_outbox(session, execution)
+            row.available_at = due + timedelta(seconds=index)
+            identities.append((row.id, row.message_id))
+    connections = []
+    attempted = []
+    active_session = []
+    confirmed_prefix = []
+
+    def connect():
+        connection = _Connection()
+        connections.append(connection)
+        generation = len(connections)
+        original = connection.channel_instance.basic_publish
+
+        def publish(**kwargs):
+            assert not active_session[0].in_transaction()
+            attempted.append((generation, kwargs["properties"].message_id))
+            if generation == 1 and len(attempted) == 2:
+                # Observe the first confirm's durable mark before the later
+                # Broker failure, rather than trusting the Relay's return value.
+                with session_factory() as observer:
+                    prefix = observer.get(ExecutionOutbox, identities[0][0])
+                    assert prefix.status == "published" and prefix.lease_owner is None
+                    assert prefix.published_at is not None and prefix.publish_attempts == 1
+                    confirmed_prefix.append((prefix.message_id, prefix.published_at))
+                raise pika.exceptions.NackError([])
+            original(**kwargs)
+
+        connection.channel_instance.basic_publish = publish
+        return connection
+
+    publisher = outbox.RelayPublisher(connect)
+    try:
+        with session_factory() as session:
+            active_session[:] = [session]
+            result = outbox.relay_once(session, "partial", limit=3, publisher=publisher)
+            assert result == outbox.OutboxRelayResult(3, 1, 2)
+        assert attempted == [(1, str(item[1])) for item in identities[:2]]
+        assert not connections[0].is_open and len(confirmed_prefix) == 1
+        with session_factory.begin() as session:
+            rows = [session.get(ExecutionOutbox, identity) for identity, _ in identities]
+            assert [row.status for row in rows] == ["published", "pending", "pending"]
+            assert all(row.lease_owner is None and row.lease_expires_at is None for row in rows)
+            assert all(row.publish_attempts == 1 for row in rows)
+            assert [row.last_error_code for row in rows] == [
+                None,
+                "publisher_nack",
+                "publish_timeout_or_connection",
+            ]
+            for row in rows[1:]:
+                row.available_at = database_now(session) - timedelta(seconds=1)
+        with session_factory() as session:
+            active_session[:] = [session]
+            result = outbox.relay_once(session, "retry-suffix", limit=3, publisher=publisher)
+            assert result == outbox.OutboxRelayResult(2, 2, 0)
+        assert len(connections) == 2
+        assert attempted == [
+            (generation, str(identities[index][1]))
+            for generation, index in ((1, 0), (1, 1), (2, 1), (2, 2))
+        ]
+        with session_factory() as session:
+            rows = [session.get(ExecutionOutbox, identity) for identity, _ in identities]
+            assert all(row.status == "published" and row.lease_owner is None for row in rows)
+            assert [row.publish_attempts for row in rows] == [1, 2, 2]
+            assert [(row.id, row.message_id) for row in rows] == identities
+            assert (rows[0].message_id, rows[0].published_at) == confirmed_prefix[0]
+    finally:
+        publisher.close()
+
+
 @pytest.mark.parametrize("hang_at", ("channel", "confirm", "publish"))
 def test_reused_channel_keeps_per_publish_deadline(monkeypatch, hang_at):
     monkeypatch.setattr(settings, "rabbitmq_publish_timeout_seconds", 0.05)
