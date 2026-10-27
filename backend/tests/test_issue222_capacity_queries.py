@@ -2,12 +2,13 @@
 
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import event
+from sqlalchemy import event, text
 
 from dlr.common.config import settings
 from dlr.control.models import SubscriptionConfigVersion, SubscriptionQuota
@@ -30,7 +31,7 @@ def selects(factory):
     engine = factory.kw["bind"]
 
     def record(connection, cursor, statement, parameters, execution_context, many):
-        if statement.startswith("SELECT"):
+        if statement.lstrip().upper().startswith(("SELECT", "WITH")):
             statements.append(statement)
 
     event.listen(engine, "before_cursor_execute", record)
@@ -52,7 +53,10 @@ def test_queue_precheck_reads_one_profile_and_both_scopes_in_three_queries(
             context(session_factory, json.loads(formal_profile())["subscription_max"])
         )
     assert len(queries) == 3
-    assert "clock_timestamp()" in queries[0] and "min(event_deliveries.created_at)" in queries[0]
+    age_query = queries[0].lower()
+    assert "capacity_clock" in age_query and "clock_timestamp()" in age_query
+    assert "exists" in age_query and "event_deliveries.created_at" in age_query
+    assert "event_deliveries.state" in age_query and "event_receipts.subscription_id" in age_query
     assert sum("FROM ingress_capacity_configurations" in query for query in queries) == 1
     assert sum("FROM subscription_quotas" in query for query in queries) == 1
     assert "subscription_quotas.scope IN" in queries[-1]
@@ -128,10 +132,16 @@ def test_read_committed_fresh_t1_gate_rejects_profile_adopted_after_advisory_rea
         def adopt_new():
             local.profile = new
             with session_factory.begin() as session:
+                session.execute(text("SET LOCAL lock_timeout = '3s'"))
                 assert capacity.activate_profile(session)
 
         with ThreadPoolExecutor(max_workers=1) as executor:
-            executor.submit(adopt_new).result(timeout=5)
+            try:
+                executor.submit(adopt_new).result(timeout=5)
+            except BaseException:
+                # Release any accidentally held lock before waiting for the worker.
+                stale.rollback()
+                raise
         # Identity-map state from the advisory read must never supply T1.
         delivery._quotas(stale, 7)
         with pytest.raises(HTTPException) as rejected:
@@ -155,9 +165,11 @@ def test_global_quota_lock_prevents_profile_change_between_two_t1_limit_calculat
     with session_factory.begin() as session:
         assert capacity.activate_profile(session)
     entering_lock = threading.Event()
+    worker_pids = []
     original_lock = capacity._lock_global_quota
 
     def global_lock(session):
+        worker_pids.append(session.scalar(text("SELECT pg_backend_pid()")))
         entering_lock.set()
         original_lock(session)
 
@@ -171,10 +183,20 @@ def test_global_quota_lock_prevents_profile_change_between_two_t1_limit_calculat
     with session_factory() as custody, ThreadPoolExecutor(max_workers=1) as executor:
         delivery._quotas(custody, 7)
         accepted = capacity.require_active_profile(custody)
+        custody_pid = custody.scalar(text("SELECT pg_backend_pid()"))
         future = executor.submit(adopt_new)
         try:
             assert entering_lock.wait(timeout=5)
-            assert not future.done()
+            deadline = time.monotonic() + 5
+            while True:
+                blockers = custody.scalar(
+                    text("SELECT pg_blocking_pids(:pid)"), {"pid": worker_pids[0]}
+                )
+                if custody_pid in blockers:
+                    break
+                assert not future.done(), "profile adoption did not wait for the custody lock"
+                assert time.monotonic() < deadline, "profile adoption lock wait was not observed"
+                time.sleep(0.05)
             with selects(session_factory) as queries:
                 assert (
                     capacity.runtime_limits_for_profile(accepted, {"limits": {"rate": 250}})["rate"]
