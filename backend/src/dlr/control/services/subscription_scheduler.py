@@ -257,14 +257,14 @@ def run_delivery_pass(
     *,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> PassResult:
-    """Independent 100-candidate/1MiB/50ms budget, one atomic transaction per item."""
-    start = monotonic()
+    """Bound selection separately from the 100-item/1MiB/50ms processing phase."""
     with session_factory() as session:
         candidates = select_candidates(session, kind, cursor)
+    start: float | None = None
     attempted = progressed = payload_bytes = 0
     exhausted = False
     for candidate in candidates:
-        if monotonic() - start >= MAX_PASS_SECONDS:
+        if start is not None and monotonic() - start >= MAX_PASS_SECONDS:
             exhausted = True
             break
         if payload_bytes + candidate.payload_bytes > MAX_PAYLOAD_BYTES:
@@ -274,6 +274,11 @@ def run_delivery_pass(
         attempted += 1
         cursor.after_subscription_id = candidate.subscription_id
         with session_factory() as session:
+            # Slow selection/Session entry must not starve the first attempt.
+            # Once processing starts, finish its transaction atomically and
+            # check the elapsed budget before opening the next Session.
+            if start is None:
+                start = monotonic()
             try:
                 item = session.get(EventDelivery, candidate.delivery_id)
                 changed = False

@@ -3,7 +3,9 @@
 import json
 import threading
 import time
+from contextlib import contextmanager
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pika
 import pytest
@@ -377,6 +379,126 @@ def test_dispatch_pass_stops_before_starting_another_transaction_at_deadline(
         ]
 
 
+@pytest.mark.parametrize("kind", ("pending", "processing"))
+def test_query_and_first_session_delay_do_not_consume_processing_budget(monkeypatch, kind):
+    clock = [0.0]
+    entries, commits, calls = [], [], []
+    items = {identity: SimpleNamespace(state=kind) for identity in (1, 2)}
+
+    @contextmanager
+    def sessions():
+        entries.append(clock[0])
+        # The first processing Session can itself be delayed before entry.
+        if len(entries) % 2 == 0:
+            clock[0] += 0.060
+        yield SimpleNamespace(
+            get=lambda model, identity: items[identity],
+            commit=lambda: commits.append(True),
+            rollback=lambda: pytest.fail("the successful transaction must not roll back"),
+        )
+
+    def select(session, selected_kind, cursor):
+        assert selected_kind == kind
+        clock[0] += 0.060
+        cursor.upper_subscription_id = 2
+        return [scheduler.Candidate(i, i, 1) for i in items if i > cursor.after_subscription_id]
+
+    def process(session, identity):
+        calls.append(identity)
+        items[identity].state = "succeeded" if kind == "processing" else "processing"
+        clock[0] += 0.051
+        return object()
+
+    monkeypatch.setattr(scheduler, "select_candidates", select)
+    monkeypatch.setattr(
+        scheduler.delivery,
+        "observe_terminal" if kind == "processing" else "dispatch_delivery",
+        process,
+    )
+    cursor = scheduler.FairCursor()
+    first = scheduler.run_delivery_pass(sessions, kind, cursor, monotonic=lambda: clock[0])
+    assert first.selected == 2 and first.attempted == first.progressed == 1
+    assert first.budget_exhausted and cursor.after_subscription_id == 1
+    assert len(entries) == 2 and calls == [1] and len(commits) == 1
+    second = scheduler.run_delivery_pass(sessions, kind, cursor, monotonic=lambda: clock[0])
+    assert second.selected == second.attempted == second.progressed == 1
+    assert len(entries) == 4 and calls == [1, 2] and len(commits) == 2
+    assert cursor == scheduler.FairCursor()
+
+
+@pytest.mark.parametrize("kind", ("pending", "processing"))
+def test_slow_real_candidate_queries_still_advance_bounded_transactions(
+    api_client, session_factory, monkeypatch, kind
+):
+    identities = []
+    with session_factory.begin() as session:
+        for number in range(2):
+            sub, activation = _subscription(session, number)
+            _, item = _receipt(session, sub, activation, 0, state=kind)
+            if kind == "processing":
+                execution = Execution(
+                    adapter_id=sub.adapter_id,
+                    version_id=activation.revision_id,
+                    trigger="subscription",
+                    input={},
+                    status="succeeded",
+                )
+                session.add(execution)
+                session.flush()
+                item.execution_id = execution.id
+            identities.append((sub.id, item.id))
+
+    clock = [0.0]
+    entries, calls = [], []
+    select = scheduler.select_candidates
+    observe = scheduler.delivery.observe_terminal
+
+    def slow_select(session, selected_kind, cursor):
+        candidates = select(session, selected_kind, cursor)
+        # Real PostgreSQL candidates, with deterministic >50ms query latency.
+        clock[0] += 0.060
+        return candidates
+
+    @contextmanager
+    def sessions():
+        entries.append(clock[0])
+        with session_factory() as session:
+            if len(entries) % 2 == 0:
+                clock[0] += 0.060
+            yield session
+
+    def process(session, identity):
+        calls.append(identity)
+        if kind == "processing":
+            observe(session, identity)
+        else:
+            # Inject transaction work cost while retaining real DB commit.
+            session.get(EventDelivery, identity).state = "processing"
+        clock[0] += 0.051
+        return object()
+
+    monkeypatch.setattr(scheduler, "select_candidates", slow_select)
+    monkeypatch.setattr(
+        scheduler.delivery,
+        "observe_terminal" if kind == "processing" else "dispatch_delivery",
+        process,
+    )
+    cursor = scheduler.FairCursor()
+    first = scheduler.run_delivery_pass(sessions, kind, cursor, monotonic=lambda: clock[0])
+    assert first.selected == 2 and first.attempted == first.progressed == 1
+    assert first.budget_exhausted and cursor.after_subscription_id == identities[0][0]
+    assert len(entries) == 2 and calls == [identities[0][1]]
+    with session_factory() as session:
+        assert session.get(EventDelivery, identities[0][1]).state == (
+            "succeeded" if kind == "processing" else "processing"
+        )
+        assert session.get(EventDelivery, identities[1][1]).state == kind
+    second = scheduler.run_delivery_pass(sessions, kind, cursor, monotonic=lambda: clock[0])
+    assert second.selected == second.attempted == second.progressed == 1
+    assert len(entries) == 4 and calls == [item for _, item in identities]
+    assert cursor == scheduler.FairCursor()
+
+
 def test_pass_rollback_retains_responsibility_and_does_not_report_progress(
     api_client, session_factory, monkeypatch
 ):
@@ -658,7 +780,7 @@ def test_persistent_relay_keeps_confirmed_prefix_and_retries_only_unconfirmed_su
 
 
 @pytest.mark.parametrize("hang_at", ("channel", "confirm", "publish"))
-def test_reused_channel_keeps_per_publish_deadline(monkeypatch, hang_at):
+def test_first_channel_handshake_and_publish_have_a_deadline(monkeypatch, hang_at):
     monkeypatch.setattr(settings, "rabbitmq_publish_timeout_seconds", 0.05)
     connection = _HangingConnection(hang_at)
     publisher = outbox.RelayPublisher(lambda: connection)
@@ -672,6 +794,43 @@ def test_reused_channel_keeps_per_publish_deadline(monkeypatch, hang_at):
         assert connection.is_closed is True
     finally:
         publisher.close()
+
+
+def test_reused_channel_keeps_per_publish_deadline(monkeypatch):
+    monkeypatch.setattr(settings, "rabbitmq_publish_timeout_seconds", 0.05)
+    connection = _HangingConnection("none")
+    publisher = outbox.RelayPublisher(lambda: connection)
+    before = outbox.publisher_health()["channels_in_use"]
+    publisher.connection({1})
+    channel_calls, publishes = [], []
+    channel = connection.channel_instance
+    original_channel, original_publish = connection.channel, channel.basic_publish
+
+    def open_channel():
+        channel_calls.append(True)
+        return original_channel()
+
+    def publish(**kwargs):
+        publishes.append(kwargs["properties"].message_id)
+        return original_publish(**kwargs)
+
+    monkeypatch.setattr(connection, "channel", open_channel)
+    monkeypatch.setattr(channel, "basic_publish", publish)
+    try:
+        outbox._publish_row(connection, _fake_dispatch_outbox_row(), publisher=publisher)
+        assert publisher.channel is channel and connection.is_open
+        assert len(channel_calls) == len(publishes) == 1
+        connection.hang_at = "publish"
+        start = time.monotonic()
+        with pytest.raises(outbox.OutboxPublishError) as error:
+            outbox._publish_row(connection, _fake_dispatch_outbox_row(), publisher=publisher)
+        assert error.value.code == "publisher_confirm_timeout"
+        assert time.monotonic() - start < 0.75
+        assert publisher.channel is channel and len(channel_calls) == 1 and len(publishes) == 2
+        assert connection.is_closed and connection.aborted.is_set()
+    finally:
+        publisher.close()
+    assert outbox.publisher_health()["channels_in_use"] == before
 
 
 def test_lost_notifications_still_return_to_durable_polling():
