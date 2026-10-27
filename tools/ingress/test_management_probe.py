@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import io
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -108,6 +109,140 @@ def evidence_rows(conf):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_private_log_constructor_closes_owned_fd_and_preserves_foreign_paths(self):
+        for mode in ("owned", "replacement", "preexisting"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "log.private.jsonl"
+                first, fds = OSError("private-fdopen-error"), []
+                if mode == "preexisting":
+                    path.write_bytes(b"preexisting")
+
+                def fail_fdopen(fd, *_args, **_kwargs):
+                    fds.append(fd)
+                    if mode == "replacement":
+                        path.unlink()
+                        path.write_bytes(b"foreign-replacement")
+                    raise first
+
+                with patch.object(probe.os, "fdopen", side_effect=fail_fdopen) as fdopen:
+                    with self.assertRaises(FileExistsError if mode == "preexisting" else OSError) as failure:
+                        probe.PrivateLog(path, 1024)
+                if mode == "preexisting":
+                    fdopen.assert_not_called()
+                    self.assertEqual(path.read_bytes(), b"preexisting")
+                else:
+                    self.assertIs(failure.exception, first)
+                    with self.assertRaises(OSError):
+                        probe.os.fstat(fds[0])
+                    if mode == "replacement":
+                        self.assertEqual(path.read_bytes(), b"foreign-replacement")
+                    else:
+                        self.assertFalse(path.exists())
+
+    def test_private_log_constructor_cleanup_keeps_primary_exception(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "log.private.jsonl"
+            primary, calls = OSError("private-fdopen-error"), []
+            close = probe.os.close
+
+            def fail_fdopen(*_args, **_kwargs):
+                calls.append("fdopen")
+                raise primary
+
+            def close_then_fail(fd):
+                calls.append("close")
+                close(fd)
+                raise OSError("private-close-error")
+
+            def unlink_fails(*_args, **_kwargs):
+                calls.append("unlink")
+                raise OSError("private-unlink-error")
+
+            with patch.object(probe.os, "fdopen", side_effect=fail_fdopen), patch.object(probe.os, "close", side_effect=close_then_fail), patch.object(Path, "unlink", new=unlink_fails):
+                with self.assertRaises(OSError) as failure:
+                    probe.PrivateLog(path, 1024)
+            self.assertIs(failure.exception, primary)
+            self.assertEqual(calls, ["fdopen", "close", "unlink"])
+            self.assertEqual(primary.__notes__, ["private log fd close failed: OSError", "private log unlink failed: OSError"])
+
+    def test_sampler_close_failure_preserves_original_or_fails_closed(self):
+        class Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+        for original in (False, True):
+            with self.subTest(original=original), tempfile.TemporaryDirectory() as directory:
+                conf = config(Path(directory))
+                primary, close_error, closed = OSError("private-sampler-error"), OSError("private-close-error"), []
+
+                async def run():
+                    if original:
+                        raise primary
+                    return {}
+
+                def close():
+                    closed.append(True)
+                    raise close_error
+
+                sampler = SimpleNamespace(start_ns=0, binding=probe.binding_witness(conf), run=run)
+                httpx = SimpleNamespace(AsyncClient=lambda **_kwargs: Client(), AsyncHTTPTransport=lambda **_kwargs: None, Limits=lambda **_kwargs: None)
+                with patch.dict(sys.modules, {"httpx": httpx}), patch.object(probe, "PrivateLog", return_value=SimpleNamespace(close=close)), patch.object(probe, "Sampler", return_value=sampler), patch.object(probe, "write_private"), patch.object(probe, "clock_domain", return_value=DOMAIN), patch.object(probe, "process_identity", return_value=PROCESS), patch.object(probe, "analyze") as analyze:
+                    with self.assertRaises(OSError) as failure:
+                        asyncio.run(probe.start_probe(conf))
+                    analyze.assert_not_called()
+                self.assertIs(failure.exception, primary if original else close_error)
+                self.assertEqual(closed, [True])
+                if original:
+                    self.assertEqual(primary.__notes__, ["sampler log close failed: OSError"])
+
+    def test_write_private_preserves_first_error_and_attempts_both_cleanups(self):
+        for stage in ("append", "fsync", "link", "interrupt"):
+            with self.subTest(stage=stage):
+                calls = []
+                primary = KeyboardInterrupt() if stage == "interrupt" else OSError("private-first-error")
+
+                def action(name, error=None):
+                    def run(*_args, **_kwargs):
+                        calls.append(name)
+                        if error is not None:
+                            raise error
+                    return run
+
+                log = SimpleNamespace(handle=SimpleNamespace(fileno=lambda: 11), append=action("append", primary if stage in ("append", "interrupt") else None), close=action("close", OSError("private-close-error")))
+                with patch.object(probe, "PrivateLog", return_value=log), patch.object(probe.os, "fsync", side_effect=action("fsync", primary if stage == "fsync" else None)), patch.object(probe.os, "link", side_effect=action("link", primary if stage == "link" else None)), patch.object(Path, "unlink", new=action("unlink", OSError("private-unlink-error"))):
+                    with self.assertRaises(type(primary)) as failure:
+                        probe.write_private(Path("/tmp/receipt-unit.private.json"), {"safe": True})
+                self.assertIs(failure.exception, primary)
+                expected = ["append"] + (["fsync"] if stage in ("fsync", "link") else []) + (["link"] if stage == "link" else []) + ["close", "unlink"]
+                self.assertEqual(calls, expected)
+                self.assertEqual(primary.__notes__, ["private receipt close failed: OSError", "private receipt unlink failed: OSError"])
+                self.assertNotIn("private-close-error", str(primary.__notes__))
+
+    def test_write_private_cleanup_failure_never_claims_success(self):
+        for close_fails, unlink_fails in ((True, False), (False, True), (True, True)):
+            with self.subTest(close_fails=close_fails, unlink_fails=unlink_fails):
+                calls = []
+                close_error, unlink_error = OSError("private-close-error"), OSError("private-unlink-error")
+
+                def action(name, error=None):
+                    def run(*_args, **_kwargs):
+                        calls.append(name)
+                        if error is not None:
+                            raise error
+                    return run
+
+                log = SimpleNamespace(handle=SimpleNamespace(fileno=lambda: 11), append=action("append"), close=action("close", close_error if close_fails else None))
+                with patch.object(probe, "PrivateLog", return_value=log), patch.object(probe.os, "fsync", side_effect=action("fsync")), patch.object(probe.os, "link", side_effect=action("link")), patch.object(Path, "unlink", new=action("unlink", unlink_error if unlink_fails else None)):
+                    with self.assertRaises(OSError) as failure:
+                        probe.write_private(Path("/tmp/receipt-unit.private.json"), {"safe": True})
+                self.assertIs(failure.exception, close_error if close_fails else unlink_error)
+                self.assertEqual(calls, ["append", "fsync", "link", "close", "unlink"])
+                if close_fails and unlink_fails:
+                    self.assertEqual(failure.exception.__notes__, ["private receipt unlink failed: OSError"])
+
     def test_api_origin_and_source_are_bound_without_logging_plaintext(self):
         conf = config(Path("/tmp/probe-unit"))
         original = probe.config_fingerprint(conf)

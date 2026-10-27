@@ -76,7 +76,26 @@ def bounded_json(path: Path, limit: int = 65536) -> Any:
 class PrivateLog:
     def __init__(self, path: Path, limit: int) -> None:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.handle = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        identity = None
+        try:
+            info = os.fstat(fd)
+            identity = (info.st_dev, info.st_ino)
+            self.handle = os.fdopen(fd, "wb")
+        except BaseException as failure:
+            try:
+                os.close(fd)
+            except BaseException as cleanup:
+                failure.add_note(f"private log fd close failed: {type(cleanup).__name__}")
+            try:
+                info = path.stat(follow_symlinks=False)
+                if identity is not None and (info.st_dev, info.st_ino) == identity:
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+            except BaseException as cleanup:
+                failure.add_note(f"private log unlink failed: {type(cleanup).__name__}")
+            raise
         self.limit, self.size = limit, 0
 
     def append(self, value: Any) -> None:
@@ -94,15 +113,25 @@ class PrivateLog:
 def write_private(path: Path, value: Any) -> None:
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     log = PrivateLog(temporary, 256 * 1024)
+    failure: BaseException | None = None
     try:
         log.append(value)
         os.fsync(log.handle.fileno())
         # The final name becomes visible only when the complete receipt exists.
         # link is atomic and cannot replace earlier evidence.
         os.link(temporary, path)
-    finally:
-        log.close()
-        temporary.unlink(missing_ok=True)
+    except BaseException as error:
+        failure = error
+    for name, cleanup in (("close", log.close), ("unlink", lambda: temporary.unlink(missing_ok=True))):
+        try:
+            cleanup()
+        except BaseException as error:
+            if failure is None:
+                failure = error
+            else:
+                failure.add_note(f"private receipt {name} failed: {type(error).__name__}")
+    if failure is not None:
+        raise failure
 
 
 def paths(config: dict[str, Any]) -> dict[str, Path]:
@@ -725,13 +754,22 @@ async def start_probe(config: dict[str, Any]) -> dict[str, Any]:
         raise ProbeError("stale_stop_file")
     domain = clock_domain()
     sink = PrivateLog(names["log"], config["log_max_bytes"])
+    original_error = None
     try:
         async with httpx.AsyncClient(timeout=config["request_timeout_seconds"], follow_redirects=False, trust_env=False, transport=httpx.AsyncHTTPTransport(retries=0, limits=httpx.Limits(max_connections=3, max_keepalive_connections=3))) as client:
             sampler = Sampler(config, sink, HttpReader(client, config), domain=domain, ready_sink=lambda value: write_private(names["ready"], value), stop_requested=names["stop"].exists)
             write_private(names["pid"], {"schema": SCHEMA, "run_id": config["run_id"], **sampler.binding, "clock_domain": domain, **process_identity(os.getpid()), "sampler_start_ns": sampler.start_ns, "deadline_ns": sampler.start_ns + config["deadline_seconds"] * NS})
             await sampler.run()
+    except BaseException as failure:
+        original_error = failure
+        raise
     finally:
-        sink.close()
+        try:
+            sink.close()
+        except BaseException as cleanup:
+            if original_error is None:
+                raise
+            original_error.add_note(f"sampler log close failed: {type(cleanup).__name__}")
     result = analyze(config)
     write_private(names["analysis"], result)
     return result
