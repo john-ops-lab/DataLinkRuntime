@@ -1,5 +1,7 @@
 # Spec Delta
 
+本次D7.12的实现与验证范围见 [覆盖表E85–E86](../../b1-b5-coverage.md#e85e86-d712实施与小链索引)：C9候选已完成36项受影响纯检查、真实collector＋ready三项PG和HTTP20/native200/忙闲小链；这些证据不改变下列资源、期限、逐条责任与确认合同，也不表示原正式万条、完整观察或最终OCR已通过。
+
 ## MODIFIED Requirements
 
 ### Requirement: 稳定身份与首次输入不受重投元数据影响

@@ -277,6 +277,10 @@ D7.10的19项纯检查、3项真实融合PG及HTTP20/实际native200/忙闲代�
 - 验证只覆盖此次变化：构造真实早seal、有限prefix/字节/FIFO、更早ready/到期/活跃或满组不促封、旧deadline不重置、原timer取消、close及native hint变陈、取消/submit拒绝/早完成与跨route公平的纯边界，并复验受影响原19项；不全量后端。3项PG须真实collector加已有ready进入同一native，分别覆盖正常混合认证/重复/冲突，以及真实提交前/提交后错误后的原ID原文重试和账本不重复，替代旧ready-only3项而非重复它们。
 - 独立GPT差异审查后，按影响完成同资源HTTP20、200及一个实际忙闲重叠代表链，保留实际native单位/人数、双完整oracle、正常停源与普通环境恢复。新PG与纯边界可强制证明earlyseal分支；普通小链自然是否发生按原件报告，不凭单元数量差推出收益，也不另造一套促封测量框架。原3SLA和HTTP提交前后故障保留接口/源码适用范围，不无依据重跑矩阵；若实现确实改变其计时/切点/所有权接口，才补相应最小用例。小链通过后再据证据决定原正式标准的一次重验，最终统一OCR仍在全部开发验证完成后，容量门和最终MQ正常轮继续pending。
 
+2026-10-27，D7.12已在`c9da9bb931225a00017e4ca98a355ac3220369d3`实现（E85）：仅API入口初始化接线与ReadyQueue准备步骤改变，原`_take/_repack/_settle/close`等共10个原Ready方法、6个原资源方法的内容边界已独立核对。旧源码两个真实pool反例分别只提交8/9条而非16；新17项直接纯边界与受影响原19项共36项通过、0 skip，原文件/失败保留。真实collector＋ready的normal/提交前失败/提交后失败三项PG首轮通过、0 skip：每次先有含3项的ready组及3项未封collector，通过锁外原flush进入恰一个含6个原对象的native，所有混合响应、未知结果、同ID原文重试及账本不重复断言保持；这三项替代旧ready-only三项，未启动真实来源集群或Worker。
+
+同候选HTTP20、实际native200与忙200/闲20代表链均完成（E86）。三条场景各自双完整oracle通过，正常停源/Admission/Broker归零并精确恢复原普通环境。实际200有19个native单元、19次真实commit正常返回和200次fresh clock，确认ready融合11次、partial0、provenance未知0；claim后collector机会计数0只说明该测点本样本未触发，未测earlyseal调用次数。忙闲请求真实相交0.285137730秒，一次顺序见证先闲accepted=succeeded20，后忙accepted78/succeeded15/pending8/processing55。完成上界包含启动/轮询，诊断还含观察开销；不由旧21与新19单元差或机会归零推导因果/收益，不将顺序见证当2秒SLA。旧SLA/HTTP切点与MQ证据仍只按原SHA/未变组件范围引用，未冒称在C9重跑整套。正式万条、完整600秒观察及最终统一OCR仍待完成。
+
 ### D8. 参考目标的自动恢复策略
 
 首轮选择 **参考 Python Adapter 内有界重试**，避免本单把全部 business_error 改成平台重试。只对白名单连接错误、SQLSTATE 08 类、40001 和 40P01 重试；唯一键内容冲突、语法/权限/数据错误立即明确失败。结果不明通过同稳定键的幂等写入与内容核验恢复，不盲目增加业务副作用。
