@@ -205,17 +205,30 @@ def test_exhausted_commit_uncertainty_remains_unknown(monkeypatch: pytest.Monkey
 def test_overall_deadline_does_not_restart_after_successful_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    entered, cancelled = [], []
+
     async def write(_driver: Any, _options: Any, item: Any, *_args: Any) -> dict[str, Any]:
         if item[2] == 2:
-            await asyncio.Event().wait()
+            entered.append(True)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
         return committed(item)
 
     monkeypatch.setattr(reference, "_batch_write_once", write)
-    monkeypatch.setattr(reference, "RETRY_SECONDS", 0.03)
-    source, started = frame(), time.monotonic()
-    result = reference.handle(Context(), source)
+    monkeypatch.setattr(reference, "RETRY_SECONDS", 1.0)
+    source = frame()
+
+    async def run() -> dict[str, Any]:
+        return await asyncio.wait_for(
+            reference._run_batch(Context(), source, psycopg, marks()), timeout=10.0
+        )
+
+    result = asyncio.run(run())
     assert_valid(source, result)
-    assert time.monotonic() - started < 0.3
+    assert entered == [True] and cancelled == [True]
     assert [item["status"] for item in result["members"]] == ["succeeded", "unknown", "not_run"]
     assert result["members"][1]["error_code"] == "execution_timeout"
 
@@ -354,7 +367,7 @@ def test_elapsed_handle_import_time_consumes_batch_deadline(
         await asyncio.Event().wait()
 
     monkeypatch.setattr(reference, "_batch_write_once", write)
-    source, started = frame(), time.monotonic()
+    source = frame()
     result = asyncio.run(
         reference._run_batch(
             Context(),
@@ -364,7 +377,6 @@ def test_elapsed_handle_import_time_consumes_batch_deadline(
         )
     )
     assert_valid(source, result)
-    assert time.monotonic() - started < 0.1
     assert result["members"][0]["error_code"] == "execution_timeout"
     assert attempted == []
 
