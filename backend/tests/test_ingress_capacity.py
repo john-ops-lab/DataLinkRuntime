@@ -155,7 +155,10 @@ def test_unavailable_disk_is_not_reported_as_message_damage(
     assert error.value.detail["code"] == "ingress_disk_unavailable"
 
 
-def test_http_capability_defaults_closed_and_can_be_explicitly_enabled() -> None:
+def test_http_capability_defaults_closed_and_can_be_explicitly_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DLR_HTTP_INGRESS_ENABLED", raising=False)
     assert Settings().http_ingress_enabled is False
     assert Settings(DLR_HTTP_INGRESS_ENABLED=True).http_ingress_enabled is True
 
