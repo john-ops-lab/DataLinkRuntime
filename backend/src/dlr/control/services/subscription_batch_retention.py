@@ -23,7 +23,7 @@ def _cleanup(
     from dlr.control.services import subscription_delivery as delivery_service
 
     adapter, sub = delivery_service.lock_subscription(session, subscription_id)
-    empty = {"batches": 0, "members": 0, "bytes_released": 0}
+    empty = {"batches": 0, "members": 0, "standalone_deliveries": 0, "bytes_released": 0}
     if not session.scalar(
         select(exists().where(SubscriptionExecutionBatch.subscription_id == subscription_id))
     ):
@@ -33,6 +33,7 @@ def _cleanup(
         and sub.deleted_at is not None
         and sub.desired_state == "disabled"
         and sub.connection_state == "stopped"
+        and not delivery_service.has_unfinished(session, sub.id)
     ):
         raise domain_error(
             409, "batch_is_protected", "Permanent cleanup requires the archived and drained source"
@@ -40,6 +41,74 @@ def _cleanup(
     now = database_now(session)
     cutoff = now - timedelta(days=30)
     member_budget = max(1, min(limit, 100))
+    quotas = delivery_service._quotas(session, sub.id)
+    result = empty
+    used_budget = 0
+    if not permanent:
+        # A skipped delivery may predate the first physical batch. Reclaim it
+        # as a bounded prefix before selecting newer batches, while keeping the
+        # Receipt and its current outcome visible.
+        newer = aliased(EventDelivery)
+        newer_member = aliased(SubscriptionExecutionBatchMember)
+        has_newer_batch = exists(
+            select(newer.id)
+            .join(newer_member, newer_member.delivery_id == newer.id)
+            .where(
+                newer.receipt_id == EventDelivery.receipt_id,
+                newer.ordinal > EventDelivery.ordinal,
+            )
+        ).correlate(EventDelivery)
+        prefixes = session.execute(
+            select(EventDelivery, EventReceipt)
+            .options(defer(EventReceipt.source_raw_body), defer(EventReceipt.envelope))
+            .join(EventReceipt, EventReceipt.id == EventDelivery.receipt_id)
+            .where(
+                EventReceipt.subscription_id == sub.id,
+                EventReceipt.state.in_(delivery_service.TERMINAL),
+                EventReceipt.terminal_at.is_not(None),
+                EventReceipt.terminal_at <= cutoff,
+                EventDelivery.state == "skipped",
+                EventDelivery.execution_id.is_(None),
+                EventDelivery.batch_execution_id.is_(None),
+                has_newer_batch,
+            )
+            .order_by(EventDelivery.receipt_id, EventDelivery.ordinal)
+            .limit(member_budget)
+            .with_for_update(of=(EventDelivery, EventReceipt))
+        ).all()
+        if prefixes:
+            prefix_ids = [item.id for item, _ in prefixes]
+            audits = session.execute(
+                select(
+                    func.count(), func.coalesce(func.sum(DeliveryDisposition.audit_bytes), 0)
+                ).where(
+                    DeliveryDisposition.delivery_id.in_(prefix_ids),
+                    DeliveryDisposition.audit_bytes > 0,
+                )
+            ).one()
+            released_count = sum(
+                1
+                for item, receipt in prefixes
+                if receipt.retained_payload_bytes > 0 or item.retained_execution_bytes > 0
+            )
+            released_bytes = sum(
+                item.retained_execution_bytes
+                + item.retained_metadata_bytes
+                + item.retained_batch_bytes
+                for item, _ in prefixes
+            )
+            session.execute(
+                delete(DeliveryDisposition).where(DeliveryDisposition.delivery_id.in_(prefix_ids))
+            )
+            session.execute(delete(EventDelivery).where(EventDelivery.id.in_(prefix_ids)))
+            for quota in quotas:
+                quota.history_count -= released_count + audits[0]
+                quota.history_bytes -= released_bytes + audits[1]
+                quota.dedupe_count -= audits[0]
+            used_budget = len(prefixes)
+            result["standalone_deliveries"] = used_budget
+            result["bytes_released"] += released_bytes + audits[1]
+            session.flush()
     protected = exists(
         select(SubscriptionExecutionBatchMember.delivery_id)
         .join(EventReceipt, EventReceipt.id == SubscriptionExecutionBatchMember.receipt_id)
@@ -54,24 +123,16 @@ def _cleanup(
     member = aliased(SubscriptionExecutionBatchMember)
     current = aliased(EventDelivery)
     older = aliased(EventDelivery)
-    older_delivery = (
-        exists(
-            select(older.id).where(
-                older.receipt_id == current.receipt_id, older.ordinal < current.ordinal
-            )
+    older_delivery = exists(
+        select(older.id).where(
+            older.receipt_id == current.receipt_id, older.ordinal < current.ordinal
         )
-        .correlate(current)
-    )
-    has_older_delivery = (
-        exists(
-            select(member.delivery_id)
-            .join(current, current.id == member.delivery_id)
-            .where(
-                member.execution_id == SubscriptionExecutionBatch.execution_id, older_delivery
-            )
-        )
-        .correlate(SubscriptionExecutionBatch)
-    )
+    ).correlate(current)
+    has_older_delivery = exists(
+        select(member.delivery_id)
+        .join(current, current.id == member.delivery_id)
+        .where(member.execution_id == SubscriptionExecutionBatch.execution_id, older_delivery)
+    ).correlate(SubscriptionExecutionBatch)
     candidates = session.scalars(
         select(SubscriptionExecutionBatch)
         .join(Execution, Execution.id == SubscriptionExecutionBatch.execution_id)
@@ -80,17 +141,15 @@ def _cleanup(
             Execution.status.in_(delivery_service.EXECUTION_TERMINAL),
             SubscriptionExecutionBatch.result.is_not(None),
             ~protected,
-            ~has_older_delivery,
+            ~has_older_delivery if not permanent else True,
         )
         .order_by(SubscriptionExecutionBatch.created_at, SubscriptionExecutionBatch.execution_id)
         .limit(member_budget)
         .with_for_update(of=SubscriptionExecutionBatch)
     ).all()
-    result = empty
-    quotas = delivery_service._quotas(session, sub.id)
     for batch in candidates:
-        if result["members"] + batch.member_count > member_budget:
-            if not result["members"] and batch.member_count > member_budget:
+        if used_budget + batch.member_count > member_budget:
+            if not used_budget and batch.member_count > member_budget:
                 raise domain_error(
                     409, "batch_cleanup_budget_too_small", "Cleanup budget cannot fit a batch"
                 )
@@ -151,6 +210,7 @@ def _cleanup(
             quota.dedupe_count -= audits[0]
         result["batches"] += 1
         result["members"] += len(rows)
+        used_budget += len(rows)
         result["bytes_released"] += released_bytes + audits[1]
     session.flush()
     return result

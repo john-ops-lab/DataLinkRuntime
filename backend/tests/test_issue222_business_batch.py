@@ -509,6 +509,47 @@ def test_cleanup_reports_member_budget_too_small_without_losing_progress(
         facts(session, batch_world)
 
 
+def test_skipped_unbatched_prefix_is_reclaimed_before_replay_batch(batch_world, session_factory):
+    from dlr.control.services import http_ingress
+
+    with session_factory.begin() as session:
+        receipt = receive(session, batch_world)
+        receipt_id = receipt.id
+        original = session.scalar(
+            select(EventDelivery).where(EventDelivery.receipt_id == receipt_id)
+        )
+        assert original.batch_execution_id is None and original.execution_id is None
+        old_id = original.id
+        delivery.skip_event(session, receipt_id, "skip-before-batch", None, "skip fixture")
+        sub = session.get(EventSubscription, batch_world["sub"])
+        sub.desired_state, sub.connection_state = "disabled", "stopped"
+        replay = delivery.replay_event(session, receipt_id, "replay-after-skip", None, "reconcile")
+        execution = delivery.dispatch_delivery(session, replay.id)
+        finish(session, execution)
+        execution_id = execution.id
+        receipt.terminal_at = database_now(session) - timedelta(days=31)
+        initial = http_ingress._status(session, "fixture", receipt)
+        assert initial["execution_id"] == execution_id
+        assert initial["batch_member_outcome"] == "succeeded"
+        facts(session, batch_world)
+
+    with session_factory.begin() as session:
+        result = batch.cleanup_batches(session, batch_world["sub"], limit=1)
+        assert result["standalone_deliveries"] == 1 and result["batches"] == 0
+        assert session.get(EventDelivery, old_id) is None
+        assert session.get(SubscriptionExecutionBatch, execution_id) is not None
+        assert (
+            http_ingress._status(session, "fixture", session.get(EventReceipt, receipt_id))
+            == initial
+        )
+        facts(session, batch_world)
+    with session_factory.begin() as session:
+        result = batch.cleanup_batches(session, batch_world["sub"], limit=1)
+        assert result["members"] == result["batches"] == 1
+        assert session.get(SubscriptionExecutionBatch, execution_id) is None
+        facts(session, batch_world)
+
+
 def test_replay_projection_survives_cleanup_while_older_batch_is_protected(
     batch_world, session_factory
 ):
