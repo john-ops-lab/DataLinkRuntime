@@ -182,6 +182,31 @@ def test_stop_wait_commit_restores_archive_before_returning(retired_batch, sessi
         assert session.get(SubscriptionExecutionBatch, retired_batch["execution"]) is None
 
 
+def test_rejected_delete_does_not_commit_batch_history_purge(retired_batch, session_factory):
+    with session_factory.begin() as session:
+        adapter = session.get(Adapter, retired_batch["adapter"])
+        queued = reliable_execution.accept_execution(
+            session,
+            adapter,
+            trigger="manual",
+            runtime_input=None,
+            input_source_type="none",
+            input_config_revision=1,
+            input_snapshot={"source_type": "none", "revision": 1},
+        )
+        identity = queued.id
+        before = quota_values(session, retired_batch)
+    with session_factory() as session:
+        with pytest.raises(HTTPException) as caught:
+            adapters.delete_adapter(session, retired_batch["adapter"])
+        assert caught.value.status_code == 409
+        assert caught.value.detail["code"] == "adapter_runtime_locked"
+        session.commit()
+    with session_factory() as session:
+        assert_retained(session, retired_batch, before)
+        assert session.get(Execution, identity).status == "queued"
+
+
 @pytest.mark.parametrize("failure", ["business", "sql_statement", "sql_flush"])
 def test_purge_failure_preserves_original_error_and_rolls_back_custody(
     retired_batch, session_factory, monkeypatch, failure
