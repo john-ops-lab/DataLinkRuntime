@@ -11,24 +11,33 @@ from sqlalchemy import event, select
 from dlr.common.config import settings
 from dlr.control.api.subscriptions import serialize_event
 from dlr.control.models import (
+    ActivationCredentialReference,
+    AdapterCredentialBinding,
+    AdapterVersion,
+    DeliveryDisposition,
     EventDelivery,
     EventReceipt,
     EventSubscription,
     Execution,
     ExecutionOutbox,
     SourceCheckpoint,
+    SubscriptionActivation,
+    SubscriptionConfigVersion,
     SubscriptionExecutionBatch,
+    SubscriptionQuota,
 )
 from dlr.control.schemas.reliable_runtime import AttemptResultBody
 from dlr.control.services import attempt as attempts
 from dlr.control.services import execution as executions
 from dlr.control.services import http_ingress
 from dlr.control.services import subscription_delivery as delivery
+from dlr.control.services import subscription_management as management
 from dlr.control.services.input_config import database_now
 from dlr.control.services.subscription_batch_view import delivery_records
 from test_issue219_delivery import receive as receive_single
 from test_issue222_business_batch import batch_world as core_batch_world
 from test_issue222_business_batch import facts, produce
+from test_issue222_business_batch import receive as receive_batch
 from test_issue222_business_batch import world as foundation_world
 
 world = foundation_world
@@ -96,6 +105,150 @@ def test_delivery_view_uses_the_replay_activation_without_adding_rows_or_queries
         latest, statements = projection(session, receipt, latest_only=True)
         assert len(statements) == len(latest) == 1
         assert latest[0] == rows[1] and "batch_view_modes" not in session.info
+
+
+@pytest.mark.parametrize(
+    ("original_mode", "current_mode"),
+    [("per_event", "business_batch"), ("business_batch", "per_event")],
+)
+def test_current_replay_rejects_cross_mode_and_rolls_back_while_original_replay_keeps_binding(
+    api_client: Any,
+    batch_world: Any,
+    session_factory: Any,
+    original_mode: str,
+    current_mode: str,
+) -> None:
+    credential = api_client.post(
+        "/api/credentials",
+        json={
+            "name": "replay-source",
+            "type": "password",
+            "fields": {"username": "fixture", "password": "fixture-password"},
+        },
+    )
+    assert credential.status_code == 201, credential.text
+    credential_id = credential.json()["id"]
+    with session_factory.begin() as session:
+        config = session.get(SubscriptionConfigVersion, batch_world["config"])
+        config.config = {**config.config, "mode": original_mode, "credential_id": credential_id}
+        config.source_credential_id = credential_id
+        original_config = deepcopy(config.config)
+        revision = session.get(AdapterVersion, batch_world["revision"])
+        assert revision.runtime_config["event_batch_schema"] == "dlr.event.batch.v1"
+        # This fixture has no native client. A binding also exercises rollback
+        # of the temporary current Activation's credential references.
+        session.add(
+            AdapterCredentialBinding(
+                adapter_id=batch_world["adapter"],
+                credential_id=credential_id,
+                env_key="SOURCE_PASSWORD",
+                field="password",
+            )
+        )
+        receipt = receive_batch(session, batch_world)
+        receipt_id, activation_id, original_epoch = (
+            receipt.id,
+            receipt.activation_id,
+            receipt.source_epoch,
+        )
+        delivery.skip_event(session, receipt_id, "resolve-before-mode-change", None, "fixture")
+    endpoint = f"/api/event-subscriptions/{batch_world['sub']}"
+    stopped = api_client.post(endpoint + "/disable", json={"expected_config_version": 1})
+    assert stopped.status_code == 200, stopped.text
+    with session_factory.begin() as session:
+        management.listener_closed(
+            session, batch_world["sub"], "owner-a", batch_world["generation"]
+        )
+    changed = api_client.patch(
+        endpoint,
+        json={
+            "expected_config_version": 1,
+            "config": {**original_config, "mode": current_mode},
+            "new_epoch": True,
+        },
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["config_version"] == 2
+    assert changed.json()["source_epoch"] != original_epoch
+    assert changed.json()["desired_state"] == "disabled"
+    assert changed.json()["connection_state"] == "stopped"
+    replay_endpoint = endpoint + f"/events/{receipt_id}"
+    preview = api_client.get(replay_endpoint + "/replay-context")
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["current"]["config_version"] == 2
+    assert preview.json()["current"]["revision_id"] == batch_world["revision"]
+
+    def snapshot() -> dict[str, Any]:
+        # Each call reads a new Session: the HTTP dependency must roll back
+        # the Activation it flushed before rejecting the mode change.
+        with session_factory() as session:
+            statements = {
+                "receipt": select(EventReceipt).where(EventReceipt.id == receipt_id),
+                "deliveries": select(EventDelivery).where(EventDelivery.receipt_id == receipt_id),
+                "activations": select(SubscriptionActivation).where(
+                    SubscriptionActivation.subscription_id == batch_world["sub"]
+                ),
+                "references": select(ActivationCredentialReference)
+                .join(SubscriptionActivation)
+                .where(SubscriptionActivation.subscription_id == batch_world["sub"]),
+                "dispositions": select(DeliveryDisposition).where(
+                    DeliveryDisposition.subscription_id == batch_world["sub"]
+                ),
+                "quotas": select(SubscriptionQuota)
+                .where(SubscriptionQuota.scope.in_((f"sub:{batch_world['sub']}", "global")))
+                .order_by(SubscriptionQuota.scope),
+            }
+            return {
+                name: [
+                    {
+                        column.key: deepcopy(getattr(row, column.key))
+                        for column in row.__table__.columns
+                    }
+                    for row in session.scalars(statement)
+                ]
+                for name, statement in statements.items()
+            }
+
+    before = snapshot()
+    rejected = api_client.post(
+        replay_endpoint + "/replay",
+        json={
+            "request_id": "reject-current-mode",
+            "reason": "cross-mode regression",
+            "expected_config_version": 2,
+            "use_current_configuration": True,
+            "expected_preview_token": preview.json()["preview_token"],
+        },
+    )
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["detail"]["code"] == "subscription_replay_mode_conflict"
+    assert snapshot() == before
+    # PostgreSQL sequences may advance on the rolled-back Activation flush;
+    # responsibility rows and quotas, rather than sequence values, must match.
+    with session_factory() as session:
+        assert (
+            session.get(SubscriptionConfigVersion, batch_world["config"]).config == original_config
+        )
+        assert session.get(EventReceipt, receipt_id).activation_id == activation_id
+        facts(session, batch_world)
+    original = api_client.post(
+        replay_endpoint + "/replay",
+        json={
+            "request_id": "replay-original-mode",
+            "reason": "preserve original mode",
+            "expected_config_version": 2,
+            "use_current_configuration": False,
+        },
+    )
+    assert original.status_code == 201, original.text
+    with session_factory() as session:
+        replay = session.get(EventDelivery, original.json()["delivery_id"])
+        receipt = session.get(EventReceipt, receipt_id)
+        assert replay.ordinal == 2 and replay.activation_override_id is None
+        assert replay.revision_override_id is None and receipt.activation_id == activation_id
+        assert receipt.source_epoch == original_epoch
+        assert delivery_records(session, receipt)[-1]["processing_mode"] == original_mode
+        facts(session, batch_world)
 
 
 def created(factory: Any, world: Any, *, claim: bool = True) -> tuple[Any, ...]:
