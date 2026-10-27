@@ -20,6 +20,8 @@ from dlr.control.services.input_config import database_now
 from test_adapters import create_adapter
 from test_ingress_capacity import formal_profile
 
+pytestmark = pytest.mark.usefixtures("deterministic_capacity_space")
+
 
 def test_capacity_adoption_audits_once_and_invalid_local_json_keeps_retained_budget(
     api_client: TestClient,
@@ -205,18 +207,17 @@ def test_adopted_profile_restart_does_not_reserve_its_full_history_budget_again(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import json
-    from types import SimpleNamespace
 
     gib = 1024**3
     monkeypatch.setattr(
         settings, "ingress_capacity_profile", json.dumps({"global": {"history_bytes": 16 * gib}})
     )
-    monkeypatch.setattr(capacity.shutil, "disk_usage", lambda _: SimpleNamespace(free=32 * gib))
+    monkeypatch.setattr(capacity, "_storage_free_bytes", lambda: 32 * gib)
     with session_factory.begin() as session:
         assert capacity.activate_profile(session)
     # Retained history may already occupy space after an ordinary restart.
     # Re-adopting the same fingerprint does not allocate a second full budget.
-    monkeypatch.setattr(capacity.shutil, "disk_usage", lambda _: SimpleNamespace(free=10 * gib))
+    monkeypatch.setattr(capacity, "_storage_free_bytes", lambda: 10 * gib)
     with session_factory.begin() as session:
         assert capacity.activate_profile(session)
     monkeypatch.setattr(

@@ -22,6 +22,8 @@ from test_issue219_delivery import receive
 from test_issue219_delivery import world as foundation_world
 from test_issue222_queue_capacity_profile import context
 
+pytestmark = pytest.mark.usefixtures("deterministic_capacity_space")
+
 world = foundation_world
 
 

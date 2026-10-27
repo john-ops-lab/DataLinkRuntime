@@ -19,6 +19,8 @@ from test_issue222_http_ingress import http_world as foundation_http_world
 from test_issue222_http_ingress import post
 from test_issue222_http_ingress import world as foundation_world
 
+pytestmark = pytest.mark.usefixtures("deterministic_capacity_space")
+
 http_world = foundation_http_world
 world = foundation_world
 

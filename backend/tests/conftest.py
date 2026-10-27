@@ -46,6 +46,15 @@ def test_ingress_storage_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return tmp_path_factory.mktemp("ingress-storage")
 
 
+@pytest.fixture
+def deterministic_capacity_space(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provide isolated ample storage for tests unrelated to disk behavior."""
+    from dlr.control.services import ingress_capacity
+
+    monkeypatch.setattr(ingress_capacity, "_storage_free_bytes", lambda: 64 * 1024**3)
+    monkeypatch.setattr(ingress_capacity, "_disk_guard", ingress_capacity.DiskCapacityGuard())
+
+
 @pytest.fixture(autouse=True)
 def configure_test_ingress_storage(
     monkeypatch: pytest.MonkeyPatch, test_ingress_storage_root: Path
