@@ -251,6 +251,16 @@ D7.9实测显示每个小单元重复的scope、容量冷加载及commit成本�
 - 先以真实Thread/Future检查整组合并、9+11分前缀、估算字节界限、过期/无新项不等待、跨路由公平和受影响的取消/关闭/submit异常/早完成所有权；PG验证须真实经过两个ready组组成一个原生单元，核独立响应、责任/计费和提交前后未知。只跑受影响selectors，不全量测试。
 - D7.8/D7.9的collector组与native gid一对一观测不可直接用于新算法。后继私有计时明确以实际`_run_group_sync`原生调用分配unit id，保留逐单元人数、真实阶段及结果；不伪造原ready/collector事件或把漏组当减少。复用已有透明阶段计时和身份/有界输出规则，不新增产品追踪框架、SQL或回调。独立审查后，同资源20/200及一个忙闲路由代表链逐项对账，核实际单元次数和200次新项clock，再决定是否重验原正式标准；不从小样本耗时外推容量，不扩大MQ故障矩阵。
 
+### D7.11 R10失败后只观测claim当刻的collector前缀机会
+
+D7.10的19项纯检查、3项真实融合PG及HTTP20/实际native200/忙闲代表链已完成（E78–E82），但同产品的正式R10仍失败（E83）：10000条首发窗4.878964219秒通过，60秒内仅实际接管8236条，原期望缺1764条。29534次POST中8212个202、21298个429、24次未知；原24个未知均已有平台记录，不能当成数据丢失或未接管。677个server-default创建时间条件桶不能当actual native次数；既有200的native间隙也未记录collector状态，不足以选择早seal或断言25ms是主要损耗。因此先固定一次额外200条窄metadata诊断，不直接改产品调度。
+
+- 复用D7.10实际native gid与透明分段观测，只在原`_take`恰一次返回后、实际原生入口之前的同一owner loop读取有限元数据。绑定实际已claim头部人数/估算字节、队列中剩余更早ready是否阻挡、collector状态和可放前缀数/估算字节；不flush/seal/move成员，不解析正文或输出正文、凭据及来源ID，不增加SQL、等待、task、线程、回调或输入副本。
+- 六个运行时源码逐字哈希保持：`api/ingress.py`及`services/http_ingress_group.py`、`http_ingress_ready.py`、`http_ingress.py`、`subscription_t1_unit.py`、`subscription_delivery.py`。实际进程、配置、路由及原生分支继续核验；接收仍32请求/8MiB、8 native/共享8接收连接，管理保留池4、收集25ms/ready1秒及所有逐项T1/fresh clock/SQL/认证/提交和释放语义不变。
+- 固定区分collector `absent/open/expired/unknown`，总状态另区分已知无余量。只有同资源owner仍为当前queue、queue/collector/group在当前loop且未关闭、读取后owner/关闭/pending身份仍一致，才允许记录known；不确定字段为null，不能以0代未知。只记录人数、估算字节、同loop剩余期限及布尔标量，不保留HttpInput/body/Future引用。absent前缀为0；expired、更早ready阻挡、人数/字节已满时合法前缀也为0，不越过FIFO头部挑小项，严格沿原16条/估算1MiB计算。
+- 先以4–6项直接相关纯边界及GPT独立只读审查验证观察透明、unknown/到期/更早ready/容量与身份变化；本轮不调用OCR。沿原私有资产和资源，核实际checkpoint、六源码与零发送后才运行唯一200条。原日志仍有界，观测缺失/超界令诊断失效而不影响产品；双完整oracle、正常停源/Admission/Broker归零、原普通环境恢复及零引用临时卷清理后，才解读实际机会。
+- 若实际出现可合法放入的collector前缀，只能据证据进入后继早seal/交接的专项设计及必要实现验证，不能在本轮偷偷改变D7.10只取ready的合同。没有出现则明确本200样本未触发；unknown不支持排除机会，未触发也不能排除10000条负载下的机制。本轮不是正式容量，不直接重跑一万条或扩大MQ/全来源矩阵，5/60/600及完整600秒观察门槛不变。
+
 ### D8. 参考目标的自动恢复策略
 
 首轮选择 **参考 Python Adapter 内有界重试**，避免本单把全部 business_error 改成平台重试。只对白名单连接错误、SQLSTATE 08 类、40001 和 40P01 重试；唯一键内容冲突、语法/权限/数据错误立即明确失败。结果不明通过同稳定键的幂等写入与内容核验恢复，不盲目增加业务副作用。

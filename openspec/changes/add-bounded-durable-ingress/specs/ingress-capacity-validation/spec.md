@@ -39,6 +39,21 @@
 - **WHEN** 现有字段不足，需要最小观测补充
 - **THEN** 单独记录实际 SHA、诊断差异和开销，不改变原锁/确认/等待行为，不把补丁运行冒充未经修改的基线
 
+### Requirement: HTTP claim机会诊断不得改变接收语义
+D7.11的补充诊断 SHALL 限定为一次额外200条、同资源/原输入/原发生器的私有metadata观测。在原`_take`返回后，同owner loop SHALL 绑定实际claimed原生单元及剩余更早ready，区分collector absent/open/expired/unknown和已知无余量，只记录原FIFO可放前缀的人数、估算字节、剩余期限与必要布尔值。观测 MUST NOT flush、封组、转移成员、增加SQL/等待/正文副本或改变原六运行时源码、32请求/8MiB/8native及25ms/1秒预算；身份或一致性未知 MUST 保留null而非零。
+
+#### Scenario: claim时存在未封组前缀
+- **WHEN** 实际claimed单元仍有原16条/估算1MiB余量，且同owner/loop下collector open、没有更早ready阻挡
+- **THEN** 仅按既有FIFO头部计算能容纳的前缀标量，不消费或提前提交它；实际机会只能成为后继专项设计依据，不能将诊断当产品优化或容量通过
+
+#### Scenario: 没有机会或无法确认
+- **WHEN** collector absent/expired、更早ready阻挡、原单元已满，或owner/关闭/pending身份不一致
+- **THEN** 已知不合法前缀为0、未知字段为null；未观察到机会只说明本200样本未触发，不能排除10000条场景或把unknown当无机会
+
+#### Scenario: 诊断进入现场
+- **WHEN** 直接相关纯边界和GPT独立审查通过，且同资源实际checkpoint与零发送已核
+- **THEN** 只执行约定唯一200，完整核验目标及平台两个oracle、正常停源/责任归零、原普通环境恢复和零引用观测卷清理；缺测/超界令诊断失效，不自动追加正式压力、扩大来源矩阵或降低5/60/600及完整600秒观察标准
+
 ### Requirement: 第零阶段通过不等于容量通过
 B0_PASS SHALL 要求约定资源/输入有效、200 条逐项对账、无重复有效业务效果或责任丢失、关键观测可用以及有依据的路线初判。B0 MUST NOT 要求旧实现已达到 16.7 条/秒，也不得替代一万条验收。安全窗口为首次发布起 900 秒；资源越界、数据异常或到期未收敛 MUST 停止新增压力并保留首败和未完责任。
 
