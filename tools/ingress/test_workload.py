@@ -362,7 +362,7 @@ class HttpCoordinatorTests(unittest.TestCase):
             await asyncio.sleep(0)
             return reply(row["seq"])
 
-        sender, sink = self.make(send, count=10000, concurrency=125)
+        sender, sink = self.make(send, count=10000, concurrency=125, clock=Clock())
         result = asyncio.run(sender.run())
         self.assertTrue(result["all_responses_accepted"])
         self.assertLessEqual(seen_tasks[0], 127)
