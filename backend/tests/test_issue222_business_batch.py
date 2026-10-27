@@ -484,6 +484,43 @@ def test_member_replay_isolated_from_new_pending_preserves_fifo_and_normal_batch
         facts(session, batch_world)
 
 
+def test_replay_projection_survives_cleanup_while_older_batch_is_protected(
+    batch_world, session_factory
+):
+    from dlr.control.services import http_ingress
+
+    with session_factory.begin() as session:
+        ids, original = produce(session, batch_world, count=2)
+        finish(session, original, [("failed", "business_error"), ("not_run", "predecessor_failed")])
+        replay = delivery.replay_event(session, ids[0], "retain-replay", None, "repair first")
+        repeated = delivery.dispatch_delivery(session, replay.id)
+        finish(session, repeated)
+        original_id, replay_id = original.id, repeated.id
+        receipt = session.get(EventReceipt, ids[0])
+        receipt.terminal_at = database_now(session) - timedelta(days=31)
+        initial = http_ingress._status(session, "fixture", receipt)
+        assert initial["processing_status"] == initial["batch_member_outcome"] == "succeeded"
+        assert initial["execution_id"] == replay_id and initial["error_code"] is None
+
+    with session_factory.begin() as session:
+        batch.cleanup_batches(session, batch_world["sub"])
+        receipt = session.get(EventReceipt, ids[0])
+        after = http_ingress._status(session, "fixture", receipt)
+        assert after == initial
+        assert session.get(SubscriptionExecutionBatch, original_id) is not None
+        assert session.get(SubscriptionExecutionBatch, replay_id) is not None
+        facts(session, batch_world)
+
+    with session_factory.begin() as session:
+        delivery.skip_event(session, ids[1], "resolve-second", None, "close fixture")
+        session.get(EventReceipt, ids[1]).terminal_at = database_now(session) - timedelta(days=31)
+        result = batch.cleanup_batches(session, batch_world["sub"])
+        assert result["batches"] == 2 and result["members"] == 3
+        assert session.get(SubscriptionExecutionBatch, original_id) is None
+        assert session.get(SubscriptionExecutionBatch, replay_id) is None
+        facts(session, batch_world)
+
+
 def test_overlapping_replay_groups_gc_their_own_shares_without_deleting_shared_receipt(
     batch_world, session_factory
 ):
