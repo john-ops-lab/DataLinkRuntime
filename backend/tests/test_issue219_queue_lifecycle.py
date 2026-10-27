@@ -183,6 +183,8 @@ def world(request, api_client, session_factory, monkeypatch):
 
     monkeypatch.setattr(runner, "run", run)
     monkeypatch.setattr(runner, "open", opened)
+    if source == "rabbitmq":
+        monkeypatch.setattr(runner, "open_context", opened)
     value = SimpleNamespace(
         sf=session_factory,
         manager=manager,
