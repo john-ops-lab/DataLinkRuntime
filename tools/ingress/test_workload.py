@@ -627,6 +627,7 @@ class HttpFollowupPacingTests(unittest.TestCase):
         self.assertEqual(sender.deadline, 60)
         self.assertEqual(sender.slots._value, 1)
 
+    @bounded_async_case
     def test_request_timeout_uses_remaining_window_and_cleans_up_in_this_task(self):
         async def run():
             clock = Clock()
