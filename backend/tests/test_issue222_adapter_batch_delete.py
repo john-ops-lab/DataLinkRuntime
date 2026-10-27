@@ -162,8 +162,8 @@ def test_stop_wait_commit_restores_archive_before_returning(retired_batch, sessi
             trigger="manual",
             runtime_input=None,
             input_source_type="none",
-            input_config_revision=0,
-            input_snapshot={"source_type": "none", "revision": None},
+            input_config_revision=1,
+            input_snapshot={"source_type": "none", "revision": 1},
         )
         running.status = "running"
         running.worker_id = adapter.runtime_worker_id
