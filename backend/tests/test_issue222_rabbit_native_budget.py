@@ -22,7 +22,7 @@ from dlr.control.services.subscription_source import ApplicationBufferBudget, So
 class NativeWire:
     """Use the actual pinned decoder/assembler; only the socket is absent."""
 
-    def __init__(self, *, owner_limit=2 * 1024**2, global_limit=64 * 1024**2):
+    def __init__(self, *, owner_limit=2 * 1024**2, global_limit=64 * 1024**2, install=True):
         self.parent = ApplicationBufferBudget(global_limit)
         self.scope = self.parent.scope(owner_limit)
         self.connection = SelectConnection.__new__(SelectConnection)
@@ -36,7 +36,8 @@ class NativeWire:
         self.channel._on_unexpected_frame = lambda value: pytest.fail("Unexpected SDK frame")
         assert budget.NativeBudget.compatible(self.connection, self.channel)
         self.native = budget.NativeBudget(self.scope, self.channel)
-        self.native.install(self.connection)
+        if install:
+            self.native.install(self.connection)
 
     def feed(self, value):
         self.connection._frame_buffer = value.marshal()
@@ -65,11 +66,13 @@ class NativeWire:
 
 
 def test_checked_upstream_and_unknown_sdk_fallback(monkeypatch):
-    wire = NativeWire()
+    wire = NativeWire(install=False)
+    assert budget.NativeBudget.compatible(wire.connection, wire.channel)
     assert not budget.NativeBudget.compatible(wire.connection, SimpleNamespace())
     monkeypatch.setattr(pika, "__version__", "1.3.3")
     assert not budget.NativeBudget.compatible(wire.connection, wire.channel)
     monkeypatch.setattr(pika, "__version__", "1.3.2")
+    assert budget.NativeBudget.compatible(wire.connection, wire.channel)
     monkeypatch.setattr(frame, "decode_frame", lambda data: (0, None))
     assert not budget.NativeBudget.compatible(wire.connection, wire.channel)
     wire.close()
