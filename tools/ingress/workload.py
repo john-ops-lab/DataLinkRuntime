@@ -333,6 +333,7 @@ def verify(config: dict[str, Any]) -> dict[str, Any]:
     with psycopg.connect(
         config["target_dsn"], connect_timeout=5, row_factory=dict_row
     ) as connection:
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         connection.execute("SET LOCAL statement_timeout='30s'")
         with (
             connection.cursor(name="b4_results") as rows,
