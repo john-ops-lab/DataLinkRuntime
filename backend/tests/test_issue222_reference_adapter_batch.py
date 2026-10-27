@@ -4,6 +4,7 @@ import asyncio
 import copy
 import json
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import psycopg
@@ -217,6 +218,101 @@ def test_overall_deadline_does_not_restart_after_successful_prefix(
     assert time.monotonic() - started < 0.3
     assert [item["status"] for item in result["members"]] == ["succeeded", "unknown", "not_run"]
     assert result["members"][1]["error_code"] == "execution_timeout"
+
+
+def test_deadline_before_next_member_does_not_inherit_previous_commit_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock, attempted = [0.0], []
+
+    async def write(
+        _driver: Any, _options: Any, item: Any, _marks: Any, _deadline: Any, state: Any
+    ) -> dict[str, Any]:
+        attempted.append(item[2])
+        state["phase"] = "commit"
+        clock[0] = 10.0
+        return committed(item)
+
+    monkeypatch.setattr(reference, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(reference, "_deadline", lambda _marks: 10.0)
+    monkeypatch.setattr(reference, "_batch_write_once", write)
+    source = frame()
+    result = asyncio.run(reference._run_batch(Context(), source, psycopg, marks()))
+
+    assert_valid(source, result)
+    assert attempted == [1]
+    assert [(item["status"], item["error_code"]) for item in result["members"]] == [
+        ("succeeded", None),
+        ("unknown", "execution_timeout"),
+        ("not_run", "predecessor_failed"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "error,code",
+    [
+        (psycopg.errors.SerializationFailure("retry"), "execution_timeout"),
+        (psycopg.errors.DeadlockDetected("retry"), "execution_timeout"),
+        (reference.AttemptTimedOut("commit"), "target_commit_unknown"),
+    ],
+)
+def test_deadline_after_commit_error_preserves_only_actual_uncertainty(
+    monkeypatch: pytest.MonkeyPatch, error: Exception, code: str
+) -> None:
+    clock = [0.0]
+
+    async def write(
+        _driver: Any, _options: Any, _item: Any, _marks: Any, _deadline: Any, state: Any
+    ) -> dict[str, Any]:
+        state["phase"] = "commit"
+        clock[0] = 10.0
+        raise error
+
+    monkeypatch.setattr(reference, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(reference, "_deadline", lambda _marks: 10.0)
+    monkeypatch.setattr(reference, "_batch_write_once", write)
+    source = frame()
+    result = asyncio.run(reference._run_batch(Context(), source, psycopg, marks()))
+
+    assert_valid(source, result)
+    assert (result["members"][0]["status"], result["members"][0]["error_code"]) == (
+        "unknown",
+        code,
+    )
+    assert [item["status"] for item in result["members"][1:]] == ["not_run", "not_run"]
+
+
+def test_later_known_abort_does_not_erase_earlier_uncertain_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock, attempts = [0.0], []
+
+    async def write(
+        _driver: Any, _options: Any, _item: Any, _marks: Any, _deadline: Any, state: Any
+    ) -> dict[str, Any]:
+        attempts.append(1)
+        state["phase"] = "commit"
+        if len(attempts) == 1:
+            raise reference.AttemptTimedOut("commit")
+        clock[0] = 10.0
+        raise psycopg.errors.SerializationFailure("retry")
+
+    async def sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(reference, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(reference, "_deadline", lambda _marks: 10.0)
+    monkeypatch.setattr(reference, "_batch_write_once", write)
+    monkeypatch.setattr(reference.asyncio, "sleep", sleep)
+    source = frame()
+    result = asyncio.run(reference._run_batch(Context(), source, psycopg, marks()))
+
+    assert_valid(source, result)
+    assert len(attempts) == 2
+    assert (result["members"][0]["status"], result["members"][0]["error_code"]) == (
+        "unknown",
+        "target_commit_unknown",
+    )
 
 
 def test_elapsed_handle_import_time_consumes_batch_deadline(

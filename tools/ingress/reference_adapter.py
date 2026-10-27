@@ -443,6 +443,7 @@ async def _run_batch(context, frame, driver, marks):
         async with asyncio.timeout(max(0, deadline - time.monotonic())):
             for current in members:
                 attempt, uncertain = 0, False
+                state.pop("phase", None)
                 try:
                     item = _payload(current["input"])
                     if options is None:
@@ -500,6 +501,7 @@ async def _run_batch(context, frame, driver, marks):
                             and getattr(error, "sqlstate", None)
                             not in {"40001", "40P01"}
                         )
+                        state.pop("phase", None)
                         await _close(state, marks)
                         _log_batch(
                             context,
