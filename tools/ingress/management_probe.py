@@ -37,7 +37,7 @@ QUOTA_KEYS = (
 LIMIT_KEYS = ("pending_count", "pending_bytes", "history_count", "history_bytes", "dedupe_count", "rate")
 MAX_LOG_BYTES = 16 * 1024**2
 MAX_RESPONSE_BYTES = 2 * 1024**2
-WORKLOAD_SHA256 = "068cba221e72326b51d1eff55767172def0adc84c416fd03f9cf666053b030eb"
+WORKLOAD_SHA256 = "befc952837c90b667bd86e60ff4812e86f04f6cb19d0f54caa71808d010e9ad9"
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 NS = 10**9
 
