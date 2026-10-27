@@ -7,7 +7,7 @@ from datetime import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import JSON, delete, func, null, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.control.models import (
@@ -525,7 +525,24 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
     managed_input_gc.ensure_no_active_upload(session, adapter.id)
     from dlr.control.services.subscription_delivery import purge_deleted_adapter_history
 
-    purge_deleted_adapter_history(session, adapter.id)
+    # The batch delete guard requires an archived parent. Keep this temporary
+    # authorization inside the existing Quota-before-Admission lock order,
+    # and restore it before a stop request can commit its waiting response.
+    archived_at = adapter.archived_at
+    sql_failed = False
+    try:
+        adapter.archived_at = worker_availability.current_time(session)
+        session.flush()
+        purge_deleted_adapter_history(session, adapter.id)
+    except DBAPIError:
+        # A statement failure may leave Session.is_active true even though
+        # PostgreSQL requires rollback. Do not mask its original SQL error.
+        sql_failed = True
+        raise
+    finally:
+        adapter.archived_at = archived_at
+        if session.is_active and not sql_failed:
+            session.flush()
 
     # Acquire the RabbitMQ Admission scope before locking any Execution.  The
     # scope is harmless for a legacy-only Adapter and makes stop/delete follow

@@ -174,6 +174,7 @@ def materialize_batch(session: Session, head_delivery_id: int) -> Execution | No
                 EventReceipt.activation_id,
                 EventReceipt.source_phase,
                 EventDelivery.id.label("delivery_id"),
+                EventDelivery.ordinal.label("delivery_ordinal"),
                 EventDelivery.state.label("delivery_state"),
                 EventDelivery.activation_override_id,
                 EventDelivery.revision_override_id,
@@ -196,7 +197,7 @@ def materialize_batch(session: Session, head_delivery_id: int) -> Execution | No
                 EventReceipt.state.not_in(delivery_service.TERMINAL),
             )
             .order_by(EventReceipt.sequence)
-            .limit(MAX_MEMBERS)
+            .limit(1 if head.ordinal > 1 else MAX_MEMBERS)
             .with_for_update(of=(EventReceipt, EventDelivery))
         )
         .mappings()
@@ -212,6 +213,10 @@ def materialize_batch(session: Session, head_delivery_id: int) -> Execution | No
             or row["batch_execution_id"] is not None
             or row["source_phase"] is not None
         ):
+            break
+        # A replay is one explicit member operation. Do not absorb a later
+        # replay into an ordinary prefix or skip it to reach newer receipts.
+        if row["delivery_ordinal"] > 1 and row["delivery_id"] != head.id:
             break
         if (row["activation_override_id"] or row["activation_id"], row["revision_override_id"]) != (
             activation.id,

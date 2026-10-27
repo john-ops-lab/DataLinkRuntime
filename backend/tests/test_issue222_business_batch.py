@@ -399,6 +399,91 @@ def test_one_member_replay_remains_batch_and_original_group_stays_protected(
         assert facts(session, batch_world).history_count == 4
 
 
+def test_member_replay_isolated_from_new_pending_preserves_fifo_and_normal_batch(
+    batch_world, session_factory
+):
+    with session_factory.begin() as session:
+        ids, original = produce(session, batch_world, count=2)
+        pending = [receive(session, batch_world, index) for index in (2, 3)]
+        pending_deliveries = [
+            session.scalar(select(EventDelivery).where(EventDelivery.receipt_id == row.id))
+            for row in pending
+        ]
+        assert delivery.dispatch_delivery(session, pending_deliveries[0].id) is None
+        finish(session, original, [("succeeded", None), ("failed", "business_error")])
+        original_batch = session.get(SubscriptionExecutionBatch, original.id)
+        original_input = deepcopy(original.input)
+        original_manifest = deepcopy(original_batch.manifest)
+        original_result = deepcopy(original_batch.result)
+        original_output = deepcopy(original.output)
+        receipt = session.get(EventReceipt, ids[1])
+        original_envelope = deepcopy(receipt.envelope)
+        session.get(EventSubscription, batch_world["sub"]).desired_state = "disabled"
+
+        assert delivery.dispatch_delivery(session, pending_deliveries[0].id) is None
+        replay = delivery.replay_event(
+            session, receipt.id, "replay-before-new-pending", None, "repair only selected member"
+        )
+        assert replay.ordinal == 2
+        assert delivery.dispatch_delivery(session, pending_deliveries[0].id) is None
+        repeated = delivery.dispatch_delivery(session, replay.id)
+        assert repeated is not None and repeated.id != original.id
+        replay_batch = session.get(SubscriptionExecutionBatch, repeated.id)
+        assert replay_batch.member_count == 1
+        assert replay_batch.batch_id != original_batch.batch_id
+        assert replay_batch.manifest_hash == digest(replay_batch.manifest)
+        assert replay_batch.manifest_hash != original_batch.manifest_hash
+        assert replay_batch.activation_id == original_batch.activation_id
+        assert replay_batch.revision_id == original_batch.revision_id
+        assert replay_batch.revision_override_id == original_batch.revision_override_id
+        assert repeated.version_id == original.version_id
+        assert repeated.target_worker_id_snapshot == original.target_worker_id_snapshot
+        assert replay_batch.manifest[0] == {
+            "receipt_id": receipt.id,
+            "delivery_id": replay.id,
+            "delivery_ordinal": 2,
+            "member_index": 0,
+            "content_hash": receipt.content_hash,
+            "envelope_hash": digest(original_envelope),
+        }
+        assert repeated.input["schema"] == "dlr.event.batch.v1"
+        assert repeated.input["batch_id"] == replay_batch.batch_id
+        assert repeated.input["manifest_hash"] == replay_batch.manifest_hash
+        assert len(repeated.input["members"]) == 1
+        assert repeated.input["members"][0]["input"] == original_envelope
+        assert all(
+            row.state == item.state == "pending"
+            for row, item in zip(pending, pending_deliveries, strict=True)
+        )
+        assert all(batch.effective_execution_id(item) is None for item in pending_deliveries)
+        assert delivery.dispatch_delivery(session, pending_deliveries[0].id) is None
+
+        finish(session, repeated)
+        successor = delivery.dispatch_delivery(session, pending_deliveries[0].id)
+        assert successor is not None
+        successor_batch = session.get(SubscriptionExecutionBatch, successor.id)
+        assert successor_batch.member_count == 2
+        assert [item["receipt_id"] for item in successor_batch.manifest] == [
+            row.id for row in pending
+        ]
+        assert [item["delivery_ordinal"] for item in successor_batch.manifest] == [1, 1]
+        assert [item["member_index"] for item in successor_batch.manifest] == [0, 1]
+        assert original.input == original_input
+        assert original.output == original_output
+        assert original_batch.manifest == original_manifest
+        assert original_batch.result == original_result
+        assert receipt.envelope == original_envelope
+        original_delivery = session.get(EventDelivery, original_manifest[1]["delivery_id"])
+        assert original_delivery.state == original_delivery.batch_member_outcome == "failed"
+        assert original_batch.result_counts == {
+            "succeeded": 1,
+            "failed": 1,
+            "unknown": 0,
+            "not_run": 0,
+        }
+        facts(session, batch_world)
+
+
 def test_overlapping_replay_groups_gc_their_own_shares_without_deleting_shared_receipt(
     batch_world, session_factory
 ):
