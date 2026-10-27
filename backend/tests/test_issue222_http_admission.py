@@ -370,7 +370,11 @@ def test_cancelled_native_work_keeps_busy_hint_until_real_future_finishes(pool, 
                 receipt_id=1 if mode == "status" else None,
             )
         )
-        reservation = 0 if mode == "status" else ingress.BODY_RESERVATION
+        reservation = ingress.BODY_RESERVATION
+        if mode == "group":
+            reservation = len(b"{}") + ingress.service.MAX_ENVELOPE_BYTES
+        elif mode == "status":
+            reservation = 0
         try:
             async with asyncio.timeout(5):
                 while not started.is_set():
@@ -409,7 +413,12 @@ def test_native_submit_failure_returns_work_and_request_reservations(pool, monke
             "get_runtime",
             lambda: SimpleNamespace(http_batch_hint=lambda _: mode == "group"),
         )
-        pool.close()  # The real executor now raises its closing RuntimeError on submit.
+        if mode == "group":
+            # Keep ready admission open so this reaches the real executor's
+            # closing RuntimeError after the request has shrunk its bytes.
+            pool.executor.shutdown(wait=True)
+        else:
+            pool.close()
 
         async def receive():
             return {"type": "http.request", "body": b"{}", "more_body": False}
@@ -457,6 +466,8 @@ def test_native_failure_returns_work_only_after_the_real_future_ends(pool, monke
         )
 
         def failed(*args):
+            if mode == "group":
+                assert pool.buffer.used_bytes == len(b"{}") + ingress.service.MAX_ENVELOPE_BYTES
             raise RuntimeError("native work failed")
 
         monkeypatch.setattr(ingress, "_run_group_sync" if mode == "group" else "_run_sync", failed)

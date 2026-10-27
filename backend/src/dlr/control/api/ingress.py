@@ -386,6 +386,10 @@ async def _request(
             from dlr.control.services.subscription_runtime import get_runtime
 
             if get_runtime().http_batch_hint(public_id):
+                unused_raw = service.MAX_BODY_BYTES - len(body)
+                if unused_raw:
+                    pool.buffer.release(unused_raw)
+                    reservation -= unused_raw
                 loop = asyncio.get_running_loop()
                 result_future: asyncio.Future[tuple[int, dict[str, Any]]] = loop.create_future()
                 result_future.add_done_callback(

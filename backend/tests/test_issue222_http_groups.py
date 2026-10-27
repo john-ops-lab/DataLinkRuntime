@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.requests import Request
 
 from dlr.common.config import settings
 from dlr.control.api import ingress
@@ -24,6 +25,7 @@ from dlr.control.models import (
 )
 from dlr.control.services import http_ingress as service
 from dlr.control.services import subscription_delivery as delivery
+from dlr.control.services.http_ingress_admission import HttpIngressAdmission
 from dlr.control.services.http_ingress_group import HttpInput
 from dlr.control.services.subscription_source import ApplicationBufferBudget
 from test_http_ingress_limits import request
@@ -319,8 +321,11 @@ def test_cancel_one_waiter_keeps_group_and_other_results(monkeypatch):
                 tasks[0].cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await tasks[0]
-                assert parent.used_bytes == 4 * ingress.BODY_RESERVATION
+                assert parent.used_bytes == 4 * (len(b"{}") + service.MAX_ENVELOPE_BYTES)
                 assert pool.work.used == 1 and pool.requests._value == 28
+                pool.begin_close()
+                assert parent.used_bytes == 4 * (len(b"{}") + service.MAX_ENVELOPE_BYTES)
+                assert pool.work.used == 1 and not any(task.done() for task in tasks[1:])
                 unblock.set()
                 assert [r.status_code for r in await asyncio.gather(*tasks[1:])] == [202] * 3
                 while parent.used_bytes:
@@ -344,6 +349,7 @@ def test_sparse_group_timer_never_waits_in_native_thread(monkeypatch):
 
         def observe_add(public_id, item):
             assert pool.work.used == 0 and not started.is_set()
+            assert parent.used_bytes == len(item.body) + service.MAX_ENVELOPE_BYTES
             original_add(public_id, item)
             added.append(item.key)
             assert pool.work.used == 0 and not started.is_set()
@@ -378,7 +384,8 @@ def test_sparse_group_timer_never_waits_in_native_thread(monkeypatch):
                     await asyncio.sleep(0.001)
                 assert added == ["one"] and sizes == [1] and not pool.collector.pending
                 assert pool.work.used == 1 and pool.requests._value == 31
-                assert parent.used_bytes == ingress.BODY_RESERVATION and not task.done()
+                assert parent.used_bytes == len(b"{}") + service.MAX_ENVELOPE_BYTES
+                assert not task.done()
                 unblock.set()
                 assert (await task).status_code == 202
                 while parent.used_bytes or pool.work.used:
@@ -410,5 +417,215 @@ def test_delayed_timer_cannot_admit_a_request_after_collection_deadline():
         assert groups == [["first"]]
         collector.close()
         assert groups == [["first"], ["later"]]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "body_bytes,capacity", [(2048, 31), (65536, 25)], ids=["small31", "maximum25"]
+)
+def test_batch_raw_reservation_preserves_8mib_with_actual_requests(
+    monkeypatch, body_bytes, capacity
+):
+    async def run():
+        parent = ApplicationBufferBudget()
+        pool = ingress.IngressResources(buffer=parent, session_factory=lambda: None)
+        started, unblock = threading.Event(), threading.Event()
+        added = []
+        original_add = pool.collector.add
+        body = b'"' + b"x" * (body_bytes - 2) + b'"'
+
+        def blocked(_pool, _public, items):
+            started.set()
+            assert unblock.wait(5)
+            return [(202, {"receipt_id": i}) for i in range(len(items))]
+
+        def observe_add(public_id, item):
+            added.append(item.key)
+            original_add(public_id, item)
+
+        monkeypatch.setattr(ingress, "resources", lambda: pool)
+        monkeypatch.setattr(ingress, "_resources", pool)
+        monkeypatch.setattr(ingress, "_run_group_sync", blocked)
+        monkeypatch.setattr(pool.collector, "add", observe_add)
+        from dlr.control.services import subscription_runtime
+
+        monkeypatch.setattr(
+            subscription_runtime,
+            "get_runtime",
+            lambda: SimpleNamespace(http_batch_hint=lambda _: True),
+        )
+        tasks = []
+        try:
+            async with asyncio.timeout(5):
+                # Finish each read before the next admission, while the real
+                # native Future retains all members already handed off.
+                for i in range(capacity):
+                    task = asyncio.create_task(
+                        ingress._request(
+                            "route",
+                            request([body], [(b"content-type", b"application/json")]),
+                            "Bearer source-token",
+                            str(i),
+                        )
+                    )
+                    tasks.append(task)
+                    while len(added) < i + 1 and not task.done():
+                        await asyncio.sleep(0)
+                    assert len(added) == i + 1, (
+                        f"Reception stopped at {len(added)} held requests; expected {capacity}"
+                    )
+                while not started.is_set():
+                    await asyncio.sleep(0)
+                held = capacity * (body_bytes + service.MAX_ENVELOPE_BYTES)
+                assert parent.used_bytes == pool.buffer.used_bytes == held
+                assert parent.peak_bytes <= 8 * 1024**2
+                assert pool.work.used == 1 and pool.requests._value == 32 - capacity
+                assert ingress.admission_capacity_busy()
+                messages = []
+
+                async def forbidden(*args):
+                    raise AssertionError("The next request must not enter or read its body")
+
+                async def send(message):
+                    messages.append(message)
+
+                await HttpIngressAdmission(forbidden, busy=ingress.admission_capacity_busy)(
+                    request([], [(b"content-type", b"application/json")]).scope,
+                    forbidden,
+                    send,
+                )
+                assert messages[0]["status"] == 429
+                assert (b"retry-after", b"1") in messages[0]["headers"]
+                assert (
+                    json.loads(messages[1]["body"])["detail"]["code"] == "ingress_capacity_exceeded"
+                )
+                assert parent.used_bytes == held and pool.work.used == 1
+                unblock.set()
+                assert all(r.status_code == 202 for r in await asyncio.gather(*tasks))
+                while parent.used_bytes or pool.work.used:
+                    await asyncio.sleep(0)
+                assert pool.requests._value == 32 and not pool.ready._routes
+        finally:
+            unblock.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            pool.close()
+
+    asyncio.run(run())
+
+
+def test_batch_body_keeps_full_reservation_before_eof_and_read_cancel(monkeypatch):
+    async def run():
+        parent = ApplicationBufferBudget()
+        pool = ingress.IngressResources(buffer=parent, session_factory=lambda: None)
+        waiting_eof = asyncio.Event()
+        eof = asyncio.Event()
+        reads = 0
+
+        async def receive():
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                return {"type": "http.request", "body": b"{", "more_body": True}
+            waiting_eof.set()
+            await eof.wait()
+            return {"type": "http.request", "body": b"}", "more_body": False}
+
+        monkeypatch.setattr(ingress, "resources", lambda: pool)
+        task = asyncio.create_task(
+            ingress._request(
+                "route",
+                Request(request([], [(b"content-type", b"application/json")]).scope, receive),
+                "Bearer source-token",
+                "reading",
+            )
+        )
+        try:
+            async with asyncio.timeout(5):
+                await waiting_eof.wait()
+                assert parent.used_bytes == pool.buffer.used_bytes == ingress.BODY_RESERVATION
+                assert not pool.collector.pending and pool.work.used == 0
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert parent.used_bytes == pool.buffer.used_bytes == 0
+                assert pool.requests._value == 32 and pool.work.used == 0
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            pool.close()
+
+    asyncio.run(run())
+
+
+def test_stale_batch_hint_keeps_shrunk_reservation_through_real_single_fallback(monkeypatch):
+    async def run():
+        parent = ApplicationBufferBudget()
+        calls, bodies = [], []
+        started, unblock = threading.Event(), threading.Event()
+
+        class FakeSession:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def rollback(self):
+                calls.append("rollback")
+
+            def commit(self):
+                calls.append("commit")
+
+        pool = ingress.IngressResources(buffer=parent, session_factory=FakeSession)
+
+        def stale_group(_session, _public, items):
+            calls.append("group")
+            bodies.append(items[0].body)
+            return None
+
+        def single(_session, _public, _authorization, _key, body):
+            calls.append("single")
+            assert body is bodies[0]
+            started.set()
+            assert unblock.wait(5)
+            return 202, {"receipt_id": 1}
+
+        monkeypatch.setattr(ingress, "resources", lambda: pool)
+        monkeypatch.setattr(service, "receive_group", stale_group)
+        monkeypatch.setattr(service, "receive", single)
+        monkeypatch.setattr(ingress, "_notify_committed_delivery_work", lambda: None)
+        from dlr.control.services import subscription_runtime
+
+        monkeypatch.setattr(
+            subscription_runtime,
+            "get_runtime",
+            lambda: SimpleNamespace(http_batch_hint=lambda _: True),
+        )
+        task = asyncio.create_task(
+            ingress._request(
+                "route",
+                request([b"{}"], [(b"content-type", b"application/json")]),
+                "Bearer source-token",
+                "one",
+            )
+        )
+        try:
+            async with asyncio.timeout(5):
+                while not started.is_set():
+                    await asyncio.sleep(0)
+                assert calls == ["group", "rollback", "single"]
+                assert parent.used_bytes == len(b"{}") + service.MAX_ENVELOPE_BYTES
+                assert pool.work.used == 1 and not task.done()
+                unblock.set()
+                assert (await task).status_code == 202
+                while parent.used_bytes or pool.work.used:
+                    await asyncio.sleep(0)
+                assert calls == ["group", "rollback", "single", "commit"]
+                assert pool.requests._value == 32
+        finally:
+            unblock.set()
+            await asyncio.gather(task, return_exceptions=True)
+            pool.close()
 
     asyncio.run(run())
