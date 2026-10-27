@@ -69,9 +69,12 @@ export function SubscriptionState({ value }: { value: string }) {
 export function EventProcessingState({ event }: { event: Pick<SubscriptionEvent, "state" | "batch_member_outcome"> }) {
   const { t } = useTranslation("subscription");
   if (!event.batch_member_outcome) return <SubscriptionState value={event.state} />;
-  return <Tag color={event.batch_member_outcome === "succeeded" ? "success" : event.batch_member_outcome === "failed" ? "error" : "warning"}>
-    {t(`businessBatch.outcomes.${event.batch_member_outcome}`)}
-  </Tag>;
+  return <>
+    {event.state === "skipped" ? <Tag>{t("businessBatch.skipped")}</Tag> : null}
+    <Tag color={event.batch_member_outcome === "succeeded" ? "success" : event.batch_member_outcome === "failed" ? "error" : "warning"}>
+      {t(`businessBatch.outcomes.${event.batch_member_outcome}`)}
+    </Tag>
+  </>;
 }
 
 export default function SubscriptionWorkspace({

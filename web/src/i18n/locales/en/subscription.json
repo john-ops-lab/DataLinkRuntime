@@ -475,6 +475,7 @@
     "notRunHint": "An earlier event did not succeed, so this event was not processed. Resolve the earlier problem before processing this one again.",
     "notStartedHint": "This run was cancelled before it started. This event was not processed and can be processed again using its original mode.",
     "memberPosition": "Event {{position}} in this run",
+    "skipped": "Skipped",
     "outcomes": {
       "succeeded": "Processing succeeded",
       "failed": "Processing failed",

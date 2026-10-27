@@ -88,6 +88,47 @@ it.each([
   expect(screen.queryByText(locale === "en" ? "Processing failed" : "处理失败")).toBeNull();
 });
 
+it.each([
+  ["en", "failed", "Processing failed", "Skipped"],
+  ["en", "unknown", "Result unconfirmed", "Skipped"],
+  ["en", "not_run", "Not processed", "Skipped"],
+  ["zh-CN", "failed", "处理失败", "已跳过"],
+  ["zh-CN", "unknown", "结果未确认", "已跳过"],
+  ["zh-CN", "not_run", "尚未处理", "已跳过"],
+] as const)("keeps skipped %s member %s visible alongside its original result", async (locale, outcome, resultLabel, skippedLabel) => {
+  await applyUiLocale(locale);
+  const view = render(<EventProcessingState event={{ state: "failed", batch_member_outcome: outcome }} />);
+  expect(screen.getByText(resultLabel)).toBeTruthy();
+  expect(screen.queryByText(skippedLabel)).toBeNull();
+  view.rerender(<EventProcessingState event={{ state: "skipped", batch_member_outcome: outcome }} />);
+  expect(screen.getByText(skippedLabel)).toBeTruthy();
+  expect(screen.getByText(resultLabel)).toBeTruthy();
+  expect(screen.queryByText(locale === "en" ? "Skipped unprocessed" : "未处理跳过")).toBeNull();
+});
+
+it.each(["en", "zh-CN"] as const)("shows skipped state and original result in the %s event list, detail and delivery history", async locale => {
+  await applyUiLocale(locale);
+  const original = event("unknown");
+  const skipped: SubscriptionEvent = { ...original, state: "skipped",
+    deliveries: original.deliveries.map(delivery => ({ ...delivery, state: "skipped" })) };
+  vi.spyOn(api, "getSubscription").mockResolvedValue(subscription());
+  vi.spyOn(api, "listSubscriptionEvents").mockResolvedValue({ items: [skipped], total: 1, next_before_id: null });
+  vi.spyOn(api, "getSubscriptionEvent").mockResolvedValue(skipped);
+  vi.spyOn(api, "subscriptionCheckpoints").mockResolvedValue({ items: [], total: 0, next_before_id: null });
+  render(<SubscriptionWorkspace id={4} adapter={adapter} capabilities={{ enabled: true, available_sources: ["http"] }} onDeleted={vi.fn()} />);
+  const skippedLabel = locale === "en" ? "Skipped" : "已跳过";
+  const resultLabel = locale === "en" ? "Result unconfirmed" : "结果未确认";
+  await screen.findByText(skippedLabel);
+  expect(screen.getByText(resultLabel)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: locale === "en" ? "View event" : "查看事件" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getAllByText(skippedLabel)).toHaveLength(2);
+  expect(within(dialog).getAllByText(resultLabel)).toHaveLength(2);
+  expect(within(dialog).getByText(locale === "en"
+    ? /The result is unconfirmed and the target may already have been written/
+    : /本条的处理结果尚未确认，可能已经写入目标/)).toBeTruthy();
+});
+
 it("shows member outcome and shared cancellation scope in received records", async () => {
   vi.spyOn(api, "getSubscription").mockResolvedValue(subscription());
   vi.spyOn(api, "listSubscriptionEvents").mockResolvedValue({ items: [event("unknown")], total: 1, next_before_id: null });

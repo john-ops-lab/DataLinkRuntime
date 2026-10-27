@@ -475,6 +475,7 @@
     "notRunHint": "前面的数据没有成功，本条尚未处理。请先解决前面的问题，再补处理本条。",
     "notStartedHint": "这次运行尚未开始就已取消，本条尚未处理。需要时可按原方式补处理。",
     "memberPosition": "本次第 {{position}} 条",
+    "skipped": "已跳过",
     "outcomes": {
       "succeeded": "处理成功",
       "failed": "处理失败",
