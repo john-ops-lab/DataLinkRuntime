@@ -494,6 +494,51 @@ def test_native_failure_returns_work_only_after_the_real_future_ends(pool, monke
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("logging_fails", [False, True])
+def test_batch_native_failure_is_diagnosable_without_logging_secrets(
+    pool, monkeypatch, caplog, logging_fails
+):
+    async def run():
+        from dlr.control.services import subscription_runtime
+
+        monkeypatch.setattr(
+            subscription_runtime,
+            "get_runtime",
+            lambda: SimpleNamespace(http_batch_hint=lambda _: True),
+        )
+
+        def failed(*args):
+            raise RuntimeError("private-token-and-request-body")
+
+        monkeypatch.setattr(ingress, "_run_group_sync", failed)
+        if logging_fails:
+
+            def logging_failure(*args):
+                raise RuntimeError("logger failed")
+
+            monkeypatch.setattr(ingress.logger, "error", logging_failure)
+
+        async def receive():
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        with pytest.raises(ingress.HTTPException) as raised:
+            await ingress._request("route", Request(scope(), receive), "Bearer token", "id")
+        assert raised.value.status_code == 503
+        assert raised.value.detail["code"] == "ingress_unavailable"
+        assert pool.work.used == 0 and pool.buffer.used_bytes == 0
+
+    with caplog.at_level("ERROR", logger="dlr.control.ingress"):
+        asyncio.run(run())
+    if logging_fails:
+        assert not caplog.records
+    else:
+        assert len(caplog.records) == 1
+        assert "RuntimeError" in caplog.text and "failed" in caplog.text
+        assert "private-token-and-request-body" not in caplog.text
+        assert "Bearer token" not in caplog.text
+        assert caplog.records[0].exc_info is None
+
+
 @pytest.mark.parametrize("mode", ["single", "status", "group"])
 def test_authoritative_native_acquire_still_refuses_if_snapshot_was_available(
     pool, monkeypatch, mode

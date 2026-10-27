@@ -7,7 +7,9 @@ The native worker owns its permit and byte reservation until it really finishes.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
+import traceback
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
@@ -32,6 +34,7 @@ from dlr.control.services.http_ingress_ready import GroupResults, HttpReadyQueue
 from dlr.control.services.subscription_source import ApplicationBufferBudget
 
 router = APIRouter()
+logger = logging.getLogger("dlr.control.ingress")
 BODY_RESERVATION = service.MAX_BODY_BYTES + service.MAX_ENVELOPE_BYTES
 
 
@@ -144,7 +147,20 @@ class IngressResources:
             else:
                 try:
                     results = result.result()
-                except Exception:
+                except Exception as error:
+                    # Exception messages may contain credentials, SQL parameters or
+                    # request data. Keep only the type and code locations.
+                    with suppress(Exception):
+                        locations = [
+                            (frame.f_code.co_name, line)
+                            for frame, line in traceback.walk_tb(error.__traceback__)
+                        ]
+                        logger.error(
+                            "HTTP ingress batch work failed: type=%s members=%d locations=%s",
+                            type(error).__name__,
+                            len(group.items),
+                            locations,
+                        )
                     results = [
                         domain_error(
                             503,
