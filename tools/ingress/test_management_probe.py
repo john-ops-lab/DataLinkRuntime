@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from unittest.mock import patch
 from tools.ingress import management_probe as probe
 
 DOMAIN = {"clock": "CLOCK_MONOTONIC", "boot_id": "00000000-0000-0000-0000-000000000000", "time_namespace": "time:[1]", "children_time_namespace": "time:[1]"}
+PROCESS = {"pid": 123, "start_ticks": 7, "pid_namespace": "pid:[1]", "time_namespace": "time:[1]"}
 
 
 def source_binding():
@@ -19,6 +21,23 @@ def source_binding():
 
 def config(root):
     return {"schema": probe.SCHEMA, "run_id": "capacity-proof", "api_base": "https://private.example", "admin_token": "secret-not-for-evidence", "subscription_id": 7, "source_binding": source_binding(), "count": 10000, "output_path": str(root), "urls": {"adapters": "/api/adapters", "events": "/api/event-subscriptions/7/events?limit=20", "backlog": "/api/event-subscriptions/7"}, "stage": "http", "producer_config_path": str(root / "producer-config.private.json"), "producer_log_path": str(root / "capacity-proof-http.private.jsonl"), "producer_result_path": str(root / "capacity-proof-http.private.json"), "baseline_samples": 20, "post_drain_seconds": 600, "deadline_seconds": 1800, "request_timeout_seconds": 5, "response_max_bytes": probe.MAX_RESPONSE_BYTES, "log_max_bytes": probe.MAX_LOG_BYTES}
+
+
+def sampler_fixture(conf, ready_ns=19 * probe.NS):
+    owner = {"schema": probe.SCHEMA, "run_id": conf["run_id"], **probe.binding_witness(conf), "clock_domain": DOMAIN, **PROCESS, "sampler_start_ns": 0, "deadline_ns": conf["deadline_seconds"] * probe.NS}
+    ready = {"schema": probe.SCHEMA, "kind": "ready", "run_id": conf["run_id"], **probe.binding_witness(conf), "clock_domain": DOMAIN, "monotonic_ns": ready_ns, "accepted": 0}
+    start = {"kind": "start", "schema": probe.SCHEMA, "run_id": conf["run_id"], **probe.binding_witness(conf), "clock_domain": DOMAIN, "monotonic_ns": 0, "deadline_seconds": conf["deadline_seconds"]}
+    names = probe.paths(conf)
+    probe.write_private(names["pid"], owner)
+    probe.write_private(names["ready"], ready)
+    names["log"].write_bytes(probe.encoded(start) + b"\n" + probe.encoded(ready) + b"\n")
+    return ready
+
+
+def producer_fixture(conf):
+    path = Path(conf["producer_config_path"])
+    probe.write_private(path, {"run_id": conf["run_id"], "kind": "capacity", "count": 10000, "output_path": conf["output_path"], "http_concurrency": 125, "ingress_url": conf["api_base"] + conf["source_binding"]["ingress_path"]})
+    return path
 
 
 def rabbit_config(root):
@@ -262,13 +281,169 @@ class SamplerTests(unittest.IsolatedAsyncioTestCase):
             await probe.HttpReader(client, conf)("adapters")
 
 
+class LifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.object(probe, "clock_domain", return_value=DOMAIN))
+        self.real_identity = getattr(probe, "process_identity", None)
+        self.identity = self.enterContext(patch.object(probe, "process_identity", return_value=PROCESS, create=True))
+        readlink = probe.os.readlink
+        self.enterContext(patch.object(probe.os, "readlink", side_effect=lambda path, *args, **kwargs: PROCESS["pid_namespace"] if str(path) == "/proc/self/ns/pid" else readlink(path, *args, **kwargs)))
+        self.clock = self.enterContext(patch.object(probe.time, "monotonic_ns", return_value=20 * probe.NS))
+
+    def test_historical_ready_after_stop_cannot_start_producer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conf = config(Path(directory))
+            sampler_fixture(conf)
+            path = producer_fixture(conf)
+            probe.paths(conf)["stop"].touch()
+            with patch.object(probe.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+                with self.assertRaisesRegex(probe.ProbeError, "probe_stopped"):
+                    probe.run_producer(conf, path, "http")
+                run.assert_not_called()
+            self.assertFalse(probe.paths(conf)["producer_start"].exists())
+
+    def test_expired_reused_dead_ended_or_mismatched_owner_cannot_launch(self):
+        for kind in ("expired", "insufficient", "end", "analysis", "dead", "reused", "pidns", "boot", "time_ns", "missing_ticks", "wrong_run", "wrong_start", "future_ready"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                conf = config(Path(directory))
+                sampler_fixture(conf)
+                path, names = producer_fixture(conf), probe.paths(conf)
+                owner = probe.bounded_json(names["pid"])
+                self.clock.return_value = 20 * probe.NS
+                self.identity.side_effect, self.identity.return_value = None, PROCESS
+                if kind == "expired":
+                    self.clock.return_value = 1800 * probe.NS
+                elif kind == "insufficient":
+                    self.clock.return_value = (1800 - 606) * probe.NS + 1
+                elif kind == "end":
+                    with names["log"].open("ab") as output:
+                        output.write(probe.encoded({"kind": "end"}) + b"\n")
+                elif kind == "analysis":
+                    names["analysis"].write_bytes(b"{}")
+                elif kind == "dead":
+                    self.identity.side_effect = probe.ProbeError("probe_not_running")
+                elif kind in ("reused", "pidns", "time_ns"):
+                    key = {"reused": "start_ticks", "pidns": "pid_namespace", "time_ns": "time_namespace"}[kind]
+                    self.identity.return_value = {**PROCESS, key: 99 if kind == "reused" else "namespace:[2]"}
+                elif kind == "boot":
+                    owner["clock_domain"] = {**DOMAIN, "boot_id": "11111111-1111-1111-1111-111111111111"}
+                elif kind == "missing_ticks":
+                    owner.pop("start_ticks")
+                elif kind == "wrong_run":
+                    owner["run_id"] = "other-run"
+                elif kind == "wrong_start":
+                    owner["sampler_start_ns"] = 1
+                    owner["deadline_ns"] += 1
+                else:
+                    self.clock.return_value = 18 * probe.NS
+                names["pid"].write_bytes(probe.encoded(owner))
+                with patch.object(probe.subprocess, "run") as run:
+                    with self.assertRaises(probe.ProbeError):
+                        probe.run_producer(conf, path, "http")
+                    run.assert_not_called()
+                self.assertFalse(names["producer_start"].exists())
+
+    def test_fresh_check_after_snapshot_stops_before_producer_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conf = config(Path(directory))
+            sampler_fixture(conf)
+            path, names = producer_fixture(conf), probe.paths(conf)
+            with patch.object(probe.os, "fsync", side_effect=lambda _fd: names["stop"].touch()), patch.object(probe.subprocess, "run") as run:
+                with self.assertRaisesRegex(probe.ProbeError, "probe_stopped"):
+                    probe.run_producer(conf, path, "http")
+                run.assert_not_called()
+            self.assertFalse(names["producer_start"].exists())
+            self.assertEqual(list(Path(directory).glob(".*producer-config-*.json")), [])
+
+    def test_post_child_check_retains_actual_exit_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conf = config(Path(directory))
+            sampler_fixture(conf)
+            path, names = producer_fixture(conf), probe.paths(conf)
+
+            def finish_child(*_args, **_kwargs):
+                names["stop"].touch()
+                return SimpleNamespace(returncode=0)
+
+            with patch.object(probe.subprocess, "run", side_effect=finish_child) as run:
+                with self.assertRaisesRegex(probe.ProbeError, "probe_stopped"):
+                    probe.run_producer(conf, path, "http")
+                run.assert_called_once()
+            result = probe.bounded_json(names["producer_end"])
+            self.assertEqual(result["returncode"], 0)
+            self.assertEqual(result["sampler_error"], "probe_stopped")
+            self.assertEqual(list(Path(directory).glob(".*producer-config-*.json")), [])
+
+    def test_short_valid_window_and_live_normal_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conf = config(Path(directory))
+            conf["deadline_seconds"] = 622
+            conf["request_timeout_seconds"] = 1
+            ready = sampler_fixture(conf)
+            path, names = producer_fixture(conf), probe.paths(conf)
+            self.clock.return_value = 20 * probe.NS  # Baseline at 19; 600 + 1 + 1 remain.
+            self.assertTrue(probe.wait_ready(conf, 1)["ready"])
+            digest = probe.assert_sampler_active(conf, ready, DOMAIN, before_producer=True)
+            self.clock.return_value += 1
+            with self.assertRaisesRegex(probe.ProbeError, "observation_window_insufficient"):
+                probe.assert_sampler_active(conf, ready, DOMAIN, before_producer=True)
+            self.clock.return_value = 20 * probe.NS
+            with patch.object(probe.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+                self.assertEqual(probe.run_producer(conf, path, "http")["returncode"], 0)
+                run.assert_called_once()
+            for key in ("producer_start", "producer_end"):
+                self.assertEqual(probe.bounded_json(names[key])["sampler_identity_sha256"], digest)
+
+    def test_process_identity_rejects_zombies_and_handles_comm_parentheses(self):
+        # Exercise the real /proc parser using bounded in-memory stat data.
+        with patch.object(probe, "process_identity", new=self.real_identity):
+            for state in ("S", "R", "Z", "X", "T"):
+                raw = b"123 (name ) with spaces) " + b" ".join([state.encode()] + [b"0"] * 18 + [b"7"])
+                with self.subTest(state=state), patch.object(Path, "open", return_value=io.BytesIO(raw)), patch.object(probe.os, "readlink", side_effect=["pid:[1]", "time:[1]"]):
+                    if state in ("S", "R"):
+                        self.assertEqual(probe.process_identity(123), PROCESS)
+                    else:
+                        with self.assertRaisesRegex(probe.ProbeError, "probe_not_running"):
+                            probe.process_identity(123)
+
+    def test_active_snapshot_ignores_only_unterminated_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conf = config(Path(directory))
+            ready = sampler_fixture(conf)
+            path = probe.paths(conf)["log"]
+            with path.open("ab") as output:
+                output.write(b'{"kind":"sample","endpoint":')
+            self.assertTrue(probe.assert_sampler_active(conf, ready, DOMAIN, before_producer=True))
+            # Offline final evidence must never silently discard the same tail.
+            with self.assertRaises(ValueError):
+                probe.analyze(conf)
+
+    def test_active_snapshot_rejects_complete_bad_rows_and_budgets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conf = config(Path(directory))
+            sampler_fixture(conf)
+            path = probe.paths(conf)["log"]
+            original = path.read_bytes()
+            for suffix, limit, count, code in ((b"{bad}\n", conf["log_max_bytes"], 12000, "invalid_evidence_row"), (b"[]\n", conf["log_max_bytes"], 12000, "invalid_evidence_row"), (b"{bad}\n{", conf["log_max_bytes"], 12000, "invalid_evidence_row"), (b"{", conf["log_max_bytes"], 2, "row_budget"), (b"x" * 16384, conf["log_max_bytes"], 12000, "row_budget"), (b"", len(original) - 1, 12000, "file_too_large")):
+                path.write_bytes(original + suffix)
+                with self.subTest(suffix=suffix[:12], count=count, limit=limit), self.assertRaisesRegex(probe.ProbeError, code):
+                    probe._read_active_rows(path, limit, count)
+
+
 class AnalysisTests(unittest.TestCase):
+    def setUp(self):
+        # Synthetic Linux owner; these tests do not inspect any live process.
+        self.enterContext(patch.object(probe, "process_identity", return_value=PROCESS))
+        readlink = probe.os.readlink
+        self.enterContext(patch.object(probe.os, "readlink", side_effect=lambda path, *args, **kwargs: PROCESS["pid_namespace"] if str(path) == "/proc/self/ns/pid" else readlink(path, *args, **kwargs)))
+        self.enterContext(patch.object(probe.time, "monotonic_ns", return_value=20 * probe.NS))
+
     def test_replaced_or_transiently_overwritten_config_cannot_redirect_child(self):
         for mode in ("same_inode", "rename"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 conf = config(root)
-                probe.write_private(probe.paths(conf)["ready"], {"clock_domain": DOMAIN, **probe.binding_witness(conf)})
+                sampler_fixture(conf)
                 path = Path(conf["producer_config_path"])
                 valid = {"run_id": conf["run_id"], "kind": "capacity", "count": 10000, "output_path": str(root), "http_concurrency": 125, "ingress_url": "https://private.example/api/ingress/private-route"}
                 changed = {**valid, "ingress_url": "https://wrong.example/api/ingress/other"}
@@ -305,7 +480,7 @@ class AnalysisTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             conf = config(root)
-            probe.write_private(probe.paths(conf)["ready"], {"clock_domain": DOMAIN, **probe.binding_witness(conf)})
+            sampler_fixture(conf)
             path = Path(conf["producer_config_path"])
             path.write_bytes(probe.encoded({"run_id": conf["run_id"], "kind": "capacity", "count": 10000, "output_path": str(root), "http_concurrency": 125, "ingress_url": "https://private.example/api/ingress/private-route"}))
             with patch.object(probe, "clock_domain", return_value=DOMAIN), patch.object(probe.os, "fsync", side_effect=OSError("snapshot_sync_failed")), patch.object(probe.subprocess, "run") as run:
@@ -366,7 +541,7 @@ class AnalysisTests(unittest.TestCase):
                 conf = config(case) if stage == "http" else rabbit_config(case)
                 if stage == "publish":
                     synthetic_broker_witness(conf, case)
-                probe.write_private(probe.paths(conf)["ready"], {"clock_domain": DOMAIN, **probe.binding_witness(conf)})
+                sampler_fixture(conf)
                 valid = {"run_id": conf["run_id"], "kind": "capacity", "count": 10000, "output_path": str(case), "http_concurrency": 125, "ingress_url": "https://private.example/api/ingress/private-route", "queue": "private-queue", "amqp_url": "amqp://private-user:private-password@publisher-private:5672/private%2Fvhost+"}
                 mutations = (("ingress_url", "https://other.example/api/ingress/private-route"), ("ingress_url", "https://private.example/api/ingress/other"), ("ingress_url", None)) if stage == "http" else (("queue", "other"), ("amqp_url", "amqp://publisher-private:5672/other"), ("amqp_url", "amqp://other:5672/private%2Fvhost+"))
                 path = Path(conf["producer_config_path"])
@@ -486,32 +661,38 @@ class AnalysisTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             conf = config(Path(directory))
             names = probe.paths(conf)
-            ready = {"monotonic_ns": 19 * probe.NS}
+            ready = sampler_fixture(conf)
             probe.write_private(Path(conf["producer_config_path"]), {"ingress_url": conf["api_base"] + conf["source_binding"]["ingress_path"]})
-            witness = {"run_id": conf["run_id"], "stage": "http", "clock_domain": DOMAIN, "workload_sha256": probe.WORKLOAD_SHA256, **probe.binding_witness(conf), "producer_config_sha256": probe.file_digest(Path(conf["producer_config_path"]))}
+            witness = {"run_id": conf["run_id"], "stage": "http", "clock_domain": DOMAIN, "workload_sha256": probe.WORKLOAD_SHA256, **probe.binding_witness(conf), "producer_config_sha256": probe.file_digest(Path(conf["producer_config_path"])), "sampler_identity_sha256": probe.hashlib.sha256(probe.encoded(probe.bounded_json(names["pid"]))).hexdigest()}
             probe.write_private(names["producer_start"], {**witness, "monotonic_ns": 20 * probe.NS})
             with Path(conf["producer_log_path"]).open("wb") as output:
                 output.writelines(probe.encoded({"kind": "http_attempt", "seq": seq, "attempt": 1, "started_ns": 20 * probe.NS + seq * 1000}) + b"\n" for seq in range(1, 10001))
             probe.write_private(Path(conf["producer_result_path"]), {"run_id": conf["run_id"], "stage": "http", "count": 10000, "concurrency_peak": 125, "burst_window_passed": True, "all_responses_accepted": True, "retry_after_contract_passed": True, "local_response_deadline_passed": True})
-            probe.write_private(names["producer_end"], {**witness, "monotonic_ns": 30 * probe.NS, "returncode": 0, "log_sha256": probe.file_digest(Path(conf["producer_log_path"])), "result_sha256": probe.file_digest(Path(conf["producer_result_path"]))})
+            probe.write_private(names["producer_end"], {**witness, "monotonic_ns": 30 * probe.NS, "returncode": 0, "sampler_error": None, "log_sha256": probe.file_digest(Path(conf["producer_log_path"])), "result_sha256": probe.file_digest(Path(conf["producer_result_path"]))})
             result = probe.producer_evidence(conf, ready, DOMAIN)
             self.assertEqual(result["sender_begin_ns"], 20 * probe.NS + 1000)
             self.assertEqual(result["first_request_count"], 10000)
             for name in ("producer_start", "producer_end"):
                 path = names[name]
                 receipt = probe.bounded_json(path)
-                for key in ("source_binding_sha256", "target_binding_sha256", "producer_config_sha256"):
+                for key in ("source_binding_sha256", "target_binding_sha256", "producer_config_sha256", "sampler_identity_sha256"):
                     path.write_bytes(probe.encoded({k: v for k, v in receipt.items() if k != key}))
                     with self.subTest(name=name, key=key), self.assertRaisesRegex(probe.ProbeError, "provenance"):
                         probe.producer_evidence(conf, ready, DOMAIN)
                 path.write_bytes(probe.encoded(receipt))
+            end = probe.bounded_json(names["producer_end"])
+            for value in ({key: item for key, item in end.items() if key != "sampler_error"}, {**end, "sampler_error": "probe_stopped"}, {**end, "monotonic_ns": 1800 * probe.NS}):
+                names["producer_end"].write_bytes(probe.encoded(value))
+                with self.subTest(end=value), self.assertRaises(probe.ProbeError):
+                    probe.producer_evidence(conf, ready, DOMAIN)
+            names["producer_end"].write_bytes(probe.encoded(end))
             producer_path = Path(conf["producer_config_path"])
             original_config = producer_path.read_bytes()
             producer_path.write_bytes(probe.encoded({"ingress_url": conf["api_base"] + conf["source_binding"]["ingress_path"], "changed_private_option": True}))
             with self.assertRaisesRegex(probe.ProbeError, "provenance"):
                 probe.producer_evidence(conf, ready, DOMAIN)
             producer_path.write_bytes(original_config)
-            with self.assertRaisesRegex(probe.ProbeError, "clock_provenance"):
+            with self.assertRaisesRegex(probe.ProbeError, "owner_mismatch|clock_provenance"):
                 probe.producer_evidence(conf, ready, {**DOMAIN, "time_namespace": "time:[2]"})
             with Path(conf["producer_log_path"]).open("ab") as output:
                 output.write(b"{}\n")
@@ -521,7 +702,7 @@ class AnalysisTests(unittest.TestCase):
     def test_producer_wrapper_refuses_128_plus_management_without_running_anything(self):
         with tempfile.TemporaryDirectory() as directory:
             root, conf = Path(directory), config(Path(directory))
-            probe.write_private(probe.paths(conf)["ready"], {"clock_domain": DOMAIN, **probe.binding_witness(conf)})
+            sampler_fixture(conf)
             path = root / "producer-config.private.json"
             probe.write_private(path, {"run_id": conf["run_id"], "kind": "capacity", "count": 10000, "http_concurrency": 128})
             with patch.object(probe, "clock_domain", return_value=DOMAIN), patch.object(probe.subprocess, "run") as run:

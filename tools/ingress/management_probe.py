@@ -298,6 +298,69 @@ def clock_domain() -> dict[str, str]:
     return {"clock": "CLOCK_MONOTONIC", "boot_id": boot, "time_namespace": namespace, "children_time_namespace": children}
 
 
+def process_identity(pid: int) -> dict[str, Any]:
+    """Read the Linux identity without exposing argv, environment or addresses."""
+    try:
+        with Path(f"/proc/{pid}/stat").open("rb") as source:
+            raw = source.read(4097)
+        prefix, separator, tail = raw.rpartition(b") ")
+        fields = tail.split()
+        if len(raw) > 4096 or not separator or prefix.partition(b" (")[0] != str(pid).encode() or len(fields) < 20:
+            raise ValueError
+        state, ticks = fields[0].decode("ascii"), int(fields[19])
+        if state not in ("R", "S", "D", "I") or ticks <= 0:
+            raise ValueError
+        return {"pid": pid, "start_ticks": ticks, "pid_namespace": os.readlink(f"/proc/{pid}/ns/pid"), "time_namespace": os.readlink(f"/proc/{pid}/ns/time")}
+    except (OSError, ValueError, UnicodeError) as error:
+        raise ProbeError("probe_not_running") from error
+
+
+def sampler_owner(config: dict[str, Any], ready: dict[str, Any], domain: dict[str, Any]) -> dict[str, Any]:
+    owner = bounded_json(paths(config)["pid"])
+    binding = binding_witness(config)
+    if any(row.get("schema") != SCHEMA or row.get("run_id") != config["run_id"] or row.get("clock_domain") != domain or any(row.get(key) != value for key, value in binding.items()) for row in (owner, ready)) or ready.get("kind") != "ready" or ready.get("accepted") != 0:
+        raise ProbeError("probe_owner_mismatch")
+    _integer(owner.get("pid"), 1, 2**31 - 1, "invalid_probe_pid")
+    _integer(owner.get("start_ticks"), 1, 2**63 - 1, "invalid_probe_start_ticks")
+    begin = _integer(owner.get("sampler_start_ns"), 0, 2**63 - 1, "invalid_probe_deadline")
+    deadline = _integer(owner.get("deadline_ns"), 1, 2**63 - 1, "invalid_probe_deadline")
+    ready_ns = _integer(ready.get("monotonic_ns"), 0, 2**63 - 1, "invalid_ready_time")
+    if not isinstance(owner.get("pid_namespace"), str) or not re.fullmatch(r"pid:\[\d+\]", owner["pid_namespace"]) or owner.get("time_namespace") != domain["time_namespace"] or deadline != begin + config["deadline_seconds"] * NS or not begin <= ready_ns < deadline:
+        raise ProbeError("probe_owner_mismatch")
+    return owner
+
+
+def assert_sampler_active(config: dict[str, Any], ready: dict[str, Any], domain: dict[str, Any], *, before_producer: bool, expected_owner: str | None = None) -> str:
+    """A fresh fail-closed check, not an atomic promise of future survival."""
+    names = paths(config)
+    owner = sampler_owner(config, ready, domain)
+    owner_digest = hashlib.sha256(encoded(owner)).hexdigest()
+    if expected_owner is not None and owner_digest != expected_owner:
+        raise ProbeError("probe_owner_changed")
+    if names["stop"].exists() or names["analysis"].exists():
+        raise ProbeError("probe_stopped")
+    current = process_identity(owner["pid"])
+    if current != {key: owner[key] for key in current} or current["pid_namespace"] != os.readlink("/proc/self/ns/pid") or clock_domain() != domain:
+        raise ProbeError("probe_process_identity_mismatch")
+    rows = _read_active_rows(names["log"], config["log_max_bytes"], 12000)
+    starts = [row for row in rows if row.get("kind") == "start"]
+    ready_rows = [row for row in rows if row.get("kind") == "ready"]
+    if any(row.get("kind") == "end" for row in rows):
+        raise ProbeError("probe_already_ended")
+    if len(starts) != 1 or len(ready_rows) != 1 or ready_rows[0] != ready or starts[0].get("monotonic_ns") != owner["sampler_start_ns"] or starts[0].get("deadline_seconds") != config["deadline_seconds"] or starts[0].get("clock_domain") != domain or starts[0].get("run_id") != config["run_id"] or any(starts[0].get(key) != value for key, value in binding_witness(config).items()):
+        raise ProbeError("probe_lifecycle_mismatch")
+    now = time.monotonic_ns()
+    remaining = owner["deadline_ns"] - now
+    if now < ready["monotonic_ns"] or remaining <= 0:
+        raise ProbeError("probe_deadline_expired")
+    # Do not add the worst-case 60/600 durations to the acceptance contract.
+    # Reserve only the unavoidable full observation and one sampling/request tail.
+    minimum = config["post_drain_seconds"] + 1 + config["request_timeout_seconds"]
+    if before_producer and remaining < minimum * NS:
+        raise ProbeError("probe_observation_window_insufficient")
+    return owner_digest
+
+
 def _numbers(value: Any, keys: tuple[str, ...]) -> dict[str, int]:
     if not isinstance(value, dict):
         raise ProbeError("invalid_numeric_snapshot")
@@ -486,6 +549,28 @@ def _read_rows(path: Path, limit: int, max_rows: int) -> list[dict[str, Any]]:
     return rows
 
 
+def _read_active_rows(path: Path, limit: int, max_rows: int) -> list[dict[str, Any]]:
+    """Snapshot an active writer; only its single unfinished LF tail is ignored."""
+    with path.open("rb") as source:
+        raw = source.read(limit + 1)
+    if len(raw) > limit:
+        raise ProbeError("evidence_file_too_large")
+    lines = raw.split(b"\n", max_rows + 1)
+    tail = lines.pop()
+    if len(lines) + bool(tail) > max_rows or any(len(line) + 1 > 16384 for line in (*lines, tail) if line):
+        raise ProbeError("evidence_row_budget_exceeded")
+    rows = []
+    for line in lines:
+        try:
+            value = json.loads(line)
+        except (ValueError, UnicodeError) as error:
+            raise ProbeError("invalid_evidence_row") from error
+        if not isinstance(value, dict):
+            raise ProbeError("invalid_evidence_row")
+        rows.append(value)
+    return rows
+
+
 def file_digest(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -502,15 +587,20 @@ def producer_evidence(config: dict[str, Any], ready: dict[str, Any], domain: dic
     producer_config, producer_raw = _json_snapshot(producer_path)
     producer_config_sha256 = hashlib.sha256(producer_raw).hexdigest()
     target_identity(config, producer_config)
+    owner = sampler_owner(config, ready, domain)
+    owner_digest = hashlib.sha256(encoded(owner)).hexdigest()
     log = private_path(config["producer_log_path"])
     result_path = private_path(config["producer_result_path"])
     for receipt in (start, end):
-        if receipt.get("run_id") != config["run_id"] or receipt.get("stage") != config["stage"] or receipt.get("clock_domain") != domain or receipt.get("workload_sha256") != WORKLOAD_SHA256 or any(receipt.get(key) != value for key, value in binding_witness(config).items()) or receipt.get("producer_config_sha256") != producer_config_sha256:
+        if receipt.get("run_id") != config["run_id"] or receipt.get("stage") != config["stage"] or receipt.get("clock_domain") != domain or receipt.get("workload_sha256") != WORKLOAD_SHA256 or any(receipt.get(key) != value for key, value in binding_witness(config).items()) or receipt.get("producer_config_sha256") != producer_config_sha256 or receipt.get("sampler_identity_sha256") != owner_digest:
             raise ProbeError("producer_clock_provenance_mismatch")
-    if end.get("returncode") != 0 or end.get("log_sha256") != file_digest(log) or end.get("result_sha256") != file_digest(result_path):
+    if end.get("returncode") != 0 or "sampler_error" not in end or end["sampler_error"] is not None or end.get("log_sha256") != file_digest(log) or end.get("result_sha256") != file_digest(result_path):
         raise ProbeError("producer_did_not_finish_unchanged")
     if start.get("monotonic_ns", 0) < ready["monotonic_ns"] or end.get("monotonic_ns", 0) <= start["monotonic_ns"]:
         raise ProbeError("producer_not_started_after_ready")
+    minimum = (config["post_drain_seconds"] + 1 + config["request_timeout_seconds"]) * NS
+    if start["monotonic_ns"] > owner["deadline_ns"] - minimum or end["monotonic_ns"] >= owner["deadline_ns"]:
+        raise ProbeError("producer_probe_window_invalid")
     if log.stat().st_size > 64 * 1024**2:
         raise ProbeError("producer_log_too_large")
     first = None
@@ -634,11 +724,11 @@ async def start_probe(config: dict[str, Any]) -> dict[str, Any]:
     if names["stop"].exists():
         raise ProbeError("stale_stop_file")
     domain = clock_domain()
-    write_private(names["pid"], {"pid": os.getpid(), "clock_domain": domain, "run_id": config["run_id"]})
     sink = PrivateLog(names["log"], config["log_max_bytes"])
     try:
         async with httpx.AsyncClient(timeout=config["request_timeout_seconds"], follow_redirects=False, trust_env=False, transport=httpx.AsyncHTTPTransport(retries=0, limits=httpx.Limits(max_connections=3, max_keepalive_connections=3))) as client:
             sampler = Sampler(config, sink, HttpReader(client, config), domain=domain, ready_sink=lambda value: write_private(names["ready"], value), stop_requested=names["stop"].exists)
+            write_private(names["pid"], {"schema": SCHEMA, "run_id": config["run_id"], **sampler.binding, "clock_domain": domain, **process_identity(os.getpid()), "sampler_start_ns": sampler.start_ns, "deadline_ns": sampler.start_ns + config["deadline_seconds"] * NS})
             await sampler.run()
     finally:
         sink.close()
@@ -655,11 +745,7 @@ def wait_ready(config: dict[str, Any], timeout: int) -> dict[str, Any]:
             value = bounded_json(paths(config)["ready"])
             if any(value.get(key) != item for key, item in binding_witness(config).items()) or value.get("clock_domain") != clock_domain() or value.get("accepted") != 0:
                 raise ProbeError("ready_receipt_mismatch")
-            pid = bounded_json(paths(config)["pid"])
-            try:
-                os.kill(_integer(pid.get("pid"), 1, 2**31 - 1, "invalid_probe_pid"), 0)
-            except OSError as error:
-                raise ProbeError("probe_not_running") from error
+            assert_sampler_active(config, value, value["clock_domain"], before_producer=True)
             return {"ready": True, "run_id": config["run_id"], "monotonic_ns": value["monotonic_ns"]}
         time.sleep(0.1)
     raise ProbeError("ready_deadline_exceeded")
@@ -673,6 +759,7 @@ def run_producer(config: dict[str, Any], workload_config_path: Path, stage: str)
     domain = clock_domain()
     if ready.get("clock_domain") != domain or any(ready.get(key) != value for key, value in binding_witness(config).items()):
         raise ProbeError("ready_receipt_mismatch")
+    owner_digest = assert_sampler_active(config, ready, domain, before_producer=True)
     workload_config_path = private_path(workload_config_path)
     if workload_config_path != private_path(config["producer_config_path"]):
         raise ProbeError("producer_config_path_mismatch")
@@ -708,7 +795,8 @@ def run_producer(config: dict[str, Any], workload_config_path: Path, stage: str)
             raise
         else:
             os.close(fd)
-        witness = {"schema": SCHEMA, "run_id": config["run_id"], "stage": stage, "clock_domain": domain, "workload_sha256": WORKLOAD_SHA256, **binding_witness(config), "producer_config_sha256": producer_config_sha256}
+        assert_sampler_active(config, ready, domain, before_producer=True, expected_owner=owner_digest)
+        witness = {"schema": SCHEMA, "run_id": config["run_id"], "stage": stage, "clock_domain": domain, "workload_sha256": WORKLOAD_SHA256, **binding_witness(config), "producer_config_sha256": producer_config_sha256, "sampler_identity_sha256": owner_digest}
         write_private(paths(config)["producer_start"], {**witness, "monotonic_ns": time.monotonic_ns()})
         try:
             completed = subprocess.run([sys.executable, str(workload_path), stage, "--config", str(frozen_config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90, check=False)
@@ -717,8 +805,15 @@ def run_producer(config: dict[str, Any], workload_config_path: Path, stage: str)
             returncode = -1
         if _json_snapshot(frozen_config)[1] != producer_raw:
             raise ProbeError("producer_configuration_changed")
-        result = {**witness, "monotonic_ns": time.monotonic_ns(), "returncode": returncode, "log_sha256": file_digest(private_path(config["producer_log_path"])) if Path(config["producer_log_path"]).exists() else None, "result_sha256": file_digest(private_path(config["producer_result_path"])) if Path(config["producer_result_path"]).exists() else None}
+        sampler_error = None
+        try:
+            assert_sampler_active(config, ready, domain, before_producer=False, expected_owner=owner_digest)
+        except Exception as error:  # noqa: BLE001
+            sampler_error = str(error) if isinstance(error, ProbeError) else "probe_liveness_unproven"
+        result = {**witness, "monotonic_ns": time.monotonic_ns(), "returncode": returncode, "sampler_error": sampler_error, "log_sha256": file_digest(private_path(config["producer_log_path"])) if Path(config["producer_log_path"]).exists() else None, "result_sha256": file_digest(private_path(config["producer_result_path"])) if Path(config["producer_result_path"]).exists() else None}
         write_private(paths(config)["producer_end"], result)
+        if sampler_error is not None:
+            raise ProbeError(sampler_error)
     except BaseException as failure:
         original_error = failure
         raise
