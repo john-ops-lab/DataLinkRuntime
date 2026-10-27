@@ -2,8 +2,11 @@
 
 import asyncio
 import base64
+import functools
 import hashlib
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -70,6 +73,47 @@ class Clock:
 
     async def sleep(self, seconds):
         self.value += seconds
+
+
+def bounded_async_case(test):
+    """Contain a broken cancellation path to a test-owned child process."""
+
+    @functools.wraps(test)
+    def run(self):
+        case = f"{type(self).__name__}.{test.__name__}"
+        marker = "DLR_ISSUE222_BOUNDED_TEST_CHILD"
+        if os.environ.get(marker) == case:
+            return test(self)
+        env = {**os.environ, marker: case}
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "unittest", f"tools.ingress.test_workload.{case}"],
+                env=env,
+                cwd=Path(__file__).resolve().parents[2],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail(f"Async test did not finish within its independent watchdog: {case}")
+        self.assertEqual(result.returncode, 0, result.stderr[-4000:])
+
+    return run
+
+
+async def await_bounded_task(task):
+    done, _ = await asyncio.wait({task}, timeout=5)
+    if not done:
+        raise AssertionError("Background task did not finish within the test deadline")
+    return task.result()
+
+
+async def cancel_bounded_task(task):
+    if not task.done():
+        task.cancel()
+    await asyncio.wait({task}, timeout=5)
 
 
 class ManifestTests(unittest.TestCase):
@@ -287,6 +331,7 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(result["counts"]["first_unknown"], 1)
         self.assertEqual(result["concurrency_peak"], 1)
 
+    @bounded_async_case
     def test_backoff_owns_no_request_slot_and_first_round_precedes_retry(self):
         async def run():
             all_first = asyncio.Event()
@@ -315,15 +360,19 @@ class HttpTests(unittest.TestCase):
 
             sender.sleep = backoff
             pending = asyncio.create_task(sender.run())
-            await asyncio.wait_for(all_first.wait(), 1)
-            # All other IDs used the sole request slot while ID 1 was asleep.
-            self.assertEqual(len(first), 20)
-            self.assertEqual(attempts[1], 1)
-            release_backoff.set()
-            result = await pending
-            self.assertEqual(violations, [])
-            self.assertTrue(result["all_responses_accepted"])
-            self.assertEqual(result["counts"]["post_requests"], 21)
+            try:
+                await asyncio.wait_for(all_first.wait(), 5)
+                # All other IDs used the sole request slot while ID 1 was asleep.
+                self.assertEqual(len(first), 20)
+                self.assertEqual(attempts[1], 1)
+                release_backoff.set()
+                result = await await_bounded_task(pending)
+                self.assertEqual(violations, [])
+                self.assertTrue(result["all_responses_accepted"])
+                self.assertEqual(result["counts"]["post_requests"], 21)
+            finally:
+                release_backoff.set()
+                await cancel_bounded_task(pending)
 
         asyncio.run(run())
 
@@ -409,6 +458,7 @@ class HttpCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["counts"]["first_unknown"], 250)
         self.assertEqual(result["scheduler"]["request_tasks_peak"], 3)
 
+    @bounded_async_case
     def test_cancel_drains_only_bounded_active_requests_and_releases_their_slots(self):
         async def run():
             started = asyncio.Event()
@@ -419,14 +469,17 @@ class HttpCoordinatorTests(unittest.TestCase):
 
             sender, _ = self.make(send, count=1000, concurrency=3)
             task = asyncio.create_task(sender.run())
-            await started.wait()
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-            self.assertEqual(sender.active, 0)
-            self.assertEqual(sender.slots._value, 3)
-            self.assertLessEqual(sender.request_tasks_peak, 3)
-            self.assertEqual(sender.counts["post_requests"], 3)
+            try:
+                await asyncio.wait_for(started.wait(), 5)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await await_bounded_task(task)
+                self.assertEqual(sender.active, 0)
+                self.assertEqual(sender.slots._value, 3)
+                self.assertLessEqual(sender.request_tasks_peak, 3)
+                self.assertEqual(sender.counts["post_requests"], 3)
+            finally:
+                await cancel_bounded_task(task)
 
         asyncio.run(run())
 
@@ -499,6 +552,7 @@ class HttpFollowupPacingTests(unittest.TestCase):
             )
         self.assertEqual(sender.slots._value, 125)
 
+    @bounded_async_case
     def test_pacing_wait_owns_no_http_slot_and_cancel_releases_the_start_lock(self):
         async def run():
             sleeping = asyncio.Event()
@@ -515,14 +569,17 @@ class HttpFollowupPacingTests(unittest.TestCase):
             sender.followup_next_start = 1
             sender.sleep = pause
             task = asyncio.create_task(sender._request("POST", sender.inputs[0]))
-            await sleeping.wait()
-            self.assertEqual(sender.slots._value, 3)
-            self.assertEqual(sender.active, 0)
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-            self.assertFalse(sender.followup_start_lock.locked())
-            self.assertEqual(sender.slots._value, 3)
+            try:
+                await asyncio.wait_for(sleeping.wait(), 5)
+                self.assertEqual(sender.slots._value, 3)
+                self.assertEqual(sender.active, 0)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await await_bounded_task(task)
+                self.assertFalse(sender.followup_start_lock.locked())
+                self.assertEqual(sender.slots._value, 3)
+            finally:
+                await cancel_bounded_task(task)
 
         asyncio.run(run())
 
