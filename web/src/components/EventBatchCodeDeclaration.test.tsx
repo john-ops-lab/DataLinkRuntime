@@ -55,3 +55,26 @@ it("discarding the controlled draft does not save the declaration", () => {
   expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
   expect(change).toHaveBeenCalledOnce();
 });
+
+it.each([
+  ["en", '{"nested":[9007199254740993]}', false, /Displayed values may be inaccurate/],
+  ["zh-CN", '{"nested":[-9007199254740993]}', false, /当前显示可能不精确/],
+  ["en", '{"nested":[1e400]}', false, /Displayed values may be inaccurate/],
+  ["zh-CN", '{"nested":[null]}', true, /当前显示可能不精确/],
+] as const)("blocks unsafe automatic edits in %s without changing the draft", async (locale, value, unsafeNumbers, hint) => {
+  await applyUiLocale(locale);
+  const change = vi.fn();
+  render(<EventBatchCodeDeclaration value={value} unsafeNumbers={unsafeNumbers} disabled={false} onChange={change} />);
+  expect((screen.getByRole("checkbox") as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByText(hint)).toBeTruthy();
+  fireEvent.click(screen.getByRole("checkbox"));
+  expect(change).not.toHaveBeenCalled();
+});
+
+it("preserves safe numeric boundaries, finite decimals and numeric strings when declaring support", () => {
+  const config = { nested: [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER, 0.1, "9007199254740993"] };
+  const change = vi.fn();
+  render(<EventBatchCodeDeclaration value={JSON.stringify(config)} disabled={false} onChange={change} />);
+  fireEvent.click(screen.getByRole("checkbox"));
+  expect(JSON.parse(change.mock.calls[0][0])).toEqual({ ...config, event_batch_schema: "dlr.event.batch.v1" });
+});
