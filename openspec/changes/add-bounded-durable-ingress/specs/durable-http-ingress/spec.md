@@ -1,8 +1,8 @@
 # Spec Delta
 
-本次D7.12的实现与验证范围见 [覆盖表E85–E86](../../b1-b5-coverage.md#e85e86-d712实施与小链索引)：C9候选已完成36项受影响纯检查、真实collector＋ready三项PG和HTTP20/native200/忙闲小链；这些证据不改变下列资源、期限、逐条责任与确认合同，也不表示原正式万条、完整观察或最终OCR已通过。
+本次D7.12的实现与验证范围见 [覆盖表E85–E86](../../b1-b5-coverage.md#e85e86-d712实施与小链索引)：C9候选已完成36项受影响纯检查、真实collector＋ready三项PG和HTTP20/native200/忙闲小链；这些证据不改变下列资源、期限、逐条责任与确认合同；C9的小链不代表正式容量通过，后继同候选正式结果见E92–E93，最终OCR仍待。
 
-D7.13的raw-only预留归还已在`17f74ee482a40fedb4be3293b0a9b27885284c6d`实施，14项纯代表、GPT独立审查及同候选新HTTP20/native200/忙闲代表链的针对性功能资格见[覆盖表E88–E90](../../b1-b5-coverage.md#e88e90-d713实施publisher补证与新候选小链索引)。正式R11首败E87保持；下列预留归还不增加资源，不表示原正式容量、完整600秒观察或最终统一OCR已通过，也不由小样本数量变化推导吞吐收益。
+D7.13的raw-only预留归还已在`17f74ee482a40fedb4be3293b0a9b27885284c6d`实施，14项纯代表、GPT独立审查及同候选新HTTP20/native200/忙闲代表链的针对性功能资格见[覆盖表E88–E90](../../b1-b5-coverage.md#e88e90-d713实施publisher补证与新候选小链索引)。正式R11首败E87保持；下列预留归还不增加资源；小样本不代表正式容量通过，后继同候选正式结果见E92–E93，最终统一OCR仍待，也不由小样本数量变化推导吞吐收益。
 
 ## Purpose
 
@@ -120,16 +120,15 @@ HTTP 多条模式的收集 SHALL 在 async 层有界完成，不让原生线程�
 - **WHEN** HTTP 持久租约仍由已退出进程的旧 owner 占有，而管理员停用来源
 - **THEN** 在原锁与 fence 下同事务使该被动租约失效并显示已停止，无须等本地不存在的 SDK 回调；原已接管责任继续排空，未结束请求工作及其独立预算不能提前释放，MQ 仍依原生关闭事实确认结束
 
-### Requirement: Preserve the trusted entry boundary during HTTP middleware optimization
-The system SHALL preserve token/account entry trust, private-prefix path/raw_path handling, bare-prefix rejection, existing double-submit CSRF and public-hook/ingress exemptions when replacing the boundary with direct ASGI calls. Non-HTTP scopes SHALL pass through unchanged.
+### Requirement: HTTP 中间件优化保持可信入口边界
+系统 SHALL 在将入口边界替换为直接ASGI调用时，保持token/account入口的信任边界、私有前缀的path/raw_path处理、裸前缀拒绝、既有双提交CSRF及public hook/ingress豁免。非HTTP scope SHALL 原样透传。
 
-#### Scenario: Equivalent busy rejection without changing responsibility
-- **WHEN** concurrent HTTP calls encounter exhausted existing request or body capacity
-- **THEN** the system MAY avoid unnecessary middleware task allocation before returning the same bounded refusal
-- **AND** accepted calls SHALL retain the original reservation ownership until the underlying work ends, including cancellation and unknown commit cases
-- **AND** the optimization SHALL keep the FastAPI route, source authentication, T1 and commit-before-success checks and all existing budgets, without an additional permit or queue
-- **AND** model tests SHALL NOT replace real functional or capacity acceptance.
-
+#### Scenario: 繁忙时等价拒绝且不改变责任
+- **WHEN** 并发HTTP调用遇到既有请求或正文容量耗尽
+- **THEN** 系统 MAY 在返回同样有界拒绝前避免不必要的中间件任务分配
+- **AND** 已接受调用 SHALL 在底层工作实际结束前保持原预留所有权，包括取消和提交结果不明场景
+- **AND** 优化 SHALL 保持FastAPI路由、来源认证、T1、提交完成后才返回成功的检查及全部既有预算，不增加许可或队列
+- **AND** 模型测试 SHALL NOT 替代真实功能或容量验收。
 
 ### Requirement: 有界HTTP组按路由获得原生工作
 显式business_batch的实际原生单元 SHALL 同public_id最多一个未结束native单元，同路由成员FIFO、跨可运行路由轮转，并共享原8 native/8接收连接。所有等待成员 MUST 持有原32请求/8MiB额度，不新增正文副本或无界路由/任务缓存；旧单条和GET路径 MUST 保持。
