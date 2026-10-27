@@ -29,7 +29,7 @@ from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services import subscription_management as management
 from dlr.control.services.input_config import database_now
 from test_issue222_business_batch import batch_world as core_batch_world
-from test_issue222_business_batch import facts, finish, produce
+from test_issue222_business_batch import facts, finish, produce, receive
 from test_issue222_business_batch import world as foundation_world
 
 world = foundation_world
@@ -124,6 +124,30 @@ def test_delete_adapter_purges_recent_terminal_batch_and_returns_all_quota(
         assert session.get(AdapterExecutionAdmission, retired_batch["adapter"]) is None
         admission = session.get(GlobalExecutionAdmission, "global")
         assert (admission.outstanding_count, admission.outstanding_bytes) == (0, 0)
+
+
+def test_delete_adapter_purges_replayed_batch_with_older_unbatched_skip(
+    batch_world, api_client, session_factory
+):
+    with session_factory.begin() as session:
+        receipt = receive(session, batch_world)
+        receipt_id = receipt.id
+        delivery.skip_event(session, receipt_id, "skip-pre-batch", None, "skip fixture")
+        sub = session.get(EventSubscription, batch_world["sub"])
+        sub.desired_state, sub.connection_state = "disabled", "stopped"
+        replay = delivery.replay_event(session, receipt_id, "replay-skip", None, "repair")
+        execution = delivery.dispatch_delivery(session, replay.id)
+        finish(session, execution)
+        retire_source(session, batch_world)
+        assert facts(session, batch_world).history_count > 0
+
+    response = api_client.delete(f"/api/adapters/{batch_world['adapter']}")
+    assert response.status_code == 204, response.text
+    with session_factory() as session:
+        assert session.get(Adapter, batch_world["adapter"]) is None
+        assert session.get(EventReceipt, receipt_id) is None
+        assert session.scalar(select(func.count()).select_from(SubscriptionExecutionBatch)) == 0
+        assert delivery.audit_global_quota(session)["differences"] == {}
 
 
 @pytest.mark.parametrize("stop", [False, True])
