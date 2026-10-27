@@ -62,7 +62,7 @@ Receipt 仍使用兼容的 pending/processing/succeeded/failed 等状态；Deliv
 
 - Worker/进程丢失、目标提交后未回报等不明情况，沿原 Execution 的固定输入、成员身份和平台恢复策略处理。重复外部效果由业务稳定键核验解决，不能把未知写成成功，也不将普通 business_error 改为自动 platform_transient。
 - 正在运行的共享 Execution 取消影响全部未完成成员，界面显示范围。只保留 **Control 已校验并持久记录** 的成功事实；其余按可证事实为 unknown，明确从未启动才可为 not_run。目标写入或日志存在不等于平台已经确认。取消与 finish 竞态在原锁序内裁决；保留原取消优先级，因此取消请求与合法全成功结果同时到达时，Execution 可记为 cancelled，但已经确认的全部成员仍记为 succeeded，不因取消改写业务事实。反向约束仍成立：Execution 只有在全部成员成功时才可 succeeded。
-- 首版保留逐成员 replay/repair/skip，不新增批量处置 API。每次操作保留原 Receipt 和旧失败 Delivery，新增 Delivery ordinal、独立审计及真实预算。批次成员即使单独 replay 仍使用单成员 batch 输入，不悄悄切回 per_event。
+- 首版保留逐成员 replay/repair/skip，不新增批量处置 API。重放（包括修复后重放）保留原 Receipt 和旧失败 Delivery，新增 Delivery ordinal、独立审计及真实预算；跳过保留原批次成员事实，在原 Delivery 上记录跳过状态并追加处置审计，不新增 Delivery 或执行轮次。批次成员即使单独 replay 仍使用单成员 batch 输入，不悄悄切回 per_event。
 - `use_current_configuration` 跨 per_event/business_batch 模式明确返回 409；同 mode 也须遵守原停止/排空、预览与绑定门禁。repair 只处理明确选中的最早阻塞责任，不自动将失败后缀重新成功化。
 - 手工恢复可能需要逐成员操作，交付文案与验收如实说明；不宣称普通业务失败后整批自动恢复。
 
@@ -87,7 +87,7 @@ Receipt 仍使用兼容的 pending/processing/succeeded/failed 等状态；Deliv
 | 路径 | 批次实施时必须核验的关联 |
 | --- | --- |
 | `subscription_delivery.dispatch_delivery/observe_terminal` | T2 前缀整体交接、共享完成去重、结果验证及 blocker 重算 |
-| `subscription_delivery.replay_event/skip_event` | 新 ordinal、单成员 batch 形状、原绑定、跨 mode 409、审计和分层计费 |
+| `subscription_delivery.replay_event/skip_event` | 重放的新 ordinal、单成员 batch 形状、原绑定、跨 mode 409；跳过在原 Delivery 记状态；各自审计及分层计费 |
 | `subscription_delivery.execution_protected/cleanup_history/audit_quota` | single execution_id 与 batch_execution_id 的联合保护；禁止逐成员清空共享 input；配额实物重算含批次和成员 |
 | `subscription_management._nonterminal`、运行锁/删除/修复 | 任一共享执行非终态均锁住相关操作；停用仍可排空 |
 | `subscription_activation_policy.ensure_policy/freeze_legacy_policies` | 同时读取普通和批次关联，旧策略不因 join 漏项回退到当前配置 |
