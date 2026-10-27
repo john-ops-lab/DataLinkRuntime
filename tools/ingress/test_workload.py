@@ -760,6 +760,26 @@ class HttpTransportTests(unittest.TestCase):
 
 
 class OracleTests(unittest.TestCase):
+    def test_inserted_outcome_must_belong_to_first_attempt(self):
+        inputs = [input_record("test-run", 1)]
+        item = inputs[0]
+        row = {
+            "run_id": item["run_id"],
+            "message_id": item["message_id"],
+            "seq": 1,
+            "payload_sha256": item["payload_sha256"],
+            "normalized_value": 3,
+            "writes": 1,
+            "attempts": 2,
+        }
+        attempts = [
+            {**row, "ordinal": 1, "outcome": "duplicate"},
+            {**row, "ordinal": 2, "outcome": "inserted"},
+        ]
+        self.assertFalse(verify_rows(inputs, [row], attempts)["target_oracle_passed"])
+        attempts[0]["outcome"], attempts[1]["outcome"] = "inserted", "duplicate"
+        self.assertTrue(verify_rows(inputs, [row], attempts)["target_oracle_passed"])
+
     def test_canonical_target_hash_and_attempt_chain_are_independent(self):
         inputs = [input_record("test-run", 1)]
         item = inputs[0]

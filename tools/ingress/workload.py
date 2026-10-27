@@ -291,6 +291,10 @@ def verify_rows(
         group["count"] += 1
         group["ordinals"].add(row["ordinal"])
         group["inserted"] += row["outcome"] == "inserted"
+        if row["outcome"] in {"inserted", "duplicate"} and (
+            (row["ordinal"] == 1) != (row["outcome"] == "inserted")
+        ):
+            fail(key[1], "attempt_outcome_order_mismatch")
         if (
             row["outcome"] not in {"inserted", "duplicate"}
             or row["payload_sha256"] != wanted["payload_sha256"]
