@@ -21,12 +21,22 @@ Private configuration (outside the checkout; the values below are placeholders):
   "subscription_id": 7,
   "count": 10000,
   "stage": "http",
+  "source_binding": {
+    "id": 7,
+    "adapter_id": 8,
+    "activation_id": 1,
+    "config_version": 1,
+    "source_epoch": "SOURCE_EPOCH_FROM_SUBSCRIPTION",
+    "source_type": "http",
+    "ingress_path": "/api/ingress/PUBLIC_ID_FROM_SUBSCRIPTION"
+  },
   "urls": {
     "adapters": "/api/adapters",
     "events": "/api/event-subscriptions/7/events?limit=20",
     "backlog": "/api/event-subscriptions/7"
   },
   "output_path": "/private/evidence",
+  "producer_config_path": "/private/producer.json",
   "producer_log_path": "/private/evidence/capacity-http-round1-http.private.jsonl",
   "producer_result_path": "/private/evidence/capacity-http-round1-http.private.json",
   "baseline_samples": 20,
@@ -38,10 +48,52 @@ Private configuration (outside the checkout; the values below are placeholders):
 }
 ```
 
-For RabbitMQ use `stage: "publish"` and the matching `-publish.private.jsonl` and
-`-publish.private.json` paths. Every round uses a fresh subscription with zero
-accepted records and a new `run_id`; never reuse a warmup or previous round.
-The source's queue and credential preparation belongs to the controller.
+Fill `source_binding` from the current authenticated subscription response, including
+its ID, adapter, activation, configuration version, source epoch and ingress path;
+do not invent the public ID from the numeric subscription ID. Use `null` for an
+actual null activation ID. The producer's `ingress_url` must use the same origin
+as `api_base` and the exact bound ingress path. `producer_config_path` must be the
+same private file passed as `--workload-config`.
+
+For RabbitMQ update the complete configuration above to use `stage: "publish"`,
+the current run ID and matching `-publish.private.jsonl` and `-publish.private.json`
+paths, plus a binding from the current subscription response:
+
+```json
+{
+  "source_binding": {
+    "id": 7,
+    "adapter_id": 8,
+    "activation_id": 1,
+    "config_version": 1,
+    "source_epoch": "SOURCE_EPOCH_FROM_SUBSCRIPTION",
+    "source_type": "rabbitmq",
+    "config": {
+      "cluster_id": "CLUSTER_ID_FROM_SUBSCRIPTION",
+      "server": "amqp://PRIVATE_CONSUMER_ENDPOINT:5672",
+      "queue": "QUEUE_FROM_SUBSCRIPTION",
+      "vhost": "/"
+    }
+  },
+  "publisher_origin": "amqp://PRIVATE_PUBLISHER_ENDPOINT:5672",
+  "broker_identity_evidence": {
+    "path": "/private/evidence/broker-identity.private.json",
+    "sha256": "FULL_SHA256_OF_REVIEWED_EVIDENCE",
+    "candidate": "FULL_CANDIDATE_COMMIT_SHA",
+    "case_context_sha256": "FULL_SHA256_OF_CASE_CONTEXT"
+  }
+}
+```
+
+The producer's AMQP origin, queue and virtual host must match this binding.
+Consumer and producer endpoints may use different network addresses. Before the
+round, the controller must independently verify that both reach the same owned
+Broker, bind the witness to this run ID, subscription, candidate and case context,
+and review the result. The probe checks the witness structure and hashes; a self-authored JSON
+file or a clock receipt is not proof of Broker identity. The source's queue and
+credential preparation also belongs to the controller. Every round uses a fresh
+subscription with zero accepted records and a new `run_id`; never reuse a warmup
+or previous round.
 
 The normal HTTP producer configuration must explicitly set
 `"http_concurrency": 125`. Its existing maximum of 128 is unchanged; this wrapper
@@ -64,12 +116,29 @@ python /source/tools/ingress/management_probe.py wait-ready --config /private/pr
 python /source/tools/ingress/management_probe.py run-producer --config /private/probe.json --workload-config /private/producer.json --stage http
 ```
 
+For a RabbitMQ round, use the corresponding private files and `--stage publish`
+in the `run-producer` command:
+
+```sh
+python /source/tools/ingress/management_probe.py run-producer --config /private/probe.json --workload-config /private/producer.json --stage publish
+```
+
+The probe checks the sampled subscription against the binding and checks its
+original process and observation window before starting
+the producer. At least 600 seconds plus one sampling interval and the configured
+request timeout must remain. Detected missing or changed evidence blocks startup;
+if the sampler stops or dies before observation completes, the end witness or final analysis fails, but
+traffic already sent cannot be undone.
+
 The wrapper runs the frozen producer once, with no replay on command failure.
 It verifies the frozen file SHA and records the Linux boot ID, active/child time
 namespace, monotonic start/end, return code, and producer log/result SHA. These
 receipts establish a common `CLOCK_MONOTONIC` domain without changing the frozen
 producer result schema. They contain no endpoint, token, producer body or config
-copy. The existing first HTTP `started_ns`, or RabbitMQ `publish_started` timestamp,
+copy. After the producer returns, the wrapper makes a best-effort end receipt even
+when evidence collection fails, preserving known exit status and stable error codes;
+`-1` with `returncode_known: false` is a timeout sentinel, not an OS exit status.
+The existing first HTTP `started_ns`, or RabbitMQ `publish_started` timestamp,
 is the sender's first-request boundary. It must fall after probe readiness and
 inside the wrapper interval. Missing, changed or foreign-domain evidence fails.
 
@@ -83,9 +152,9 @@ missed slot, exceeded evidence budget or stopped probe prevents a passing result
 
 JSONL samples retain scheduled/start/end monotonic timestamps, HTTP status,
 elapsed time, timeout and stable error codes. Response bodies are discarded.
-Only allowlisted receipt counts, quota/limit numbers, list sizes and an optional
-oldest-pending Unix timestamp survive. The latter is diagnostic only; it is never
-used to compare platform and generator clocks. `accepted` must equal the sum of
+Only allowlisted receipt counts, quota/limit numbers, list sizes, binding digests
+and an optional oldest-pending Unix timestamp survive. The latter is diagnostic
+only; it is never used to compare platform and generator clocks. `accepted` must equal the sum of
 the seven real receipt states. `replayed` and `coalesced` are aliases and are not
 added to the unique accepted count.
 
@@ -115,7 +184,8 @@ The probe exits after complete post-drain observation, an external stop, or its
 overall deadline (never above 1800 seconds). It writes private PID, ready,
 producer clock and analysis receipts with exclusive creation; previous evidence
 is never overwritten. The controller may create the run-specific
-`<run_id>-management.stop` file or signal the recorded PID. An early stop is
+`<run_id>-management.stop` file. Before signaling a recorded PID, recheck its
+start ticks, boot ID and PID namespace rather than trusting an old PID. An early stop is
 incomplete evidence. The bounded JSONL and stable exit code retain the failure.
 
 After the probe ends, or to recompute from unchanged evidence:
