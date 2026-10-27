@@ -226,7 +226,9 @@ def drive_stream(monkeypatch, messages, custody=None, *, lose_first_ack=False, p
     stream = Stream(monkeypatch, messages[:16], parent=parent)
     pending = deque(enumerate(messages[16:], 17))
     groups = []
-    monkeypatch.setattr(queue, "capacity_ready", lambda context: True)
+    monkeypatch.setattr(
+        queue, "_capacity_decision", lambda context: queue._CapacityDecision(True, 16)
+    )
 
     def receive(context, prepared):
         assert 1 <= len(prepared) <= 16
@@ -391,7 +393,9 @@ def test_successful_micro_runner_propagates_unknown_close_without_releasing_scop
     runner = queue.QueueSourceRunner()
     runner.open_context = lambda context: stream.source
     runner._run_micro = lambda context, transport: None
-    monkeypatch.setattr(queue, "capacity_ready", lambda context: True)
+    monkeypatch.setattr(
+        queue, "_capacity_decision", lambda context: queue._CapacityDecision(True, 16)
+    )
     before = stream.scope.used_bytes
     close = stream.source.close
 
