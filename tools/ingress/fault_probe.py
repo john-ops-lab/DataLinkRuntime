@@ -384,6 +384,7 @@ class Probe:
         ):
             return False
         directory = None
+        receipt_identity = None
         try:
             directory = _private_directory(self.arm_path.parent)
             info = os.fstat(directory)
@@ -416,7 +417,7 @@ class Probe:
                 encoded = json.dumps(
                     receipt, sort_keys=True, separators=(",", ":")
                 ).encode()
-                self._exclusive_write(
+                receipt_identity = self._exclusive_write(
                     directory, f"fault-{arm.arm_id}.result-evidence.json", encoded
                 )
                 record["diagnostic_receipt_sha256"] = hashlib.sha256(
@@ -426,6 +427,10 @@ class Probe:
             encoded = json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
             self._exclusive_write(directory, f"fault-{arm.arm_id}.json", encoded)
         except (OSError, ValueError, TypeError):
+            if directory is not None and receipt_identity is not None:
+                self._remove_owned(
+                    directory, f"fault-{arm.arm_id}.result-evidence.json", receipt_identity
+                )
             return (
                 False  # No marker means no counted fault; never break the product call.
             )
@@ -437,7 +442,7 @@ class Probe:
         )  # Only this explicitly opted-in process; no external PID is accepted.
 
     @staticmethod
-    def _exclusive_write(directory: int, name: str, encoded: bytes) -> None:
+    def _exclusive_write(directory: int, name: str, encoded: bytes) -> tuple[int, int]:
         if len(encoded) > 8192:
             raise ValueError("proof_too_large")
         fd = os.open(
@@ -446,15 +451,35 @@ class Probe:
             0o600,
             dir_fd=directory,
         )
+        identity = None
         try:
-            with os.fdopen(fd, "wb", closefd=False) as stream:
-                stream.write(encoded)
-                stream.write(b"\n")
-                stream.flush()
-                os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.fsync(directory)
+            try:
+                info = os.fstat(fd)
+                identity = (info.st_dev, info.st_ino)
+                with os.fdopen(fd, "wb", closefd=False) as stream:
+                    stream.write(encoded)
+                    stream.write(b"\n")
+                    stream.flush()
+                    os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.fsync(directory)
+        except BaseException:
+            if identity is not None:
+                Probe._remove_owned(directory, name, identity)
+            raise
+        return identity
+
+    @staticmethod
+    def _remove_owned(directory: int, name: str, identity: tuple[int, int]) -> None:
+        try:
+            info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if (info.st_dev, info.st_ino) == identity:
+                os.unlink(name, dir_fd=directory)
+                os.fsync(directory)
+        except OSError:
+            # Cleanup is best effort; an unknown leftover must never trigger a cut.
+            pass
 
     def _wrap(self, owner: Any, name: str, wrapper: Any) -> None:
         original = getattr(owner, name, None)
