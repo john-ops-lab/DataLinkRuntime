@@ -13,12 +13,34 @@ from tools.ingress import management_probe as probe
 DOMAIN = {"clock": "CLOCK_MONOTONIC", "boot_id": "00000000-0000-0000-0000-000000000000", "time_namespace": "time:[1]", "children_time_namespace": "time:[1]"}
 
 
+def source_binding():
+    return {"id": 7, "adapter_id": 12, "activation_id": 4, "source_type": "http", "config_version": 1, "source_epoch": "private-epoch", "ingress_path": "/api/ingress/private-route"}
+
+
 def config(root):
-    return {"schema": probe.SCHEMA, "run_id": "capacity-proof", "api_base": "https://private.example", "admin_token": "secret-not-for-evidence", "subscription_id": 7, "count": 10000, "output_path": str(root), "urls": {"adapters": "/api/adapters", "events": "/api/event-subscriptions/7/events?limit=20", "backlog": "/api/event-subscriptions/7"}, "stage": "http", "producer_log_path": str(root / "capacity-proof-http.private.jsonl"), "producer_result_path": str(root / "capacity-proof-http.private.json"), "baseline_samples": 20, "post_drain_seconds": 600, "deadline_seconds": 1800, "request_timeout_seconds": 5, "response_max_bytes": probe.MAX_RESPONSE_BYTES, "log_max_bytes": probe.MAX_LOG_BYTES}
+    return {"schema": probe.SCHEMA, "run_id": "capacity-proof", "api_base": "https://private.example", "admin_token": "secret-not-for-evidence", "subscription_id": 7, "source_binding": source_binding(), "count": 10000, "output_path": str(root), "urls": {"adapters": "/api/adapters", "events": "/api/event-subscriptions/7/events?limit=20", "backlog": "/api/event-subscriptions/7"}, "stage": "http", "producer_config_path": str(root / "producer-config.private.json"), "producer_log_path": str(root / "capacity-proof-http.private.jsonl"), "producer_result_path": str(root / "capacity-proof-http.private.json"), "baseline_samples": 20, "post_drain_seconds": 600, "deadline_seconds": 1800, "request_timeout_seconds": 5, "response_max_bytes": probe.MAX_RESPONSE_BYTES, "log_max_bytes": probe.MAX_LOG_BYTES}
+
+
+def rabbit_config(root):
+    value = config(root)
+    value.update(stage="publish", publisher_origin="amqp://publisher-private:5672")
+    value["source_binding"] = {**source_binding(), "source_type": "rabbitmq", "config": {"cluster_id": "private-cluster", "server": "amqp://consumer-private:5672", "queue": "private-queue", "vhost": "private/vhost+"}}
+    value["source_binding"].pop("ingress_path")
+    for key, suffix in (("producer_log_path", "jsonl"), ("producer_result_path", "json")):
+        value[key] = str(root / f"capacity-proof-publish.private.{suffix}")
+    return value
+
+
+def synthetic_broker_witness(conf, root):
+    value = {"schema": "dlr.private.rabbit-target-identity/v1", "run_id": conf["run_id"], "candidate": "1" * 40, "case_context_sha256": "2" * 64, "identity": probe._broker_identity_projection(conf), "containers": {role: {"cid": char * 64, "pid": 3, "started_at": "2026-10-27T00:00:00Z", "restarts": 0, "image": "sha256:" + "5" * 64, **dict.fromkeys(("config_sha256", "hostconfig_sha256", "mounts_sha256", "network_sha256"), "4" * 64)} for role, char in (("control", "a"), ("generator", "b"), ("broker", "c"))}, "child_identities": {role: {"pid": 5, "start_ticks": "6", "boot_id_sha256": "7" * 64, "netns_sha256": "8" * 64} for role in ("control", "generator")}, "simultaneous_connection_pids_sha256": {"a" * 64: "b" * 64, "c" * 64: "d" * 64}, "both_connections_observed_same_owned_CID": True, "both_child_closed_and_reaped": True, "owned_tags_absent_after_close": True}
+    path = root / "synthetic-broker-witness.json"
+    probe.write_private(path, value)
+    conf["broker_identity_evidence"] = {"path": str(path), "sha256": probe.file_digest(path), "candidate": value["candidate"], "case_context_sha256": value["case_context_sha256"]}
+    return value
 
 
 def backlog(accepted=0, succeeded=0):
-    return {"id": 7, "event_counts": {"accepted": accepted, "pending": accepted - succeeded, "succeeded": succeeded, "coalesced": 0, "replayed": 0}, "quota": {"pending_count": accepted - succeeded, "history_bytes": accepted * 2048}, "limits": {"pending_count": 10000}, "oldest_pending_at": None, "config": {"credential_id": 88, "server": "secret-host"}, "name": "secret-adapter"}
+    return {**source_binding(), "event_counts": {"accepted": accepted, "pending": accepted - succeeded, "succeeded": succeeded, "coalesced": 0, "replayed": 0}, "quota": {"pending_count": accepted - succeeded, "history_bytes": accepted * 2048}, "limits": {"pending_count": 10000}, "oldest_pending_at": None, "config": {"credential_id": 88, "server": "secret-host"}, "name": "secret-adapter"}
 
 
 def body_for(endpoint, counts=None):
@@ -48,18 +70,63 @@ class FakeClock:
 
 
 def evidence_rows(conf):
-    rows = [{"kind": "start", "schema": probe.SCHEMA, "run_id": conf["run_id"], "config_fingerprint": probe.config_fingerprint(conf), "clock_domain": DOMAIN, "monotonic_ns": 0}]
+    rows = [{"kind": "start", "schema": probe.SCHEMA, "run_id": conf["run_id"], **probe.binding_witness(conf), "clock_domain": DOMAIN, "monotonic_ns": 0}]
     for slot in range(624):
         for endpoint in probe.ENDPOINTS:
             counts = backlog(0 if slot <= 20 else 5000 if slot == 21 else conf["count"], conf["count"] if slot >= 23 else 0)
-            rows.append({"kind": "sample", "endpoint": endpoint, "slot": slot, "scheduled_ns": slot * probe.NS, "request_begin_ns": slot * probe.NS, "response_end_ns": slot * probe.NS + 10_000_000, "elapsed_ms": 10.0, "status": 200, "timeout": False, "error_code": None, "snapshot": probe.safe_response(endpoint, body_for(endpoint, counts), 7)})
+            rows.append({"kind": "sample", "endpoint": endpoint, "slot": slot, "scheduled_ns": slot * probe.NS, "request_begin_ns": slot * probe.NS, "response_end_ns": slot * probe.NS + 10_000_000, "elapsed_ms": 10.0, "status": 200, "timeout": False, "error_code": None, "snapshot": probe.safe_response(endpoint, body_for(endpoint, counts), 7, conf["source_binding"])})
         if slot == 19:
-            rows.append({"kind": "ready", "monotonic_ns": 19 * probe.NS + 10_000_000, "config_fingerprint": probe.config_fingerprint(conf), "clock_domain": DOMAIN, "accepted": 0})
+            rows.append({"kind": "ready", "monotonic_ns": 19 * probe.NS + 10_000_000, **probe.binding_witness(conf), "clock_domain": DOMAIN, "accepted": 0})
     rows.append({"kind": "end", "monotonic_ns": 624 * probe.NS, "reason": "post_drain_complete", "slots": 624, "concurrency_peak": 3})
     return rows
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_api_origin_and_source_are_bound_without_logging_plaintext(self):
+        conf = config(Path("/tmp/probe-unit"))
+        original = probe.config_fingerprint(conf)
+        self.assertEqual(original, probe.config_fingerprint({**conf, "api_base": "https://PRIVATE.example:443/"}))
+        self.assertNotEqual(original, probe.config_fingerprint({**conf, "api_base": "https://other-private.example"}))
+        self.assertNotEqual(original, probe.config_fingerprint({**conf, "source_binding": {**conf["source_binding"], "config_version": 2}}))
+        self.assertNotIn("private", probe.encoded(probe.binding_witness(conf)).decode())
+
+    def test_backlog_requires_the_actual_source_projection(self):
+        for key, value in (("id", 8), ("adapter_id", 13), ("activation_id", 5), ("source_type", "rabbitmq"), ("config_version", 2), ("source_epoch", "other"), ("ingress_path", "/api/ingress/other")):
+            with self.subTest(key=key), self.assertRaises(probe.ProbeError):
+                probe.safe_response("backlog", probe.encoded({**backlog(), key: value}), 7, source_binding())
+        missing = backlog()
+        missing.pop("activation_id")
+        with self.assertRaisesRegex(probe.ProbeError, "source_binding"):
+            probe.safe_response("backlog", probe.encoded(missing), 7, source_binding())
+        inactive = {**source_binding(), "activation_id": None}
+        self.assertIn("source_binding_sha256", probe.safe_response("backlog", probe.encoded({**backlog(), **inactive}), 7, inactive))
+        with tempfile.TemporaryDirectory() as directory:
+            conf = rabbit_config(Path(directory))
+            value = {**backlog(), **conf["source_binding"]}
+            safe = probe.safe_response("backlog", probe.encoded(value), 7, conf["source_binding"])
+            self.assertNotIn("private", probe.encoded(safe).decode())
+            for key, item in (("queue", "other"), ("vhost", "other"), ("server", "amqp://other:5672"), ("cluster_id", "other")):
+                changed = {**value, "config": {**value["config"], key: item}}
+                with self.subTest(key=key), self.assertRaisesRegex(probe.ProbeError, "source_binding"):
+                    probe.safe_response("backlog", probe.encoded(changed), 7, conf["source_binding"])
+
+    def test_rabbit_mapping_needs_independent_same_broker_witness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            conf = rabbit_config(root)
+            with self.assertRaisesRegex(probe.ProbeError, "evidence_missing"):
+                probe.binding_witness(conf)
+            witness = synthetic_broker_witness(conf, root)
+            self.assertEqual(probe.broker_identity_evidence(conf), conf["broker_identity_evidence"]["sha256"])
+            self.assertTrue(probe.evaluate(conf, [], None)["independent_broker_identity_required"])
+            path = Path(conf["broker_identity_evidence"]["path"])
+            mutations = [("candidate", "0" * 40), ("case_context_sha256", "0" * 64), ("identity", {**witness["identity"], "queue_sha256": "0" * 64}), ("identity", {**witness["identity"], "cluster_id_sha256": "0" * 64}), ("containers", {}), ("child_identities", {}), ("simultaneous_connection_pids_sha256", {}), ("both_child_closed_and_reaped", False)]
+            for key, item in mutations:
+                path.write_bytes(probe.encoded({**witness, key: item}))
+                conf["broker_identity_evidence"]["sha256"] = probe.file_digest(path)
+                with self.subTest(key=key), self.assertRaisesRegex(probe.ProbeError, "evidence_"):
+                    probe.binding_witness(conf)
+
     def test_closed_formal_routes_and_hard_budgets(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -92,16 +159,16 @@ class ConfigurationTests(unittest.TestCase):
     def test_backlog_counts_do_not_double_count_aliases_or_retain_bodies(self):
         value = backlog(3, 2)
         value["event_counts"].update(superseded=1, pending=0, coalesced=1, replayed=20)
-        safe = probe.safe_response("backlog", probe.encoded(value), 7)
+        safe = probe.safe_response("backlog", probe.encoded(value), 7, source_binding())
         self.assertEqual(safe["counts"]["accepted"], 3)
         self.assertNotIn("secret", probe.encoded(safe).decode())
         value["event_counts"]["accepted"] = 24
         with self.assertRaisesRegex(probe.ProbeError, "alias_mismatch"):
-            probe.safe_response("backlog", probe.encoded(value), 7)
+            probe.safe_response("backlog", probe.encoded(value), 7, source_binding())
         value["event_counts"]["accepted"] = 3
         value["event_counts"]["new_unknown_state"] = 0
         with self.assertRaisesRegex(probe.ProbeError, "unknown_receipt_counter"):
-            probe.safe_response("backlog", probe.encoded(value), 7)
+            probe.safe_response("backlog", probe.encoded(value), 7, source_binding())
 
 
 class SamplerTests(unittest.IsolatedAsyncioTestCase):
@@ -196,6 +263,130 @@ class SamplerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AnalysisTests(unittest.TestCase):
+    def test_replaced_or_transiently_overwritten_config_cannot_redirect_child(self):
+        for mode in ("same_inode", "rename"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                conf = config(root)
+                probe.write_private(probe.paths(conf)["ready"], {"clock_domain": DOMAIN, **probe.binding_witness(conf)})
+                path = Path(conf["producer_config_path"])
+                valid = {"run_id": conf["run_id"], "kind": "capacity", "count": 10000, "output_path": str(root), "http_concurrency": 125, "ingress_url": "https://private.example/api/ingress/private-route"}
+                changed = {**valid, "ingress_url": "https://wrong.example/api/ingress/other"}
+                original = probe.encoded(valid)
+                path.write_bytes(original)
+                path.chmod(0o600)
+                original_inode = path.stat().st_ino
+
+                def replace_while_child_reads(argv, **_kwargs):
+                    frozen = Path(argv[-1])
+                    frozen_inode = frozen.stat().st_ino
+                    self.assertEqual(frozen.stat().st_mode & 0o777, 0o600)
+                    if mode == "rename":
+                        replacement = root / "replacement.json"
+                        replacement.write_bytes(probe.encoded(changed))
+                        replacement.replace(path)
+                    else:
+                        path.write_bytes(probe.encoded(changed))
+                        self.assertEqual(path.stat().st_ino, original_inode)
+                    self.assertEqual(probe.bounded_json(frozen), valid)
+                    self.assertNotEqual(frozen_inode, original_inode)
+                    if mode == "same_inode":
+                        path.write_bytes(original)
+                    return SimpleNamespace(returncode=0)
+
+                with patch.object(probe, "clock_domain", return_value=DOMAIN), patch.object(probe.subprocess, "run", side_effect=replace_while_child_reads):
+                    self.assertEqual(probe.run_producer(conf, path, "http")["returncode"], 0)
+                self.assertEqual(list(root.glob(".*producer-config-*.json")), [])
+                if mode == "rename":
+                    with self.assertRaisesRegex(probe.ProbeError, "target_mismatch"):
+                        probe.producer_evidence(conf, {"monotonic_ns": 0}, DOMAIN)
+
+    def test_config_snapshot_failure_cleans_only_owned_file_and_keeps_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            conf = config(root)
+            probe.write_private(probe.paths(conf)["ready"], {"clock_domain": DOMAIN, **probe.binding_witness(conf)})
+            path = Path(conf["producer_config_path"])
+            path.write_bytes(probe.encoded({"run_id": conf["run_id"], "kind": "capacity", "count": 10000, "output_path": str(root), "http_concurrency": 125, "ingress_url": "https://private.example/api/ingress/private-route"}))
+            with patch.object(probe, "clock_domain", return_value=DOMAIN), patch.object(probe.os, "fsync", side_effect=OSError("snapshot_sync_failed")), patch.object(probe.subprocess, "run") as run:
+                with self.assertRaisesRegex(OSError, "snapshot_sync_failed"):
+                    probe.run_producer(conf, path, "http")
+                run.assert_not_called()
+            self.assertEqual(list(root.glob(".*producer-config-*.json")), [])
+            with patch.object(probe, "clock_domain", return_value=DOMAIN), patch.object(probe.os, "fsync", side_effect=OSError("snapshot_sync_failed")), patch.object(Path, "unlink", side_effect=OSError("cleanup_failed")), patch.object(probe.subprocess, "run") as run:
+                with self.assertRaisesRegex(OSError, "snapshot_sync_failed") as failure:
+                    probe.run_producer(conf, path, "http")
+                run.assert_not_called()
+            self.assertIn("owned-config cleanup failed: OSError", failure.exception.__notes__)
+            real_close = probe.os.close
+
+            def close_then_fail(fd):
+                real_close(fd)
+                raise OSError("close_failed")
+
+            with patch.object(probe, "clock_domain", return_value=DOMAIN), patch.object(probe.os, "fsync", side_effect=OSError("snapshot_sync_failed")), patch.object(probe.os, "close", side_effect=close_then_fail), patch.object(probe.subprocess, "run") as run:
+                with self.assertRaisesRegex(OSError, "snapshot_sync_failed") as failure:
+                    probe.run_producer(conf, path, "http")
+                run.assert_not_called()
+            self.assertIn("owned-config fd close failed: OSError", failure.exception.__notes__)
+
+    def test_analyze_cannot_rebind_api_or_omit_source_target_witness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conf = config(Path(directory))
+            path = probe.paths(conf)["log"]
+            original = evidence_rows(conf)
+
+            def save(rows):
+                path.write_bytes(b"\n".join(probe.encoded(row) for row in rows) + b"\n")
+
+            save(original)
+            producer = {"sender_begin_ns": 20 * probe.NS, "clock_domain_proven": True}
+            with patch.object(probe, "producer_evidence", return_value=producer):
+                self.assertTrue(probe.analyze(conf)["management_and_timing_passed"])
+                rebound = probe.analyze({**conf, "api_base": "https://other-private.example"})
+                self.assertFalse(rebound["management_and_timing_passed"])
+                for kind in ("start", "ready"):
+                    for key in ("source_binding_sha256", "target_binding_sha256"):
+                        rows = copy.deepcopy(original)
+                        next(row for row in rows if row["kind"] == kind).pop(key)
+                        save(rows)
+                        with self.subTest(kind=kind, key=key):
+                            self.assertFalse(probe.analyze(conf)["management_and_timing_passed"])
+                rows = copy.deepcopy(original)
+                next(row for row in rows if row.get("endpoint") == "backlog")["snapshot"].pop("source_binding_sha256")
+                save(rows)
+                self.assertIn("backlog_source_binding_mismatch", probe.analyze(conf)["failure_codes"])
+
+    def test_producer_target_mismatch_stops_before_receipt_or_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for stage in ("http", "publish"):
+                case = root / stage
+                case.mkdir()
+                conf = config(case) if stage == "http" else rabbit_config(case)
+                if stage == "publish":
+                    synthetic_broker_witness(conf, case)
+                probe.write_private(probe.paths(conf)["ready"], {"clock_domain": DOMAIN, **probe.binding_witness(conf)})
+                valid = {"run_id": conf["run_id"], "kind": "capacity", "count": 10000, "output_path": str(case), "http_concurrency": 125, "ingress_url": "https://private.example/api/ingress/private-route", "queue": "private-queue", "amqp_url": "amqp://private-user:private-password@publisher-private:5672/private%2Fvhost+"}
+                mutations = (("ingress_url", "https://other.example/api/ingress/private-route"), ("ingress_url", "https://private.example/api/ingress/other"), ("ingress_url", None)) if stage == "http" else (("queue", "other"), ("amqp_url", "amqp://publisher-private:5672/other"), ("amqp_url", "amqp://other:5672/private%2Fvhost+"))
+                path = Path(conf["producer_config_path"])
+                with patch.object(probe, "clock_domain", return_value=DOMAIN), patch.object(probe.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+                    for key, value in mutations:
+                        path.write_bytes(probe.encoded({**valid, key: value}))
+                        with self.subTest(stage=stage, key=key), self.assertRaises(probe.ProbeError):
+                            probe.run_producer(conf, path, stage)
+                        run.assert_not_called()
+                        self.assertFalse(probe.paths(conf)["producer_start"].exists())
+                    path.write_bytes(probe.encoded(valid))
+                    self.assertEqual(probe.run_producer(conf, path, stage)["returncode"], 0)
+                    run.assert_called_once()
+                for name in ("producer_start", "producer_end"):
+                    receipt = probe.bounded_json(probe.paths(conf)[name])
+                    self.assertEqual(receipt["target_binding_sha256"], probe.target_fingerprint(conf))
+                    self.assertEqual(receipt["source_binding_sha256"], probe.source_fingerprint(conf))
+                    self.assertEqual(receipt["producer_config_sha256"], probe.file_digest(path))
+                    self.assertNotIn("private", probe.encoded(receipt).decode())
+
     def test_valid_complete_evidence_uses_conservative_causal_intervals(self):
         conf = config(Path("/tmp/probe-unit"))
         result = probe.evaluate(conf, evidence_rows(conf), {"sender_begin_ns": 20 * probe.NS, "clock_domain_proven": True})
@@ -248,7 +439,7 @@ class AnalysisTests(unittest.TestCase):
         rows = evidence_rows(conf)
         for row in rows:
             if row.get("endpoint") == "backlog":
-                row["snapshot"] = probe.safe_response("backlog", probe.encoded(backlog(10000, 10000)), 7)
+                row["snapshot"] = probe.safe_response("backlog", probe.encoded(backlog(10000, 10000)), 7, source_binding())
         result = probe.evaluate(conf, rows, {"sender_begin_ns": 20 * probe.NS, "clock_domain_proven": True})
         self.assertFalse(result["timing"]["known"])
         self.assertIn("accept_or_completion_interval_unknown", result["failure_codes"])
@@ -282,9 +473,9 @@ class AnalysisTests(unittest.TestCase):
             if row.get("endpoint") == "backlog":
                 slot = row["slot"]
                 if 21 <= slot <= 80:
-                    row["snapshot"] = probe.safe_response("backlog", probe.encoded(backlog(5000, 0)), 7)
+                    row["snapshot"] = probe.safe_response("backlog", probe.encoded(backlog(5000, 0)), 7, source_binding())
                 elif slot == 81:
-                    row["snapshot"] = probe.safe_response("backlog", probe.encoded(backlog(10000, 0)), 7)
+                    row["snapshot"] = probe.safe_response("backlog", probe.encoded(backlog(10000, 0)), 7, source_binding())
         result = probe.evaluate(conf, rows, {"sender_begin_ns": 20 * probe.NS, "clock_domain_proven": True})
         self.assertEqual(result["timing"]["sender_begin_ns"], 20 * probe.NS)
         self.assertAlmostEqual(result["timing"]["acceptance_seconds_upper"], 61.01)
@@ -296,7 +487,8 @@ class AnalysisTests(unittest.TestCase):
             conf = config(Path(directory))
             names = probe.paths(conf)
             ready = {"monotonic_ns": 19 * probe.NS}
-            witness = {"run_id": conf["run_id"], "stage": "http", "clock_domain": DOMAIN, "workload_sha256": probe.WORKLOAD_SHA256, "config_fingerprint": probe.config_fingerprint(conf)}
+            probe.write_private(Path(conf["producer_config_path"]), {"ingress_url": conf["api_base"] + conf["source_binding"]["ingress_path"]})
+            witness = {"run_id": conf["run_id"], "stage": "http", "clock_domain": DOMAIN, "workload_sha256": probe.WORKLOAD_SHA256, **probe.binding_witness(conf), "producer_config_sha256": probe.file_digest(Path(conf["producer_config_path"]))}
             probe.write_private(names["producer_start"], {**witness, "monotonic_ns": 20 * probe.NS})
             with Path(conf["producer_log_path"]).open("wb") as output:
                 output.writelines(probe.encoded({"kind": "http_attempt", "seq": seq, "attempt": 1, "started_ns": 20 * probe.NS + seq * 1000}) + b"\n" for seq in range(1, 10001))
@@ -305,6 +497,20 @@ class AnalysisTests(unittest.TestCase):
             result = probe.producer_evidence(conf, ready, DOMAIN)
             self.assertEqual(result["sender_begin_ns"], 20 * probe.NS + 1000)
             self.assertEqual(result["first_request_count"], 10000)
+            for name in ("producer_start", "producer_end"):
+                path = names[name]
+                receipt = probe.bounded_json(path)
+                for key in ("source_binding_sha256", "target_binding_sha256", "producer_config_sha256"):
+                    path.write_bytes(probe.encoded({k: v for k, v in receipt.items() if k != key}))
+                    with self.subTest(name=name, key=key), self.assertRaisesRegex(probe.ProbeError, "provenance"):
+                        probe.producer_evidence(conf, ready, DOMAIN)
+                path.write_bytes(probe.encoded(receipt))
+            producer_path = Path(conf["producer_config_path"])
+            original_config = producer_path.read_bytes()
+            producer_path.write_bytes(probe.encoded({"ingress_url": conf["api_base"] + conf["source_binding"]["ingress_path"], "changed_private_option": True}))
+            with self.assertRaisesRegex(probe.ProbeError, "provenance"):
+                probe.producer_evidence(conf, ready, DOMAIN)
+            producer_path.write_bytes(original_config)
             with self.assertRaisesRegex(probe.ProbeError, "clock_provenance"):
                 probe.producer_evidence(conf, ready, {**DOMAIN, "time_namespace": "time:[2]"})
             with Path(conf["producer_log_path"]).open("ab") as output:
@@ -315,7 +521,7 @@ class AnalysisTests(unittest.TestCase):
     def test_producer_wrapper_refuses_128_plus_management_without_running_anything(self):
         with tempfile.TemporaryDirectory() as directory:
             root, conf = Path(directory), config(Path(directory))
-            probe.write_private(probe.paths(conf)["ready"], {"clock_domain": DOMAIN, "config_fingerprint": probe.config_fingerprint(conf)})
+            probe.write_private(probe.paths(conf)["ready"], {"clock_domain": DOMAIN, **probe.binding_witness(conf)})
             path = root / "producer-config.private.json"
             probe.write_private(path, {"run_id": conf["run_id"], "kind": "capacity", "count": 10000, "http_concurrency": 128})
             with patch.object(probe, "clock_domain", return_value=DOMAIN), patch.object(probe.subprocess, "run") as run:

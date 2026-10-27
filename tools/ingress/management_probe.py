@@ -24,7 +24,7 @@ from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 SCHEMA = "dlr.ingress.management-probe.v1"
 ENDPOINTS = ("adapters", "events", "backlog")
@@ -58,13 +58,19 @@ def private_path(value: str | Path) -> Path:
     return result
 
 
-def bounded_json(path: Path, limit: int = 65536) -> Any:
-    if path.stat().st_size > limit:
+def _json_snapshot(path: Path, limit: int = 65536) -> tuple[Any, bytes]:
+    with path.open("rb") as source:
+        raw = source.read(limit + 1)
+    if len(raw) > limit:
         raise ProbeError("input_file_too_large")
     try:
-        return json.loads(path.read_bytes())
+        return json.loads(raw), raw
     except (ValueError, UnicodeError) as error:
         raise ProbeError("invalid_json_file") from error
+
+
+def bounded_json(path: Path, limit: int = 65536) -> Any:
+    return _json_snapshot(path, limit)[0]
 
 
 class PrivateLog:
@@ -115,6 +121,129 @@ def _integer(value: Any, minimum: int, maximum: int, code: str) -> int:
     return value
 
 
+def _origin(value: Any, schemes: tuple[str, ...], *, credentials: bool = False) -> list[Any]:
+    try:
+        if not isinstance(value, str) or any(ord(char) < 33 for char in value):
+            raise ValueError
+        parsed = urlsplit(value)
+        if parsed.scheme not in schemes or not parsed.hostname or parsed.fragment or (not credentials and (parsed.username is not None or parsed.password is not None)):
+            raise ValueError
+        port = parsed.port
+        if port is None:
+            port = {"http": 80, "https": 443, "amqp": 5672, "amqps": 5671}[parsed.scheme]
+        if not 1 <= port <= 65535:
+            raise ValueError
+        return [parsed.scheme, parsed.hostname.lower(), port]
+    except (ValueError, TypeError):
+        raise ProbeError("invalid_target_origin") from None
+
+
+def source_identity(value: Any, subscription_id: int) -> dict[str, Any]:
+    """Project the subscription DTO without retaining its config or credentials."""
+    if not isinstance(value, dict) or type(value.get("id")) is not int or value["id"] != subscription_id:
+        raise ProbeError("invalid_backlog_identity")
+    result = {name: _integer(value.get(name), 1, 2**63 - 1, "invalid_source_binding") for name in ("id", "adapter_id", "config_version")}
+    if "activation_id" not in value:
+        raise ProbeError("invalid_source_binding")
+    result["activation_id"] = _integer(value["activation_id"], 1, 2**63 - 1, "invalid_source_binding") if value["activation_id"] is not None else None
+    epoch = value.get("source_epoch")
+    if not isinstance(epoch, str) or not 1 <= len(epoch) <= 64:
+        raise ProbeError("invalid_source_binding")
+    result.update(source_type=value.get("source_type"), source_epoch=epoch)
+    if result["source_type"] == "http":
+        path = value.get("ingress_path")
+        if not isinstance(path, str) or not re.fullmatch(r"/api/ingress/[A-Za-z0-9_-]{1,128}", path):
+            raise ProbeError("invalid_source_binding")
+        result["ingress_path"] = path
+    elif result["source_type"] == "rabbitmq":
+        config = value.get("config")
+        if not isinstance(config, dict):
+            raise ProbeError("invalid_source_binding")
+        queue, vhost = config.get("queue"), config.get("vhost", "/")
+        if not isinstance(queue, str) or not 1 <= len(queue.encode()) <= 255 or queue.startswith("amq.") or not isinstance(vhost, str) or not 1 <= len(vhost) <= 128 or any(ord(char) < 32 for char in queue + vhost):
+            raise ProbeError("invalid_source_binding")
+        cluster = config.get("cluster_id")
+        if not isinstance(cluster, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", cluster):
+            raise ProbeError("invalid_source_binding")
+        origin = _origin(config.get("server"), ("amqp", "amqps"))
+        server = urlsplit(config["server"])
+        if server.path not in {"", "/"} or server.query:
+            raise ProbeError("invalid_source_binding")
+        result.update(server_origin=origin, cluster_id=cluster, queue=queue, vhost=vhost)
+    else:
+        raise ProbeError("invalid_source_binding")
+    return result
+
+
+def source_fingerprint(config: dict[str, Any]) -> str:
+    return hashlib.sha256(encoded(source_identity(config.get("source_binding"), config["subscription_id"]))).hexdigest()
+
+
+def target_identity(config: dict[str, Any], producer: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = source_identity(config.get("source_binding"), config["subscription_id"])
+    if config["stage"] == "http" and source["source_type"] == "http":
+        target = {"origin": _origin(config["api_base"], ("http", "https")), "ingress_path": source["ingress_path"]}
+        if producer is not None:
+            url = producer.get("ingress_url")
+            parsed = urlsplit(url) if isinstance(url, str) else None
+            if parsed is None or parsed.query or parsed.fragment or parsed.path != target["ingress_path"] or _origin(url, ("http", "https")) != target["origin"]:
+                raise ProbeError("producer_target_mismatch")
+        return target
+    if config["stage"] != "publish" or source["source_type"] != "rabbitmq":
+        raise ProbeError("producer_source_type_mismatch")
+    origin = config.get("publisher_origin")
+    parsed = urlsplit(origin) if isinstance(origin, str) else None
+    if parsed is None or parsed.path not in {"", "/"} or parsed.query:
+        raise ProbeError("invalid_publisher_origin")
+    target = {"origin": _origin(origin, ("amqp", "amqps")), "queue": source["queue"], "vhost": source["vhost"]}
+    if producer is not None:
+        url = producer.get("amqp_url")
+        parsed = urlsplit(url) if isinstance(url, str) else None
+        # Pika 1.3.2 decodes the first path component once; an absent path is '/'.
+        vhost = unquote(parsed.path.split("/")[1]) if parsed and len(parsed.path) > 1 else "/"
+        if parsed is None or _origin(url, ("amqp", "amqps"), credentials=True) != target["origin"] or producer.get("queue") != target["queue"] or vhost != target["vhost"]:
+            raise ProbeError("producer_target_mismatch")
+    return target
+
+
+def target_fingerprint(config: dict[str, Any]) -> str:
+    return hashlib.sha256(encoded(target_identity(config))).hexdigest()
+
+
+def _broker_identity_projection(config: dict[str, Any]) -> dict[str, Any]:
+    source = source_identity(config["source_binding"], config["subscription_id"])
+    digest = lambda value: hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return {"api_origin_sha256": digest(_origin(config["api_base"], ("http", "https"))), "subscription_id": config["subscription_id"], "source_type": "rabbitmq", "server_origin_sha256": digest(source["server_origin"]), "producer_origin_sha256": digest(target_identity(config)["origin"]), "queue_sha256": digest(source["queue"]), "vhost_sha256": digest(source["vhost"]), "cluster_id_sha256": digest(source["cluster_id"])}
+
+
+def broker_identity_evidence(config: dict[str, Any]) -> str | None:
+    if config["stage"] != "publish":
+        return None
+    # Only a Root-reviewed independently collected witness may be configured.
+    # Hash/shape checks here do not authenticate a self-authored witness.
+    evidence = config.get("broker_identity_evidence")
+    if not isinstance(evidence, dict) or set(evidence) != {"path", "sha256", "candidate", "case_context_sha256"}:
+        raise ProbeError("broker_identity_evidence_missing")
+    for key, size in (("sha256", 64), ("candidate", 40), ("case_context_sha256", 64)):
+        if not isinstance(evidence.get(key), str) or not re.fullmatch(r"[a-f0-9]{%s}" % size, evidence[key]):
+            raise ProbeError("broker_identity_evidence_invalid")
+    value, raw = _json_snapshot(private_path(evidence["path"]))
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != evidence["sha256"] or not isinstance(value, dict):
+        raise ProbeError("broker_identity_evidence_invalid")
+    if value.get("schema") != "dlr.private.rabbit-target-identity/v1" or value.get("run_id") != config["run_id"] or value.get("candidate") != evidence["candidate"] or value.get("case_context_sha256") != evidence["case_context_sha256"] or value.get("identity") != _broker_identity_projection(config):
+        raise ProbeError("broker_identity_evidence_mismatch")
+    containers, children, connections = value.get("containers"), value.get("child_identities"), value.get("simultaneous_connection_pids_sha256")
+    valid_hash = lambda item: isinstance(item, str) and re.fullmatch(r"[a-f0-9]{64}", item) is not None
+    if not isinstance(containers, dict) or set(containers) != {"control", "generator", "broker"} or not all(isinstance(item, dict) and valid_hash(item.get("cid")) and type(item.get("pid")) is int and item["pid"] > 0 and isinstance(item.get("started_at"), str) and bool(item["started_at"]) and type(item.get("restarts")) is int and item["restarts"] >= 0 and isinstance(item.get("image"), str) and re.fullmatch(r"(?:sha256:)?[a-f0-9]{64}", item["image"]) is not None and all(valid_hash(item.get(key)) for key in ("config_sha256", "hostconfig_sha256", "mounts_sha256", "network_sha256")) for item in containers.values()):
+        raise ProbeError("broker_identity_evidence_incomplete")
+    if not isinstance(children, dict) or set(children) != {"control", "generator"} or not all(isinstance(item, dict) and type(item.get("pid")) is int and item["pid"] > 0 and isinstance(item.get("start_ticks"), str) and item["start_ticks"].isdigit() and all(valid_hash(item.get(key)) for key in ("boot_id_sha256", "netns_sha256")) for item in children.values()):
+        raise ProbeError("broker_identity_evidence_incomplete")
+    if not isinstance(connections, dict) or len(connections) != 2 or not all(valid_hash(key) and valid_hash(item) for key, item in connections.items()) or len(set(connections.values())) != 2 or not all(value.get(key) is True for key in ("both_connections_observed_same_owned_CID", "both_child_closed_and_reaped", "owned_tags_absent_after_close")):
+        raise ProbeError("broker_identity_evidence_incomplete")
+    return digest
+
+
 def load_config(path: Path) -> dict[str, Any]:
     value = bounded_json(private_path(path))
     if not isinstance(value, dict) or value.get("schema") != SCHEMA:
@@ -135,19 +264,26 @@ def load_config(path: Path) -> dict[str, Any]:
     expected = {"adapters": "/api/adapters", "events": f"/api/event-subscriptions/{sub}/events?limit=20", "backlog": f"/api/event-subscriptions/{sub}"}
     if value.get("urls") != expected:
         raise ProbeError("probe_endpoints_must_be_fixed_get_routes")
-    for name in ("output_path", "producer_log_path", "producer_result_path"):
+    for name in ("output_path", "producer_log_path", "producer_result_path", "producer_config_path"):
         value[name] = str(private_path(value[name]))
     defaults = {"baseline_samples": 20, "post_drain_seconds": 600, "deadline_seconds": 1800, "request_timeout_seconds": 5, "response_max_bytes": MAX_RESPONSE_BYTES, "log_max_bytes": MAX_LOG_BYTES}
     bounds = {"baseline_samples": (20, 60), "post_drain_seconds": (600, 600), "deadline_seconds": (622, 1800), "request_timeout_seconds": (1, 5), "response_max_bytes": (1024, MAX_RESPONSE_BYTES), "log_max_bytes": (1024, MAX_LOG_BYTES)}
     for name, default in defaults.items():
         value[name] = _integer(value.get(name, default), *bounds[name], f"invalid_{name}")
+    target_identity(value)
+    broker_identity_evidence(value)
     return value
 
 
 def config_fingerprint(config: dict[str, Any]) -> str:
-    # Paths, addresses and secrets never enter evidence, even as a config copy.
+    # Private origins/source identity affect the digest, never its saved plaintext.
     public = {name: config[name] for name in ("schema", "run_id", "subscription_id", "count", "stage", "baseline_samples", "post_drain_seconds", "deadline_seconds", "request_timeout_seconds", "response_max_bytes", "log_max_bytes")}
+    public.update(api_origin=_origin(config["api_base"], ("http", "https")), source=source_identity(config.get("source_binding"), config["subscription_id"]), target=target_identity(config), broker_evidence_sha256=broker_identity_evidence(config))
     return hashlib.sha256(encoded(public)).hexdigest()
+
+
+def binding_witness(config: dict[str, Any]) -> dict[str, Any]:
+    return {"config_fingerprint": config_fingerprint(config), "source_binding_sha256": source_fingerprint(config), "target_binding_sha256": target_fingerprint(config), "broker_identity_evidence_sha256": broker_identity_evidence(config)}
 
 
 def clock_domain() -> dict[str, str]:
@@ -168,7 +304,7 @@ def _numbers(value: Any, keys: tuple[str, ...]) -> dict[str, int]:
     return {key: _integer(value[key], 0, 2**63 - 1, "invalid_numeric_snapshot") for key in keys if key in value}
 
 
-def safe_response(endpoint: str, body: bytes, subscription_id: int) -> dict[str, Any]:
+def safe_response(endpoint: str, body: bytes, subscription_id: int, source_binding: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
         value = json.loads(body)
     except (ValueError, UnicodeError) as error:
@@ -183,6 +319,9 @@ def safe_response(endpoint: str, body: bytes, subscription_id: int) -> dict[str,
         return {"item_count": len(value["items"]), "total": _integer(value.get("total"), len(value["items"]), 2**63 - 1, "invalid_events_total")}
     if not isinstance(value, dict) or type(value.get("id")) is not int or value["id"] != subscription_id:
         raise ProbeError("invalid_backlog_identity")
+    identity = source_identity(value, subscription_id)
+    if identity != source_identity(source_binding, subscription_id):
+        raise ProbeError("backlog_source_binding_mismatch")
     counts = _numbers(value.get("event_counts"), STATES + ALIASES)
     if set(value["event_counts"]) - set(STATES + ALIASES) or "accepted" not in counts:
         raise ProbeError("unknown_receipt_counter")
@@ -201,7 +340,7 @@ def safe_response(endpoint: str, body: bytes, subscription_id: int) -> dict[str,
                 raise ValueError
         except (TypeError, ValueError, OverflowError) as error:
             raise ProbeError("invalid_oldest_pending_time") from error
-    return {"counts": counts, "quota": _numbers(value.get("quota"), QUOTA_KEYS), "limits": _numbers(value.get("limits"), LIMIT_KEYS), "oldest_pending_unix_seconds": oldest_epoch}
+    return {"counts": counts, "quota": _numbers(value.get("quota"), QUOTA_KEYS), "limits": _numbers(value.get("limits"), LIMIT_KEYS), "oldest_pending_unix_seconds": oldest_epoch, "source_binding_sha256": hashlib.sha256(encoded(identity)).hexdigest()}
 
 
 class HttpReader:
@@ -242,7 +381,8 @@ class Sampler:
         self.done_ns: int | None = None
         self.first_zero: dict[str, Any] | None = None
         self.start_ns = self.clock()
-        self.fingerprint = config_fingerprint(config)
+        self.binding = binding_witness(config)
+        self.fingerprint = self.binding["config_fingerprint"]
 
     async def one(self, endpoint: str, slot: int, scheduled_ns: int) -> None:
         started = self.clock()
@@ -252,7 +392,7 @@ class Sampler:
         try:
             status, body = await asyncio.wait_for(self.reader(endpoint), self.config["request_timeout_seconds"])
             if status == 200:
-                safe = safe_response(endpoint, body, self.config["subscription_id"])
+                safe = safe_response(endpoint, body, self.config["subscription_id"], self.config["source_binding"])
             else:
                 code = "http_status_not_200"
         except (TimeoutError, asyncio.TimeoutError):
@@ -281,12 +421,12 @@ class Sampler:
                 self.done_ns = ended
         if self.ready_ns is None and self.errors == 0 and all(self.successes[name] >= self.config["baseline_samples"] for name in ENDPOINTS) and self.latest["backlog"]["snapshot"]["counts"]["accepted"] == 0:
             self.ready_ns = ended
-            ready = {"schema": SCHEMA, "kind": "ready", "run_id": self.config["run_id"], "config_fingerprint": self.fingerprint, "monotonic_ns": ended, "clock_domain": self.domain, "baseline_samples": dict(self.successes), "first_zero_poll": self.first_zero, "accepted": 0}
+            ready = {"schema": SCHEMA, "kind": "ready", "run_id": self.config["run_id"], **self.binding, "monotonic_ns": ended, "clock_domain": self.domain, "baseline_samples": dict(self.successes), "first_zero_poll": self.first_zero, "accepted": 0}
             self.sink.append(ready)
             self.ready_sink(ready)
 
     async def run(self) -> dict[str, Any]:
-        self.sink.append({"kind": "start", "schema": SCHEMA, "run_id": self.config["run_id"], "config_fingerprint": self.fingerprint, "monotonic_ns": self.start_ns, "clock_domain": self.domain, "deadline_seconds": self.config["deadline_seconds"], "interval_seconds": 1, "max_concurrency": 3})
+        self.sink.append({"kind": "start", "schema": SCHEMA, "run_id": self.config["run_id"], **self.binding, "monotonic_ns": self.start_ns, "clock_domain": self.domain, "deadline_seconds": self.config["deadline_seconds"], "interval_seconds": 1, "max_concurrency": 3})
         deadline = self.start_ns + self.config["deadline_seconds"] * NS
         slot, reason = 0, "deadline"
         try:
@@ -358,10 +498,14 @@ def producer_evidence(config: dict[str, Any], ready: dict[str, Any], domain: dic
     names = paths(config)
     start = bounded_json(names["producer_start"])
     end = bounded_json(names["producer_end"])
+    producer_path = private_path(config["producer_config_path"])
+    producer_config, producer_raw = _json_snapshot(producer_path)
+    producer_config_sha256 = hashlib.sha256(producer_raw).hexdigest()
+    target_identity(config, producer_config)
     log = private_path(config["producer_log_path"])
     result_path = private_path(config["producer_result_path"])
     for receipt in (start, end):
-        if receipt.get("run_id") != config["run_id"] or receipt.get("stage") != config["stage"] or receipt.get("clock_domain") != domain or receipt.get("workload_sha256") != WORKLOAD_SHA256 or receipt.get("config_fingerprint") != config_fingerprint(config):
+        if receipt.get("run_id") != config["run_id"] or receipt.get("stage") != config["stage"] or receipt.get("clock_domain") != domain or receipt.get("workload_sha256") != WORKLOAD_SHA256 or any(receipt.get(key) != value for key, value in binding_witness(config).items()) or receipt.get("producer_config_sha256") != producer_config_sha256:
             raise ProbeError("producer_clock_provenance_mismatch")
     if end.get("returncode") != 0 or end.get("log_sha256") != file_digest(log) or end.get("result_sha256") != file_digest(result_path):
         raise ProbeError("producer_did_not_finish_unchanged")
@@ -425,6 +569,8 @@ def evaluate(config: dict[str, Any], rows: list[dict[str, Any]], producer: dict[
         if begin < row.get("scheduled_ns", 0) or begin >= row.get("scheduled_ns", 0) + NS or end < begin or end - begin > config["request_timeout_seconds"] * NS or abs(row.get("elapsed_ms", -1) - (end - begin) / 10**6) > 0.001:
             failures.add("sample_time_budget_invalid")
     backlogs = sorted((row for row in samples if row.get("endpoint") == "backlog" and row.get("snapshot") is not None and row.get("error_code") is None), key=lambda row: row["response_end_ns"])
+    if any(row["snapshot"].get("source_binding_sha256") != source_fingerprint(config) for row in backlogs):
+        failures.add("backlog_source_binding_mismatch")
     accepted = next((row for row in backlogs if row["snapshot"]["counts"]["accepted"] == config["count"]), None)
     done = next((row for row in backlogs if row["snapshot"]["counts"]["accepted"] == config["count"] and row["snapshot"]["counts"]["succeeded"] == config["count"] and all(row["snapshot"]["counts"][state] == 0 for state in STATES if state != "succeeded")), None)
     previous = next((row for row in reversed(backlogs) if accepted and row["response_end_ns"] < accepted["response_end_ns"] and row["snapshot"]["counts"]["accepted"] < config["count"]), None)
@@ -464,7 +610,7 @@ def evaluate(config: dict[str, Any], rows: list[dict[str, Any]], producer: dict[
             failures.add("management_p95_exceeded")
         if done and not any(row["response_end_ns"] >= done["response_end_ns"] + config["post_drain_seconds"] * NS for row in own):
             failures.add("post_drain_600s_not_observed")
-    return {"schema": SCHEMA, "run_id": config["run_id"], "management_and_timing_passed": not failures, "failure_codes": sorted(failures), "timing": timing, "latency": metrics, "sample_count": len(samples), "first_zero_poll": {key: first_zero[key] for key in ("request_begin_ns", "response_end_ns")} if first_zero else None, "independent_business_oracle_required": True, "root_resource_verification_required": True, "capacity_acceptance_declared": False}
+    return {"schema": SCHEMA, "run_id": config["run_id"], "management_and_timing_passed": not failures, "failure_codes": sorted(failures), "timing": timing, "latency": metrics, "sample_count": len(samples), "first_zero_poll": {key: first_zero[key] for key in ("request_begin_ns", "response_end_ns")} if first_zero else None, "independent_business_oracle_required": True, "root_resource_verification_required": True, "independent_broker_identity_required": config["stage"] == "publish", "capacity_acceptance_declared": False}
 
 
 def analyze(config: dict[str, Any]) -> dict[str, Any]:
@@ -473,7 +619,7 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
     try:
         ready = next(row for row in rows if row.get("kind") == "ready")
         start = next(row for row in rows if row.get("kind") == "start")
-        if start.get("config_fingerprint") != config_fingerprint(config) or ready.get("config_fingerprint") != config_fingerprint(config) or start.get("clock_domain") != ready.get("clock_domain"):
+        if any(row.get(key) != value for row in (start, ready) for key, value in binding_witness(config).items()) or start.get("clock_domain") != ready.get("clock_domain"):
             raise ProbeError("probe_clock_provenance_mismatch")
         producer = producer_evidence(config, ready, start["clock_domain"])
     except Exception as failure:  # noqa: BLE001
@@ -507,7 +653,7 @@ def wait_ready(config: dict[str, Any], timeout: int) -> dict[str, Any]:
     while time.monotonic() < deadline:
         if paths(config)["ready"].exists():
             value = bounded_json(paths(config)["ready"])
-            if value.get("config_fingerprint") != config_fingerprint(config) or value.get("clock_domain") != clock_domain() or value.get("accepted") != 0:
+            if any(value.get(key) != item for key, item in binding_witness(config).items()) or value.get("clock_domain") != clock_domain() or value.get("accepted") != 0:
                 raise ProbeError("ready_receipt_mismatch")
             pid = bounded_json(paths(config)["pid"])
             try:
@@ -525,26 +671,69 @@ def run_producer(config: dict[str, Any], workload_config_path: Path, stage: str)
         raise ProbeError("frozen_workload_changed")
     ready = bounded_json(paths(config)["ready"])
     domain = clock_domain()
-    if ready.get("clock_domain") != domain or ready.get("config_fingerprint") != config_fingerprint(config):
+    if ready.get("clock_domain") != domain or any(ready.get(key) != value for key, value in binding_witness(config).items()):
         raise ProbeError("ready_receipt_mismatch")
     workload_config_path = private_path(workload_config_path)
-    producer = bounded_json(workload_config_path)
+    if workload_config_path != private_path(config["producer_config_path"]):
+        raise ProbeError("producer_config_path_mismatch")
+    producer, producer_raw = _json_snapshot(workload_config_path)
+    producer_config_sha256 = hashlib.sha256(producer_raw).hexdigest()
     if stage != config["stage"] or producer.get("run_id") != config["run_id"] or producer.get("kind") != "capacity" or producer.get("count") != config["count"]:
         raise ProbeError("producer_config_identity_mismatch")
     if stage == "http" and (type(producer.get("http_concurrency")) is not int or not 1 <= producer["http_concurrency"] <= 125):
         raise ProbeError("producer_plus_management_exceeds_128")
+    target_identity(config, producer)
     producer_output = private_path(producer["output_path"])
     if private_path(config["producer_log_path"]) != producer_output / f"{config['run_id']}-{stage}.private.jsonl" or private_path(config["producer_result_path"]) != producer_output / f"{config['run_id']}-{stage}.private.json":
         raise ProbeError("producer_evidence_paths_mismatch")
-    witness = {"schema": SCHEMA, "run_id": config["run_id"], "stage": stage, "clock_domain": domain, "workload_sha256": WORKLOAD_SHA256, "config_fingerprint": config_fingerprint(config)}
-    write_private(paths(config)["producer_start"], {**witness, "monotonic_ns": time.monotonic_ns()})
+    # The bounded validated bytes are isolated from both path replacement and
+    # transient in-place writes to the original. This private0600 temporary is
+    # never a log/receipt and is removed after the owned child returns.
+    frozen_config = private_path(config["output_path"]) / f".{config['run_id']}-producer-config-{secrets.token_hex(8)}.private.json"
+    identity, original_error = None, None
     try:
-        completed = subprocess.run([sys.executable, str(workload_path), stage, "--config", str(workload_config_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90, check=False)
-        returncode = completed.returncode
-    except subprocess.TimeoutExpired:
-        returncode = -1
-    result = {**witness, "monotonic_ns": time.monotonic_ns(), "returncode": returncode, "log_sha256": file_digest(private_path(config["producer_log_path"])) if Path(config["producer_log_path"]).exists() else None, "result_sha256": file_digest(private_path(config["producer_result_path"])) if Path(config["producer_result_path"]).exists() else None}
-    write_private(paths(config)["producer_end"], result)
+        fd = os.open(frozen_config, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            info = os.fstat(fd)
+            identity = (info.st_dev, info.st_ino)
+            with os.fdopen(fd, "wb", closefd=False) as stream:
+                stream.write(producer_raw)
+                stream.flush()
+                os.fsync(fd)
+        except BaseException as failure:
+            try:
+                os.close(fd)
+            except BaseException as cleanup:
+                failure.add_note(f"owned-config fd close failed: {type(cleanup).__name__}")
+            raise
+        else:
+            os.close(fd)
+        witness = {"schema": SCHEMA, "run_id": config["run_id"], "stage": stage, "clock_domain": domain, "workload_sha256": WORKLOAD_SHA256, **binding_witness(config), "producer_config_sha256": producer_config_sha256}
+        write_private(paths(config)["producer_start"], {**witness, "monotonic_ns": time.monotonic_ns()})
+        try:
+            completed = subprocess.run([sys.executable, str(workload_path), stage, "--config", str(frozen_config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90, check=False)
+            returncode = completed.returncode
+        except subprocess.TimeoutExpired:
+            returncode = -1
+        if _json_snapshot(frozen_config)[1] != producer_raw:
+            raise ProbeError("producer_configuration_changed")
+        result = {**witness, "monotonic_ns": time.monotonic_ns(), "returncode": returncode, "log_sha256": file_digest(private_path(config["producer_log_path"])) if Path(config["producer_log_path"]).exists() else None, "result_sha256": file_digest(private_path(config["producer_result_path"])) if Path(config["producer_result_path"]).exists() else None}
+        write_private(paths(config)["producer_end"], result)
+    except BaseException as failure:
+        original_error = failure
+        raise
+    finally:
+        if identity is not None:
+            try:
+                info = frozen_config.stat(follow_symlinks=False)
+                if (info.st_dev, info.st_ino) == identity:
+                    frozen_config.unlink()
+            except FileNotFoundError:
+                pass
+            except BaseException as cleanup:
+                if original_error is None:
+                    raise
+                original_error.add_note(f"owned-config cleanup failed: {type(cleanup).__name__}")
     return {"run_id": config["run_id"], "stage": stage, "returncode": returncode, "clock_domain_proven": True}
 
 
