@@ -5,6 +5,7 @@ import json
 import threading
 from typing import Any
 
+import httptools
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -107,6 +108,64 @@ def test_unsupported_media(headers: list[tuple[bytes, bytes]]) -> None:
     with pytest.raises(HTTPException) as raised:
         ingress._require_media(request([], headers))
     assert raised.value.status_code == 415
+
+
+@pytest.mark.parametrize(
+    ("length", "status"),
+    [
+        ("2048", None),
+        ("65536", None),
+        ("65537", 413),
+        ("x", 422),
+        ("0" * 4301, None),
+        ("0" * 4301 + "65536", None),
+        ("0" * 4301 + "65537", 413),
+        ("9" * 4301, 413),
+    ],
+    ids=[
+        "normal",
+        "limit",
+        "over-limit",
+        "invalid",
+        "long-zero",
+        "long-limit",
+        "long-over",
+        "long-nines",
+    ],
+)
+def test_content_length_is_checked_without_unbounded_integer_conversion(
+    length: str, status: int | None
+) -> None:
+    headers = [(b"content-type", b"application/json"), (b"content-length", length.encode())]
+    if status is None:
+        ingress._require_media(request([], headers))
+    else:
+        with pytest.raises(HTTPException) as raised:
+            ingress._require_media(request([], headers))
+        assert raised.value.status_code == status
+        assert raised.value.detail["code"] == (
+            "ingress_body_too_large" if status == 413 else "ingress_length_invalid"
+        )
+
+
+def test_http_parser_accepts_long_zero_length_without_server_error() -> None:
+    class Protocol:
+        def __init__(self) -> None:
+            self.headers: list[tuple[bytes, bytes]] = []
+
+        def on_header(self, name: bytes, value: bytes) -> None:
+            self.headers.append((name.lower(), value))
+
+    protocol = Protocol()
+    parser = httptools.HttpRequestParser(protocol)
+    parser.feed_data(
+        b"POST /api/ingress/test HTTP/1.1\r\n"
+        b"Content-Type: application/json\r\nContent-Length: " + b"0" * 4301 + b"\r\n\r\n"
+    )
+    ingress._require_media(request([], protocol.headers))
+    with pytest.raises(HTTPException) as raised:
+        parse_body(b"")
+    assert raised.value.status_code == 422
 
 
 def test_cancelled_request_keeps_native_work_and_bytes_bounded(

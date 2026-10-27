@@ -233,7 +233,9 @@ def _require_media(request: Request) -> None:
     if length is not None:
         if not length.isascii() or not length.isdecimal():
             raise domain_error(422, "ingress_length_invalid", "Invalid Content-Length")
-        if int(length) > service.MAX_BODY_BYTES:
+        normalized = length.lstrip("0") or "0"
+        limit = str(service.MAX_BODY_BYTES)
+        if len(normalized) > len(limit) or (len(normalized) == len(limit) and normalized > limit):
             raise domain_error(413, "ingress_body_too_large", "JSON body exceeds 64 KiB")
 
 
