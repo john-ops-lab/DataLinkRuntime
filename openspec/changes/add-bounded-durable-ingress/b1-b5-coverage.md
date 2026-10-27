@@ -325,3 +325,9 @@ B3按实际执行层分列：E33/E34的正常与准确恢复、E37的三种负�
 - E92 HTTP R12 Root完整资格 `0ce284a5f0fd51f0700b405aabcca63694262d21facbf32d15a2f0e76f22ab94`、独立资源/管理审核 `127c6eb5ef3bd2d91876e0d9f9119bb8157665be2b9c393bb39d22e49ea61d3d`、controller final `58eed66d4bb0f8bf1075c6fef409f0200af7a6039a544d82faa9384a00b52513`、独立原件核验 `c612f5917dca64ea0349c9c3167cd2c72acfb9231eb96205a1694d0078766bd3`、原10000平台逐项报告 `bf5fce026ffc1711d548aec6d767eb0c636d1f65d868febdbe32cbb4a898cdae`。Root另读独立Target原verify、原输入/生产者回执及119批次关系，不以final成功替代oracle。首轮500/9500与最终10000/19331/unknown0分别保留，60秒上界仅余1.138087724秒。
 - E93 MQ R7 Root完整资格 `6e009d7a1443f8ce97a01bbbdfd80b0ce703b8a7a58126cbdbe11deea0fdb671`、独立资源/管理审核 `2a956c17ecb8d6ab94b948b0e67c862e7c13139ba55a67814eccbf50a1c6b3d1`、controller final `11c2b1b364037eb17587ba92ccbb61ddb68b64771adf459f64a62d2f877024f7`、原10000平台逐项报告 `aacce5cd280e2e5b8d3f15f46639764d8974c342adff6d49cfab6d4ec68ef28b`；独立Target原verify及159批次关系另核；独立GPT原件核验 `5f6c12d874a1f11a799fbfd0605e33ec0871bc48e734eb945c021c549ca2ff3e`另核20000条发布/ACK逐tag、原输入/回执、159批及三端点818个slot/各600个post样本。两份资源工具仅负责其资源/管理资格，完整容量结论由Root组合两份独立业务oracle与实际门禁得出。
 - MQ后实际恢复 `3fc9bfe26287cc562790bae21aaf7520bf9e6c292c95f4b012ae9be462c209a5`：正常重建Control/Worker/Web并等待API就绪，精确恢复原普通context，原source557/R8、5695＋1000、namespace及五角色资源/凭据/挂载/DataCID/Generator保持，Admission/Broker0，MQ本轮数据库未改。管理与业务计时按已核同域单调时钟，资源时钟不跨VM相减；两轮完整观察不拼接、不外推长期无泄漏，主规格已由Root同步并17项校验通过，本批报告、任务与规格一致性已核，统一OCR仍待。
+
+### E94 OCR发现的请求长度边界
+
+- 首轮 Kimi 审查发现超长十进制 `Content-Length` 可触发 Python 整数转换限制；实际 HTTP 解析器接受超过 4300 位的全零长度，旧实现会抛出未处理异常。该路径发生在读取正文和接管之前，不代表已接管数据丢失。
+- 后继修复按去除前导零后的数字字符串比较 64 KiB 上限，保留非法长度的 422、超限的 413 和正文读取时的实际大小检查。相关测试修复前复现失败，修复后 34 项通过，包含实际解析器前导零、正常 2048 字节及上限边界；独立代码复核与 Ruff 检查通过，最终 Kimi 复审仍须完成。
+- E92–E93 的正式容量实际测量对象仍是 `a9667a42f1a6999632eab18d4842863c2ad6a25a`；截至本修复，产品代码相比该版本仅变更上述长度校验。正常 2048 字节条件已作针对性验证，但没有重新进行最终候选的万条容量测量，不把旧测量记成新 SHA 的实测。
