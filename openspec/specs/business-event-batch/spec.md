@@ -32,7 +32,7 @@ T2 MUST 在同一事务创建一份 Execution/Admission/Outbox、不可变 manif
 - **THEN** 不封存最终成员结果、不释放 Admission，沿原 Execution/输入恢复；不能把临时故障当最终未知而吞掉恢复
 
 ### Requirement: 成员处置与共享取消可解释
-每条 Receipt/Delivery SHALL 保留独立成功、失败、未知或未执行投影，blocker 为最早未结清责任。重放/修复/跳过 MUST 保留旧事实并新增 ordinal 和预算；单成员重放 MUST 创建只含目标成员的新 batch 输入和 manifest，成员索引从 0 开始，结果只覆盖该新 manifest，不得夹带其他待处理事件。跨 mode 的当前配置重放拒绝。共享取消 SHALL 说明影响范围，只保留 Control 已验证持久事实；无可信成员结果时，可能已启动的成员为 unknown，仅可证明从未启动的成员可为 not_run，不得依据目标写入或日志推断成功。取消请求本身不得提前释放尚未终态的共享 Execution 所占 Admission；Execution 终态后按原规则幂等释放，非成功成员责任、blocker 和恢复保留预算不因此结清。
+每条 Receipt/Delivery SHALL 保留独立成功、失败、未知或未执行投影，blocker 为最早未结清责任。重放（包括修复后重放）MUST 保留旧事实并新增 ordinal 和预算；跳过 MUST 保留原批次成员事实，在原 Delivery 上记录跳过状态并追加处置审计，不新增 Delivery 或执行轮次。单成员重放 MUST 创建只含目标成员的新 batch 输入和 manifest，成员索引从 0 开始，结果只覆盖该新 manifest，不得夹带其他待处理事件。跨 mode 的当前配置重放拒绝。共享取消 SHALL 说明影响范围，只保留 Control 已验证持久事实；无可信成员结果时，可能已启动的成员为 unknown，仅可证明从未启动的成员可为 not_run，不得依据目标写入或日志推断成功。取消请求本身不得提前释放尚未终态的共享 Execution 所占 Admission；Execution 终态后按原规则幂等释放，非成功成员责任、blocker 和恢复保留预算不因此结清。
 
 #### Scenario: 部分成功后恢复
 - **WHEN** 首失败成员单独重放成功但后继仍未执行
