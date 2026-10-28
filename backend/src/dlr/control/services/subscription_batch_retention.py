@@ -2,7 +2,7 @@
 
 from datetime import timedelta
 
-from sqlalchemy import delete, exists, func, select
+from sqlalchemy import delete, exists, func, select, true
 from sqlalchemy.orm import Session, aliased, defer
 
 from dlr.control.models import (
@@ -141,7 +141,7 @@ def _cleanup(
             Execution.status.in_(delivery_service.EXECUTION_TERMINAL),
             SubscriptionExecutionBatch.result.is_not(None),
             ~protected,
-            ~has_older_delivery if not permanent else True,
+            ~has_older_delivery if not permanent else true(),
         )
         .order_by(SubscriptionExecutionBatch.created_at, SubscriptionExecutionBatch.execution_id)
         .limit(member_budget)
