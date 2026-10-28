@@ -597,7 +597,7 @@ def test_route_window_refuses_without_reading_and_recovers_without_new_resources
     assert not pool.acquire_route("route")
     before = snapshot(pool)
     app = HttpIngressAdmission(
-        forbidden, busy=ingress.admission_capacity_busy, busy_route=ingress.route_capacity_busy
+        forbidden, busy=forbidden, busy_route=ingress.route_capacity_busy
     )
     path = ("/__dlr_account" if account else "") + "/api/ingress/route"
     assert asyncio.run(invoke(app, scope(path)))[0]["status"] == 429
