@@ -544,7 +544,6 @@ def test_reused_clock_statement_reads_fresh_database_time_and_control_state(
 ):
     from sqlalchemy import text
 
-
     with session_factory.begin() as session:
         clock_unit = unit(session, batch_world)
         first, ready = clock_unit._clock()

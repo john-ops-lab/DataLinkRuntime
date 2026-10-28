@@ -46,9 +46,7 @@ class HttpIngressAdmission:
             and scope["method"] == "POST"
             and _is_ingress(scope["path"])
             and (
-                (
-                    self.busy_route is not None and self.busy_route(scope["path"].rsplit("/", 1)[1])
-                )
+                (self.busy_route is not None and self.busy_route(scope["path"].rsplit("/", 1)[1]))
                 or self.busy()
             )
         ):
