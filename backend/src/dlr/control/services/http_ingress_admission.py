@@ -29,16 +29,28 @@ def _is_ingress(path: str) -> bool:
 
 
 class HttpIngressAdmission:
-    def __init__(self, app: ASGIApp, *, busy: Callable[[], bool]) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        busy: Callable[[], bool],
+        busy_route: Callable[[str], bool] | None = None,
+    ) -> None:
         self.app = app
         self.busy = busy
+        self.busy_route = busy_route
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if (
             scope["type"] == "http"
             and scope["method"] == "POST"
             and _is_ingress(scope["path"])
-            and self.busy()
+            and (
+                self.busy()
+                or (
+                    self.busy_route is not None and self.busy_route(scope["path"].rsplit("/", 1)[1])
+                )
+            )
         ):
             await send({"type": "http.response.start", "status": 429, "headers": _BUSY_HEADERS})
             await send({"type": "http.response.body", "body": _BUSY_BODY})

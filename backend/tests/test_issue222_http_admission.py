@@ -588,3 +588,21 @@ def test_authoritative_native_acquire_still_refuses_if_snapshot_was_available(
             pool.work.release()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("account", [False, True])
+def test_route_window_refuses_without_reading_and_recovers_without_new_resources(pool, account):
+    for _ in range(32):
+        assert pool.acquire_route("route")
+    assert not pool.acquire_route("route")
+    before = snapshot(pool)
+    app = HttpIngressAdmission(
+        forbidden, busy=ingress.admission_capacity_busy, busy_route=ingress.route_capacity_busy
+    )
+    path = ("/__dlr_account" if account else "") + "/api/ingress/route"
+    assert asyncio.run(invoke(app, scope(path)))[0]["status"] == 429
+    assert snapshot(pool) == before and pool._route_requests == {"route": 32}
+    assert not ingress.route_capacity_busy("other")
+    for _ in range(32):
+        pool.release_route("route")
+    assert not ingress.route_capacity_busy("route") and not pool._route_requests

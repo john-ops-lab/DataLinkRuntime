@@ -44,6 +44,7 @@ from dlr.control.services.subscription_source import ApplicationBufferBudget, Sc
 router = APIRouter()
 logger = logging.getLogger("dlr.control.ingress")
 REQUEST_LIMIT = 128
+ROUTE_REQUEST_LIMIT = 32
 REQUEST_METADATA_BYTES = 4 * 1024
 BODY_RESERVATION = 3 * service.MAX_BODY_BYTES + REQUEST_METADATA_BYTES
 RAW_BUFFER_BYTES = 3 * 1024**2 // 2
@@ -57,6 +58,8 @@ class IngressCounters:
         self._last_log = monotonic()
         self.values: dict[str, int | float] = dict.fromkeys(
             (
+                "hint_route",
+                "route",
                 "hint_requests",
                 "hint_native",
                 "hint_raw",
@@ -68,6 +71,7 @@ class IngressCounters:
                 "ready_expired",
                 "groups",
                 "members",
+                "members_max",
                 "native_seconds",
                 "native_max_seconds",
                 "queue_max_seconds",
@@ -84,6 +88,10 @@ class IngressCounters:
         with self._lock:
             return self._requests
 
+    def snapshot(self) -> dict[str, int | float]:
+        with self._lock:
+            return {**self.values, "requests_current": self._requests}
+
     def record(self, reason: str) -> None:
         with self._lock:
             self.values[reason] += 1
@@ -98,6 +106,7 @@ class IngressCounters:
         with self._lock:
             self.values["groups"] += 1
             self.values["members"] += count
+            self.values["members_max"] = max(self.values["members_max"], count)
             self.values["native_seconds"] += elapsed
             self.values["native_max_seconds"] = max(self.values["native_max_seconds"], elapsed)
             self.values["queue_max_seconds"] = max(self.values["queue_max_seconds"], queued)
@@ -155,6 +164,8 @@ class IngressResources:
     ) -> None:
         self.requests = threading.BoundedSemaphore(REQUEST_LIMIT)
         self.counters = IngressCounters()
+        self._route_lock = threading.Lock()
+        self._route_requests: dict[str, int] = {}
         self.work = NativeWorkBudget(8, self._wake_ready)
         self.buffer = buffer.scope(8 * 1024**2)
         self.raw_buffer = ScopedBufferBudget(self.buffer, RAW_BUFFER_BYTES)
@@ -196,6 +207,26 @@ class IngressResources:
         self.ready = ready = HttpReadyQueue(
             self.work.acquire, self._submit_group, self._finish_group, prepare=prepare
         )
+
+    def route_busy(self, public_id: str) -> bool:
+        with self._route_lock:
+            return self._route_requests.get(public_id, 0) >= ROUTE_REQUEST_LIMIT
+
+    def acquire_route(self, public_id: str) -> bool:
+        with self._route_lock:
+            count = self._route_requests.get(public_id, 0)
+            if count >= ROUTE_REQUEST_LIMIT:
+                return False
+            self._route_requests[public_id] = count + 1
+            return True
+
+    def release_route(self, public_id: str) -> None:
+        with self._route_lock:
+            count = self._route_requests[public_id]
+            if count == 1:
+                del self._route_requests[public_id]
+            else:
+                self._route_requests[public_id] = count - 1
 
     def _wake_ready(self) -> None:
         self.ready.wake()
@@ -311,6 +342,29 @@ def admission_capacity_busy() -> bool:
     if reason is not None:
         current.counters.record(reason)
     return reason is not None
+
+
+def route_capacity_busy(public_id: str) -> bool:
+    current = _resources
+    if current is not None and current.route_busy(public_id):
+        current.counters.record("hint_route")
+        return True
+    return False
+
+
+def ingress_snapshot() -> dict[str, int | float] | None:
+    current = _resources
+    if current is None:
+        return None
+    return {
+        **current.counters.snapshot(),
+        "raw_current_bytes": current.raw_buffer.used_bytes,
+        "raw_peak_bytes": current.raw_buffer.peak_bytes,
+        "workspace_current_bytes": current.workspace_buffer.used_bytes,
+        "workspace_peak_bytes": current.workspace_buffer.peak_bytes,
+        "total_current_bytes": current.buffer.used_bytes,
+        "total_peak_bytes": current.buffer.peak_bytes,
+    }
 
 
 def resources() -> IngressResources:
@@ -511,12 +565,17 @@ async def _request(
     pool.counters.request(1)
     reservation = BODY_RESERVATION if receipt_id is None else 0
     reserved = False
+    route_reserved = False
     workspace_reservation = 0
     work_acquired = False
     handed_off = False
     try:
         read_limit = service.MAX_BODY_BYTES
         if receipt_id is None:
+            if not pool.acquire_route(public_id):
+                pool.counters.record("route")
+                _busy()
+            route_reserved = True
             read_limit = _require_media(request)
             service.require_key(key)
             reservation = 3 * read_limit + REQUEST_METADATA_BYTES
@@ -545,6 +604,7 @@ async def _request(
 
                 def release_request() -> None:
                     pool.raw_buffer.release(reservation)
+                    pool.release_route(public_id)
                     pool.requests.release()
                     pool.counters.request(-1)
 
@@ -575,6 +635,8 @@ async def _request(
             pool.workspace_buffer.release(workspace_reservation)
             pool.work.release()
             pool.raw_buffer.release(reservation)
+            if route_reserved:
+                pool.release_route(public_id)
             pool.requests.release()
             pool.counters.request(-1)
 
@@ -598,6 +660,8 @@ async def _request(
                 pool.work.release()
             if reserved:
                 pool.raw_buffer.release(reservation)
+            if route_reserved:
+                pool.release_route(public_id)
             pool.requests.release()
             pool.counters.request(-1)
 

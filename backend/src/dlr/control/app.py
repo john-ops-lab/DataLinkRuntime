@@ -422,5 +422,9 @@ def create_app() -> FastAPI:
     app.include_router(events.router)
     # Last registered user middleware is outermost: reject only known-full
     # ingress resources before entry checks and route work.
-    app.add_middleware(HttpIngressAdmission, busy=ingress.admission_capacity_busy)
+    app.add_middleware(
+        HttpIngressAdmission,
+        busy=ingress.admission_capacity_busy,
+        busy_route=ingress.route_capacity_busy,
+    )
     return app

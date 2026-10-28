@@ -299,13 +299,15 @@ def capabilities() -> dict[str, Any]:
 @router.get(
     "/api/event-subscriptions/runtime-status", dependencies=[Depends(require_admin_principal)]
 )
-def runtime_status() -> dict[str, int]:
+def runtime_status() -> dict[str, Any]:
     """Process-wide counters for administrators; no source identities or native RPCs."""
+    from dlr.control.api.ingress import ingress_snapshot
     from dlr.control.services.subscription_runtime import get_runtime
 
     runtime = get_runtime()
     return {
         "active_count": runtime.active_count,
+        "http_ingress": ingress_snapshot(),
         "application_buffer_used_bytes": runtime.buffer.used_bytes,
         "application_buffer_peak_bytes": runtime.buffer.peak_bytes,
         "application_buffer_limit_bytes": runtime.buffer.limit_bytes,

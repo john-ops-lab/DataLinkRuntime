@@ -335,6 +335,7 @@ def test_cancel_one_waiter_keeps_group_and_other_results(monkeypatch):
                 while parent.used_bytes:
                     await asyncio.sleep(0.001)
                 assert groups == [4]
+                assert not pool._route_requests
                 assert pool.work.used == 0 and pool.requests._value == 128
         finally:
             unblock.set()
@@ -428,7 +429,7 @@ def test_delayed_timer_cannot_admit_a_request_after_collection_deadline():
 
 
 @pytest.mark.parametrize(
-    "body_bytes,capacity", [(2048, 128), (65536, 20)], ids=["small128", "maximum20"]
+    "body_bytes,capacity", [(2048, 32), (65536, 20)], ids=["small32", "maximum20"]
 )
 def test_batch_raw_reservation_preserves_8mib_with_actual_requests(
     monkeypatch, body_bytes, capacity
@@ -489,7 +490,7 @@ def test_batch_raw_reservation_preserves_8mib_with_actual_requests(
                 assert parent.used_bytes == pool.buffer.used_bytes == held
                 assert parent.peak_bytes <= 8 * 1024**2
                 assert pool.work.used == 1 and pool.requests._value == 128 - capacity
-                assert ingress.admission_capacity_busy()
+                assert ingress.admission_capacity_busy() or ingress.route_capacity_busy("route")
                 messages = []
 
                 async def forbidden(*args):
@@ -498,8 +499,14 @@ def test_batch_raw_reservation_preserves_8mib_with_actual_requests(
                 async def send(message):
                     messages.append(message)
 
-                await HttpIngressAdmission(forbidden, busy=ingress.admission_capacity_busy)(
-                    request([], [(b"content-type", b"application/json")]).scope,
+                next_scope = request([], [(b"content-type", b"application/json")]).scope
+                next_scope["path"] = "/api/ingress/route"
+                await HttpIngressAdmission(
+                    forbidden,
+                    busy=ingress.admission_capacity_busy,
+                    busy_route=ingress.route_capacity_busy,
+                )(
+                    next_scope,
                     forbidden,
                     send,
                 )

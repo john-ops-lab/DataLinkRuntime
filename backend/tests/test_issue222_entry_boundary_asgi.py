@@ -221,15 +221,15 @@ def test_125_call_model_refuses_only_existing_full_budget_without_extra_tasks(mo
 
         async def downstream(actual_scope, receive, send):
             assert asyncio.current_task() is actual_scope["request_task"]
-            assert pool.buffer.reserve(ingress.BODY_RESERVATION)
+            assert pool.raw_buffer.reserve(ingress.BODY_RESERVATION)
             entered.append(True)
-            if len(entered) == 25:
+            if len(entered) == 7:
                 full.set()
             try:
                 await release.wait()
                 await send({"type": "http.response.start", "status": 202, "headers": []})
             finally:
-                pool.buffer.release(ingress.BODY_RESERVATION)
+                pool.raw_buffer.release(ingress.BODY_RESERVATION)
 
         target = HttpIngressAdmission(
             app_module._EntryBoundary(downstream), busy=ingress.admission_capacity_busy
@@ -246,13 +246,13 @@ def test_125_call_model_refuses_only_existing_full_budget_without_extra_tasks(mo
             try:
                 await full.wait()
                 await asyncio.sleep(0)
-                assert len(entered) == 25 and statuses == [429] * 100
-                assert pool.buffer.used_bytes == 25 * ingress.BODY_RESERVATION
+                assert len(entered) == 7 and statuses == [429] * 118
+                assert pool.buffer.used_bytes == 7 * ingress.BODY_RESERVATION
                 assert pool.work.used == 0
             finally:
                 release.set()
                 await asyncio.gather(*tasks)
-        assert statuses.count(202) == 25 and statuses.count(429) == 100
+        assert statuses.count(202) == 7 and statuses.count(429) == 118
         assert pool.buffer.used_bytes == 0 and pool.buffer.parent.used_bytes == 0
 
     try:
