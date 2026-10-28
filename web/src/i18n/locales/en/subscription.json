@@ -464,7 +464,7 @@
     "savedOnly": "This only saves the mode. It does not change code or convert ordinary code into a multi-event handler.",
     "codeHelp": "Writing multi-event code",
     "markerHint": "After checking the code, expand Multi-event code support in the editor, select This code supports several events per run, and save a new version. API callers can use the equivalent Runtime parameters marker below. The declaration does not change code.",
-    "exampleHint": "This Python example only shows ordering and the result format. Replace process_one with a real, idempotent write for each event. Until then it reports failure rather than claiming success.",
+    "exampleHint": "This Python example only shows ordering and the result format. Replace process_one with a real, idempotent write for each event. The placeholder never reports success. Unclassified exceptions leave the result unconfirmed and later events unprocessed.",
     "orderHint": "Report success only after each business write completes. Stop at the first failure or unknown result and mark later events as not processed. Cancellation affects all unfinished events in this run.",
     "receivingHint": "A run may process several events together; each event keeps its own result.",
     "group": "Shared run",

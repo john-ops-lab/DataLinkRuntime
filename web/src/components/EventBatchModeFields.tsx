@@ -17,8 +17,9 @@ async def handle(input):
             try:
                 await process_one(member["input"])
             except Exception:
+                # The business write may have committed before this error.
                 blocked = True
-                result.update(status="failed", error_code="business_error")
+                result.update(status="unknown", error_code="result_unavailable")
             else:
                 result.update(status="succeeded", error_code=None)
         results.append(result)

@@ -42,18 +42,28 @@ beforeEach(async () => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-it.each(["http", "rabbitmq"] as const)("requires an explicit advanced selection for %s and does not save code", async source => {
+it.each([
+  ["en", "http"], ["en", "rabbitmq"], ["zh-CN", "http"], ["zh-CN", "rabbitmq"],
+] as const)("requires an explicit advanced selection for %s %s and does not save code", async (locale, source) => {
+  await applyUiLocale(locale);
   const save = vi.fn().mockResolvedValue(undefined);
   const saveCode = vi.spyOn(api, "saveVersion");
   render(<SubscriptionConfigDialog subscription={subscription(source)} availableSources={[source]}
     adapterId={9} canManage canTest onClose={vi.fn()} onSave={save} />);
-  expect(screen.queryByText("Save code that supports multiple inputs before starting reception.")).toBeNull();
-  fireEvent.mouseDown(screen.getByLabelText("Processing mode"));
-  fireEvent.click(await screen.findByText("Several events per run (code support required)"));
-  await screen.findByText("Save code that supports multiple inputs before starting reception.");
+  const notice = locale === "en" ? "Save code that supports multiple inputs before starting reception." : "请先保存能够处理多条输入的代码，再开启接收。";
+  expect(screen.queryByText(notice)).toBeNull();
+  fireEvent.mouseDown(screen.getByLabelText(locale === "en" ? "Processing mode" : "处理方式"));
+  fireEvent.click(await screen.findByText(locale === "en" ? "Several events per run (code support required)" : "一次处理多条（代码需支持）"));
+  await screen.findByText(notice);
   expect(screen.getByText('{"event_batch_schema":"dlr.event.batch.v1"}')).toBeTruthy();
-  expect(screen.getByText(/Replace process_one with a real, idempotent write/)).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+  expect(screen.getByText(locale === "en" ? /Unclassified exceptions leave the result unconfirmed/ : /无法确认的异常按结果未确认处理/)).toBeTruthy();
+  const example = screen.getByText(/async def process_one/).textContent;
+  expect(example).toContain('status="unknown", error_code="result_unavailable"');
+  expect(example).toContain('status="not_run", error_code="predecessor_failed"');
+  expect(example).not.toContain('status="failed"');
+  expect(example).toContain("except Exception:");
+  expect(example).not.toContain("except BaseException:");
+  fireEvent.click(screen.getByRole("button", { name: locale === "en" ? /^Save$/ : /^保\s*存$/ }));
   await waitFor(() => expect(save).toHaveBeenCalledOnce());
   expect(save.mock.calls[0][0].config).toMatchObject({ source_type: source, mode: "business_batch" });
   expect(saveCode).not.toHaveBeenCalled();
