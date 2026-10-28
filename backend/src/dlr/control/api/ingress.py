@@ -13,6 +13,7 @@ import traceback
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
+from time import monotonic
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -25,17 +26,89 @@ from dlr.control.security import AuthorizationHeader
 from dlr.control.services import http_ingress as service
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.http_ingress_group import (
+    MAX_WORKSPACE_BYTES,
     HttpCollector,
     HttpInput,
     complete,
     estimated_input_bytes,
+    workspace_bytes,
 )
-from dlr.control.services.http_ingress_ready import GroupResults, HttpReadyQueue, ReadyGroup
-from dlr.control.services.subscription_source import ApplicationBufferBudget
+from dlr.control.services.http_ingress_ready import (
+    READY_WAIT_SECONDS,
+    GroupResults,
+    HttpReadyQueue,
+    ReadyGroup,
+)
+from dlr.control.services.subscription_source import ApplicationBufferBudget, ScopedBufferBudget
 
 router = APIRouter()
 logger = logging.getLogger("dlr.control.ingress")
-BODY_RESERVATION = service.MAX_BODY_BYTES + service.MAX_ENVELOPE_BYTES
+REQUEST_LIMIT = 128
+REQUEST_METADATA_BYTES = 4 * 1024
+BODY_RESERVATION = 3 * service.MAX_BODY_BYTES + REQUEST_METADATA_BYTES
+RAW_BUFFER_BYTES = 3 * 1024**2 // 2
+
+
+class IngressCounters:
+    """Fixed-cardinality, content-free aggregates on the existing logger."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last_log = monotonic()
+        self.values: dict[str, int | float] = dict.fromkeys(
+            (
+                "hint_requests",
+                "hint_native",
+                "hint_raw",
+                "hint_parent",
+                "requests",
+                "raw",
+                "workspace",
+                "native",
+                "ready_expired",
+                "groups",
+                "members",
+                "native_seconds",
+                "native_max_seconds",
+                "queue_max_seconds",
+                "request_peak",
+                "raw_peak",
+                "workspace_peak",
+            ),
+            0,
+        )
+        self._requests = 0
+
+    @property
+    def requests_used(self) -> int:
+        with self._lock:
+            return self._requests
+
+    def record(self, reason: str) -> None:
+        with self._lock:
+            self.values[reason] += 1
+            self._log()
+
+    def request(self, change: int) -> None:
+        with self._lock:
+            self._requests += change
+            self.values["request_peak"] = max(self.values["request_peak"], self._requests)
+
+    def group(self, count: int, queued: float, elapsed: float, raw: int, workspace: int) -> None:
+        with self._lock:
+            self.values["groups"] += 1
+            self.values["members"] += count
+            self.values["native_seconds"] += elapsed
+            self.values["native_max_seconds"] = max(self.values["native_max_seconds"], elapsed)
+            self.values["queue_max_seconds"] = max(self.values["queue_max_seconds"], queued)
+            self.values["raw_peak"] = max(self.values["raw_peak"], raw)
+            self.values["workspace_peak"] = max(self.values["workspace_peak"], workspace)
+            self._log()
+
+    def _log(self) -> None:
+        if monotonic() - self._last_log >= 5:
+            self._last_log = monotonic()
+            logger.info("HTTP ingress aggregates: %s", self.values)
 
 
 class NativeWorkBudget:
@@ -80,9 +153,12 @@ class IngressResources:
         buffer: ApplicationBufferBudget,
         session_factory: Callable[[], Session] | None = None,
     ) -> None:
-        self.requests = threading.BoundedSemaphore(32)
+        self.requests = threading.BoundedSemaphore(REQUEST_LIMIT)
+        self.counters = IngressCounters()
         self.work = NativeWorkBudget(8, self._wake_ready)
         self.buffer = buffer.scope(8 * 1024**2)
+        self.raw_buffer = ScopedBufferBudget(self.buffer, RAW_BUFFER_BYTES)
+        self.workspace_buffer = ScopedBufferBudget(self.buffer, MAX_WORKSPACE_BYTES)
         self.executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="dlr-ingress")
         if session_factory is None:
             from dlr.control.services.subscription_runtime import get_runtime
@@ -136,7 +212,25 @@ class IngressResources:
         self.ready.enqueue(public_id, items)
 
     def _submit_group(self, group: ReadyGroup) -> Future[GroupResults]:
-        return self.executor.submit(_run_group_sync, self, group.public_id, group.items)
+        amount = sum(workspace_bytes(len(item.body)) for item in group.items)
+        if not self.workspace_buffer.reserve(amount):
+            self.counters.record("workspace")
+            rejected: Future[GroupResults] = Future()
+            rejected.set_result([_capacity_error() for _ in group.items])
+            return rejected
+        group.workspace_reservation = amount
+        queued = max(0.0, group.loop.time() - (group.deadline - READY_WAIT_SECONDS))
+        raw = self.raw_buffer.peak_bytes
+        workspace = self.workspace_buffer.peak_bytes
+
+        def run(pool: IngressResources, public_id: str, items: list[HttpInput]) -> GroupResults:
+            started = monotonic()
+            try:
+                return _run_group_sync(pool, public_id, items)
+            finally:
+                self.counters.group(len(group.items), queued, monotonic() - started, raw, workspace)
+
+        return self.executor.submit(run, self, group.public_id, group.items)
 
     def _finish_group(
         self, group: ReadyGroup, result: Future[GroupResults] | HTTPException, claimed: bool
@@ -171,6 +265,11 @@ class IngressResources:
                         for _ in group.items
                     ]
         finally:
+            if group.workspace_reservation:
+                self.workspace_buffer.release(group.workspace_reservation)
+                group.workspace_reservation = 0
+            if isinstance(result, HTTPException) and result.status_code == 429:
+                self.counters.record("ready_expired")
             if claimed:
                 self.work.release()
             for item in group.items:
@@ -197,11 +296,21 @@ def admission_capacity_busy() -> bool:
     if current is None:
         return False
     buffer = current.buffer
-    return (
-        current.work.saturated
-        or buffer.used_bytes + BODY_RESERVATION > buffer.limit_bytes
+    reason = (
+        "hint_requests"
+        if current.counters.requests_used >= REQUEST_LIMIT
+        else "hint_native"
+        if current.work.saturated
+        else "hint_raw"
+        if current.raw_buffer.used_bytes + BODY_RESERVATION > current.raw_buffer.limit_bytes
+        else "hint_parent"
+        if buffer.used_bytes + BODY_RESERVATION > buffer.limit_bytes
         or buffer.parent.used_bytes + BODY_RESERVATION > buffer.parent.limit_bytes
+        else None
     )
+    if reason is not None:
+        current.counters.record(reason)
+    return reason is not None
 
 
 def resources() -> IngressResources:
@@ -228,13 +337,17 @@ def flush_ingress_resources() -> None:
         _resources.begin_close()
 
 
-def _busy() -> None:
+def _capacity_error() -> HTTPException:
     error = domain_error(429, "ingress_capacity_exceeded", "Reception resources are busy")
     error.headers = {"Retry-After": "1"}
-    raise error
+    return error
 
 
-def _require_media(request: Request) -> None:
+def _busy() -> None:
+    raise _capacity_error()
+
+
+def _require_media(request: Request) -> int:
     if request.headers.get("content-encoding", "identity").lower().strip() != "identity":
         raise domain_error(
             415, "ingress_encoding_unsupported", "Compressed request bodies are not supported"
@@ -253,9 +366,11 @@ def _require_media(request: Request) -> None:
         limit = str(service.MAX_BODY_BYTES)
         if len(normalized) > len(limit) or (len(normalized) == len(limit) and normalized > limit):
             raise domain_error(413, "ingress_body_too_large", "JSON body exceeds 64 KiB")
+        return int(normalized)
+    return service.MAX_BODY_BYTES
 
 
-async def _read_body(request: Request) -> bytes:
+async def _read_body(request: Request, limit_bytes: int = service.MAX_BODY_BYTES) -> bytes:
     body = bytearray()
     chunks_since_yield = 0
     stream = request.stream().__aiter__()
@@ -266,7 +381,7 @@ async def _read_body(request: Request) -> bytes:
                     chunk = await asyncio.wait_for(anext(stream), timeout=2)
                 except StopAsyncIteration:
                     break
-                if len(body) + len(chunk) > service.MAX_BODY_BYTES:
+                if len(body) + len(chunk) > limit_bytes:
                     raise domain_error(413, "ingress_body_too_large", "JSON body exceeds 64 KiB")
                 body.extend(chunk)
                 chunks_since_yield += 1
@@ -391,27 +506,37 @@ async def _request(
 ) -> JSONResponse:
     pool = resources()
     if not pool.requests.acquire(blocking=False):
+        pool.counters.record("requests")
         _busy()
+    pool.counters.request(1)
     reservation = BODY_RESERVATION if receipt_id is None else 0
     reserved = False
+    workspace_reservation = 0
     work_acquired = False
     handed_off = False
     try:
-        if not pool.buffer.reserve(reservation):
+        read_limit = service.MAX_BODY_BYTES
+        if receipt_id is None:
+            read_limit = _require_media(request)
+            service.require_key(key)
+            reservation = 3 * read_limit + REQUEST_METADATA_BYTES
+        if not pool.raw_buffer.reserve(reservation):
+            pool.counters.record("raw")
             _busy()
         reserved = True
         body = None
         if receipt_id is None:
-            _require_media(request)
-            service.require_key(key)
-            body = await _read_body(request)
+            body = await _read_body(request, read_limit)
+            if request.headers.get("content-length") is not None and len(body) != read_limit:
+                raise domain_error(
+                    422, "ingress_length_invalid", "Body length differs from Content-Length"
+                )
+            unused_raw = reservation - len(body) - REQUEST_METADATA_BYTES
+            pool.raw_buffer.release(unused_raw)
+            reservation -= unused_raw
             from dlr.control.services.subscription_runtime import get_runtime
 
             if get_runtime().http_batch_hint(public_id):
-                unused_raw = service.MAX_BODY_BYTES - len(body)
-                if unused_raw:
-                    pool.buffer.release(unused_raw)
-                    reservation -= unused_raw
                 loop = asyncio.get_running_loop()
                 result_future: asyncio.Future[tuple[int, dict[str, Any]]] = loop.create_future()
                 result_future.add_done_callback(
@@ -419,8 +544,9 @@ async def _request(
                 )
 
                 def release_request() -> None:
-                    pool.buffer.release(reservation)
+                    pool.raw_buffer.release(reservation)
                     pool.requests.release()
+                    pool.counters.request(-1)
 
                 pool.collector.add(
                     public_id, HttpInput(authorization, key, body, release_request, result_future)
@@ -430,8 +556,14 @@ async def _request(
                 status, result = await asyncio.shield(result_future)
                 return JSONResponse(result, status_code=status)
         if not pool.work.acquire():
+            pool.counters.record("native")
             _busy()
         work_acquired = True
+        workspace_reservation = workspace_bytes(len(body)) if body is not None else 64 * 1024
+        if not pool.workspace_buffer.reserve(workspace_reservation):
+            workspace_reservation = 0
+            pool.counters.record("workspace")
+            _busy()
         try:
             future = pool.executor.submit(
                 _run_sync, pool, public_id, authorization, body, key, receipt_id
@@ -440,9 +572,11 @@ async def _request(
             raise domain_error(503, "ingress_unavailable", "Reception is closing") from None
 
         def release(_: Future[tuple[int, dict[str, Any]]]) -> None:
+            pool.workspace_buffer.release(workspace_reservation)
             pool.work.release()
-            pool.buffer.release(reservation)
+            pool.raw_buffer.release(reservation)
             pool.requests.release()
+            pool.counters.request(-1)
 
         future.add_done_callback(release)
         handed_off = True
@@ -458,11 +592,14 @@ async def _request(
         raise
     finally:
         if not handed_off:
+            if workspace_reservation:
+                pool.workspace_buffer.release(workspace_reservation)
             if work_acquired:
                 pool.work.release()
             if reserved:
-                pool.buffer.release(reservation)
+                pool.raw_buffer.release(reservation)
             pool.requests.release()
+            pool.counters.request(-1)
 
 
 @router.post("/api/ingress/{public_id}")

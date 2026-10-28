@@ -17,8 +17,10 @@ from fastapi import HTTPException
 from dlr.control.services.http_ingress_group import (
     MAX_ITEMS,
     MAX_PAYLOAD_BYTES,
+    MAX_WORKSPACE_BYTES,
     HttpInput,
     estimated_input_bytes,
+    workspace_bytes,
 )
 
 READY_WAIT_SECONDS = 1.0
@@ -31,6 +33,7 @@ class ReadyGroup:
     items: list[HttpInput]
     loop: asyncio.AbstractEventLoop
     deadline: float
+    workspace_reservation: int = 0
     state: Literal["ready", "submitting", "running", "done"] = "ready"
 
 
@@ -159,6 +162,7 @@ class HttpReadyQueue:
         this submitted unit and remain held until its real completion.
         """
         size = sum(estimated_input_bytes(len(item.body)) for item in group.items)
+        workspace = sum(workspace_bytes(len(item.body)) for item in group.items)
         while route.ready and len(group.items) < MAX_ITEMS:
             donor = route.ready[0]
             if (
@@ -170,10 +174,15 @@ class HttpReadyQueue:
             taken = 0
             for item in donor.items:
                 amount = estimated_input_bytes(len(item.body))
-                if len(group.items) == MAX_ITEMS or size + amount > MAX_PAYLOAD_BYTES:
+                if (
+                    len(group.items) == MAX_ITEMS
+                    or size + amount > MAX_PAYLOAD_BYTES
+                    or workspace + workspace_bytes(len(item.body)) > MAX_WORKSPACE_BYTES
+                ):
                     break
                 group.items.append(item)
                 size += amount
+                workspace += workspace_bytes(len(item.body))
                 taken += 1
             del donor.items[:taken]
             if donor.items:

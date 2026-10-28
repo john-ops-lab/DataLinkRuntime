@@ -19,6 +19,8 @@
 
 非目标：#129 的 Worker Pool、跨主机 HA、同 Adapter 多并发、默认常驻 Adapter、DAG、自研 CDC、额外消息基础设施、持续每秒一万条、任意外部系统 exactly-once，以及无持久重试能力的 HTTP 发送方可靠性承诺。
 
+本轮后继调整以 [design.md D7.14](design.md#d714-按真实阶段分配有界内存和请求名额) 为准：将固定最大Envelope常驻预留改为读取/等待与native工作区分阶段预算，在原8MiB及全来源64MiB内配置最多128请求，大小与顺序/持久责任、正式验收标准不变。先实施直接边界和代表链，再按原标准验证及剩余额度OCR；不新增辅助框架、不提交PR。
+
 ## Capabilities
 
 ### New Capabilities

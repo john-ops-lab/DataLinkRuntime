@@ -321,17 +321,21 @@ def test_cancel_one_waiter_keeps_group_and_other_results(monkeypatch):
                 tasks[0].cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await tasks[0]
-                assert parent.used_bytes == 4 * (len(b"{}") + service.MAX_ENVELOPE_BYTES)
-                assert pool.work.used == 1 and pool.requests._value == 28
+                assert parent.used_bytes == 4 * (
+                    len(b"{}") + ingress.REQUEST_METADATA_BYTES + ingress.workspace_bytes(2)
+                )
+                assert pool.work.used == 1 and pool.requests._value == 124
                 pool.begin_close()
-                assert parent.used_bytes == 4 * (len(b"{}") + service.MAX_ENVELOPE_BYTES)
+                assert parent.used_bytes == 4 * (
+                    len(b"{}") + ingress.REQUEST_METADATA_BYTES + ingress.workspace_bytes(2)
+                )
                 assert pool.work.used == 1 and not any(task.done() for task in tasks[1:])
                 unblock.set()
                 assert [r.status_code for r in await asyncio.gather(*tasks[1:])] == [202] * 3
                 while parent.used_bytes:
                     await asyncio.sleep(0.001)
                 assert groups == [4]
-                assert pool.work.used == 0 and pool.requests._value == 32
+                assert pool.work.used == 0 and pool.requests._value == 128
         finally:
             unblock.set()
             pool.close()
@@ -349,7 +353,7 @@ def test_sparse_group_timer_never_waits_in_native_thread(monkeypatch):
 
         def observe_add(public_id, item):
             assert pool.work.used == 0 and not started.is_set()
-            assert parent.used_bytes == len(item.body) + service.MAX_ENVELOPE_BYTES
+            assert parent.used_bytes == len(item.body) + ingress.REQUEST_METADATA_BYTES
             original_add(public_id, item)
             added.append(item.key)
             assert pool.work.used == 0 and not started.is_set()
@@ -383,14 +387,16 @@ def test_sparse_group_timer_never_waits_in_native_thread(monkeypatch):
                 while not started.is_set():
                     await asyncio.sleep(0.001)
                 assert added == ["one"] and sizes == [1] and not pool.collector.pending
-                assert pool.work.used == 1 and pool.requests._value == 31
-                assert parent.used_bytes == len(b"{}") + service.MAX_ENVELOPE_BYTES
+                assert pool.work.used == 1 and pool.requests._value == 127
+                assert parent.used_bytes == len(
+                    b"{}"
+                ) + ingress.REQUEST_METADATA_BYTES + ingress.workspace_bytes(2)
                 assert not task.done()
                 unblock.set()
                 assert (await task).status_code == 202
                 while parent.used_bytes or pool.work.used:
                     await asyncio.sleep(0.001)
-                assert pool.requests._value == 32
+                assert pool.requests._value == 128
         finally:
             unblock.set()
             task.cancel()
@@ -422,7 +428,7 @@ def test_delayed_timer_cannot_admit_a_request_after_collection_deadline():
 
 
 @pytest.mark.parametrize(
-    "body_bytes,capacity", [(2048, 31), (65536, 25)], ids=["small31", "maximum25"]
+    "body_bytes,capacity", [(2048, 128), (65536, 20)], ids=["small128", "maximum20"]
 )
 def test_batch_raw_reservation_preserves_8mib_with_actual_requests(
     monkeypatch, body_bytes, capacity
@@ -477,10 +483,12 @@ def test_batch_raw_reservation_preserves_8mib_with_actual_requests(
                     )
                 while not started.is_set():
                     await asyncio.sleep(0)
-                held = capacity * (body_bytes + service.MAX_ENVELOPE_BYTES)
+                held = capacity * (body_bytes + ingress.REQUEST_METADATA_BYTES) + (
+                    16 if body_bytes == 2048 else 1
+                ) * ingress.workspace_bytes(body_bytes)
                 assert parent.used_bytes == pool.buffer.used_bytes == held
                 assert parent.peak_bytes <= 8 * 1024**2
-                assert pool.work.used == 1 and pool.requests._value == 32 - capacity
+                assert pool.work.used == 1 and pool.requests._value == 128 - capacity
                 assert ingress.admission_capacity_busy()
                 messages = []
 
@@ -505,7 +513,7 @@ def test_batch_raw_reservation_preserves_8mib_with_actual_requests(
                 assert all(r.status_code == 202 for r in await asyncio.gather(*tasks))
                 while parent.used_bytes or pool.work.used:
                     await asyncio.sleep(0)
-                assert pool.requests._value == 32 and not pool.ready._routes
+                assert pool.requests._value == 128 and not pool.ready._routes
         finally:
             unblock.set()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -549,7 +557,7 @@ def test_batch_body_keeps_full_reservation_before_eof_and_read_cancel(monkeypatc
                 with pytest.raises(asyncio.CancelledError):
                     await task
                 assert parent.used_bytes == pool.buffer.used_bytes == 0
-                assert pool.requests._value == 32 and pool.work.used == 0
+                assert pool.requests._value == 128 and pool.work.used == 0
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -615,14 +623,16 @@ def test_stale_batch_hint_keeps_shrunk_reservation_through_real_single_fallback(
                 while not started.is_set():
                     await asyncio.sleep(0)
                 assert calls == ["group", "rollback", "single"]
-                assert parent.used_bytes == len(b"{}") + service.MAX_ENVELOPE_BYTES
+                assert parent.used_bytes == len(
+                    b"{}"
+                ) + ingress.REQUEST_METADATA_BYTES + ingress.workspace_bytes(2)
                 assert pool.work.used == 1 and not task.done()
                 unblock.set()
                 assert (await task).status_code == 202
                 while parent.used_bytes or pool.work.used:
                     await asyncio.sleep(0)
                 assert calls == ["group", "rollback", "single", "commit"]
-                assert pool.requests._value == 32
+                assert pool.requests._value == 128
         finally:
             unblock.set()
             await asyncio.gather(task, return_exceptions=True)

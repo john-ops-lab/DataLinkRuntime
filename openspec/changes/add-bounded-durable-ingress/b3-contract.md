@@ -108,3 +108,7 @@ Receipt 仍使用兼容的 pending/processing/succeeded/failed 等状态；Deliv
 6. 同资源200条完整链路实测与独立目标对账，再分别验证HTTP/RabbitMQ正常10000条及约定故障轮次。实际批次数、Execution数、成员数分别记录；本候选或小样本通过都不代表正式容量通过。
 
 本文件新增不标记 B3 或 B4/B5 任务完成，不替代主设计/delta 的后续同步和专项审查决议。
+
+## D7.14 后继实施约束
+
+当前HTTP预算以design.md D7.14及durable-http-ingress的新分阶段要求为准，替代历史固定32请求/完整Envelope常驻预留。仍保留8MiB/64MiB、native8/DB8+4、同路由串行T1、16项/25ms/1MiB/ready1秒，以及业务批次100项/256KiB/50ms、单Adapter单active和所有逐成员责任合同。读取和等待只保留原文，native前必须取得覆盖解析/编码/数据库临时量的独立工作区；大项先按该维度切小组，不改变输入大小上限。原正式数字、资源与完整观察不变，R13失败保持。

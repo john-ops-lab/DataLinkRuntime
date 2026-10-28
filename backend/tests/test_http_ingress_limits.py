@@ -230,23 +230,26 @@ def test_cancelled_request_keeps_native_work_and_bytes_bounded(
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await task
-                assert parent.used_bytes == ingress.BODY_RESERVATION
+                assert (
+                    parent.used_bytes
+                    == 2 + ingress.REQUEST_METADATA_BYTES + ingress.workspace_bytes(2)
+                )
                 assert pool.work.used == 1
                 acquired = 0
                 try:
-                    for _ in range(33):
+                    for _ in range(129):
                         if not pool.requests.acquire(blocking=False):
                             break
                         acquired += 1
-                    assert acquired == 31
+                    assert acquired == 127
                 finally:
                     for _ in range(acquired):
                         pool.requests.release()
                 release.set()
-                while parent.used_bytes or pool.work.used or pool.requests._value != 32:
+                while parent.used_bytes or pool.work.used or pool.requests._value != 128:
                     await asyncio.sleep(0.001)
                 assert ended.is_set()
-                assert pool.work.used == 0 and pool.requests._value == 32
+                assert pool.work.used == 0 and pool.requests._value == 128
         finally:
             release.set()
             task.cancel()
@@ -260,3 +263,84 @@ def test_http_float_storage_safe_boundaries() -> None:
     assert parse_body(b"9007199254740991.0") == 9007199254740991
     assert parse_body(b"-9007199254740991.0") == -9007199254740991
     assert parse_body(b"1e-308") == 1e-308
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'"' + b"x" * 65534 + b'"',
+        ('"' + "\U0001f642" * 16383 + '"').encode(),
+        json.dumps({str(i): {} for i in range(1000)}).encode(),
+        b"[" + b"0," * 4094 + b"0]",
+        b"[" + b"[]," * 16000 + b"[]]",
+        b"[" * 12000 + b"0" + b"]" * 12000,
+        b"[" + b"1e-7," * 300 + b"1e-7]",
+    ],
+    ids=[
+        "max-string",
+        "unicode",
+        "maps",
+        "node-limit",
+        "invalid-nodes",
+        "invalid-depth",
+        "float-expansion",
+    ],
+)
+def test_native_workspace_covers_parser_envelope_and_encoding_peak(body):
+    from dlr.control.services import http_ingress as service
+    from dlr.control.services.event_envelope import canonical
+    from dlr.control.services.http_ingress_group import MAX_WORKSPACE_BYTES, workspace_bytes
+
+    count = min(16, MAX_WORKSPACE_BYTES // workspace_bytes(len(body)))
+    assert count >= 1  # Even a legal maximum body can make progress.
+    held = []
+    tracemalloc.start()
+    try:
+        for _index in range(count):
+            try:
+                payload = parse_body(body)
+                envelope = service._build_envelope(
+                    2**63 - 1, 2**31 - 1, "e" * 64, "r" * 64, "i" * 128, payload
+                )
+                # Retain the ORM input and encoded parameter at the same time;
+                # JSON/JCS traversal/encoding scratch contributes to the peak.
+                encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+                canonical(envelope)
+                held.append((envelope, encoded))
+            except HTTPException as error:
+                assert error.status_code in {413, 422}
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak <= count * workspace_bytes(len(body))
+
+
+@pytest.mark.parametrize("declared,status", [("1", 413), ("3", 422)])
+def test_declared_length_never_allocates_or_submits_a_larger_body(monkeypatch, declared, status):
+    async def run():
+        pool = ingress.IngressResources(
+            buffer=ApplicationBufferBudget(), session_factory=lambda: None
+        )
+        monkeypatch.setattr(ingress, "resources", lambda: pool)
+        try:
+            with pytest.raises(HTTPException) as raised:
+                await ingress._request(
+                    "route",
+                    request(
+                        [b"{}"],
+                        [
+                            (b"content-type", b"application/json"),
+                            (b"content-length", declared.encode()),
+                        ],
+                    ),
+                    "Bearer example",
+                    "one",
+                )
+            assert raised.value.status_code == status
+            assert pool.buffer.used_bytes == pool.buffer.parent.used_bytes == pool.work.used == 0
+            assert pool.raw_buffer.peak_bytes == 3 * int(declared) + ingress.REQUEST_METADATA_BYTES
+            assert pool.workspace_buffer.peak_bytes == 0 and pool.requests._value == 128
+        finally:
+            pool.close()
+
+    asyncio.run(run())

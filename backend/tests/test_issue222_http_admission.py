@@ -61,7 +61,7 @@ def test_uninitialized_capacity_hint_does_not_initialize(monkeypatch):
 
 @pytest.mark.parametrize("account", [False, True])
 def test_known_full_local_budget_refuses_before_inner_or_receive(pool, monkeypatch, account):
-    assert pool.buffer.reserve(25 * ingress.BODY_RESERVATION)
+    assert pool.buffer.reserve(pool.buffer.limit_bytes - ingress.BODY_RESERVATION + 1)
     before = snapshot(pool)
     monkeypatch.setattr(ingress, "resources", forbidden)
     path = ("/__dlr_account" if account else "") + "/api/ingress/route"
@@ -193,7 +193,9 @@ def test_available_target_is_not_rewritten_or_received_by_shortcut():
 def test_app_wiring_is_outside_basehttp_and_matches_original_busy_response(pool, monkeypatch, gate):
     async def run():
         if gate == "body":
-            assert pool.buffer.reserve(25 * ingress.BODY_RESERVATION)
+            assert pool.buffer.reserve(
+                pool.buffer.limit_bytes - (3 * 2 + ingress.REQUEST_METADATA_BYTES) + 1
+            )
         else:
             for _ in range(8):
                 assert pool.work.acquire()
@@ -229,7 +231,9 @@ def test_app_wiring_is_outside_basehttp_and_matches_original_busy_response(pool,
         assert shortcut.status_code == old.status_code == 429
         assert shortcut.content == old.content and shortcut.headers == old.headers
         assert snapshot(pool)[:2] == before[:2]
-        assert pool.buffer.parent.peak_bytes == max(before[2], ingress.BODY_RESERVATION)
+        assert pool.buffer.parent.peak_bytes == max(
+            before[2], 3 * 2 + ingress.REQUEST_METADATA_BYTES
+        )
 
     asyncio.run(run())
 
@@ -238,7 +242,7 @@ def test_app_wiring_is_outside_basehttp_and_matches_original_busy_response(pool,
 def test_full_ingress_keeps_existing_cookie_auth_and_csrf_for_other_paths(pool, monkeypatch, gate):
     async def run():
         if gate == "body":
-            assert pool.buffer.reserve(25 * ingress.BODY_RESERVATION)
+            assert pool.buffer.reserve(pool.buffer.limit_bytes - ingress.BODY_RESERVATION + 1)
         else:
             for _ in range(8):
                 assert pool.work.acquire()
@@ -323,8 +327,14 @@ def test_cancelling_passed_request_retains_native_body_reservation(pool, monkeyp
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await task
-                assert pool.buffer.used_bytes == ingress.BODY_RESERVATION
-                assert pool.buffer.parent.used_bytes == ingress.BODY_RESERVATION
+                assert (
+                    pool.buffer.used_bytes
+                    == 2 + ingress.REQUEST_METADATA_BYTES + ingress.workspace_bytes(2)
+                )
+                assert (
+                    pool.buffer.parent.used_bytes
+                    == 2 + ingress.REQUEST_METADATA_BYTES + ingress.workspace_bytes(2)
+                )
                 assert pool.work.used == 1
                 unblock.set()
                 while pool.buffer.used_bytes:
@@ -370,11 +380,11 @@ def test_cancelled_native_work_keeps_busy_hint_until_real_future_finishes(pool, 
                 receipt_id=1 if mode == "status" else None,
             )
         )
-        reservation = ingress.BODY_RESERVATION
-        if mode == "group":
-            reservation = len(b"{}") + ingress.service.MAX_ENVELOPE_BYTES
-        elif mode == "status":
-            reservation = 0
+        reservation = (
+            64 * 1024
+            if mode == "status"
+            else 2 + ingress.REQUEST_METADATA_BYTES + ingress.workspace_bytes(2)
+        )
         try:
             async with asyncio.timeout(5):
                 while not started.is_set():
@@ -444,10 +454,10 @@ def test_native_submit_failure_returns_work_and_request_reservations(pool, monke
         assert not pool.work.acquire()
         for _ in range(8):
             pool.work.release()
-        for _ in range(32):
+        for _ in range(128):
             assert pool.requests.acquire(blocking=False)
         assert not pool.requests.acquire(blocking=False)
-        for _ in range(32):
+        for _ in range(128):
             pool.requests.release()
         assert not ingress.admission_capacity_busy()
 
@@ -487,7 +497,9 @@ def test_native_failure_returns_work_only_after_the_real_future_ends(pool, monke
         if mode == "group":
             assert isinstance(raised.value, ingress.HTTPException)
             assert raised.value.status_code == 503
-            assert observed_buffer == [len(b"{}") + ingress.service.MAX_ENVELOPE_BYTES]
+            assert observed_buffer == [
+                len(b"{}") + ingress.REQUEST_METADATA_BYTES + ingress.workspace_bytes(2)
+            ]
         else:
             assert isinstance(raised.value, RuntimeError)
             assert len(observed_buffer) == 1

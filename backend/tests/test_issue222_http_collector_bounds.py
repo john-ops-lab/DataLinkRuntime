@@ -29,6 +29,9 @@ class Loop:
         self.timers = []
         self.futures = asyncio.new_event_loop()
 
+    def is_closed(self):
+        return False
+
     def time(self):
         return self.now
 
@@ -84,8 +87,10 @@ def test_sixteen_small_items_flush_without_wait_or_early_response(collector_cloc
 
 @pytest.mark.parametrize("extra_raw_byte", [0, 1])
 def test_exact_one_mib_estimate_flushes_and_overflow_starts_new_group(
-    collector_clock, extra_raw_byte
+    collector_clock, extra_raw_byte, monkeypatch
 ):
+    # Isolate the serialized 1MiB dimension; native workspace has its own test.
+    monkeypatch.setattr(grouping, "MAX_WORKSPACE_BYTES", 64 * 1024**2)
     clock, collector, groups = collector_clock
     sizes = [9830] * 9 + [9834 + extra_raw_byte]
     assert sum(grouping.estimated_input_bytes(size) for size in sizes) == (
@@ -111,10 +116,14 @@ def test_maximum_legal_bodies_split_before_exceeding_one_mib(collector_clock):
     clock, collector, groups = collector_clock
     for index in range(4):
         collector.add("route", clock.item(index, 64 * 1024))
-    assert [len(items) for _, items in groups] == [3]
+    assert [len(items) for _, items in groups] == [1, 1, 1]
     assert collector.pending["route"].estimated_bytes == 320 * 1024
     collector.close()
-    assert [len(items) for _, items in groups] == [3, 1]
+    assert [len(items) for _, items in groups] == [1, 1, 1, 1]
+    assert all(
+        sum(grouping.workspace_bytes(len(i.body)) for i in members) <= grouping.MAX_WORKSPACE_BYTES
+        for _, members in groups
+    )
 
 
 def test_timer_flushes_at_twenty_five_ms_and_never_moves_first_deadline(collector_clock):

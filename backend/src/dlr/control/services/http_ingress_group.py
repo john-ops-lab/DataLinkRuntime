@@ -13,6 +13,18 @@ from fastapi import HTTPException
 MAX_ITEMS = 16
 MAX_PAYLOAD_BYTES = 1024**2
 MAX_WAIT_SECONDS = 0.025
+MAX_WORKSPACE_BYTES = 13 * 1024**2 // 2
+
+
+def workspace_bytes(raw_bytes: int) -> int:
+    """Conservative native allocation allowance, separate from serialized size.
+
+    96 bytes per wire byte allows CPython container/string/number expansion,
+    JSON/JCS/SQL encoding copies and traversal scratch; 64 KiB covers bounded
+    Envelope, ORM and per-item metadata. Reserve before parsing, including
+    invalid JSON. This ledger does not replace the process RSS limit.
+    """
+    return 96 * raw_bytes + 64 * 1024
 
 
 def estimated_input_bytes(raw_bytes: int) -> int:
@@ -38,6 +50,7 @@ class HttpInput:
 class _Group:
     items: list[HttpInput] = field(default_factory=list)
     estimated_bytes: int = 0
+    workspace_bytes: int = 0
     timer: asyncio.TimerHandle | None = None
     deadline: float = 0
 
@@ -64,7 +77,10 @@ class HttpCollector:
             self.flush(public_id)
             group = None
         size = estimated_input_bytes(len(item.body))
-        if group is not None and group.estimated_bytes + size > MAX_PAYLOAD_BYTES:
+        if group is not None and (
+            group.estimated_bytes + size > MAX_PAYLOAD_BYTES
+            or group.workspace_bytes + workspace_bytes(len(item.body)) > MAX_WORKSPACE_BYTES
+        ):
             self.flush(public_id)
             group = None
         if group is None:
@@ -72,6 +88,7 @@ class HttpCollector:
             group.timer = loop.call_later(MAX_WAIT_SECONDS, self.flush, public_id)
         group.items.append(item)
         group.estimated_bytes += size
+        group.workspace_bytes += workspace_bytes(len(item.body))
         if len(group.items) == MAX_ITEMS or group.estimated_bytes >= MAX_PAYLOAD_BYTES:
             self.flush(public_id)
 

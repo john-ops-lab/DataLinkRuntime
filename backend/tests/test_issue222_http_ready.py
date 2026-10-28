@@ -29,11 +29,11 @@ async def until(predicate):
 
 def entry(pool, key, releases, body=b"{}"):
     assert pool.requests.acquire(blocking=False)
-    assert pool.buffer.reserve(ingress.BODY_RESERVATION)
+    assert pool.raw_buffer.reserve(len(body) + ingress.REQUEST_METADATA_BYTES)
 
     def release():
         releases.append(key)
-        pool.buffer.release(ingress.BODY_RESERVATION)
+        pool.raw_buffer.release(len(body) + ingress.REQUEST_METADATA_BYTES)
         pool.requests.release()
 
     future = asyncio.get_running_loop().create_future()
@@ -72,21 +72,21 @@ def test_route_fifo_other_route_parallel_and_cancelled_waiters_keep_permits(monk
             assert calls == [("a", ["first", "other"]), ("b", ["idle"])]
             first.future.cancel()
             second.future.cancel()
-            assert current.buffer.used_bytes == 4 * ingress.BODY_RESERVATION
+            assert current.raw_buffer.used_bytes == 4 * (2 + ingress.REQUEST_METADATA_BYTES)
             assert current.work.used == 1 and releases == ["idle"]
             unblock.set()
             assert await asyncio.gather(other.future, third.future) == [
                 (202, {"key": "other"}),
                 (202, {"key": "third"}),
             ]
-            await until(lambda: current.work.used == current.buffer.used_bytes == 0)
+            await until(lambda: current.work.used == current.raw_buffer.used_bytes == 0)
             assert calls == [
                 ("a", ["first", "other"]),
                 ("b", ["idle"]),
                 ("a", ["second", "third"]),
             ]
             assert sorted(releases) == ["first", "idle", "other", "second", "third"]
-            assert not current.ready._routes and current.requests._value == 32
+            assert not current.ready._routes and current.requests._value == 128
         finally:
             unblock.set()
             await asyncio.to_thread(current.close)
@@ -147,7 +147,7 @@ def test_ready_groups_repack_fifo_and_keep_partial_tail_deadline(monkeypatch, co
             await asyncio.to_thread(current.close)
             for _ in range(held):
                 current.work.release()
-        assert not current.ready._routes and current.requests._value == 32
+        assert not current.ready._routes and current.requests._value == 128
         assert current.buffer.parent.used_bytes == current.work.used == 0
 
     asyncio.run(run())
@@ -222,7 +222,7 @@ def test_claim_seals_existing_collector_and_reuses_original_fifo_items(monkeypat
                 current.work.release()
         assert len(releases) == len(set(releases)) == sum(counts)
         assert not current.ready._routes and not current.collector.pending
-        assert current.requests._value == 32
+        assert current.requests._value == 128
         assert current.work.used == current.buffer.parent.used_bytes == 0
 
     asyncio.run(run())
@@ -230,6 +230,12 @@ def test_claim_seals_existing_collector_and_reuses_original_fifo_items(monkeypat
 
 @pytest.mark.parametrize("extra", [0, 1])
 def test_ready_repack_byte_limit_never_skips_a_nonfitting_head(monkeypatch, extra):
+    # This test isolates the independent serialized-size gate.
+    from dlr.control.services import http_ingress_ready
+
+    monkeypatch.setattr(ingress, "workspace_bytes", lambda _: 0)
+    monkeypatch.setattr(http_ingress_ready, "workspace_bytes", lambda _: 0)
+
     async def run():
         current = pool()
         releases, calls = [], []
@@ -277,7 +283,7 @@ def test_ready_repack_byte_limit_never_skips_a_nonfitting_head(monkeypatch, extr
             for _ in range(held):
                 current.work.release()
         assert current.work.used == current.buffer.parent.used_bytes == 0
-        assert current.requests._value == 32 and not current.ready._routes
+        assert current.requests._value == 128 and not current.ready._routes
 
     asyncio.run(run())
 
@@ -363,8 +369,8 @@ def test_repacked_prefix_keeps_permits_while_cancelled_tail_closes(monkeypatch):
                 isinstance(value, HTTPException) and value.status_code == 503 for value in tail[1:]
             )
             assert sorted(releases) == [str(i) for i in range(16, 20)]
-            assert current.buffer.used_bytes == 16 * ingress.BODY_RESERVATION
-            assert current.requests._value == 16 and current.work.used == held + 1
+            assert current.raw_buffer.used_bytes == 16 * (2 + ingress.REQUEST_METADATA_BYTES)
+            assert current.requests._value == 112 and current.work.used == held + 1
             assert all(not value.future.done() for value in values[:16])
             unblock.set()
             assert await asyncio.gather(*(v.future for v in values[:16])) == [
@@ -377,7 +383,7 @@ def test_repacked_prefix_keeps_permits_while_cancelled_tail_closes(monkeypatch):
             for _ in range(held):
                 current.work.release()
         assert len(releases) == len(set(releases)) == 20
-        assert current.requests._value == 32 and not current.ready._routes
+        assert current.requests._value == 128 and not current.ready._routes
         assert current.work.used == current.buffer.parent.used_bytes == 0
 
     asyncio.run(run())
@@ -428,7 +434,7 @@ def test_repacked_prefix_fast_future_or_submit_error_releases_each_member_once(
             await asyncio.to_thread(current.close)
             for _ in range(held):
                 current.work.release()
-        assert current.requests._value == 32 and current.buffer.parent.used_bytes == 0
+        assert current.requests._value == 128 and current.buffer.parent.used_bytes == 0
 
     asyncio.run(run())
 
@@ -462,7 +468,10 @@ def test_real_single_or_get_release_pumps_ready_without_new_post(monkeypatch, st
                     asyncio.create_task(
                         ingress._request(
                             "legacy",
-                            request([b"{}"], [(b"content-type", b"application/json")]),
+                            request(
+                                [b"{}"],
+                                [(b"content-type", b"application/json"), (b"content-length", b"2")],
+                            ),
                             "Bearer test",
                             str(index),
                             receipt_id=index + 1 if status else None,
@@ -483,7 +492,7 @@ def test_real_single_or_get_release_pumps_ready_without_new_post(monkeypatch, st
             await asyncio.gather(*tasks)
             await asyncio.to_thread(current.close)
         assert current.work.used == current.buffer.parent.used_bytes == 0
-        assert not current.ready._routes and current.requests._value == 32
+        assert not current.ready._routes and current.requests._value == 128
 
     asyncio.run(run())
 
@@ -570,7 +579,7 @@ def test_close_during_submit_and_fast_future_keep_owner_until_registered_callbac
             assert not closer.is_alive()
         assert releases == ["one", "two"] and not current.ready._routes
         assert current.work.used == current.buffer.parent.used_bytes == 0
-        assert current.requests._value == 32
+        assert current.requests._value == 128
 
     asyncio.run(run())
 
@@ -594,7 +603,7 @@ def test_submit_closed_executor_and_to_thread_close_flush_once():
         current.close()
         assert sorted(releases) == ["collecting", "failed"]
         assert current.work.used == current.buffer.parent.used_bytes == 0
-        assert current.requests._value == 32 and not current.ready._routes
+        assert current.requests._value == 128 and not current.ready._routes
         assert not current.collector.pending and current.ready._timer is None
 
     asyncio.run(run())
@@ -616,7 +625,7 @@ def test_existing_body_request_limits_bound_ready_routes_and_one_expiry_timer(mo
         current.dispatch("route", [first])
         try:
             await until(started.is_set)
-            waiting = [entry(current, str(index), releases) for index in range(24)]
+            waiting = [entry(current, str(index), releases) for index in range(127)]
             for value in waiting:
                 current.dispatch("route", [value])
             # Isolate state/timer bounds from wall-clock expiry, covered above.
@@ -629,22 +638,22 @@ def test_existing_body_request_limits_bound_ready_routes_and_one_expiry_timer(mo
                 current.ready.wake()
             await asyncio.sleep(0)
             assert current.ready._timer is timer
-            assert current.buffer.used_bytes == 25 * ingress.BODY_RESERVATION
-            assert current.buffer.used_bytes <= 8 * 1024**2
-            assert not current.buffer.reserve(ingress.BODY_RESERVATION)
-            assert current.requests._value == 7 and current.work.used == 1
+            assert current.raw_buffer.used_bytes == 128 * (2 + ingress.REQUEST_METADATA_BYTES)
+            assert current.raw_buffer.used_bytes <= 8 * 1024**2
+            assert not current.requests.acquire(blocking=False)
+            assert current.requests._value == 0 and current.work.used == 1
             current.begin_close()
             results = await asyncio.gather(*(v.future for v in waiting), return_exceptions=True)
             assert all(isinstance(r, HTTPException) and r.status_code == 503 for r in results)
-            assert current.buffer.used_bytes == ingress.BODY_RESERVATION
+            assert current.raw_buffer.used_bytes == 2 + ingress.REQUEST_METADATA_BYTES
             assert current.ready._timer is None
             unblock.set()
             assert (await first.future)[0] == 202
-            assert len(releases) == len(set(releases)) == 25
+            assert len(releases) == len(set(releases)) == 128
         finally:
             unblock.set()
             await asyncio.to_thread(current.close)
-        assert not current.ready._routes and current.requests._value == 32
+        assert not current.ready._routes and current.requests._value == 128
         assert current.buffer.parent.used_bytes == current.work.used == 0
 
     asyncio.run(run())
@@ -678,7 +687,9 @@ def test_submitted_future_not_started_still_owns_route_and_bytes_on_close(monkey
             active.deadline = asyncio.get_running_loop().time() - 1
             current.begin_close()
             assert current.work.used == 1 and not value.future.done()
-            assert current.buffer.used_bytes == ingress.BODY_RESERVATION and not releases
+            assert (
+                current.raw_buffer.used_bytes == 2 + ingress.REQUEST_METADATA_BYTES and not releases
+            )
             release.set()
             assert (await value.future)[0] == 202
             occupied.result(timeout=5)
@@ -774,7 +785,7 @@ def test_prepare_does_not_cross_fifo_or_collector_guards(monkeypatch, barrier):
             isinstance(answer, HTTPException) and answer.status_code == 503 for answer in answers
         )
         assert len(releases) == len(set(releases)) == len(values)
-        assert current.requests._value == 32
+        assert current.requests._value == 128
         assert current.work.used == current.buffer.parent.used_bytes == 0
 
     asyncio.run(run())
@@ -831,7 +842,7 @@ def test_prepare_hint_is_not_a_reservation_and_original_take_rechecks(monkeypatc
             await asyncio.to_thread(current.close)
             for _ in range(held):
                 current.work.release()
-        assert releases == ["head", "pending"] and current.requests._value == 32
+        assert releases == ["head", "pending"] and current.requests._value == 128
         assert current.work.used == current.buffer.parent.used_bytes == 0
 
     asyncio.run(run())
@@ -879,7 +890,7 @@ def test_prepare_exception_still_advances_ready_and_arms_timer(monkeypatch, afte
         finally:
             await asyncio.to_thread(current.close)
         assert current.work.used == current.buffer.parent.used_bytes == 0
-        assert current.requests._value == 32 and not current.ready._routes
+        assert current.requests._value == 128 and not current.ready._routes
 
     asyncio.run(run())
 
@@ -916,7 +927,7 @@ def test_prepare_close_race_uses_original_rejection_without_claim(monkeypatch, a
             assert releases == ["head", "pending"] and not current.collector.pending
         finally:
             await asyncio.to_thread(current.close)
-        assert current.requests._value == 32 and current.buffer.parent.used_bytes == 0
+        assert current.requests._value == 128 and current.buffer.parent.used_bytes == 0
 
     asyncio.run(run())
 
@@ -956,7 +967,7 @@ def test_early_seal_ends_the_old_collection_window_without_reopening_it(monkeypa
             await asyncio.to_thread(current.close)
         assert releases == ["head", "pending", "later"]
         assert current.work.used == current.buffer.parent.used_bytes == 0
-        assert current.requests._value == 32
+        assert current.requests._value == 128
 
     asyncio.run(run())
 
@@ -1012,8 +1023,8 @@ def test_real_group_responses_and_ledger_through_ready_queue(
             assert values[2].body == values[3].body
             values = await asyncio.gather(send("same", b"[]"), send("new"), return_exceptions=True)
             assert [status(value) for value in values] == [409, 202]
-            await until(lambda: current.work.used == current.buffer.used_bytes == 0)
-            assert current.requests._value == 32 and not current.ready._routes
+            await until(lambda: current.work.used == current.raw_buffer.used_bytes == 0)
+            assert current.requests._value == 128 and not current.ready._routes
         finally:
             await asyncio.to_thread(current.close)
 
@@ -1160,8 +1171,8 @@ def test_ready_and_collector_commit_one_native_unit_with_independent_responses(
             assert timer.cancelled() and not current.collector.pending
             await until(lambda: current.work.used == held)
             assert len(releases) == len(set(releases)) == 6 * (round_number + 1)
-            assert current.requests._value == 32 and not current.ready._routes
-            assert current.buffer.used_bytes == 0
+            assert current.requests._value == 128 and not current.ready._routes
+            assert current.raw_buffer.used_bytes == 0
             return results
 
         def statuses(results):
@@ -1223,3 +1234,44 @@ def test_ready_and_collector_commit_one_native_unit_with_independent_responses(
             assert (quota.pending_count, quota.history_count, quota.dedupe_count) == (2, 2, 2)
         assert subscription_delivery.audit_quota(session, group_world["sub"])["differences"] == {}
         assert subscription_delivery.audit_global_quota(session)["differences"] == {}
+
+
+def test_native_workspace_splits_large_ready_prefix_without_skipping_or_stranding(monkeypatch):
+    async def run():
+        current = pool()
+        releases, calls = [], []
+        started, unblock = threading.Event(), threading.Event()
+        values = [entry(current, str(i), releases, b'"' + b"x" * 65534 + b'"') for i in range(3)]
+
+        def native(_pool, _route, items):
+            calls.append([item.key for item in items])
+            if len(calls) == 1:
+                started.set()
+                assert unblock.wait(5)
+            return [(202, {}) for _ in items]
+
+        monkeypatch.setattr(ingress, "_run_group_sync", native)
+        for value in values:
+            current.dispatch("route", [value])
+        tail = current.ready._routes["route"].ready[1]
+        original_deadline = tail.deadline
+        try:
+            await until(started.is_set)
+            assert calls == [["0"]]
+            assert current.ready._routes["route"].ready[0] is tail
+            assert tail.deadline == original_deadline
+            assert current.workspace_buffer.used_bytes == ingress.workspace_bytes(65536)
+            assert current.buffer.used_bytes <= 8 * 1024**2
+            unblock.set()
+            assert [answer[0] for answer in await asyncio.gather(*(v.future for v in values))] == [
+                202
+            ] * 3
+            await until(lambda: current.work.used == 0)
+            assert calls == [["0"], ["1"], ["2"]]
+            assert releases == ["0", "1", "2"] and current.buffer.parent.used_bytes == 0
+            assert not current.ready._routes
+        finally:
+            unblock.set()
+            await asyncio.to_thread(current.close)
+
+    asyncio.run(run())
