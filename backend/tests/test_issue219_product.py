@@ -202,6 +202,7 @@ def test_runtime_diagnostics_use_live_process_ledger_and_preserve_admin_boundary
         "active_count": 0,
         "application_buffer_used_bytes": 1024,
         "application_buffer_peak_bytes": 2048,
+        "http_ingress": None,
         "application_buffer_limit_bytes": 64 * 1024**2,
     }
     viewer = account(session_factory, "runtime-viewer")

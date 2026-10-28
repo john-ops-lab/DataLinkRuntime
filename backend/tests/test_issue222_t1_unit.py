@@ -537,3 +537,18 @@ def test_lease_expiry_before_shared_commit_prevents_partial_custody(
     assert failure.value.detail["code"] == "subscription_owner_stale"
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(EventReceipt)) == 0
+
+
+def test_reused_clock_statement_reads_fresh_database_time_and_control_state(
+    batch_world, session_factory
+):
+    from sqlalchemy import text
+
+
+    with session_factory.begin() as session:
+        clock_unit = unit(session, batch_world)
+        first, ready = clock_unit._clock()
+        assert not ready
+        session.execute(text("SELECT pg_sleep(0.01)"))
+        second, after = clock_unit._clock()
+        assert second > first and not after

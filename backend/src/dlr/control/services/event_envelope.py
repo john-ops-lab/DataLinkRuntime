@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import re
 from typing import Any
 
 import rfc8785
@@ -10,6 +11,8 @@ import rfc8785
 from dlr.common.config import settings
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.subscription_registry import SOURCES, source_definition
+
+_INVALID_STRING = re.compile(r"[\x00\ud800-\udfff]")
 
 FIELDS = {"schema", "subscription", "event", "source", "received_at", "data", "sync"}
 
@@ -19,7 +22,7 @@ def canonical(value: Any) -> bytes:
 
         def invalid(item: Any) -> bool:
             if isinstance(item, str):
-                return "\x00" in item or any(0xD800 <= ord(char) <= 0xDFFF for char in item)
+                return _INVALID_STRING.search(item) is not None
             if isinstance(item, dict):
                 return any(invalid(key) or invalid(child) for key, child in item.items())
             if isinstance(item, list):

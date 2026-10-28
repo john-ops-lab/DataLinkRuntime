@@ -49,6 +49,9 @@ MAX_ITEMS = 16
 HTTP_MAX_ITEMS = 16
 MAX_PAYLOAD_BYTES = 1024**2
 SourceType = Literal["http", "rabbitmq"]
+# Reuse only SQL structure. Every member still executes a fresh server clock
+# and control-priority query inside its actual transaction, after quota locks.
+_CLOCK_QUERY = select(func.clock_timestamp(), exists().where(SyncBatch.ready_kind.is_not(None)))
 
 
 @dataclass(frozen=True)
@@ -418,9 +421,7 @@ class T1Unit:
         return values
 
     def _clock(self) -> tuple[datetime, bool]:
-        now, ready = self.session.execute(
-            select(func.clock_timestamp(), exists().where(SyncBatch.ready_kind.is_not(None)))
-        ).one()
+        now, ready = self.session.execute(_CLOCK_QUERY).one()
         return now, ready
 
     def _validate_new(self, prepared: _Prepared) -> tuple[accounting.BatchBudget, datetime, bool]:

@@ -344,3 +344,28 @@ def test_declared_length_never_allocates_or_submits_a_larger_body(monkeypatch, d
             pool.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "value,valid",
+    [
+        ("a\x00b", False),
+        ("\ud7ff", True),
+        ("\ud800", False),
+        ("\udfff", False),
+        ("\ue000", True),
+        ("\U0001f642", True),
+    ],
+)
+def test_event_canonical_string_boundaries_keep_exact_jcs(value, valid):
+    import rfc8785
+
+    from dlr.control.services.event_envelope import canonical
+
+    payload = {"field": [value]}
+    if valid:
+        assert canonical(payload) == rfc8785.dumps(payload)
+    else:
+        with pytest.raises(HTTPException) as raised:
+            canonical(payload)
+        assert raised.value.status_code == 422
