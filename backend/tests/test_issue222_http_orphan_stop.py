@@ -277,7 +277,10 @@ def test_http_disable_does_not_release_or_cancel_real_ingress_native_work(
             async with asyncio.timeout(5):
                 while not started.is_set():
                     await asyncio.sleep(0.001)
-                held = 4 * ingress.BODY_RESERVATION
+                # Four fully read bodies retain their raw + native reservations.
+                held = 4 * (2 + 4 * 1024 + 96 * 2 + 64 * 1024)
+                assert pool.raw_buffer.used_bytes == 4 * (2 + 4 * 1024)
+                assert pool.workspace_buffer.used_bytes == 4 * (96 * 2 + 64 * 1024)
                 assert manager.buffer.used_bytes == pool.buffer.used_bytes == held
                 management.disable_subscription(
                     state.session, state.sub.id, 1, SUPERADMIN_PRINCIPAL
@@ -286,7 +289,7 @@ def test_http_disable_does_not_release_or_cancel_real_ingress_native_work(
                 manager._finish_owner(owner, None)
                 assert state.sub.connection_state == "stopped" and manager.active_count == 0
                 assert manager.buffer.used_bytes == pool.buffer.used_bytes == held
-                assert pool.work.used == 1 and pool.requests._value == 28
+                assert pool.work.used == 1 and pool.requests._value == 124
                 assert all(not task.done() for task in tasks)
                 unblock.set()
                 assert [response.status_code for response in await asyncio.gather(*tasks)] == [
@@ -294,7 +297,7 @@ def test_http_disable_does_not_release_or_cancel_real_ingress_native_work(
                 ] * 4
                 while manager.buffer.used_bytes:
                     await asyncio.sleep(0.001)
-                assert pool.work.used == 0 and pool.requests._value == 32
+                assert pool.work.used == 0 and pool.requests._value == 128
         finally:
             unblock.set()
             await asyncio.gather(*tasks, return_exceptions=True)

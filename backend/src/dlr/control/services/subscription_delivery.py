@@ -631,6 +631,8 @@ def observe_terminal(session: Session, delivery_id: int) -> None:
         sync._recompute_blocker(session, sub, checkpoint)
         if receipt.batch_id is not None:
             sync.maintain_batch(session, receipt.batch_id)
+    # The scalar EXISTS projection below does not autoflush these ORM changes.
+    session.flush()
     refresh_delivery_state(session, sub)
 
 

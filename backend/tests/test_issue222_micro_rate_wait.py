@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import DateTime, func, literal, select
+from sqlalchemy import DateTime, bindparam, func, literal, select
 
 from dlr.control.models import EventReceipt, SourceCheckpoint, SubscriptionLease, SubscriptionQuota
 from dlr.control.services import input_config, subscription_t1_unit
@@ -434,6 +434,16 @@ def controlled_clock(micro_context, monkeypatch):
     # functions and the production database clock implementation stay intact.
     for module in (queue, subscription_t1_unit, input_config):
         monkeypatch.setattr(module, "func", Functions())
+    # T1 caches its SQL shape at import time. Bind the same advancing test
+    # clock there too, preserving the original control-priority expression.
+    monkeypatch.setattr(
+        subscription_t1_unit,
+        "_CLOCK_QUERY",
+        select(
+            bindparam("controlled_now", callable_=lambda: clock.now, type_=DateTime(timezone=True)),
+            subscription_t1_unit._CLOCK_QUERY.selected_columns[1],
+        ),
+    )
     monkeypatch.setattr(queue, "time", SimpleNamespace(monotonic=lambda: clock.elapsed))
     return clock
 

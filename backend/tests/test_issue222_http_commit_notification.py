@@ -166,7 +166,14 @@ def test_hint_failure_preserves_known_response_and_real_native_budget_lifetime(m
     def broken_hint():
         assert session.durable and events[-1] == "commit_end"
         assert pool.work.used == 1
-        assert pool.buffer.used_bytes == pool.buffer.parent.used_bytes == ingress.BODY_RESERVATION
+        # After reading, hold body + 4 KiB and the contract's native workspace.
+        assert pool.raw_buffer.used_bytes == 2 + 4 * 1024
+        assert pool.workspace_buffer.used_bytes == 96 * 2 + 64 * 1024
+        assert (
+            pool.buffer.used_bytes
+            == pool.buffer.parent.used_bytes
+            == (2 + 4 * 1024 + 96 * 2 + 64 * 1024)
+        )
         events.append("notify")
         raise RuntimeError("synthetic hint failure after known commit")
 
@@ -189,11 +196,16 @@ def test_hint_failure_preserves_known_response_and_real_native_budget_lifetime(m
         assert response.status_code == 202 and response.body == b'{"receipt_id":1}'
         assert events == ["enter", "commit_begin", "commit_end", "notify", "exit"]
         assert pool.work.used == pool.buffer.used_bytes == pool.buffer.parent.used_bytes == 0
-        for _ in range(32):
+        for _ in range(128):
             assert pool.requests.acquire(blocking=False)
         assert not pool.requests.acquire(blocking=False)
-        for _ in range(32):
+        for _ in range(128):
             pool.requests.release()
+        for _ in range(32):
+            assert pool.acquire_route("route")
+        assert not pool.acquire_route("route")
+        for _ in range(32):
+            pool.release_route("route")
 
     try:
         asyncio.run(run())
