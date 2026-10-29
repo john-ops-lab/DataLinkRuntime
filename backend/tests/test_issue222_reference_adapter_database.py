@@ -10,6 +10,7 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from psycopg import sql
+from psycopg.conninfo import make_conninfo
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -22,8 +23,17 @@ def prepare_target(factory: sessionmaker[Session]) -> str:
         for statement in schema.read_text().split(";"):
             if statement.strip():
                 session.execute(text(statement))
+        connection = session.connection().connection.driver_connection
+        assert isinstance(connection, psycopg.Connection)
+        # Resolve outside the bounded invocation, using the endpoint already
+        # reached by this fixture; retain the original host for TLS identity.
+        hostaddr = connection.info.hostaddr
     engine = factory.kw["bind"]
-    return engine.url.set(drivername="postgresql").render_as_string(hide_password=False)
+    return (
+        engine.url.set(drivername="postgresql")
+        .update_query_dict({"hostaddr": hostaddr})
+        .render_as_string(hide_password=False)
+    )
 
 
 def test_real_target_same_key_same_content_reads_original_and_conflict_preserves_it(
@@ -100,10 +110,7 @@ def test_real_target_permission_denial_is_not_retried(
     admin_dsn = prepare_target(session_factory)
     role = "reference_no_write_" + uuid4().hex
     password = uuid4().hex
-    engine = session_factory.kw["bind"]
-    denied_dsn = engine.url.set(
-        drivername="postgresql", username=role, password=password
-    ).render_as_string(hide_password=False)
+    denied_dsn = make_conninfo(admin_dsn, user=role, password=password)
     with psycopg.connect(admin_dsn) as connection:
         connection.execute(
             sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
@@ -127,11 +134,8 @@ def test_real_target_wrong_password_is_not_blindly_retried(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    prepare_target(session_factory)
-    wrong_dsn = (
-        session_factory.kw["bind"]
-        .url.set(drivername="postgresql", password="deliberately-wrong-reference-password")
-        .render_as_string(hide_password=False)
+    wrong_dsn = make_conninfo(
+        prepare_target(session_factory), password="deliberately-wrong-reference-password"
     )
     context = Context(wrong_dsn)
     with pytest.raises(RuntimeError, match="reference_target_write_failed"):
