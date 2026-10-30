@@ -8,7 +8,14 @@
     "**/*.test.{js,jsx,ts,tsx}",
     "**/*.spec.{js,jsx,ts,tsx}",
     "openspec/**/*.md",
-    "docs/**/*.md"
+    "docs/**/*.md",
+    ".env.example",
+    "tools/ingress/README.md",
+    "tools/ingress/batch-reference.md",
+    "tools/ingress/fault-probe.md",
+    "tools/ingress/management-probe.md",
+    "tools/ingress/requirements-http.txt",
+    "tools/ingress_b0/README.md"
   ],
   "exclude": [
     "**/*.private.*",

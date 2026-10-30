@@ -39,3 +39,8 @@ CONFIGURATION_FAILURES = frozenset(
         "source_authorization_failed",
     }
 )
+
+# Deployment/profile/disk guards reject new custody, never message content.
+PLATFORM_RECEPTION_FAILURES = frozenset(
+    {"ingress_capacity_unavailable", "ingress_disk_low", "ingress_disk_unavailable"}
+)

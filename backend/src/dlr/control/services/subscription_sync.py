@@ -27,13 +27,17 @@ from dlr.control.models import (
     SubscriptionLease,
     SyncBatch,
 )
+from dlr.control.services import subscription_accounting as accounting
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.event_envelope import canonical, event_id, validate_envelope
 from dlr.control.services.input_config import database_now
+from dlr.control.services.subscription_queue_failure import PLATFORM_RECEPTION_FAILURES
 from dlr.control.services.subscription_source import SourceRunContext
 
 KUBERNETES_SHARD = "kubernetes"
-CONTROL_BYTES = 8192
+
+CONTROL_ENVELOPE_BYTES = accounting.CONTROL_ENVELOPE_BYTES
+CONTROL_BYTES = accounting.CONTROL_RESERVATION_BYTES
 CONTROL_COUNT = 3
 MAX_BATCH_ITEMS = 5000
 MAX_BATCH_BYTES = 128 * 1024**2
@@ -450,9 +454,9 @@ def select_batch_maintenance_candidates(
     return ids, ids[-1], upper
 
 
-def _context(
+def _source_context(
     session: Session, context: SourceRunContext
-) -> tuple[EventSubscription, SubscriptionActivation, SubscriptionConfigVersion, SourceCheckpoint]:
+) -> tuple[EventSubscription, SubscriptionActivation, SubscriptionConfigVersion]:
     from dlr.control.services import subscription_delivery as delivery
 
     _, sub = delivery.lock_subscription(session, context.subscription_id)
@@ -476,6 +480,13 @@ def _context(
         raise domain_error(409, "subscription_config_conflict", "Source activation differs")
     if not settings.event_subscriptions_enabled:
         raise domain_error(409, "source_not_available", "Source intake is disabled")
+    return sub, activation, config
+
+
+def _context(
+    session: Session, context: SourceRunContext
+) -> tuple[EventSubscription, SubscriptionActivation, SubscriptionConfigVersion, SourceCheckpoint]:
+    sub, activation, config = _source_context(session, context)
     cp = session.scalar(
         select(SourceCheckpoint)
         .where(
@@ -584,7 +595,7 @@ def begin_sync_batch(
         raise domain_error(409, "subscription_sync_draining", "Prior batch responsibility remains")
     rows = delivery._quotas(session, sub.id)
     for quota, limits in zip(
-        rows, (delivery._limits(session, activation), delivery.GLOBAL_LIMITS), strict=True
+        rows, (delivery._limits(session, activation), delivery._global_limits(session)), strict=True
     ):
         for key in (
             "pending_count",
@@ -687,6 +698,12 @@ def _insert_receipt(
     phase: str,
     page_index: int | None = None,
 ) -> EventReceipt:
+    from dlr.control.models import Adapter
+    from dlr.control.services.subscription_activation_policy import ensure_policy
+
+    adapter = session.get(Adapter, sub.adapter_id)
+    assert adapter is not None
+    ensure_policy(session, activation, adapter)
     now = database_now(session)
     object_key = envelope["event"]["object_key"]
     receipt = EventReceipt(
@@ -710,9 +727,12 @@ def _insert_receipt(
         first_received_at=now,
         last_seen_at=now,
     )
+    accounting.receipt_budget(receipt, size)
     session.add(receipt)
     session.flush()
-    session.add(EventDelivery(receipt_id=receipt.id, ordinal=1, state="pending"))
+    first_delivery = EventDelivery(receipt_id=receipt.id, ordinal=1, state="pending")
+    accounting.delivery_budget(first_delivery, size)
+    session.add(first_delivery)
     cp.next_sequence += 1
     session.flush()
     return receipt
@@ -769,23 +789,28 @@ def receive_list_item(
         raise domain_error(429, "subscription_sync_batch_capacity", "Batch capacity reached")
     rows = delivery._quotas(session, sub.id)
     for quota, maximum in zip(
-        rows, (delivery._limits(session, activation), delivery.GLOBAL_LIMITS), strict=True
+        rows, (delivery._limits(session, activation), delivery._global_limits(session)), strict=True
     ):
         if (
             quota.history_count + quota.reserved_control_count + 1 > maximum["history_count"]
-            or quota.history_bytes + quota.reserved_control_bytes + size > maximum["history_bytes"]
+            or quota.history_bytes
+            + quota.reserved_control_bytes
+            + accounting.responsibility_bytes(size)
+            > maximum["history_bytes"]
             or quota.dedupe_count + quota.reserved_control_count + 1 > maximum["dedupe_count"]
         ):
             raise domain_error(
                 429, "subscription_sync_history_capacity", "Protected LIST history is full"
             )
-    delivery._reserve(session, sub, activation, size)
+    delivery._reserve(session, sub, activation, accounting.responsibility_bytes(size))
     receipt = _insert_receipt(
         session, sub, activation, cp, envelope, content_hash, size, batch.id, "list", page_index
     )
     batch.resource_version = collection_rv
     batch.item_count += 1
     batch.total_bytes += size
+    if sub.last_error_code in PLATFORM_RECEPTION_FAILURES:
+        sub.last_error_code = None
     delivery.refresh_delivery_state(session, sub)
     return SyncAcceptResult(receipt.id, False, cp.next_sequence - 1)
 
@@ -924,7 +949,7 @@ def receive_watch_event(
         for quota in delivery._quotas(session, sub.id):
             quota.pending_count -= 1
             quota.pending_bytes -= old.payload_bytes
-    delivery._reserve(session, sub, activation, size)
+    delivery._reserve(session, sub, activation, accounting.responsibility_bytes(size))
     receipt = _insert_receipt(
         session,
         sub,
@@ -953,6 +978,8 @@ def receive_watch_event(
         and cp.blocked_unaccepted.get("code") == "subscription_capacity_exceeded"
     ):
         cp.blocked_unaccepted = None
+    if sub.last_error_code in PLATFORM_RECEPTION_FAILURES:
+        sub.last_error_code = None
     delivery.refresh_delivery_state(session, sub)
     return SyncAcceptResult(receipt.id, False, cp.next_sequence - 1)
 
@@ -969,15 +996,26 @@ def advance_bookmark(
     return True
 
 
-def mark_sync_backpressure(session: Session, context: SourceRunContext) -> None:
+def mark_sync_backpressure(
+    session: Session, context: SourceRunContext, code: str = "subscription_capacity_exceeded"
+) -> None:
     from dlr.control.services import subscription_delivery as delivery
 
+    if code in PLATFORM_RECEPTION_FAILURES:
+        # A platform wait is not an unaccepted-message or quota diagnosis.
+        # Keep the same source fence without creating a checkpoint/ledger.
+        sub, _, _ = _source_context(session, context)
+        if sub.last_error_code is None or sub.last_error_code in PLATFORM_RECEPTION_FAILURES:
+            sub.last_error_code = code
+        return
+    if code != "subscription_capacity_exceeded":
+        raise ValueError("Unsupported sync backpressure code")
     sub, activation, _, cp = _context(session, context)
     rows = delivery._quotas(session, sub.id)
     # A rate/ready-control wait does not by itself justify sticky capacity
     # hysteresis. Mark genuinely pressured ledgers; no new source position.
     for quota, limits in zip(
-        rows, (delivery._limits(session, activation), delivery.GLOBAL_LIMITS), strict=True
+        rows, (delivery._limits(session, activation), delivery._global_limits(session)), strict=True
     ):
         if any(
             getattr(quota, key)
@@ -1198,10 +1236,10 @@ def maintain_batch(session: Session, batch_id: int) -> SyncStep:
 
 
 def _rate_available(session: Session, rows: list[Any], limits: dict[str, int]) -> bool:
-    from dlr.control.services.subscription_delivery import GLOBAL_LIMITS
+    from dlr.control.services.subscription_delivery import _global_limits
 
     now = database_now(session)
-    for row, maximum in zip(rows, (limits, GLOBAL_LIMITS), strict=True):
+    for row, maximum in zip(rows, (limits, _global_limits(session)), strict=True):
         if row.rate_window_at is None or now - row.rate_window_at >= timedelta(seconds=1):
             row.rate_window_at = now
             row.rate_count = 0
@@ -1303,7 +1341,7 @@ def materialize_ready_control(session: Session, ticket: ControlTicket) -> SyncSt
     envelope["event"]["id"] = event_id(envelope)
     content_hash, size = validate_envelope(envelope)
     if (
-        size > CONTROL_BYTES
+        size > CONTROL_ENVELOPE_BYTES
         or batch.reserved_control_count < 1
         or batch.reserved_control_bytes < CONTROL_BYTES
     ):
@@ -1312,9 +1350,9 @@ def materialize_ready_control(session: Session, ticket: ControlTicket) -> SyncSt
         quota.reserved_control_count -= 1
         quota.reserved_control_bytes -= CONTROL_BYTES
         quota.pending_count += 1
-        quota.pending_bytes += size
+        quota.pending_bytes += accounting.responsibility_bytes(size)
         quota.history_count += 1
-        quota.history_bytes += size
+        quota.history_bytes += accounting.responsibility_bytes(size)
         quota.dedupe_count += 1
         quota.rate_count += 1
     batch.reserved_control_count -= 1
@@ -1565,7 +1603,7 @@ def abandon_completion(
         )
     )
     if (
-        size > CONTROL_BYTES
+        size > CONTROL_ENVELOPE_BYTES
         or batch.reserved_control_count < 1
         or batch.reserved_control_bytes < CONTROL_BYTES
     ):

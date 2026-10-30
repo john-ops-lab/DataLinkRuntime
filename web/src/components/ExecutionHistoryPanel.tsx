@@ -23,6 +23,7 @@ import type {
 import { unifiedLogContent } from "../unified-log";
 import { userErrorMessage } from "../user-message";
 import ExecutionInputSummary, { ExecutionFileSummary } from "./ExecutionInputSummary";
+import ExecutionBatchNotice from "./ExecutionBatchNotice";
 import { LogView, OutputView } from "./OutputView";
 
 const PAGE_SIZE = 50;
@@ -690,6 +691,7 @@ export default function ExecutionHistoryPanel(props: {
         {detailLoading && <Spin />}
         {visibleDetail !== null && !detailLoading && (
           <div className="execution-detail">
+            <ExecutionBatchNotice execution={visibleDetail} />
             {watcher.fallbackExhausted && !isTerminal(visibleDetail.status) && (
               <Alert
                 type="warning"

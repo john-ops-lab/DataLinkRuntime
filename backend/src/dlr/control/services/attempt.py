@@ -549,6 +549,9 @@ def claim_dispatch(
         execution.ended_at = now
         execution.error_code = CANCELLATION_ERROR_CODE
         execution.last_error_code = CANCELLATION_ERROR_CODE
+        from dlr.control.services.subscription_business_batch import finalize_on_terminal
+
+        finalize_on_terminal(session, execution, not_started=execution.attempt_count == 0)
         admission.release_admission_once(session, execution, now=now)
         execution_service.release_execution_leases(session, execution.id)
         from dlr.control.services.incident_disposition import (
@@ -618,6 +621,9 @@ def claim_dispatch(
         execution.ended_at = now
         _create_holds_locked(session, execution, now=now)
         execution_service.release_execution_leases(session, execution.id)
+        from dlr.control.services.subscription_business_batch import finalize_on_terminal
+
+        finalize_on_terminal(session, execution, not_started=execution.attempt_count == 0)
         admission.release_admission_once(session, execution, now=now)
         from dlr.control.services.incident_disposition import (
             converge_terminal_dispositions_locked,
@@ -969,6 +975,8 @@ def _apply_terminal_locked(
         can_retry = error_class in policy["retryable_error_classes"] and attempt.attempt_no < int(
             policy["max_attempts"]
         )
+        if execution.subscription_delivery_kind == "batch" and error_code == "batch_member_failed":
+            can_retry = False
         if can_retry:
             execution.status = "retry_wait"
             execution.next_attempt_at = now + timedelta(
@@ -981,6 +989,9 @@ def _apply_terminal_locked(
             _create_holds_locked(session, execution, now=now)
             final = True
     if final:
+        from dlr.control.services.subscription_business_batch import finalize_on_terminal
+
+        finalize_on_terminal(session, execution, attempt.id)
         execution.next_attempt_at = None
         execution.ended_at = now
         if execution.started_at is not None:
@@ -1026,15 +1037,49 @@ def finish_attempt(
     normalized_output, normalized_size, normalized_truncated, normalized_preview = (
         execution_service._normalize_output(cast(ExecutionResultReport, payload))
     )
+    from dlr.control.services.subscription_business_batch import persist_finish, validate_finish
+
+    report_status = payload.status
+    report_error = payload.error
+    # Only an authoritative successful report can provide member facts. Failed
+    # infrastructure Attempts may still retry; central finalization seals unknown
+    # only once the shared Execution itself becomes terminal.
+    decision = (
+        validate_finish(
+            session,
+            execution,
+            payload.output,
+            normalized_output,
+            payload.output_truncated,
+            normalized_truncated,
+            "succeeded",
+        )
+        if payload.status == "succeeded"
+        else None
+    )
+    if decision is not None:
+        persist_finish(session, execution, attempt.id, decision)
+        report_status = "succeeded" if decision.execution_status == "succeeded" else "failed"
+        error_code = decision.error_code or "execution_succeeded"
+        error_class = "" if report_status == "succeeded" else "business_error"
+        report_error = (
+            None if report_status == "succeeded" else "Batch member result requires attention"
+        )
+        normalized_output = decision.output
+        from dlr.control.services.subscription_batch_protocol import encode
+
+        normalized_size = len(encode(decision.output))
+        normalized_truncated = False
+        normalized_preview = None
     result = _apply_terminal_locked(
         session,
         execution,
         attempt,
         slot,
-        status=payload.status,
+        status=report_status,
         error_code=error_code,
         error_class=error_class,
-        error=payload.error,
+        error=report_error,
         output=normalized_output,
         output_size=normalized_size,
         output_truncated=normalized_truncated,

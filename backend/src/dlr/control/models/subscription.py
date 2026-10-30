@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Index,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -99,13 +100,38 @@ class SubscriptionConfigVersion(Base):
     created_at: Mapped[datetime] = clock()
 
 
+class HttpIngressRoute(Base):
+    """Permanent route identity. Retired routes never acquire a different epoch."""
+
+    __tablename__ = "http_ingress_routes"
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "source_epoch", name="uq_http_ingress_epoch"),
+    )
+    public_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    subscription_id: Mapped[int | None] = reference(
+        "event_subscriptions", nullable=True, ondelete="SET NULL"
+    )
+    source_epoch: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = clock()
+
+
 class SubscriptionActivation(Base):
     __tablename__ = "subscription_activations"
+    __table_args__ = (
+        Index(
+            "ix_subscription_activation_policy_legacy",
+            "id",
+            postgresql_where=text("execution_policy_snapshot IS NULL"),
+        ),
+    )
     id: Mapped[int] = identity()
     subscription_id: Mapped[int] = reference("event_subscriptions")
     config_version_id: Mapped[int] = reference("subscription_config_versions")
     revision_id: Mapped[int] = reference("adapter_versions")
     worker_id: Mapped[int] = reference("workers")
+    execution_policy_snapshot: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )
     created_at: Mapped[datetime] = clock()
 
 
@@ -170,7 +196,7 @@ class SyncBatch(Base):
         ),
         CheckConstraint(
             "reserved_control_count >= 0 AND reserved_control_count <= 3 "
-            "AND reserved_control_bytes >= 0 AND reserved_control_bytes <= 24576",
+            "AND reserved_control_bytes >= 0 AND reserved_control_bytes <= 62976",
             name="ck_sync_control_reserve",
         ),
     )
@@ -227,7 +253,32 @@ class EventReceipt(Base):
             name="uq_subscription_shard_sequence",
         ),
         CheckConstraint("payload_bytes >= 0", name="ck_receipt_payload_bytes"),
+        CheckConstraint(
+            "retained_payload_bytes >= 0 AND retained_metadata_bytes BETWEEN 0 AND 4096",
+            name="ck_receipt_retained_budget",
+        ),
         Index("ix_receipt_cleanup", "subscription_id", "terminal_at"),
+        Index(
+            "ix_receipt_active_state",
+            "subscription_id",
+            "state",
+            postgresql_where=text("state IN ('pending','processing','failed')"),
+        ),
+        Index(
+            "ix_receipt_pending_age",
+            "subscription_id",
+            "first_received_at",
+            postgresql_where=text("state = 'pending'"),
+        ),
+        Index(
+            "ix_receipt_unsettled_shard",
+            "subscription_id",
+            "source_epoch",
+            "shard",
+            "sequence",
+            "id",
+            postgresql_where=text("state NOT IN ('succeeded','skipped','superseded','abandoned')"),
+        ),
         Index("ix_receipt_sync_members", "batch_id", "source_phase", "state", "id"),
         Index(
             "ix_receipt_pending_object",
@@ -244,8 +295,11 @@ class EventReceipt(Base):
     source_epoch: Mapped[str] = mapped_column(String(64))
     source_event_id: Mapped[str] = mapped_column(String(128))
     content_hash: Mapped[str] = mapped_column(String(64))
+    source_raw_body: Mapped[bytes | None] = mapped_column(LargeBinary)
     envelope: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     payload_bytes: Mapped[int] = mapped_column(BigInteger)
+    retained_payload_bytes: Mapped[int] = counter()
+    retained_metadata_bytes: Mapped[int] = counter()
     shard: Mapped[str] = mapped_column(String(512))
     sequence: Mapped[int] = mapped_column(BigInteger)
     batch_id: Mapped[int | None] = reference("subscription_sync_batches", nullable=True)
@@ -268,12 +322,42 @@ class EventDelivery(Base):
     __table_args__ = (
         UniqueConstraint("receipt_id", "ordinal", name="uq_receipt_delivery_ordinal"),
         UniqueConstraint("execution_id", name="uq_delivery_execution"),
+        UniqueConstraint(
+            "id", "receipt_id", "batch_execution_id", name="uq_delivery_batch_identity"
+        ),
+        CheckConstraint(
+            "execution_id IS NULL OR batch_execution_id IS NULL", name="ck_delivery_single_or_batch"
+        ),
+        CheckConstraint("retained_batch_bytes BETWEEN 0 AND 8192", name="ck_delivery_batch_bytes"),
+        Index(
+            "ix_delivery_batch_execution",
+            "batch_execution_id",
+            postgresql_where=text("batch_execution_id IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "batch_member_outcome IS NULL OR batch_member_outcome IN "
+            "('succeeded','failed','unknown','not_run')",
+            name="ck_delivery_batch_outcome",
+        ),
         Index("ix_subscription_delivery_state", "state", "id"),
+        CheckConstraint(
+            "retained_execution_bytes >= 0 AND retained_metadata_bytes BETWEEN 0 AND 512",
+            name="ck_delivery_retained_budget",
+        ),
     )
     id: Mapped[int] = identity()
     receipt_id: Mapped[int] = reference("event_receipts")
     ordinal: Mapped[int] = mapped_column(BigInteger, default=1)
     execution_id: Mapped[int | None] = reference("executions", nullable=True, ondelete="SET NULL")
+    batch_execution_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "subscription_execution_batches.execution_id", deferrable=True, initially="DEFERRED"
+        ),
+    )
+    batch_member_outcome: Mapped[str | None] = mapped_column(String(16))
+    batch_member_code: Mapped[str | None] = mapped_column(String(64))
+    retained_batch_bytes: Mapped[int] = counter()
     state: Mapped[str] = mapped_column(String(32), default="pending")
     activation_override_id: Mapped[int | None] = reference(
         "subscription_activations", nullable=True
@@ -282,6 +366,8 @@ class EventDelivery(Base):
     retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = clock()
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retained_execution_bytes: Mapped[int] = counter()
+    retained_metadata_bytes: Mapped[int] = counter()
 
 
 class DeliveryDisposition(Base):

@@ -8,7 +8,14 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from dlr.common.config import settings
-from dlr.control.models import Adapter, AdapterPermission, AdapterVersion, User
+from dlr.control.models import (
+    Adapter,
+    AdapterPermission,
+    AdapterVersion,
+    IngressCapacityAudit,
+    IngressCapacityConfiguration,
+    User,
+)
 from dlr.control.models.subscription import (
     ActivationCredentialReference,
     DeliveryDisposition,
@@ -24,6 +31,7 @@ from dlr.control.security import Principal, require_principal
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services import subscription_management as management
 from dlr.control.services.event_envelope import event_id
+from dlr.control.services.ingress_capacity import subscription_limits
 from runtime_api_support import claim_execution, report_attempt
 from test_adapters import create_adapter, save_version
 
@@ -281,6 +289,110 @@ def test_acl_filter_before_count_and_paging(api_client, monkeypatch, session_fac
         ).status_code
         == 403
     )
+
+
+def test_stopped_pending_subscription_rejects_limit_edit_without_mutation(
+    api_client, monkeypatch, session_factory
+):
+    adapter, _, sub = setup_subscription(api_client, monkeypatch)
+    sub = activate(api_client, monkeypatch, sub)
+    receipt_id, delivery_id = receive(session_factory, sub, 0)
+    stop_and_ack(api_client, session_factory, sub)
+    with session_factory.begin() as session:
+        user = User(username="limit-editor", password_hash="unused-test-hash", role="user")
+        session.add(user)
+        session.flush()
+        session.add(AdapterPermission(adapter_id=adapter["id"], user_id=user.id, permission="edit"))
+        user_id = user.id
+    api_client.app.dependency_overrides[require_principal] = lambda: Principal(
+        kind="account", role="user", user_id=user_id, username="limit-editor"
+    )
+    endpoint = f"/api/event-subscriptions/{sub['id']}"
+    renamed = api_client.patch(endpoint, json={"name": "renamed while draining"})
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["name"] == "renamed while draining"
+
+    def snapshot():
+        with session_factory() as session:
+            return {
+                "subscription": dict(
+                    session.execute(
+                        select(EventSubscription.__table__).where(EventSubscription.id == sub["id"])
+                    )
+                    .mappings()
+                    .one()
+                ),
+                "versions": [
+                    dict(row)
+                    for row in session.execute(
+                        select(SubscriptionConfigVersion.__table__)
+                        .where(SubscriptionConfigVersion.subscription_id == sub["id"])
+                        .order_by(SubscriptionConfigVersion.id)
+                    ).mappings()
+                ],
+                "activations": [
+                    dict(row)
+                    for row in session.execute(
+                        select(SubscriptionActivation.__table__)
+                        .where(SubscriptionActivation.subscription_id == sub["id"])
+                        .order_by(SubscriptionActivation.id)
+                    ).mappings()
+                ],
+                "receipt": dict(
+                    session.execute(
+                        select(EventReceipt.__table__).where(EventReceipt.id == receipt_id)
+                    )
+                    .mappings()
+                    .one()
+                ),
+                "delivery": dict(
+                    session.execute(
+                        select(EventDelivery.__table__).where(EventDelivery.id == delivery_id)
+                    )
+                    .mappings()
+                    .one()
+                ),
+                "quotas": [
+                    dict(row)
+                    for row in session.execute(
+                        select(SubscriptionQuota.__table__)
+                        .where(SubscriptionQuota.scope.in_(["global", f"sub:{sub['id']}"]))
+                        .order_by(SubscriptionQuota.scope)
+                    ).mappings()
+                ],
+                "profiles": [
+                    dict(row)
+                    for row in session.execute(
+                        select(IngressCapacityConfiguration.__table__).order_by(
+                            IngressCapacityConfiguration.id
+                        )
+                    ).mappings()
+                ],
+                "capacity_audits": [
+                    dict(row)
+                    for row in session.execute(
+                        select(IngressCapacityAudit.__table__).order_by(IngressCapacityAudit.id)
+                    ).mappings()
+                ],
+            }
+
+    before = snapshot()
+    assert before["subscription"]["desired_state"] == "disabled"
+    assert before["subscription"]["connection_state"] == "stopped"
+    assert before["subscription"]["activation_id"] is not None
+    assert before["receipt"]["state"] == before["delivery"]["state"] == "pending"
+    assert len(before["quotas"]) == 2
+    assert all(quota["pending_count"] == 1 for quota in before["quotas"])
+    assert len(before["profiles"]) == 1 and before["capacity_audits"]
+    changed_config = {**renamed.json()["config"], "limits": {"pending_count": 2}}
+    assert subscription_limits(changed_config)["pending_count"] == 2
+    rejected = api_client.patch(
+        endpoint,
+        json={"expected_config_version": sub["config_version"], "config": changed_config},
+    )
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["detail"]["code"] == "subscription_draining"
+    assert snapshot() == before
 
 
 def test_activation_freezes_refs_and_disable_fences(api_client, monkeypatch, session_factory):
@@ -673,6 +785,7 @@ def test_deleted_subscription_keeps_bounded_retention_gc(api_client, monkeypatch
     baseline = datetime.now(UTC)
     monkeypatch.setattr(delivery, "database_now", lambda session: baseline + timedelta(days=8))
     monkeypatch.setattr(management, "_subscription_cursor", 0)
+    monkeypatch.setattr(management, "_last_history_pass", 0.0)
     management.maintenance_tick()
     with session_factory() as session:
         assert session.get(Adapter, adapter["id"]) is not None
@@ -682,6 +795,7 @@ def test_deleted_subscription_keeps_bounded_retention_gc(api_client, monkeypatch
     assert api_client.delete(f"/api/credentials/{source_credential['id']}").status_code == 409
     monkeypatch.setattr(delivery, "database_now", lambda session: baseline + timedelta(days=31))
     monkeypatch.setattr(management, "_subscription_cursor", 0)
+    monkeypatch.setattr(management, "_last_history_pass", 0.0)
     management.maintenance_tick()
     with session_factory() as session:
         assert session.get(Adapter, adapter["id"]) is not None

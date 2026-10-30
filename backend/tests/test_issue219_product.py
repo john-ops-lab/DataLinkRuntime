@@ -127,7 +127,12 @@ def test_history_scan_wraps_deleted_upper_and_new_tail_without_starving_old_payl
 
     monkeypatch.setattr(delivery, "cleanup_history", observed_cleanup)
 
+    # Freeze only this module's scheduling clock: the separate time-budget
+    # test covers stopping early. This case proves the finite 100-row sweep.
+    monkeypatch.setattr(management, "time", SimpleNamespace(monotonic=lambda: 100.0))
+
     def tick():
+        monkeypatch.setattr(management, "_last_history_pass", 0.0)
         observed_pages.append([])
         management.maintenance_tick()
 
@@ -197,6 +202,7 @@ def test_runtime_diagnostics_use_live_process_ledger_and_preserve_admin_boundary
         "active_count": 0,
         "application_buffer_used_bytes": 1024,
         "application_buffer_peak_bytes": 2048,
+        "http_ingress": None,
         "application_buffer_limit_bytes": 64 * 1024**2,
     }
     viewer = account(session_factory, "runtime-viewer")

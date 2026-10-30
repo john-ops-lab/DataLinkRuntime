@@ -421,7 +421,11 @@ def result_attempt(
     session: DbSession,
 ) -> ClaimDecision:
     _reject_query_tokens(request, error_code="attempt_token_invalid")
-    return attempt_service.finish_attempt(session, worker_id, attempt_id, payload)
+    result = attempt_service.finish_attempt(session, worker_id, attempt_id, payload)
+    from dlr.control.services.subscription_scheduler import notify_delivery_work
+
+    notify_delivery_work()
+    return result
 
 
 @router.post(

@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 from sqlalchemy import Select, exists, false, func, or_, select
@@ -30,6 +31,7 @@ from dlr.control.models.subscription import (
     EventDelivery,
     EventReceipt,
     EventSubscription,
+    HttpIngressRoute,
     SourceCheckpoint,
     SubscriptionActivation,
     SubscriptionConfigVersion,
@@ -54,10 +56,15 @@ from dlr.control.services.subscription_registry import (
     source_group_key,
 )
 
+if TYPE_CHECKING:
+    from dlr.control.services.subscription_scheduler import DeliveryScheduler
+
 logger = logging.getLogger("dlr.control.subscriptions")
 # Public candidates follow their source batch gates. Enablement alone does not
 # establish product acceptance; implemented connectors also serve diagnostics.
-AVAILABLE_SOURCES: frozenset[str] = frozenset({"kafka", "kubernetes", "rabbitmq", "rocketmq"})
+AVAILABLE_SOURCES: frozenset[str] = frozenset(
+    {"kafka", "kubernetes", "rabbitmq", "rocketmq", "http"}
+)
 NONTERMINAL = ("queued", "running", "retry_wait")
 MAX_ENABLED_SUBSCRIPTIONS = 16
 _delivery_cursor = 0
@@ -76,6 +83,8 @@ def bounded_page(
     identity: InstrumentedAttribute[int],
     cursor: int,
     upper: int,
+    *,
+    limit: int = 100,
 ) -> tuple[list[int], int, int]:
     """A finite sweep must revisit old work despite a continuously growing tail."""
     if not upper:
@@ -84,7 +93,9 @@ def bounded_page(
         return [], 0, 0
     rows = list(
         session.scalars(
-            query.where(identity > cursor, identity <= upper).order_by(identity).limit(100)
+            query.where(identity > cursor, identity <= upper)
+            .order_by(identity)
+            .limit(min(max(limit, 1), 100))
         )
     )
     if not rows or rows[-1] >= upper:
@@ -109,6 +120,8 @@ def require_feature() -> None:
 
 def require_source(source_type: str) -> None:
     require_feature()
+    if source_type == "http" and not settings.http_ingress_enabled:
+        raise domain_error(409, "source_not_available", "HTTP ingress is disabled")
     if source_type not in AVAILABLE_SOURCES or not source_definition(source_type).implemented:
         raise domain_error(409, "source_not_available", "This event source is not yet available")
 
@@ -178,18 +191,10 @@ def _credential_access(
 
 
 def _configuration(config: SourceConfig) -> dict[str, Any]:
-    from dlr.control.services.subscription_delivery import DEFAULT_LIMITS
+    from dlr.control.services.ingress_capacity import subscription_limits
 
     value = config.model_dump(mode="json")
-    for key, amount in value.get("limits", {}).items():
-        if (
-            key not in DEFAULT_LIMITS
-            or isinstance(amount, bool)
-            or not 0 < amount <= DEFAULT_LIMITS[key]
-        ):
-            raise domain_error(
-                422, "subscription_config_invalid", "Limits may only tighten known defaults"
-            )
+    subscription_limits(value)
     ca = value.get("ca_pem") or ""
     if "PRIVATE KEY" in ca:
         raise domain_error(
@@ -247,6 +252,24 @@ def _new_config(
     *,
     source_identity: dict[str, Any] | None = None,
 ) -> None:
+    if value["source_type"] == "http":
+        credential = session.get(Credential, value["credential_id"])
+        if credential is None or credential.type != "token":
+            raise domain_error(422, "subscription_config_invalid", "HTTP requires a token account")
+        route = session.scalar(
+            select(HttpIngressRoute).where(
+                HttpIngressRoute.subscription_id == subscription.id,
+                HttpIngressRoute.source_epoch == subscription.source_epoch,
+            )
+        )
+        if route is None:
+            session.add(
+                HttpIngressRoute(
+                    public_id=uuid.uuid4().hex,
+                    subscription_id=subscription.id,
+                    source_epoch=subscription.source_epoch,
+                )
+            )
     session.add(
         SubscriptionConfigVersion(
             subscription_id=subscription.id,
@@ -373,7 +396,8 @@ def _nonterminal(session: Session, subscription: EventSubscription) -> bool:
                 exists().where(
                     EventDelivery.receipt_id == EventReceipt.id,
                     EventReceipt.subscription_id == subscription.id,
-                    EventDelivery.execution_id == Execution.id,
+                    func.coalesce(EventDelivery.execution_id, EventDelivery.batch_execution_id)
+                    == Execution.id,
                     Execution.status.in_(NONTERMINAL),
                 )
             )
@@ -392,18 +416,25 @@ def _fence(session: Session, subscription: EventSubscription) -> None:
 
 def _activate(session: Session, subscription: EventSubscription) -> SubscriptionActivation:
     from dlr.control.services.reliable_execution import resolve_queue_target_worker
+    from dlr.control.services.subscription_activation_policy import snapshot_policy
 
     adapter = session.get(Adapter, subscription.adapter_id)
     assert adapter is not None
     _validate_adapter(adapter)
     if adapter.latest_version_id is None:
         raise domain_error(409, "adapter_has_no_version", "Save an Adapter Revision first")
+    config = current_config(session, subscription)
+    if config.config.get("mode") == "business_batch":
+        from dlr.control.services.subscription_business_batch import require_revision_schema
+
+        require_revision_schema(session, adapter.latest_version_id)
     worker = resolve_queue_target_worker(session, adapter)
     activation = SubscriptionActivation(
         subscription_id=subscription.id,
         config_version_id=current_config(session, subscription).id,
         revision_id=adapter.latest_version_id,
         worker_id=worker.id,
+        execution_policy_snapshot=snapshot_policy(adapter),
     )
     session.add(activation)
     _flush(session)
@@ -498,10 +529,30 @@ def disable_subscription(
     subscription.desired_state = "disabled"
     # Native owners acknowledge stopping only after their clients actually close.
     lease = session.get(SubscriptionLease, subscription.id)
-    subscription.connection_state = "stopping" if lease and lease.owner_id else "stopped"
+    if not _close_disabled_http_lease(session, subscription, lease):
+        subscription.connection_state = "stopping" if lease and lease.owner_id else "stopped"
     refresh_delivery_state(session, subscription)
     subscription.updated_at = database_now(session)
     return subscription
+
+
+def _close_disabled_http_lease(
+    session: Session, subscription: EventSubscription, lease: SubscriptionLease | None
+) -> bool:
+    """HTTP has no native SDK client to close; its request jobs own separate credits.
+
+    Callers hold the Adapter/Subscription locks and fence before this operation.
+    Clearing this passive lease does not cancel or release any ingress job,
+    request permit, byte reservation or accepted responsibility.
+    """
+    if subscription.source_type != "http" or subscription.desired_state != "disabled":
+        return False
+    if lease is not None:
+        lease.owner_id = ""
+        lease.closing_generation = None
+        lease.lease_until = database_now(session)
+    subscription.connection_state = "stopped"
+    return True
 
 
 def delete_subscription(
@@ -774,66 +825,49 @@ def visible_query(principal: Principal) -> Any:
     return query
 
 
-def maintenance_tick() -> None:
-    """Bounded, one-responsibility transactions; feature-off still preserves draining."""
+_scheduler: DeliveryScheduler | None = None
+_last_history_pass = 0.0
+
+
+def maintenance_tick() -> bool:
+    """Independent completion/dispatch budgets; cold maintenance stays bounded."""
     from dlr.control import db
     from dlr.control.services import subscription_delivery as delivery
     from dlr.control.services import subscription_sync as sync
+    from dlr.control.services.subscription_scheduler import DeliveryScheduler
 
-    global _delivery_cursor, _delivery_upper, _subscription_cursor, _subscription_upper
-    global _batch_cursor, _batch_upper
-
-    with db.SessionLocal() as session:
-        deliveries, _delivery_cursor, _delivery_upper = bounded_page(
-            session,
-            select(EventDelivery.id).where(EventDelivery.state.in_(("pending", "processing"))),
-            EventDelivery.id,
-            _delivery_cursor,
-            _delivery_upper,
-        )
-        subscriptions, _subscription_cursor, _subscription_upper = bounded_page(
-            session,
-            select(EventSubscription.id),
-            EventSubscription.id,
-            _subscription_cursor,
-            _subscription_upper,
-        )
-        states: dict[int, str] = {
-            delivery_id: state
-            for delivery_id, state in session.execute(
-                select(EventDelivery.id, EventDelivery.state).where(
-                    EventDelivery.id.in_(deliveries)
-                )
-            ).all()
-        }
-    for delivery_id in deliveries:
-        if states.get(delivery_id) != "processing":
-            continue
+    global _scheduler, _subscription_cursor, _subscription_upper
+    global _batch_cursor, _batch_upper, _last_history_pass
+    if _scheduler is None:
+        _scheduler = DeliveryScheduler()
+    completed = _scheduler.complete(db.SessionLocal)
+    # K8s control responsibilities retain a separate budget and original gates.
+    deadline = time.monotonic() + 0.050
+    for _ in range(100):
+        if time.monotonic() >= deadline:
+            break
+        with db.SessionLocal() as session:
+            batches, cursor, upper = sync.select_batch_maintenance_candidates(
+                session, _batch_cursor, _batch_upper, 1
+            )
+        _batch_cursor, _batch_upper = cursor, upper
+        if not batches:
+            break
         with db.SessionLocal() as session:
             try:
-                item = session.get(EventDelivery, delivery_id)
-                if item is not None and item.state == "processing":
-                    delivery.observe_terminal(session, delivery_id)
-                session.commit()
-            except Exception:
-                session.rollback()
-                logger.warning("subscription delivery tick failed", exc_info=False)
-    with db.SessionLocal() as session:
-        batches, _batch_cursor, _batch_upper = sync.select_batch_maintenance_candidates(
-            session, _batch_cursor, _batch_upper, 100
-        )
-    for batch_id in batches:
-        with db.SessionLocal() as session:
-            try:
-                sync.maintain_batch(session, batch_id)
+                sync.maintain_batch(session, batches[0])
                 session.commit()
             except Exception:
                 session.rollback()
                 logger.warning("subscription batch tick failed", exc_info=False)
-    # Fair, persisted ready controls have a dedicated scan, independent of Sub GC.
+        if not _batch_upper:
+            break
     with db.SessionLocal() as session:
         tickets = sync.select_ready_control_candidates(session, limit=100)
+    deadline = time.monotonic() + 0.050
     for ticket in tickets:
+        if time.monotonic() >= deadline:
+            break
         with db.SessionLocal() as session:
             try:
                 sync.materialize_ready_control(session, ticket)
@@ -841,40 +875,66 @@ def maintenance_tick() -> None:
             except Exception:
                 session.rollback()
                 logger.warning("subscription control tick failed", exc_info=False)
-    for delivery_id in deliveries:
-        if states.get(delivery_id) != "pending":
-            continue
-        with db.SessionLocal() as session:
-            try:
-                item = session.get(EventDelivery, delivery_id)
-                if item is not None and item.state == "pending":
-                    delivery.dispatch_delivery(session, delivery_id)
-                session.commit()
-            except Exception:
-                session.rollback()
-                logger.warning("subscription delivery tick failed", exc_info=False)
-    for subscription_id in subscriptions:
-        with db.SessionLocal() as session:
-            try:
-                _, subscription = delivery.lock_subscription(session, subscription_id)
-                delivery.cleanup_history(session, subscription_id)
-                if subscription.deleted_at is None:
-                    delivery.refresh_delivery_state(session, subscription)
-                session.commit()
-            except Exception:
-                session.rollback()
-                logger.warning("subscription history tick failed", exc_info=False)
+    from dlr.control.services.subscription_activation_policy import legacy_policy_gate
+
+    with db.SessionLocal.begin() as session:
+        policies_ready = legacy_policy_gate(session)
+    dispatched = _scheduler.dispatch(db.SessionLocal) if policies_ready else None
+    # History is not in the hot polling path. Advance only processed rows so a
+    # budget boundary never silently skips a selected subscription.
+    if time.monotonic() - _last_history_pass >= 1.0:
+        _last_history_pass = time.monotonic()
+        deadline = _last_history_pass + 0.050
+        for _ in range(100):
+            if time.monotonic() >= deadline:
+                break
+            with db.SessionLocal() as session:
+                subscriptions, cursor, upper = bounded_page(
+                    session,
+                    select(EventSubscription.id),
+                    EventSubscription.id,
+                    _subscription_cursor,
+                    _subscription_upper,
+                    limit=1,
+                )
+            _subscription_cursor, _subscription_upper = cursor, upper
+            if not subscriptions:
+                break
+            with db.SessionLocal() as session:
+                try:
+                    _, subscription = delivery.lock_subscription(session, subscriptions[0])
+                    delivery.cleanup_history(session, subscriptions[0])
+                    if subscription.deleted_at is None:
+                        delivery.refresh_delivery_state(session, subscription)
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    logger.warning("subscription history tick failed", exc_info=False)
+            if not _subscription_upper:
+                break
+    return (
+        completed.continue_immediately
+        or not policies_ready
+        or (dispatched is not None and dispatched.continue_immediately)
+    )
 
 
 async def subscription_maintenance_loop() -> None:
+    from dlr.control.services.subscription_scheduler import wait_delivery_work
+
     while True:
         try:
-            await asyncio.to_thread(maintenance_tick)
+            progressed = await asyncio.to_thread(maintenance_tick)
+            if progressed:
+                await asyncio.sleep(0)
+                continue
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.warning("subscription maintenance unavailable", exc_info=False)
-        await asyncio.sleep(settings.event_subscription_tick_seconds)
+        await asyncio.to_thread(
+            wait_delivery_work, min(settings.event_subscription_tick_seconds, 1.0)
+        )
 
 
 def quota_audit_tick() -> None:

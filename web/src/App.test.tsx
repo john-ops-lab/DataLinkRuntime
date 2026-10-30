@@ -19,6 +19,7 @@ import { FALLBACK_POLICY } from "./fallback-policy";
 import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
 import { pushBrowserLocation } from "./history-route";
+import { applyUiLocale } from "./i18n";
 import type {
   Adapter,
   AiAssistResponse,
@@ -8227,6 +8228,104 @@ it.each(["task", "webhook"] as const)("only saves changed code and dependencies 
   fireEvent.click(save());
   expect(savedBodies).toHaveLength(1);
   expect(fetchMock.mock.calls.filter(([, init]) => ["PATCH", "PUT"].includes(init?.method ?? ""))).toHaveLength(0);
+});
+
+it("keeps business batch declaration in the draft until code save and preserves other version configuration", async () => {
+  let adapter = makeAdapter({ adapter_type: "task", latest_version_id: 10 });
+  const inherited = { retained: { arbitrary: [1, true, null] }, custom_flag: "unchanged" };
+  let version = makeVersion({ runtime_config: inherited });
+  const originalCode = version.code;
+  const savedBodies: unknown[] = [];
+  stubFetch([
+    healthRoute({ status: "ok", database: true }), readyWorkerRoute,
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [version] }) },
+    { method: "GET", match: /\/api\/adapters\/1\/versions\/\d+$/, respond: () => ({ body: version }) },
+    { method: "POST", match: "/api/adapters/1/versions", respond: body => {
+      const payload = JSON.parse(body ?? "{}");
+      savedBodies.push(payload);
+      version = makeVersion({ id: 11, seq: 2, ...payload });
+      adapter = { ...adapter, latest_version_id: version.id };
+      return { status: 201, body: version };
+    } },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByText("多条事件代码支持"));
+  const declaration = await screen.findByLabelText("这段代码支持一次处理多条事件");
+  const save = () => screen.getByRole("button", { name: "保存代码" }) as HTMLButtonElement;
+  expect(save().disabled).toBe(true);
+  fireEvent.click(declaration);
+  expect(save().disabled).toBe(false);
+  expect(savedBodies).toEqual([]);
+  expect(valueOf("code-editor")).toBe(originalCode);
+  fireEvent.click(declaration);
+  expect(save().disabled).toBe(true);
+  expect(savedBodies).toEqual([]);
+  fireEvent.click(declaration);
+  fireEvent.click(save());
+  await screen.findByText("适配器已保存");
+  await waitFor(() => expect(save().disabled).toBe(true));
+  expect(savedBodies).toEqual([{
+    code: originalCode, requirements: "",
+    runtime_config: { ...inherited, event_batch_schema: "dlr.event.batch.v1" },
+  }]);
+});
+
+it.each([
+  ["zh-CN", "task", "9007199254740993"],
+  ["en", "task", "1" + "0".repeat(400)],
+  ["zh-CN", "webhook", "1" + "0".repeat(400)],
+  ["en", "webhook", "9007199254740993"],
+] as const)("blocks revision saves of unsafe decoded runtime numbers in %s %s", async (locale, adapterType, literal) => {
+  await applyUiLocale(locale);
+  const adapter = makeAdapter({ adapter_type: adapterType, latest_version_id: 10 });
+  const version = makeVersion({ runtime_config: {} });
+  // Keep the original server literal through the real Response.json() path.
+  // A JS number fixture would already have rounded before this API boundary.
+  const rawVersion = JSON.stringify(version).replace('"runtime_config":{}', `"runtime_config":{"nested":[${literal}]}`);
+  const baseFetch = stubFetch([
+    healthRoute({ status: "ok", database: true }), readyWorkerRoute,
+    { method: "GET", match: "/api/locale", respond: () => ({ body: { locale } }) },
+    { method: "GET", match: "/api/adapters/1/webhook", respond: () => ({ body: makeWebhook() }) },
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [version] }) },
+    { method: "POST", match: "/api/adapters/1/versions", respond: () => ({ status: 201, body: version }) },
+  ]);
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/adapters/1/versions/10" && (init?.method ?? "GET") === "GET") {
+      return new Response(rawVersion, { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return baseFetch(input, init);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    render(<App />);
+    await selectFirstAdapter();
+    const hint = locale === "en" ? /Displayed values may be inaccurate/ : /当前显示可能不精确/;
+    expect(await screen.findByText(hint)).toBeTruthy();
+    if (adapterType === "task") {
+      fireEvent.click(screen.getByText(locale === "en" ? "Multi-event code support" : "多条事件代码支持"));
+      const declaration = await screen.findByRole("checkbox", { name: locale === "en" ? "This code supports several events per run" : "这段代码支持一次处理多条事件" });
+      expect((declaration as HTMLInputElement).disabled).toBe(true);
+      fireEvent.click(declaration);
+    }
+    const editedCode = version.code + "\n# keep this edit";
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: editedCode } });
+    fireEvent.click(screen.getByTestId("requirements-collapse-header"));
+    const dependencies = await screen.findByTestId("requirements-input");
+    fireEvent.change(dependencies, { target: { value: "requests==2.32.0" } });
+    fireEvent.click(screen.getByRole("button", { name: locale === "en" ? "Save code" : "保存代码" }));
+    expect(await screen.findByTestId("error-banner")).toBeTruthy();
+    expect(valueOf("code-editor")).toBe(editedCode);
+    expect(valueOf("requirements-input")).toBe("requests==2.32.0");
+    expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/versions") && init?.method === "POST")).toHaveLength(0);
+  } finally {
+    cleanup();
+    await applyUiLocale("zh-CN");
+  }
 });
 
 it.each(["task", "webhook"] as const)("allows the first unsaved starter version for %s without typing, then disables save", async (adapterType) => {

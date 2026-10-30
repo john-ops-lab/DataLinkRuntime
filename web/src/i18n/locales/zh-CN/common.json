@@ -334,6 +334,7 @@
   },
   "validation": {
     "runtimeConfigJson": "运行参数必须是合法的 JSON 对象",
+    "runtimeConfigUnsafeNumber": "运行参数中有浏览器无法安全表示的数字，当前显示可能不精确。已禁止自动修改和保存版本；请通过 API 核对并处理原配置。",
     "codeRequired": "代码不能为空",
     "noCompatibleWorker": "当前没有可用的兼容运行节点，请先启动或注册运行节点。"
   },

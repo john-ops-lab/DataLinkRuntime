@@ -334,6 +334,7 @@
   },
   "validation": {
     "runtimeConfigJson": "Runtime parameters must be a valid JSON object",
+    "runtimeConfigUnsafeNumber": "Runtime parameters contain numbers this browser cannot safely represent. Displayed values may be inaccurate. Automatic edits and revision saving are blocked; verify and manage the original configuration through the API.",
     "codeRequired": "Code cannot be empty",
     "noCompatibleWorker": "No compatible Runtime Worker is available. Start or register a Worker first."
   },

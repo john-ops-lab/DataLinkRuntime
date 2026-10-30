@@ -193,6 +193,11 @@ def runtime_world(api_client, session_factory, monkeypatch) -> Iterator[dict[str
                 )
                 session.add(activation)
                 session.flush()
+                # New activations carry their policy before listeners start.
+                # The bounded legacy backfill gate is covered separately.
+                from dlr.control.services.subscription_activation_policy import ensure_policy
+
+                ensure_policy(session, activation, adapter)
                 sub.activation_id = activation.id
                 ids.append(sub.id)
         return ids

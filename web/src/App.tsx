@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Editor, { loader } from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
 import { Alert, Button, Collapse, Input, message, Modal, Result, Segmented, Select, Tabs, Tooltip, Typography } from "antd";
+import EventBatchCodeDeclaration from "./components/EventBatchCodeDeclaration";
 import { DiffOutlined, FullscreenExitOutlined, FullscreenOutlined, MessageOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
@@ -81,6 +82,7 @@ import {
 } from "./languages";
 import { isTerminal } from "./status";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
+import { parseRuntimeConfigDraft, runtimeConfigSnapshot } from "./runtime-config";
 import type {
   AccountPrincipal,
   Adapter,
@@ -118,6 +120,7 @@ interface EditorSnapshot {
   code: string;
   requirements: string;
   runtimeConfigText: string;
+  runtimeConfigUnsafeNumbers?: boolean;
 }
 
 interface EditorSelection {
@@ -137,7 +140,7 @@ function versionSnapshot(detail: VersionDetail): EditorSnapshot {
   return {
     code: detail.code,
     requirements: detail.requirements,
-    runtimeConfigText: JSON.stringify(detail.runtime_config, null, 2),
+    ...runtimeConfigSnapshot(detail.runtime_config),
   };
 }
 
@@ -205,20 +208,6 @@ interface DiffViewState {
   baseSeq: number | null;
   adapterLanguage: AdapterLanguage;
   panes: Omit<DiffPane, "label">[];
-}
-
-// M1 frontend validation mirrors the backend contract: runtime_config must be
-// parseable JSON whose top level is an object.
-function parseRuntimeConfig(text: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-    return null;
-  } catch {
-    return null;
-  }
 }
 
 // M5.5.9：活跃 Adapter 名称唯一的前端预检。trim 后精确匹配（与 Backend 一致），
@@ -292,6 +281,12 @@ export function AdapterConsole({
     requirements: "",
     runtimeConfigText: "{}",
   });
+  const runtimeConfigDraft = useMemo(
+    () => parseRuntimeConfigDraft(snapshot.runtimeConfigText),
+    [snapshot.runtimeConfigText],
+  );
+  const runtimeConfigUnsafe = snapshot.runtimeConfigUnsafeNumbers === true
+    || runtimeConfigDraft.kind === "unsafe_number";
 
   const [error, setError] = useState<string | null>(null);
   const [adapterListError, setAdapterListError] = useState<string | null>(null);
@@ -1195,7 +1190,7 @@ export function AdapterConsole({
       initialAdapterDrafts.current.set(created.id, {
         code: request.draft.code,
         requirements: request.draft.requirements,
-        runtimeConfigText: JSON.stringify(request.draft.runtime_config, null, 2),
+        ...runtimeConfigSnapshot(request.draft.runtime_config),
       });
       copiedEditorFocusIdRef.current = created.id;
       let target = created;
@@ -1289,8 +1284,12 @@ export function AdapterConsole({
     if (!selected || !selectedCanEdit || busy || !contentReady || selectedRuntimeLocked || !versionNeedsSave) {
       return;
     }
-    const runtimeConfig = parseRuntimeConfig(snapshot.runtimeConfigText);
-    if (runtimeConfig === null) {
+    const runtimeConfig = parseRuntimeConfigDraft(snapshot.runtimeConfigText);
+    if (snapshot.runtimeConfigUnsafeNumbers || runtimeConfig.kind === "unsafe_number") {
+      setError(t("validation.runtimeConfigUnsafeNumber"));
+      return;
+    }
+    if (runtimeConfig.kind === "invalid") {
       setError(t("validation.runtimeConfigJson"));
       return;
     }
@@ -1314,7 +1313,7 @@ export function AdapterConsole({
       const saved = await api.saveVersion(saveTarget.id, {
         code: submittedSnapshot.code,
         requirements: submittedSnapshot.requirements,
-        runtime_config: runtimeConfig,
+        runtime_config: runtimeConfig.value,
       });
       versionSaved = true;
       initialAdapterDrafts.current.delete(saveTarget.id);
@@ -1381,7 +1380,12 @@ export function AdapterConsole({
     if (!selected || !selectedCanEdit || busy || !contentReady || selectedRuntimeLocked || !versionNeedsSave) {
       return;
     }
-    if (parseRuntimeConfig(snapshot.runtimeConfigText) === null) {
+    const runtimeConfig = parseRuntimeConfigDraft(snapshot.runtimeConfigText);
+    if (snapshot.runtimeConfigUnsafeNumbers || runtimeConfig.kind === "unsafe_number") {
+      setError(t("validation.runtimeConfigUnsafeNumber"));
+      return;
+    }
+    if (runtimeConfig.kind === "invalid") {
       setError(t("validation.runtimeConfigJson"));
       return;
     }
@@ -2033,6 +2037,8 @@ export function AdapterConsole({
                           />
                         </div>
 
+                        {runtimeConfigUnsafe && <Alert type="warning" showIcon
+                          message={t("validation.runtimeConfigUnsafeNumber")} />}
                         <Collapse
                           key={selected.id}
                           className="version-fields"
@@ -2083,6 +2089,14 @@ export function AdapterConsole({
                                 </div>
                               ),
                             },
+                            ...(selected.adapter_type === "task" ? [{
+                              key: "event-batch-support",
+                              label: t("businessBatch.editorTitle", { ns: "subscription" }),
+                              children: <EventBatchCodeDeclaration value={snapshot.runtimeConfigText}
+                                unsafeNumbers={runtimeConfigUnsafe}
+                                disabled={busy || !selectedCanEdit || !contentReady || !!selected.archived_at || selectedRuntimeLocked}
+                                onChange={value => setSnapshot(current => ({ ...current, runtimeConfigText: value }))} />,
+                            }] : []),
                           ]}
                         />
                       </div>

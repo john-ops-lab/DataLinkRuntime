@@ -328,6 +328,7 @@ def accept_execution(
     worker_id_override: int | None = None,
     credential_bindings_override: Sequence[dict[str, object]] | None = None,
     subscription_activation_id: int | None = None,
+    subscription_delivery_kind: str | None = None,
 ) -> Execution:
     """Atomically accept one gated RabbitMQ Execution or its idempotent hit."""
 
@@ -372,14 +373,16 @@ def accept_execution(
             "schedule_snapshot_unavailable",
             "Schedule policy snapshot is unavailable",
         )
-    try:
-        retry_policy = default_retry_policy()
-    except ValueError:
-        raise domain_error(
-            503,
-            "runtime_configuration_invalid",
-            "Reliable runtime Retry Policy configuration is invalid",
-        ) from None
+    retry_policy: dict[str, object]
+    if trigger != "subscription":
+        try:
+            retry_policy = default_retry_policy()
+        except ValueError:
+            raise domain_error(
+                503,
+                "runtime_configuration_invalid",
+                "Reliable runtime Retry Policy configuration is invalid",
+            ) from None
     locked_adapter = session.get(Adapter, adapter.id, with_for_update=True)
     if locked_adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
@@ -414,6 +417,7 @@ def accept_execution(
             "Reliable RabbitMQ topology is not verified for the target Worker",
             {"retry_after": 1},
         )
+    resource_profile: dict[str, object]
     if trigger == "subscription":
         assert subscription_activation_id is not None and credential_bindings_override is not None
         credential_bindings_snapshot = _subscription_credential_snapshot(
@@ -424,7 +428,16 @@ def accept_execution(
             version_id=version_id,
             worker_id=worker_id_override,
         )
+        from dlr.control.models.subscription import SubscriptionActivation
+        from dlr.control.services.subscription_activation_policy import ensure_policy
+
+        activation = session.get(SubscriptionActivation, subscription_activation_id)
+        assert activation is not None  # validated by the frozen references above
+        policy = ensure_policy(session, activation, adapter)
+        retry_policy = policy["retry_policy"]
+        resource_profile = policy["resource_profile"]
     else:
+        resource_profile = default_resource_profile(adapter.timeout_seconds)
         credential_bindings_snapshot = (
             [] if dependency_check else _credential_bindings_snapshot(session, adapter.id)
         )
@@ -462,12 +475,13 @@ def accept_execution(
         logical_input_bytes=logical_bytes,
         max_attempts_snapshot=cast(int, retry_policy["max_attempts"]),
         retry_policy_snapshot=retry_policy,
-        resource_profile_snapshot=default_resource_profile(adapter.timeout_seconds),
+        resource_profile_snapshot=resource_profile,
         credential_bindings_snapshot=credential_bindings_snapshot,
         schedule_policy_snapshot=schedule_policy_snapshot,
         resource_class=RESOURCE_PROFILE_CLASS,
         version_id_override=version_id,
         dependency_check=dependency_check,
+        subscription_delivery_kind=subscription_delivery_kind,
     )
     # Keep the DB clock as the accepted-at source for all generated facts.
     execution.queued_at = now

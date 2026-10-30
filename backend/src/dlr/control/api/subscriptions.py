@@ -4,9 +4,9 @@ from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 from starlette.concurrency import run_in_threadpool
 
 from dlr.common.config import settings
@@ -163,14 +163,32 @@ def serialize_batch_detail(view: sync.SyncBatchView) -> SyncBatchDetail:
 def serialize(
     session: Session, subscription: EventSubscription, principal: Principal
 ) -> SubscriptionResponse:
-    from dlr.control.services.subscription_delivery import DEFAULT_LIMITS, GLOBAL_LIMITS
+    from dlr.control.services.http_ingress import ingress_path
+    from dlr.control.services.ingress_capacity import (
+        effective_profile,
+        global_limits,
+        runtime_limits_for_profile,
+    )
+    from dlr.control.services.subscription_capacity_view import capacity_paused
 
     current = management.current_config(session, subscription)
     quota = session.get(SubscriptionQuota, f"sub:{subscription.id}")
-    pending = session.scalar(
-        select(func.min(EventReceipt.first_received_at)).where(
-            EventReceipt.subscription_id == subscription.id, EventReceipt.state == "pending"
+    global_quota = session.get(SubscriptionQuota, "global")
+    profile = effective_profile(session)
+    limits = runtime_limits_for_profile(profile, current.config)
+    platform_limits = global_limits(profile=profile)
+    now, pending = session.execute(
+        select(
+            func.clock_timestamp(),
+            select(func.min(EventReceipt.first_received_at))
+            .where(EventReceipt.subscription_id == subscription.id, EventReceipt.state == "pending")
+            .scalar_subquery(),
         )
+    ).one()
+    available = (
+        settings.event_subscriptions_enabled
+        and subscription.source_type in management.AVAILABLE_SOURCES
+        and (subscription.source_type != "http" or settings.http_ingress_enabled)
     )
     counts = {
         state: count
@@ -207,8 +225,9 @@ def serialize(
         repair_revision_id=subscription.repair_revision_id,
         last_error_code=subscription.last_error_code,
         config=current.config,
-        limits={**DEFAULT_LIMITS, **current.config.get("limits", {})},
-        global_limits=dict(GLOBAL_LIMITS),
+        limits=limits,
+        global_limits=platform_limits,
+        ingress_path=ingress_path(session, subscription),
         quota={
             key: getattr(quota, key) if quota else 0
             for key in (
@@ -224,8 +243,16 @@ def serialize(
         },
         oldest_pending_at=pending,
         event_counts=counts,
-        available=settings.event_subscriptions_enabled
-        and subscription.source_type in management.AVAILABLE_SOURCES,
+        available=available,
+        capacity_paused=capacity_paused(
+            receiving=available and subscription.desired_state == "enabled",
+            local=quota,
+            global_quota=global_quota,
+            local_limits=limits,
+            global_limits=platform_limits,
+            oldest_pending_at=pending,
+            now=now,
+        ),
         access_level=adapter_access.require_adapter_access(
             session, subscription.adapter_id, principal
         ).level,
@@ -255,7 +282,9 @@ def capabilities() -> dict[str, Any]:
         sorted(
             name
             for name in management.AVAILABLE_SOURCES
-            if name in SOURCES and SOURCES[name].implemented
+            if name in SOURCES
+            and SOURCES[name].implemented
+            and (name != "http" or settings.http_ingress_enabled)
         )
         if settings.event_subscriptions_enabled
         else []
@@ -270,13 +299,15 @@ def capabilities() -> dict[str, Any]:
 @router.get(
     "/api/event-subscriptions/runtime-status", dependencies=[Depends(require_admin_principal)]
 )
-def runtime_status() -> dict[str, int]:
+def runtime_status() -> dict[str, Any]:
     """Process-wide counters for administrators; no source identities or native RPCs."""
+    from dlr.control.api.ingress import ingress_snapshot
     from dlr.control.services.subscription_runtime import get_runtime
 
     runtime = get_runtime()
     return {
         "active_count": runtime.active_count,
+        "http_ingress": ingress_snapshot(),
         "application_buffer_used_bytes": runtime.buffer.used_bytes,
         "application_buffer_peak_bytes": runtime.buffer.peak_bytes,
         "application_buffer_limit_bytes": runtime.buffer.limit_bytes,
@@ -823,11 +854,10 @@ def _event(session: Session, subscription_id: int, receipt_id: int) -> EventRece
 
 
 def serialize_event(session: Session, receipt: EventReceipt) -> EventResponse:
-    deliveries = session.scalars(
-        select(EventDelivery)
-        .where(EventDelivery.receipt_id == receipt.id)
-        .order_by(EventDelivery.ordinal)
-    ).all()
+    from dlr.control.services.subscription_batch_view import delivery_records
+
+    records = delivery_records(session, receipt)
+    latest = records[-1] if records else {}
     return EventResponse(
         id=receipt.id,
         source_event_id=receipt.source_event_id,
@@ -840,18 +870,13 @@ def serialize_event(session: Session, receipt: EventReceipt) -> EventResponse:
         payload_expired=receipt.payload_expired_at is not None,
         first_received_at=receipt.first_received_at,
         duplicate_count=receipt.duplicate_count,
-        deliveries=[
-            {
-                "id": item.id,
-                "ordinal": item.ordinal,
-                "execution_id": item.execution_id,
-                "state": item.state,
-                "revision_override_id": item.revision_override_id,
-                "activation_override_id": item.activation_override_id,
-                "effective_activation_id": item.activation_override_id or receipt.activation_id,
-            }
-            for item in deliveries
-        ],
+        deliveries=records,
+        processing_mode=cast(Any, latest.get("processing_mode", "per_event")),
+        batch_execution_id=latest.get("batch_execution_id"),
+        batch_member_index=latest.get("batch_member_index"),
+        batch_member_count=latest.get("batch_member_count"),
+        batch_member_outcome=latest.get("batch_member_outcome"),
+        batch_member_code=latest.get("batch_member_code"),
         batch_id=receipt.batch_id,
         source_phase=cast(SourcePhase | None, receipt.source_phase),
         coalesced_count=receipt.coalesced_count,
@@ -869,14 +894,31 @@ def list_events(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> EventPage:
     management.get_subscription(session, subscription_id, principal)
-    query = select(EventReceipt).where(EventReceipt.subscription_id == subscription_id)
-    total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
+    scope = EventReceipt.subscription_id == subscription_id
+    total = (
+        select(func.count().label("total"))
+        .select_from(EventReceipt)
+        .where(scope)
+        .cte("event_receipt_total")
+    )
+    page = select(EventReceipt.id).where(scope)
     if before_id is not None:
-        query = query.where(EventReceipt.id < before_id)
-    rows = list(session.scalars(query.order_by(EventReceipt.id.desc()).limit(limit + 1)))
+        page = page.where(EventReceipt.id < before_id)
+    page_ids = page.order_by(EventReceipt.id.desc()).limit(limit + 1).cte("event_receipt_page")
+    # One PostgreSQL statement fixes count and page to the same MVCC snapshot.
+    # The count side always has one row, retaining total even for an empty page.
+    result = session.execute(
+        select(total.c.total, EventReceipt)
+        .select_from(total)
+        .outerjoin(page_ids, true())
+        .outerjoin(EventReceipt, EventReceipt.id == page_ids.c.id)
+        .options(defer(EventReceipt.source_raw_body))
+        .order_by(EventReceipt.id.desc())
+    ).all()
+    rows = [receipt for _, receipt in result if receipt is not None]
     return EventPage(
         items=[serialize_event(session, item) for item in rows[:limit]],
-        total=total,
+        total=result[0][0],
         next_before_id=rows[limit - 1].id if len(rows) > limit else None,
     )
 
@@ -935,7 +977,10 @@ def replay_event(
         expected_config_version=payload.expected_config_version,
     )
     commit(session)
-    return {"delivery_id": delivery.id, "execution_id": delivery.execution_id}
+    return {
+        "delivery_id": delivery.id,
+        "execution_id": delivery.execution_id or delivery.batch_execution_id,
+    }
 
 
 @router.post("/api/event-subscriptions/{subscription_id}/events/{receipt_id}/skip")

@@ -7,6 +7,7 @@ import contextlib
 import copy
 import logging
 import random
+import re
 import threading
 import time
 import uuid
@@ -14,6 +15,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -21,6 +23,7 @@ from dlr.common.config import settings
 from dlr.control.models import Credential
 from dlr.control.models.subscription import (
     EventSubscription,
+    HttpIngressRoute,
     SourceCheckpoint,
     SubscriptionActivation,
     SubscriptionConfigVersion,
@@ -29,6 +32,7 @@ from dlr.control.models.subscription import (
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services import subscription_management as management
 from dlr.control.services.secrets import decrypt_fields
+from dlr.control.services.subscription_http import HttpSourceRunner
 from dlr.control.services.subscription_queue_failure import LEGACY_LIFECYCLE_FAILURES
 from dlr.control.services.subscription_source import (
     ApplicationBufferBudget,
@@ -82,10 +86,12 @@ class SubscriptionRuntimeManager:
         buffer_limit_bytes: int = 64 * 1024**2,
         clock: Callable[[], float] = time.monotonic,
         jitter: Callable[[float, float], float] = random.uniform,
+        intake_session_factory: sessionmaker[Session] | None = None,
     ) -> None:
         if not 1 <= max_listeners <= 16:
             raise ValueError("Invalid source owner limit")
         self.session_factory = session_factory
+        self.intake_session_factory = intake_session_factory or session_factory
         self.registry = dict(implemented_sources() if registry is None else registry)
         self.buffer = ApplicationBufferBudget(buffer_limit_bytes)
         self._permits = threading.BoundedSemaphore(max_listeners)
@@ -128,7 +134,18 @@ class SubscriptionRuntimeManager:
 
     def start_once(self, subscription_id: int) -> bool:
         """No thread is created unless both a local permit and a DB lease are acquired."""
-        if not settings.event_subscriptions_enabled or not self._claim(subscription_id):
+        if not settings.event_subscriptions_enabled:
+            return False
+        from dlr.control.services.ingress_capacity import activate_profile
+        from dlr.control.services.subscription_activation_policy import legacy_policy_gate
+
+        try:
+            with self.session_factory.begin() as session:
+                if not legacy_policy_gate(session) or not activate_profile(session):
+                    return False
+        except Exception:
+            return False
+        if not self._claim(subscription_id):
             return False
         owner: _Owner | None = None
         try:
@@ -137,6 +154,7 @@ class SubscriptionRuntimeManager:
                 runner = self.registry.get(sub.source_type)
                 if (
                     runner is None
+                    or (sub.source_type == "http" and not settings.http_ingress_enabled)
                     or sub.desired_state != "enabled"
                     or (
                         sub.connection_state == "blocked"
@@ -187,10 +205,20 @@ class SubscriptionRuntimeManager:
                     source_config=copy.deepcopy(config.config),
                     credential_fields=values,
                     stop_event=threading.Event(),
-                    session_factory=self.session_factory,
+                    session_factory=self.intake_session_factory,
                     buffer=self.buffer.scope(),
                     connected=lambda: self._connected(subscription_id),
                     identity_snapshot=copy.deepcopy(config.source_identity),
+                    public_id=(
+                        session.scalar(
+                            select(HttpIngressRoute.public_id).where(
+                                HttpIngressRoute.subscription_id == sub.id,
+                                HttpIngressRoute.source_epoch == config.source_epoch,
+                            )
+                        )
+                        if sub.source_type == "http"
+                        else None
+                    ),
                 )
                 sub.connection_state = "starting"
             owner = _Owner(context, runner)
@@ -223,6 +251,17 @@ class SubscriptionRuntimeManager:
         else:
             self._release_start(subscription_id)
         return False
+
+    def http_batch_hint(self, public_id: str) -> bool:
+        """A scheduling hint only; T1 rechecks the locked authoritative binding."""
+        with self._lock:
+            return any(
+                owner.context.public_id == public_id
+                and owner.context.source_config.get("mode") == "business_batch"
+                and not owner.context.stop_event.is_set()
+                and not owner.native_closed
+                for owner in self._owners.values()
+            )
 
     def _connected(self, subscription_id: int) -> None:
         with self._lock:
@@ -257,9 +296,19 @@ class SubscriptionRuntimeManager:
                 owner.runner.run(owner.context)
         except SourceFailure as error:
             failure = error
-        except Exception:
-            # A broken connector cannot assert resource reclamation implicitly.
-            failure = SourceFailure("source_runtime_error", closed=False)
+        except Exception as error:
+            if type(owner.runner) is HttpSourceRunner:
+                # This built-in passive runner owns no SDK. Its returned thread
+                # is finished; HTTP request jobs retain their separate credits.
+                code = "source_runtime_error"
+                if isinstance(error, HTTPException) and isinstance(error.detail, dict):
+                    value = error.detail.get("code")
+                    if isinstance(value, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value):
+                        code = value
+                failure = SourceFailure(code, "backoff")
+            else:
+                # A broken connector cannot assert resource reclamation implicitly.
+                failure = SourceFailure("source_runtime_error", closed=False)
         self._finish_owner(owner, failure)
 
     def _finish_owner(self, owner: _Owner, failure: SourceFailure | None) -> None:
@@ -336,7 +385,10 @@ class SubscriptionRuntimeManager:
                 if lease is not None and lease.owner_id == context.owner_id:
                     if lease.generation == context.generation:
                         management._fence(session, sub)
-                    if sub.connection_state != "blocked":
+                    if (
+                        not management._close_disabled_http_lease(session, sub, lease)
+                        and sub.connection_state != "blocked"
+                    ):
                         sub.connection_state = (
                             "stopping" if sub.desired_state == "disabled" else "starting"
                         )
@@ -386,6 +438,11 @@ class SubscriptionRuntimeManager:
                 lease = session.get(SubscriptionLease, subscription_id)
                 if (
                     not settings.event_subscriptions_enabled
+                    or (
+                        sub is not None
+                        and sub.source_type == "http"
+                        and not settings.http_ingress_enabled
+                    )
                     or sub is None
                     or sub.deleted_at is not None
                     or sub.desired_state != "enabled"
@@ -477,7 +534,7 @@ class SubscriptionRuntimeManager:
             except Exception:
                 logger.warning("source lease maintenance unavailable")
 
-    async def aclose(self, timeout: float = 15) -> None:
+    async def aclose(self, timeout: float = 15) -> bool:
         self._shutdown.set()
         if self._supervisor is None:
             # Directly started owners share the same shutdown contract. DB work
@@ -490,11 +547,13 @@ class SubscriptionRuntimeManager:
         while time.monotonic() < deadline:
             with self._lock:
                 active = bool(self._owners or self._probes or self._starting)
-            if not active and not (self._supervisor and self._supervisor.is_alive()):
-                return
+                supervisor_alive = bool(self._supervisor and self._supervisor.is_alive())
+            if not active and not supervisor_alive:
+                return True
             await asyncio.sleep(0.02)
         # Native operations keep their permits until returning, even during shutdown.
         logger.warning("source shutdown awaiting native close")
+        return False
 
     async def test_connection(
         self,
@@ -565,6 +624,11 @@ def get_runtime() -> SubscriptionRuntimeManager:
     global _runtime
     if _runtime is None:
         from dlr.control import db
+        from dlr.control.services.ingress_database import intake_sessions
 
-        _runtime = SubscriptionRuntimeManager(db.SessionLocal)
+        # Respect the active factory binding (including isolated test overrides).
+        bind = db.SessionLocal.kw["bind"]
+        _runtime = SubscriptionRuntimeManager(
+            db.SessionLocal, intake_session_factory=intake_sessions(bind.url)
+        )
     return _runtime

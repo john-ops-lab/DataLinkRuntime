@@ -73,16 +73,24 @@ class ApplicationBufferBudget:
 class ScopedBufferBudget:
     """Per-owner ledger permits deterministic cleanup only after actual native close."""
 
-    def __init__(self, parent: ApplicationBufferBudget, limit_bytes: int) -> None:
+    def __init__(
+        self, parent: ApplicationBufferBudget | ScopedBufferBudget, limit_bytes: int
+    ) -> None:
         self.parent = parent
         self.limit_bytes = limit_bytes
         self._used = 0
+        self._peak = 0
         self._lock = threading.Lock()
 
     @property
     def used_bytes(self) -> int:
         with self._lock:
             return self._used
+
+    @property
+    def peak_bytes(self) -> int:
+        with self._lock:
+            return self._peak
 
     def reserve(self, size: int) -> bool:
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
@@ -91,6 +99,7 @@ class ScopedBufferBudget:
             if self._used + size > self.limit_bytes or not self.parent.reserve(size):
                 return False
             self._used += size
+            self._peak = max(self._peak, self._used)
             return True
 
     def release(self, size: int) -> None:
@@ -123,6 +132,7 @@ class SourceRunContext:
     buffer: ScopedBufferBudget = field(repr=False)
     connected: Callable[[], None] = field(repr=False)
     identity_snapshot: dict[str, Any] | None = field(default=None, repr=False)
+    public_id: str | None = None
 
 
 class SourceRunner(Protocol):

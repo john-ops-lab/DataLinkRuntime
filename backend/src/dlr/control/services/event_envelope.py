@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import re
 from typing import Any
 
 import rfc8785
@@ -10,6 +11,8 @@ import rfc8785
 from dlr.common.config import settings
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.subscription_registry import SOURCES, source_definition
+
+_INVALID_STRING = re.compile(r"[\x00\ud800-\udfff]")
 
 FIELDS = {"schema", "subscription", "event", "source", "received_at", "data", "sync"}
 
@@ -19,7 +22,7 @@ def canonical(value: Any) -> bytes:
 
         def invalid(item: Any) -> bool:
             if isinstance(item, str):
-                return "\x00" in item or any(0xD800 <= ord(char) <= 0xDFFF for char in item)
+                return _INVALID_STRING.search(item) is not None
             if isinstance(item, dict):
                 return any(invalid(key) or invalid(child) for key, child in item.items())
             if isinstance(item, list):
@@ -40,6 +43,8 @@ def event_id(envelope: dict[str, Any]) -> str:
     source = envelope["source"]
     attrs, position = source["attributes"], source["position"]
     definition = source_definition(source["type"])
+    if definition.identity_contract == "http-raw-v1":
+        return str(position["idempotency_key"])
     if definition.identity_contract == "message-id-v1":
         identity = [
             source["type"],
@@ -104,9 +109,28 @@ def validate_envelope(envelope: dict[str, Any]) -> tuple[str, int]:
             raise ValueError("source")
         if source["type"] not in SOURCES or not source["identity"]:
             raise ValueError("source type")
-        if set(envelope["data"]) != {"encoding", "content_type", "value"}:
+        if set(envelope["data"]) != {
+            "encoding",
+            "content_type",
+            "payload" if source["type"] == "http" else "value",
+        }:
             raise ValueError("data")
-        if source_definition(source["type"]).identity_contract == "message-id-v1":
+        if source["type"] == "http":
+            key = source["position"].get("idempotency_key")
+            if (
+                set(source["position"]) != {"idempotency_key"}
+                or not isinstance(key, str)
+                or not 1 <= len(key) <= 128
+                or any(not 32 <= ord(c) <= 126 for c in key)
+                or source["attributes"] != {"public_id": source["identity"]}
+                or envelope["data"]["encoding"] != "json"
+                or envelope["data"]["content_type"] != "application/json"
+                or envelope["event"]["kind"] != "message"
+                or envelope["event"]["object_key"] is not None
+                or envelope["sync"] is not None
+            ):
+                raise ValueError("HTTP message contract")
+        elif source_definition(source["type"]).identity_contract == "message-id-v1":
             validate_queue_content(envelope)
         elif source["type"] == "kafka":
             attrs = source["attributes"]

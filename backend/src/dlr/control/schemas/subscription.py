@@ -103,7 +103,6 @@ class QueueSourceConfig(SourceModel):
     server: str = Field(min_length=1, max_length=512)
     credential_id: int | None = Field(default=None, gt=0)
     ca_pem: str | None = Field(default=None, max_length=65536)
-    mode: Literal["per_event"] = "per_event"
     ordering: Literal["receipt_serial"] = "receipt_serial"
     limits: dict[str, StrictInt] = Field(default_factory=dict)
 
@@ -135,6 +134,7 @@ class RabbitMQSourceConfig(QueueSourceConfig):
     vhost: str = Field(default="/", min_length=1, max_length=128)
     queue: str = Field(min_length=1, max_length=255)
     credential_id: int = Field(gt=0)
+    mode: Literal["per_event", "business_batch"] = "per_event"
 
     @model_validator(mode="after")
     def rabbitmq_contract(self) -> "RabbitMQSourceConfig":
@@ -151,6 +151,7 @@ class RocketMQSourceConfig(QueueSourceConfig):
     source_type: Literal["rocketmq"] = "rocketmq"
     topic: str = Field(min_length=1, max_length=127, pattern=r"^[a-zA-Z0-9_%.-]+$")
     group_id: str = Field(min_length=1, max_length=127, pattern=r"^[a-zA-Z0-9_%.-]+$")
+    mode: Literal["per_event"] = "per_event"
 
     @model_validator(mode="after")
     def rocketmq_contract(self) -> "RocketMQSourceConfig":
@@ -163,8 +164,20 @@ class RocketMQSourceConfig(QueueSourceConfig):
         return self
 
 
+class HttpSourceConfig(SourceModel):
+    source_type: Literal["http"] = "http"
+    credential_id: int = Field(gt=0)
+    mode: Literal["per_event", "business_batch"] = "per_event"
+    ordering: Literal["receipt_serial"] = "receipt_serial"
+    limits: dict[str, StrictInt] = Field(default_factory=dict)
+
+
 SourceConfig = Annotated[
-    KafkaSourceConfig | KubernetesSourceConfig | RabbitMQSourceConfig | RocketMQSourceConfig,
+    KafkaSourceConfig
+    | KubernetesSourceConfig
+    | RabbitMQSourceConfig
+    | RocketMQSourceConfig
+    | HttpSourceConfig,
     Field(discriminator="source_type"),
 ]
 
@@ -390,10 +403,12 @@ class SubscriptionResponse(BaseModel):
     oldest_pending_at: datetime | None
     event_counts: dict[str, int]
     available: bool
+    capacity_paused: bool = False
     access_level: Literal["admin", "owner", "edit", "read"] | None = None
     created_at: datetime
     updated_at: datetime
     latest_batch: SyncBatchSummary | None = None
+    ingress_path: str | None = None
 
 
 class SubscriptionPage(BaseModel):
@@ -420,6 +435,12 @@ class EventResponse(BaseModel):
     coalesced_count: int = Field(default=0, ge=0)
     first_source_event_id: str | None = Field(default=None, max_length=128)
     superseded_by_id: int | None = Field(default=None, gt=0)
+    processing_mode: Literal["per_event", "business_batch"] = "per_event"
+    batch_execution_id: int | None = Field(default=None, gt=0)
+    batch_member_index: int | None = Field(default=None, ge=0, lt=100)
+    batch_member_outcome: Literal["succeeded", "failed", "unknown", "not_run"] | None = None
+    batch_member_code: str | None = Field(default=None, max_length=64)
+    batch_member_count: int | None = Field(default=None, ge=1, le=100)
 
 
 class EventPage(BaseModel):
@@ -482,7 +503,7 @@ class KubernetesConnectionDiagnostic(ClosedModel):
 
 
 class SourceConnectionResponse(BaseModel):
-    source_type: Literal["kafka", "kubernetes", "rabbitmq", "rocketmq"]
+    source_type: Literal["kafka", "kubernetes", "rabbitmq", "rocketmq", "http"]
     cluster_id: str = Field(min_length=1, max_length=256)
     topic_count: int | None = Field(default=None, ge=1, le=16, strict=True)
     partition_count: int | None = Field(default=None, ge=1, le=16, strict=True)

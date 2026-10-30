@@ -144,6 +144,11 @@ class Execution(Base):
             name="ck_executions_trigger",
         ),
         CheckConstraint("locale IN ('zh-CN', 'en')", name="ck_executions_locale"),
+        CheckConstraint(
+            "subscription_delivery_kind IS NULL "
+            "OR subscription_delivery_kind IN ('single','batch')",
+            name="ck_execution_subscription_kind",
+        ),
         # Supports status/time inventory queries.
         Index("ix_executions_claim", "status", "created_at", "id"),
         # M5.2: one planned point yields at most one Schedule Execution;
@@ -250,6 +255,7 @@ class Execution(Base):
         index=True,
     )
     trigger: Mapped[str] = mapped_column(String(16), nullable=False)
+    subscription_delivery_kind: Mapped[str | None] = mapped_column(String(16))
     # M5.2: the planned point this Schedule Execution represents; NULL for
     # every non-schedule trigger.
     scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

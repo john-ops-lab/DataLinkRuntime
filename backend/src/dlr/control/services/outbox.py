@@ -11,8 +11,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -93,6 +95,17 @@ class _PublisherWindow:
 
 
 _publisher_window = _PublisherWindow()
+_outbox_work_available = threading.Event()
+
+
+def notify_outbox() -> None:
+    """Prompt a local Relay after commit; durable polling repairs lost hints."""
+    _outbox_work_available.set()
+
+
+def _wait_outbox() -> None:
+    _outbox_work_available.wait(1.0)
+    _outbox_work_available.clear()
 
 
 def _record_publish_failure(code: str) -> None:
@@ -592,6 +605,7 @@ def _publish_row(
     row: LeasedOutbox | ExecutionOutbox,
     *,
     message: Any | None = None,
+    publisher: RelayPublisher | None = None,
 ) -> None:
     """Publish one frozen row with persistent mandatory confirm semantics."""
 
@@ -608,8 +622,12 @@ def _publish_row(
         # Start before opening the channel: Pika's channel open and close
         # handshakes both use _flush_output and are otherwise unbounded.
         timer = _schedule_confirm_deadline(connection, expire_confirm_deadline)
-        channel = connection.channel()
-        channel.confirm_delivery()
+        channel = publisher.channel if publisher is not None else None
+        if channel is None:
+            channel = connection.channel()
+            channel.confirm_delivery()
+            if publisher is not None:
+                publisher.channel = channel
         properties = pika.BasicProperties(
             delivery_mode=pika.DeliveryMode.Persistent,
             message_id=str(row.message_id),
@@ -624,7 +642,7 @@ def _publish_row(
             properties=properties,
             mandatory=True,
         )
-        if getattr(channel, "is_open", True):
+        if publisher is None and getattr(channel, "is_open", True):
             # Keep the same deadline active through cleanup.  A graceful
             # channel close is allowed only while the disposable connection
             # can still be force-aborted by the timer.
@@ -708,23 +726,121 @@ def deserialize_outbox_payload(payload: object) -> Any:
     return message
 
 
+class RelayPublisher:
+    """One thread-owned connection/channel, within the original publisher window.
+
+    Short lifetimes bound topology cache staleness and idle heartbeat work. A
+    changed target set rebuilds the connection before topology handshakes, so
+    the cached publish channel never overlaps an extra topology channel.
+    """
+
+    def __init__(self, connection_factory: Callable[[], pika.BlockingConnection]) -> None:
+        self._factory = connection_factory
+        self._connection: pika.BlockingConnection | None = None
+        self.channel: Any | None = None
+        self._window: Any | None = None
+        self._thread_id: int | None = None
+        self._created_at = 0.0
+        self._last_used_at = 0.0
+        self._targets: set[int] = set()
+
+    def _check_thread(self) -> None:
+        current = threading.get_ident()
+        if self._thread_id is None:
+            self._thread_id = current
+        elif self._thread_id != current:
+            raise RuntimeError("Relay publisher cannot cross threads")
+
+    def connection(self, targets: set[int]) -> pika.BlockingConnection:
+        self._check_thread()
+        now = time.monotonic()
+        if self._connection is not None and (
+            not getattr(self._connection, "is_open", True)
+            or now - self._created_at >= 10.0
+            or (self.channel is not None and not targets.issubset(self._targets))
+        ):
+            self.close()
+        if self._connection is None:
+            self._window = _publisher_window.acquire(
+                "channels", settings.rabbitmq_publisher_channel_count
+            )
+            self._window.__enter__()
+            try:
+                self._connection = self._factory()
+            except Exception:
+                self.close()
+                raise
+            self._created_at = now
+        self._last_used_at = now
+        return self._connection
+
+    def prepare(self, connection: pika.BlockingConnection, targets: set[int]) -> None:
+        for target in sorted(targets - self._targets):
+            rabbitmq.bootstrap_worker_topology(connection, target)
+            self._targets.add(target)
+
+    def expire_idle(self) -> None:
+        self._check_thread()
+        if self._connection is None:
+            return
+        if time.monotonic() - self._last_used_at >= 5.0:
+            self.close()
+            return
+        connection = self._connection
+        timer: tuple[Any, Any] | None = None
+        expired = False
+
+        def expire() -> None:
+            nonlocal expired
+            expired = True
+            _abort_connection(connection, _ConfirmDeadlineExceeded("idle heartbeat deadline"))
+
+        try:
+            timer = _schedule_confirm_deadline(connection, expire)
+            connection.process_data_events(time_limit=0)
+        except Exception:
+            self.close()
+        finally:
+            _remove_confirm_deadline(timer)
+            if expired:
+                self.close()
+
+    def close(self) -> None:
+        self._check_thread()
+        try:
+            if self._connection is not None:
+                _close_connection_bounded(self._connection)
+        finally:
+            self._connection = self.channel = None
+            self._targets.clear()
+            if self._window is not None:
+                self._window.__exit__(None, None, None)
+                self._window = None
+
+
 def relay_once(
     session: Session,
     owner: str,
     *,
     limit: int = 10,
     connection_factory: Callable[[], pika.BlockingConnection] | None = None,
+    publisher: RelayPublisher | None = None,
 ) -> OutboxRelayResult:
     """Run one bounded Relay cycle without exceeding the publisher window."""
 
     if not settings.rabbitmq_url:
         return OutboxRelayResult(0, 0, 0)
+    if publisher is not None:
+        return _relay_once(
+            session, owner, limit=limit, connection_factory=None, publisher=publisher
+        )
     with _publisher_window.acquire("channels", settings.rabbitmq_publisher_channel_count):
         return _relay_once(
             session,
             owner,
             limit=limit,
             connection_factory=connection_factory,
+            publisher=None,
         )
 
 
@@ -734,6 +850,7 @@ def _relay_once(
     *,
     limit: int,
     connection_factory: Callable[[], pika.BlockingConnection] | None,
+    publisher: RelayPublisher | None,
 ) -> OutboxRelayResult:
     """Lease rows, publish outside the DB transaction, then settle each row."""
 
@@ -772,7 +889,12 @@ def _relay_once(
 
     connection: pika.BlockingConnection | None = None
     try:
-        connection = (connection_factory or rabbitmq.connect)()
+        targets = {message.target_worker_id for _, message in valid_rows}
+        connection = (
+            publisher.connection(targets)
+            if publisher is not None
+            else (connection_factory or rabbitmq.connect)()
+        )
     except Exception:
         _record_publish_failure("publish_timeout_or_connection")
         rabbitmq.mark_runtime_failure("topology_unavailable")
@@ -791,9 +913,11 @@ def _relay_once(
         return OutboxRelayResult(len(rows), published, failed)
     try:
         try:
-            targets = {message.target_worker_id for _, message in valid_rows}
-            for target_worker_id in targets:
-                rabbitmq.bootstrap_worker_topology(connection, target_worker_id)
+            if publisher is not None:
+                publisher.prepare(connection, targets)
+            else:
+                for target_worker_id in targets:
+                    rabbitmq.bootstrap_worker_topology(connection, target_worker_id)
         except rabbitmq.RabbitMQTopologyError as exc:
             error_code = exc.code
             if error_code == "topology_unavailable":
@@ -855,11 +979,16 @@ def _relay_once(
                         "confirms", settings.rabbitmq_publisher_max_confirm_inflight
                     ),
                 ):
-                    _publish_row(connection, row)
+                    if publisher is not None:
+                        _publish_row(connection, row, publisher=publisher)
+                    else:
+                        _publish_row(connection, row)
             except OutboxPublishError as exc:
+                if publisher is not None:
+                    publisher.close()
                 failed += 1
                 release_outbox_lease(session, row.id, owner, error_code=exc.code)
-                if exc.code in {
+                if publisher is not None or exc.code in {
                     "publisher_confirm_timeout",
                     "publisher_confirm_timeout_unavailable",
                 }:
@@ -870,18 +999,33 @@ def _relay_once(
                             session,
                             remaining.id,
                             owner,
-                            error_code=exc.code,
+                            error_code=(
+                                "publish_timeout_or_connection"
+                                if publisher is not None
+                                else exc.code
+                            ),
                         )
                     break
             except Exception:
+                if publisher is not None:
+                    publisher.close()
                 failed += 1
                 logger.error("outbox publish failed: id=%s code=publish_failed", row.id)
                 release_outbox_lease(session, row.id, owner, error_code="publish_failed")
+                if publisher is not None:
+                    for remaining, _ in valid_rows[index + 1 :]:
+                        failed += 1
+                        release_outbox_lease(
+                            session, remaining.id, owner, error_code="publish_failed"
+                        )
+                    break
             else:
                 if mark_outbox_published(session, row.id, owner):
                     published += 1
     finally:
-        if connection is not None:
+        if publisher is not None and failed:
+            publisher.close()
+        elif publisher is None and connection is not None:
             _close_connection_bounded(connection)
     return OutboxRelayResult(len(rows), published, failed)
 
@@ -890,15 +1034,38 @@ async def outbox_relay_loop() -> None:
     """Repair pending Outbox rows while a Broker URL is configured."""
 
     owner = f"control-relay-{uuid.uuid4()}"
-    while True:
-        try:
-            if settings.rabbitmq_url:
-                from dlr.control.db import SessionLocal
+    publisher = RelayPublisher(rabbitmq.connect)
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dlr-outbox")
+    loop = asyncio.get_running_loop()
 
-                with SessionLocal() as session:
-                    await asyncio.to_thread(relay_once, session, owner)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.error("outbox relay cycle failed: code=topology_unavailable")
-        await asyncio.sleep(1.0)
+    def cycle() -> OutboxRelayResult:
+        from dlr.control.db import SessionLocal
+
+        try:
+            with SessionLocal() as session:
+                return relay_once(session, owner, publisher=publisher)
+        finally:
+            publisher.expire_idle()
+
+    try:
+        while True:
+            result = OutboxRelayResult(0, 0, 0)
+            try:
+                if settings.rabbitmq_url:
+                    result = await loop.run_in_executor(executor, cycle)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await loop.run_in_executor(executor, publisher.close)
+                logger.error("outbox relay cycle failed: code=topology_unavailable")
+            # A successful bounded pass continues immediately; failed rows have
+            # persisted retry_after, and idle work is revisited within one second.
+            if result.published:
+                await asyncio.sleep(0)
+            else:
+                await asyncio.to_thread(_wait_outbox)
+    finally:
+        # The same executor serializes close after any in-flight bounded Pika
+        # operation. Never close a live BlockingConnection from another thread.
+        await asyncio.shield(loop.run_in_executor(executor, publisher.close))
+        executor.shutdown(wait=False, cancel_futures=True)

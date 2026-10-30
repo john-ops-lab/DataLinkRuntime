@@ -8,6 +8,7 @@ table contents between tests.
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from alembic import command
@@ -38,6 +39,31 @@ TEST_MASTER_KEY = "test-master-key"
 settings.admin_token = ADMIN_TOKEN
 settings.worker_token = WORKER_TOKEN
 settings.master_key = TEST_MASTER_KEY
+
+
+@pytest.fixture(scope="session")
+def test_ingress_storage_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return tmp_path_factory.mktemp("ingress-storage")
+
+
+@pytest.fixture
+def deterministic_capacity_space(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provide isolated ample storage for tests unrelated to disk behavior."""
+    from dlr.control.services import ingress_capacity
+
+    monkeypatch.setattr(ingress_capacity, "_storage_free_bytes", lambda: 64 * 1024**3)
+    monkeypatch.setattr(ingress_capacity, "_disk_guard", ingress_capacity.DiskCapacityGuard())
+
+
+@pytest.fixture(autouse=True)
+def configure_test_ingress_storage(
+    monkeypatch: pytest.MonkeyPatch, test_ingress_storage_root: Path
+) -> None:
+    # Host tests have no Compose PGDATA mount. Supply an explicit test anchor,
+    # while preserving intentional private-runner/deployment overrides. Tests
+    # may still replace the setting or disk_usage for their own failure cases.
+    if "DLR_INGRESS_STORAGE_ROOT" not in os.environ:
+        monkeypatch.setattr(settings, "ingress_storage_root", str(test_ingress_storage_root))
 
 
 def _base_url() -> URL:
@@ -86,7 +112,8 @@ def _truncate(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE TABLE adapter_batches, subscription_quotas, user_templates, "
+                "TRUNCATE TABLE ingress_capacity_configurations, ingress_capacity_audits, "
+                "adapter_batches, subscription_quotas, user_templates, "
                 "builtin_packages, "
                 "builtin_package_uploads, "
                 "builtin_package_settings, adapters, adapter_versions, adapter_schedules, "

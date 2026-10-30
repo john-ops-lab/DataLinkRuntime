@@ -10,7 +10,7 @@ import logging
 from collections import Counter
 from collections.abc import Sequence
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
@@ -149,6 +149,7 @@ def _create_pending_execution_locked(
     resource_class: str | None = None,
     version_id_override: int | None = None,
     dependency_check: bool = False,
+    subscription_delivery_kind: str | None = None,
 ) -> Execution:
     """Create a fully initialized queued Execution under the Adapter lock.
 
@@ -185,12 +186,35 @@ def _create_pending_execution_locked(
                 "builtin_worker_upgrade_required",
                 "Upgrade the selected Worker for builtin package support",
             )
+    if trigger == "subscription":
+        # The caller validated the Activation policy. Keep these top-level
+        # metadata copies consistent with the same profile that Worker receives.
+        assert resource_profile_snapshot is not None
+        runtime_profile = resource_profile_snapshot
+        timeout_seconds = cast(int, runtime_profile["execution_timeout_seconds"])
+        grace_seconds = cast(int, runtime_profile["recovery_grace_seconds"])
+        cleanup_attempt_seconds = cast(
+            int, runtime_profile["workspace_cleanup_attempt_timeout_seconds"]
+        )
+        cleanup_total_seconds = cast(
+            int, runtime_profile["workspace_cleanup_total_timeout_seconds"]
+        )
+        claim_seconds = cast(int, runtime_profile["claim_timeout_seconds"])
+    else:
+        timeout_seconds = adapter.timeout_seconds
+        grace_seconds = settings.execution_recovery_grace_seconds
+        cleanup_attempt_seconds = settings.workspace_cleanup_attempt_timeout_seconds
+        cleanup_total_seconds = settings.workspace_cleanup_total_timeout_seconds
+        claim_seconds = settings.execution_claim_timeout_seconds
     execution = Execution(
         builtin_package_snapshot=dependency_snapshot,
         dependency_check=dependency_check,
         adapter_id=adapter.id,
         version_id=version_id,
         trigger=trigger,
+        subscription_delivery_kind=(subscription_delivery_kind or "single")
+        if trigger == "subscription"
+        else None,
         status="queued",
         dispatch_backend=dispatch_backend,
         dispatch_generation=dispatch_generation,
@@ -208,17 +232,13 @@ def _create_pending_execution_locked(
         input_source_type=input_source_type,
         input_config_revision=input_config_revision,
         input_snapshot=input_snapshot,
-        timeout_seconds_snapshot=adapter.timeout_seconds,
-        recovery_grace_seconds_snapshot=settings.execution_recovery_grace_seconds,
-        workspace_cleanup_attempt_timeout_seconds_snapshot=(
-            settings.workspace_cleanup_attempt_timeout_seconds
-        ),
-        workspace_cleanup_total_timeout_seconds_snapshot=(
-            settings.workspace_cleanup_total_timeout_seconds
-        ),
+        timeout_seconds_snapshot=timeout_seconds,
+        recovery_grace_seconds_snapshot=grace_seconds,
+        workspace_cleanup_attempt_timeout_seconds_snapshot=cleanup_attempt_seconds,
+        workspace_cleanup_total_timeout_seconds_snapshot=cleanup_total_seconds,
         workspace_cleanup_status="pending",
         # Freeze the bounded Claim handshake budget in the immutable snapshot.
-        claim_deadline_at=created_at + timedelta(seconds=settings.execution_claim_timeout_seconds),
+        claim_deadline_at=created_at + timedelta(seconds=claim_seconds),
         target_worker_id=target_worker_id,
         scheduled_for=scheduled_for,
         locale=get_system_locale(session),
@@ -479,6 +499,9 @@ def cancel_execution_locked(
         )
     request_cancellation(execution)
     if execution.status == "cancelled":
+        from dlr.control.services.subscription_business_batch import finalize_on_terminal
+
+        finalize_on_terminal(session, execution, not_started=execution.attempt_count == 0)
         release_execution_leases(session, execution.id)
         if execution.dispatch_backend == "rabbitmq":
             from dlr.control.services import admission, outbox

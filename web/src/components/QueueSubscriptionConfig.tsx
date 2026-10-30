@@ -5,11 +5,13 @@ import { api } from "../api";
 import type { Credential } from "../types";
 import type { EventSubscription, SubscriptionDraftState, SubscriptionSourceConfig } from "../subscription-types";
 import { subscriptionErrorMessage } from "../subscription-message";
+import EventBatchModeFields from "./EventBatchModeFields";
 
 type Source = "rabbitmq" | "rocketmq";
 interface Values {
   cluster_id: string; server: string; vhost: string; queue: string; topic: string;
   group_id: string; credential_id?: number; ca_pem?: string; limits: string; new_epoch?: boolean;
+  mode?: "per_event" | "business_batch";
 }
 export default function QueueSubscriptionConfig({ sourceType, subscription, adapterId, canManage,
   canTest = false, readOnly = false, sourceSelector, onDraftStateChange, onClose, onSave }: {
@@ -59,12 +61,12 @@ export default function QueueSubscriptionConfig({ sourceType, subscription, adap
       setBusy(true); setError(null);
       const common = { cluster_id: value.cluster_id, server: value.server,
         ca_pem: tls ? value.ca_pem?.trim() || null : null,
-        mode: "per_event" as const, ordering: "receipt_serial" as const,
+        ordering: "receipt_serial" as const,
         limits: limits as Record<string, number> };
       const next: SubscriptionSourceConfig = rabbit
-        ? { ...common, source_type: "rabbitmq", vhost: value.vhost, queue: value.queue,
+        ? { ...common, source_type: "rabbitmq", mode: value.mode ?? "per_event", vhost: value.vhost, queue: value.queue,
             credential_id: value.credential_id! }
-        : { ...common, source_type: "rocketmq", topic: value.topic, group_id: value.group_id,
+        : { ...common, source_type: "rocketmq", mode: "per_event", topic: value.topic, group_id: value.group_id,
             credential_id: value.credential_id ?? null };
       await onSave({ name: subscription?.name ?? "", description: subscription?.description ?? "",
         config: next, new_epoch: value.new_epoch === true }, test);
@@ -98,6 +100,7 @@ export default function QueueSubscriptionConfig({ sourceType, subscription, adap
         topic: config?.source_type === "rocketmq" ? config.topic : "",
         group_id: config?.source_type === "rocketmq" ? config.group_id : "",
         credential_id: config?.credential_id ?? undefined, ca_pem: config?.ca_pem ?? "",
+        mode: config?.mode ?? "per_event",
         limits: JSON.stringify(config?.limits ?? {}, null, 2), new_epoch: false,
       }}>
       <Form.Item name="cluster_id" label={t("queues.identity")} extra={t("queues.identityHint")}
@@ -124,6 +127,7 @@ export default function QueueSubscriptionConfig({ sourceType, subscription, adap
         rules={rabbit ? required : []} extra={t("credentialNote")}><Select disabled={!canManage || busy || readOnly} allowClear options={options} /></Form.Item>
       <p className="ux-muted">{t(`queues.${sourceType}StartHint`)}</p>
       <details ref={advanced} className="event-form-advanced"><summary>{t("ux.connectionOptions")}</summary>
+        {rabbit && <EventBatchModeFields />}
         {tls && <Form.Item name="ca_pem" label={t("ca")}><Input.TextArea maxLength={65536} rows={3} /></Form.Item>}
         <Form.Item name="limits" label={t("limits")}><Input.TextArea rows={3} /></Form.Item>
         {subscription && <Form.Item name="new_epoch" valuePropName="checked"><Checkbox>{t("newEpoch")}</Checkbox></Form.Item>}

@@ -179,7 +179,12 @@
     "source_message_digest_invalid": "消息完整性校验失败，请检查来源消息。",
     "source_message_encoding_invalid": "消息编码或压缩格式不受支持，请在来源检查。",
     "source_queue_unavailable": "队列不可用或已有其他接收方，请检查队列和权限。",
-    "source_ack_failed": "消息已保存，但来源确认失败，系统会在重投时去重。"
+    "source_ack_failed": "消息已保存，但来源确认失败，系统会在重投时去重。",
+    "ingress_capacity_unavailable": "接收容量配置尚未就绪或与平台不一致，请联系部署管理员；旧事件仍可继续处理。",
+    "ingress_disk_low": "持久存储可用空间不足，已暂停接收新数据。请联系部署管理员释放空间；已收到的数据会继续处理。",
+    "ingress_disk_unavailable": "无法检查持久存储，暂时停止接收新数据。请联系部署管理员。",
+    "subscription_batch_code_required": "请先保存支持多条输入的代码，在编辑页勾选“这段代码支持一次处理多条事件”并保存新版本，再开启接收。",
+    "subscription_replay_mode_conflict": "当前处理方式与这条数据原来的方式不同。请使用原运行配置重新处理，不要直接改用当前配置。"
   },
   "controlReserve": "控制记录预留（数量 / 字节）",
   "sourceLag": "源 lag",
@@ -187,7 +192,7 @@
   "versionComparison": "原激活配置 v{{original}} → 当前配置 v{{current}}",
   "sourceCredential": "来源凭据引用",
   "resumeNote": "沿用原激活与 source epoch 恢复连接，重新读取所引用来源凭据的当前 Secret Store 值；不跳过阻塞责任，也不应用工作台草稿。",
-  "limitsInvalid": "请填写已知容量字段的正整数 JSON 对象；服务端仅允许收紧上限。",
+  "limitsInvalid": "请填写已知容量字段的正整数 JSON 对象，不能超过平台配置的上限。",
   "previewNote": "请选择用于重新处理的代码，并核对运行节点和账号引用。修复版本只替换代码和依赖；改用当前运行配置时，如配置已变化，系统会拒绝本次操作。页面不显示账号密码。",
   "setting": "配置项",
   "continue": "继续",
@@ -323,16 +328,18 @@
       "stopped": "已停止接收",
       "receiving": "正在接收",
       "reconnecting": "正在重新连接",
-      "starting": "正在连接来源"
+      "starting": "正在连接来源",
+      "capacityPaused": "额度不足，暂缓接收"
     },
     "createManual": "点击按钮时运行",
     "createSchedule": "按设定时间运行",
-    "createEvent": "收到消息或资源变化时运行",
+    "createEvent": "收到外部数据、消息或资源变化时运行",
     "sourceType": {
       "kafka": "Kafka 消息",
       "kubernetes": "Kubernetes 资源变化",
       "rabbitmq": "RabbitMQ 消息",
-      "rocketmq": "RocketMQ 消息"
+      "rocketmq": "RocketMQ 消息",
+      "http": "HTTP 数据推送"
     },
     "connectionOptions": "高级连接设置",
     "saveAndTest": "保存并测试连接",
@@ -381,7 +388,14 @@
     "manualTest": "使用已保存输入测试一次",
     "manualTestHint": "使用下面已保存的手动测试输入，不从事件来源读取新事件。接收或旧事件处理期间不可测试。",
     "statusUnknown": "运行方式待确认",
-    "checkingStatus": "正在查询事件来源；请稍候再切换运行方式。"
+    "checkingStatus": "正在查询事件来源；请稍候再切换运行方式。",
+    "processingCount": "处理中 {{count}} 条",
+    "oldestWaiting": "最老等待：{{duration}}",
+    "noWaiting": "无等待",
+    "waitSeconds": "{{count}} 秒",
+    "waitMinutes": "{{count}} 分钟",
+    "capacityPausedHint": "已接收的消息继续处理，既有记录保持保留。可在下方查看接收记录，或展开容量详情；等待留存额度释放，或停止接收后调整来源额度。",
+    "viewCapacity": "查看容量详情"
   },
   "repairExitNote": "继续处理已收到的旧事件，仍使用各事件接收时固定的代码和运行配置。修复版本只用于您明确选中的重新处理，不会自动开启来源接收。",
   "queues": {
@@ -412,5 +426,83 @@
     "errors": {
       "source_epoch_required": "连接范围已改变。请先停止接收并结清旧事件，再在高级连接设置中确认重新开始。"
     }
+  },
+  "http": {
+    "hint": "让外部系统向这个适配器推送 JSON 数据。系统先保存收到的数据，再按顺序运行处理代码。",
+    "saveNote": "保存配置不会开启接收。保存代码和运行节点后，再点击“开启接收”。",
+    "credential": "接收令牌",
+    "credentialHint": "选择已有的令牌账号，发送方使用对应令牌。页面不会显示令牌内容。",
+    "path": "接收地址路径",
+    "pathHint": "发送方使用 DLR 的对外访问地址加上此路径。",
+    "sendHint": "使用 POST 发送未压缩的 UTF-8 JSON；Authorization: Bearer 携带接收令牌，Idempotency-Key 携带该条数据唯一且固定的编号。",
+    "retryHint": "202 表示已保存，不表示处理成功。重试保留原编号和原文；200 表示已接收过，可使用返回的 status_url 查询当前处理状态。",
+    "capacityHint": "留空对象 {} 沿用平台默认额度。修改只影响此来源，不能超过部署管理员配置的上限；停止接收并处理完旧事件后才能修改。",
+    "capacityFields": "可设置 pending_count、pending_bytes、history_count、history_bytes、dedupe_count、rate，值须为正整数。",
+    "checked": "接收配置和令牌引用检查通过；尚未验证外部系统发送，也未执行业务。",
+    "check": "检查接收配置",
+    "saveAndCheck": "保存并检查配置",
+    "help": "选择接收令牌并保存来源配置，保存处理代码和运行节点，再开启接收。发送方保留每条数据的固定编号和原文。停止接收后，已保存的数据仍会继续处理。",
+    "eventSummary": "HTTP 数据 · 编号 {{id}}",
+    "reset": "更换接收地址",
+    "resetNote": "请先停止接收并处理完旧事件。此操作会生成新的接收地址；旧地址仅允许使用当前有效令牌查询或读回已收到的记录，不能接收新的数据。旧记录和处理结果会保留。请同步更新发送方地址。",
+    "confirmReset": "我已了解接收地址会改变，确认更换并同步发送方。",
+    "errors": {
+      "event_identity_conflict": "这个编号已收到过，但正文不同。请使用原编号和原文重试，或给新数据使用新编号；其他数据仍可正常接收。",
+      "source_credential_unavailable": "接收令牌不可用，请检查已有令牌账号和授权。",
+      "ingress_disabled": "尚未开启接收；已收到的记录仍可查询。",
+      "ingress_epoch_retired": "接收地址已更换。此旧地址只能读回已有记录，请更新发送方地址。",
+      "ingress_unavailable": "暂时不能接收新数据，请稍后保留原编号和原文重试。"
+    },
+    "rateLimit": "接收速率上限（条/秒）"
+  },
+  "businessBatch": {
+    "mode": "处理方式",
+    "modeHint": "修改前需停止接收并处理完旧事件。保存配置不会自动开启接收。",
+    "single": "逐条运行（默认）",
+    "multiple": "一次处理多条（代码需支持）",
+    "codeRequired": "请先保存能够处理多条输入的代码，再开启接收。",
+    "savedOnly": "选择此项只保存处理方式，不会自动修改代码，也不会把普通代码变成多条处理。",
+    "codeHelp": "多条处理代码说明",
+    "markerHint": "确认代码支持后，在编辑页展开“多条事件代码支持”，勾选“这段代码支持一次处理多条事件”并保存新版本。接口调用者可在运行参数中加入下列等价标记。仅勾选或添加标记不会修改代码。",
+    "exampleHint": "以下Python示例只展示顺序和结果格式。请将process_one替换为真实的逐条幂等写入；未实现时不会报告成功。无法确认的异常按结果未确认处理，后续成员标为尚未处理。",
+    "orderHint": "每条数据完成业务写入后才能报告成功；遇到失败或结果不明立即停止，后面的数据标为尚未处理。取消会影响这次运行里所有尚未完成的数据。",
+    "receivingHint": "每次运行可一起处理多条数据，每条处理结果仍单独记录。",
+    "group": "同次运行",
+    "groupCount": "本次一起处理 {{count}} 条",
+    "sharedExecution": "查看同次运行",
+    "cancelHint": "这些数据共用一次运行。取消运行会影响其中所有尚未完成的数据；已确认成功的结果不会撤销。",
+    "unknownHint": "本条的处理结果尚未确认，可能已经写入目标。请先核对目标，再用原编号和原文重新处理，不要当作未执行。",
+    "notRunHint": "前面的数据没有成功，本条尚未处理。请先解决前面的问题，再补处理本条。",
+    "notStartedHint": "这次运行尚未开始就已取消，本条尚未处理。需要时可按原方式补处理。",
+    "memberPosition": "本次第 {{position}} 条",
+    "skipped": "已跳过",
+    "outcomes": {
+      "succeeded": "处理成功",
+      "failed": "处理失败",
+      "unknown": "结果未确认",
+      "not_run": "尚未处理"
+    },
+    "failedHint": "请查看执行详情，确认原因并修复后，再按原编号补处理；原失败记录会保留。",
+    "codes": {
+      "business_error": "处理代码报告失败，请查看执行详情。",
+      "target_unavailable": "目标暂时不可用，请检查目标服务后补处理。",
+      "target_permission_denied": "目标账号没有所需权限，请检查绑定的账号和目标授权。",
+      "target_identity_conflict": "目标已存在同编号但内容不同的数据，请先核对目标，不能直接覆盖。",
+      "target_invalid_data": "目标不接受这条数据，请检查字段和类型。",
+      "target_retry_exhausted": "目标重试次数或时间已用完，请确认目标恢复后再补处理。",
+      "target_commit_unknown": "目标提交结果未确认，请先核对目标后再按原编号处理。",
+      "execution_cancelled": "这次运行已取消，尚未确认的处理结果需要核对。",
+      "execution_timeout": "这次运行超时，请核对目标是否已写入后再处理。",
+      "worker_lost": "运行节点失去连接，请核对目标结果及节点状态。",
+      "result_unavailable": "未能取得完整处理结果，请核对目标后再处理。",
+      "batch_result_invalid": "代码返回的逐条结果格式不符合要求，请修复代码后再处理。",
+      "batch_output_truncated": "逐条处理结果过大，未能完整保存。请减小返回内容后再处理。",
+      "predecessor_failed": "前面的数据没有成功，本条尚未处理。",
+      "execution_not_started": "运行尚未开始，本条未被处理。"
+    },
+    "editorTitle": "多条事件代码支持",
+    "codeDeclaration": "这段代码支持一次处理多条事件",
+    "declarationHint": "仅在代码能按顺序处理每条数据并返回逐条结果时勾选。请保存新版本后再开启接收；此声明不会修改代码或自动运行。",
+    "invalidConfig": "当前运行参数不是有效JSON对象，请先恢复有效版本；此处不会覆盖原草稿。"
   }
 }
