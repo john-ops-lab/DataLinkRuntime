@@ -967,6 +967,15 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
         )
         trust_file.chmod(0o600)
         monkeypatch.setattr(lease_session_v4, "_open_v4", send_via_api)
+        if os.environ.get("DLR_TEST_CLAIM_PROCESS") != "1":
+            # This fixture verifies real database/API transactions with an
+            # in-process transport on every OS. Native Linux IO is exercised
+            # separately by the explicit TLS/child and cross-host paths.
+            monkeypatch.setattr(
+                lease_session_v4.WorkerLeaseSession,
+                "_post",
+                lease_session_v4.WorkerLeaseSession._post_in_process,
+            )
         base_url = "https://control.example"
         if os.environ.get("DLR_TEST_CLAIM_PROCESS") == "1":
             base_url = tls_stack.enter_context(_local_tls_control(app, tmp_path, monkeypatch))
