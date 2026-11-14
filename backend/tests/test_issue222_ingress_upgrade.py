@@ -14,7 +14,6 @@ from dlr.control.models import (
     EventSubscription,
     Execution,
     SubscriptionConfigVersion,
-    Worker,
 )
 from test_issue219_upgrade import migration_config
 from test_issue219_upgrade import upgrade_database as database_fixture
@@ -30,9 +29,14 @@ def test_upgrade_preserves_pending_failed_and_kubernetes_control(upgrade_databas
     config = migration_config(upgrade_database)
     command.upgrade(config, "0050_issue223_adapter_batches")
     with Session(upgrade_database) as session, session.begin():
-        worker = Worker(name="upgrade-worker", status="online", capabilities=["python"])
+        worker_id = session.scalar(
+            text(
+                "INSERT INTO workers (name,status,capabilities) "
+                "VALUES ('upgrade-worker','online','[\"python\"]') RETURNING id"
+            )
+        )
         adapter = Adapter(name="old-subscription", language="python", adapter_type="task")
-        session.add_all([worker, adapter])
+        session.add(adapter)
         session.flush()
         revision = AdapterVersion(adapter_id=adapter.id, seq=1, code="pass", requirements="")
         session.add(revision)
@@ -59,7 +63,7 @@ def test_upgrade_preserves_pending_failed_and_kubernetes_control(upgrade_databas
                 "(subscription_id,config_version_id,revision_id,worker_id) "
                 "VALUES (:sub,:config,:revision,:worker) RETURNING id"
             ),
-            {"sub": sub.id, "config": cv.id, "revision": revision.id, "worker": worker.id},
+            {"sub": sub.id, "config": cv.id, "revision": revision.id, "worker": worker_id},
         )
         sub.activation_id = activation_id
         sub_id = sub.id
@@ -163,7 +167,7 @@ def test_upgrade_preserves_pending_failed_and_kubernetes_control(upgrade_databas
 
 def test_fresh_http_schema_and_downgrade_preserve_permanent_route_marker(upgrade_database):
     config = migration_config(upgrade_database)
-    command.upgrade(config, "head")
+    command.upgrade(config, "0054_issue222_receipt_ttl_guard")
     with upgrade_database.begin() as connection:
         assert connection.scalar(text("SELECT count(*) FROM http_ingress_routes")) == 0
         # A removed subscription leaves an unassigned marker; public IDs remain
@@ -202,8 +206,13 @@ def test_migration_adds_old_execution_and_control_reserve_deltas_without_reset(
     command.upgrade(config, "0050_issue223_adapter_batches")
     with Session(upgrade_database) as session, session.begin():
         adapter = Adapter(name="retained-copy", language="python", adapter_type="task")
-        worker = Worker(name="old-worker", status="online", capabilities=["python"])
-        session.add_all([adapter, worker])
+        worker_id = session.scalar(
+            text(
+                "INSERT INTO workers (name,status,capabilities) "
+                "VALUES ('old-worker','online','[\"python\"]') RETURNING id"
+            )
+        )
+        session.add(adapter)
         session.flush()
         version = AdapterVersion(adapter_id=adapter.id, seq=1, code="pass", requirements="")
         session.add(version)
@@ -223,7 +232,7 @@ def test_migration_adds_old_execution_and_control_reserve_deltas_without_reset(
                 "INSERT INTO subscription_activations(subscription_id,config_version_id,"
                 "revision_id,worker_id) VALUES (:sub,:cv,:revision,:worker) RETURNING id"
             ),
-            {"sub": sub.id, "cv": cv.id, "revision": version.id, "worker": worker.id},
+            {"sub": sub.id, "cv": cv.id, "revision": version.id, "worker": worker_id},
         )
         # Build the genuine old schema row; the current ORM deliberately has
         # additional columns that are not present before this upgrade.

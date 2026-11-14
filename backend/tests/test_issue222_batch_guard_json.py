@@ -5,11 +5,13 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
-from alembic import command
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from sqlalchemy import event, func, select, text
 from sqlalchemy.exc import IntegrityError
 
+from dlr.common.schema_version import SCHEMA_REVISION
 from dlr.control.models import (
     EventDelivery,
     EventReceipt,
@@ -27,20 +29,48 @@ world = foundation_world
 batch_world = core_batch_world
 
 
+def apply_guard_revision(engine: Any, revision: str, *, down: bool = False) -> None:
+    """Exercise one replace-function revision without downgrading newer schema.
+
+    Full-chain upgrade and rollback refusal have separate migration tests.
+    These function-identity/custody cases keep the current schema and its v4
+    authority guards intact; no Alembic version is stamped or rewritten.
+    """
+    assert revision in {"0053_issue222_batch_guard_json", "0054_issue222_receipt_ttl_guard"}
+    script = ScriptDirectory.from_config(migration_config(engine)).get_revision(revision)
+    assert script is not None
+    with engine.begin() as connection, Operations.context(MigrationContext.configure(connection)):
+        (script.module.downgrade if down else script.module.upgrade)()
+
+
 def migration(
     factory: Any, monkeypatch: pytest.MonkeyPatch, revision: str, *, down: bool = False
 ) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    config = migration_config(factory.kw["bind"])
-    (command.downgrade if down else command.upgrade)(config, revision)
+    if down:
+        assert revision == "0052_issue222_business_batches"
+    else:
+        assert revision in {"0053_issue222_batch_guard_json", "head"}
+    apply_guard_revision(factory.kw["bind"], "0053_issue222_batch_guard_json", down=down)
 
 
 @contextmanager
 def restore_migration_head(factory: Any, monkeypatch: pytest.MonkeyPatch):
+    with factory() as session:
+        original = session.scalar(
+            text("SELECT pg_get_functiondef('dlr_batch_validate(bigint)'::regprocedure)")
+        )
     try:
         yield
     finally:
         migration(factory, monkeypatch, "head")
+        with factory() as session:
+            assert (
+                session.scalar(
+                    text("SELECT pg_get_functiondef('dlr_batch_validate(bigint)'::regprocedure)")
+                )
+                == original
+            )
 
 
 def assert_migration_head(factory: Any) -> None:
@@ -115,8 +145,7 @@ def test_0052_upgrade_preserves_large_accepted_batch_and_validates_guard(
                 text("SELECT dlr_batch_validate(:identity)"), {"identity": execution_id}
             )
             assert (
-                session.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0053_issue222_batch_guard_json"
+                session.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_REVISION
             )
             assert (
                 session.scalar(text("SELECT 'dlr_batch_validate(bigint)'::regprocedure::oid"))

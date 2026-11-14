@@ -10,6 +10,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.exc import IntegrityError
 
 from dlr.common.config import settings
 
@@ -88,7 +89,36 @@ def test_fresh_head_has_only_reliable_execution_defaults_and_constraints() -> No
         )
         assert "legacy" not in constraints["ck_executions_dispatch_backend"]
         assert "rabbitmq" in constraints["ck_executions_dispatch_backend"]
-        assert "protocol_version = 3" in constraints["ck_workers_protocol_version"]
+        # Current storage supports v3 and v4 while keeping the legacy default.
+        assert (
+            connection.scalar(
+                text(
+                    "INSERT INTO workers (name,status,capabilities) "
+                    "VALUES ('default-protocol','offline','[]') RETURNING protocol_version"
+                )
+            )
+            == 3
+        )
+        for protocol in (3, 4):
+            assert (
+                connection.scalar(
+                    text(
+                        "INSERT INTO workers (name,status,capabilities,protocol_version) "
+                        "VALUES (:name,'offline','[]',:protocol) RETURNING protocol_version"
+                    ),
+                    {"name": f"allowed-{protocol}", "protocol": protocol},
+                )
+                == protocol
+            )
+        for protocol in (1, 2, 5):
+            with pytest.raises(IntegrityError), connection.begin_nested():
+                connection.execute(
+                    text(
+                        "INSERT INTO workers (name,status,capabilities,protocol_version) "
+                        "VALUES (:name,'offline','[]',:protocol)"
+                    ),
+                    {"name": f"invalid-{protocol}", "protocol": protocol},
+                )
         assert "dispatch_generation >= 1" in constraints["ck_executions_dispatch_generation"]
         for table in ("execution_outbox", "execution_attempts", "adapter_execution_slots"):
             assert connection.scalar(text("SELECT to_regclass(:table)"), {"table": table}) == table

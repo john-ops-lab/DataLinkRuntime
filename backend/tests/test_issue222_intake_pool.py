@@ -247,7 +247,7 @@ def test_lifespan_waits_for_http_future_before_intake_pool_close(monkeypatch, na
         monkeypatch.setattr(app_module, name, background)
 
     async def exercise():
-        context = app_module.lifespan(SimpleNamespace())
+        context = app_module.lifespan(SimpleNamespace(state=SimpleNamespace()))
         await context.__aenter__()
         closing = asyncio.create_task(context.__aexit__(None, None, None))
         try:
