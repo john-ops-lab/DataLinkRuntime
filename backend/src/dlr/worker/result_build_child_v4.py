@@ -216,9 +216,9 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
             for name in AttemptResultBody.model_fields
             if name != "claim_token"
         }
-        result_fd = os.memfd_create(  # type: ignore[attr-defined]
+        result_fd = os.memfd_create(  # type: ignore[attr-defined, unused-ignore]
             "dlr-result",
-            os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,  # type: ignore[attr-defined]
+            os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,  # type: ignore[attr-defined, unused-ignore]
         )
 
         def write(data: bytes) -> None:
@@ -231,8 +231,8 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
 
         mac, size = stream_result_request(body, action.claim_token, max_body, write)
         seals = sandbox._launch_seals()
-        fcntl.fcntl(result_fd, fcntl.F_ADD_SEALS, seals)  # type: ignore[attr-defined]
-        if fcntl.fcntl(result_fd, fcntl.F_GET_SEALS) & seals != seals:  # type: ignore[attr-defined]
+        fcntl.fcntl(result_fd, fcntl.F_ADD_SEALS, seals)  # type: ignore[attr-defined, unused-ignore]
+        if fcntl.fcntl(result_fd, fcntl.F_GET_SEALS) & seals != seals:  # type: ignore[attr-defined, unused-ignore]
             raise ValueError("result snapshot unavailable")
         _send(channel, {"state": "result", "size_bytes": size, "body_mac": mac.hex()})
         if (

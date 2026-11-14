@@ -141,7 +141,7 @@ class _KernelKillTimer:
         self._libc = libc
         self._timer = ctypes.c_void_p()
         event = _Sigevent(None, signal.SIGKILL, 0, (ctypes.c_int * 12)())  # SIGEV_SIGNAL
-        clock = time.CLOCK_BOOTTIME  # type: ignore[attr-defined]
+        clock = time.CLOCK_BOOTTIME  # type: ignore[attr-defined, unused-ignore]
         if libc.timer_create(clock, ctypes.byref(event), ctypes.byref(self._timer)):
             raise OSError(ctypes.get_errno(), "supervisor timer unavailable")
         self._active = True
@@ -161,7 +161,7 @@ class _KernelKillTimer:
 
 
 def _clock() -> float:
-    value = time.clock_gettime(time.CLOCK_BOOTTIME)  # type: ignore[attr-defined]
+    value = time.clock_gettime(time.CLOCK_BOOTTIME)  # type: ignore[attr-defined, unused-ignore]
     if not math.isfinite(value) or value < 0:
         raise ValueError("invalid clock")
     return value
@@ -291,9 +291,9 @@ def _arm(timer_fd: int, deadline: float) -> None:
     nanoseconds = numerator * 1_000_000_000 // denominator
     if nanoseconds <= 0:
         raise ValueError("invalid timer deadline")
-    os.timerfd_settime_ns(  # type: ignore[attr-defined]
+    os.timerfd_settime_ns(  # type: ignore[attr-defined, unused-ignore]
         timer_fd,
-        flags=os.TFD_TIMER_ABSTIME,  # type: ignore[attr-defined]
+        flags=os.TFD_TIMER_ABSTIME,  # type: ignore[attr-defined, unused-ignore]
         initial=nanoseconds,
     )
 
@@ -398,7 +398,7 @@ def _sandbox_guardian(
                 os._exit(127)
         os.close(gate_read)
         gate_read = -1
-        helper_fd = os.pidfd_open(pid, 0)  # type: ignore[attr-defined]
+        helper_fd = os.pidfd_open(pid, 0)  # type: ignore[attr-defined, unused-ignore]
         try:
             if control.send(b"GATED") != 5:
                 raise OSError("sandbox gate unavailable")
@@ -486,7 +486,7 @@ def _probe_spawn(
     supervisor, guardian = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     supervisor_fd = -1
     try:
-        supervisor_fd = os.pidfd_open(os.getpid(), 0)  # type: ignore[attr-defined]
+        supervisor_fd = os.pidfd_open(os.getpid(), 0)  # type: ignore[attr-defined, unused-ignore]
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.unshare(0x20000000) != 0:  # CLONE_NEWPID; only subsequent children enter it.
             raise OSError(ctypes.get_errno(), "PID namespace unavailable")
@@ -579,12 +579,12 @@ def _run(
     try:
         if os.getppid() != parent_pid:
             raise ValueError("parent changed")
-        parent_fd = os.pidfd_open(parent_pid, 0)  # type: ignore[attr-defined]
+        parent_fd = os.pidfd_open(parent_pid, 0)  # type: ignore[attr-defined, unused-ignore]
         if os.getppid() != parent_pid:
             raise ValueError("parent changed")
-        timer_fd = os.timerfd_create(  # type: ignore[attr-defined]
-            time.CLOCK_BOOTTIME,  # type: ignore[attr-defined]
-            flags=os.TFD_CLOEXEC,  # type: ignore[attr-defined]
+        timer_fd = os.timerfd_create(  # type: ignore[attr-defined, unused-ignore]
+            time.CLOCK_BOOTTIME,  # type: ignore[attr-defined, unused-ignore]
+            flags=os.TFD_CLOEXEC,  # type: ignore[attr-defined, unused-ignore]
         )
         poller = select.poll()
         poller.register(sock, select.POLLIN | select.POLLHUP | select.POLLERR)

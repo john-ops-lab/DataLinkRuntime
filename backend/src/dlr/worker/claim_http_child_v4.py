@@ -127,7 +127,7 @@ def _receive_output_fd(
                 if type(value) is not int:
                     raise ValueError("sealed request unavailable")
                 seals |= value
-            get_seals = fcntl.F_GET_SEALS  # type: ignore[attr-defined]
+            get_seals = fcntl.F_GET_SEALS  # type: ignore[attr-defined, unused-ignore]
             if (
                 not stat.S_ISREG(info.st_mode)
                 or info.st_uid != os.geteuid()
@@ -152,8 +152,12 @@ class _PreadBody:
     def __init__(self, fd: int, size: int) -> None:
         self._fd, self._size, self._offset = fd, size, 0
 
-    def read(self, size: int) -> bytes:
-        if type(size) is not int or size <= 0:
+    def read(self, size: int = -1) -> bytes:
+        if size == -1:
+            size = 65536
+        if size == 0:
+            return b""
+        if type(size) is not int or size < 0:
             raise ValueError("invalid request read")
         if self._offset == self._size:
             return b""
@@ -343,7 +347,7 @@ def _arm_deadline(deadline_ns: object) -> None:
     """Kernel kills this process at the suspend-aware absolute deadline."""
     if type(deadline_ns) is not int or deadline_ns <= 0:
         raise ValueError("invalid deadline")
-    boot_clock = time.CLOCK_BOOTTIME  # type: ignore[attr-defined]
+    boot_clock = time.CLOCK_BOOTTIME  # type: ignore[attr-defined, unused-ignore]
     if time.clock_gettime_ns(boot_clock) >= deadline_ns:
         raise TimeoutError
     # The default SIGALRM disposition terminates even if the parent or this

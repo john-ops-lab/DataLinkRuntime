@@ -752,7 +752,9 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
     database = test_engine.url.database
     assert database and database.isidentifier()
     monkeypatch.setattr(settings, "worker_v4_database_role", runtime_role)
-    monkeypatch.setattr(settings, "worker_v4_database_admin_roles", ["postgres"])
+    admin_role = test_engine.url.username
+    assert admin_role is not None
+    monkeypatch.setattr(settings, "worker_v4_database_admin_roles", [admin_role])
     signing_key = secrets.token_bytes(32)
     key_file = tmp_path / "proof-key"
     key_file.write_text(signing_key.hex())
@@ -880,8 +882,9 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 visible = observer.execute(
                     text(
                         "SELECT usename, datname, backend_type FROM pg_catalog.pg_stat_activity "
-                        "WHERE datname = current_database() AND usename = 'postgres'"
-                    )
+                        "WHERE datname = current_database() AND usename = :admin_role"
+                    ),
+                    {"admin_role": admin_role},
                 ).all()
                 assert visible
             assert client.post(endpoint, json={}).status_code == 503

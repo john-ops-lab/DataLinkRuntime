@@ -209,7 +209,7 @@ class ClaimPreparer:
             if pidfd is None:
                 raise ValueError("Claim child unavailable")
             if self._alive(pidfd):
-                signal.pidfd_send_signal(pidfd, signal.SIGKILL)  # type: ignore[attr-defined]
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)  # type: ignore[attr-defined, unused-ignore]
             if not claim_http_v4._reap(process, pidfd, claim_http_v4._clock() + 2.0):
                 raise ValueError("Claim child unavailable")
             if not claim_http_v4._join_creator(ticket):
@@ -261,7 +261,7 @@ class ClaimPreparer:
                 or info.st_uid != os.geteuid()
                 or not 0 < info.st_size <= limit
                 or info.st_nlink != 0
-                or fcntl.fcntl(fd, fcntl.F_GET_SEALS) & sandbox._launch_seals()  # type: ignore[attr-defined]
+                or fcntl.fcntl(fd, fcntl.F_GET_SEALS) & sandbox._launch_seals()  # type: ignore[attr-defined, unused-ignore]
                 != sandbox._launch_seals()
             ):
                 raise ValueError("launch handoff unavailable")
@@ -590,7 +590,7 @@ class ClaimPreparer:
             with ticket.lock:
                 if ticket.abandoned or ticket.process is None:
                     raise ValueError("Claim child unavailable")
-            pidfd = os.pidfd_open(ticket.process.pid, 0)  # type: ignore[attr-defined]
+            pidfd = os.pidfd_open(ticket.process.pid, 0)  # type: ignore[attr-defined, unused-ignore]
             if (
                 claim_http_v4._receive(channel, 1, io_deadline, (lease._lost, stop)) != b"R"
                 or ticket.thread is None

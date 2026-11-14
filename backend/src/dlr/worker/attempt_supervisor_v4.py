@@ -628,7 +628,7 @@ def start_supervisor(
                     str(live._child_fd),
                     str(os.getpid()),
                 ]
-                descriptors = (child.fileno(), live._child_fd)
+                descriptors: tuple[int, ...] = (child.fileno(), live._child_fd)
                 if _sandbox_launch is not None:
                     args.extend(_sandbox_launch.arguments())
                     descriptors += _sandbox_launch.descriptors()

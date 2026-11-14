@@ -158,9 +158,9 @@ class ClaimCoordinator:
                 # No request or credentials were sent to an abandoned spawn.
                 pidfd: int | None = None
                 try:
-                    pidfd = os.pidfd_open(process.pid, 0)  # type: ignore[attr-defined]
+                    pidfd = os.pidfd_open(process.pid, 0)  # type: ignore[attr-defined, unused-ignore]
                     if process.poll() is None:
-                        signal.pidfd_send_signal(pidfd, signal.SIGKILL)  # type: ignore[attr-defined]
+                        signal.pidfd_send_signal(pidfd, signal.SIGKILL)  # type: ignore[attr-defined, unused-ignore]
                     process.wait(timeout=2)
                     os.close(pidfd)
                 except Exception:
@@ -252,7 +252,7 @@ class ClaimCoordinator:
             owned_child = child_channel
             child_channel = None
             spawn, child = self._spawn_child(owned_child, deadline, address_space_bytes)
-            pidfd = os.pidfd_open(child.pid, 0)  # type: ignore[attr-defined]
+            pidfd = os.pidfd_open(child.pid, 0)  # type: ignore[attr-defined, unused-ignore]
             if (
                 _read_exact(channel, 1) != b"R"
                 or spawn.thread is None
@@ -553,7 +553,7 @@ class ClaimCoordinator:
             if process.poll() is None:
                 if pidfd is None:
                     raise ValueError("child identity unavailable")
-                signal.pidfd_send_signal(pidfd, signal.SIGKILL)  # type: ignore[attr-defined]
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)  # type: ignore[attr-defined, unused-ignore]
             process.wait(timeout=2)
             if pidfd is not None:
                 os.close(pidfd)
@@ -636,7 +636,7 @@ class ClaimCoordinator:
             spawn, child = self._spawn_child(
                 owned_child, deadline, address_space, module="dlr.control.services.result_child_v4"
             )
-            pidfd = os.pidfd_open(child.pid, 0)  # type: ignore[attr-defined]
+            pidfd = os.pidfd_open(child.pid, 0)  # type: ignore[attr-defined, unused-ignore]
             if (
                 _read_exact(channel, 1) != b"R"
                 or spawn.thread is None

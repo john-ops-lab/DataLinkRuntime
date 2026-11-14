@@ -44,7 +44,7 @@ def _valid_snapshot(snapshot: ResultSnapshot, owner: SupervisedExecution) -> boo
             and info.st_nlink == 0
             and (info.st_dev, info.st_ino, info.st_size) == snapshot.identity
             and info.st_size == snapshot.size
-            and fcntl.fcntl(snapshot.fd, fcntl.F_GET_SEALS) & seals == seals  # type: ignore[attr-defined]
+            and fcntl.fcntl(snapshot.fd, fcntl.F_GET_SEALS) & seals == seals  # type: ignore[attr-defined, unused-ignore]
         )
     except (AttributeError, OSError, ValueError):
         return False

@@ -165,6 +165,8 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                 from dlr.worker import workspace, workspace_fs_v4
 
                 phase = "broker_configuration"
+                if config.broker_config_file is None:
+                    raise ValueError("Broker configuration unavailable")
                 broker = broker_config_v4.BrokerConfigV4.from_private_file(
                     config.broker_config_file,
                     worker_id=config.worker_id,

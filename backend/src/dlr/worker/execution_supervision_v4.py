@@ -275,7 +275,7 @@ class SupervisedExecution:
                 )
                 if ticket.process is None or ticket.abandoned:
                     raise ValueError("result child unavailable")
-                pidfd = os.pidfd_open(ticket.process.pid, 0)  # type: ignore[attr-defined]
+                pidfd = os.pidfd_open(ticket.process.pid, 0)  # type: ignore[attr-defined, unused-ignore]
                 if (
                     claim_http_v4._receive(channel, 1, deadline, (self._stop,)) != b"R"
                     or ticket.thread is None

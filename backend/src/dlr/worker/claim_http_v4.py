@@ -243,7 +243,7 @@ def _retain(
 
 
 def _clock() -> float:
-    return time.clock_gettime(time.CLOCK_BOOTTIME)  # type: ignore[attr-defined]
+    return time.clock_gettime(time.CLOCK_BOOTTIME)  # type: ignore[attr-defined, unused-ignore]
 
 
 def _check_cancelled(events: tuple[threading.Event, ...]) -> None:
@@ -362,7 +362,7 @@ def _reap(
         if not poller.poll(max(1, math.ceil(min(remaining, 0.1) * 1000))):
             continue
         try:
-            result = os.waitid(os.P_PIDFD, pidfd, os.WEXITED | os.WNOHANG)  # type: ignore[attr-defined]
+            result = os.waitid(os.P_PIDFD, pidfd, os.WEXITED | os.WNOHANG)  # type: ignore[attr-defined, unused-ignore]
         except (OSError, ChildProcessError):
             return False
         if result is None:
@@ -467,7 +467,7 @@ def _spawn_until(
         if abandoned and process is not None:
             # No payload was sent. End the original child without guessing a PID.
             try:
-                fd = os.pidfd_open(process.pid, 0)  # type: ignore[attr-defined]
+                fd = os.pidfd_open(process.pid, 0)  # type: ignore[attr-defined, unused-ignore]
             except BaseException as error:
                 _retain(process, None, None)
                 if not isinstance(error, Exception):
@@ -476,7 +476,7 @@ def _spawn_until(
                 reaped = False
                 try:
                     with suppress(Exception):
-                        signal.pidfd_send_signal(fd, signal.SIGKILL)  # type: ignore[attr-defined]
+                        signal.pidfd_send_signal(fd, signal.SIGKILL)  # type: ignore[attr-defined, unused-ignore]
                     try:
                         reaped = _reap(process, fd, _clock() + 2.0)
                     except Exception:

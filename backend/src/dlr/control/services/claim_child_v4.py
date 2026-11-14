@@ -54,7 +54,7 @@ def _send_frame(channel: socket.socket, value: dict[str, Any]) -> None:
 
 
 def _clock() -> float:
-    value = time.clock_gettime(time.CLOCK_BOOTTIME)  # type: ignore[attr-defined]
+    value = time.clock_gettime(time.CLOCK_BOOTTIME)  # type: ignore[attr-defined, unused-ignore]
     if not math.isfinite(value) or value < 0:
         raise ValueError("Claim deadline unavailable")
     return value

@@ -280,6 +280,8 @@ def create_live_workspace(
                 if mount_id is None:
                     raise ValueError("workspace mount unavailable")
                 leaf_name = f"dlr-exec-{task.execution_id}"
+                if cgroup._config.namespace_identity is None:
+                    raise ValueError("cgroup namespace unavailable")
                 parent_record: dict[str, object] = {
                     "version": 1,
                     "execution_id": task.execution_id,

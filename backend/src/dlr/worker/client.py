@@ -48,7 +48,7 @@ class V4Renewal:
 def _v4_lease_clock() -> float:
     """Read an elapsed clock including Linux suspend, or fail closed."""
     try:
-        clock = time.CLOCK_BOOTTIME if sys.platform == "linux" else time.CLOCK_MONOTONIC  # type: ignore[attr-defined]
+        clock = time.CLOCK_BOOTTIME if sys.platform == "linux" else time.CLOCK_MONOTONIC  # type: ignore[attr-defined, unused-ignore]
         now = time.clock_gettime(clock)
         if not math.isfinite(now) or now < 0:
             raise OSError("invalid clock")
