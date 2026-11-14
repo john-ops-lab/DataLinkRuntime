@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from fastapi.testclient import TestClient
+from psycopg import sql as pg_sql
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
@@ -749,6 +750,7 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
     monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
     runtime_role = "dlr_w1_" + uuid4().hex[:12]
     old_role = "dlr_old_" + uuid4().hex[:12]
+    role_password = secrets.token_hex(32)
     database = test_engine.url.database
     assert database and database.isidentifier()
     monkeypatch.setattr(settings, "worker_v4_database_role", runtime_role)
@@ -802,6 +804,16 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
         with test_engine.begin() as conn:
             conn.execute(text(f'CREATE ROLE "{runtime_role}" LOGIN'))
             conn.execute(text(f'CREATE ROLE "{old_role}" LOGIN'))
+            # Configure the isolated logins under password-authenticated CI too.
+            # Driver composition safely quotes DDL without logging its secret
+            # through SQLAlchemy statement/parameter diagnostics.
+            with conn.connection.driver_connection.cursor() as cursor:
+                for login in (runtime_role, old_role):
+                    cursor.execute(
+                        pg_sql.SQL("ALTER ROLE {} PASSWORD {}").format(
+                            pg_sql.Identifier(login), pg_sql.Literal(role_password)
+                        )
+                    )
             conn.execute(text(f'REVOKE CONNECT ON DATABASE "{database}" FROM PUBLIC'))
             conn.execute(text(f'REVOKE TEMPORARY ON DATABASE "{database}" FROM PUBLIC'))
             conn.execute(text(f'GRANT CONNECT ON DATABASE "{database}" TO "{runtime_role}"'))
@@ -826,14 +838,18 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             conn.execute(text(f'GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO "{runtime_role}"'))
         roles_created = True
         test_engine.dispose()  # The admin pool must not retain old database sessions.
-        runtime_engine = create_engine(test_engine.url.set(username=runtime_role), pool_size=4)
+        runtime_engine = create_engine(
+            test_engine.url.set(username=runtime_role, password=role_password), pool_size=4
+        )
         runtime_sessions = sessionmaker(bind=runtime_engine, expire_on_commit=False)
         if os.environ.get("DLR_TEST_FIXED_WORKER_E2E") == "1":
             # Child processes use the same restricted runtime role as Control.
             monkeypatch.setattr(
                 settings,
                 "database_url",
-                test_engine.url.set(username=runtime_role).render_as_string(hide_password=False),
+                test_engine.url.set(username=runtime_role, password=role_password).render_as_string(
+                    hide_password=False
+                ),
             )
             monkeypatch.setattr(db, "SessionLocal", runtime_sessions)
 
@@ -853,7 +869,7 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
         # A role capable of opening old connections blocks issuance even when
         # no such connection is active.
         assert client.post(endpoint, json={}).status_code == 503
-        old_engine = create_engine(test_engine.url.set(username=old_role))
+        old_engine = create_engine(test_engine.url.set(username=old_role, password=role_password))
         with old_engine.connect() as old_connection:
             old_connection.execute(text("SELECT 1"))
             with test_engine.begin() as conn:
@@ -1426,4 +1442,8 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 conn.execute(text(f'GRANT TEMPORARY ON DATABASE "{database}" TO PUBLIC'))
                 conn.execute(text(f'DROP OWNED BY "{runtime_role}"'))
                 conn.execute(text(f'DROP ROLE IF EXISTS "{runtime_role}"'))
+                if conn.scalar(
+                    text("SELECT 1 FROM pg_roles WHERE rolname = :role"), {"role": old_role}
+                ):
+                    conn.execute(text(f'DROP OWNED BY "{old_role}"'))
                 conn.execute(text(f'DROP ROLE IF EXISTS "{old_role}"'))
