@@ -5,8 +5,8 @@ M2 contracts kept by these models:
 - Every Execution is pinned to one immutable ``version_id`` at creation
   time; later Save operations never change it.
 - Execution history is removed by the Adapter's permanent-delete transaction.
-- Workers carry no credentials; the platform-wide Worker token lives only
-  in the Control configuration.
+- Legacy Workers use the platform-wide token. Per-Worker credential rows
+  contain only digests, never the original credentials.
 
 M3.2 scheduling and lifecycle fields:
 
@@ -24,6 +24,7 @@ M5.2 Schedule Trigger fields:
   Control restarts or multiple competing scheduler instances.
 """
 
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
@@ -35,10 +36,12 @@ from sqlalchemy import (
     Identity,
     Index,
     Integer,
+    LargeBinary,
     SmallInteger,
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
     text,
 )
@@ -55,7 +58,33 @@ class Worker(Base):
     __tablename__ = "workers"
     __table_args__ = (
         CheckConstraint("status IN ('online', 'offline')", name="ck_workers_status"),
-        CheckConstraint("protocol_version = 3", name="ck_workers_protocol_version"),
+        CheckConstraint(
+            "identity_lifecycle IN ('legacy', 'reserved')",
+            name="ck_workers_identity_lifecycle",
+        ),
+        CheckConstraint(
+            "identity_lifecycle <> 'reserved' OR protocol_version = 4",
+            name="ck_workers_reserved_protocol",
+        ),
+        CheckConstraint("protocol_version IN (3, 4)", name="ck_workers_protocol_version"),
+        CheckConstraint(
+            "scheduling_state IN ('active', 'draining', 'disabled')",
+            name="ck_workers_scheduling_state",
+        ),
+        CheckConstraint(
+            "capacity_state IN ('unknown', 'reconciling', 'ready', 'quarantined')",
+            name="ck_workers_capacity_state",
+        ),
+        CheckConstraint("instance_generation >= 0", name="ck_workers_instance_generation"),
+        CheckConstraint("maintenance_version >= 1", name="ck_workers_maintenance_version"),
+        CheckConstraint(
+            "(instance_id IS NULL AND instance_lease_until IS NULL) OR "
+            "(instance_id IS NOT NULL AND instance_lease_until IS NOT NULL "
+            "AND instance_generation > 0)",
+            name="ck_workers_instance_lease",
+        ),
+        UniqueConstraint("identity_id", name="uq_workers_identity_id"),
+        UniqueConstraint("id", "identity_id", name="uq_workers_id_identity"),
         CheckConstraint(
             "isolation_preflight_status IN ('unknown', 'passed', 'failed')",
             name="ck_workers_isolation_preflight_status",
@@ -70,13 +99,37 @@ class Worker(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    # The migration makes both this identity and its numeric Worker ID immutable.
+    identity_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()")
+    )
+    # Reservation blocks name-based legacy takeover even before enrollment.
+    identity_lifecycle: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="legacy", server_default=text("'legacy'")
+    )
+    # Backfilled identities remain on the legacy path until enrollment succeeds.
+    identity_enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    instance_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
+    instance_generation: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    instance_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scheduling_state: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active", server_default=text("'active'")
+    )
+    maintenance_version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default=text("1")
+    )
+    capacity_state: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unknown", server_default=text("'unknown'")
+    )
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     last_heartbeat: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     # Runtime names detected by the Worker at registration time.
     capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    # Internal wire version; there is only one supported execution protocol.
+    # Storage accepts 3 and 4; runtime authorization decides which may operate.
     protocol_version: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, default=3, server_default=text("3")
     )
@@ -103,6 +156,40 @@ class Worker(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class WorkerCredential(Base):
+    """Only a one-way digest is stored for an enrollment or runtime credential."""
+
+    __tablename__ = "worker_credentials"
+    __table_args__ = (
+        CheckConstraint("kind IN ('enrollment', 'runtime')", name="ck_worker_credentials_kind"),
+        CheckConstraint("octet_length(secret_digest) = 32", name="ck_worker_credentials_digest"),
+        CheckConstraint(
+            "kind <> 'enrollment' OR expires_at IS NOT NULL",
+            name="ck_worker_credentials_enrollment_expiry",
+        ),
+        CheckConstraint(
+            "consumed_at IS NULL OR kind = 'enrollment'",
+            name="ck_worker_credentials_consumed_kind",
+        ),
+        UniqueConstraint("secret_digest", name="uq_worker_credentials_secret_digest"),
+        UniqueConstraint("worker_id", "id", name="uq_worker_credentials_worker_record"),
+        Index("ix_worker_credentials_worker_id", "worker_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    worker_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("workers.id", ondelete="RESTRICT"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    secret_digest: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Execution(Base):

@@ -34,6 +34,30 @@ class Settings(BaseSettings):
     # is unset, the protected APIs answer 503 instead of running open.
     admin_token: str | None = Field(default=None, validation_alias="DLR_ADMIN_TOKEN")
     worker_token: str | None = Field(default=None, validation_alias="DLR_WORKER_TOKEN")
+    worker_identity_reservation_enabled: bool = Field(
+        default=False, validation_alias="DLR_WORKER_IDENTITY_RESERVATION_ENABLED"
+    )
+    worker_remote_v4_enabled: bool = Field(
+        default=False, validation_alias="DLR_WORKER_REMOTE_V4_ENABLED"
+    )
+    worker_v4_database_role: str | None = Field(
+        default=None, validation_alias="DLR_WORKER_V4_DATABASE_ROLE"
+    )
+    worker_v4_database_admin_roles: list[str] = Field(
+        default_factory=list, validation_alias="DLR_WORKER_V4_DATABASE_ADMIN_ROLES"
+    )
+    worker_v4_claim_child_address_space_bytes: int = Field(
+        default=512 * 1024 * 1024,
+        ge=128 * 1024 * 1024,
+        le=1 << 40,
+        validation_alias="DLR_WORKER_V4_CLAIM_CHILD_ADDRESS_SPACE_BYTES",
+    )
+    control_identity_file: str | None = Field(
+        default=None, validation_alias="DLR_CONTROL_IDENTITY_FILE"
+    )
+    worker_proof_signing_key_file: str | None = Field(
+        default=None, validation_alias="DLR_WORKER_PROOF_SIGNING_KEY_FILE"
+    )
 
     # M4.1 effective-online lease window. Worker rows keep their last
     # self-reported stored status; Control derives current availability from

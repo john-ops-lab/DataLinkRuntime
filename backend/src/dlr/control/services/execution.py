@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any, cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,6 +22,7 @@ from dlr.control.models import (
     Adapter,
     AdapterVersion,
     Execution,
+    ExecutionAttempt,
     ExecutionCredentialBindingSnapshot,
     ExecutionInputArtifactLease,
     Worker,
@@ -76,10 +77,17 @@ def compact_json_bytes(value: object) -> bytes:
 
 
 def release_execution_leases(session: Session, execution_id: int) -> None:
-    """Release all file Leases for one locked Execution."""
+    """Release file Leases only after all v4 Attempts have settled cleanup."""
     session.execute(
         delete(ExecutionInputArtifactLease).where(
-            ExecutionInputArtifactLease.execution_id == int(execution_id)
+            ExecutionInputArtifactLease.execution_id == int(execution_id),
+            ~exists(
+                select(1).where(
+                    ExecutionAttempt.execution_id == int(execution_id),
+                    ExecutionAttempt.worker_identity_id.is_not(None),
+                    ExecutionAttempt.cleanup_settled_at.is_(None),
+                )
+            ),
         )
     )
 
@@ -178,6 +186,13 @@ def _create_pending_execution_locked(
     from dlr.control.services.builtin_package import snapshot as builtin_snapshot
 
     dependency_snapshot = builtin_snapshot(session, adapter.language, force=dependency_check)
+    if settings.worker_remote_v4_enabled and dependency_snapshot is not None:
+        raise domain_error(
+            409,
+            "worker_task_capability_unavailable",
+            "Remote Worker stage does not support builtin packages",
+            {"reason": "builtin_packages"},
+        )
     if dependency_snapshot is not None:
         worker = session.get(Worker, target_worker_id)
         if worker is None or worker.isolation_capabilities.get("builtin_packages_v1") is not True:
@@ -311,6 +326,21 @@ def _create_execution_locked(
             .with_for_update()
         )
 
+    if settings.worker_remote_v4_enabled:
+        from dlr.control.models import AdapterInputConfig
+        from dlr.control.services.worker_stage_capability_v4 import require_input_source
+
+        source_type = (
+            session.scalar(
+                select(AdapterInputConfig.source_type).where(
+                    AdapterInputConfig.adapter_id == adapter.id
+                )
+            )
+            if input_override is NO_INPUT_OVERRIDE
+            else "json"
+        )
+        if source_type is not None:
+            require_input_source(source_type)
     if input_override is NO_INPUT_OVERRIDE:
         resolved = resolve_for_execution(session, adapter.id)
     else:

@@ -42,6 +42,14 @@ from dlr.control.api import (
     templates,
     users,
     webhooks,
+    worker_activation_v4,
+    worker_attempt_authority_v4,
+    worker_claim_v4,
+    worker_cleanup_v4,
+    worker_enrollment_v4,
+    worker_fresh_identity_v4,
+    worker_instance_v4,
+    worker_result_v4,
     workers,
 )
 from dlr.control.security import require_csrf
@@ -146,6 +154,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     PostgreSQL is the only Control-plane state source; these loops are plain
     background tasks and no external scheduler framework is introduced.
     """
+    app.state.control_process_v4 = None
+    if settings.worker_remote_v4_enabled:
+        from dlr.control.services.control_declaration_v4 import read_declaration
+        from dlr.control.services.control_process_v4 import ControlProcess
+        from dlr.control.services.worker_remote_deployment_v4 import require_dedicated_deployment
+
+        # Fail startup before scheduling or disabling a legacy deployment's
+        # Worker traffic. Do not swallow this as merely unavailable v4 authority.
+        with db.SessionLocal() as session:
+            require_dedicated_deployment(session)
+            session.rollback()
+        process = None
+        try:
+            process = ControlProcess(settings, db.SessionLocal, read_declaration(settings))
+            process.start()
+            with db.SessionLocal() as session:
+                fence = process.worker_fence(session)
+                process.worker_proof_authority(session)
+                fence.check()
+                session.rollback()
+            process.check_authority()
+            app.state.control_process_v4 = process
+        except Exception:
+            if process is not None:
+                process.stop()
+            raise RuntimeError("worker_remote_control_unavailable") from None
+
     bootstrap_task = asyncio.create_task(_demo_bootstrap_loop())
     ai_attachment_task = asyncio.create_task(attachment_gc_loop())
     task = asyncio.create_task(scheduler_loop())
@@ -168,6 +203,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        coordinator = getattr(app.state, "claim_coordinator_v4", None)
+        if coordinator is not None:
+            coordinator.close()
+        if app.state.control_process_v4 is not None:
+            app.state.control_process_v4.stop()
         native_closed = await source_runtime.aclose()
         from dlr.control.api.ingress import flush_ingress_resources, shutdown_ingress_resources
         from dlr.control.services.ingress_database import close_intake_database
@@ -227,6 +267,10 @@ def create_app() -> FastAPI:
     # release gates validate all 51 before packaging.
     get_template_catalog()
     app = FastAPI(title="DLR Control", version="0.0.1", lifespan=lifespan)
+    if settings.worker_remote_v4_enabled:
+        from dlr.control.services.claim_coordinator_v4 import ClaimCoordinator
+
+        app.state.claim_coordinator_v4 = ClaimCoordinator()
 
     @app.exception_handler(DocumentConversionError)
     async def _ai_attachment_error(request: Request, exc: DocumentConversionError) -> JSONResponse:
@@ -416,6 +460,16 @@ def create_app() -> FastAPI:
     # and must never require the admin token.
     app.include_router(webhooks.public_router)
     app.include_router(executions.router)
+    if settings.worker_identity_reservation_enabled:
+        app.include_router(worker_fresh_identity_v4.router)
+    if settings.worker_remote_v4_enabled:
+        app.include_router(worker_activation_v4.router)
+        app.include_router(worker_enrollment_v4.router)
+        app.include_router(worker_instance_v4.router)
+        app.include_router(worker_attempt_authority_v4.router)
+        app.include_router(worker_claim_v4.router)
+        app.include_router(worker_result_v4.router)
+        app.include_router(worker_cleanup_v4.router)
     app.include_router(workers.router)
     app.include_router(workers.admin_router)
     app.include_router(cache_admin.router)

@@ -15,8 +15,8 @@ import math
 import random
 import uuid
 from collections import Counter
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -29,6 +29,7 @@ from dlr.common.bigfields import truncate_utf8
 from dlr.common.config import settings
 from dlr.control.models import (
     Adapter,
+    AdapterExecutionAdmission,
     AdapterExecutionSlot,
     AdapterVersion,
     Execution,
@@ -38,10 +39,12 @@ from dlr.control.models import (
     ExecutionInfrastructureIncident,
     ExecutionInputArtifactLease,
     ExecutionOutbox,
+    GlobalExecutionAdmission,
     ManagedInputArtifact,
     ManagedInputArtifactStatus,
     RuntimeReconciliationCursor,
     Worker,
+    WorkerCredential,
 )
 from dlr.control.schemas.execution import ExecutionResultReport
 from dlr.control.schemas.reliable_runtime import (
@@ -606,6 +609,13 @@ def claim_dispatch(
                 return _decision("DEFER", "adapter_slot_busy", retry_after_seconds=1)
             session.rollback()
             return _decision("DEFER", "slot_recovery_pending", retry_after_seconds=1)
+        if (
+            active is not None
+            and active.worker_identity_id is not None
+            and active.cleanup_settled_at is None
+        ):
+            session.rollback()
+            return _decision("DEFER", "slot_recovery_pending", retry_after_seconds=1)
         slot.active_attempt_id = None
         slot.lease_expires_at = None
     try:
@@ -673,8 +683,15 @@ def claim_dispatch(
     return _decision("EXECUTE", "claimed", attempt_id=attempt.id, payload=payload)
 
 
+@dataclass(frozen=True)
+class V4AttemptAuthority:
+    credential: str = field(repr=False)
+    instance_id: uuid.UUID
+    instance_generation: int
+
+
 def _lock_attempt_context(
-    session: Session, worker_id: int, attempt_id: int
+    session: Session, worker_id: int, attempt_id: int, *, existing_only: bool = False
 ) -> tuple[Execution, Adapter, ExecutionAttempt, AdapterExecutionSlot]:
     execution_id = session.scalar(
         select(ExecutionAttempt.execution_id).where(ExecutionAttempt.id == attempt_id)
@@ -687,11 +704,28 @@ def _lock_attempt_context(
     if identity is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
     adapter_id, dispatch_backend = identity
-    if (
-        dispatch_backend == "rabbitmq"
-        and admission.lock_admission_scope(session, int(adapter_id)) is None
-    ):
-        raise domain_error(404, "adapter_not_found", "Adapter not found")
+    if existing_only and dispatch_backend != "rabbitmq":
+        raise domain_error(409, "attempt_backend_invalid", "Attempt backend is incompatible")
+    if dispatch_backend == "rabbitmq":
+        if existing_only:
+            adapter = session.get(
+                Adapter, int(adapter_id), with_for_update=True, populate_existing=True
+            )
+            if adapter is None:
+                raise domain_error(404, "adapter_not_found", "Adapter not found")
+            adapter_counter = session.get(
+                AdapterExecutionAdmission,
+                int(adapter_id),
+                with_for_update=True,
+                populate_existing=True,
+            )
+            global_counter = session.get(
+                GlobalExecutionAdmission, "global", with_for_update=True, populate_existing=True
+            )
+            if adapter_counter is None or global_counter is None:
+                raise domain_error(409, "admission_state_invalid", "Admission state unavailable")
+        elif admission.lock_admission_scope(session, int(adapter_id)) is None:
+            raise domain_error(404, "adapter_not_found", "Adapter not found")
     execution = session.get(Execution, execution_id, with_for_update=True, populate_existing=True)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
@@ -706,10 +740,48 @@ def _lock_attempt_context(
     attempt = next((row for row in attempts if row.id == attempt_id), None)
     if attempt is None:
         raise domain_error(404, "attempt_not_found", "Attempt not found")
-    slot = _slot(session, adapter.id)
+    if existing_only:
+        slot = session.get(
+            AdapterExecutionSlot, (adapter.id, 0), with_for_update=True, populate_existing=True
+        )
+        if slot is None:
+            raise domain_error(409, "attempt_slot_invalid", "Attempt slot unavailable")
+    else:
+        slot = _slot(session, adapter.id)
     if attempt.worker_id != worker_id:
         raise domain_error(409, "attempt_not_owned", "Attempt is assigned to another Worker")
     return execution, adapter, attempt, slot
+
+
+def _authorize_attempt_action(
+    session: Session,
+    worker_id: int,
+    execution: Execution,
+    attempt: ExecutionAttempt,
+    slot: AdapterExecutionSlot,
+    payload: AttemptActionBody,
+    authority: V4AttemptAuthority | None,
+    now: datetime,
+) -> bool:
+    if authority is None:
+        _validate_action(execution, attempt, payload, now)
+        return False
+    from dlr.control.services.worker_attempt_identity import validate_v4_attempt_locked
+
+    return (
+        validate_v4_attempt_locked(
+            session,
+            execution=execution,
+            attempt=attempt,
+            slot=slot,
+            worker_id=worker_id,
+            credential=authority.credential,
+            instance_id=authority.instance_id,
+            instance_generation=authority.instance_generation,
+            action=payload,
+        )
+        == "terminal"
+    )
 
 
 def _validate_action(
@@ -728,6 +800,60 @@ def _validate_action(
         raise domain_error(409, "attempt_lease_expired", "Attempt Lease has expired")
     if execution.worker_id != attempt.worker_id:
         raise domain_error(409, "attempt_stale_fence", "Attempt ownership is stale")
+
+
+def _revalidate_v4_terminal_after_tail(
+    session: Session,
+    worker_id: int,
+    execution: Execution,
+    attempt: ExecutionAttempt,
+    slot: AdapterExecutionSlot,
+    payload: AttemptActionBody,
+    authority: V4AttemptAuthority,
+) -> datetime:
+    """Recheck already-held identity/credential locks after the terminal tail wait."""
+    from dlr.control.services import worker_credentials
+    from dlr.control.services.worker_attempt_identity import validate_v4_attempt_locked
+
+    if (
+        validate_v4_attempt_locked(
+            session,
+            execution=execution,
+            attempt=attempt,
+            slot=slot,
+            worker_id=worker_id,
+            credential=authority.credential,
+            instance_id=authority.instance_id,
+            instance_generation=authority.instance_generation,
+            action=payload,
+        )
+        != "active"
+    ):
+        raise domain_error(409, "attempt_stale_fence", "Attempt ownership is stale")
+    now = database_now(session)
+    _validate_action(execution, attempt, payload, now)
+    worker = session.get(Worker, worker_id)
+    if (
+        worker is None
+        or worker.instance_lease_until is None
+        or _utc(worker.instance_lease_until) <= now
+    ):
+        raise domain_error(409, "worker_instance_expired", "Worker instance is no longer valid")
+    digest = worker_credentials._digest(authority.credential)
+    credential = session.scalar(
+        select(WorkerCredential).where(
+            WorkerCredential.worker_id == worker_id,
+            WorkerCredential.kind == "runtime",
+            WorkerCredential.secret_digest == digest,
+        )
+    )
+    if (
+        credential is None
+        or credential.revoked_at is not None
+        or (credential.expires_at is not None and _utc(credential.expires_at) <= now)
+    ):
+        raise domain_error(401, "worker_credential_invalid", "Worker credential is invalid")
+    return now
 
 
 def start_attempt(
@@ -833,6 +959,9 @@ def progress_attempt(
 def _release_slot_locked(slot: AdapterExecutionSlot, attempt: ExecutionAttempt) -> bool:
     if slot.active_attempt_id != attempt.id or slot.fencing_token != attempt.fencing_token:
         return False
+    if attempt.worker_identity_id is not None:
+        # V4 cleanup is settled separately after a committed receipt.
+        return False
     slot.active_attempt_id = None
     slot.lease_expires_at = None
     return True
@@ -905,10 +1034,16 @@ def _apply_terminal_locked(
     resource_usage: dict[str, Any] | None = None,
     cleanup_summary: dict[str, Any] | None = None,
     now: datetime,
+    after_tail: Callable[[], datetime] | None = None,
+    before_terminal: Callable[[], None] | None = None,
 ) -> ClaimDecision:
     if attempt.status in TERMINAL_ATTEMPT_STATUSES:
         return _decision("ACK_NOOP", "already_terminal", attempt_id=attempt.id)
     incidents, _outbox_rows = lock_incidents_and_outbox(session, execution.id)
+    if after_tail is not None:
+        now = after_tail()
+    if before_terminal is not None:
+        before_terminal()
     attempt.status = status
     attempt.ended_at = now
     attempt.error_code = error_code[:64]
@@ -937,10 +1072,10 @@ def _apply_terminal_locked(
     execution.stdout_truncated = stdout_truncated or stdout_capped
     execution.stderr_truncated = stderr_truncated or stderr_capped
     if execution.dispatch_backend == "rabbitmq":
-        # v3 reports the local cleanup result with the Attempt result.  A
-        # completed result is still idempotently receipt-acknowledged by
-        # Control; a deferred result remains the durable recovery boundary.
-        effective_cleanup_status = workspace_cleanup_status or "deferred"
+        # A v4 result cannot itself confirm the separate cleanup obligation.
+        effective_cleanup_status = (
+            "deferred" if attempt.worker_identity_id is not None else workspace_cleanup_status
+        ) or "deferred"
         effective_cleanup_error_code = (
             workspace_cleanup_error_code if effective_cleanup_status == "deferred" else None
         )
@@ -1001,7 +1136,11 @@ def _apply_terminal_locked(
             )
         execution_service.release_execution_leases(session, execution.id)
         admission.release_admission_once(session, execution, now=now)
-    _release_slot_locked(slot, attempt)
+    # A v4 result does not settle the separate physical-cleanup obligation.
+    # Keep the Slot occupied until the cleanup transaction clears this exact
+    # Attempt and its fencing token.
+    if attempt.worker_identity_id is None:
+        _release_slot_locked(slot, attempt)
     if final:
         from dlr.control.services.incident_disposition import (
             converge_terminal_dispositions_locked,
@@ -1013,11 +1152,32 @@ def _apply_terminal_locked(
 
 
 def finish_attempt(
-    session: Session, worker_id: int, attempt_id: int, payload: AttemptResultBody
+    session: Session,
+    worker_id: int,
+    attempt_id: int,
+    payload: AttemptResultBody,
+    *,
+    authority: V4AttemptAuthority | None = None,
+    _proof_check: Callable[[], None] | None = None,
+    _proof_after_terminal: Callable[[], None] | None = None,
 ) -> ClaimDecision:
-    execution, _adapter, attempt, slot = _lock_attempt_context(session, worker_id, attempt_id)
+    if authority is None:
+        if _proof_check is not None or _proof_after_terminal is not None:
+            raise ValueError("invalid result proof checks")
+    elif not callable(_proof_check) or not callable(_proof_after_terminal):
+        raise ValueError("result proof checks required")
+    execution, _adapter, attempt, slot = _lock_attempt_context(
+        session, worker_id, attempt_id, existing_only=authority is not None
+    )
     now = database_now(session)
-    _validate_action(execution, attempt, payload, now)
+    if _authorize_attempt_action(
+        session, worker_id, execution, attempt, slot, payload, authority, now
+    ):
+        session.rollback()
+        return _decision("ACK_NOOP", "already_terminal", attempt_id=attempt_id)
+    if authority is not None:
+        # Refresh after credential-lock waits before any transition timestamp.
+        now = database_now(session)
     if attempt.status in TERMINAL_ATTEMPT_STATUSES:
         session.rollback()
         return _decision("ACK_NOOP", "already_terminal", attempt_id=attempt.id)
@@ -1058,7 +1218,16 @@ def finish_attempt(
         else None
     )
     if decision is not None:
-        persist_finish(session, execution, attempt.id, decision)
+        if authority is None:
+            persist_finish(session, execution, attempt.id, decision)
+        else:
+            # Keep the existing batch -> incident/outbox lock order, but do
+            # not mutate its result until v4 authorization is rechecked after
+            # the terminal tail locks.
+            from dlr.control.models.subscription_business_batch import SubscriptionExecutionBatch
+
+            with session.no_autoflush:
+                session.get(SubscriptionExecutionBatch, execution.id, with_for_update=True)
         report_status = "succeeded" if decision.execution_status == "succeeded" else "failed"
         error_code = decision.error_code or "execution_succeeded"
         error_class = "" if report_status == "succeeded" else "business_error"
@@ -1071,6 +1240,13 @@ def finish_attempt(
         normalized_size = len(encode(decision.output))
         normalized_truncated = False
         normalized_preview = None
+
+    def before_terminal() -> None:
+        if _proof_check is not None:
+            _proof_check()
+        if authority is not None and decision is not None:
+            persist_finish(session, execution, attempt.id, decision)
+
     result = _apply_terminal_locked(
         session,
         execution,
@@ -1093,7 +1269,24 @@ def finish_attempt(
         resource_usage=payload.resource_usage,
         cleanup_summary=payload.cleanup_summary,
         now=now,
+        after_tail=(
+            (
+                lambda: _revalidate_v4_terminal_after_tail(
+                    session, worker_id, execution, attempt, slot, payload, authority
+                )
+            )
+            if authority is not None
+            else None
+        ),
+        before_terminal=(
+            before_terminal
+            if _proof_check is not None or (authority is not None and decision is not None)
+            else None
+        ),
     )
+    if _proof_after_terminal is not None:
+        session.flush()
+        _proof_after_terminal()
     session.commit()
     return result
 
@@ -1360,6 +1553,18 @@ def retry_dispatcher_once(
             session.rollback()
             continue
         if execution.adapter_id != adapter.id:
+            session.rollback()
+            continue
+        unresolved = session.scalar(
+            select(ExecutionAttempt.id)
+            .where(
+                ExecutionAttempt.execution_id == execution.id,
+                ExecutionAttempt.worker_identity_id.is_not(None),
+                ExecutionAttempt.cleanup_settled_at.is_(None),
+            )
+            .limit(1)
+        )
+        if unresolved is not None:
             session.rollback()
             continue
         # Keep the injected clock authoritative for deterministic reconciliation

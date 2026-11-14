@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -18,6 +18,7 @@ from pydantic import (
     model_validator,
 )
 
+from dlr.common.managed_input import controlled_input_mount_name
 from dlr.control.schemas.worker import TaskInputFile
 
 Decision = Literal["EXECUTE", "ACK_NOOP", "DEFER", "REJECT_DLQ", "PAUSE_CONSUMER"]
@@ -184,8 +185,8 @@ class ResourceProfile(BaseModel):
         return self
 
 
-class V3TaskPayload(BaseModel):
-    """Complete immutable TaskPayload returned only after a successful Claim."""
+class _TaskPayloadBase(BaseModel):
+    """Common immutable task fields returned after a successful Claim."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -200,7 +201,9 @@ class V3TaskPayload(BaseModel):
         return data
 
     dispatch_backend: Literal["rabbitmq"] = "rabbitmq"
-    protocol_version: Literal[3] = 3
+    # Concrete wire versions replace these fields in place. This keeps the
+    # existing v3 field order and serializer output unchanged.
+    protocol_version: int
     execution_id: StrictInt = Field(gt=0)
     attempt_id: StrictInt = Field(gt=0)
     attempt_no: StrictInt = Field(gt=0)
@@ -228,15 +231,131 @@ class V3TaskPayload(BaseModel):
     credential_bindings: list[dict[str, Any]] = Field(default_factory=list)
     input_source_type: Literal["none", "json", "webhook", "managed_files"]
     input_snapshot: dict[str, Any]
-    input_files: list[TaskInputFile] = Field(default_factory=list)
+    input_files: list[Any] = Field(default_factory=list)
     recovery_grace_seconds_snapshot: StrictInt | None = Field(default=None, gt=0)
     workspace_cleanup_attempt_timeout_seconds_snapshot: StrictInt | None = Field(default=None, gt=0)
     workspace_cleanup_total_timeout_seconds_snapshot: StrictInt | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
-    def validate_lease_intervals(self) -> V3TaskPayload:
+    def validate_lease_intervals(self) -> Self:
         if self.renew_seconds * 3 >= self.lease_seconds:
             raise ValueError("renew interval must be less than one third of lease")
+        return self
+
+
+class V3TaskPayload(_TaskPayloadBase):
+    """Current v3 wire shape; validation and defaults remain unchanged."""
+
+    protocol_version: Literal[3] = 3
+    input_files: list[TaskInputFile] = Field(default_factory=list)
+
+
+class V4TaskInputFile(BaseModel):
+    """Closed, path-free descriptor for an immutable leased input file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: StrictInt = Field(gt=0, le=2**63 - 1)
+    ordinal: StrictInt = Field(ge=0, le=7)
+    mount_name: str
+    original_filename: str
+    content_type: str
+    size_bytes: StrictInt = Field(ge=0, le=2**63 - 1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_mount_name(self) -> Self:
+        if self.mount_name != controlled_input_mount_name(self.ordinal, self.original_filename):
+            raise ValueError("input mount name must match the frozen filename and ordinal")
+        return self
+
+
+class V4TaskPayload(_TaskPayloadBase):
+    """A future v4 payload; defining this schema does not enable v4 Claim."""
+
+    protocol_version: Literal[4]
+    execution_id: StrictInt = Field(gt=0, le=2**63 - 1)
+    attempt_id: StrictInt = Field(gt=0, le=2**63 - 1)
+    attempt_no: StrictInt = Field(gt=0, le=2**31 - 1)
+    fencing_token: StrictInt = Field(gt=0, le=2**63 - 1)
+    adapter_id: StrictInt = Field(gt=0, le=2**63 - 1)
+    version_id: StrictInt = Field(gt=0, le=2**63 - 1)
+    worker_identity_id: uuid.UUID
+    instance_id: uuid.UUID
+    instance_generation: StrictInt = Field(gt=0, le=2**63 - 1)
+    latest_version_id: StrictInt | None = Field(gt=0, le=2**63 - 1)
+    input_files: list[V4TaskInputFile] = Field(default_factory=list, max_length=8)
+    recovery_grace_seconds_snapshot: StrictInt = Field(gt=0)
+    workspace_cleanup_attempt_timeout_seconds_snapshot: StrictInt = Field(gt=0)
+    workspace_cleanup_total_timeout_seconds_snapshot: StrictInt = Field(gt=0)
+
+    @field_validator("protocol_version", mode="before")
+    @classmethod
+    def validate_protocol_version(cls, value: object) -> object:
+        if type(value) is not int or value != 4:
+            raise ValueError("protocol_version must be the integer 4")
+        return value
+
+    @field_validator("worker_identity_id", "instance_id")
+    @classmethod
+    def validate_identity(cls, value: uuid.UUID) -> uuid.UUID:
+        if value.int == 0:
+            raise ValueError("worker identity must not be nil")
+        return value
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("code must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_v4_snapshots_and_files(self) -> Self:
+        profile = self.resource_profile
+        if (
+            self.execution_timeout_seconds != profile.execution_timeout_seconds
+            or self.recovery_grace_seconds_snapshot != profile.recovery_grace_seconds
+            or self.workspace_cleanup_attempt_timeout_seconds_snapshot
+            != profile.workspace_cleanup_attempt_timeout_seconds
+            or self.workspace_cleanup_total_timeout_seconds_snapshot
+            != profile.workspace_cleanup_total_timeout_seconds
+            or profile.output_preview_max_bytes > profile.output_max_bytes
+        ):
+            raise ValueError("task budget snapshots must match the resource profile")
+        if any(item.ordinal != ordinal for ordinal, item in enumerate(self.input_files)):
+            raise ValueError("input file ordinals must start at zero and be consecutive")
+        if self.input_source_type != "managed_files":
+            if self.input_files:
+                raise ValueError("only managed input may carry file descriptors")
+            return self
+        frozen = self.input_snapshot.get("artifacts")
+        revision = self.input_snapshot.get("revision")
+        if (
+            self.input_snapshot.get("source_type") != "managed_files"
+            or type(revision) is not int
+            or revision <= 0
+            or not isinstance(frozen, list)
+            or not 1 <= len(self.input_files) <= 8
+            or len(frozen) != len(self.input_files)
+            or len({item.id for item in self.input_files}) != len(self.input_files)
+        ):
+            raise ValueError("managed input does not match its frozen snapshot")
+        for item, entry in zip(self.input_files, frozen, strict=True):
+            if (
+                not isinstance(entry, dict)
+                or type(entry.get("ordinal")) is not int
+                or type(entry.get("size_bytes")) is not int
+                or entry
+                != {
+                    "ordinal": item.ordinal,
+                    "original_filename": item.original_filename,
+                    "content_type": item.content_type,
+                    "size_bytes": item.size_bytes,
+                    "sha256": item.sha256,
+                }
+            ):
+                raise ValueError("managed input does not match its frozen snapshot")
         return self
 
 
@@ -262,6 +381,18 @@ class ClaimDecision(BaseModel):
             raise ValueError("DEFER requires bounded retry_after_seconds")
         if self.decision == "EXECUTE" and self.attempt_id is None:
             raise ValueError("EXECUTE requires attempt_id")
+        return self
+
+
+class V4RenewDecision(ClaimDecision):
+    """A v4 renew reports the conservative authority remaining at the DB sample."""
+
+    lease_remaining_ms: StrictInt | None = Field(default=None, ge=1, le=86_400_000)
+
+    @model_validator(mode="after")
+    def validate_remaining(self) -> V4RenewDecision:
+        if (self.reason == "renewed") != (self.lease_remaining_ms is not None):
+            raise ValueError("renewed decision requires remaining authority")
         return self
 
 

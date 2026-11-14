@@ -43,7 +43,11 @@ from dlr.control.schemas.worker import (
     WorkerRegister,
     WorkerResponse,
 )
-from dlr.control.security import require_business_principal, require_worker_token
+from dlr.control.security import (
+    reject_enrolled_legacy_worker,
+    require_business_principal,
+    require_worker_token,
+)
 from dlr.control.services import attempt as attempt_service
 from dlr.control.services import cache_admin, cache_governance, worker_availability
 from dlr.control.services import worker as worker_service
@@ -53,7 +57,9 @@ from dlr.control.services.worker_protocol import (
     CLEANUP_TOKEN_HEADER,
 )
 
-router = APIRouter(dependencies=[Depends(require_worker_token)])
+router = APIRouter(
+    dependencies=[Depends(require_worker_token), Depends(reject_enrolled_legacy_worker)]
+)
 # M5.9 Wave D: Worker metadata is required by the Adapter runtime editor for
 # ordinary account users. The list is read-only; registration and task
 # execution remain on the Worker-token router above.

@@ -598,6 +598,15 @@ def upsert_schedule(
             adapter_id,
         )
     if data.enabled:
+        from dlr.control.services.worker_stage_capability_v4 import require_new_execution
+
+        require_new_execution(
+            session,
+            adapter,
+            version_id=adapter.latest_version_id,
+            trigger="schedule",
+            input_source_type=config.source_type,
+        )
         input_config_service.validate_saved_config(config, session=session)
     now = worker_availability.current_time(session)
     next_run_at = next_run_after(cron, tz_name, now) if data.enabled else None

@@ -18,6 +18,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Identity,
     Index,
     Integer,
@@ -311,12 +312,39 @@ class ExecutionAttempt(Base):
     __tablename__ = "execution_attempts"
     __table_args__ = (
         UniqueConstraint(
+            "id",
+            "worker_id",
+            "worker_identity_id",
+            "worker_instance_id",
+            "worker_instance_generation",
+            "fencing_token",
+            name="uq_execution_attempts_v4_binding",
+        ),
+        ForeignKeyConstraint(
+            ["worker_id", "worker_identity_id"],
+            ["workers.id", "workers.identity_id"],
+            name="fk_execution_attempts_worker_identity",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
             "execution_id",
             "attempt_no",
             name="uq_execution_attempts_execution_attempt_no",
         ),
         CheckConstraint("attempt_no > 0", name="ck_execution_attempts_attempt_no_positive"),
         CheckConstraint("fencing_token > 0", name="ck_execution_attempts_fencing_positive"),
+        CheckConstraint(
+            "(worker_identity_id IS NULL AND worker_instance_id IS NULL "
+            "AND worker_instance_generation IS NULL) OR "
+            "(worker_identity_id IS NOT NULL AND worker_instance_id IS NOT NULL "
+            "AND worker_instance_generation IS NOT NULL AND worker_instance_generation > 0)",
+            name="ck_execution_attempts_worker_instance_shape",
+        ),
+        CheckConstraint(
+            "recovery_not_before IS NULL OR "
+            "(worker_identity_id IS NOT NULL AND recovery_not_before >= lease_expires_at)",
+            name="ck_execution_attempts_v4_recovery_not_before",
+        ),
         CheckConstraint(
             "claim_token_hash ~ '^[0-9a-f]{64}$' AND cleanup_token_hash ~ '^[0-9a-f]{64}$'",
             name="ck_execution_attempts_token_hashes_sha256",
@@ -333,6 +361,22 @@ class ExecutionAttempt(Base):
             postgresql_where=text("status IN ('claimed', 'running')"),
         ),
         Index("ix_execution_attempts_lease", "status", "lease_expires_at"),
+        Index(
+            "ix_execution_attempts_v4_adapter",
+            "adapter_id",
+            postgresql_where=text("worker_identity_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_execution_attempts_v4_worker",
+            "worker_id",
+            "worker_identity_id",
+            postgresql_where=text("worker_identity_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_execution_attempts_v4_identity",
+            "worker_identity_id",
+            postgresql_where=text("worker_identity_id IS NOT NULL"),
+        ),
         Index(
             "ix_execution_attempts_active_id",
             "id",
@@ -357,6 +401,11 @@ class ExecutionAttempt(Base):
         ForeignKey("workers.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    # Storage shape only: Claim must still authenticate and lock the Worker,
+    # validate instance ownership/generation, and bind the current fence.
+    worker_identity_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    worker_instance_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    worker_instance_generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     fencing_token: Mapped[int] = mapped_column(BigInteger, nullable=False)
     # Raw Claim/Cleanup credentials are returned only to the Worker over
     # authenticated HTTP. PostgreSQL stores SHA-256 digests and the service
@@ -377,6 +426,7 @@ class ExecutionAttempt(Base):
         server_default=text(f"'{_ZERO_TOKEN_DIGEST}'"),
     )
     lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recovery_not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -385,6 +435,9 @@ class ExecutionAttempt(Base):
     resource_usage_json: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
     output_summary: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
     cleanup_summary: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    # Set only after Control observes the committed v4 cleanup receipt. The
+    # Worker's reported cleanup summary alone cannot release responsibility.
+    cleanup_settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

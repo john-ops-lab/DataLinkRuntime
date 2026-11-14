@@ -7,6 +7,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 import dlr.control.models  # noqa: F401  (registers tables on Base.metadata)
+from dlr.common.schema_gate import acquire_migration_gate, offline_lock_sql
 from dlr.control.db import Base
 
 config = context.config
@@ -32,6 +33,7 @@ def run_migrations_offline() -> None:
     )
 
     with context.begin_transaction():
+        context.execute(offline_lock_sql())
         context.run_migrations()
 
 
@@ -43,9 +45,9 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
 
-    with connectable.connect() as connection:
+    with connectable.connect() as connection, connection.begin():
+        acquire_migration_gate(connection)
         context.configure(connection=connection, target_metadata=target_metadata)
-
         with context.begin_transaction():
             context.run_migrations()
 

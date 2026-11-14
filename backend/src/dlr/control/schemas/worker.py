@@ -118,7 +118,7 @@ class WorkerResponse(BaseModel):
     status: str
     last_heartbeat: datetime
     capabilities: list[str]
-    protocol_version: StrictInt = Field(ge=1, le=3)
+    protocol_version: StrictInt = Field(ge=1, le=4)
     isolation_capabilities: dict[str, bool] = Field(default_factory=dict)
     isolation_preflight_status: str = "unknown"
     isolation_preflight_at: datetime | None = None

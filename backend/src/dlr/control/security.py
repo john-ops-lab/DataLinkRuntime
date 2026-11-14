@@ -14,6 +14,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
+from dlr.common.worker_protocol_v4 import is_worker_credential
 from dlr.control import db
 from dlr.control.services.accounts import AccountSession, find_session
 
@@ -81,6 +82,14 @@ def _bearer_token(authorization: str | None) -> str | None:
 
 
 def _require_token(authorization: str | None, configured: str | None) -> None:
+    if is_worker_credential(configured):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "auth_not_configured",
+                "message": "Authentication token is not configured on the server",
+            },
+        )
     if configured is None:
         raise HTTPException(
             status_code=503,
@@ -111,8 +120,39 @@ def require_worker_token(
     authorization: AuthorizationHeader = None,
 ) -> None:
     """Protect worker-internal endpoints and keep them off the account entry."""
+    if settings.worker_remote_v4_enabled:
+        # Remote v4 mode requires the old shared-token Worker path to stop.
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "worker_credential_required", "message": "Worker credential required"},
+        )
     require_entry(request, TOKEN_ENTRY_MODE)
     _require_token(authorization, settings.worker_token)
+
+
+def reject_enrolled_legacy_worker(request: Request, session: DbSession) -> None:
+    """Keep the shared-token API away from an individually reserved identity."""
+    worker_id = request.path_params.get("worker_id")
+    if worker_id is None:
+        return
+    try:
+        worker_id = int(worker_id)
+    except (TypeError, ValueError):
+        return
+    if not 0 < worker_id <= 2**63 - 1:
+        raise HTTPException(
+            status_code=404, detail={"code": "worker_not_found", "message": "Worker not found"}
+        )
+    from dlr.control.models import Worker
+
+    worker = session.get(Worker, worker_id)
+    if worker is not None and (
+        worker.identity_enrolled_at is not None or worker.identity_lifecycle != "legacy"
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "worker_credential_required", "message": "Worker credential required"},
+        )
 
 
 def _account_principal(account_session: AccountSession) -> Principal:

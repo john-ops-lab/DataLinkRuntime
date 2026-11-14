@@ -180,6 +180,9 @@ def upsert_webhook(
         raise domain_error(409, "adapter_type_mismatch", "Only webhook Adapters support Webhook")
     _require_not_archived(adapter)
     if data.enabled:
+        from dlr.control.services.worker_stage_capability_v4 import require_trigger
+
+        require_trigger("webhook")
         from dlr.control.services.subscription_guards import require_no_subscription
 
         require_no_subscription(session, adapter.id)
