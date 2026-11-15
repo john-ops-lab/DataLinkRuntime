@@ -70,6 +70,7 @@ class PreparedClaim:
     child_address_space_bytes: int
     result_wire_budget: int
     deadline: float
+    dispatch: dict[str, Any] = field(default_factory=dict, repr=False)
     stage_state: str = "claimed"
 
     @property
@@ -288,7 +289,7 @@ class ClaimPreparer:
         A failure after entry retains the journal and both charges. The caller
         must stop intake and reconcile it; no returned value proves execution.
         """
-        from dlr.worker import cgroup_intent_v4, workspace_live_v4
+        from dlr.worker import cgroup_intent_v4, recovery_checkpoint_v4, workspace_live_v4
 
         with self._lock:
             if (
@@ -369,7 +370,9 @@ class ClaimPreparer:
                 if stop.is_set() or not prepared.attempt.is_usable():
                     raise ValueError("task authority unavailable")
                 prepared.stage_state = "staged"
-                return StagedClaim(prepared, live_cgroup, live_workspace, launch_fd, launch_max)
+                staged = StagedClaim(prepared, live_cgroup, live_workspace, launch_fd, launch_max)
+                recovery_checkpoint_v4.persist_prepared(staged)
+                return staged
             except BaseException as error:
                 self._poisoned = True
                 prepared.stage_state = "unknown"
@@ -808,6 +811,7 @@ class ClaimPreparer:
                 child_address_space_bytes=child_address_space_bytes,
                 result_wire_budget=result_wire_budget,
                 deadline=deadline,
+                dispatch=message.model_dump(mode="json"),
             )
             self._active = prepared
             transferred = True

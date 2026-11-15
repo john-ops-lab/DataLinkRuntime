@@ -707,7 +707,7 @@ def start_sandbox_supervisor(
     execution_deadline: float | None = None,
 ) -> tuple[SupervisorObservation, AttemptSupervisor | None, SandboxStreams | None]:
     """Start the guardian for the exact staged Claim, retaining both charges."""
-    from dlr.worker import sandbox, workspace_live_v4
+    from dlr.worker import recovery_checkpoint_v4, sandbox, workspace_live_v4
 
     blocked = SupervisorObservation("blocked", "sandbox_binding_unavailable")
     if type(staged) is not claim_preparation_v4.StagedClaim:
@@ -738,6 +738,7 @@ def start_sandbox_supervisor(
     side_effects_entered = False
     published = False
     try:
+        recovery_checkpoint_v4.require_startable(staged)
         with workspace._lock:
             with live._mutex:
                 if (

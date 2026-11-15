@@ -56,6 +56,7 @@ services:
       - --receive-memory-bytes
       - ${DLR_WORKER_RECEIVE_MEMORY_BYTES:-402653184}
     environment:
+      DLR_WORKER_RECOVERY_OPERATION: ${DLR_WORKER_RECOVERY_OPERATION:-}
       SSL_CERT_FILE: /var/lib/dlr/private/ca.pem
       DLR_SANDBOX_BACKEND: cgroup_v2
       DLR_SANDBOX_CGROUP_PATH: /run/dlr-cgroup

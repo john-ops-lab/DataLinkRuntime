@@ -14,7 +14,14 @@ from uuid import UUID, uuid4
 
 from dlr.common.result_intent_proof_wire_v4 import verify_result_intent_binding
 from dlr.common.result_receipt_proof_v4 import verify_result_receipt
-from dlr.worker import claim_http_v4, claim_preparation_v4, journal_v4, sandbox, workspace_fs_v4
+from dlr.worker import (
+    claim_http_v4,
+    claim_preparation_v4,
+    journal_v4,
+    recovery_checkpoint_v4,
+    sandbox,
+    workspace_fs_v4,
+)
 from dlr.worker.execution_supervision_v4 import ResultSnapshot, SupervisedExecution
 from dlr.worker.lease_session_v4 import _proof_deadline
 
@@ -266,6 +273,12 @@ def submit_result(
                     if journal_v4._read(directory, intent.journal_name) != expected_record:
                         raise ValueError("result journal unavailable")
                 journal_uncertain = False
+                phase = "stopped_checkpoint"
+                journal_uncertain = True
+                recovery_checkpoint_v4.persist_stopped(
+                    owner, snapshot, expected_record, intent.journal_name
+                )
+                journal_uncertain = False
                 cutoff = min(deadline, intent.deadline)
                 parent._require_before(cutoff)
                 receipt_nonce = uuid4()
@@ -296,6 +309,7 @@ def submit_result(
                 parent._require_before(cutoff)
                 parent._observation = (receipt.observed_us, started, finished)
                 snapshot.receipt = response["result_receipt"]
+                snapshot.finalization_id = receipt.finalization_id
                 return True
         except BaseException as error:
             logger.warning(

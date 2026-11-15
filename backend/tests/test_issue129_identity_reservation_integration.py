@@ -742,8 +742,9 @@ def test_reserved_identity_cannot_be_taken_over_by_legacy_worker(
         assert worker.status == "offline" and worker.scheduling_state == "disabled"
 
 
+@pytest.mark.parametrize("controlled_recovery", [False, True])
 def test_enrollment_requires_isolated_database_role_and_exchanges_once(
-    api_client, test_engine, session_factory, tmp_path, monkeypatch
+    api_client, test_engine, session_factory, tmp_path, monkeypatch, controlled_recovery
 ):
     """Exercise the actual API against a restricted PostgreSQL login."""
     monkeypatch.setattr(settings, "worker_identity_reservation_enabled", True)
@@ -1389,14 +1390,28 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             # rather than the request-session dependency overridden above.
             with monkeypatch.context() as cleanup_scope:
                 cleanup_scope.setattr(db, "SessionLocal", runtime_sessions)
-                _assert_cleanup_protocol(
-                    client,
-                    runtime_sessions,
-                    worker_id,
-                    lease,
-                    claimed,
-                    public_key_bytes(signing_key),
-                )
+                if controlled_recovery:
+                    from recovery_protocol_fixtures import assert_controlled_recovery
+
+                    lease = assert_controlled_recovery(
+                        client,
+                        runtime_sessions,
+                        session_factory,
+                        worker_id,
+                        lease,
+                        claimed,
+                        trust_file,
+                        public_key_bytes(signing_key),
+                    )
+                else:
+                    _assert_cleanup_protocol(
+                        client,
+                        runtime_sessions,
+                        worker_id,
+                        lease,
+                        claimed,
+                        public_key_bytes(signing_key),
+                    )
             finished_drain = client.post(f"/api/workers/{worker_id}/v4/drain", json=active_drain)
             assert finished_drain.json()["scheduling_state"] == "disabled"
             assert finished_drain.json()["unsettled_attempts"] == 0

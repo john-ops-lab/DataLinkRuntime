@@ -19,7 +19,7 @@ from dlr.control.api.worker_instance_v4 import _HEADERS, _process
 from dlr.control.models import ExecutionAttempt, Worker, WorkerMaintenanceOperation
 from dlr.control.schemas.worker import isolation_capabilities_ready
 from dlr.control.security import Principal, require_admin_principal
-from dlr.control.services import worker_availability
+from dlr.control.services import worker_availability, worker_recovery_v4
 from dlr.control.services.attempt import ACTIVE_ATTEMPT_STATUSES
 from dlr.control.services.worker_identity_reservation import _actor
 
@@ -38,6 +38,39 @@ class ActivationRequest(BaseModel):
 
 class _Conflict(Exception):
     pass
+
+
+@router.post("/api/workers/{worker_id}/v4/recovery-intent")
+def recovery_intent(
+    request: Request,
+    worker_id: int,
+    payload: worker_recovery_v4.RecoveryRequest,
+    session: DbSession,
+    principal: Admin,
+) -> dict[str, object]:
+    """Record supervised host checks; this endpoint cannot prove physical stop."""
+    try:
+        process = _process(request)
+        fence = process.worker_fence(session)
+        result = worker_recovery_v4.request_recovery(session, worker_id, payload, principal)
+        fence.check()
+        process.check_authority()
+        session.commit()
+        process.check_authority()
+        return result
+    except worker_recovery_v4.RecoveryUnavailable:
+        with suppress(Exception):
+            session.rollback()
+        raise HTTPException(
+            status_code=409, detail={"code": "worker_recovery_conflict"}, headers=_HEADERS
+        ) from None
+    except Exception as error:
+        with suppress(Exception):
+            session.rollback()
+        logger.warning("worker recovery intent unavailable: type=%s", type(error).__name__)
+        raise HTTPException(
+            status_code=503, detail={"code": "worker_recovery_unknown"}, headers=_HEADERS
+        ) from None
 
 
 def _unsettled_attempts(session: Session, worker: Worker) -> int:

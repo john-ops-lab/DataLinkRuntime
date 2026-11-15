@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定义 Wave 1-A 专用新部署的单 Control、单固定 Worker、标准库 Python 远程运行合同。该能力不替代既有默认 v3 部署，不声明 Pool、HA、旧部署迁移或异常历史自动恢复。
+定义 Wave 1-A 专用新部署及 W1-B 已提交结果受控恢复的单 Control、单固定 Worker、标准库 Python 远程运行合同。该能力不替代既有默认 v3 部署，不声明 Pool、HA、旧部署迁移或异常历史自动恢复。
 
 ## Requirements
 
@@ -44,7 +44,7 @@ protocol 4 操作 MUST 验证独立运行凭据、稳定身份、instance/genera
 
 #### Scenario: 结果已提交但回执未知
 - **WHEN** 服务端已经保存终态，而 Worker 无法确认结果回执
-- **THEN** Worker 停止并保留原 journal、预算及未结责任，不 ACK、不创建第二个有效 Attempt；同身份带残留重启仍阻断
+- **THEN** Worker 停止并保留原 journal、预算及未结责任，不 ACK、不创建第二个有效 Attempt；普通带残留重启仍阻断，只有满足下述 W1-B 完整前提的显式恢复可继续
 
 #### Scenario: 重复清理结算
 - **WHEN** 相同归属、intent 和合法证明再次提交清理结算
@@ -71,3 +71,32 @@ Control/Worker 存活的父子进程、业务数据副本和 IO MUST 受有限 c
 #### Scenario: 正常结算后复用预算
 - **WHEN** 同一 Worker 进程的上一项任务已经完成结果、清理和本地释放
 - **THEN** 原预算可用于下一项任务；峰值观测只说明样本行为，不作为所有 JSON 的内存上界
+
+### Requirement: 已提交结果受控恢复必须保留原物理与预算责任
+W1-B MUST 在业务放行前持久化版本化 prepared 检查点，冻结原 Dispatch、身份/instance/generation、Attempt/fence、receive/task 两份预算及计费版本、boot/原卷锚点和实际对象；真实监督链确认进程/IO 停止后、结果 finalize 前 MUST 持久化 stopped 检查点，绑定 result intent/MAC，并不可逆禁止原业务再次启动。旧 W1-A 记录缺失此信息时 MUST 保持阻断，不得故障后补造资格。
+
+#### Scenario: 旧 W1-A 残留缺少新检查点
+- **WHEN** 重启扫描只能找到旧 journal 或缺失/损坏的 prepared/stopped 记录
+- **THEN** 保持 recovery_required，不补造原预算或停止事实
+
+### Requirement: 恢复必须绑定可信宿主操作及管理员意图
+恢复 MUST 由管理员的版本化、幂等维护意图触发；绑定完整旧容器 ID、部署记录引用/摘要、原责任、boot 和 prepared 摘要。可信宿主操作者 MUST 在故障前建档并在故障后通过既有 Compose/Docker/Linux 命令确认整个旧容器和后代退出、原卷独占且无未知 FD/namespace 导出。Control MUST 将这些材料标为运维断言，MUST NOT 宣称 HTTP 参数或证据摘要自动证明物理停止。
+
+#### Scenario: 无法确认原容器和独占卷前提
+- **WHEN** 缺少故障前映射或不能确认整个旧容器/后代退出及无未知共享引用
+- **THEN** 保持部署阻断，证据摘要和 HTTP 参数不能代替真实核验，不通过换空卷继续
+
+### Requirement: 恢复实例必须独立核验历史责任并可安全重入
+Worker MUST 独立核验其可观察的原锁/锚点、相同 boot/存储/身份、检查点和实际对象/挂载；新 namespace 观察不得覆盖旧绑定。宿主重启、复制卷、跨宿主接管和未知结果仍延期。
+
+#### Scenario: 显式恢复具有完整资格的已提交结果
+- **WHEN** 当前有效凭据读回匹配管理员意图、旧实例及候选期限已过，并且原卷检查通过
+- **THEN** 只注册新的 reconciling 实例，不开 consumer、不报告 ready；用当前证明、原 Cleanup Token、两代历史和新 nonce 只读核对已提交 result intent/MAC/finalization，不使用旧证明或重发结果正文
+
+#### Scenario: 清理或本地多文件删除中断
+- **WHEN** 原对象的清理、cleanup 提交/回执或 journal/runtime 删除中断
+- **THEN** 每项破坏操作前持久保存绑定原对象的删除意图，缺失对象只沿匹配意图重入；同名替换、嵌套挂载、损坏/额外对象仍阻断；已提交 completion 只读确认，未提交意图才可在当前围栏下重绑定；终结记录保存原 Cleanup Token、Dispatch/两份冻结额度、稳定结果/结算 ID 及精确记录摘要，逐项 unlink/fsync 后最后删除
+
+#### Scenario: 恢复完成后重新调度与旧消息确认
+- **WHEN** 物理清理、服务端结算、本地记录及实际管理 IO 已全部结束
+- **THEN** 不对旧内存句柄 release 或将旧额度加回新账；重新验证 envelope/preflight 后建立一次新预算，保持维护状态并等待显式 activate；新 channel 对重投消息取得权威 ACK_NOOP 后才 ACK 当前 tag，再执行新任务，原 Execution/Attempt/业务结果不重建或修改

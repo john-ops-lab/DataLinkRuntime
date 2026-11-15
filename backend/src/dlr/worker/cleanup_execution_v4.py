@@ -14,6 +14,8 @@ from dlr.worker import (
     claim_http_v4,
     claim_preparation_v4,
     journal_v4,
+    recovery_checkpoint_v4,
+    recovery_local_v4,
     result_exchange_v4,
     workspace_fs_v4,
     workspace_live_v4,
@@ -63,6 +65,7 @@ def settle_execution(
             or snapshot.owner is not owner
             or type(snapshot.receipt) is not str
             or not snapshot.receipt
+            or snapshot.finalization_id is None
             or not owner._physical_done.is_set()
             or owner._observation is None
             or owner._observation.code != "cgroup_empty_supervisor_reaped"
@@ -76,6 +79,15 @@ def settle_execution(
             return False
         phase = "physical_cleanup"
         try:
+            identity = prepared.identity
+            with root_lock.borrow(live._runtime_root, [live._attempt_journal_root]):
+                directory = preparer._entry(root_lock, live._attempt_journal_root)
+                first, last = recovery_checkpoint_v4.names(identity.attempt_id)
+                frozen = journal_v4._read(directory, first)
+                stopped_checkpoint = journal_v4._read(directory, last)
+                if frozen is None or stopped_checkpoint is None:
+                    raise ValueError("recovery checkpoint unavailable")
+                recovery_local_v4.physical_intent(directory, frozen, stopped_checkpoint)
             stopped = cgroup_intent_v4.stop_live_cgroup(
                 live,
                 config=live._config,
@@ -268,13 +280,45 @@ def settle_execution(
             with root_lock.borrow(live._runtime_root, [live._attempt_journal_root]):
                 root_lock.require_v4_journal(live._runtime_root, live._attempt_journal_root)
                 with journal_v4._locked_root(live._attempt_journal_root) as directory:
-                    _remove_exact(directory, records)
+                    for name in recovery_checkpoint_v4.names(attempt_id):
+                        record = journal_v4._read(directory, name)
+                        if record is None:
+                            raise ValueError("recovery checkpoint unavailable")
+                        records[name] = record
+                    physical_name = recovery_local_v4.progress_name(attempt_id)
+                    physical = journal_v4._read(directory, physical_name)
+                    if physical is None:
+                        raise ValueError("physical deletion intent unavailable")
+                    records[physical_name] = physical
+                    for name in recovery_local_v4._entries(directory):
+                        if name.startswith(f"recovery-{attempt_id}.delete-"):
+                            record = journal_v4._read(directory, name)
+                            if record is None:
+                                raise ValueError("physical deletion progress unavailable")
+                            records[name] = record
+                    terminal = {
+                        "version": 1,
+                        "prepared": frozen,
+                        "stopped": stopped_checkpoint,
+                        "attempt_record": prepared.journal,
+                        "finalization_id": str(snapshot.finalization_id),
+                        "completion_id": str(receipt.completion_id),
+                        "records": {
+                            name: recovery_checkpoint_v4.digest(record)
+                            for name, record in records.items()
+                        },
+                        "runtime_records": frozen["runtime_record"],
+                    }
+                    recovery_local_v4.retire(
+                        directory,
+                        preparer._entry(root_lock, live._runtime_root),
+                        terminal,
+                        allow_missing=False,
+                    )
                 # Keep the runtime intent until the journal directory is durable.
                 # The runtime root is intentionally 0711 so the sandbox can
                 # traverse it. Reuse its already-locked descriptor: the
                 # journal helper would incorrectly change it to 0700.
-                directory = preparer._entry(root_lock, live._runtime_root)
-                _remove_exact(directory, {prepared.intent_names[1]: prepared.intent})
             phase = "budget_release"
             budget._release_settled_v4(
                 prepared.attempt_reservation, prepared.receive_reservation, attempt_id=attempt_id
