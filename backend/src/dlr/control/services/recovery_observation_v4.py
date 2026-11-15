@@ -40,7 +40,7 @@ def observe(
             # Recovery _snapshot takes Admission -> Execution -> Attempts ->
             # Slot -> Worker before reading the immutable operation/result.
             cleanup._snapshot(session, frozen)
-            result = worker_recovery_v4.require_committed_result(
+            disposition, result = worker_recovery_v4.require_recovery_fact(
                 session,
                 lookup,
                 worker_id=frozen.worker_id,
@@ -49,7 +49,7 @@ def observe(
             )
             execution = session.get(Execution, frozen.execution_id)
             attempt = session.get(ExecutionAttempt, frozen.receipt.attempt_id)
-            if execution is None or attempt is None or result.finalization_id is None:
+            if execution is None or attempt is None:
                 raise ValueError
             slot = session.get(AdapterExecutionSlot, (execution.adapter_id, 0))
             row = session.scalar(
@@ -115,6 +115,16 @@ def observe(
                 attempt.status,
                 _timestamp(before),
                 _timestamp(now),
+                kind="platform_terminal" if disposition is not None else "committed_result",
+                disposition_id=(
+                    disposition.recovery_disposition_id if disposition is not None else None
+                ),
+                stopped_sha256=(
+                    bytes.fromhex(disposition.recovery_disposition["stopped_sha256"])
+                    if disposition is not None and disposition.recovery_disposition is not None
+                    else None
+                ),
+                execution_status=execution.status if disposition is not None else None,
             )
             token = sign_observation(claims, authority.key)
             gate.check()

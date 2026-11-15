@@ -437,7 +437,9 @@ def _exercise_remote_fixed_worker(client, session_factory, shared, base_url, tru
         connection.close()
 
 
-def _assert_result_transaction_fences(factory, process, worker_id, credential, lease, attempt):
+def _assert_result_transaction_fences(
+    factory, process, worker_id, credential, lease, attempt, *, staged_only=False
+):
     """DB protocol only: decoding a valid intent cannot replace either fence."""
     from dlr.common.result_receipt_proof_v4 import verify_result_receipt
     from dlr.control.schemas.reliable_runtime import AttemptResultBody
@@ -496,6 +498,8 @@ def _assert_result_transaction_fences(factory, process, worker_id, credential, l
         )
     with factory() as session:
         assert session.get(ExecutionAttempt, action.attempt_id).status == "running"
+    if staged_only:
+        return context, ref, proof, nonce, fence
     with pytest.raises(finalizer.ResultFinalizeUnknown):
         finalizer.finalize_unconfirmed_result_from_token(
             factory,
@@ -742,7 +746,16 @@ def test_reserved_identity_cannot_be_taken_over_by_legacy_worker(
         assert worker.status == "offline" and worker.scheduling_state == "disabled"
 
 
-@pytest.mark.parametrize("controlled_recovery", [False, True])
+@pytest.mark.parametrize(
+    "controlled_recovery",
+    [
+        False,
+        True,
+        ("worker_lost", "dead_letter"),
+        ("worker_lost", "cancelled"),
+        ("cancelled", "cancelled"),
+    ],
+)
 def test_enrollment_requires_isolated_database_role_and_exchanges_once(
     api_client, test_engine, session_factory, tmp_path, monkeypatch, controlled_recovery
 ):
@@ -835,6 +848,7 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 "attempt_lease_candidates_v4",
                 "attempt_result_intents_v4",
                 "worker_cleanup_intents_v4",
+                "worker_maintenance_operations",
             ):
                 conn.execute(text(f'REVOKE DELETE ON "{table}" FROM "{runtime_role}"'))
             conn.execute(
@@ -997,17 +1011,40 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             "Authorization": f"Bearer {runtime_secret}",
             "X-DLR-Worker-Instance": str(instance),
         }
-        # A runtime role that can add candidate triggers must not sign leases.
-        with test_engine.begin() as conn:
-            conn.execute(text(f'GRANT TRIGGER ON worker_lease_candidates_v4 TO "{runtime_role}"'))
-        test_engine.dispose()
-        with pytest.raises(lease_session_v4.WorkerLeaseError):
-            lease.register()
-        with test_engine.begin() as conn:
-            conn.execute(
-                text(f'REVOKE TRIGGER ON worker_lease_candidates_v4 FROM "{runtime_role}"')
-            )
-        test_engine.dispose()
+        # New disposition storage joins the existing role/trigger gate.
+        unsafe_tables = ["worker_lease_candidates_v4"]
+        if controlled_recovery is True:
+            unsafe_tables.append("worker_maintenance_operations")
+        for table in unsafe_tables:
+            with test_engine.begin() as conn:
+                conn.execute(text(f'GRANT TRIGGER ON {table} TO "{runtime_role}"'))
+            test_engine.dispose()
+            with pytest.raises(lease_session_v4.WorkerLeaseError):
+                lease.register()
+            with test_engine.begin() as conn:
+                conn.execute(text(f'REVOKE TRIGGER ON {table} FROM "{runtime_role}"'))
+            test_engine.dispose()
+        if controlled_recovery is True:
+            with test_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE worker_maintenance_operations "
+                        "DISABLE TRIGGER recovery_disposition_guard_v4"
+                    )
+                )
+            test_engine.dispose()
+            try:
+                with pytest.raises(lease_session_v4.WorkerLeaseError):
+                    lease.register()
+            finally:
+                with test_engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE worker_maintenance_operations "
+                            "ENABLE ALWAYS TRIGGER recovery_disposition_guard_v4"
+                        )
+                    )
+                test_engine.dispose()
         lease.register()
         original_proof = lease._proof
         claims = verify_worker_proof_signature(original_proof, public_key_bytes(signing_key))
@@ -1359,8 +1396,14 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 )
                 == 1
             )
-        _assert_result_transaction_fences(
-            runtime_sessions, process, worker_id, runtime_secret, lease, attempt_lease
+        result_pending = _assert_result_transaction_fences(
+            runtime_sessions,
+            process,
+            worker_id,
+            runtime_secret,
+            lease,
+            attempt_lease,
+            staged_only=isinstance(controlled_recovery, tuple),
         )
         attempt_lease.close()
         active_drain = {"request_id": str(uuid4()), "expected_version": 4}
@@ -1406,6 +1449,10 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                         claimed,
                         trust_file,
                         public_key_bytes(signing_key),
+                        terminal=(
+                            controlled_recovery if isinstance(controlled_recovery, tuple) else None
+                        ),
+                        pending=result_pending,
                     )
                 else:
                     _assert_cleanup_protocol(

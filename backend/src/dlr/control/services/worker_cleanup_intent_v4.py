@@ -128,7 +128,10 @@ def _snapshot(
     authority = V4AttemptAuthority(context.credential, context.instance_id, context.generation)
     if context.recovery is not None:
         execution = lock_execution_in_admission_order(session, context.execution_id)
-        if execution is None or execution.cancel_requested or execution.status == "cancelled":
+        if execution is None or (
+            context.recovery.mode == "committed_result"
+            and (execution.cancel_requested or execution.status == "cancelled")
+        ):
             raise CleanupIntentUnavailable("recovery result unavailable")
         lock_execution_attempts(session, context.execution_id)
         slot = session.get(
@@ -168,7 +171,7 @@ def _snapshot(
     if now >= before:
         raise CleanupIntentUnavailable("cleanup intent unavailable")
     if context.recovery is not None:
-        worker_recovery_v4.require_committed_result(
+        worker_recovery_v4.require_recovery_fact(
             session,
             context.recovery,
             worker_id=context.worker_id,
@@ -533,9 +536,8 @@ def finalize_cleanup_intent(
                     raise ValueError
                 slot.active_attempt_id = None
                 slot.lease_expires_at = None
-            _, _, now = _snapshot(session, frozen)
             if attempt.cleanup_settled_at is None:
-                attempt.cleanup_settled_at = now
+                attempt.cleanup_settled_at = worker_availability.current_time(session)
             row.completion_id = uuid4()
             row.completion_xid = row.writer_xid = xid
             session.flush()

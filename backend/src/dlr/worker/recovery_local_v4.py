@@ -391,6 +391,34 @@ def clean_workspace(
                 os.close(fd)
 
 
+def valid_terminal(terminal: object) -> bool:
+    if not isinstance(terminal, dict):
+        return False
+    base = {
+        "version",
+        "prepared",
+        "stopped",
+        "attempt_record",
+        "completion_id",
+        "records",
+        "runtime_records",
+    }
+    if type(terminal.get("version")) is not int or not checkpoint._uuid(
+        terminal.get("completion_id")
+    ):
+        return False
+    if terminal["version"] == 1:
+        return set(terminal) == base | {"finalization_id"} and checkpoint._uuid(
+            terminal["finalization_id"]
+        )
+    return (
+        terminal["version"] == 2
+        and set(terminal) == base | {"kind", "disposition_id"}
+        and terminal["kind"] == "platform_terminal"
+        and checkpoint._uuid(terminal["disposition_id"])
+    )
+
+
 def retire(
     directory: int,
     runtime: int,
@@ -399,6 +427,8 @@ def retire(
     allow_missing: bool,
 ) -> None:
     """The self-contained terminal survives every journal/runtime unlink."""
+    if not valid_terminal(terminal):
+        raise ValueError("recovery terminal invalid")
     prepared, stopped = terminal["prepared"], terminal["stopped"]
     if not checkpoint.valid_stopped(stopped, prepared):
         raise ValueError("recovery terminal invalid")
