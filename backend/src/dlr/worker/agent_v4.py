@@ -171,7 +171,7 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
             if observation.status != "local_empty":
                 if config.recovery_operation is None or sandbox_config is None:
                     return "recovery_required"
-                from dlr.worker import recovery_execution_v4, sandbox
+                from dlr.worker import recovery_checkpoint_v4, recovery_execution_v4, sandbox
 
                 phase = "recovery_scan"
                 if sandbox_config.namespace_identity is None:
@@ -184,8 +184,8 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     identity_id=config.worker_identity_id,
                     boot_id=sandbox_config.namespace_identity.boot_id,
                 )
-                if not recovery_execution_v4.checkpoint.fresh_process(
-                    state.prepared["process"], recovery_execution_v4.checkpoint.process_identity()
+                if not recovery_checkpoint_v4.fresh_process(
+                    state.prepared["process"], recovery_checkpoint_v4.process_identity()
                 ):
                     return "recovery_required"
                 # Management stays inside this newly verified hard envelope;
