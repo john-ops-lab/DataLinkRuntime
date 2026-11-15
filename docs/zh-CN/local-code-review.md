@@ -1,6 +1,6 @@
 # 本机代码预审与按风险合并
 
-项目规则以根目录 [AGENTS.md](../../AGENTS.md) 为准。Open Code Review（OCR）在本机审查提交差异，Agent 核实问题、修复和验证；GitHub 保留最终 CI 与受保护合并。工具安装不改变 DLR 运行服务。
+项目规则以根目录 [AGENTS.md](../../AGENTS.md) 为准。Open Code Review（OCR）仅在 PR 创建前使用 GPT-6 Astra 审查提交差异，Agent 核实问题、修复和验证；PR 创建后不再发起 OCR 或其他外部模型审查，GitHub 保留最终 CI 与受保护合并。工具安装不改变 DLR 运行服务。
 
 ## 工具与模型
 
@@ -11,24 +11,35 @@ npm install -g @alibaba-group/open-code-review@1.13.3
 ocr version
 ```
 
-模型、API 地址和 API Key 通过本机私有配置管理，不提交到仓库。Kimi 开放平台的 K3.1 Pro 模型 ID 为 `kimi-k3.1-pro`；Kimi Code 订阅接口对应 `k3.1-pro`，两套接口的密钥和模型 ID 不能混用。第三方服务可能使用不同别名，以该服务实际提供值为准。使用 OpenAI Chat Completions 兼容协议，保留多轮工具调用所需的 `reasoning_content`；K3.1 始终思考，不套用关闭 thinking 的通用示例。
+预审模型固定为 **GPT-6 Astra（`gpt-6-astra`）**。provider、API 地址和登录凭据由本机私有配置管理，不提交到仓库。本机可使用 OCR 内置的 `chatgpt` provider，通过其已有 ChatGPT 登录连接 Astra；使用其他接入方式仍须核对实际模型，不以配置名称代替执行证明。指定模型不可用时报告预审未完成，不静默回退其他模型。
 
-凭据建议通过 OCR 的 `api_key_cmd` 从本机私有文件或秘密管理器读取；不得把真值放到命令参数、聊天、截图、公开配置或日志中。配置的模型服务会收到所选代码和必要上下文。先做最小连接/工具调用验证，再运行真实预审；连接成功不等于审查完成。Kimi Code 订阅可用于第三方编程工具，连接时保留 OCR/SDK 的真实客户端身份；不得伪装其他工具的 User-Agent 绕过限制。
+需要调整私有配置时，可使用以下固定版本命令；它们不修改仓库，也不创建 PR：
+
+```sh
+npx --yes @alibaba-group/open-code-review@1.13.3 config set provider chatgpt
+npx --yes @alibaba-group/open-code-review@1.13.3 config set model gpt-6-astra
+npx --yes @alibaba-group/open-code-review@1.13.3 llm test
+```
+
+不得把登录凭据或 API Key 真值放到命令参数、聊天、截图、公开配置或日志中。配置的模型服务会收到所选代码和必要上下文。模型/连接配置改变后先做不含项目代码的最小连接及工具调用验证，不在每次 PR 前重复自检；连接成功不等于审查完成。保留 OCR/SDK 的真实客户端身份，不伪装其他工具绕过限制。
 
 ## 提交前流程
 
 1. 完成本次实现、必要测试和能提前完成的文档，明确验收条件和风险；大任务仍拆成可独立审查的批次。
 2. 形成干净候选提交，固定 base/head 完整 SHA。背景文件包含任务目标、相关 OpenSpec、验收要求和适用项目规则，放仓库外。
 3. preview 后逐项核对实际覆盖；项目规则显式包含相关测试、OpenSpec 和规则说明。排除文件必须有理由；删除文件仍要核对调用方与兼容性。必要时用 `ocr rules check <path>` 确认规则来源。
-4. 执行预审，保留完整 JSON 与日志；核实实质发现后修复，运行受影响验证并复审。记录新增改动覆盖，不把旧回执冒充新候选通过。
+4. 使用 Astra 执行预审，保留完整 JSON 与日志；核实实质发现后修复，运行受影响验证并对新增差异作 Astra OCR 增量复审。以上工作均在 PR 创建前完成，记录新增改动覆盖，不把旧回执冒充新候选通过。
 5. 审查、验证和可提前完成的说明准备好后，再提交 PR。
 
 以下是命令形式，变量由当前任务设置。使用不同的 preview/result 文件名；业务背景和报告路径必须位于仓库外的私有目录，不在 shell 中拼接未经转义的用户文本。
 
 ```sh
-ocr review --from "$REVIEW_BASE_SHA" --to "$REVIEW_HEAD_SHA" \
+npx --yes @alibaba-group/open-code-review@1.13.3 review \
+  --from "$REVIEW_BASE_SHA" --to "$REVIEW_HEAD_SHA" \
   --preview --format json --output "$REVIEW_PREVIEW_FILE"
-ocr review --from "$REVIEW_BASE_SHA" --to "$REVIEW_HEAD_SHA" \
+npx --yes @alibaba-group/open-code-review@1.13.3 review \
+  --from "$REVIEW_BASE_SHA" --to "$REVIEW_HEAD_SHA" \
+  --provider chatgpt --model gpt-6-astra \
   --background-file "$REVIEW_BACKGROUND_FILE" \
   --format json --audience agent --concurrency 2 \
   --effort medium --max-tokens-budget 200000 \
@@ -41,9 +52,11 @@ ocr review --from "$REVIEW_BASE_SHA" --to "$REVIEW_HEAD_SHA" \
 
 核对 JSON 的终态、manifest（若存在）、逐文件状态、warnings、选中/排除清单及实际模型。OCR 退出码 0 仍可能带警告或部分完成；`skipped`、`partial`、`failed` 或没有覆盖相关文件，不能当成“全部通过”。没有发现问题也不保证没有缺陷。报告中记录版本、模型、base/head、项目规则和背景摘要，并保留未解决事项。
 
-已确认的严重缺陷修复后才交付；误报记录理由。业务决策不明确时请用户裁定。审查报告自身不修改代码，也不授权合并。委托模式复用宿主模型，应明确标注；本机 OCR 自主调用第三方模型是单独的审查过程。
+已确认的严重缺陷修复后才交付；误报记录理由。业务决策不明确时请用户裁定。审查报告自身不修改代码，也不授权合并。委托模式仅在实际执行模型为 GPT-6 Astra 时满足 PR 前的模型要求，并须记录实际执行模式；不能将其他宿主模型的核查冒充 Astra OCR。
 
 ## PR、合并与收尾
+
+PR 创建后不再启动 OCR、Kimi 或其他外部模型审查，也不追加第二轮模型全审。CI 或验收暴露的必要修复由当前 Agent 核实差异、调用方和直接影响，完成针对性验证并记录新增 SHA；保留 PR 前审查所绑定的原 SHA 和后续增量说明，不能把旧 OCR 回执标为新 HEAD 的审查通过。已有审查讨论和实质问题仍须处理。
 
 PR 最终 HEAD 的 `backend`、`web`、`compose-smoke`、`local-preview` 必须全部通过；有新提交就重新核对最终结果。main 变化时确认当前集成状态，不沿用已经失效的证据。需要本机功能验收时，沿用 [现有本机预览契约](local-preview.md) 与私有编排，保留卷和凭据。
 
