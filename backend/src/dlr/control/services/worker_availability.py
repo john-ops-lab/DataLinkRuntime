@@ -9,7 +9,7 @@ currently usable Worker.
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import Select, SQLColumnExpression, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
@@ -44,43 +44,51 @@ def has_unreconciled_v4_attempt(session: Session, worker: Worker, *, now: dateti
     cleanup. An inconsistent Worker ID and identity snapshot blocks both
     possible owners even if a settlement marker is present.
     """
+    return session.scalar(unreconciled_v4_attempt_query(worker, now=now)) is not None
+
+
+def unreconciled_v4_attempt_query(
+    worker: Worker | type[Worker], *, now: datetime | SQLColumnExpression[datetime]
+) -> Select[tuple[int]]:
+    """Share the read predicate with the single-snapshot admin observation.
+
+    This query does not grant authority. Business callers still hold Worker;
+    an administrator's unlocked projection is only a historical observation.
+    """
     from dlr.control.services.attempt import ACTIVE_ATTEMPT_STATUSES
 
     return (
-        session.scalar(
-            select(ExecutionAttempt.id)
-            .where(
-                ExecutionAttempt.worker_identity_id.is_not(None),
-                or_(
-                    and_(
-                        ExecutionAttempt.worker_id == worker.id,
-                        or_(
-                            ExecutionAttempt.worker_identity_id != worker.identity_id,
-                            and_(
-                                ExecutionAttempt.cleanup_settled_at.is_(None),
-                                or_(
-                                    ExecutionAttempt.status.not_in(ACTIVE_ATTEMPT_STATUSES),
-                                    ExecutionAttempt.worker_instance_id != worker.instance_id,
-                                    ExecutionAttempt.worker_instance_generation
-                                    != worker.instance_generation,
-                                    ExecutionAttempt.lease_expires_at <= now,
-                                ),
-                            ),
-                            and_(
-                                ExecutionAttempt.cleanup_settled_at.is_not(None),
-                                ExecutionAttempt.status.in_(ACTIVE_ATTEMPT_STATUSES),
+        select(ExecutionAttempt.id)
+        .where(
+            ExecutionAttempt.worker_identity_id.is_not(None),
+            or_(
+                and_(
+                    ExecutionAttempt.worker_id == worker.id,
+                    or_(
+                        ExecutionAttempt.worker_identity_id != worker.identity_id,
+                        and_(
+                            ExecutionAttempt.cleanup_settled_at.is_(None),
+                            or_(
+                                ExecutionAttempt.status.not_in(ACTIVE_ATTEMPT_STATUSES),
+                                ExecutionAttempt.worker_instance_id != worker.instance_id,
+                                ExecutionAttempt.worker_instance_generation
+                                != worker.instance_generation,
+                                ExecutionAttempt.lease_expires_at <= now,
                             ),
                         ),
-                    ),
-                    and_(
-                        ExecutionAttempt.worker_identity_id == worker.identity_id,
-                        ExecutionAttempt.worker_id != worker.id,
+                        and_(
+                            ExecutionAttempt.cleanup_settled_at.is_not(None),
+                            ExecutionAttempt.status.in_(ACTIVE_ATTEMPT_STATUSES),
+                        ),
                     ),
                 ),
-            )
-            .limit(1)
+                and_(
+                    ExecutionAttempt.worker_identity_id == worker.identity_id,
+                    ExecutionAttempt.worker_id != worker.id,
+                ),
+            ),
         )
-        is not None
+        .limit(1)
     )
 
 

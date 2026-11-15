@@ -209,6 +209,27 @@ def assert_controlled_recovery(
         assert created.json() == lost_reply
     assert created.json()["host_evidence"] == "operator_attestation"
     assert client.post(admin_endpoint, json=request).json() == created.json()
+    if terminal == ("worker_lost", "cancelled"):
+        # W1-D's fresh confirmation must not bypass an unfinished recovery,
+        # even if a fixture reports ready before its cleanup responsibility.
+        with factory.begin() as session:
+            session.get(Worker, worker_id).capacity_state = "ready"
+        blocked_confirmation = {
+            "request_id": str(uuid4()),
+            "expected_version": created.json()["maintenance_version"],
+        }
+        assert (
+            client.post(f"/api/workers/{worker_id}/v4/drain", json=blocked_confirmation).status_code
+            == 409
+        )
+        with factory.begin() as session:
+            worker = session.get(Worker, worker_id)
+            assert worker.maintenance_version == created.json()["maintenance_version"]
+            assert (
+                session.get(WorkerMaintenanceOperation, UUID(blocked_confirmation["request_id"]))
+                is None
+            )
+            worker.capacity_state = "reconciling"
     conflicting = deepcopy(request)
     conflicting["binding"]["evidence_sha256"] = "4" * 64
     assert client.post(admin_endpoint, json=conflicting).status_code == 409
@@ -456,6 +477,16 @@ def assert_controlled_recovery(
             ]
             assert disposition["reason"] == "result_uncommitted_outcome_unknown"
             assert disposition["disposition_id"] == lookup["disposition_id"]
+            assert set(disposition) == {
+                "operation_id",
+                "disposition_id",
+                "kind",
+                "reason",
+                "execution_id",
+                "attempt_id",
+                "attempt_status",
+                "execution_status",
+            }
         cleanup = session.get(WorkerCleanupIntentV4, task.attempt_id)
         assert (
             cleanup.completion_id,

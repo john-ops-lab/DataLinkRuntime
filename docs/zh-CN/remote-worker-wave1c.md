@@ -62,4 +62,6 @@ W1-C 在 [W1-B](remote-worker-wave1b.md) 的同宿主、同 boot、原身份和�
 
 业务 status/output/error/ended_at、Attempt 状态/计数和 dispatch 保持原值。管理员 `GET /api/workers/{id}/v4/status` 的 `last_recovery_disposition` 保存最近 C 操作的原终态、Execution/Attempt、disposition ID 和固定原因 `result_uncommitted_outcome_unknown`；后续 drain/activate 不会将其变成业务成功。相同原 request 也可读回原处置。
 
+W1-D 在系统状态页只读显示这一摘要及原终态，继续提示“结清不重试也不回滚”。恢复后排空须遵循 [W1-B 的当前版本、新 request ID 确认规则](remote-worker-wave1b.md)，不能重放旧 drain 推进新周期；该确认不更改原 disposition/completion 或恢复算法。
+
 两份冻结占用一直保留到本地记录和真实 IO 结束，不调用消失进程的 release，不给新预算加旧额度。全部归零后才重新核验实际 envelope，建立一次新账；随后按 B 流程确认 disabled 并显式 activate。新 channel 只 ACK 服务端权威 `ACK_NOOP` 对应的当前 delivery tag，最后实际完成一项新任务。安全阻断本身不构成 C 成功结清。

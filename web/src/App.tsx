@@ -82,6 +82,9 @@ import {
 } from "./languages";
 import { isTerminal } from "./status";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
+import { parseWorkerMaintenanceSnapshot, WORKER_MAINTENANCE_TIMEOUT_MS, WORKER_OBSERVATION_MAX_AGE_MS } from "./worker-maintenance";
+import type { WorkerMaintenanceSnapshot, WorkerMaintenanceView } from "./types";
+import { clearWorkerMaintenanceIntent } from "./worker-maintenance-intent";
 import { parseRuntimeConfigDraft, runtimeConfigSnapshot } from "./runtime-config";
 import type {
   AccountPrincipal,
@@ -242,6 +245,9 @@ export function AdapterConsole({
   onOpenAccountProfile,
 }: AdapterConsoleProps = {}) {
   const { t } = useTranslation(["common", "adapter", "runtime"]);
+  const canManageUsers = accountPrincipal === undefined || accountPrincipal.role === "admin";
+  const workerMaintenanceScope = canManageUsers
+    ? `${currentEntryMode()}:${accountPrincipal?.id ?? "deployment"}` : null;
   const [messageApi, messageContextHolder] = message.useMessage();
   const [modalApi, modalContextHolder] = Modal.useModal();
   const deletingAdapterRef = useRef(false);
@@ -251,6 +257,7 @@ export function AdapterConsole({
   const [systemStatusRefreshing, setSystemStatusRefreshing] = useState(false);
   const healthRefreshRef = useRef<(() => Promise<void>) | null>(null);
   const workerRefreshRef = useRef<(() => Promise<void>) | null>(null);
+  const workerObservationRef = useRef<((workerId: number) => Promise<WorkerMaintenanceSnapshot>) | null>(null);
   const systemStatusRefreshInFlight = useRef(false);
 
   const [adapters, setAdapters] = useState<Adapter[]>([]);
@@ -267,9 +274,19 @@ export function AdapterConsole({
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [workers, setWorkers] = useState<Worker[]>([]);
+  const [workerCollection, setWorkers] = useState<Worker[]>([]);
+  const workers = useMemo(() => {
+    if (workerCollection.every((worker) => !worker.maintenance
+      || worker.maintenance.scope === workerMaintenanceScope)) return workerCollection;
+    return workerCollection.map((worker) => worker.maintenance?.scope === workerMaintenanceScope
+      ? worker : { ...worker, maintenance: undefined });
+  }, [workerCollection, workerMaintenanceScope]);
   const [workersLoading, setWorkersLoading] = useState(true);
   const [workersError, setWorkersError] = useState<string | null>(null);
+  const readWorkerMaintenance = useCallback((workerId: number): Promise<WorkerMaintenanceSnapshot> => {
+    const read = workerObservationRef.current;
+    return read ? read(workerId) : Promise.reject(new Error("worker_maintenance_unavailable"));
+  }, []);
 
   const [snapshot, setSnapshot] = useState<EditorSnapshot>({
     code: "",
@@ -559,7 +576,6 @@ export function AdapterConsole({
   const activeExecutionId = selected?.running_execution_id ?? null;
   const selectedRuntimeLocked = selected?.runtime_locked === true
     || runtimeAuthority.synchronizingAfterMutation;
-  const canManageUsers = accountPrincipal === undefined || accountPrincipal.role === "admin";
   const selectedAccessLevel: AdapterAccessLevel = selected === null
     ? "admin"
     : adapterAccessLevel(selected, accountPrincipal);
@@ -791,11 +807,101 @@ export function AdapterConsole({
   useEffect(() => {
     let cancelled = false;
     let inFlight: Promise<void> | null = null;
+    let generation = 0;
+    let previousView: WorkerMaintenanceView | null = null;
+    let previousWorkerId: number | null = null;
+    let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+    let observationController: AbortController | null = null;
+    let observationInFlight: Promise<WorkerMaintenanceSnapshot> | null = null;
+    let observationGeneration = 0;
+    let observationFlightGeneration = 0;
+    let observationFlightWorkerId: number | null = null;
+    let observedWorkerId: number | null = null;
 
-    function loadWorkers(initial = false): Promise<void> {
+    const invalidateObservation = () => {
+      generation += 1;
+      observationGeneration += 1;
+      if (previousView) previousView = { ...previousView, fresh: false };
+      if (expiryTimer !== null) clearTimeout(expiryTimer);
+      setWorkers((current) => current.map((worker) => worker.maintenance
+        ? { ...worker, maintenance: { ...worker.maintenance, fresh: false } } : worker));
+    };
+
+    function observeWorker(workerId: number): Promise<WorkerMaintenanceSnapshot> {
+      if (cancelled || workerMaintenanceScope === null || observedWorkerId !== workerId
+        || document.visibilityState === "hidden") return Promise.reject(new Error("worker_maintenance_unavailable"));
+      if (observationInFlight !== null) {
+        if (observationFlightGeneration !== observationGeneration || observationFlightWorkerId !== workerId) {
+          return observationInFlight.catch(() => undefined).then(() => observeWorker(workerId));
+        }
+        return observationInFlight;
+      }
+      const readGeneration = ++observationGeneration;
+      observationFlightGeneration = readGeneration;
+      observationFlightWorkerId = workerId;
+      const startedAt = performance.now();
+      const flight: Promise<WorkerMaintenanceSnapshot> = (async () => {
+        const old = previousWorkerId === workerId ? previousView?.snapshot ?? null : null;
+        let view: WorkerMaintenanceView = { snapshot: old, fresh: false, error: null, scope: workerMaintenanceScope };
+        const controller = new AbortController();
+        observationController = controller;
+        const timeout = setTimeout(() => controller.abort(), WORKER_MAINTENANCE_TIMEOUT_MS);
+        try {
+          const raw = await api.getWorkerMaintenance(workerId, controller.signal);
+          const snapshot = parseWorkerMaintenanceSnapshot(raw, workerId);
+          const regressed = snapshot !== null && old !== null && (
+            snapshot.worker_identity_id !== old.worker_identity_id
+            || snapshot.maintenance_version < old.maintenance_version
+            || snapshot.instance_generation < old.instance_generation
+            || Date.parse(snapshot.observed_at) < Date.parse(old.observed_at)
+            || (snapshot.instance_generation === old.instance_generation
+              && snapshot.instance_id !== null && snapshot.instance_id !== old.instance_id)
+          );
+          view = snapshot && !regressed ? {
+            snapshot, fresh: performance.now() - startedAt < WORKER_OBSERVATION_MAX_AGE_MS,
+            error: null, scope: workerMaintenanceScope,
+          } : { ...view, error: regressed ? "unavailable" : "unsupported" };
+        } catch (error) {
+          view = { ...view, error: error instanceof ApiError && error.status === 404 ? "unsupported" : "unavailable" };
+        } finally {
+          clearTimeout(timeout);
+          if (observationController === controller) observationController = null;
+        }
+        if (cancelled || readGeneration !== observationGeneration || observedWorkerId !== workerId) {
+          throw new Error("worker_maintenance_superseded");
+        }
+        previousView = view;
+        previousWorkerId = workerId;
+        setWorkers((current) => current.map((worker) => worker.id === workerId && worker.protocol_version === 4
+          ? { ...worker, maintenance: view } : worker));
+        if (expiryTimer !== null) clearTimeout(expiryTimer);
+        if (view.fresh) {
+          const observed = view.snapshot;
+          expiryTimer = setTimeout(() => {
+            if (cancelled) return;
+            setWorkers((current) => current.map((worker) => worker.maintenance?.snapshot === observed
+              ? { ...worker, maintenance: { ...worker.maintenance, fresh: false } } : worker));
+          }, Math.max(0, WORKER_OBSERVATION_MAX_AGE_MS - (performance.now() - startedAt)));
+        }
+        if (!view.snapshot || !view.fresh || view.error !== null) throw new Error("worker_maintenance_unavailable");
+        return view.snapshot;
+      })().finally(() => { if (observationInFlight === flight) observationInFlight = null; });
+      observationInFlight = flight;
+      return flight;
+    }
+    workerObservationRef.current = observeWorker;
+
+    function loadWorkers(initial = false, requireNew = false): Promise<void> {
+      if (cancelled) return Promise.resolve();
       if (inFlight !== null) {
+        if (requireNew) {
+          invalidateObservation();
+          return inFlight.then(() => loadWorkers());
+        }
         return inFlight;
       }
+      if (requireNew) invalidateObservation();
+      const requestGeneration = ++generation;
       if (initial) {
         setWorkersLoading(true);
         setWorkersError(null);
@@ -803,13 +909,31 @@ export function AdapterConsole({
       inFlight = (async () => {
         try {
           const list = await api.listWorkers();
-          if (!cancelled) {
-            setWorkers(list);
+          if (cancelled || requestGeneration !== generation) return;
+          let next: Worker[] = list.map((worker) => ({ ...worker, maintenance: undefined }));
+          const remote = list.filter((worker) => worker.protocol_version === 4);
+          observedWorkerId = remote.length === 1 ? remote[0].id : null;
+          // The enabled deployment supports exactly one v4 Worker. Never
+          // create per-row polling or silently broaden a corrupt catalog.
+          if (workerMaintenanceScope !== null && remote.length === 1) {
+            const workerId = remote[0].id;
+            if (document.visibilityState !== "hidden") {
+              try { await observeWorker(workerId); }
+              catch { /* The shared observation keeps its own unknown/error state. */ }
+            }
+            if (cancelled || requestGeneration !== generation) return;
+            const view: WorkerMaintenanceView = previousWorkerId === workerId && previousView !== null
+              ? previousView : { snapshot: null, fresh: false, error: null, scope: workerMaintenanceScope };
+            next = next.map((worker) => worker.id === workerId ? { ...worker, maintenance: view } : worker);
+          }
+          if (!cancelled && requestGeneration === generation) {
+            setWorkers(next);
             setWorkersError(null);
           }
         } catch (err) {
-          if (!cancelled) {
+          if (!cancelled && requestGeneration === generation) {
             setWorkersError(errorMessage(err));
+            invalidateObservation();
           }
         } finally {
           inFlight = null;
@@ -821,24 +945,35 @@ export function AdapterConsole({
       return inFlight;
     }
 
-    const refreshWorkers = () => loadWorkers();
+    const refreshWorkers = () => loadWorkers(false, true);
     workerRefreshRef.current = refreshWorkers;
     const handleFocus = () => void loadWorkers();
+    const handleVisibility = () => {
+      if (document.visibilityState === "hidden") invalidateObservation();
+      else void loadWorkers(false, true);
+    };
     const intervalId = window.setInterval(
       () => void loadWorkers(),
       WORKER_REFRESH_POLICY.pollIntervalMs,
     );
     window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
     void loadWorkers(true);
     return () => {
       cancelled = true;
+      generation += 1;
+      observationGeneration += 1;
+      observationController?.abort();
+      if (expiryTimer !== null) clearTimeout(expiryTimer);
       if (workerRefreshRef.current === refreshWorkers) {
         workerRefreshRef.current = null;
       }
+      if (workerObservationRef.current === observeWorker) workerObservationRef.current = null;
       window.clearInterval(intervalId);
       window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, []);
+  }, [workerMaintenanceScope]);
 
   const refreshAdapters = useCallback(async (): Promise<Adapter[]> => {
     const generation = ++adapterListGeneration.current;
@@ -1764,6 +1899,7 @@ export function AdapterConsole({
           workersError={workersError}
           systemStatusRefreshing={systemStatusRefreshing}
           onRefreshSystemStatus={refreshSystemStatus}
+          onReadWorkerMaintenance={readWorkerMaintenance}
           onSelectAdapter={handleSettingsSelectAdapter}
           onCategoryChange={changeSystemSettingsCategory}
           onClose={closeSystemSettings}
@@ -2473,6 +2609,7 @@ function TokenApp() {
   }
 
   async function handleLogout(): Promise<void> {
+    clearWorkerMaintenanceIntent();
     sessionStorage.removeItem(TOKEN_STORAGE_KEY);
     setAuthToken(null);
     setNoticeKey("auth.logoutNotice");

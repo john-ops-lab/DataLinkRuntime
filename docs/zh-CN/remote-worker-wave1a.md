@@ -6,6 +6,8 @@
 
 W1-B 新检查点与管理员显式恢复的增量合同、旧残留限制及宿主操作流程见 [Wave 1-B](remote-worker-wave1b.md)。完整 stopped 后未提交结果的受控结清见 [Wave 1-C](remote-worker-wave1c.md)。以下故障阻断记录是 W1-A 的历史边界，不能当作 W1-B 恢复通过证据。
 
+W1-D 在现有系统状态页增加受限 v4 观察和标准排空/激活操作；具体接口、提交未知及升级边界见下方“受限 v4 运维界面”。它不增加恢复向导、强制停止、凭据管理或 HA。
+
 ## 候选代码与依赖
 
 | 入口/职责 | 保留的实现 | 理由 |
@@ -197,7 +199,7 @@ Agent 通过真实本地隔离预检、注册及 ready 后，管理员读取 `GE
 正常排空按以下顺序进行：
 
 1. 保存状态 API 返回的 `maintenance_version`，向 `POST /api/workers/{id}/v4/drain` 发送新 UUID `request_id` 和该 `expected_version`。新 Claim 被拒绝，已有执行仍可完成结果和清理。
-2. 保留原请求体；重复同一排空请求核对完成情况。存在未结 Attempt 时保持 draining，责任归零后返回 disabled，不重复递增维护版本。
+2. 保留原请求体；重复同一排空请求核对完成情况。仅当前维护版本仍等于原排空操作的 result_version 时，才可在责任归零后确认 disabled，不重复递增维护版本。后续 activate/reconcile 已推进版本时，旧 drain 返回 409，不能再用于确认新周期；恢复后的确认规则见下方。
 3. 独立确认任务输出和终态日志、`cleanup_settled_at`、Slot、本地 workspace/journal、进程/cgroup 和预算归还，并确认 Broker 累计 ACK 增长、ready/unacked 归零。数据库 disabled 不是本地清理或 ACK 证明。
 4. 使用同一 project、runtime volume、journal 锚点和凭据目录正常停止，核对 Agent 返回 `stopped`、容器退出 0。离线不会缩短原实例租约；停止后等待旧租约届满（最多一个 30 秒租约期），再创建新实例。
 5. 用同一配置 `up -d`，等待新实例完成预检和 ready；管理员按最新维护版本显式 activate，再运行下一项任务。
@@ -210,6 +212,48 @@ docker compose -p dlr-wave1a-worker --env-file /ABSOLUTE/PRIVATE/worker.env \
 docker compose -p dlr-wave1a-worker --env-file /ABSOLUTE/PRIVATE/worker.env \
   -f deploy/standalone-worker/compose.wave1a.yml up -d
 ```
+
+## 受限 v4 运维界面（W1-D）
+
+管理员打开“系统设置 → 系统状态”，可查看“远程固定 Python（受限）”节点。原 v3 执行就绪和缓存入口不变；v4 不使用 v3 Broker 标志判断协议兼容，也不显示尚未支持的缓存管理。
+
+v4 分别展示观测在线、调度状态、容量、活动 Attempt、平台未结责任及历史阻塞。正常运行中的责任不等于历史恢复阻塞；“状态观测正常”只表示这一份观察满足显示条件，不授予 Claim 权限，也不承诺下一项任务可执行。服务端 Claim 仍重新检查当前身份、证明、期限、资源和冻结任务。
+
+观察复用共享 Worker 刷新：单固定 v4 部署中管理员最多追加一个状态 GET，普通用户不请求管理员明细。页面可见时沿用 30 秒周期，聚焦、手动刷新和操作后刷新共用单飞请求；隐藏页面不新增维护轮询。30 秒未成功刷新、隐藏恢复、缺字段或读取失败时，旧观察只作为带时间的历史记录，操作不可据此放行。每次打开确认及最终提交前都重新读取，身份、代际或维护版本变化时停止本次新写入。
+
+### 管理员 API
+
+以下接口沿用 `worker_remote_v4_enabled`、管理员认证及现有维护表，无新增表、迁移或 Worker 协议。GET 使用独立只读会话的一条业务 SELECT，不取得业务行锁、不修改版本、不完成排空；有限语句/锁等待失败返回 503。响应为 `Cache-Control: no-store`。
+
+| 接口 | 返回与边界 |
+| --- | --- |
+| `GET /api/workers/{id}/v4/status` | 保留原字段，增加 `observation_schema=1`、数据库 `observed_at`、protocol/enrolled、preflight/隔离布尔和能力、`active_attempts`、`has_unreconciled_attempts`、`current_maintenance_action`、`current_drain_operation`。Worker、计数和最近操作来自同一语句快照 |
+| `current_drain_operation` | 当前版本匹配的 drain：`request_id/action/expected_version/result_version/same_actor`，否则 null；只允许原操作者显式继续原请求，不能跨操作者代领 |
+| `GET /api/workers/{id}/v4/maintenance-operations/{request_id}` | `operation={request_id,worker_id,action,expected_version,result_version,created_at,same_actor}`，`current={worker_identity_id,maintenance_version,scheduling_state,observed_at}`，以及 `applies_to_current_version`；仅查询精确 drain/activate |
+| `POST /api/workers/{id}/v4/drain`、`activate` | 保持 `{"request_id":"NONZERO_UUID","expected_version":N}`；服务器锁内重新裁决，不以浏览器观察授权 |
+
+普通账号无管理员权限返回 403；Worker 凭据不能作为管理员凭据。错误 Worker、不存在或非 drain/activate 的精确回执统一 404。404 仅表示该快照没看到已提交行，不能证明仍在途的事务不会提交。只读响应不输出原维护行、恢复 binding、宿主断言、MAC、路径、正文或凭据。普通 `/api/workers` 列表合同保持。
+
+### 显式排空、确认与激活
+
+1. 新鲜观察为 active 时选择“申请排空”，核对节点、期望维护版本及请求 ID，再明确提交。服务端登记后拒绝新 Claim，原合法任务继续；页面只有独立 GET 看到同一操作和当前状态后才报告提交。
+2. 仍为 draining 时，“已登记排空”不表示排空完成。原操作者等待未结归零后选择“确认本次排空”，明确重送同一 request ID 和原 expected_version；只有读到当前 disabled 才确认停用。刷新和轮询不会自动发送确认 POST。
+3. B/C 恢复可能推进维护版本但保留 draining。旧 drain 必须拒绝。恢复完成且当前操作为 reconcile、容量 ready、零未结且无历史阻塞时，选择“确认恢复后排空”，用当前版本和新 request ID 登记本次确认，版本递增一次并转 disabled；未结或 reconciling 时不可确认。它不重做恢复、物理清理或结账。
+4. 当前 disabled、在线、容量 ready、隔离检查通过且无未结责任时，选择“激活节点”并明确提交；服务器沿原全部资格核验。历史激活已提交但被后续维护替代时，页面会分开显示历史提交和当前状态，不再用旧 POST 的混合响应宣称现在 active。
+
+disabled、零计数、在线及历史回执均不能证明物理停止、原目录/预算释放或当前 channel ACK；仍须按正常维护及 B/C 说明分别核对。
+
+### 提交未知、刷新与权限变化
+
+POST 前，本页只把 origin、当前认证范围、Worker/稳定身份、action、request ID 和 expected_version 暂存到该标签页的 sessionStorage 并回读核对；不保存 Token、证明或恢复材料。存储失败则不发送。一个 Worker 同时只保留一个未决意图。
+
+超时、断线或 503 后先查询一次精确回执；未见行或读取失败继续显示“待确认”，不将其当作回滚。刷新页面仅恢复原 tuple 并 GET，不自动重发。用户可选择“重试同一请求”并再次确认，始终发送原 ID/版本/动作，不能自动换版本或新建意图。当前版本已被后续操作替代时，显示“原操作已提交，当前已被替代”。首次明确拒绝的 409 需重新核对当前状态；已有未知请求重试得到 409 再查到 404 时，仍保留原意图，因为这次拒绝不能阻止原在途请求迟到提交。权限变化和登出清除本地意图，后端鉴权仍是权威。其他管理员可观察原 drain，但不能冒用原 request ID 完成排空。
+
+最近 C 处置始终显示固定未知原因和原 Execution/Attempt 终态，包括后续已激活时；“结清不重试也不回滚”，不代表业务成功。处置后的可信宿主与恢复操作仍按 [W1-B](remote-worker-wave1b.md) / [W1-C](remote-worker-wave1c.md) 执行，页面没有恢复或强制清账表单。
+
+### 版本配对与回退
+
+W1-D 使用现有 v4 开关与迁移链，不改变固定 React/Ant Design 基线。部署匹配 Web/Control；新 Web 遇到旧 Control 缺少完整观察 schema/回执接口时只读展示有限事实，提示管理版本需匹配并禁用新操作，不以旧 POST 200 替代独立读回。旧 Web 可继续原列表功能。停用新 Web 不回滚已提交维护意愿；若回退到没有旧 drain 版本围栏的 Control，应先停止管理写入并保留未决 tuple/审计，使用匹配版本向前修复，不能重置版本或覆盖旧数据库。
 
 ## 诊断与停止边界
 

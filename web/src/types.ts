@@ -613,6 +613,83 @@ export interface Worker {
   isolation_preflight_status?: "unknown" | "passed" | "failed" | string;
   isolation_preflight_at?: string | null;
   rabbitmq_execution_v3?: boolean;
+  /** Client-only admin observation; never part of the ordinary Worker list API. */
+  maintenance?: WorkerMaintenanceView;
+}
+
+export type WorkerSchedulingState = "active" | "draining" | "disabled";
+export type WorkerCapacityState = "unknown" | "reconciling" | "ready" | "quarantined";
+export type WorkerMaintenanceAction = "drain" | "activate";
+
+export interface WorkerDrainOperation {
+  request_id: string;
+  action: "drain";
+  expected_version: number;
+  result_version: number;
+  same_actor: boolean;
+}
+
+export interface WorkerRecoveryDisposition {
+  operation_id: string;
+  disposition_id: string;
+  kind: "platform_terminal";
+  reason: "result_uncommitted_outcome_unknown";
+  execution_id: number;
+  attempt_id: number;
+  attempt_status: "worker_lost" | "cancelled";
+  execution_status: "dead_letter" | "cancelled";
+}
+
+export interface WorkerMaintenanceSnapshot {
+  observation_schema: 1;
+  observed_at: string;
+  worker_id: number;
+  worker_identity_id: string;
+  protocol_version: 4;
+  enrolled: boolean;
+  scheduling_state: WorkerSchedulingState;
+  maintenance_version: number;
+  capacity_state: WorkerCapacityState;
+  online: boolean;
+  instance_id: string | null;
+  instance_generation: number;
+  instance_lease_until: string | null;
+  isolation_preflight_status: "unknown" | "passed" | "failed";
+  isolation_preflight_at: string | null;
+  isolation_capabilities: Record<string, boolean>;
+  capabilities: string[];
+  active_attempts: number;
+  unsettled_attempts: number;
+  has_unreconciled_attempts: boolean;
+  current_drain_operation: WorkerDrainOperation | null;
+  current_maintenance_action: "drain" | "activate" | "reconcile" | null;
+  last_recovery_disposition: WorkerRecoveryDisposition | null;
+}
+
+export interface WorkerMaintenanceView {
+  snapshot: WorkerMaintenanceSnapshot | null;
+  fresh: boolean;
+  error: "unsupported" | "unavailable" | null;
+  scope: string;
+}
+
+export interface WorkerMaintenanceReceipt {
+  operation: {
+    request_id: string;
+    worker_id: number;
+    action: WorkerMaintenanceAction;
+    expected_version: number;
+    result_version: number;
+    created_at: string;
+    same_actor: boolean;
+  };
+  current: {
+    worker_identity_id: string;
+    maintenance_version: number;
+    scheduling_state: WorkerSchedulingState;
+    observed_at: string;
+  };
+  applies_to_current_version: boolean;
 }
 
 export type CacheAdminStatus =

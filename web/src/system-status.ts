@@ -131,6 +131,20 @@ export function isWorkerExecutionReady(worker: Worker): boolean {
   );
 }
 
+/** v4 is an administrator observation, never a substitute for Claim authority. */
+export function workerStatusLevel(worker: Worker): SystemStatusLevel {
+  if (worker.protocol_version !== 4) return isWorkerExecutionReady(worker) ? "normal" : "error";
+  const view = worker.maintenance;
+  const snapshot = view?.snapshot;
+  if (!snapshot || !view.fresh || view.error !== null) return "checking";
+  return snapshot.worker_id === worker.id && snapshot.enrolled && snapshot.online
+    && snapshot.scheduling_state === "active" && snapshot.capacity_state === "ready"
+    && snapshot.isolation_preflight_status === "passed"
+    && REQUIRED_ISOLATION_CAPABILITIES.every((key) => snapshot.isolation_capabilities[key] === true)
+    && snapshot.capabilities.length === 1 && snapshot.capabilities[0] === "python"
+    && !snapshot.has_unreconciled_attempts ? "normal" : "warning";
+}
+
 export function workerFleetStatus(
   workers: Worker[],
   loading: boolean,
@@ -145,11 +159,13 @@ export function workerFleetStatus(
   if (workers.length === 0) {
     return "error";
   }
-  const readyCount = workers.filter(isWorkerExecutionReady).length;
+  const levels = workers.map(workerStatusLevel);
+  const readyCount = levels.filter((level) => level === "normal").length;
   if (readyCount === workers.length) {
     return "normal";
   }
-  return readyCount === 0 ? "error" : "warning";
+  if (levels.includes("error")) return readyCount === 0 ? "error" : "warning";
+  return levels.includes("warning") ? "warning" : "checking";
 }
 
 function controlStatusLevel(health: HealthStatus): SystemStatusLevel {

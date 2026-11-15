@@ -66,3 +66,21 @@
   .worker-cache-panel .admin-stat strong { font-size:20px; }
   .worker-cache-footer { flex-wrap:wrap; }
 }
+
+.worker-maintenance { width: 100%; min-width: 0; }
+.worker-maintenance-hint { color: var(--ant-color-text-secondary, #626b78); margin: 8px 0; font-size: 12px; }
+.worker-maintenance-facts { display: grid; grid-template-columns: minmax(130px, 210px) minmax(0, 1fr); gap: 6px 16px; margin: 12px 0; font-size: 13px; }
+.worker-maintenance-facts dt { color: var(--ant-color-text-secondary, #626b78); }
+.worker-maintenance-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.worker-maintenance-notice { border-left: 3px solid var(--ant-color-warning, #b07717); padding: 8px 12px; margin: 10px 0; background: var(--ant-color-warning-bg, #faf8f1); overflow-wrap: anywhere; }
+.worker-maintenance-notice p { margin: 4px 0; }
+.worker-maintenance-links { margin: 8px 0; font-size: 12px; }
+@media (max-width: 640px) {
+  .worker-maintenance-facts { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .worker-maintenance-facts dd { margin-bottom: 6px; }
+}
+
+.worker-maintenance-actions { display: grid; gap: 10px; width: 100%; margin: 12px 0; }
+.worker-maintenance-actions .worker-maintenance-hint { margin: 0; }
+.worker-maintenance-buttons, .worker-maintenance-pending { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.worker-maintenance-pending p { width: 100%; margin: 0; overflow-wrap: anywhere; font-size: 12px; }
