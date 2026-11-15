@@ -11,7 +11,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
-from dlr.common.managed_input import MANAGED_INPUT_FILE_EXTENSION_SET
+from dlr.common.managed_input import controlled_input_mount_name as _controlled_input_mount_name
 from dlr.control.input_errors import ManagedInputErrorCode
 from dlr.control.models import (
     Adapter,
@@ -81,16 +81,6 @@ def _safe_content_type(value: object) -> str:
     if not all(0x20 <= ord(character) < 0x7F for character in value):
         return DEFAULT_CONTENT_TYPE
     return value
-
-
-def _controlled_input_mount_name(ordinal: int, original_filename: str) -> str:
-    """Keep only a known lowercase type suffix in the opaque workspace name."""
-    suffix = (
-        f".{original_filename.rsplit('.', 1)[-1].casefold()}" if "." in original_filename else ""
-    )
-    if suffix not in MANAGED_INPUT_FILE_EXTENSION_SET:
-        suffix = ""
-    return f"input-{ordinal:02d}{suffix}"
 
 
 @dataclass(frozen=True)
@@ -333,6 +323,12 @@ def register_worker(session: Session, data: WorkerRegister) -> Worker:
         )
         session.add(worker)
     else:
+        if worker.identity_enrolled_at is not None or worker.identity_lifecycle != "legacy":
+            raise domain_error(
+                409,
+                "worker_identity_enrolled",
+                "Worker identity requires its individual credential",
+            )
         worker.status = "online"
         worker.last_heartbeat = func.now()
         worker.capabilities = data.capabilities

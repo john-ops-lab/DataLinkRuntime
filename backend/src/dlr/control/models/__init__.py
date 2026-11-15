@@ -3,6 +3,8 @@
 from dlr.control.models.account import User, UserSession
 from dlr.control.models.adapter import Adapter, AdapterPermission, AdapterVersion
 from dlr.control.models.adapter_batch import AdapterBatch, AdapterBatchItem
+from dlr.control.models.attempt_lease_candidate_v4 import AttemptLeaseCandidateV4
+from dlr.control.models.attempt_result_intent_v4 import AttemptResultIntentV4
 from dlr.control.models.builtin_package import (
     BuiltinPackage,
     BuiltinPackageSettings,
@@ -16,7 +18,13 @@ from dlr.control.models.cache_governance import (
     WorkerCacheSnapshot,
     WorkerCacheSnapshotItem,
 )
-from dlr.control.models.execution import Execution, ExecutionInputArtifactLease, Worker
+from dlr.control.models.control_process_instance import ControlProcessInstance
+from dlr.control.models.execution import (
+    Execution,
+    ExecutionInputArtifactLease,
+    Worker,
+    WorkerCredential,
+)
 from dlr.control.models.ingress_capacity import IngressCapacityAudit, IngressCapacityConfiguration
 from dlr.control.models.input_config import (
     AdapterInputConfig,
@@ -87,8 +95,18 @@ from dlr.control.models.system import SystemSetting
 from dlr.control.models.user_template import UserTemplate
 from dlr.control.models.webhook import AdapterWebhook
 from dlr.control.models.worker_cleanup import WorkerCleanupRequest
+from dlr.control.models.worker_cleanup_intent_v4 import WorkerCleanupIntentV4
+from dlr.control.models.worker_credential_audit import WorkerCredentialAudit
+from dlr.control.models.worker_identity_reservation import WorkerIdentityReservation
+from dlr.control.models.worker_instance_history import WorkerInstanceHistory
+from dlr.control.models.worker_lease_candidate_v4 import WorkerLeaseCandidateV4
+from dlr.control.models.worker_maintenance import WorkerMaintenanceOperation
+from dlr.control.models.worker_observation import WorkerCapabilityObservation
 
 __all__ = [
+    "AttemptLeaseCandidateV4",
+    "AttemptResultIntentV4",
+    "ControlProcessInstance",
     "SubscriptionExecutionBatch",
     "SubscriptionExecutionBatchMember",
     "AdapterBatch",
@@ -145,7 +163,15 @@ __all__ = [
     "PackageSource",
     "SystemSetting",
     "Worker",
+    "WorkerCredential",
     "WorkerCleanupRequest",
+    "WorkerCleanupIntentV4",
+    "WorkerCredentialAudit",
+    "WorkerIdentityReservation",
+    "WorkerInstanceHistory",
+    "WorkerLeaseCandidateV4",
+    "WorkerMaintenanceOperation",
+    "WorkerCapabilityObservation",
     "WorkerCacheGuard",
     "WorkerCacheOperation",
     "WorkerCacheManagementOperation",

@@ -573,7 +573,7 @@ def test_0046_retires_only_chat_tables_after_backup_confirmation(
     before = snapshots()
     if with_history:
         with pytest.raises(RuntimeError, match="back up and verify"):
-            _upgrade(config, "head")
+            _upgrade(config, "0046_issue166_retire_ai_history")
         assert snapshots() == before
         with old_engine.connect() as connection:
             assert (
@@ -581,7 +581,7 @@ def test_0046_retires_only_chat_tables_after_backup_confirmation(
             )
             assert connection.scalar(text("SELECT count(*) FROM ai_conversations")) == 1
         config.cmd_opts = Namespace(x=["ai_history_backup_verified=true"])
-    _upgrade(config, "head")
+    _upgrade(config, "0046_issue166_retire_ai_history")
     assert not {"ai_conversations", "ai_conversation_messages"} & set(
         inspect(old_engine).get_table_names()
     )
@@ -591,4 +591,4 @@ def test_0046_retires_only_chat_tables_after_backup_confirmation(
     with old_engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM ai_conversations")) == 0
     assert snapshots() == before
-    _upgrade(config, "head")
+    _upgrade(config, "0046_issue166_retire_ai_history")

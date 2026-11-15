@@ -1,0 +1,56 @@
+# One Control process against a separately provisioned, dedicated database
+# and Broker. Run migrations/authority initialization before starting it.
+services:
+  control:
+    image: ${DLR_CONTROL_IMAGE:?set the reviewed Control image digest}
+    env_file: ${DLR_CONTROL_RUNTIME_ENV_FILE:?set the private runtime environment file}
+    restart: 'no'
+    cgroup: private
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    cpus: ${DLR_CONTROL_CPU_LIMIT:-2.0}
+    mem_limit: ${DLR_CONTROL_MEMORY_LIMIT:-1610612736}
+    memswap_limit: ${DLR_CONTROL_MEMORY_LIMIT:-1610612736}
+    pids_limit: ${DLR_CONTROL_PIDS_LIMIT:-256}
+    stop_grace_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: '3'
+    command:
+      - uvicorn
+      - dlr.control.app:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8443'
+      - --ssl-certfile
+      - /run/dlr-private/tls-cert.pem
+      - --ssl-keyfile
+      - /run/dlr-private/tls-key.pem
+    environment:
+      DLR_WORKER_REMOTE_V4_ENABLED: 'true'
+      DLR_WORKER_IDENTITY_RESERVATION_ENABLED: 'true'
+      DLR_CONTROL_IDENTITY_FILE: /run/dlr-private/control.json
+      DLR_WORKER_PROOF_SIGNING_KEY_FILE: /run/dlr-private/proof-key
+      DLR_WORKER_V4_CLAIM_CHILD_ADDRESS_SPACE_BYTES: ${DLR_CONTROL_CLAIM_ADDRESS_SPACE_BYTES:-536870912}
+    ports:
+      - ${DLR_CONTROL_BIND_ADDRESS:-127.0.0.1}:${DLR_CONTROL_TLS_PORT:-8443}:8443
+    volumes:
+      - type: bind
+        source: ${DLR_CONTROL_PRIVATE_DIRECTORY:?set the existing private TLS/declaration directory}
+        target: /run/dlr-private
+        read_only: true
+        bind:
+          create_host_path: false
+      - control_builtin:/var/lib/dlr/builtin-packages
+      - control_artifacts:/var/lib/dlr/artifacts
+      - control_logs:/var/lib/dlr/platform-logs
+
+volumes:
+  control_builtin:
+  control_artifacts:
+  control_logs:

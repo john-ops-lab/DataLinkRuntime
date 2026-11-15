@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import errno
+import fcntl
 import json
 import logging
 import math
@@ -40,10 +41,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# The sandbox helper is also executed as a standalone script with a minimal
+# environment; its entry point does not use the parent-process budget.
+if __name__ != "__main__":
+    from dlr.common.cpu_accounting import CPU_PERIOD_US, attempt_cpu_units, cpu_units
+
 logger = logging.getLogger("dlr.worker.sandbox")
 
 CGROUP_CONTROLLERS = ("cpu", "memory", "pids")
 LIMIT_FILES = ("cpu.max", "memory.max", "memory.swap.max", "pids.max")
+_LAUNCH_ENV_KEYS = frozenset({"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ", "USER"})
 ATTEMPT_NAME_PATTERN = re.compile(
     r"(?:attempt-[1-9][0-9]*-[1-9][0-9]*|dlr-preflight-[0-9a-f]{16,64})\Z"
 )
@@ -530,8 +537,15 @@ class ResourceBudget:
             "tmp": int(agent_reserve_tmp),
         }
         self._envelope_source = envelope_source
-        self._used: dict[str, float] = {key: 0.0 for key in self._capacity}
+        self._cpu_capacity_units = cpu_units(float(capacity_cpu), round_up=False)
+        self._cpu_reserve_units = cpu_units(float(agent_reserve_cpu), round_up=True)
+        self._used: dict[str, int] = {key: 0 for key in self._capacity}
         self._reservations: dict[str, ResourceLimits] = {}
+        self._reservation_handles: dict[str, ResourceReservation] = {}
+        self._v4_prepared_attempts: dict[int, str] = {}
+        self._v4_in_use: set[str] = set()
+        self._owner_pid = os.getpid()
+        self._accounting_lost = False
         self._lock = threading.RLock()
 
     @classmethod
@@ -543,13 +557,17 @@ class ResourceBudget:
         """
         if slots < 1:
             raise ValueError("resource budget slots must be positive")
+        reserve_cpu = max(0.25, config.cpu_cores * 0.25)
         return cls(
-            capacity_cpu=config.cpu_cores * slots + max(0.25, config.cpu_cores * 0.25),
+            capacity_cpu=(
+                attempt_cpu_units(config.cpu_cores) * slots + cpu_units(reserve_cpu, round_up=True)
+            )
+            / CPU_PERIOD_US,
             capacity_memory=config.memory_bytes * slots
             + max(64 * 1024 * 1024, config.memory_bytes // 8),
             capacity_pids=config.pids * slots + max(32, config.pids // 8),
             capacity_tmp=config.tmp_bytes * slots + max(16 * 1024 * 1024, config.tmp_bytes // 8),
-            agent_reserve_cpu=max(0.25, config.cpu_cores * 0.25),
+            agent_reserve_cpu=reserve_cpu,
             agent_reserve_memory=max(64 * 1024 * 1024, config.memory_bytes // 8),
             agent_reserve_pids=max(32, config.pids // 8),
             agent_reserve_tmp=max(16 * 1024 * 1024, config.tmp_bytes // 8),
@@ -594,12 +612,13 @@ class ResourceBudget:
         ):
             raise SandboxError("sandbox_resource_envelope_invalid")
         minimum = {
-            "cpu": config.cpu_cores * slots + reserve_cpu,
             "memory": config.memory_bytes * slots + reserve_memory,
             "pids": config.pids * slots + reserve_pids,
             "tmp": config.tmp_bytes * slots + reserve_tmp,
         }
-        if any(capacity[key] < minimum[key] for key in capacity):
+        if cpu_units(float(envelope.cpu_cores), round_up=False) < (
+            attempt_cpu_units(config.cpu_cores) * slots + cpu_units(reserve_cpu, round_up=True)
+        ) or any(capacity[key] < minimum[key] for key in minimum):
             raise SandboxError("sandbox_resource_envelope_insufficient")
         return cls(
             capacity_cpu=float(envelope.cpu_cores),
@@ -614,38 +633,208 @@ class ResourceBudget:
         )
 
     def try_reserve(self, limits: ResourceLimits) -> ResourceReservation | None:
+        if os.getpid() != self._owner_pid:
+            return None
         requested = {
-            "cpu": limits.cpu_cores,
+            "cpu": attempt_cpu_units(limits.cpu_cores),
             "memory": limits.memory_bytes,
             "pids": limits.pids,
             "tmp": limits.tmp_bytes,
         }
         with self._lock:
+            if self._accounting_lost:
+                return None
             for key, amount in requested.items():
-                if self._used[key] + amount > self._capacity[key] - self._reserve[key]:
+                available = (
+                    self._cpu_capacity_units - self._cpu_reserve_units
+                    if key == "cpu"
+                    else self._capacity[key] - self._reserve[key]
+                )
+                if self._used[key] + amount > available:
                     return None
             token = uuid.uuid4().hex
+            if token in self._reservations:
+                self._accounting_lost = True
+                return None
+            reservation = ResourceReservation(token, limits)
+            # An interruption during a multi-field mutation poisons admission.
+            self._accounting_lost = True
             for key, amount in requested.items():
                 self._used[key] += amount
             self._reservations[token] = limits
-            return ResourceReservation(token, limits)
+            self._reservation_handles[token] = reservation
+            self._accounting_lost = False
+            return reservation
 
     def release(self, reservation: ResourceReservation) -> None:
+        if os.getpid() != self._owner_pid or type(reservation) is not ResourceReservation:
+            raise SandboxError("sandbox_reservation_invalid")
         with self._lock:
+            if self._accounting_lost:
+                raise SandboxError("sandbox_reservation_accounting_unknown")
+            if reservation.token not in self._reservations:
+                return
+            if self._reservation_handles.get(reservation.token) is not reservation:
+                raise SandboxError("sandbox_reservation_invalid")
+            if reservation.token in self._v4_prepared_attempts.values():
+                raise SandboxError("sandbox_reservation_in_use")
+            self._accounting_lost = True
             limits = self._reservations.pop(reservation.token, None)
             if limits is None:
-                return
-            self._used["cpu"] -= limits.cpu_cores
+                raise SandboxError("sandbox_reservation_accounting_unknown")
+            self._reservation_handles.pop(reservation.token)
+            self._used["cpu"] -= attempt_cpu_units(limits.cpu_cores)
             self._used["memory"] -= limits.memory_bytes
             self._used["pids"] -= limits.pids
             self._used["tmp"] -= limits.tmp_bytes
+            self._accounting_lost = False
+
+    def _reserve_v4_preparation(
+        self, limits: ResourceLimits, *, attempt_id: int
+    ) -> tuple[str, ResourceReservation | None]:
+        """Pin the exact reservation before any durable Claim responsibility."""
+        if os.getpid() != self._owner_pid or type(attempt_id) is not int or attempt_id <= 0:
+            return "unknown", None
+        with self._lock:
+            if self._accounting_lost:
+                return "unknown", None
+            if attempt_id in self._v4_prepared_attempts:
+                return "pending", None
+            try:
+                reservation = self.try_reserve(limits)
+                if reservation is None:
+                    return "capacity", None
+                self._accounting_lost = True
+                self._v4_prepared_attempts[attempt_id] = reservation.token
+                self._accounting_lost = False
+                return "reserved", reservation
+            except BaseException:
+                self._accounting_lost = True
+                raise
+
+    def _release_uncommitted_v4(self, reservation: ResourceReservation, *, attempt_id: int) -> None:
+        """Release only after the caller has reaped a pre-commit Claim child."""
+        if os.getpid() != self._owner_pid:
+            raise SandboxError("sandbox_reservation_invalid")
+        with self._lock:
+            if (
+                self._accounting_lost
+                or self._reservation_handles.get(reservation.token) is not reservation
+                or self._v4_prepared_attempts.get(attempt_id) != reservation.token
+                or reservation.token in self._v4_in_use
+            ):
+                raise SandboxError("sandbox_reservation_invalid")
+            try:
+                self._accounting_lost = True
+                del self._v4_prepared_attempts[attempt_id]
+                self._accounting_lost = False
+                self.release(reservation)
+            except BaseException:
+                self._accounting_lost = True
+                raise
+
+    def _begin_v4_use(self, reservation: ResourceReservation) -> bool:
+        if os.getpid() != self._owner_pid:
+            return False
+        with self._lock:
+            if (
+                self._accounting_lost
+                or self._reservation_handles.get(reservation.token) is not reservation
+                or reservation.token not in self._v4_prepared_attempts.values()
+                or reservation.token in self._v4_in_use
+            ):
+                return False
+            self._accounting_lost = True
+            self._v4_in_use.add(reservation.token)
+            self._accounting_lost = False
+            return True
+
+    def _v4_handle_state(self, reservation: ResourceReservation) -> str:
+        if os.getpid() != self._owner_pid:
+            return "invalid"
+        with self._lock:
+            if self._reservation_handles.get(reservation.token) is not reservation:
+                return "invalid"
+            return "in_use" if reservation.token in self._v4_in_use else "available"
+
+    def _v4_start_allowed(self, reservation: ResourceReservation) -> bool:
+        if os.getpid() != self._owner_pid:
+            return False
+        with self._lock:
+            return (
+                not self._accounting_lost
+                and self._reservation_handles.get(reservation.token) is reservation
+                and reservation.token in self._v4_in_use
+            )
+
+    def _v4_stop_allowed(self, reservation: ResourceReservation) -> bool:
+        if os.getpid() != self._owner_pid:
+            return False
+        with self._lock:
+            return self._accounting_lost or (
+                self._reservation_handles.get(reservation.token) is reservation
+                and reservation.token in self._v4_in_use
+            )
+
+    def _release_settled_v4(
+        self,
+        attempt: ResourceReservation,
+        receive: ResourceReservation,
+        *,
+        attempt_id: int,
+    ) -> None:
+        """Release exact handles after the caller verified cleanup and its receipt."""
+        if os.getpid() != self._owner_pid or attempt is receive:
+            raise SandboxError("sandbox_reservation_invalid")
+        with self._lock:
+            if (
+                self._accounting_lost
+                or type(attempt) is not ResourceReservation
+                or type(receive) is not ResourceReservation
+                or self._reservation_handles.get(attempt.token) is not attempt
+                or self._reservation_handles.get(receive.token) is not receive
+                or self._reservations.get(attempt.token) != attempt.limits
+                or self._reservations.get(receive.token) != receive.limits
+                or self._v4_prepared_attempts.get(attempt_id) != attempt.token
+                or attempt.token not in self._v4_in_use
+                or receive.token in self._v4_in_use
+                or receive.token in self._v4_prepared_attempts.values()
+            ):
+                raise SandboxError("sandbox_reservation_invalid")
+            amounts = {
+                "cpu": attempt_cpu_units(attempt.limits.cpu_cores)
+                + attempt_cpu_units(receive.limits.cpu_cores),
+                "memory": attempt.limits.memory_bytes + receive.limits.memory_bytes,
+                "pids": attempt.limits.pids + receive.limits.pids,
+                "tmp": attempt.limits.tmp_bytes + receive.limits.tmp_bytes,
+            }
+            if any(self._used[key] < value for key, value in amounts.items()):
+                raise SandboxError("sandbox_reservation_accounting_unknown")
+            # A partial mutation must prevent new admission in this process.
+            self._accounting_lost = True
+            self._v4_in_use.remove(attempt.token)
+            del self._v4_prepared_attempts[attempt_id]
+            for reservation in (attempt, receive):
+                del self._reservations[reservation.token]
+                del self._reservation_handles[reservation.token]
+            for key, value in amounts.items():
+                self._used[key] -= value
+            self._accounting_lost = False
+
+    def _mark_claim_receive_accounting_unknown(self) -> None:
+        if os.getpid() == self._owner_pid:
+            with self._lock:
+                self._accounting_lost = True
 
     def snapshot(self) -> dict[str, Any]:
+        if os.getpid() != self._owner_pid:
+            raise SandboxError("sandbox_reservation_invalid")
         with self._lock:
             return {
+                "accounting_state": "unknown" if self._accounting_lost else "unflagged",
                 "capacity": dict(self._capacity),
                 "agent_reserve": dict(self._reserve),
-                "used": dict(self._used),
+                "used": dict(self._used, cpu=self._used["cpu"] / CPU_PERIOD_US),
                 "active_reservations": len(self._reservations),
                 "envelope_source": self._envelope_source,
             }
@@ -1046,6 +1235,76 @@ def _filesystem_magic(path: Path) -> int:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
     return int(result[0])
+
+
+def _filesystem_magic_fd(directory: int) -> int:
+    """Read filesystem identity through the already-held descriptor."""
+    result = (ctypes.c_long * 16)()
+    fstatfs = getattr(_libc(), "fstatfs", None)
+    if fstatfs is None:
+        raise OSError(errno.ENOSYS, "cgroup filesystem unavailable")
+    fstatfs.argtypes = [ctypes.c_int, ctypes.c_void_p]
+    fstatfs.restype = ctypes.c_int
+    if fstatfs(directory, ctypes.byref(result)) != 0:
+        raise OSError(ctypes.get_errno(), "cgroup filesystem unavailable")
+    return int(result[0])
+
+
+def _verify_inherited_cgroup(
+    directory: int, *, path: Path | None = None, child_pid: int | None = None
+) -> None:
+    """Check a pinned cgroup and members before a supervised payload runs.
+
+    The descriptor must come from the trusted supervisor which already owns
+    the exact Attempt. This check neither creates that ownership nor prevents
+    another privileged cgroup manager from moving a process afterwards.
+    """
+    if (
+        sys.platform != "linux"
+        or type(directory) is not int
+        or directory < 3
+        or (child_pid is not None and (type(child_pid) is not int or child_pid <= 0))
+    ):
+        raise OSError(errno.EINVAL, "inherited cgroup unavailable")
+    info = os.fstat(directory)
+    if not stat.S_ISDIR(info.st_mode) or _filesystem_magic_fd(directory) != CGROUP2_SUPER_MAGIC:
+        raise OSError(errno.EINVAL, "inherited cgroup unavailable")
+    if path is not None:
+        if not path.is_absolute() or path.resolve(strict=True) != path:
+            raise OSError(errno.EINVAL, "inherited cgroup unavailable")
+        visible = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            named = os.fstat(visible)
+            if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                raise OSError(errno.ESTALE, "inherited cgroup unavailable")
+        finally:
+            os.close(visible)
+    members_fd = os.open(
+        "cgroup.procs", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory
+    )
+    try:
+        raw = bytearray()
+        while len(raw) <= 65536:
+            chunk = os.read(members_fd, min(4096, 65537 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        members = bytes(raw).splitlines()
+        if (
+            len(raw) > 65536
+            # Linux can show zero for a cgroup member outside the reader's
+            # PID namespace; it is never accepted as the current process or
+            # the still-gated child.
+            or any(
+                not member.isdigit() or (member != b"0" and member.startswith(b"0"))
+                for member in members
+            )
+            or str(os.getpid()).encode("ascii") not in members
+            or (child_pid is not None and str(child_pid).encode("ascii") not in members)
+        ):
+            raise OSError(errno.ESRCH, "inherited cgroup membership unavailable")
+    finally:
+        os.close(members_fd)
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
@@ -1501,8 +1760,10 @@ def _helper_child(
     ready_fd: int,
     diagnostic_fd: int,
     usage_fd: int,
+    *,
+    inherited_cgroup_fd: int | None = None,
 ) -> int:
-    """Run in a standalone helper and report fixed syscall evidence."""
+    """Run a helper; an inherited cgroup fd requires a trusted supervisor."""
 
     stage = "ready_gate"
     try:
@@ -1548,6 +1809,11 @@ def _helper_child(
             mount_root.parent,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
         )
+        if inherited_cgroup_fd is not None:
+            stage = "validate_inherited_cgroup"
+            if inherited_cgroup_fd in (ready_fd, diagnostic_fd, usage_fd):
+                raise OSError(errno.EINVAL, "inherited cgroup unavailable")
+            _verify_inherited_cgroup(inherited_cgroup_fd, path=attempt_cgroup)
         stage = "validate_cgroup_hide_target"
         exact_cgroup_mount = _validated_hidden_cgroup_path(
             hidden_cgroup_path,
@@ -1611,11 +1877,10 @@ def _helper_child(
         stage = "workspace_ownership"
         _copy_tree_as_owner(host_workspace, workspace_relative, payload_uid, payload_gid)
 
-        # PID namespaces only affect children, so fork after unshare.  The
-        # helper stays outside the Attempt child; only the payload PID is
-        # moved into the task-owned cgroup before identity is dropped.  This
-        # lets cgroup.kill terminate the payload while the helper remains
-        # available to copy output and unmount the private filesystems.
+        # PID namespaces only affect children, so fork after unshare. The v3
+        # helper stays outside the Attempt and moves its gated payload in.
+        # A trusted v4 supervisor may instead start the helper inside its bound
+        # Attempt; then both processes must already belong to that cgroup.
         stage = "pid_namespace"
         _unshare(CLONE_NEWPID)
         payload_gate_read, payload_gate_write = os.pipe()
@@ -1626,6 +1891,13 @@ def _helper_child(
                 if os.read(payload_gate_read, 1) != b"1":
                     raise OSError(errno.ECANCELED, "payload cgroup gate was not released")
                 os.close(payload_gate_read)
+                if inherited_cgroup_fd is not None:
+                    stage = "payload_inherited_cgroup"
+                    try:
+                        _verify_inherited_cgroup(inherited_cgroup_fd)
+                    finally:
+                        # This cgroup descriptor must not reach the payload.
+                        os.close(inherited_cgroup_fd)
                 stage = "payload_temp_mounts"
                 _unshare(CLONE_NEWNS)
                 assert payload_root is not None
@@ -1702,11 +1974,16 @@ def _helper_child(
         os.close(payload_gate_read)
         try:
             stage = "attempt_membership"
-            if not (attempt_cgroup / "cgroup.procs").is_file():
-                raise OSError(errno.ENOENT, "Attempt cgroup is unavailable")
-            _write(attempt_cgroup / "cgroup.procs", f"{child_pid}\n")
-            if not _pid_is_in_child(child_pid, attempt_cgroup):
-                raise OSError(errno.EPERM, "payload cgroup membership readback failed")
+            if inherited_cgroup_fd is None:
+                if not (attempt_cgroup / "cgroup.procs").is_file():
+                    raise OSError(errno.ENOENT, "Attempt cgroup is unavailable")
+                _write(attempt_cgroup / "cgroup.procs", f"{child_pid}\n")
+                if not _pid_is_in_child(child_pid, attempt_cgroup):
+                    raise OSError(errno.EPERM, "payload cgroup membership readback failed")
+            else:
+                _verify_inherited_cgroup(
+                    inherited_cgroup_fd, path=attempt_cgroup, child_pid=child_pid
+                )
 
             # The Adapter inherits no cgroup control plane, even though the
             # private namespace starts from the Worker mount namespace. The
@@ -1906,12 +2183,155 @@ def _helper_child(
             os.close(usage_fd)
 
 
+def _validated_launch(value: object, max_bytes: int) -> tuple[list[str], dict[str, str]]:
+    """Validate a private launch snapshot without reflecting its contents."""
+    if (
+        type(max_bytes) is not int
+        or not 0 < max_bytes < 2**63
+        or type(value) is not dict
+        or set(value) != {"command", "environment"}
+    ):
+        raise ValueError("launch unavailable")
+    command, environment = value["command"], value["environment"]
+    if (
+        type(command) is not list
+        or not command
+        or type(environment) is not dict
+        # Each string needs quotes and a separator, even if it is empty.
+        or len(command) * 3 + len(environment) * 6 > max_bytes
+        or not all(type(item) is str for item in command)
+        or not command[0]
+        or not all(type(key) is str and type(item) is str for key, item in environment.items())
+    ):
+        raise ValueError("launch unavailable")
+    # Reject a certainly oversized graph before building its JSON encoding.
+    if (
+        len(command) * 3
+        + len(environment) * 6
+        + sum(map(len, command))
+        + sum(len(key) + len(item) for key, item in environment.items())
+        > max_bytes
+    ):
+        raise ValueError("launch unavailable")
+    if any("\x00" in item for item in command) or any(
+        "\x00" in key
+        or "=" in key
+        or "\x00" in item
+        or (key not in _LAUNCH_ENV_KEYS and not key.startswith("DLR_SECRET_"))
+        for key, item in environment.items()
+    ):
+        raise ValueError("launch unavailable")
+    return command, environment
+
+
+def _launch_seals() -> int:
+    names = ("F_SEAL_WRITE", "F_SEAL_GROW", "F_SEAL_SHRINK", "F_SEAL_SEAL")
+    seals = 0
+    for name in names:
+        value = getattr(fcntl, name, None)
+        if type(value) is not int:
+            raise ValueError("launch unavailable")
+        seals |= value
+    return seals
+
+
+def _encode_launch(command: list[str], environment: dict[str, str], max_bytes: int) -> bytes:
+    """Freeze and bound the snapshot before creating a kernel object."""
+    try:
+        _validated_launch({"command": command, "environment": environment}, max_bytes)
+        frozen = {"command": list(command), "environment": dict(environment)}
+        _validated_launch(frozen, max_bytes)
+        raw = json.dumps(
+            frozen,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(raw) > max_bytes:
+            raise ValueError("launch unavailable")
+        return raw
+    except (OverflowError, RuntimeError, TypeError, UnicodeError, ValueError):
+        raise ValueError("launch unavailable") from None
+
+
+def _seal_launch(raw: bytes) -> int:
+    if sys.platform != "linux" or not hasattr(os, "memfd_create") or type(raw) is not bytes:
+        raise ValueError("launch unavailable")
+    try:
+        fd = os.memfd_create("dlr-worker-launch", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+        try:
+            if fd < 3:
+                raise ValueError("launch unavailable")
+            pending = memoryview(raw)
+            while pending:
+                written = os.write(fd, pending)
+                if written <= 0:
+                    raise OSError("launch unavailable")
+                pending = pending[written:]
+            fcntl.fcntl(fd, fcntl.F_ADD_SEALS, _launch_seals())
+            if fcntl.fcntl(fd, fcntl.F_GET_SEALS) & _launch_seals() != _launch_seals():
+                raise ValueError("launch unavailable")
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+    except (AttributeError, OSError, OverflowError, TypeError, ValueError):
+        raise ValueError("launch unavailable") from None
+
+
+def create_sealed_launch(command: list[str], environment: dict[str, str], *, max_bytes: int) -> int:
+    """Return a close-on-exec immutable launch fd; the caller owns the fd.
+
+    This snapshot does not authorize execution or establish its resource
+    budget. The caller must bind it to a verified Attempt before handoff.
+    """
+    return _seal_launch(_encode_launch(command, environment, max_bytes))
+
+
+def _read_sealed_launch(fd: int, max_bytes: int) -> tuple[list[str], dict[str, str]]:
+    """Read one sealed anonymous snapshot without changing its shared offset."""
+    if sys.platform != "linux" or type(fd) is not int or fd < 3:
+        raise ValueError("launch unavailable")
+    try:
+        info = os.fstat(fd)
+        seals = _launch_seals()
+        if (
+            type(max_bytes) is not int
+            or not 0 < max_bytes < 2**63
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 0
+            or not 0 < info.st_size <= max_bytes
+            or fcntl.fcntl(fd, fcntl.F_GET_SEALS) & seals != seals
+        ):
+            raise ValueError("launch unavailable")
+        raw = bytearray()
+        while len(raw) < info.st_size:
+            chunk = os.pread(fd, min(65536, info.st_size - len(raw)), len(raw))
+            if not chunk:
+                raise ValueError("launch unavailable")
+            raw.extend(chunk)
+
+        def unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, item in pairs:
+                if key in result:
+                    raise ValueError("launch unavailable")
+                result[key] = item
+            return result
+
+        return _validated_launch(json.loads(raw, object_pairs_hook=unique_pairs), max_bytes)
+    except (AttributeError, OSError, OverflowError, TypeError, UnicodeError, ValueError):
+        raise ValueError("launch unavailable") from None
+
+
 def _helper_main(argv: list[str]) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--sandbox-child", action="store_true")
-    parser.add_argument("--command", required=True)
+    launch = parser.add_mutually_exclusive_group(required=True)
+    launch.add_argument("--command")
+    launch.add_argument("--launch-fd", type=int)
+    parser.add_argument("--launch-max-bytes", type=int)
     parser.add_argument("--host-workspace", required=True)
     parser.add_argument("--mount-root", required=True)
     parser.add_argument("--nofile", required=True, type=int)
@@ -1921,6 +2341,7 @@ def _helper_main(argv: list[str]) -> int:
     parser.add_argument("--payload-gid", required=True, type=int)
     parser.add_argument("--hidden-cgroup-path", default="")
     parser.add_argument("--attempt-cgroup", required=True)
+    parser.add_argument("--inherited-cgroup-fd", type=int)
     parser.add_argument("--ready-fd", required=True, type=int)
     parser.add_argument("--diagnostic-fd", required=True, type=int)
     parser.add_argument("--usage-fd", required=True, type=int)
@@ -1928,7 +2349,24 @@ def _helper_main(argv: list[str]) -> int:
     if not args.sandbox_child:
         return 125
     try:
-        command = json.loads(base64.urlsafe_b64decode(args.command.encode()).decode())
+        if args.launch_fd is not None:
+            if args.launch_fd in (
+                args.ready_fd,
+                args.diagnostic_fd,
+                args.usage_fd,
+                args.inherited_cgroup_fd,
+            ):
+                raise ValueError("launch unavailable")
+            try:
+                command, environment = _read_sealed_launch(args.launch_fd, args.launch_max_bytes)
+            finally:
+                os.close(args.launch_fd)
+            os.environ.clear()
+            os.environ.update(environment)
+        else:
+            if args.launch_max_bytes is not None:
+                raise ValueError("launch unavailable")
+            command = json.loads(base64.urlsafe_b64decode(args.command.encode()).decode())
         if (
             not isinstance(command, list)
             or not command
@@ -1955,6 +2393,7 @@ def _helper_main(argv: list[str]) -> int:
             args.ready_fd,
             args.diagnostic_fd,
             args.usage_fd,
+            inherited_cgroup_fd=args.inherited_cgroup_fd,
         )
     except OSError as error:
         _write_helper_diagnostic(

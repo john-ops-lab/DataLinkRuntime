@@ -174,7 +174,14 @@ def resolve_queue_target_worker(
             "The configured runtime Worker does not support the Adapter language",
             {"language": adapter.language},
         )
-    if worker.protocol_version != 3:
+    compatible_legacy = worker.protocol_version == 3 and not settings.worker_remote_v4_enabled
+    compatible_remote = (
+        worker.protocol_version == 4
+        and settings.worker_remote_v4_enabled
+        and worker.identity_lifecycle == "reserved"
+        and worker.identity_enrolled_at is not None
+    )
+    if not (compatible_legacy or compatible_remote):
         raise domain_error(
             409,
             "runtime_worker_invalid",
@@ -409,6 +416,16 @@ def accept_execution(
         from dlr.control.services.subscription_guards import require_subscription_unlocked
 
         require_subscription_unlocked(session, adapter.id)
+    from dlr.control.services.worker_stage_capability_v4 import require_new_execution
+
+    require_new_execution(
+        session,
+        adapter,
+        version_id=version_id or adapter.latest_version_id,
+        trigger=trigger,
+        input_source_type=input_source_type,
+        dependency_check=dependency_check,
+    )
     worker = resolve_queue_target_worker(session, adapter, worker_id_override)
     if not rabbitmq.ingress_configuration_ready(session, worker_id=worker.id):
         raise domain_error(

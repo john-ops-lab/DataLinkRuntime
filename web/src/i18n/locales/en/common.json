@@ -557,6 +557,7 @@
     "builtin_package_in_use": "An unfinished task or unconfirmed installation cleanup holds this file",
     "builtin_delete_failed": "Physical deletion failed; check Control storage and retry",
     "builtin_worker_upgrade_required": "Upgrade the selected Worker to support builtin packages",
+    "worker_task_capability_unavailable": "This remote Worker stage supports standard-library Python, none/JSON input, and manual or scheduled tasks only; dependencies, files and credentials are unavailable",
     "builtin_source_invalid": "Select an existing builtin source; its kind, URL and credentials cannot be customized",
     "subscription_draining": "The source is still receiving or older events still need processing. Stop receiving, then inspect and resolve them in received events.",
     "batch_config_conflict": "Saved configuration changed. Refresh the list, review it, and create a new operation.",

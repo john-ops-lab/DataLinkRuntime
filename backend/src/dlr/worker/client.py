@@ -5,11 +5,84 @@ Control Node; it never listens on any port.
 """
 
 import json
+import math
+import ssl
+import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, cast
+
+from dlr.common.worker_protocol_v4 import validate_control_url
+
+
+@dataclass(frozen=True)
+class WorkerInstance:
+    """The stable identity and generation of one authenticated Worker."""
+
+    worker_identity_id: uuid.UUID
+    instance_id: uuid.UUID
+    instance_generation: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.worker_identity_id) is not uuid.UUID
+            or type(self.instance_id) is not uuid.UUID
+            or self.worker_identity_id.int == 0
+            or self.instance_id.int == 0
+            or type(self.instance_generation) is not int
+            or not 0 < self.instance_generation < 2**63
+        ):
+            raise ValueError("invalid Worker instance")
+
+
+@dataclass(frozen=True)
+class V4Renewal:
+    reason: str
+    deadline: float | None
+
+
+def _v4_lease_clock() -> float:
+    """Read an elapsed clock including Linux suspend, or fail closed."""
+    try:
+        clock = time.CLOCK_BOOTTIME if sys.platform == "linux" else time.CLOCK_MONOTONIC  # type: ignore[attr-defined, unused-ignore]
+        now = time.clock_gettime(clock)
+        if not math.isfinite(now) or now < 0:
+            raise OSError("invalid clock")
+        return now
+    except (AttributeError, OSError, ValueError):
+        raise ControlUnavailableError("v4 lease clock unavailable") from None
+
+
+class _RejectRedirect(urllib.request.HTTPRedirectHandler):
+    """Never forward Worker credentials to a redirect target."""
+
+    def redirect_request(
+        self, req: Any, fp: Any, code: Any, msg: Any, headers: Any, newurl: Any
+    ) -> None:
+        return None
+
+
+def _open_v4(
+    request: urllib.request.Request, *, timeout: float, _test_only_plaintext_loopback: bool = False
+) -> Any:
+    validate_control_url(
+        request.full_url,
+        _test_only_plaintext_loopback=_test_only_plaintext_loopback,
+        allow_query=True,
+    )
+    handlers: list[Any] = [_RejectRedirect()]
+    if request.type == "https":
+        context = ssl.create_default_context()
+        if context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname:
+            raise OSError("v4 TLS verification unavailable")
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    else:
+        handlers.append(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener(*handlers).open(request, timeout=timeout)
 
 
 class ControlUnavailableError(Exception):

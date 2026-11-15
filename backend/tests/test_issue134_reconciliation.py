@@ -440,7 +440,13 @@ def test_reconciliation_lock_wait_is_local_bounded_and_recoverable(
         holder = pool.submit(hold_row_lock)
         assert locked.wait(timeout=5)
         try:
-            with session_factory() as blocked:
+            # Recovery ends transactions. Keep one physical connection so
+            # another pooled session's prior SET cannot change the baseline.
+            with (
+                session_factory.kw["bind"].connect() as connection,
+                Session(bind=connection) as blocked,
+            ):
+                backend_pid = blocked.scalar(text("SELECT pg_backend_pid()"))
                 baseline_timeout = blocked.scalar(text("SHOW lock_timeout"))
                 started = time.monotonic()
                 with pytest.raises(OperationalError) as captured:
@@ -449,6 +455,7 @@ def test_reconciliation_lock_wait_is_local_bounded_and_recoverable(
                 assert getattr(captured.value.orig, "sqlstate", None) == "55P03"
                 assert 0.5 <= elapsed < 5
                 assert blocked.scalar(text("SHOW lock_timeout")) == baseline_timeout
+                assert blocked.scalar(text("SELECT pg_backend_pid()")) == backend_pid
 
             with session_factory() as session:
                 attempt = session.get(ExecutionAttempt, attempt_id)

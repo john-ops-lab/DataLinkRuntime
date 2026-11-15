@@ -462,6 +462,9 @@ def enable_subscription(
 ) -> EventSubscription:
     subscription = get_subscription(session, subscription_id, principal, "edit", lock=True)
     check_version(subscription, expected)
+    from dlr.control.services.worker_stage_capability_v4 import require_trigger
+
+    require_trigger("subscription")
     require_source(subscription.source_type)
     require_verified_identity(current_config(session, subscription))
     if subscription.desired_state == "enabled":

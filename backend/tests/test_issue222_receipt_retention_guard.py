@@ -4,12 +4,12 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
-from alembic import command
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+from dlr.common.schema_version import SCHEMA_REVISION
 from dlr.control.models import EventReceipt, Execution, SubscriptionExecutionBatch
-from test_issue219_upgrade import migration_config
+from test_issue222_batch_guard_json import apply_guard_revision
 from test_issue222_business_batch import batch_world as core_batch_world
 from test_issue222_business_batch import finish, produce
 from test_issue222_business_batch import world as foundation_world
@@ -22,10 +22,10 @@ NEW_REVISION = "0054_issue222_receipt_ttl_guard"
 
 @pytest.fixture(autouse=True)
 def install_guard_revision(session_factory: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    # An earlier migration-specific test may intentionally leave the shared
-    # test engine at 0053. These regressions exercise the new deployed guard.
+    # Reapply only this function revision; newer schema rollback is forbidden.
+    # Keep current authority tables and the Alembic version unchanged.
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    command.upgrade(migration_config(session_factory.kw["bind"]), NEW_REVISION)
+    apply_guard_revision(session_factory.kw["bind"], NEW_REVISION)
 
 
 def retained_snapshot(factory: Any) -> dict[str, Any]:
@@ -124,14 +124,15 @@ def test_0054_upgrade_and_downgrade_preserve_custody_identity_permissions_and_bi
     batch_world: Any, session_factory: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    config = migration_config(session_factory.kw["bind"])
-    command.downgrade(config, OLD_REVISION)
+    engine = session_factory.kw["bind"]
+    initial_definition = function_identity(session_factory)
+    apply_guard_revision(engine, NEW_REVISION, down=True)
     try:
         with session_factory.begin() as session:
             produce(session, batch_world, 2)
         before = retained_snapshot(session_factory)
         old_function, old_triggers = function_identity(session_factory)
-        command.upgrade(config, NEW_REVISION)
+        apply_guard_revision(engine, NEW_REVISION)
         new_function, new_triggers = function_identity(session_factory)
         assert new_function[:-1] == old_function[:-1]
         assert new_triggers == old_triggers
@@ -140,9 +141,12 @@ def test_0054_upgrade_and_downgrade_preserve_custody_identity_permissions_and_bi
         )
         assert retained_snapshot(session_factory) == before
         with session_factory() as session:
-            assert session.scalar(text("SELECT version_num FROM alembic_version")) == NEW_REVISION
-        command.downgrade(config, OLD_REVISION)
+            assert (
+                session.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_REVISION
+            )
+        apply_guard_revision(engine, NEW_REVISION, down=True)
         assert function_identity(session_factory) == (old_function, old_triggers)
         assert retained_snapshot(session_factory) == before
     finally:
-        command.upgrade(config, NEW_REVISION)
+        apply_guard_revision(engine, NEW_REVISION)
+        assert function_identity(session_factory) == initial_definition

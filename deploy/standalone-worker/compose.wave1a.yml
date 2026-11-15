@@ -1,0 +1,90 @@
+# Dedicated new installation; one fixed Python Worker. No automatic restart
+# or empty replacement of persistent responsibility after an unknown result.
+services:
+  worker:
+    image: ${DLR_WORKER_IMAGE:?set the version-matched Worker image digest}
+    restart: 'no'
+    init: false
+    privileged: false
+    cgroup: private
+    cap_drop: [ALL]
+    cap_add: [SYS_ADMIN, SETUID, SETGID]
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=unconfined
+    cgroup_parent: ${DLR_SANDBOX_CGROUP_PARENT:?set the prepared host cgroup parent}
+    cpus: ${DLR_WORKER_CPU_LIMIT:-2.5}
+    mem_limit: ${DLR_WORKER_MEMORY_LIMIT:-2684354560}
+    memswap_limit: ${DLR_WORKER_MEMORY_LIMIT:-2684354560}
+    pids_limit: ${DLR_WORKER_PIDS_LIMIT:-512}
+    stop_grace_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: '3'
+    command:
+      - python
+      - -m
+      - dlr.worker.agent_v4
+      - --base-url
+      - ${DLR_CONTROL_URL:?set the HTTPS Control endpoint}
+      - --worker-id
+      - ${DLR_WORKER_ID:?set the reserved numeric Worker ID}
+      - --worker-identity-id
+      - ${DLR_WORKER_IDENTITY_ID:?set the reserved identity UUID}
+      - --credential-directory
+      - /var/lib/dlr/private
+      - --proof-trust-file
+      - /var/lib/dlr/private/trust.json
+      - --broker-config-file
+      - /var/lib/dlr/private/broker.json
+      - --runtime-root
+      - /var/lib/dlr/runtime
+      - --journal-anchor
+      - /var/lib/dlr/journal
+      - --cleanup-journal-root
+      - /var/lib/dlr/journal
+      - --attempt-journal-root
+      - /var/lib/dlr/journal/attempt-v4
+      - --claim-child-address-space-bytes
+      - ${DLR_WORKER_CLAIM_ADDRESS_SPACE_BYTES:-268435456}
+      - --claim-wire-budget-bytes
+      - ${DLR_WORKER_CLAIM_WIRE_BYTES:-16777216}
+      - --result-wire-budget-bytes
+      - ${DLR_WORKER_RESULT_WIRE_BYTES:-16777216}
+      - --receive-memory-bytes
+      - ${DLR_WORKER_RECEIVE_MEMORY_BYTES:-402653184}
+    environment:
+      SSL_CERT_FILE: /var/lib/dlr/private/ca.pem
+      DLR_SANDBOX_BACKEND: cgroup_v2
+      DLR_SANDBOX_CGROUP_PATH: /run/dlr-cgroup
+      DLR_SANDBOX_PAYLOAD_UID: ${DLR_SANDBOX_PAYLOAD_UID:-501}
+      DLR_SANDBOX_PAYLOAD_GID: ${DLR_SANDBOX_PAYLOAD_GID:-1000}
+      DLR_SANDBOX_CPU_CORES: ${DLR_SANDBOX_CPU_CORES:-1.0}
+      DLR_SANDBOX_MEMORY_BYTES: ${DLR_SANDBOX_MEMORY_BYTES:-536870912}
+      DLR_SANDBOX_PIDS: ${DLR_SANDBOX_PIDS:-128}
+      DLR_SANDBOX_TMP_BYTES: ${DLR_SANDBOX_TMP_BYTES:-1073741824}
+      DLR_SANDBOX_NOFILE: ${DLR_SANDBOX_NOFILE:-1024}
+    volumes:
+      - type: bind
+        source: ${DLR_SANDBOX_CGROUP_SOURCE:?set the prepared cgroup subtree}
+        target: /run/dlr-cgroup
+        bind:
+          create_host_path: false
+      - worker_runtime:/var/lib/dlr/runtime
+      - type: bind
+        source: ${DLR_WORKER_JOURNAL_ANCHOR_HOST_PATH:?set the precreated persistent journal anchor}
+        target: /var/lib/dlr/journal
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DLR_WORKER_PRIVATE_DIRECTORY:?set the existing private credential/configuration directory}
+        target: /var/lib/dlr/private
+        bind:
+          create_host_path: false
+
+volumes:
+  worker_runtime:
+    external: true
+    name: ${DLR_WORKER_RUNTIME_VOLUME:?set the existing persistent runtime volume}
