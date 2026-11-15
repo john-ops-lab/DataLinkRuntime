@@ -6,11 +6,14 @@ import { useTranslation } from "react-i18next";
 
 import {
   isWorkerExecutionReady,
+  workerStatusLevel,
   REQUIRED_ISOLATION_CAPABILITIES,
   type RequiredIsolationCapability,
 } from "../system-status";
 import type { Adapter, Worker } from "../types";
 import WorkerCachePanel from "./WorkerCachePanel";
+import WorkerMaintenanceObservation from "./WorkerMaintenanceObservation";
+import WorkerMaintenanceActions from "./WorkerMaintenanceActions";
 
 function formatTime(value: string, locale: "zh-CN" | "en"): string {
   const date = new Date(value);
@@ -30,13 +33,16 @@ interface WorkerStatusProps {
   loading: boolean;
   error: string | null;
   canManageCache?: boolean;
+  onRefresh?: () => Promise<void>;
+  onReadMaintenance?: (workerId: number) => Promise<import("../types").WorkerMaintenanceSnapshot>;
 }
 
-export default function WorkerStatus({ workers, loading, error, canManageCache = false, adapters }: WorkerStatusProps) {
+export default function WorkerStatus({ workers, loading, error, canManageCache = false, adapters, onRefresh, onReadMaintenance }: WorkerStatusProps) {
   const { i18n, t } = useTranslation(["common", "settings"]);
   const [cacheWorker, setCacheWorker] = useState<Worker | null>(null);
   const locale = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
-  const readyCount = workers.filter(isWorkerExecutionReady).length;
+  const remote = workers.some((worker) => worker.protocol_version === 4);
+  const readyCount = workers.filter((worker) => workerStatusLevel(worker) === "normal").length;
 
   return (
     <div className="worker-status-details" data-testid="worker-status-details">
@@ -53,18 +59,20 @@ export default function WorkerStatus({ workers, loading, error, canManageCache =
       {!loading && workers.length > 0 && (
         <>
           <Typography.Text type="secondary" className="worker-execution-summary">
-            {t("worker.executionSummary", { ready: readyCount, total: workers.length })}
+            {t(remote ? "worker.maintenance.summary" : "worker.executionSummary", { ready: readyCount, total: workers.length })}
           </Typography.Text>
           <List
             size="small"
             dataSource={workers}
             renderItem={(worker) => {
               const executionReady = isWorkerExecutionReady(worker);
+              const remoteWorker = worker.protocol_version === 4;
+              const level = workerStatusLevel(worker);
               return (
                 <List.Item
                   key={worker.id}
                   data-testid="worker-item"
-                  actions={canManageCache ? [
+                  actions={canManageCache && !remoteWorker ? [
                     <Button key="cache" size="small" onClick={() => setCacheWorker(worker)}>
                       {t("worker.cacheManagement")}
                     </Button>,
@@ -77,12 +85,19 @@ export default function WorkerStatus({ workers, loading, error, canManageCache =
                         <Tag color={worker.status === "online" ? "green" : "red"}>
                           {worker.status === "online" ? t("worker.online") : t("worker.offline")}
                         </Tag>
-                        <Tag color={executionReady ? "green" : "red"}>
-                          {executionReady ? t("worker.executionReady") : t("worker.executionUnavailable")}
+                        <Tag color={remoteWorker ? (level === "normal" ? "green" : level === "checking" ? "default" : "gold") : executionReady ? "green" : "red"}>
+                          {remoteWorker ? t(level === "normal" ? "worker.maintenance.observedNormal" : level === "checking" ? "worker.unknownStatus" : "worker.maintenance.observedRestricted")
+                            : executionReady ? t("worker.executionReady") : t("worker.executionUnavailable")}
                         </Tag>
+                        {remoteWorker && <Tag>{t("worker.maintenance.remotePython")}</Tag>}
                       </span>
                     )}
-                    description={(
+                    description={remoteWorker ? <>
+                      <WorkerMaintenanceObservation worker={worker} />
+                      {canManageCache && onRefresh && onReadMaintenance && worker.maintenance && <WorkerMaintenanceActions
+                        key={`${worker.maintenance.scope}:${worker.id}:${worker.maintenance.snapshot?.worker_identity_id ?? "unknown"}`}
+                        worker={worker} onRefresh={onRefresh} onRead={onReadMaintenance} />}
+                    </> : (
                       <details className="admin-worker-checks" open={!executionReady}><summary>{t("systemStatus.environmentDetails", { ns: "settings" })}</summary><div className="worker-facts">
                         <div>{t("worker.lastHeartbeat", { time: formatTime(worker.last_heartbeat, locale) })}</div>
                         {worker.isolation_preflight_at && (

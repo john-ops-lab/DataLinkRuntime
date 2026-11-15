@@ -1655,6 +1655,7 @@ interface SystemSettingsDrawerProps {
   workersError?: string | null;
   systemStatusRefreshing?: boolean;
   onRefreshSystemStatus?: () => Promise<void>;
+  onReadWorkerMaintenance?: (workerId: number) => Promise<import("../types").WorkerMaintenanceSnapshot>;
 }
 
 // Settings panels render their own persistent alert next to the failed action.
@@ -2456,6 +2457,7 @@ const SystemSettingsDrawer = forwardRef<PageLeaveGuardHandle, SystemSettingsDraw
                 workersError={props.workersError ?? null}
                 refreshing={props.systemStatusRefreshing ?? false}
                 onRefresh={props.onRefreshSystemStatus ?? (() => Promise.resolve())}
+                onReadWorkerMaintenance={props.onReadWorkerMaintenance}
                 canManageCache={canManageManagedInput}
               />
             )}

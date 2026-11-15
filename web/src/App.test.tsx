@@ -8,6 +8,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import App, {
   EDITOR_THEME_STORAGE_KEY,
   TOKEN_STORAGE_KEY,
+  AdapterConsole,
 } from "./App";
 import { api, clearTemplateVariantCache, setAuthToken } from "./api";
 import type { AdapterBatchOperation, AdapterBatchRequest } from "./adapter-batch-types";
@@ -18,6 +19,7 @@ import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import { FALLBACK_POLICY } from "./fallback-policy";
 import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
+import { makeMaintenanceSnapshot } from "./worker-maintenance.fixtures";
 import { pushBrowserLocation } from "./history-route";
 import { applyUiLocale } from "./i18n";
 import type {
@@ -1392,6 +1394,88 @@ it("opens the administrator System Status page and refreshes both existing sourc
     expect(healthCalls).toBe(2);
     expect(workerCalls).toBe(2);
   });
+});
+
+it("W1-D shares one v4 observation across focus requests and the status page", async () => {
+  let release: ((value: RouteResponse) => void) | undefined;
+  let calls = 0;
+  const pending = new Promise<RouteResponse>((resolve) => { release = resolve; });
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }), emptyAdaptersRoute,
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [makeReadyWorker({ id: 7, protocol_version: 4, rabbitmq_execution_v3: false })] }) },
+    { method: "GET", match: "/api/workers/7/v4/status", respond: () => { calls += 1; return pending; } },
+  ]);
+  render(<App />);
+  await waitFor(() => expect(calls).toBe(1));
+  act(() => { window.dispatchEvent(new Event("focus")); window.dispatchEvent(new Event("focus")); });
+  expect(calls).toBe(1);
+  await act(async () => { release!({ body: makeMaintenanceSnapshot() }); });
+  await waitFor(() => expect(screen.getByTestId("system-status-summary").textContent).toBe("系统正常"));
+  fireEvent.click(screen.getByTestId("system-status-summary"));
+  await screen.findByTestId("worker-v4-observation");
+  expect(screen.getByText("状态观测正常")).toBeTruthy();
+  expect(fetchMock.mock.calls.filter(([url]) => String(url) === "/api/workers")).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+});
+
+it("W1-D ignores an old in-flight observation when an explicit refresh requires a newer one", async () => {
+  let calls = 0;
+  let release: ((value: RouteResponse) => void) | undefined;
+  const pending = new Promise<RouteResponse>((resolve) => { release = resolve; });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }), emptyAdaptersRoute,
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [makeReadyWorker({ id: 7, protocol_version: 4 })] }) },
+    { method: "GET", match: "/api/workers/7/v4/status", respond: () => {
+      calls += 1;
+      if (calls === 2) return pending;
+      return { body: makeMaintenanceSnapshot(calls > 2 ? { maintenance_version: 6, instance_generation: 2,
+        instance_id: "55555555-5555-4555-8555-555555555555" } : {}) };
+    } },
+  ]);
+  render(<App />);
+  await waitFor(() => expect(screen.getByTestId("system-status-summary").textContent).toBe("系统正常"));
+  fireEvent.click(screen.getByTestId("system-status-summary"));
+  await screen.findByTestId("worker-v4-observation");
+  act(() => window.dispatchEvent(new Event("focus")));
+  await waitFor(() => expect(calls).toBe(2));
+  fireEvent.click(screen.getByTestId("system-status-refresh"));
+  await act(async () => { release!({ body: makeMaintenanceSnapshot({ maintenance_version: 5 }) }); });
+  await waitFor(() => expect(screen.getByTestId("worker-maintenance-version").textContent).toBe("6"));
+  expect(calls).toBe(3);
+});
+
+it("W1-D invalidates a hidden observation without adding hidden maintenance polling", async () => {
+  let visibility: DocumentVisibilityState = "visible";
+  vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+  let calls = 0;
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }), emptyAdaptersRoute,
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [makeReadyWorker({ id: 7, protocol_version: 4 })] }) },
+    { method: "GET", match: "/api/workers/7/v4/status", respond: () => { calls += 1; return { body: makeMaintenanceSnapshot() }; } },
+  ]);
+  render(<App />);
+  await waitFor(() => expect(screen.getByTestId("system-status-summary").textContent).toBe("系统正常"));
+  await act(async () => {
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+  });
+  expect(screen.getByTestId("system-status-summary").textContent).not.toBe("系统正常");
+  expect(calls).toBe(1);
+  await act(async () => { visibility = "visible"; document.dispatchEvent(new Event("visibilitychange")); });
+  await waitFor(() => expect(calls).toBe(2));
+  await waitFor(() => expect(screen.getByTestId("system-status-summary").textContent).toBe("系统正常"));
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+});
+
+it("W1-D does not fetch admin observations for an ordinary account", async () => {
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }), emptyAdaptersRoute,
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [makeReadyWorker({ id: 7, protocol_version: 4 })] }) },
+  ]);
+  render(<AdapterConsole accountPrincipal={{ id: 14, username: "viewer", role: "user", enabled: true, must_change_password: false }} />);
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/workers")).toBe(true));
+  expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/v4/"))).toBe(false);
 });
 
 // --- Adapter list / create ---------------------------------------------------

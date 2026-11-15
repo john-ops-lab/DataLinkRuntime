@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定义 Wave 1-A 专用新部署、W1-B 已提交结果受控恢复及 W1-C 未提交结果的显式终态处置的单 Control、单固定 Worker、标准库 Python 远程运行合同。该能力不替代既有默认 v3 部署，不声明 Pool、HA、旧部署迁移或异常历史自动恢复。
+定义 Wave 1-A 专用新部署、W1-B 已提交结果受控恢复、W1-C 未提交结果的显式终态处置及 W1-D 受限运维界面的单 Control、单固定 Worker、标准库 Python 远程运行合同。该能力不替代既有默认 v3 部署，不声明 Pool、HA、旧部署迁移或异常历史自动恢复。
 
 ## Requirements
 
@@ -60,6 +60,36 @@ protocol 4 操作 MUST 验证独立运行凭据、稳定身份、instance/genera
 #### Scenario: 正常重启后再次运行
 - **WHEN** 已完成排空的 Worker 用同一配置正常重启
 - **THEN** 新 instance/generation 完成 ready 后仍为 disabled，显式激活后才可领取下一项任务
+
+### Requirement: 受限管理员观察必须区分状态与执行权威
+W1-D 管理员 status 和精确 drain/activate 回执 MUST 由独立只读会话的单条业务 SELECT 读取已提交快照，返回有限 schema、observed_at、身份/代际、调度/容量、活动和未结计数、历史阻塞及当前操作摘要。读取 MUST NOT 写入、取得业务行锁、推进版本或输出恢复 binding、宿主材料、MAC、路径、正文及凭据。普通 Worker 列表及权限保持；Worker 凭据不得读取管理员明细。
+
+#### Scenario: 运行中或维护中的 v4 节点
+- **WHEN** 现有系统状态页展示受限 v4 Worker
+- **THEN** 不使用 v3 Broker 标志否定 v4，也不将有效运行责任误报为历史阻塞；协议、在线、维护、容量和责任分别展示，正常观察不授予 Claim 权限；v3 就绪和缓存入口保持
+
+#### Scenario: 观察不可用或过期
+- **WHEN** 隐藏恢复、30 秒未成功更新、缺字段/旧 Control、403/404/503 或读取失败
+- **THEN** 旧观察仅作历史值，新增写按钮不可据此放行；共享单飞刷新不按行增加轮询，隐藏页面不新增维护读取，旧响应不得覆盖新身份/代际/版本
+
+### Requirement: 标准维护界面必须显式保存意图并独立读回
+排空/确认/激活 MUST 在每次确认前重新读取观察，绑定非零 request ID、expected_version、稳定身份及当前操作者。POST 前 MUST 在该页 sessionStorage 暂存并回读非敏感 tuple；失败不发 POST。提交未知后 MUST 先精确 GET，刷新仅恢复 tuple 并查询，不能自动换 ID/版本或重发。历史 operation 与 current 状态 MUST 分开展示；404 不证明回滚，浏览器观察不替代服务器锁内鉴权与资格裁决。
+
+#### Scenario: 排空登记后责任归零
+- **WHEN** 原操作者明确确认本次 drain，原 tuple 匹配且当前版本仍等于 operation.result_version
+- **THEN** 仅在未结归零后转 disabled，重复确认不增长版本；GET 或轮询不完成排空，旧周期 drain 一律 409 且零写入
+
+#### Scenario: B/C 恢复留下 draining
+- **WHEN** 当前维护操作为 reconcile，容量 ready、已 enrollment、零未结且无历史阻塞，管理员使用当前版本和新 request ID 明确确认
+- **THEN** 版本增长一次并转 disabled；未结或 reconciling 拒绝，不修改原恢复、处置、清理或 completion
+
+#### Scenario: activate 提交后页面丢失响应
+- **WHEN** POST 超时/断线/503 或页面重入
+- **THEN** 以原 tuple 只读查询；用户明确重试时只发原 tuple，已提交且被后续版本替代时不宣称当前 active；登出/切换 Principal 清除意图，其他操作者不能冒用原 drain
+
+#### Scenario: 后续激活仍存在 C 处置
+- **WHEN** status 返回最近 C 摘要和原 Execution/Attempt 终态
+- **THEN** 界面持续显示原业务结果未知、结清不重试也不回滚；disabled/零计数/在线均不能替代物理停止、本地预算或当前 channel ACK，界面不提供强制清账或恢复向导
 
 ### Requirement: 接收、解析和结果进程必须保持真实资源归属
 Control/Worker 存活的父子进程、业务数据副本和 IO MUST 受有限 cgroup 硬限及禁止 swap 条件约束。解析/结果子进程 MUST 在接收业务材料前应用其地址空间限额；真实结束/回收不明时不得提前释放资源账目。Control 可在同一 Attempt 内保留同一个有限资源子进程完成 Claim、结果 stage 和 finalize，但 MUST 每次重新验证当前 Control/Worker/Attempt 权威，原 Claim 期限和资源保留期限不得成为新授权。不同任务不得共享该子进程。

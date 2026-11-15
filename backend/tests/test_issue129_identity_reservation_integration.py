@@ -877,6 +877,9 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 yield session
 
         app.dependency_overrides[db.get_session] = runtime_session
+        # Administrator observations use an independent read-only session from
+        # the production factory, just like cleanup's separate transactions.
+        monkeypatch.setattr(db, "SessionLocal", runtime_sessions)
         process = ControlProcess(settings, runtime_sessions, deployment)
         process.start()
         app.state.control_process_v4 = process
@@ -1119,6 +1122,13 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             ).status_code
             == 401
         )
+        maintenance_version = 4
+        if controlled_recovery is False and os.environ.get("DLR_TEST_CLAIM_PROCESS") != "1":
+            from maintenance_observation_fixtures import assert_maintenance_observations
+
+            maintenance_version = assert_maintenance_observations(
+                client, runtime_sessions, worker_id, activation_body, runtime_secret
+            )
         adapter = create_adapter(client, name="remote-claim")
         save_version(
             client,
@@ -1406,7 +1416,7 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             staged_only=isinstance(controlled_recovery, tuple),
         )
         attempt_lease.close()
-        active_drain = {"request_id": str(uuid4()), "expected_version": 4}
+        active_drain = {"request_id": str(uuid4()), "expected_version": maintenance_version}
         draining = client.post(f"/api/workers/{worker_id}/v4/drain", json=active_drain)
         assert draining.status_code == 200
         assert draining.json()["scheduling_state"] == "draining"
@@ -1463,7 +1473,53 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                         claimed,
                         public_key_bytes(signing_key),
                     )
-            finished_drain = client.post(f"/api/workers/{worker_id}/v4/drain", json=active_drain)
+            status_after_cleanup = client.get(f"/api/workers/{worker_id}/v4/status").json()
+            if controlled_recovery:
+                # Recovery advanced the maintenance version. Never let the
+                # original drain mutate that later cycle.
+                assert (
+                    client.post(f"/api/workers/{worker_id}/v4/drain", json=active_drain).status_code
+                    == 409
+                )
+                confirmation = {
+                    "request_id": str(uuid4()),
+                    "expected_version": status_after_cleanup["maintenance_version"],
+                }
+                assert status_after_cleanup["current_maintenance_action"] == "reconcile"
+                assert status_after_cleanup["current_drain_operation"] is None
+                assert status_after_cleanup["unsettled_attempts"] == 0
+                assert (
+                    client.post(f"/api/workers/{worker_id}/v4/drain", json=confirmation).status_code
+                    == 409
+                )  # Still reconciling.
+                # API fixture only: real local preflight/ready is not claimed.
+                with runtime_sessions.begin() as session:
+                    session.get(Worker, worker_id).capacity_state = "ready"
+                finished_drain = client.post(
+                    f"/api/workers/{worker_id}/v4/drain", json=confirmation
+                )
+                assert finished_drain.status_code == 200, finished_drain.text
+                assert (
+                    finished_drain.json()["maintenance_version"]
+                    == confirmation["expected_version"] + 1
+                )
+                assert (
+                    client.post(f"/api/workers/{worker_id}/v4/drain", json=confirmation).json()
+                    == finished_drain.json()
+                )
+            else:
+                # A much older, completed drain cannot finish this newer drain
+                # after its last cleanup has settled, even with a zero count.
+                assert (
+                    client.post(f"/api/workers/{worker_id}/v4/drain", json=empty_drain).status_code
+                    == 409
+                )
+                unchanged = client.get(f"/api/workers/{worker_id}/v4/status").json()
+                assert unchanged["scheduling_state"] == "draining"
+                assert unchanged["maintenance_version"] == active_drain["expected_version"] + 1
+                finished_drain = client.post(
+                    f"/api/workers/{worker_id}/v4/drain", json=active_drain
+                )
             assert finished_drain.json()["scheduling_state"] == "disabled"
             assert finished_drain.json()["unsettled_attempts"] == 0
         lease.retire()

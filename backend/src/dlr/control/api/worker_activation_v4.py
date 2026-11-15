@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from contextlib import suppress
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -19,7 +20,11 @@ from dlr.control.api.worker_instance_v4 import _HEADERS, _process
 from dlr.control.models import ExecutionAttempt, Worker, WorkerMaintenanceOperation
 from dlr.control.schemas.worker import isolation_capabilities_ready
 from dlr.control.security import Principal, require_admin_principal
-from dlr.control.services import worker_availability, worker_recovery_v4
+from dlr.control.services import (
+    worker_availability,
+    worker_maintenance_observation,
+    worker_recovery_v4,
+)
 from dlr.control.services.attempt import ACTIVE_ATTEMPT_STATUSES
 from dlr.control.services.worker_identity_reservation import _actor
 
@@ -95,52 +100,44 @@ def _unsettled_attempts(session: Session, worker: Worker) -> int:
     )
 
 
+def _observe(
+    read: Callable[[], dict[str, object]], *, not_found_code: str = "worker_maintenance_not_found"
+) -> dict[str, object]:
+    try:
+        return read()
+    except worker_maintenance_observation.ObservationNotFound:
+        raise HTTPException(
+            status_code=404, detail={"code": not_found_code}, headers=_HEADERS
+        ) from None
+    except Exception as error:
+        logger.warning("worker maintenance observation unavailable: type=%s", type(error).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "worker_maintenance_observation_unavailable"},
+            headers=_HEADERS,
+        ) from None
+
+
 @router.get("/api/workers/{worker_id}/v4/status")
-def maintenance_status(worker_id: int, session: DbSession, _principal: Admin) -> dict[str, object]:
-    worker = session.get(Worker, worker_id)
-    if worker is None or worker.identity_lifecycle != "reserved" or worker.protocol_version != 4:
-        raise HTTPException(status_code=404, detail={"code": "worker_not_found"})
-    unsettled = _unsettled_attempts(session, worker)
-    last_disposition = session.scalar(
-        select(WorkerMaintenanceOperation)
-        .where(
-            WorkerMaintenanceOperation.worker_id == worker_id,
-            WorkerMaintenanceOperation.recovery_disposition_id.is_not(None),
-        )
-        .order_by(WorkerMaintenanceOperation.result_version.desc())
-        .limit(1)
+def maintenance_status(worker_id: int, response: Response, principal: Admin) -> dict[str, object]:
+    response.headers.update(_HEADERS)
+    return _observe(
+        lambda: worker_maintenance_observation.read_status(db.SessionLocal, worker_id, principal),
+        not_found_code="worker_not_found",
     )
-    disposition = None
-    if last_disposition is not None:
-        snapshot = last_disposition.recovery_disposition
-        binding = last_disposition.recovery_binding
-        if snapshot is not None and binding is not None:
-            disposition = {
-                "operation_id": str(last_disposition.request_id),
-                "disposition_id": str(last_disposition.recovery_disposition_id),
-                "kind": snapshot["kind"],
-                "reason": snapshot["reason"],
-                "execution_id": binding["execution_id"],
-                "attempt_id": binding["attempt"]["attempt_id"],
-                "attempt_status": snapshot["attempt_status"],
-                "execution_status": snapshot["execution_status"],
-            }
-    return {
-        "worker_id": worker.id,
-        "worker_identity_id": str(worker.identity_id),
-        "scheduling_state": worker.scheduling_state,
-        "maintenance_version": worker.maintenance_version,
-        "capacity_state": worker.capacity_state,
-        "online": worker_availability.is_effectively_online(
-            worker, now=worker_availability.current_time(session)
-        ),
-        "instance_id": str(worker.instance_id) if worker.instance_id is not None else None,
-        "instance_generation": worker.instance_generation,
-        "instance_lease_until": worker.instance_lease_until,
-        "unsettled_attempts": unsettled,
-        "blocked_reason": "worker_cleanup_unsettled" if unsettled else None,
-        "last_recovery_disposition": disposition,
-    }
+
+
+@router.get("/api/workers/{worker_id}/v4/maintenance-operations/{request_id}")
+def maintenance_operation(
+    worker_id: int, request_id: UUID, response: Response, principal: Admin
+) -> dict[str, object]:
+    """Observe a committed action; absence does not prove an in-flight rollback."""
+    response.headers.update(_HEADERS)
+    return _observe(
+        lambda: worker_maintenance_observation.read_operation(
+            db.SessionLocal, worker_id, request_id, principal
+        )
+    )
 
 
 @router.post("/api/workers/{worker_id}/v4/drain")
@@ -177,15 +174,36 @@ def drain(
                 or existing.action != "drain"
                 or existing.actor_kind != actor_kind
                 or existing.actor_id != actor_id
+                or worker.maintenance_version != existing.result_version
+                or worker.scheduling_state not in {"draining", "disabled"}
             ):
                 raise _Conflict
         else:
-            if (
-                worker.maintenance_version != payload.expected_version
-                or worker.scheduling_state != "active"
-            ):
+            if worker.maintenance_version != payload.expected_version:
                 raise _Conflict
-            worker.scheduling_state = "draining"
+            recovered_drain = False
+            if worker.scheduling_state == "draining":
+                current_action = session.scalar(
+                    select(WorkerMaintenanceOperation.action).where(
+                        WorkerMaintenanceOperation.worker_id == worker.id,
+                        WorkerMaintenanceOperation.result_version == worker.maintenance_version,
+                    )
+                )
+                # B/C recovery advanced the version but did not change the
+                # administrator's draining intent. Finish it with a NEW audit,
+                # only after the existing recovery reported ready and settled.
+                recovered_drain = (
+                    current_action == "reconcile"
+                    and worker.capacity_state == "ready"
+                    and worker.identity_enrolled_at is not None
+                    and _unsettled_attempts(session, worker) == 0
+                    and not worker_availability.has_unreconciled_v4_attempt(
+                        session, worker, now=worker_availability.current_time(session)
+                    )
+                )
+            if worker.scheduling_state != "active" and not recovered_drain:
+                raise _Conflict
+            worker.scheduling_state = "disabled" if recovered_drain else "draining"
             worker.maintenance_version += 1
             session.add(
                 WorkerMaintenanceOperation(

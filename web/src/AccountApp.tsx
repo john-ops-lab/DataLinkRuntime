@@ -12,6 +12,7 @@ import {
   readCachedSystemLocale,
 } from "./i18n";
 import { applyLoginLocalePreference } from "./login-locale";
+import { clearWorkerMaintenanceIntent } from "./worker-maintenance-intent";
 import type { AccountPrincipal, SystemLocale } from "./types";
 import { AdapterConsole } from "./App";
 import AccountLoginPage from "./components/AccountLoginPage";
@@ -53,6 +54,7 @@ export default function AccountApp() {
   }, []);
 
   const returnToLogin = useCallback((nextNotice: LoginNotice | null) => {
+    clearWorkerMaintenanceIntent();
     setPrincipal(null);
     setProfileOpen(false);
     setNotice(nextNotice);
@@ -160,7 +162,10 @@ export default function AccountApp() {
       >
         <AccountUserPage
           principal={principal}
-          onPrincipalChange={setPrincipal}
+          onPrincipalChange={(next) => {
+            if (next.id !== principal.id || next.role !== principal.role) clearWorkerMaintenanceIntent();
+            setPrincipal(next);
+          }}
           onPasswordChanged={() => returnToLogin({ key: "users.passwordChanged" })}
           onLogout={handleLogout}
         />

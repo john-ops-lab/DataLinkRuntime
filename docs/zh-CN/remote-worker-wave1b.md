@@ -109,7 +109,7 @@ Agent 在注册前只读扫描原卷，并用当前合法运行凭据读回这�
 
 恢复 proof HTTP 使用既有有限响应/整次调用截止和 pidfd 收割路径，父子进程实际受整个 Worker 容器的 CPU/内存/PID 硬限及零 swap 约束。这条 proof 路径未单独设置地址空间上限；W1-A 结果上传子进程的 128 MiB 限制不能套用于此。记录实际 cgroup/进程限额，不能以响应字节数或一次峰值代替内存上界。
 
-恢复完成后仍保持原 draining/disabled 管理状态。必要时重复原 drain request，使未结责任归零的 Worker 变为 disabled；读回当前 version，再以新 request ID 显式 activate。新 channel 对旧消息取得服务端权威 `ACK_NOOP` 后，才 ACK 当前 delivery tag；不保存或复用旧 tag。ACK 到达未知时允许重投，再次权威判定，不重复清理结账。最后必须实际执行一项新任务。
+恢复完成后仍保持原 draining/disabled 管理状态。W1-D 起，reconcile 推进版本后旧 drain request 返回 409，不再用旧周期确认排空。当前仍 draining 且操作为 reconcile、容量 ready、零未结且无历史阻塞时，用**当前 expected_version 和新 request ID**显式确认排空，版本仅递增一次并转 disabled；读回当前 version，再以另一新 request ID 显式 activate。未结或 reconciling 时不能确认。界面和精确只读回执说明见 [W1-D 运维界面](remote-worker-wave1a.md#受限-v4-运维界面w1-d)。新 channel 对旧消息取得服务端权威 `ACK_NOOP` 后，才 ACK 当前 delivery tag；不保存或复用旧 tag。ACK 到达未知时允许重投，再次权威判定，不重复清理结账。最后必须实际执行一项新任务。
 
 ## 诊断与迁移
 

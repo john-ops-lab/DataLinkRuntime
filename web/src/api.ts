@@ -2,6 +2,7 @@
 
 import { createSubscriptionApi } from "./subscription-api";
 import { createAdapterBatchApi } from "./adapter-batch-api";
+import { clearWorkerMaintenanceIntent } from "./worker-maintenance-intent";
 
 import type {
   BuiltinPackage,
@@ -71,6 +72,7 @@ import type {
   VersionDetail,
   VersionSummary,
   Worker,
+  WorkerMaintenanceAction,
 } from "./types";
 
 const templateVariantCache = new Map<string, Promise<TemplateVariant>>();
@@ -115,6 +117,7 @@ export function onUnauthorized(handler: () => void): void {
 /** Shared 401 handling for plain requests and the SSE stream reader. */
 export function handleUnauthorized(): void {
   authToken = null;
+  clearWorkerMaintenanceIntent();
   unauthorizedHandler?.();
 }
 
@@ -558,6 +561,16 @@ export const api = {
   },
 
   listWorkers: (): Promise<Worker[]> => request("/api/workers"),
+
+  getWorkerMaintenance: (workerId: number, signal?: AbortSignal): Promise<unknown> =>
+    request(`/api/workers/${workerId}/v4/status`, { signal, cache: "no-store" }),
+
+  getWorkerMaintenanceOperation: (workerId: number, requestId: string, signal?: AbortSignal): Promise<unknown> =>
+    request(`/api/workers/${workerId}/v4/maintenance-operations/${encodeURIComponent(requestId)}`, { signal, cache: "no-store" }),
+
+  maintainWorker: (workerId: number, action: WorkerMaintenanceAction,
+    payload: { request_id: string; expected_version: number }, signal?: AbortSignal): Promise<unknown> =>
+    request(`/api/workers/${workerId}/v4/${action}`, { method: "POST", body: JSON.stringify(payload), signal }),
 
   getWorkerCache: (
     workerId: number,
