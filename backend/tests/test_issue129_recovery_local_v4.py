@@ -258,3 +258,62 @@ def test_terminal_cannot_replace_physical_removal(original):
     with pytest.raises(ValueError, match="physical residue"):
         scan(original)
     assert (original[1] / "workspaces/attempt-8/dlr-exec-5/adapter.py").exists()
+
+
+@pytest.mark.parametrize("failure", ["prepared", "runtime", "fsync"])
+def test_platform_terminal_v2_reenters_exact_manifest(original, monkeypatch, failure):
+    terminal = _terminal(original)
+    terminal.pop("finalization_id")
+    terminal.update(version=2, kind="platform_terminal", disposition_id=str(uuid4()))
+    directory, runtime_fd = original[-2:]
+    unlink, fsync = os.unlink, os.fsync
+    fired = []
+
+    def interrupt(name, **kwargs):
+        unlink(name, **kwargs)
+        if not fired and (
+            (failure == "prepared" and name.endswith(".prepared.json"))
+            or (failure == "runtime" and kwargs.get("dir_fd") == runtime_fd)
+        ):
+            fired.append(name)
+            raise OSError("C deletion receipt lost")
+
+    def interrupted_sync(fd):
+        fsync(fd)
+        if failure == "fsync" and not fired and fd == directory:
+            fired.append(fd)
+            raise OSError("C directory sync receipt lost")
+
+    with monkeypatch.context() as m:
+        m.setattr(os, "unlink", interrupt)
+        m.setattr(os, "fsync", interrupted_sync)
+        with pytest.raises(OSError):
+            local.retire(directory, runtime_fd, terminal, allow_missing=False)
+    assert fired and scan(original).terminal == terminal
+    assert "finalization_id" not in terminal
+    local.retire(directory, runtime_fd, terminal, allow_missing=True)
+    assert local._entries(directory) == {".dlr-instance.lock"}
+    assert not (original[1] / "claim-test.pending.json").exists()
+
+
+@pytest.mark.parametrize("damage", ["missing_kind", "mixed_ids", "wrong_kind", "zero_id", "v1_id"])
+def test_terminal_kinds_cannot_be_interchanged(original, damage):
+    terminal = _terminal(original)
+    terminal.pop("finalization_id")
+    terminal.update(version=2, kind="platform_terminal", disposition_id=str(uuid4()))
+    if damage == "missing_kind":
+        terminal.pop("kind")
+    elif damage == "mixed_ids":
+        terminal["finalization_id"] = terminal["disposition_id"]
+    elif damage == "wrong_kind":
+        terminal["kind"] = "committed_result"
+    elif damage == "zero_id":
+        terminal["disposition_id"] = "00000000-0000-0000-0000-000000000000"
+    else:
+        terminal["version"] = 1
+    checkpoint.persist(original[-2], local.terminal_name(8), terminal)
+    with pytest.raises(ValueError, match="terminal invalid"):
+        scan(original)
+    with pytest.raises(ValueError, match="terminal invalid"):
+        local.retire(original[-2], original[-1], terminal, allow_missing=True)
+    assert journal_v4._read(original[-2], local.terminal_name(8)) == terminal

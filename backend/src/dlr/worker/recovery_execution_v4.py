@@ -27,7 +27,7 @@ from dlr.worker import (
     workspace_fs_v4,
 )
 from dlr.worker import recovery_checkpoint_v4 as checkpoint
-from dlr.worker.lease_session_v4 import WorkerLeaseSession, _proof_deadline
+from dlr.worker.lease_session_v4 import WorkerLeaseError, WorkerLeaseSession, _proof_deadline
 
 
 @dataclass(frozen=True)
@@ -64,29 +64,10 @@ def scan(
         terminal = None
         if len(terminals) == 1:
             terminal = journal_v4._read(directory, terminals[0])
-            if (
-                terminal is None
-                or set(terminal)
-                != {
-                    "version",
-                    "prepared",
-                    "stopped",
-                    "attempt_record",
-                    "finalization_id",
-                    "completion_id",
-                    "records",
-                    "runtime_records",
-                }
-                or type(terminal["version"]) is not int
-                or terminal["version"] != 1
-            ):
+            if not recovery_local_v4.valid_terminal(terminal) or terminal is None:
                 raise ValueError("recovery terminal invalid")
             prepared, stopped = terminal["prepared"], terminal["stopped"]
             attempt_record = terminal["attempt_record"]
-            if not all(
-                checkpoint._uuid(terminal[key]) for key in ("finalization_id", "completion_id")
-            ):
-                raise ValueError("recovery terminal invalid")
         elif not terminals and len(prepared_names) == 1:
             prepared = journal_v4._read(directory, prepared_names[0])
             if not checkpoint.valid_prepared(prepared) or prepared is None:
@@ -293,7 +274,11 @@ def read_operation(
         },
     )
     raw = lease._post(request, timeout=lease._timeout, deadline=lease._now() + 5, expected=200)
-    response = lease._body(raw, {"request_id", "maintenance_version", "binding", "host_evidence"})
+    base_fields = {"request_id", "maintenance_version", "binding", "host_evidence"}
+    try:
+        response = lease._body(raw, base_fields)
+    except WorkerLeaseError:
+        response = lease._body(raw, base_fields | {"mode", "disposition_id", "settlement"})
     binding = response["binding"]
     p = state.prepared
     expected = {
@@ -328,12 +313,43 @@ def read_operation(
         or not checkpoint._uuid(binding["deployment_record_id"])
     ):
         raise ValueError("recovery operation conflict")
-    return {
+    lookup = {
         "operation_id": str(operation),
         "binding": binding,
         "result_intent_id": state.stopped["intent_id"],
         "body_mac": state.stopped["body_mac"],
     }
+    if "mode" in response:
+        settlement = response["settlement"]
+        if (
+            response["mode"] != "settle_stopped_uncommitted"
+            or not checkpoint._uuid(response["disposition_id"])
+            or not isinstance(settlement, dict)
+            or set(settlement)
+            != {
+                "stopped_sha256",
+                "result_intent_id",
+                "body_mac",
+                "attempt_status",
+                "execution_status",
+                "acknowledgement",
+            }
+            or settlement["stopped_sha256"] != checkpoint.digest(state.stopped)
+            or settlement["result_intent_id"] != state.stopped["intent_id"]
+            or settlement["body_mac"] != state.stopped["body_mac"]
+            or settlement["acknowledgement"] != "result_uncommitted_outcome_unknown"
+            or (settlement["attempt_status"], settlement["execution_status"])
+            not in {
+                ("worker_lost", "dead_letter"),
+                ("worker_lost", "cancelled"),
+                ("cancelled", "cancelled"),
+            }
+        ):
+            raise ValueError("recovery disposition conflict")
+        lookup.update(
+            mode=response["mode"], disposition_id=response["disposition_id"], settlement=settlement
+        )
+    return lookup
 
 
 class RecoveryExchange:
@@ -417,6 +433,19 @@ class RecoveryExchange:
                 nonce,
             ):
                 raise ValueError("recovery observation conflict")
+            if self.lookup.get("mode", "committed_result") == "settle_stopped_uncommitted":
+                settlement = self.lookup["settlement"]
+                if (
+                    claims.kind != "platform_terminal"
+                    or claims.finalization_id is not None
+                    or str(claims.disposition_id) != self.lookup["disposition_id"]
+                    or claims.stopped_sha256 != bytes.fromhex(checkpoint.digest(s))
+                    or claims.attempt_status != settlement["attempt_status"]
+                    or claims.execution_status != settlement["execution_status"]
+                ):
+                    raise ValueError("recovery disposition observation conflict")
+            elif claims.kind != "committed_result" or claims.finalization_id is None:
+                raise ValueError("recovery result observation conflict")
             lease._check_observation_clock(claims.observed_us, started, finished)
             lease._require_before(
                 _proof_deadline(started, claims.proof_before_us, claims.observed_us)
@@ -570,14 +599,34 @@ def recover(
                 "prepared": state.prepared,
                 "stopped": state.stopped,
                 "attempt_record": state.attempt_record,
-                "finalization_id": str(observed.finalization_id),
                 "completion_id": str(observed.completion_id),
                 "records": records,
                 "runtime_records": state.prepared["runtime_record"],
             }
-        elif terminal["finalization_id"] != str(observed.finalization_id) or terminal[
-            "completion_id"
-        ] != str(observed.completion_id):
+            if observed.kind == "platform_terminal":
+                terminal.update(
+                    version=2, kind=observed.kind, disposition_id=str(observed.disposition_id)
+                )
+            else:
+                terminal["finalization_id"] = str(observed.finalization_id)
+        if (
+            terminal["completion_id"] != str(observed.completion_id)
+            or (
+                observed.kind == "platform_terminal"
+                and (
+                    terminal.get("version") != 2
+                    or terminal.get("kind") != observed.kind
+                    or terminal.get("disposition_id") != str(observed.disposition_id)
+                )
+            )
+            or (
+                observed.kind == "committed_result"
+                and (
+                    terminal.get("version") != 1
+                    or terminal.get("finalization_id") != str(observed.finalization_id)
+                )
+            )
+        ):
             raise ValueError("recovery terminal committed IDs conflict")
         recovery_local_v4.retire(
             directory, runtime_fd, terminal, allow_missing=state.terminal is not None

@@ -24,7 +24,12 @@ VERSION = 1
 # optional committed cleanup, nonce, terminal status, observation window.
 WIRE = struct.Struct(">B16s16sQ16sQQ16sQ16sQQQ16s16s32s16s32s16s16s16sBqq")
 TOKEN_LENGTH = ((WIRE.size + 64 + 2) // 3) * 4
-STATUS_TO_CODE = {"succeeded": 1, "failed": 2, "timed_out": 3}
+V2_CONTEXT = b"dlr/recovery/observation/v2\x00"
+V2_WIRE = struct.Struct(WIRE.format + "B32s16sB")
+V2_TOKEN_LENGTH = ((V2_WIRE.size + 64 + 2) // 3) * 4
+STATUS_TO_CODE = {"succeeded": 1, "failed": 2, "timed_out": 3, "worker_lost": 4, "cancelled": 5}
+EXECUTION_TO_CODE = {"dead_letter": 1, "cancelled": 2}
+CODE_TO_EXECUTION = {value: key for key, value in EXECUTION_TO_CODE.items()}
 CODE_TO_STATUS = {value: key for key, value in STATUS_TO_CODE.items()}
 
 
@@ -47,17 +52,23 @@ class RecoveryClaims:
     prepared_sha256: bytes
     result_intent_id: UUID
     body_mac: bytes
-    finalization_id: UUID
+    finalization_id: UUID | None
     completion_id: UUID | None
     observation_nonce: UUID
     attempt_status: str
     proof_before_us: int
     observed_us: int
+    kind: str = "committed_result"
+    disposition_id: UUID | None = None
+    stopped_sha256: bytes | None = None
+    execution_status: str | None = None
+    version: int = 2
 
 
 def _payload(claims: RecoveryClaims) -> bytes:
-    return WIRE.pack(
-        VERSION,
+    v2 = claims.version == 2
+    values = (
+        2 if v2 else VERSION,
         claims.cluster_id.bytes,
         claims.authority_epoch.bytes,
         claims.worker_id,
@@ -75,17 +86,29 @@ def _payload(claims: RecoveryClaims) -> bytes:
         claims.prepared_sha256,
         claims.result_intent_id.bytes,
         claims.body_mac,
-        claims.finalization_id.bytes,
+        claims.finalization_id.bytes if claims.finalization_id is not None else bytes(16),
         claims.completion_id.bytes if claims.completion_id is not None else bytes(16),
         claims.observation_nonce.bytes,
         STATUS_TO_CODE[claims.attempt_status],
         claims.proof_before_us,
         claims.observed_us,
     )
+    if v2:
+        return V2_WIRE.pack(
+            *values,
+            2 if claims.kind == "platform_terminal" else 1,
+            claims.stopped_sha256 if claims.stopped_sha256 is not None else bytes(32),
+            claims.disposition_id.bytes if claims.disposition_id is not None else bytes(16),
+            EXECUTION_TO_CODE.get(claims.execution_status or "", 0),
+        )
+    return WIRE.pack(*values)
 
 
 def _parse(raw: bytes) -> RecoveryClaims | None:
     try:
+        v2 = len(raw) == V2_WIRE.size
+        fields = V2_WIRE.unpack(raw) if v2 else WIRE.unpack(raw)
+        extra = fields[24:] if v2 else ()
         (
             version,
             cluster,
@@ -111,7 +134,7 @@ def _parse(raw: bytes) -> RecoveryClaims | None:
             status,
             before,
             observed,
-        ) = WIRE.unpack(raw)
+        ) = fields[:24]
         result = RecoveryClaims(
             UUID(bytes=cluster),
             UUID(bytes=epoch),
@@ -130,15 +153,48 @@ def _parse(raw: bytes) -> RecoveryClaims | None:
             prepared,
             UUID(bytes=intent),
             mac,
-            UUID(bytes=finalization),
+            UUID(bytes=finalization) if any(finalization) else None,
             UUID(bytes=completion) if any(completion) else None,
             UUID(bytes=nonce),
             CODE_TO_STATUS.get(status, ""),
             before,
             observed,
+            "platform_terminal" if v2 and extra[0] == 2 else "committed_result",
+            UUID(bytes=extra[2]) if v2 and any(extra[2]) else None,
+            extra[1] if v2 and (extra[0] == 2 or any(extra[1])) else None,
+            CODE_TO_EXECUTION.get(extra[3], "") if v2 and extra[3] else None,
+            version,
         )
         if (
-            version != VERSION
+            version != (2 if v2 else VERSION)
+            or (v2 and extra[0] not in {1, 2})
+            or (
+                result.kind == "platform_terminal"
+                and (
+                    not v2
+                    or any(finalization)
+                    or result.disposition_id is None
+                    or result.disposition_id.int == 0
+                    or len(result.stopped_sha256 or b"") != 32
+                    or (result.attempt_status, result.execution_status)
+                    not in {
+                        ("worker_lost", "dead_letter"),
+                        ("worker_lost", "cancelled"),
+                        ("cancelled", "cancelled"),
+                    }
+                )
+            )
+            or (
+                result.kind == "committed_result"
+                and (
+                    result.disposition_id is not None
+                    or result.stopped_sha256 is not None
+                    or result.execution_status is not None
+                    or result.finalization_id is None
+                    or result.finalization_id.int == 0
+                    or result.attempt_status not in {"succeeded", "failed", "timed_out"}
+                )
+            )
             or not result.attempt_status
             or any(
                 value.int == 0
@@ -151,7 +207,6 @@ def _parse(raw: bytes) -> RecoveryClaims | None:
                     result.instance_candidate_id,
                     result.operation_id,
                     result.result_intent_id,
-                    result.finalization_id,
                     result.observation_nonce,
                 )
             )
@@ -173,7 +228,8 @@ def sign_observation(claims: RecoveryClaims, key: bytes) -> str:
     payload = _payload(claims)
     if _parse(payload) != claims:
         raise ValueError("recovery observation invalid")
-    signature = Ed25519PrivateKey.from_private_bytes(key).sign(CONTEXT + payload)
+    context = V2_CONTEXT if claims.version == 2 else CONTEXT
+    signature = Ed25519PrivateKey.from_private_bytes(key).sign(context + payload)
     return base64.urlsafe_b64encode(payload + signature).decode("ascii")
 
 
@@ -183,7 +239,7 @@ def verify_observation(
     instance = verify_worker_proof_signature(instance_token, public_key)
     if (
         type(token) is not str
-        or len(token) != TOKEN_LENGTH
+        or len(token) not in {TOKEN_LENGTH, V2_TOKEN_LENGTH}
         or instance is None
         or type(public_key) is not bytes
         or len(public_key) != 32
@@ -192,13 +248,15 @@ def verify_observation(
     try:
         encoded = token.encode("ascii")
         raw = base64.b64decode(encoded, altchars=b"-_", validate=True)
-        if len(raw) != WIRE.size + 64 or base64.urlsafe_b64encode(raw) != encoded:
+        v2 = len(raw) == V2_WIRE.size + 64
+        size = V2_WIRE.size if v2 else WIRE.size
+        if len(raw) != size + 64 or base64.urlsafe_b64encode(raw) != encoded:
             return None
-        claims = _parse(raw[: WIRE.size])
+        claims = _parse(raw[:size])
         if claims is None:
             return None
         Ed25519PublicKey.from_public_bytes(public_key).verify(
-            raw[WIRE.size :], CONTEXT + raw[: WIRE.size]
+            raw[size:], (V2_CONTEXT if v2 else CONTEXT) + raw[:size]
         )
         if (
             claims.cluster_id != instance.cluster_id

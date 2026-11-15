@@ -36,6 +36,26 @@ _EXPECTED_PROSRC = """
         END
         """
 
+_EXPECTED_DISPOSITION_PROSRC = """
+        BEGIN
+            IF TG_OP = 'UPDATE' AND OLD.recovery_disposition_id IS NOT NULL THEN
+                IF NEW IS DISTINCT FROM OLD THEN
+                    RAISE EXCEPTION 'v4 recovery disposition immutable' USING ERRCODE = '23514';
+                END IF;
+            ELSIF NEW.recovery_disposition_id IS NOT NULL THEN
+                IF NEW.recovery_disposition_xid IS DISTINCT FROM pg_catalog.txid_current() THEN
+                    RAISE EXCEPTION 'v4 recovery transaction mismatch' USING ERRCODE = '23514';
+                END IF;
+            END IF;
+            RETURN NEW;
+        END
+        """
+
+_EXPECTED_AUDIT_PROSRC = """
+        BEGIN
+          RAISE EXCEPTION 'Worker maintenance audit is immutable' USING ERRCODE = '23514';
+        END """
+
 _TABLES = (
     ("worker_lease_candidates_v4", "worker_candidate_xid_guard_v4", 23),
     ("worker_lease_candidates_v4", "worker_candidate_xid_postguard_v4", 21),
@@ -45,6 +65,9 @@ _TABLES = (
     ("attempt_result_intents_v4", "result_intent_xid_postguard_v4", 21),
     ("worker_cleanup_intents_v4", "worker_cleanup_intent_xid_guard_v4", 23),
     ("worker_cleanup_intents_v4", "worker_cleanup_intent_xid_postguard_v4", 21),
+    ("worker_maintenance_operations", "recovery_disposition_guard_v4", 23),
+    ("worker_maintenance_operations", "recovery_disposition_postguard_v4", 21),
+    ("worker_maintenance_operations", "dlr_worker_maintenance_immutable", 27),
 )
 
 
@@ -183,6 +206,15 @@ def inspect_candidate_storage(
         if versions.scalars().all() != [SCHEMA_REVISION]:
             return _BLOCKED
         for table_name, trigger_name, trigger_type in _TABLES:
+            disposition = table_name == "worker_maintenance_operations"
+            immutable = trigger_name == "dlr_worker_maintenance_immutable"
+            expected_function = (
+                "dlr_v4_require_disposition" if disposition else "dlr_v4_require_writer_xid"
+            )
+            expected_source = _EXPECTED_DISPOSITION_PROSRC if disposition else _EXPECTED_PROSRC
+            if immutable:
+                expected_function = "dlr_worker_maintenance_immutable"
+                expected_source = _EXPECTED_AUDIT_PROSRC
             row = (
                 session.execute(
                     text(
@@ -245,11 +277,11 @@ def inspect_candidate_storage(
                 or row["tgnargs"] != 0
                 or row["no_trigger_condition"] is not True
                 or row["tgisinternal"] is not False
-                or row["user_trigger_count"] != 2
+                or row["user_trigger_count"] != (3 if disposition else 2)
                 or row["rule_count"] != 0
-                or row["proname"] != "dlr_v4_require_writer_xid"
+                or row["proname"] != expected_function
                 or row["function_schema"] != expected_schema
-                or row["prosrc"] != _EXPECTED_PROSRC
+                or row["prosrc"] != expected_source
                 or row["prosecdef"] is not False
                 or row["provolatile"] != "v"
                 or row["prokind"] != "f"

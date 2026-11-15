@@ -26,7 +26,12 @@ from dlr.control.services import worker_cleanup_intent_v4 as cleanup
 from dlr.control.services.attempt_result_finalize_v4 import ResultControlFence
 from dlr.control.services.worker_cleanup_v4 import V4CleanupReceipt
 from dlr.control.services.worker_lease_candidates_v4 import ProofAuthority
-from dlr.control.services.worker_recovery_v4 import RecoveryBinding, RecoveryLookup, Sha
+from dlr.control.services.worker_recovery_v4 import (
+    RecoveryBinding,
+    RecoveryLookup,
+    Sha,
+    operation_response,
+)
 
 router = APIRouter()
 
@@ -82,12 +87,8 @@ async def read_intent(request: Request, worker_id: int) -> JSONResponse:
                 or binding.attempt.original_instance_id == proposed_instance
             ):
                 raise ValueError
-            result = {
-                "request_id": str(operation.request_id),
-                "maintenance_version": operation.result_version,
-                "binding": binding.model_dump(mode="json"),
-                "host_evidence": "operator_attestation",
-            }
+            result = operation_response(operation)
+            result.pop("worker_id")
             fence.check()
             process.check_authority()
             session.rollback()

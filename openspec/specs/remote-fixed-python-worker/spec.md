@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定义 Wave 1-A 专用新部署及 W1-B 已提交结果受控恢复的单 Control、单固定 Worker、标准库 Python 远程运行合同。该能力不替代既有默认 v3 部署，不声明 Pool、HA、旧部署迁移或异常历史自动恢复。
+定义 Wave 1-A 专用新部署、W1-B 已提交结果受控恢复及 W1-C 未提交结果的显式终态处置的单 Control、单固定 Worker、标准库 Python 远程运行合同。该能力不替代既有默认 v3 部署，不声明 Pool、HA、旧部署迁移或异常历史自动恢复。
 
 ## Requirements
 
@@ -87,7 +87,7 @@ W1-B MUST 在业务放行前持久化版本化 prepared 检查点，冻结原 Di
 - **THEN** 保持部署阻断，证据摘要和 HTTP 参数不能代替真实核验，不通过换空卷继续
 
 ### Requirement: 恢复实例必须独立核验历史责任并可安全重入
-Worker MUST 独立核验其可观察的原锁/锚点、相同 boot/存储/身份、检查点和实际对象/挂载；新 namespace 观察不得覆盖旧绑定。宿主重启、复制卷、跨宿主接管和未知结果仍延期。
+Worker MUST 独立核验其可观察的原锁/锚点、相同 boot/存储/身份、检查点和实际对象/挂载；新 namespace 观察不得覆盖旧绑定。宿主重启、复制卷、跨宿主接管仍延期；未提交结果仅允许下述 W1-C 完整停止检查点与既有平台终态子集，其他未知责任仍延期。
 
 #### Scenario: 显式恢复具有完整资格的已提交结果
 - **WHEN** 当前有效凭据读回匹配管理员意图、旧实例及候选期限已过，并且原卷检查通过
@@ -100,3 +100,44 @@ Worker MUST 独立核验其可观察的原锁/锚点、相同 boot/存储/身份
 #### Scenario: 恢复完成后重新调度与旧消息确认
 - **WHEN** 物理清理、服务端结算、本地记录及实际管理 IO 已全部结束
 - **THEN** 不对旧内存句柄 release 或将旧额度加回新账；重新验证 envelope/preflight 后建立一次新预算，保持维护状态并等待显式 activate；新 channel 对重投消息取得权威 ACK_NOOP 后才 ACK 当前 tag，再执行新任务，原 Execution/Attempt/业务结果不重建或修改
+
+
+### Requirement: 未提交结果只能在明确平台终态下显式处置
+W1-C MUST 仅接受同宿主同 boot 原身份原卷、完整真实 prepared/stopped、匹配 staged result intent/MAC 且没有任何 result finalization 的责任；允许组合只有 Attempt=worker_lost 与 Execution=dead_letter/cancelled，或 Attempt=cancelled 与 Execution=cancelled。running/retry_wait MUST 先沿原 cancel/reconciler 收敛；新 Attempt/dispatch、缺失/冲突/部分 finalization 和无 stopped 继续拒绝。已提交结果只按 B 资格处理，不能以 C 绕过取消冲突。
+
+#### Scenario: 原策略允许 worker_lost 重试
+- **WHEN** 原 Attempt 失联后进入 retry_wait，管理员选择结清未知结果
+- **THEN** 原 cleanup 未结屏障继续阻止重试派发；先显式取消并读到允许终态，再登记 C，不增加原 attempt_count/dispatch 或隐式 Replay
+
+#### Scenario: 外部目标可能已产生效果
+- **WHEN** 管理员请求 C 处置
+- **THEN** 必须确认平台未确认业务结果、结清不重试也不回滚；原 status/output/error/ended_at、Attempt 状态/计数及独立 Hold 保持，未知结果原因可查询，清理不显示为业务成功
+
+### Requirement: 处置登记与提交观察必须独立冻结精确责任
+C MUST 显式使用 settle_stopped_uncommitted，绑定原 B binding、stopped 摘要、staged intent/MAC、预期终态、固定未知结果确认、request ID 和 expected version。登记 SHALL 按 Admission→Execution→Attempts→Slot→Worker→maintenance operation→result intent 锁序重读，原子保存唯一非零 disposition ID、当前完整事务号及封闭不可变快照；数据库约束/触发器和运行角色围栏防止绕过。默认 committed_result 保持 B 合同。
+
+#### Scenario: 管理员登记回执丢失
+- **WHEN** 操作者以相同 request ID、身份和完整参数重试
+- **THEN** 只读回同一 disposition/maintenance version，冲突拒绝；管理员 HTTP 成功不能替代 Worker 的独立提交观察
+
+#### Scenario: 本事务可见或旧权限观察
+- **WHEN** 处置仅在当前事务可见，或 xid/xmin/epoch、当前凭据/实例证明、原 Cleanup Token、两代 history、nonce/期限不匹配
+- **THEN** 不签发历史权限、不删除物理对象或释放责任；COMMIT 或回执未知不推断为回滚
+
+### Requirement: 证明与本地终结记录必须区分处置和结果
+历史观察 v2 MUST 签名绑定版本、domain 和 kind，committed_result 携真实 finalization ID，platform_terminal 携独立 disposition ID；互斥且不能填假结果 ID。C MUST 绑定集群/epoch、原/当前身份、Execution/Attempt/fence、operation、prepared/stopped 摘要、原 staged intent/MAC、冻结终态、候选/期限、nonce 和可空 cleanup completion。B v1 证明和 terminal v1 仍只表示已提交结果。
+
+#### Scenario: 交叉使用结果和处置
+- **WHEN** kind/版本缺失或冲突、跨责任、旧 nonce/期限，或将 disposition 当作 finalization
+- **THEN** 明确拒绝，不扩大历史业务权限或伪造业务结果
+
+#### Scenario: C 清理回执或 terminal 部分删除未知
+- **WHEN** 当前 generation 退出后新实例显式重入
+- **THEN** 每次 stage/finalize/observe 重验已提交处置和当前权限，读回同一 completion；terminal v2 保留 kind/disposition/completion、原检查点/两份预算和精确清单，沿原 unlink/fsync 算法继续，最后删除锚点，不重复结账或重跑业务
+
+### Requirement: C 升级与完成路径保留 B 的物理和预算边界
+升级 MUST drain、停写并保留数据库/原卷，部署匹配 Control/Worker 与前向迁移；完整 B prepared/stopped 可以核验使用，无完整 stopped 不回填。存在 C 处置/terminal v2 时 MUST 拒绝降级、旧备份覆盖和只理解 B 的二进制。恢复不新增结果正文 spool、runner 或外围平台；物理清理和实际 IO、本地清单全部结束后才建立一次新预算并等待显式 activate。
+
+#### Scenario: C 责任完整结清后继续工作
+- **WHEN** 物理对象、服务端 Slot/Lease、completion、本地记录及两份冻结占用已各自确认结束
+- **THEN** 新 channel 对旧消息仅按权威 ACK_NOOP 确认当前 tag，原业务键无恢复重执，后继新任务实际完成；安全阻断、同 VM 容器或 synthetic 检查点不能替代两个独立宿主的成功闭环

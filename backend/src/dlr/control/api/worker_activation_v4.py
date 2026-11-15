@@ -101,6 +101,30 @@ def maintenance_status(worker_id: int, session: DbSession, _principal: Admin) ->
     if worker is None or worker.identity_lifecycle != "reserved" or worker.protocol_version != 4:
         raise HTTPException(status_code=404, detail={"code": "worker_not_found"})
     unsettled = _unsettled_attempts(session, worker)
+    last_disposition = session.scalar(
+        select(WorkerMaintenanceOperation)
+        .where(
+            WorkerMaintenanceOperation.worker_id == worker_id,
+            WorkerMaintenanceOperation.recovery_disposition_id.is_not(None),
+        )
+        .order_by(WorkerMaintenanceOperation.result_version.desc())
+        .limit(1)
+    )
+    disposition = None
+    if last_disposition is not None:
+        snapshot = last_disposition.recovery_disposition
+        binding = last_disposition.recovery_binding
+        if snapshot is not None and binding is not None:
+            disposition = {
+                "operation_id": str(last_disposition.request_id),
+                "disposition_id": str(last_disposition.recovery_disposition_id),
+                "kind": snapshot["kind"],
+                "reason": snapshot["reason"],
+                "execution_id": binding["execution_id"],
+                "attempt_id": binding["attempt"]["attempt_id"],
+                "attempt_status": snapshot["attempt_status"],
+                "execution_status": snapshot["execution_status"],
+            }
     return {
         "worker_id": worker.id,
         "worker_identity_id": str(worker.identity_id),
@@ -115,6 +139,7 @@ def maintenance_status(worker_id: int, session: DbSession, _principal: Admin) ->
         "instance_lease_until": worker.instance_lease_until,
         "unsettled_attempts": unsettled,
         "blocked_reason": "worker_cleanup_unsettled" if unsettled else None,
+        "last_recovery_disposition": disposition,
     }
 
 

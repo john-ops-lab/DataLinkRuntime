@@ -4,7 +4,7 @@
 
 不支持第三方依赖、托管文件、内置包、业务凭据注入、其他语言、Webhook/事件/批次、旧身份迁移、异常后的自动恢复、Pool 或 HA。不能把业务凭据写入代码来绕过限制。#129 在阶段 PR 后保持开放。
 
-W1-B 新检查点与管理员显式恢复的增量合同、旧残留限制及宿主操作流程见 [Wave 1-B](remote-worker-wave1b.md)。以下故障阻断记录是 W1-A 的历史边界，不能当作 W1-B 恢复通过证据。
+W1-B 新检查点与管理员显式恢复的增量合同、旧残留限制及宿主操作流程见 [Wave 1-B](remote-worker-wave1b.md)。完整 stopped 后未提交结果的受控结清见 [Wave 1-C](remote-worker-wave1c.md)。以下故障阻断记录是 W1-A 的历史边界，不能当作 W1-B 恢复通过证据。
 
 ## 候选代码与依赖
 
@@ -93,7 +93,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO dlr_wave1
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO dlr_wave1a_runtime;
 REVOKE INSERT, UPDATE, DELETE ON alembic_version FROM dlr_wave1a_runtime;
 REVOKE DELETE ON worker_lease_candidates_v4, attempt_lease_candidates_v4,
-  attempt_result_intents_v4, worker_cleanup_intents_v4 FROM dlr_wave1a_runtime;
+  attempt_result_intents_v4, worker_cleanup_intents_v4,
+  worker_maintenance_operations FROM dlr_wave1a_runtime;
 ```
 
 运行角色不能是数据库、schema、表或受保护函数的所有者，不能继承管理员权限、创建 schema 或改变触发器。迁移账号仅供部署操作使用；`DLR_WORKER_V4_DATABASE_ADMIN_ROLES` 明确列出可信管理员角色，初始化完毕后退出管理员数据库连接。签发和运行围栏会拒绝其他可连接的旧登录角色、旧会话及 prepared transaction；不能通过缩小查询或放宽权限绕过。

@@ -7,15 +7,17 @@ not a remotely verified physical-stop proof. Worker-local checks are separate.
 from __future__ import annotations
 
 import hmac
-from typing import Annotated
-from uuid import UUID
+from typing import Annotated, Literal
+from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
-from sqlalchemy import select
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+from sqlalchemy import BigInteger, literal_column, select, text
 from sqlalchemy.orm import Session
 
 from dlr.control.models import (
+    AdapterExecutionSlot,
     AttemptResultIntentV4,
+    Execution,
     ExecutionAttempt,
     Worker,
     WorkerLeaseCandidateV4,
@@ -24,8 +26,13 @@ from dlr.control.models import (
 from dlr.control.security import Principal
 from dlr.control.services import worker_availability
 from dlr.control.services.attempt import TERMINAL_ATTEMPT_STATUSES
+from dlr.control.services.execution_cancellation import (
+    lock_execution_attempts,
+    lock_execution_in_admission_order,
+)
 from dlr.control.services.worker_cleanup_v4 import V4HistoricalAttempt
 from dlr.control.services.worker_identity_reservation import _actor
+from dlr.control.services.worker_lease_candidates_v4 import _committed_xid_matches, _xid
 
 Sha = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{64}$")]
 
@@ -49,12 +56,41 @@ class RecoveryBinding(BaseModel):
         return value
 
 
+class StoppedSettlement(BaseModel):
+    """Explicit preservation of unknown business outcome, never a result."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    stopped_sha256: Sha
+    result_intent_id: UUID
+    body_mac: Sha
+    attempt_status: Literal["worker_lost", "cancelled"]
+    execution_status: Literal["dead_letter", "cancelled"]
+    acknowledgement: Literal["result_uncommitted_outcome_unknown"]
+
+    @model_validator(mode="after")
+    def allowed_terminal(self) -> StoppedSettlement:
+        if self.result_intent_id.int == 0 or (
+            self.attempt_status == "cancelled" and self.execution_status != "cancelled"
+        ):
+            raise ValueError("recovery terminal combination invalid")
+        return self
+
+
 class RecoveryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     request_id: UUID
     expected_version: StrictInt = Field(ge=1, lt=2**63 - 1)
     binding: RecoveryBinding
+    mode: Literal["committed_result", "settle_stopped_uncommitted"] = "committed_result"
+    settlement: StoppedSettlement | None = None
+
+    @model_validator(mode="after")
+    def explicit_mode(self) -> RecoveryRequest:
+        if (self.mode == "settle_stopped_uncommitted") != (self.settlement is not None):
+            raise ValueError("recovery mode invalid")
+        return self
 
 
 class RecoveryLookup(BaseModel):
@@ -64,6 +100,19 @@ class RecoveryLookup(BaseModel):
     binding: RecoveryBinding
     result_intent_id: UUID
     body_mac: Sha
+    mode: Literal["committed_result", "settle_stopped_uncommitted"] = "committed_result"
+    disposition_id: UUID | None = None
+    settlement: StoppedSettlement | None = None
+
+    @model_validator(mode="after")
+    def explicit_mode(self) -> RecoveryLookup:
+        if (self.mode == "settle_stopped_uncommitted") != (self.disposition_id is not None):
+            raise ValueError("recovery mode invalid")
+        if self.disposition_id is not None and self.disposition_id.int == 0:
+            raise ValueError("recovery disposition invalid")
+        if (self.mode == "settle_stopped_uncommitted") != (self.settlement is not None):
+            raise ValueError("recovery settlement invalid")
+        return self
 
     @field_validator("operation_id", "result_intent_id")
     @classmethod
@@ -77,6 +126,120 @@ class RecoveryUnavailable(Exception):
     pass
 
 
+def operation_response(row: WorkerMaintenanceOperation) -> dict[str, object]:
+    response: dict[str, object] = {
+        "request_id": str(row.request_id),
+        "worker_id": row.worker_id,
+        "maintenance_version": row.result_version,
+        "binding": row.recovery_binding,
+        "host_evidence": "operator_attestation",
+    }
+    if row.recovery_disposition is not None:
+        response.update(
+            mode="settle_stopped_uncommitted",
+            disposition_id=str(row.recovery_disposition_id),
+            settlement=StoppedSettlement.model_validate(
+                {key: row.recovery_disposition[key] for key in StoppedSettlement.model_fields}
+            ).model_dump(mode="json"),
+        )
+    return response
+
+
+def _lock_business(
+    session: Session, execution_id: int
+) -> tuple[Execution, tuple[ExecutionAttempt, ...], AdapterExecutionSlot]:
+    # Bound waits without turning a timeout into evidence of absence.
+    session.execute(text("SET LOCAL lock_timeout = '3s'"))
+    execution = lock_execution_in_admission_order(session, execution_id)
+    if execution is None:
+        raise RecoveryUnavailable
+    attempts = lock_execution_attempts(session, execution_id)
+    slot = session.get(
+        AdapterExecutionSlot,
+        (execution.adapter_id, 0),
+        with_for_update=True,
+        populate_existing=True,
+    )
+    if slot is None:
+        raise RecoveryUnavailable
+    return execution, attempts, slot
+
+
+def _result_row(session: Session, attempt_id: int) -> AttemptResultIntentV4:
+    row = session.scalar(
+        select(AttemptResultIntentV4)
+        .where(AttemptResultIntentV4.attempt_id == attempt_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
+        raise RecoveryUnavailable
+    return row
+
+
+def _uncommitted_result(
+    row: AttemptResultIntentV4,
+    binding: RecoveryBinding,
+    worker_id: int,
+    intent_id: UUID,
+    body_mac: str,
+) -> None:
+    ref = binding.attempt
+    if (
+        row.worker_id != worker_id
+        or row.worker_identity_id != ref.worker_identity_id
+        or row.instance_id != ref.original_instance_id
+        or row.instance_generation != ref.original_instance_generation
+        or row.fencing_token != ref.fencing_token
+        or row.intent_id != intent_id
+        or not hmac.compare_digest(row.body_mac, bytes.fromhex(body_mac))
+        or any(
+            value is not None
+            for value in (
+                row.finalization_id,
+                row.finalization_xid,
+                row.final_attempt_status,
+                row.final_execution_status,
+            )
+        )
+    ):
+        raise RecoveryUnavailable
+
+
+def _terminal_responsibility(
+    execution: Execution,
+    attempts: tuple[ExecutionAttempt, ...],
+    slot: AdapterExecutionSlot,
+    binding: RecoveryBinding,
+    attempt_status: str,
+    execution_status: str,
+    *,
+    completed: bool,
+) -> ExecutionAttempt:
+    ref = binding.attempt
+    if not attempts:
+        raise RecoveryUnavailable
+    attempt = attempts[-1]
+    if (
+        attempt.id != ref.attempt_id
+        or attempt.attempt_no != execution.attempt_count
+        or any(a.id != attempt.id and a.cleanup_settled_at is None for a in attempts)
+        or (attempt.status, execution.status)
+        not in {
+            ("worker_lost", "dead_letter"),
+            ("worker_lost", "cancelled"),
+            ("cancelled", "cancelled"),
+        }
+        or (attempt.status, execution.status) != (attempt_status, execution_status)
+        or (execution.status == "dead_letter" and execution.cancel_requested)
+        or slot.fencing_token != ref.fencing_token
+        or (not completed and slot.active_attempt_id != attempt.id)
+        or (completed and slot.active_attempt_id is not None)
+    ):
+        raise RecoveryUnavailable
+    return attempt
+
+
 def request_recovery(
     session: Session, worker_id: int, payload: RecoveryRequest, principal: Principal
 ) -> dict[str, object]:
@@ -84,12 +247,19 @@ def request_recovery(
     if type(worker_id) is not int or not 0 < worker_id < 2**63 or payload.request_id.int == 0:
         raise RecoveryUnavailable
     actor_kind, actor_id = _actor(principal)
+    execution, attempts, slot = _lock_business(session, payload.binding.execution_id)
     worker = session.get(Worker, worker_id, with_for_update=True, populate_existing=True)
     if worker is None or worker.identity_lifecycle != "reserved" or worker.protocol_version != 4:
         raise RecoveryUnavailable
     binding = payload.binding.model_dump(mode="json")
-    existing = session.get(WorkerMaintenanceOperation, payload.request_id)
+    existing = session.get(
+        WorkerMaintenanceOperation,
+        payload.request_id,
+        with_for_update=True,
+        populate_existing=True,
+    )
     if existing is not None:
+        saved = existing.recovery_disposition
         if (
             existing.worker_id != worker_id
             or existing.action != "reconcile"
@@ -97,15 +267,20 @@ def request_recovery(
             or existing.actor_kind != actor_kind
             or existing.actor_id != actor_id
             or existing.recovery_binding != binding
+            or (saved is None) != (payload.mode == "committed_result")
+            or (
+                payload.settlement is not None
+                and (
+                    saved is None
+                    or any(
+                        saved.get(key) != value
+                        for key, value in payload.settlement.model_dump(mode="json").items()
+                    )
+                )
+            )
         ):
             raise RecoveryUnavailable
-        return {
-            "request_id": str(existing.request_id),
-            "worker_id": worker_id,
-            "maintenance_version": existing.result_version,
-            "binding": binding,
-            "host_evidence": "operator_attestation",
-        }
+        return operation_response(existing)
     ref = payload.binding.attempt
     if (
         worker.maintenance_version != payload.expected_version
@@ -116,7 +291,12 @@ def request_recovery(
     ):
         raise RecoveryUnavailable
     now = worker_availability.current_time(session)
-    candidate = session.get(WorkerLeaseCandidateV4, worker_id, populate_existing=True)
+    candidate = session.get(
+        WorkerLeaseCandidateV4,
+        worker_id,
+        with_for_update=True,
+        populate_existing=True,
+    )
     if (
         worker.instance_lease_until is None
         or worker.instance_lease_until > now
@@ -126,10 +306,9 @@ def request_recovery(
         or max(candidate.nominal_until, candidate.guard_until, candidate.proof_before) > now
     ):
         raise RecoveryUnavailable
-    attempt = session.get(ExecutionAttempt, ref.attempt_id, populate_existing=True)
+    attempt = next((a for a in attempts if a.id == ref.attempt_id), None)
     if (
         attempt is None
-        or attempt.execution_id != payload.binding.execution_id
         or attempt.worker_id != worker_id
         or attempt.worker_identity_id != worker.identity_id
         or attempt.worker_instance_id != ref.original_instance_id
@@ -138,29 +317,53 @@ def request_recovery(
         or attempt.status not in TERMINAL_ATTEMPT_STATUSES
     ):
         raise RecoveryUnavailable
+    operation = WorkerMaintenanceOperation(
+        request_id=payload.request_id,
+        worker_id=worker_id,
+        expected_version=payload.expected_version,
+        result_version=worker.maintenance_version + 1,
+        action="reconcile",
+        actor_kind=actor_kind,
+        actor_id=actor_id,
+        reason=None,
+        recovery_binding=binding,
+    )
+    # The new audit is inserted once, with its final immutable snapshot.
+    # Existing request IDs were locked above; result is the final lock suffix.
+    if payload.settlement is not None:
+        settlement = payload.settlement
+        _terminal_responsibility(
+            execution,
+            attempts,
+            slot,
+            payload.binding,
+            settlement.attempt_status,
+            settlement.execution_status,
+            completed=False,
+        )
+        if attempt.cleanup_settled_at is not None:
+            raise RecoveryUnavailable
+        _uncommitted_result(
+            _result_row(session, ref.attempt_id),
+            payload.binding,
+            worker_id,
+            settlement.result_intent_id,
+            settlement.body_mac,
+        )
+        operation.recovery_disposition_id = uuid4()
+        operation.recovery_disposition_xid = _xid(session)
+        operation.recovery_disposition = {
+            **settlement.model_dump(mode="json"),
+            "kind": "platform_terminal",
+            "reason": "result_uncommitted_outcome_unknown",
+            "dispatch_generation": execution.dispatch_generation,
+            "attempt_no": attempt.attempt_no,
+        }
+    session.add(operation)
     worker.maintenance_version += 1
     worker.capacity_state = "reconciling"
-    session.add(
-        WorkerMaintenanceOperation(
-            request_id=payload.request_id,
-            worker_id=worker_id,
-            expected_version=payload.expected_version,
-            result_version=worker.maintenance_version,
-            action="reconcile",
-            actor_kind=actor_kind,
-            actor_id=actor_id,
-            reason=None,
-            recovery_binding=binding,
-        )
-    )
     session.flush()
-    return {
-        "request_id": str(payload.request_id),
-        "worker_id": worker_id,
-        "maintenance_version": worker.maintenance_version,
-        "binding": binding,
-        "host_evidence": "operator_attestation",
-    }
+    return operation_response(operation)
 
 
 def require_operation(
@@ -174,7 +377,9 @@ def require_operation(
 ) -> WorkerMaintenanceOperation:
     """Authenticate current proof separately before this maintenance lookup."""
     worker = session.get(Worker, worker_id, populate_existing=True)
-    row = session.get(WorkerMaintenanceOperation, operation_id)
+    row = session.get(
+        WorkerMaintenanceOperation, operation_id, with_for_update=True, populate_existing=True
+    )
     if (
         worker is None
         or row is None
@@ -200,7 +405,7 @@ def require_committed_result(
     """Use only after the historical Attempt/current-proof locks are held."""
     from dlr.control.services.attempt_result_intent_v4 import _already_committed
 
-    require_operation(
+    operation = require_operation(
         session,
         worker_id=worker_id,
         operation_id=lookup.operation_id,
@@ -208,6 +413,8 @@ def require_committed_result(
         instance_id=instance_id,
         generation=generation,
     )
+    if lookup.mode != "committed_result" or operation.recovery_disposition is not None:
+        raise RecoveryUnavailable
     ref = lookup.binding.attempt
     row = session.scalar(
         select(AttemptResultIntentV4)
@@ -237,3 +444,107 @@ def require_committed_result(
         raise RecoveryUnavailable
     _already_committed(session, row)
     return row
+
+
+def require_disposition(
+    session: Session,
+    lookup: RecoveryLookup,
+    *,
+    worker_id: int,
+    instance_id: UUID,
+    generation: int,
+) -> tuple[WorkerMaintenanceOperation, AttemptResultIntentV4]:
+    """Only a later transaction may authorize the immutable terminal disposition."""
+    operation = require_operation(
+        session,
+        worker_id=worker_id,
+        operation_id=lookup.operation_id,
+        binding=lookup.binding,
+        instance_id=instance_id,
+        generation=generation,
+    )
+    snapshot = operation.recovery_disposition
+    if (
+        lookup.mode != "settle_stopped_uncommitted"
+        or snapshot is None
+        or operation.recovery_disposition_id != lookup.disposition_id
+        or operation.recovery_disposition_xid is None
+    ):
+        raise RecoveryUnavailable
+    tuple_xid = session.scalar(
+        select(
+            literal_column("worker_maintenance_operations.xmin::text::bigint", type_=BigInteger())
+        )
+        .select_from(WorkerMaintenanceOperation)
+        .where(WorkerMaintenanceOperation.request_id == operation.request_id)
+    )
+    if not _committed_xid_matches(_xid(session), operation.recovery_disposition_xid, tuple_xid):
+        raise RecoveryUnavailable
+    settlement = StoppedSettlement.model_validate(
+        {key: snapshot[key] for key in StoppedSettlement.model_fields}
+    )
+    if (
+        settlement != lookup.settlement
+        or settlement.result_intent_id != lookup.result_intent_id
+        or settlement.body_mac != lookup.body_mac
+    ):
+        raise RecoveryUnavailable
+    execution = session.get(Execution, lookup.binding.execution_id, populate_existing=True)
+    if execution is None or execution.dispatch_generation != snapshot["dispatch_generation"]:
+        raise RecoveryUnavailable
+    attempts = tuple(
+        session.scalars(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.execution_id == execution.id)
+            .order_by(ExecutionAttempt.id)
+            .execution_options(populate_existing=True)
+        )
+    )
+    slot = session.get(AdapterExecutionSlot, (execution.adapter_id, 0), populate_existing=True)
+    if slot is None or not attempts:
+        raise RecoveryUnavailable
+    attempt = _terminal_responsibility(
+        execution,
+        attempts,
+        slot,
+        lookup.binding,
+        settlement.attempt_status,
+        settlement.execution_status,
+        completed=attempts[-1].cleanup_settled_at is not None,
+    )
+    if attempt.attempt_no != snapshot["attempt_no"]:
+        raise RecoveryUnavailable
+    result = _result_row(session, attempt.id)
+    _uncommitted_result(
+        result,
+        lookup.binding,
+        worker_id,
+        lookup.result_intent_id,
+        lookup.body_mac,
+    )
+    return operation, result
+
+
+def require_recovery_fact(
+    session: Session,
+    lookup: RecoveryLookup,
+    *,
+    worker_id: int,
+    instance_id: UUID,
+    generation: int,
+) -> tuple[WorkerMaintenanceOperation | None, AttemptResultIntentV4]:
+    if lookup.mode == "settle_stopped_uncommitted":
+        return require_disposition(
+            session,
+            lookup,
+            worker_id=worker_id,
+            instance_id=instance_id,
+            generation=generation,
+        )
+    return None, require_committed_result(
+        session,
+        lookup,
+        worker_id=worker_id,
+        instance_id=instance_id,
+        generation=generation,
+    )
