@@ -189,3 +189,15 @@ def test_unknown_record_is_retained_and_never_replaced(tmp_path, damage):
 def test_synthetic_owners_cannot_manufacture_stop_checkpoint():
     with pytest.raises(ValueError):
         checkpoint.persist_stopped(object(), object(), {}, "result.json")
+
+
+def test_new_pid_one_can_have_reused_namespace_inode_numbers():
+    original = _prepared()["process"]
+    current = copy.deepcopy(original)
+    current["start_ticks"] += 1
+    assert checkpoint.fresh_process(original, current)
+    assert not checkpoint.fresh_process(original, original)
+    current["start_ticks"] = original["start_ticks"] - 1
+    assert not checkpoint.fresh_process(original, current)
+    current["start_ticks"] = True
+    assert not checkpoint.fresh_process(original, current)

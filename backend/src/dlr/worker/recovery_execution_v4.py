@@ -195,14 +195,7 @@ def scan(
                     or record["prepared_sha256"] != checkpoint.digest(prepared)
                     or not checkpoint._positive(record["generation"])
                     or record["generation"] <= prepared["instance_generation"]
-                    or not isinstance(record["process"], dict)
-                    or set(record["process"]) != {"start_ticks", "pid_namespace", "mount_namespace"}
-                    or not checkpoint._positive(record["process"]["start_ticks"])
-                    or not all(
-                        checkpoint._binding(record["process"][key])
-                        and record["process"][key] != prepared["process"][key]
-                        for key in ("pid_namespace", "mount_namespace")
-                    )
+                    or not checkpoint.fresh_process(prepared["process"], record["process"])
                 ):
                     raise ValueError("recovery new instance observation conflict")
             else:

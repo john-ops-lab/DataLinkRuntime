@@ -12,6 +12,8 @@
 
 Worker 独立检查其能观察的事实：原根锁和锚点、boot/存储/身份、完整冻结记录、当前证明、原对象及新 namespace 中的挂载。旧 cgroup 被运行时移除的事实须由宿主证据确认，不能用新容器看不到旧路径代替。旧 PID/mount namespace 绑定保持原值，新实例观察另行记录。
 
+Linux 可在旧 namespace 释放后复用其 inode 数字，因此不以数字必须不同判断新实例。Worker 核验同 boot 下 PID 1 的启动 ticks 严格晚于原进程，同时保留两次真实 namespace 观察；完整旧容器退出、当前 Docker/cgroup 启动归属、原卷锁和独占前提仍分别核对。内核依据见 [namespace 分配/释放入口](https://github.com/torvalds/linux/blob/v6.12/include/linux/proc_ns.h) 与 [可回收的 inode 分配器](https://github.com/torvalds/linux/blob/v6.12/fs/proc/generic.c)。
+
 ## 事前建档
 
 沿用 [W1-A 部署准备](remote-worker-wave1a.md) 的固定 Compose project/service 和私有 env；镜像固定版本。每次正常启动、故障前，保存以下原生命令的选择字段输出到私有部署记录，绑定 Worker ID/identity、instance/generation 及本次检查点。不要导出完整 `docker inspect` 的 Env。
@@ -31,7 +33,7 @@ cat "/proc/$OLD_HOST_PID/cgroup"
 readlink "/proc/$OLD_HOST_PID/ns/pid" "/proc/$OLD_HOST_PID/ns/mnt"
 docker volume inspect "$RUNTIME_VOLUME"
 stat -Lc '%d %i %a %u' "$JOURNAL_ANCHOR"
-findmnt -R "$JOURNAL_ANCHOR"
+findmnt -T "$JOURNAL_ANCHOR"
 ```
 
 `OLD_HOST_PID` 来自该完整容器的 `State.Pid`，须保存其启动身份；由实际 cgroup 映射确认 Docker 容器根与 Agent/Attempt 子树，保留对应设备/inode和路径。不能用相同 Compose 名称或复用的 PID 代替原身份。卷名/driver/mountpoint、bind 原路径和挂载来源一并保存。只有本部署唯一 Worker writer 可挂载这些目录；业务身份无 journal/root 写权限。

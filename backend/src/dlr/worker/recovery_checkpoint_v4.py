@@ -98,6 +98,31 @@ def _binding(value: object) -> bool:
     )
 
 
+def valid_process(value: object) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and set(value) == {"start_ticks", "pid_namespace", "mount_namespace"}
+        and _positive(value["start_ticks"])
+        and _binding(value["pid_namespace"])
+        and _binding(value["mount_namespace"])
+    )
+
+
+def fresh_process(original: object, current: object) -> bool:
+    """Same-boot PID 1 must be newer; namespace inode numbers may be reused.
+
+    This is only a local observation. The original container's complete exit,
+    exclusive storage and no exported namespace/FD remain operator premises.
+    """
+    return bool(
+        valid_process(original)
+        and valid_process(current)
+        and isinstance(original, dict)
+        and isinstance(current, dict)
+        and current["start_ticks"] > original["start_ticks"]
+    )
+
+
 def _refs(value: object) -> bool:
     return (
         isinstance(value, dict)
@@ -172,13 +197,7 @@ def valid_prepared(value: object) -> bool:
     ):
         return False
     process = value["process"]
-    if (
-        not isinstance(process, dict)
-        or set(process) != {"start_ticks", "pid_namespace", "mount_namespace"}
-        or not _positive(process["start_ticks"])
-        or not _binding(process["pid_namespace"])
-        or not _binding(process["mount_namespace"])
-    ):
+    if not valid_process(process):
         return False
     try:
         dispatch = deserialize_dispatch_message(value["dispatch"])

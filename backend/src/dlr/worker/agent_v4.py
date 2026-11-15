@@ -180,10 +180,8 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     identity_id=config.worker_identity_id,
                     boot_id=sandbox_config.namespace_identity.boot_id,
                 )
-                if any(
-                    state.prepared["process"][key]
-                    == recovery_execution_v4.checkpoint.process_identity()[key]
-                    for key in ("pid_namespace", "mount_namespace")
+                if not recovery_execution_v4.checkpoint.fresh_process(
+                    state.prepared["process"], recovery_execution_v4.checkpoint.process_identity()
                 ):
                     return "recovery_required"
                 # Management stays inside this newly verified hard envelope;
