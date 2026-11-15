@@ -112,6 +112,33 @@ it.each([403, 409])("handles a %s rejection without a new operation", async (sta
   expect(api.maintainWorker).toHaveBeenCalledTimes(1);
 });
 
+it("keeps the original unknown intent after a retry 409 and missing receipt, then observes late commit", async () => {
+  const snapshot = makeMaintenanceSnapshot({ scheduling_state: "disabled" });
+  const post = vi.spyOn(api, "maintainWorker")
+    .mockRejectedValueOnce(new Error("reply timeout"))
+    .mockRejectedValueOnce(new ApiError(409, "worker_activation_unavailable", "Temporarily offline"));
+  const get = vi.spyOn(api, "getWorkerMaintenanceOperation").mockRejectedValue(new ApiError(404, "not_found", "Not committed yet"));
+  render(<WorkerMaintenanceActions worker={makeObservedWorker(snapshot)} onRead={async () => snapshot} onRefresh={async () => undefined} />);
+  const unknown = "提交结果尚未确认。先查询本次回执，不把断线当作失败或回滚。";
+  await confirm("激活节点");
+  await screen.findByText(unknown);
+  const saved = sessionStorage.getItem(WORKER_MAINTENANCE_INTENT_KEY);
+  const tuple = post.mock.calls[0][2];
+  await confirm("重试同一请求");
+  await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect((screen.getByRole("button", { name: "查询本次回执" }) as HTMLButtonElement).disabled).toBe(false));
+  expect(screen.getByText(unknown)).toBeTruthy();
+  expect(sessionStorage.getItem(WORKER_MAINTENANCE_INTENT_KEY)).toBe(saved);
+  expect((screen.getByRole("button", { name: "激活节点" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(post.mock.calls[1][2]).toEqual(tuple);
+  // The first dispatch can still commit after the retry's negative snapshot.
+  get.mockResolvedValue(receipt("activate", tuple.request_id, "active"));
+  fireEvent.click(screen.getByRole("button", { name: "查询本次回执" }));
+  await screen.findByText("本次操作已在独立查询中确认提交。");
+  expect(post).toHaveBeenCalledTimes(2);
+  expect(sessionStorage.getItem(WORKER_MAINTENANCE_INTENT_KEY)).toBeNull();
+});
+
 it("blocks writes when storage fails", async () => {
   const post = vi.spyOn(api, "maintainWorker").mockResolvedValue({});
   const snapshot = makeMaintenanceSnapshot({ scheduling_state: "disabled" });

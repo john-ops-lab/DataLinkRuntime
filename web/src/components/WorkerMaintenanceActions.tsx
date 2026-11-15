@@ -87,7 +87,7 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
     }
   }, []);
 
-  const lookup = useCallback(async (intent: WorkerMaintenanceIntent, current: number, rejected = false) => {
+  const lookup = useCallback(async (intent: WorkerMaintenanceIntent, current: number, firstDispatchRejected = false) => {
     let observed: WorkerMaintenanceReceipt | null = null;
     try {
       const raw = await call((signal) => api.getWorkerMaintenanceOperation(intent.worker_id, intent.request_id, signal));
@@ -100,7 +100,7 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
         setNotice("permission");
         return;
       }
-      if (rejected && error instanceof ApiError && error.status === 404) {
+      if (firstDispatchRejected && error instanceof ApiError && error.status === 404) {
         clearWorkerMaintenanceIntent(intent);
         setPending(null);
         setNotice("conflict");
@@ -249,7 +249,9 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
       if (generation.current !== current) return;
       setConfirmation(null);
       setNotice("unknown");
-      await lookup(intent, current, rejected);
+      // A retry's 409 only rejects this dispatch; it cannot fence an earlier
+      // unknown request that may still commit after this 404 snapshot.
+      await lookup(intent, current, rejected && !retry && !continuingDrain);
     } catch { if (generation.current === current) setNotice("unavailable"); }
     finally { if (generation.current === current) { busyRef.current = false; setBusy(false); } }
   };
