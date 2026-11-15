@@ -5,11 +5,15 @@ deployment. Expiry is synthetic DB setup; real stopped-container acceptance is
 separate and must use actual new-version local checkpoints.
 """
 
+import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import timedelta
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy import func, select
 
 from dlr.common.recovery_observation_v4 import verify_observation
@@ -23,6 +27,8 @@ from dlr.control.models import (
     WorkerLeaseCandidateV4,
 )
 from dlr.worker.lease_session_v4 import WorkerLeaseSession
+from dlr.worker.recovery_checkpoint_v4 import digest
+from dlr.worker.recovery_execution_v4 import RecoveryExchange, RecoveryState
 
 
 def _expire(factory, worker_id):
@@ -85,6 +91,14 @@ def assert_controlled_recovery(
             result.finalization_id,
         )
         version = worker.maintenance_version
+    # Protocol metadata only: this does not qualify any physical checkpoint.
+    prepared = {
+        "execution_id": task.execution_id,
+        "attempt_id": task.attempt_id,
+        "fencing_token": task.fencing_token,
+        "instance_id": str(original_id),
+        "instance_generation": original_gen,
+    }
     binding = {
         "execution_id": task.execution_id,
         "attempt": {
@@ -98,7 +112,7 @@ def assert_controlled_recovery(
         "deployment_record_id": str(uuid4()),
         "evidence_sha256": "2" * 64,
         "boot_id": str(uuid4()),
-        "prepared_sha256": "3" * 64,
+        "prepared_sha256": digest(prepared),
     }
     request = {"request_id": str(uuid4()), "expected_version": version, "binding": binding}
     admin_endpoint = f"/api/workers/{worker_id}/v4/recovery-intent"
@@ -164,6 +178,8 @@ def assert_controlled_recovery(
             "X-DLR-Worker-Lease-Proof": lease._proof,
         }
 
+    observations = []
+
     def observe(lease, body=lookup, extra=None, status=200):
         nonce = uuid4()
         response = client.post(
@@ -185,9 +201,44 @@ def assert_controlled_recovery(
         assert proof.operation_id == UUID(request["request_id"])
         assert proof.prepared_sha256.hex() == binding["prepared_sha256"]
         assert proof.finalization_id == finalization and proof.body_mac.hex() == mac
+        observations.append((response.json()["recovery_proof"], lease._proof))
         return proof
 
     assert observe(lease).completion_id is None
+    # A genuine API signature for a different nonce must not pass the client.
+    state = RecoveryState(
+        prepared,
+        {"intent_id": intent_id, "body_mac": mac},
+        {"cleanup_token": task.cleanup_token},
+        None,
+    )
+    exchange = RecoveryExchange(lease, state, lookup, threading.Event())
+    replay = json.dumps({"recovery_proof": observations[-1][0]}).encode()
+    with (
+        patch.object(exchange, "_call", return_value=(replay, lease._now(), lease._now())),
+        pytest.raises(ValueError, match="recovery observation conflict"),
+    ):
+        exchange.observe()
+    # A matching finalization written in this transaction is not committed.
+    from dlr.control.services.attempt_result_intent_v4 import ResultIntentError
+    from dlr.control.services.worker_recovery_v4 import (
+        RecoveryLookup,
+        require_committed_result,
+    )
+
+    with factory() as session:
+        marker = session.get(AttemptResultIntentV4, task.attempt_id)
+        marker.finalization_xid = marker.writer_xid = session.scalar(select(func.txid_current()))
+        session.flush()
+        with pytest.raises(ResultIntentError):
+            require_committed_result(
+                session,
+                RecoveryLookup.model_validate(lookup),
+                worker_id=worker_id,
+                instance_id=lease._instance_id,
+                generation=lease._claims.generation,
+            )
+        session.rollback()
     observe(lease, extra={"X-DLR-Cleanup-Token": "invalid"}, status=503)
     for key, value in (
         ("body_mac", "0" * 64),
@@ -238,6 +289,10 @@ def assert_controlled_recovery(
     # Heartbeat revision and a second new generation read the same committed
     # completion. Staging another intent cannot reset it.
     lease.heartbeat()
+    assert (
+        verify_observation(observations[-1][0], public_key=public_key, instance_token=lease._proof)
+        is None
+    )
     assert observe(lease).completion_id == first.completion_id
     denied = client.post(
         base + "/cleanup/stage",

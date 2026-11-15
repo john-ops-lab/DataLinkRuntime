@@ -747,6 +747,10 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
     api_client, test_engine, session_factory, tmp_path, monkeypatch, controlled_recovery
 ):
     """Exercise the actual API against a restricted PostgreSQL login."""
+    if controlled_recovery and os.environ.get("DLR_TEST_CLAIM_PROCESS") == "1":
+        pytest.skip(
+            "controlled recovery uses the restricted-role API fixture, not Claim process mode"
+        )
     monkeypatch.setattr(settings, "worker_identity_reservation_enabled", True)
     monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
     runtime_role = "dlr_w1_" + uuid4().hex[:12]
