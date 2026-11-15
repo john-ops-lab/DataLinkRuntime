@@ -76,7 +76,9 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
     catch { /* Keep the separately observed commit; catalog reports read errors. */ }
   }, []);
 
-  const call = useCallback(async <T,>(send: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+  const call = useCallback(async <T,>(
+    send: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> => {
     const active = new AbortController();
     controller.current = active;
     const timeout = setTimeout(() => active.abort(), WORKER_MAINTENANCE_TIMEOUT_MS);
