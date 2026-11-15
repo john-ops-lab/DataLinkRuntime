@@ -95,7 +95,7 @@ docker compose -p "$WORKER_PROJECT" --env-file "$WORKER_ENV" \
 
 保持同一 project、原挂载、原运行凭据及版本匹配镜像。不要同时启动第二个服务或使用 `compose run` 增加 writer。下次正常停启清除该环境设置；不为清除设置提前重建正在运行的容器。
 
-Agent 在注册前只读扫描原卷，并用当前合法运行凭据读回这条管理员意图；不接受文件中的布尔“已停止”绕过。通过后注册 **新** reconciling instance/generation。恢复期间没有 consumer、ready 或业务执行。凭据撤销/过期仍拒绝，不能使用旧 Claim Token/证明续活。
+Agent 在注册前只读扫描原卷，并用当前合法运行凭据读回这条管理员意图；不接受文件中的布尔“已停止”绕过。显式恢复模式下空目录也拒绝，不能据此将空卷认作恢复完成；已确认完成的后续正常启动须清除恢复参数。通过后注册 **新** reconciling instance/generation。恢复期间没有 consumer、ready 或业务执行。凭据撤销/过期仍拒绝，不能使用旧 Claim Token/证明续活。
 
 ## 清理、结算和重新激活
 
@@ -104,6 +104,8 @@ Agent 在注册前只读扫描原卷，并用当前合法运行凭据读回这�
 缺失对象只在匹配的持久删除意图下重入；同名替换、额外目录、嵌套挂载、损坏或未知记录均保留责任。已提交 completion 只读返回，不能重新 stage 覆盖。提交或回执未知先观察稳定标记，再决定是否继续；不按 HTTP 失败推断回滚。结果/output/error/ended_at 和原 Attempt 保持不变。
 
 两份原冻结占用一直保留在受保护记录中。新进程不调用旧内存句柄的 release，也不把旧额度加回新账；清理/网络实际占用结束、全部记录归零后，才重新验证实际 envelope/preflight，并建立一次新预算。正常同进程路径仍只释放原 receive/task 两个句柄各一次。阻塞的 IO 不因超时而释放资源或并发重试。
+
+恢复 proof HTTP 使用既有有限响应/整次调用截止和 pidfd 收割路径，父子进程实际受整个 Worker 容器的 CPU/内存/PID 硬限及零 swap 约束。这条 proof 路径未单独设置地址空间上限；W1-A 结果上传子进程的 128 MiB 限制不能套用于此。记录实际 cgroup/进程限额，不能以响应字节数或一次峰值代替内存上界。
 
 恢复完成后仍保持原 draining/disabled 管理状态。必要时重复原 drain request，使未结责任归零的 Worker 变为 disabled；读回当前 version，再以新 request ID 显式 activate。新 channel 对旧消息取得服务端权威 `ACK_NOOP` 后，才 ACK 当前 delivery tag；不保存或复用旧 tag。ACK 到达未知时允许重投，再次权威判定，不重复清理结账。最后必须实际执行一项新任务。
 

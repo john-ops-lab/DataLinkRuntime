@@ -164,6 +164,10 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                 attempt_journal_root=config.attempt_journal_root,
                 root_lock=root_lock,
             )
+            if config.recovery_operation is not None and observation.status == "local_empty":
+                # An empty/replacement volume cannot establish that the named
+                # recovery operation retired its original frozen records.
+                return "recovery_required"
             if observation.status != "local_empty":
                 if config.recovery_operation is None or sandbox_config is None:
                     return "recovery_required"
