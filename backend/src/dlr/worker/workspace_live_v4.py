@@ -482,22 +482,32 @@ def cleanup_live_workspace(
         ):
             return WorkspaceObservation("blocked", "workspace_not_quiescent")
         try:
+            from dlr.worker import recovery_checkpoint_v4, recovery_local_v4
+
             if type(max_entries) is not int or not 0 <= max_entries <= 100000:
                 raise ValueError("invalid cleanup limit")
             with cg._root_lock.borrow(cg._runtime_root, [cg._attempt_journal_root]):
                 _check_journal(live, for_cleanup=True)
                 _verify_workspace(live)
-                _remove_contents(live._leaf, live._mount_id, [max_entries], 0)
-                os.fsync(live._leaf)
-                _verify_workspace(live)
-                os.rmdir(live._leaf_name, dir_fd=live._parent)
-                os.fsync(live._parent)
-                _check_journal(live, for_cleanup=True)
-                _verify_workspace_parent(live)
-                _remove_sandbox_mountpoint(live)
-                _verify_workspace_parent(live)
-                os.rmdir(live._parent_name, dir_fd=live._workspaces)
-                os.fsync(live._workspaces)
+                directory = recovery_checkpoint_v4._root_fd(cg._root_lock, cg._attempt_journal_root)
+                first, last = recovery_checkpoint_v4.names(cg._prepared.payload.attempt_id)
+                prepared, stopped = (
+                    journal_v4._read(directory, first),
+                    journal_v4._read(directory, last),
+                )
+                if (
+                    prepared is None
+                    or stopped is None
+                    or len(stopped.get("workspace_entries", {})) > max_entries
+                ):
+                    raise ValueError("recovery checkpoint unavailable")
+                recovery_local_v4.clean_workspace(
+                    directory,
+                    live._root,
+                    cg._runtime_root,
+                    prepared,
+                    stopped,
+                )
             live._close_locked()
             live._cleanup_confirmed = True
             return WorkspaceObservation("removed_observation", "workspace_removed")

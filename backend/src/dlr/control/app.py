@@ -49,6 +49,7 @@ from dlr.control.api import (
     worker_enrollment_v4,
     worker_fresh_identity_v4,
     worker_instance_v4,
+    worker_recovery_v4,
     worker_result_v4,
     workers,
 )
@@ -470,6 +471,7 @@ def create_app() -> FastAPI:
         app.include_router(worker_claim_v4.router)
         app.include_router(worker_result_v4.router)
         app.include_router(worker_cleanup_v4.router)
+        app.include_router(worker_recovery_v4.router)
     app.include_router(workers.router)
     app.include_router(workers.admin_router)
     app.include_router(cache_admin.router)

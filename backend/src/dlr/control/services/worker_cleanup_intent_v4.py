@@ -33,6 +33,7 @@ from dlr.control.services import (
     worker_availability,
     worker_cleanup_v4,
     worker_credentials,
+    worker_recovery_v4,
 )
 from dlr.control.services.attempt import V4AttemptAuthority
 from dlr.control.services.attempt_lease_candidates_v4 import _check_instance_at, _credential_expiry
@@ -73,6 +74,7 @@ class CleanupIntentContext:
     receipt: V4CleanupReceipt = field(repr=False)
     cleanup_token: str = field(repr=False)
     authority: ProofAuthority = field(repr=False)
+    recovery: worker_recovery_v4.RecoveryLookup | None = field(default=None, repr=False)
 
 
 def _frozen(context: CleanupIntentContext) -> CleanupIntentContext:
@@ -94,15 +96,49 @@ def _frozen(context: CleanupIntentContext) -> CleanupIntentContext:
         or type(context.authority) is not ProofAuthority
         or context.receipt.worker_identity_id.int == 0
         or context.receipt.original_instance_id.int == 0
+        or (
+            context.recovery is not None
+            and (
+                type(context.recovery) is not worker_recovery_v4.RecoveryLookup
+                or context.recovery.binding.execution_id != context.execution_id
+                or context.recovery.binding.attempt.model_dump()
+                != {
+                    key: value
+                    for key, value in context.receipt.model_dump().items()
+                    if key != "status"
+                }
+            )
+        )
     ):
         raise CleanupIntentUnavailable("cleanup intent unavailable")
-    return replace(context, receipt=V4CleanupReceipt.model_validate(context.receipt.model_dump()))
+    return replace(
+        context,
+        receipt=V4CleanupReceipt.model_validate(context.receipt.model_dump()),
+        recovery=(
+            worker_recovery_v4.RecoveryLookup.model_validate(context.recovery.model_dump())
+            if context.recovery is not None
+            else None
+        ),
+    )
 
 
 def _snapshot(
     session: Session, context: CleanupIntentContext
 ) -> tuple[WorkerLeaseCandidateV4, datetime, datetime]:
     authority = V4AttemptAuthority(context.credential, context.instance_id, context.generation)
+    if context.recovery is not None:
+        execution = lock_execution_in_admission_order(session, context.execution_id)
+        if execution is None or execution.cancel_requested or execution.status == "cancelled":
+            raise CleanupIntentUnavailable("recovery result unavailable")
+        lock_execution_attempts(session, context.execution_id)
+        slot = session.get(
+            AdapterExecutionSlot,
+            (execution.adapter_id, 0),
+            with_for_update=True,
+            populate_existing=True,
+        )
+        if slot is None:
+            raise CleanupIntentUnavailable("recovery slot unavailable")
     worker_cleanup_v4._lock_receipt(
         session,
         context.execution_id,
@@ -131,6 +167,14 @@ def _snapshot(
         before = min(before, credential_expiry)
     if now >= before:
         raise CleanupIntentUnavailable("cleanup intent unavailable")
+    if context.recovery is not None:
+        worker_recovery_v4.require_committed_result(
+            session,
+            context.recovery,
+            worker_id=context.worker_id,
+            instance_id=context.instance_id,
+            generation=context.generation,
+        )
     return candidate, before, now
 
 
@@ -286,12 +330,28 @@ def stage_cleanup_intent(
             .execution_options(populate_existing=True)
         )
         if row is not None:
-            if row.intent_id != intent_id or not _matches(
-                row, frozen, candidate, before, intent_id
+            if row.intent_id == intent_id and _matches(row, frozen, candidate, before, intent_id):
+                _snapshot(session, frozen)
+                return
+            if (
+                frozen.recovery is None
+                or row.completion_id is not None
+                or row.completion_xid is not None
+                or row.worker_id != frozen.worker_id
+                or row.worker_identity_id != frozen.receipt.worker_identity_id
+                or row.original_instance_id != frozen.receipt.original_instance_id
+                or row.original_generation != frozen.receipt.original_instance_generation
+                or row.fencing_token != frozen.receipt.fencing_token
+                or row.instance_generation > frozen.generation
+                or (
+                    row.instance_generation == frozen.generation
+                    and (
+                        row.instance_id != frozen.instance_id
+                        or row.proof_before > worker_availability.current_time(session)
+                    )
+                )
             ):
                 raise ValueError
-            _snapshot(session, frozen)
-            return
         writer_xid = _xid(session)
         if row is None:
             row = WorkerCleanupIntentV4(attempt_id=frozen.receipt.attempt_id)

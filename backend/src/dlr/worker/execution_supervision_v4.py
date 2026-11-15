@@ -13,6 +13,7 @@ import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from uuid import UUID
 
 from dlr.worker import attempt_supervisor_v4, claim_http_v4, claim_preparation_v4
 from dlr.worker.client import V4Renewal, _v4_lease_clock
@@ -42,6 +43,7 @@ class ResultSnapshot:
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     intent: object | None = field(default=None, repr=False)
     receipt: str | None = field(default=None, repr=False)
+    finalization_id: UUID | None = field(default=None, repr=False)
 
 
 class _OutputCollector:

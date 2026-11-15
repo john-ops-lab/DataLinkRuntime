@@ -43,7 +43,7 @@ def _uuid_header(request: Request, name: str) -> UUID:
         raise _error(422) from None
 
 
-async def _receipt(request: Request) -> V4CleanupReceipt:
+async def _read_json(request: Request) -> dict[str, object]:
     lengths = request.headers.getlist("content-length")
     types = request.headers.getlist("content-type")
     if (
@@ -64,10 +64,18 @@ async def _receipt(request: Request) -> V4CleanupReceipt:
             body.extend(chunk)
         if len(body) != int(lengths[0]):
             raise ValueError
-        return V4CleanupReceipt.model_validate(
-            json.loads(body, object_pairs_hook=_unique_pairs, parse_constant=_invalid_constant)
-        )
+        value = json.loads(body, object_pairs_hook=_unique_pairs, parse_constant=_invalid_constant)
+        if not isinstance(value, dict):
+            raise ValueError
+        return value
     except (ValueError, UnicodeError, RecursionError, ValidationError):
+        raise _error(422) from None
+
+
+async def _receipt(request: Request) -> V4CleanupReceipt:
+    try:
+        return V4CleanupReceipt.model_validate(await _read_json(request))
+    except ValidationError:
         raise _error(422) from None
 
 

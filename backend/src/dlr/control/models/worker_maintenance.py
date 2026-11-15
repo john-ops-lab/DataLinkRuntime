@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     Uuid,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dlr.control.db import Base
@@ -31,9 +33,12 @@ class WorkerMaintenanceOperation(Base):
             name="ck_worker_maintenance_operation_version",
         ),
         CheckConstraint(
-            "(action IN ('drain', 'activate') AND reason IS NULL) OR "
+            "(action IN ('drain', 'activate') AND reason IS NULL AND recovery_binding IS NULL) OR "
             "(action = 'force_stop' AND reason IS NOT NULL AND "
-            "length(reason) BETWEEN 1 AND 256 AND length(btrim(reason)) > 0)",
+            "length(reason) BETWEEN 1 AND 256 AND length(btrim(reason)) > 0 "
+            "AND recovery_binding IS NULL) OR "
+            "(action = 'reconcile' AND reason IS NULL AND recovery_binding IS NOT NULL "
+            "AND jsonb_typeof(recovery_binding) = 'object')",
             name="ck_worker_maintenance_operation_action",
         ),
         CheckConstraint(
@@ -53,6 +58,7 @@ class WorkerMaintenanceOperation(Base):
     actor_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     actor_id: Mapped[int | None] = mapped_column(BigInteger)
     reason: Mapped[str | None] = mapped_column(String(256))
+    recovery_binding: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.pg_catalog.clock_timestamp()
     )

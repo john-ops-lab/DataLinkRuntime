@@ -47,6 +47,7 @@ class WorkerConfig:
     claim_wire_budget_bytes: int = 16 * 1024 * 1024
     result_wire_budget_bytes: int = 16 * 1024 * 1024
     receive_memory_bytes: int = 384 * 1024 * 1024
+    recovery_operation: UUID | None = None
 
 
 def run(config: WorkerConfig, stop: threading.Event) -> str:
@@ -95,9 +96,18 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
         or not config.claim_child_address_space_bytes + 64 * 1024 * 1024
         <= config.receive_memory_bytes
         < 2**63
+        or (
+            config.recovery_operation is not None
+            and (
+                type(config.recovery_operation) is not UUID
+                or config.recovery_operation.int == 0
+                or config.broker_config_file is None
+            )
+        )
     ):
         return "configuration_invalid"
     phase = "configuration"
+    recovery_lease = None
     try:
         validate_control_url(config.base_url)
         sandbox_config = None
@@ -154,8 +164,76 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                 attempt_journal_root=config.attempt_journal_root,
                 root_lock=root_lock,
             )
-            if observation.status != "local_empty":
+            if config.recovery_operation is not None and observation.status == "local_empty":
+                # An empty/replacement volume cannot establish that the named
+                # recovery operation retired its original frozen records.
                 return "recovery_required"
+            if observation.status != "local_empty":
+                if config.recovery_operation is None or sandbox_config is None:
+                    return "recovery_required"
+                from dlr.worker import recovery_checkpoint_v4, recovery_execution_v4, sandbox
+
+                phase = "recovery_scan"
+                if sandbox_config.namespace_identity is None:
+                    return "recovery_required"
+                state = recovery_execution_v4.scan(
+                    lock=root_lock,
+                    runtime=config.runtime_root,
+                    attempts=config.attempt_journal_root,
+                    worker_id=config.worker_id,
+                    identity_id=config.worker_identity_id,
+                    boot_id=sandbox_config.namespace_identity.boot_id,
+                )
+                if not recovery_checkpoint_v4.fresh_process(
+                    state.prepared["process"], recovery_checkpoint_v4.process_identity()
+                ):
+                    return "recovery_required"
+                # Management stays inside this newly verified hard envelope;
+                # both old frozen charges remain in state. No new ResourceBudget
+                # exists until retirement and an empty-root check complete.
+                sandbox.read_verified_resource_envelope(sandbox_config)
+                credential = runtime_credential_v4.load_runtime_credential(
+                    config.credential_directory,
+                    worker_id=config.worker_id,
+                    worker_identity_id=config.worker_identity_id,
+                )
+                recovery_lease = lease_session_v4.WorkerLeaseSession.from_trusted_file(
+                    trust_file=config.proof_trust_file,
+                    base_url=config.base_url,
+                    worker_id=config.worker_id,
+                    worker_identity_id=config.worker_identity_id,
+                    credential=credential.secret,
+                    credential_record_id=credential.credential_record_id,
+                    instance_id=uuid4(),
+                    timeout_seconds=config.request_timeout_seconds,
+                )
+                phase = "recovery_operation"
+                lookup = recovery_execution_v4.read_operation(
+                    recovery_lease, state, config.recovery_operation
+                )
+                phase = "recovery_registration"
+                recovery_lease.register(stop=stop)
+                phase = "recovery_execution"
+                recovery_execution_v4.recover(
+                    lease=recovery_lease,
+                    state=state,
+                    lookup=lookup,
+                    lock=root_lock,
+                    runtime=config.runtime_root,
+                    attempts=config.attempt_journal_root,
+                    stop=stop,
+                )
+                verify_roots()
+                if (
+                    startup_v4_gate.inspect_local_startup(
+                        runtime_root=config.runtime_root,
+                        cleanup_journal_root=config.cleanup_journal_root,
+                        attempt_journal_root=config.attempt_journal_root,
+                        root_lock=root_lock,
+                    ).status
+                    != "local_empty"
+                ):
+                    return "recovery_required"
             if stop.is_set():
                 return "stopped"
             flags = None
@@ -232,21 +310,25 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                 ):
                     return "recovery_required"
             phase = "credential"
-            credential = runtime_credential_v4.load_runtime_credential(
-                config.credential_directory,
-                worker_id=config.worker_id,
-                worker_identity_id=config.worker_identity_id,
-            )
-            lease = lease_session_v4.WorkerLeaseSession.from_trusted_file(
-                trust_file=config.proof_trust_file,
-                base_url=config.base_url,
-                worker_id=config.worker_id,
-                worker_identity_id=config.worker_identity_id,
-                credential=credential.secret,
-                credential_record_id=credential.credential_record_id,
-                instance_id=uuid4(),
-                timeout_seconds=config.request_timeout_seconds,
-            )
+            if recovery_lease is not None:
+                lease = recovery_lease
+                lease.heartbeat(stop=stop)
+            else:
+                credential = runtime_credential_v4.load_runtime_credential(
+                    config.credential_directory,
+                    worker_id=config.worker_id,
+                    worker_identity_id=config.worker_identity_id,
+                )
+                lease = lease_session_v4.WorkerLeaseSession.from_trusted_file(
+                    trust_file=config.proof_trust_file,
+                    base_url=config.base_url,
+                    worker_id=config.worker_id,
+                    worker_identity_id=config.worker_identity_id,
+                    credential=credential.secret,
+                    credential_record_id=credential.credential_record_id,
+                    instance_id=uuid4(),
+                    timeout_seconds=config.request_timeout_seconds,
+                )
             consumer = None
             consumer_thread = None
             try:
@@ -256,7 +338,8 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                 # deadline. An uncertain registration is never replaced.
                 while not stop.is_set():
                     try:
-                        lease.register(stop=stop)
+                        if recovery_lease is None:
+                            lease.register(stop=stop)
                         break
                     except lease_session_v4.WorkerLeaseError:
                         if lease._state == "dead":
@@ -329,6 +412,9 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
     except Exception as error:  # noqa: BLE001 - no exception text, paths or secrets in logs
         logger.warning("fixed Worker unavailable: phase=%s error=%s", phase, type(error).__name__)
         return "worker_unavailable"
+    finally:
+        if recovery_lease is not None:
+            recovery_lease.close()
 
 
 class _InvalidArguments(Exception):
@@ -360,6 +446,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--claim-wire-budget-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--result-wire-budget-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--receive-memory-bytes", type=int, default=384 * 1024 * 1024)
+    parser.add_argument(
+        "--recovery-operation",
+        type=UUID,
+        default=os.environ.get("DLR_WORKER_RECOVERY_OPERATION") or None,
+    )
     try:
         args = parser.parse_args(argv)
         config = WorkerConfig(**vars(args))
