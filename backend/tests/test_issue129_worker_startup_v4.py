@@ -189,6 +189,18 @@ def test_bounded_stage_uses_same_task_directory_and_sealed_minimal_launch(
     tmp_path, monkeypatch, language, tamper
 ):
     """Real staging/SCM_RIGHTS/memfd only; physical isolation is G2/G4."""
+    seal_api = (
+        "F_ADD_SEALS",
+        "F_GET_SEALS",
+        "F_SEAL_WRITE",
+        "F_SEAL_GROW",
+        "F_SEAL_SHRINK",
+        "F_SEAL_SEAL",
+    )
+    if tamper is None and any(
+        type(getattr(sandbox.fcntl, name, None)) is not int for name in seal_api
+    ):
+        pytest.skip("Python build lacks Linux memfd sealing constants; Worker fails closed")
     code = (
         "export async function handle(c, input) { return input; }"
         if language == "javascript"
