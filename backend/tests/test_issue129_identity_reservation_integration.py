@@ -131,7 +131,7 @@ def _local_tls_control(app, directory, monkeypatch):
 
 
 @contextmanager
-def _claim_task_process(lease, message, wire_budget):
+def _claim_task_process(lease, message, wire_budget, *, business_credentials=False):
     """Run the same bounded Claim receiver and creator lifecycle as the Worker."""
     parent, child = socket.socketpair()
     parent.setblocking(False)
@@ -157,6 +157,7 @@ def _claim_task_process(lease, message, wire_budget):
                 "dispatch": message,
                 "wire_budget": wire_budget,
                 "timeout": 5.0,
+                "business_credentials": business_credentials,
             }
         io_deadline = min(deadline, claim_http_v4._clock() + 5.0)
         numerator, denominator = deadline.as_integer_ratio()
@@ -969,6 +970,31 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
     worker_id = reserved.json()["worker_id"]
     endpoint = f"/api/workers/{worker_id}/credentials/enrollment"
     assert client.post(endpoint, json={}).status_code == 503
+    business_credential = None
+    if language == "javascript" and controlled_recovery is False:
+        from test_credentials import create_credential
+
+        business_credential = create_credential(
+            client, type_="token", fields={"token": "claim-original-value"}
+        )
+        policy_file = tmp_path / "business-policy.json"
+        policy_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "workers": [
+                        {
+                            "worker_id": worker_id,
+                            "worker_identity_id": reserved.json()["worker_identity_id"],
+                            "credential_ids": [business_credential["id"]],
+                        }
+                    ],
+                }
+            )
+        )
+        policy_file.chmod(0o600)
+        monkeypatch.setattr(settings, "worker_business_credential_policy_file", str(policy_file))
+        monkeypatch.setattr(settings, "_business_credential_policy", None)
 
     runtime_engine = None
     old_engine = None
@@ -1325,6 +1351,58 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             assert result.status_code == 200, result.text
             with runtime_sessions() as session:
                 assert session.get(Worker, worker_id).capabilities == ["python", "javascript"]
+        if business_credential is not None:
+            from dlr.common.business_credentials_v4 import CAPABILITY
+
+            for invalid in (1, 0, "true", None, [], {}):
+                assert (
+                    client.post(
+                        endpoint,
+                        headers=current_headers,
+                        json={"isolation_capabilities": flags, "business_credentials_v1": invalid},
+                    ).status_code
+                    == 422
+                )
+            report = {
+                "isolation_capabilities": flags,
+                "capabilities": ["python", "javascript"],
+                "business_credentials_v1": True,
+            }
+            assert client.post(endpoint, headers=heartbeat_headers, json=report).status_code == 503
+            assert client.post(endpoint, headers=current_headers, json=report).status_code == 200
+            with runtime_sessions() as session:
+                assert session.get(Worker, worker_id).isolation_capabilities[CAPABILITY] is True
+            original_commit = Session.commit
+            changed = []
+
+            def change_credentials_after_commit(session):
+                writing = any(
+                    isinstance(row, Worker)
+                    and row.id == worker_id
+                    and row.isolation_capabilities.get(CAPABILITY) is True
+                    for row in session.identity_map.values()
+                )
+                original_commit(session)
+                if writing and not changed:
+                    changed.append(True)
+                    with test_engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "UPDATE workers SET "
+                                "isolation_capabilities=isolation_capabilities - :cap "
+                                "WHERE id=:id"
+                            ),
+                            {"cap": CAPABILITY, "id": worker_id},
+                        )
+                    test_engine.dispose()
+
+            with monkeypatch.context() as race:
+                race.setattr(Session, "commit", change_credentials_after_commit)
+                assert (
+                    client.post(endpoint, headers=current_headers, json=report).status_code == 503
+                )
+                assert changed
+            assert client.post(endpoint, headers=current_headers, json=report).status_code == 200
         activation_body = {"request_id": str(uuid4()), "expected_version": 1}
         with runtime_sessions() as concurrent_operation:
             ordinary_fence = process.worker_fence(concurrent_operation)
@@ -1391,6 +1469,23 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             )
             + "x" * 5000,
         )
+        if business_credential is not None:
+            from test_credentials import set_bindings
+
+            assert (
+                set_bindings(
+                    client,
+                    adapter["id"],
+                    [
+                        {
+                            "env_key": "AUTH",
+                            "field": "token",
+                            "credential_id": business_credential["id"],
+                        }
+                    ],
+                ).status_code
+                == 200
+            )
         created = client.post(f"/api/adapters/{adapter['id']}/executions", json={})
         assert created.status_code == 202, created.text
         execution_id = created.json()["id"]
@@ -1468,6 +1563,72 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 )
                 == 0
             )
+        if business_credential is not None:
+            assert (
+                client.patch(
+                    f"/api/credentials/{business_credential['id']}",
+                    json={"fields": {"token": "\x01" * 4000}},
+                ).status_code
+                == 200
+            )
+            with runtime_sessions() as session:
+                fence = process.worker_fence(session)
+                authority = process.worker_proof_authority(session)
+                expanded, no_proposal = prepare_claim(
+                    session,
+                    worker_id,
+                    dispatch,
+                    worker_authority,
+                    wire_budget=ClaimWireBudget(12000),
+                    proof_context=ClaimProofContext(authority, renewed_proof),
+                    check_authority=check_claim_authority,
+                )
+                assert expanded.decision == "PAUSE_CONSUMER"
+                assert expanded.reason == "claim_response_budget_exceeded" and no_proposal is None
+            with runtime_sessions() as session:
+                assert session.get(Execution, execution_id).attempt_count == 0
+            # A committed rotation between prepare/finalize changes exact wire;
+            # neither the tentative parse nor the old plaintext permits execution.
+            assert (
+                client.patch(
+                    f"/api/credentials/{business_credential['id']}",
+                    json={"fields": {"token": "claim-rotated-value"}},
+                ).status_code
+                == 200
+            )
+            with runtime_sessions() as session:
+                fence = process.worker_fence(session)
+                authority = process.worker_proof_authority(session)
+                changed = finalize_claim(
+                    session,
+                    worker_id,
+                    dispatch,
+                    worker_authority,
+                    wire_budget=ClaimWireBudget(100000),
+                    proof_context=ClaimProofContext(authority, renewed_proof),
+                    proposal=proposal,
+                )
+                assert (
+                    changed.decision == "PAUSE_CONSUMER"
+                    and changed.reason == "claim_snapshot_changed"
+                )
+            with runtime_sessions() as session:
+                assert session.get(Execution, execution_id).attempt_count == 0
+            assert set_bindings(client, adapter["id"], []).status_code == 200
+            with runtime_sessions() as session:
+                fence = process.worker_fence(session)
+                authority = process.worker_proof_authority(session)
+                tentative, proposal = prepare_claim(
+                    session,
+                    worker_id,
+                    dispatch,
+                    worker_authority,
+                    wire_budget=ClaimWireBudget(100000),
+                    proof_context=ClaimProofContext(authority, renewed_proof),
+                    check_authority=check_claim_authority,
+                )
+                assert tentative.decision == "EXECUTE" and proposal is not None
+                assert tentative.payload.secrets == {"AUTH": "claim-rotated-value"}
         # A real newer Adapter revision changes the prepared metadata. The
         # stale proposal must not create an Attempt, even though its original
         # immutable revision is still available.
@@ -1532,7 +1693,9 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 assert session.get(Execution, execution_id).attempt_count == 0
                 session.get(Worker, worker_id).capabilities = ["python", "javascript"]
         if os.environ.get("DLR_TEST_CLAIM_PROCESS") == "1":
-            with _claim_task_process(lease, message, 4096) as (waiting, _channel):
+            with _claim_task_process(
+                lease, message, 4096, business_credentials=business_credential is not None
+            ) as (waiting, _channel):
                 assert waiting == {
                     "state": "decision",
                     "decision": "PAUSE_CONSUMER",
@@ -1541,7 +1704,9 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 }
             with runtime_sessions() as session:
                 assert session.get(Execution, execution_id).attempt_count == 0
-            with _claim_task_process(lease, message, 100000) as (prepared, channel):
+            with _claim_task_process(
+                lease, message, 100000, business_credentials=business_credential is not None
+            ) as (prepared, channel):
                 assert prepared["state"] == "prepared"
                 with runtime_sessions() as session:
                     assert session.get(Execution, execution_id).attempt_count == 0

@@ -67,8 +67,8 @@ def _invalid_constant(_value: str) -> None:
     raise ValueError("invalid constant")
 
 
-def _receive_directory(channel: socket.socket) -> int:
-    """Receive exactly one private workspace directory descriptor."""
+def _receive_fd(channel: socket.socket) -> int:
+    """Receive exactly one close-on-exec descriptor, closing rejected rights."""
     descriptors: list[int] = []
     try:
         cloexec = getattr(socket, "MSG_CMSG_CLOEXEC", None)
@@ -95,6 +95,17 @@ def _receive_directory(channel: socket.socket) -> int:
         ):
             raise ValueError("workspace handoff unavailable")
         fd = descriptors[0]
+        descriptors.clear()
+        return fd
+    finally:
+        for fd in descriptors:
+            with suppress(OSError):
+                os.close(fd)
+
+
+def _receive_directory(channel: socket.socket) -> int:
+    fd = _receive_fd(channel)
+    try:
         info = os.fstat(fd)
         if (
             not stat.S_ISDIR(info.st_mode)
@@ -102,12 +113,10 @@ def _receive_directory(channel: socket.socket) -> int:
             or stat.S_IMODE(info.st_mode) != 0o700
         ):
             raise ValueError("workspace handoff unavailable")
-        descriptors.clear()
         return fd
-    finally:
-        for fd in descriptors:
-            with suppress(OSError):
-                os.close(fd)
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def _stage_python(
@@ -240,6 +249,12 @@ def _stage_python(
             if task.language == "javascript"
             else {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
         )
+        from dlr.common import business_credentials_v4 as business_contract
+
+        bound_values = business_contract.values(
+            business_contract.bindings(task.credential_bindings), task.secrets
+        )
+        environment.update({f"DLR_SECRET_{key}": item for key, item in bound_values.items()})
         launch_fd = sandbox.create_sealed_launch(
             argv,
             environment,
@@ -284,6 +299,7 @@ def _prepare(channel: socket.socket) -> None:
         "dispatch",
         "wire_budget",
         "timeout",
+        "business_credentials",
     }
     if set(value) != expected:
         raise ValueError("Claim request unavailable")
@@ -302,7 +318,8 @@ def _prepare(channel: socket.socket) -> None:
     wire_budget, timeout = value["wire_budget"], value["timeout"]
     claims = verify_worker_proof_signature(proof, key)
     if (
-        type(worker_id) is not int
+        type(value["business_credentials"]) is not bool
+        or type(worker_id) is not int
         or not 0 < worker_id < 2**63
         or type(generation) is not int
         or not 0 < generation < 2**63
@@ -436,8 +453,7 @@ def _prepare(channel: socket.socket) -> None:
         or task.input_files
         or task.builtin_package_snapshot is not None
         or task.dependency_check
-        or task.secrets
-        or task.credential_bindings
+        or ((task.secrets or task.credential_bindings) and not value["business_credentials"])
     ):
         _send(
             channel,
@@ -449,6 +465,9 @@ def _prepare(channel: socket.socket) -> None:
             },
         )
         return
+    from dlr.common import business_credentials_v4 as business_contract
+
+    business_contract.values(business_contract.bindings(task.credential_bindings), task.secrets)
     task_fingerprint = task_fingerprint_v4.fingerprint(task, task.claim_token).hex()
     del buffer, document, request, value, credential, proof
     # The business snapshot remains here; the Agent receives only bounded
@@ -469,6 +488,7 @@ def _prepare(channel: socket.socket) -> None:
             "claim_token": task.claim_token,
             "cleanup_token": task.cleanup_token,
             "resource_profile": task.resource_profile.model_dump(mode="json"),
+            "business_credentials": bool(task.credential_bindings),
         },
     )
     command = _receive(channel)

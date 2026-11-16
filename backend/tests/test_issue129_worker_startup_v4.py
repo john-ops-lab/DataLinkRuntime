@@ -185,8 +185,9 @@ def test_unavailable_fixed_node_cannot_emit_a_successful_probe(tmp_path, monkeyp
 @pytest.mark.skipif(sys.platform != "linux", reason="sealed launch requires Linux memfd")
 @pytest.mark.parametrize("language", ["python", "javascript"])
 @pytest.mark.parametrize("tamper", [None, "fingerprint", "directory", "bytes"])
+@pytest.mark.parametrize("business", [False, True])
 def test_bounded_stage_uses_same_task_directory_and_sealed_minimal_launch(
-    tmp_path, monkeypatch, language, tamper
+    tmp_path, monkeypatch, language, tamper, business
 ):
     """Real staging/SCM_RIGHTS/memfd only; physical isolation is G2/G4."""
     seal_api = (
@@ -226,6 +227,13 @@ def test_bounded_stage_uses_same_task_directory_and_sealed_minimal_launch(
             }
         )
     )
+    if business:
+        task.credential_bindings = [
+            {"binding_id": 1, "credential_id": 2, "env_key": "BOUND", "field": "token"}
+        ]
+        task.secrets = {"BOUND": "bound-private"}
+    monkeypatch.setenv("DLR_SECRET_BOUND", "host-must-not-be-inherited")
+    monkeypatch.setenv("DLR_SECRET_OTHER", "host-extra")
     fingerprint = task_fingerprint_v4.fingerprint(task, task.claim_token).hex()
     workspace = tmp_path / "attempt-2" / "dlr-exec-1"
     workspace.mkdir(parents=True, mode=0o700)
@@ -273,7 +281,9 @@ def test_bounded_stage_uses_same_task_directory_and_sealed_minimal_launch(
         suffix = "mjs" if language == "javascript" else "py"
         assert (workspace / f"adapter.{suffix}").read_text() == code
         assert json.loads((workspace / "input.json").read_text()) == {"value": "中文"}
-        assert set(environment) == {"PATH"}
+        assert set(environment) == ({"PATH", "DLR_SECRET_BOUND"} if business else {"PATH"})
+        if business:
+            assert environment["DLR_SECRET_BOUND"] == "bound-private"
         if language == "javascript":
             assert argv == [
                 "/usr/local/bin/node",
@@ -281,7 +291,7 @@ def test_bounded_stage_uses_same_task_directory_and_sealed_minimal_launch(
                 str(workspace),
                 str(workspace / "adapter.mjs"),
             ]
-            assert environment == {"PATH": "/usr/bin:/bin"}
+            assert environment["PATH"] == "/usr/bin:/bin"
         else:
             assert argv == [
                 sys.executable,

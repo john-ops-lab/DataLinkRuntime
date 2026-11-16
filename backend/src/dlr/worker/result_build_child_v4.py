@@ -20,6 +20,7 @@ from dlr.worker.claim_task_child_v4 import (
     _pairs,
     _receive,
     _receive_directory,
+    _receive_fd,
     _send,
 )
 
@@ -64,7 +65,44 @@ def _read_file(directory: int, name: str, limit: int) -> bytes:
         os.close(fd)
 
 
+def _redact_text(value: str, secrets: tuple[str, ...]) -> str:
+    for secret in secrets:
+        value = value.replace(secret, "[REDACTED]")
+    return value
+
+
+class _RedactionCollision(ValueError):
+    pass
+
+
+def _redact_json(value: Any, secrets: tuple[str, ...]) -> Any:
+    # Iterative traversal avoids adding a smaller recursion limit to an
+    # otherwise valid bounded JSON result. No input is mutated.
+    root: list[Any] = [None]
+    stack: list[tuple[Any, Any, Any]] = [(value, root, 0)]
+    while stack:
+        current, parent, key = stack.pop()
+        if isinstance(current, dict):
+            result: Any = {}
+            for old_key, item in current.items():
+                new_key = _redact_text(old_key, secrets)
+                if new_key in result:
+                    raise _RedactionCollision("output_redaction_conflict")
+                result[new_key] = None
+                stack.append((item, result, new_key))
+        elif isinstance(current, list):
+            result = [None] * len(current)
+            stack.extend((item, result, i) for i, item in enumerate(current))
+        elif isinstance(current, str):
+            result = _redact_text(current, secrets)
+        else:
+            result = current
+        parent[key] = result
+    return root[0]
+
+
 def _run(channel: socket.socket, address_space_bytes: int) -> None:
+    from dlr.common.business_credentials_v4 import launch_values
     from dlr.common.result_intent_mac_v4 import stream_result_request
     from dlr.control.schemas.reliable_runtime import AttemptResultBody
     from dlr.worker import sandbox
@@ -83,6 +121,9 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
         "max_body_bytes",
         "workspace_device",
         "workspace_inode",
+        "redaction_required",
+        "redaction_identity",
+        "launch_max_bytes",
     }:
         raise ValueError("result unavailable")
     output_limit, preview_limit, max_body = (
@@ -109,15 +150,38 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
         or not 0 < max_body <= address_space_bytes
         or type(request["workspace_device"]) is not int
         or type(request["workspace_inode"]) is not int
+        or type(request["redaction_required"]) is not bool
+        or type(request["launch_max_bytes"]) is not int
+        or not 0 < request["launch_max_bytes"] <= 65536
     ):
         raise ValueError("result unavailable")
     stdout = _exact(channel, stdout_size).decode("utf-8", errors="replace")
     directory = _receive_directory(channel)
-    result_fd = -1
+    result_fd = redaction_fd = -1
     try:
         info = os.fstat(directory)
         if (info.st_dev, info.st_ino) != (request["workspace_device"], request["workspace_inode"]):
             raise ValueError("result workspace unavailable")
+        secret_values: tuple[str, ...] = ()
+        if request["redaction_required"]:
+            redaction_fd = _receive_fd(channel)
+            redaction_info = os.fstat(redaction_fd)
+            expected = request["redaction_identity"]
+            if (
+                type(expected) is not list
+                or len(expected) != 3
+                or any(type(n) is not int or n < 0 for n in expected)
+                or tuple(expected)
+                != (redaction_info.st_dev, redaction_info.st_ino, redaction_info.st_size)
+            ):
+                raise ValueError("redaction snapshot unavailable")
+            _, environment = sandbox._read_sealed_launch(redaction_fd, request["launch_max_bytes"])
+            secret_values = launch_values(environment)
+            stdout = (
+                "[REDACTED]" if request["stdout_truncated"] else _redact_text(stdout, secret_values)
+            )
+        elif request["redaction_identity"] is not None:
+            raise ValueError("redaction snapshot unavailable")
         result: dict[str, Any] = {
             "attempt_id": request["attempt_id"],
             "fencing_token": request["fencing_token"],
@@ -175,7 +239,9 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
                         status="succeeded",
                         output_truncated=True,
                         output_size=metadata["size"],
-                        output_preview=output[:preview_limit].decode("utf-8", errors="ignore"),
+                        output_preview=""
+                        if secret_values
+                        else output[:preview_limit].decode("utf-8", errors="ignore"),
                         error_code="output_too_large",
                     )
                 else:
@@ -191,6 +257,12 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
                             error_class="business_error",
                         )
                     else:
+                        collision = False
+                        if secret_values:
+                            try:
+                                value = _redact_json(value, secret_values)
+                            except _RedactionCollision:
+                                value, collision = None, True
                         encoded = json.dumps(
                             value, ensure_ascii=False, separators=(",", ":"), allow_nan=False
                         ).encode("utf-8")
@@ -198,6 +270,10 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
                             result.update(
                                 status="succeeded", output=value, output_size=len(encoded)
                             )
+                            if collision:
+                                result.update(
+                                    output_preview="", error_code="output_redaction_conflict"
+                                )
                         else:
                             result.update(
                                 status="succeeded",
@@ -210,6 +286,11 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
                             )
         else:
             raise ValueError("result stop unverified")
+        if secret_values:
+            for key in ("error", "stdout", "stderr", "output_preview"):
+                item = result.get(key)
+                if type(item) is str:
+                    result[key] = _redact_text(item, secret_values)
         action = AttemptResultBody.model_validate(result)
         body = {
             name: getattr(action, name)
@@ -243,6 +324,8 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
         ):
             raise ValueError("result snapshot unavailable")
     finally:
+        if redaction_fd >= 0:
+            os.close(redaction_fd)
         if result_fd >= 0:
             os.close(result_fd)
         os.close(directory)

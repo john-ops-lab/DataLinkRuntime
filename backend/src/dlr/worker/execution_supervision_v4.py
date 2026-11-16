@@ -302,6 +302,9 @@ class SupervisedExecution:
                         "max_body_bytes": staged.prepared.result_wire_budget,
                         "workspace_device": info.st_dev,
                         "workspace_inode": info.st_ino,
+                        "redaction_required": staged.prepared.business_credentials,
+                        "redaction_identity": staged.redaction_identity,
+                        "launch_max_bytes": staged.launch_max_bytes,
                     }
                     raw = json.dumps(request, separators=(",", ":")).encode("utf-8")
                     del request, token
@@ -310,6 +313,19 @@ class SupervisedExecution:
                     )
                     claim_http_v4._send_all(channel, observed.stdout, deadline, (self._stop,))
                     claim_http_v4._send_fd(channel, directory, deadline, (self._stop,))
+                    if staged.prepared.business_credentials:
+                        if staged.redaction_fd < 3 or staged.redaction_identity is None:
+                            raise ValueError("redaction snapshot unavailable")
+                        launch_info = os.fstat(staged.redaction_fd)
+                        if (
+                            launch_info.st_dev,
+                            launch_info.st_ino,
+                            launch_info.st_size,
+                        ) != staged.redaction_identity:
+                            raise ValueError("redaction snapshot unavailable")
+                        claim_http_v4._send_fd(
+                            channel, staged.redaction_fd, deadline, (self._stop,)
+                        )
                     size = struct.unpack(
                         "!I", claim_http_v4._receive(channel, 4, deadline, (self._stop,))
                     )[0]
@@ -339,6 +355,12 @@ class SupervisedExecution:
                     ticket = None
                     pidfd = None
                     channel = None
+                    if staged.prepared.business_credentials:
+                        # The result child was reaped; the task/helper was already
+                        # observed stopped. Only this opaque alias remains.
+                        os.close(staged.redaction_fd)
+                        staged.redaction_fd = -1
+                        staged.redaction_identity = None
                     with live._mutex:
                         workspace._external_io_inflight = False
                 if not attempt.is_usable() or self._stop.is_set():

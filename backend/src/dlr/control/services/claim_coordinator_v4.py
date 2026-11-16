@@ -23,6 +23,7 @@ from sqlalchemy import Engine
 
 from dlr.common.config import settings
 from dlr.control.schemas.reliable_runtime import AttemptActionBody
+from dlr.control.services import business_credentials_v4 as business_credentials
 from dlr.control.services.attempt_lease_candidates_v4 import AttemptCandidateRef
 from dlr.control.services.claim_child_v4 import _clock, _read_exact, _read_frame, _send_frame
 from dlr.control.services.claim_envelope_v4 import ClaimEnvelope, ClaimEnvelopeUnavailable
@@ -338,6 +339,7 @@ class _ClaimSlot:
                 channel,
                 {
                     "settings": snapshot,
+                    "business_credential_policy": business_credentials.frozen(settings).snapshot(),
                     "control_instance": control_instance,
                     "control_token": control_token,
                     "control_deadline": deadline,

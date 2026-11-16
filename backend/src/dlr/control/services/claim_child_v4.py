@@ -98,6 +98,9 @@ def _run(channel: socket.socket, address_space_bytes: int) -> dict[str, object] 
                 raise ValueError("Claim configuration unavailable")
             aliases[alias] = snapshot[name]
         config.settings = config.Settings(**aliases)
+        from dlr.control.services.business_credentials_v4 import install_snapshot
+
+        install_snapshot(request["business_credential_policy"], config.settings)
 
         # Load these only after replacing the child-local settings instance.
         from dlr.control import db

@@ -27,6 +27,7 @@ from sqlalchemy import BigInteger, case, func, select, text
 from sqlalchemy import cast as sql_cast
 from sqlalchemy.orm import Session, defer
 
+from dlr.common.business_credentials_v4 import BusinessCredentialError
 from dlr.common.config import settings
 from dlr.common.managed_input import controlled_input_mount_name
 from dlr.common.worker_languages_v4 import valid_capabilities
@@ -45,6 +46,7 @@ from dlr.control.models import (
 from dlr.control.models.worker_instance_history import WorkerInstanceHistory
 from dlr.control.schemas.reliable_runtime import V4TaskInputFile, V4TaskPayload
 from dlr.control.schemas.worker import isolation_capabilities_ready
+from dlr.control.services import business_credentials_v4 as business_credentials
 from dlr.control.services import package_source as package_source_service
 from dlr.control.services import secrets as secrets_service
 from dlr.control.services import worker_availability, worker_credentials
@@ -350,7 +352,11 @@ def _build_payload(
         execution_timeout_seconds=execution.timeout_seconds_snapshot,
         secrets={}
         if execution.dependency_check
-        else secrets_service.resolve_execution_secrets(session, execution),
+        else (
+            business_credentials.resolve_values(session, execution, worker)
+            if settings.worker_remote_v4_enabled
+            else secrets_service.resolve_execution_secrets(session, execution)
+        ),
         builtin_package_snapshot=execution.builtin_package_snapshot,
         dependency_check=execution.dependency_check,
         index_url=index_url,
@@ -555,8 +561,12 @@ def _claim_fixed(
         return V4ClaimDecision(decision="ACK_NOOP", reason="execution_not_queued")
     from dlr.control.services.worker_stage_capability_v4 import execution_block_reason
 
-    if execution_block_reason(session, adapter, execution) is not None:
-        return _pause(session, "worker_task_capability_unavailable")
+    blocked = execution_block_reason(session, adapter, execution, lock_credentials=True)
+    if blocked is not None:
+        return _pause(
+            session,
+            blocked if blocked.startswith("credentials_") else "worker_task_capability_unavailable",
+        )
     # A lost instance's process and local resources cannot be presumed gone
     # from expiry or a new lease. Until physical reconciliation exists, do not
     # execute even when a retry generation is already queued.
@@ -662,7 +672,10 @@ def _claim_fixed(
     slot.active_attempt_id = attempt.id
     slot.lease_expires_at = attempt.lease_expires_at
     slot.fencing_token = fence
-    payload = _build_payload(session, execution, adapter, worker, attempt, token, cleanup)
+    try:
+        payload = _build_payload(session, execution, adapter, worker, attempt, token, cleanup)
+    except BusinessCredentialError as error:
+        return _pause(session, error.reason)
     decision = V4ClaimDecision(
         decision="EXECUTE", reason="claimed", attempt_id=attempt.id, payload=payload
     )

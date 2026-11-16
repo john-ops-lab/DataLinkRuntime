@@ -73,6 +73,8 @@ def settle_execution(
             or owner._watchdog.is_alive()
             or owner._collector._thread.is_alive()
             or owner._collector._failed
+            or staged.redaction_fd != -1
+            or staged.redaction_identity is not None
             or owner._stop.is_set()
             or type(snapshot.intent) is not result_exchange_v4.ResultIntent
         ):
@@ -325,6 +327,7 @@ def settle_execution(
             )
             prepared.stage_state = "settled"
             preparer._active = None
+            preparer._staged = None
             return True
         except BaseException as error:
             preparer._poisoned = True

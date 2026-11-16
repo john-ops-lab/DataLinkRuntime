@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError
 from sqlalchemy.orm import Session
 
+from dlr.common.business_credentials_v4 import CAPABILITY
 from dlr.common.worker_languages_v4 import valid_capabilities
 from dlr.control import db
 from dlr.control.models import Worker
@@ -31,6 +32,7 @@ class _ReadyReport(BaseModel):
 
     isolation_capabilities: dict[str, StrictBool]
     capabilities: list[str] = ["python"]
+    business_credentials_v1: StrictBool = False
 
 
 def _pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -194,6 +196,9 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
             or not valid_capabilities(report.capabilities)
         ):
             raise ValueError
+        expected_flags: dict[str, object] = dict(flags)
+        if report.business_credentials_v1:
+            expected_flags[CAPABILITY] = True
     except (ValueError, UnicodeError, RecursionError, ValidationError):
         raise _error(422) from None
 
@@ -226,7 +231,7 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
         fence = process.worker_fence(session)
         worker = verify()
         worker.capabilities = list(report.capabilities)
-        worker.isolation_capabilities = dict(flags)
+        worker.isolation_capabilities = expected_flags
         worker.isolation_preflight_status = "passed"
         worker.isolation_preflight_at = worker_availability.current_time(session)
         worker.capacity_state = "ready"
@@ -243,7 +248,7 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
         if (
             worker.capacity_state != "ready"
             or worker.capabilities != report.capabilities
-            or worker.isolation_capabilities != flags
+            or worker.isolation_capabilities != expected_flags
             or worker.isolation_preflight_status != "passed"
         ):
             raise ValueError("Worker readiness unavailable")

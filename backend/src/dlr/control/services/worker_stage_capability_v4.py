@@ -3,10 +3,12 @@
 from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
+from dlr.common.business_credentials_v4 import BusinessCredentialError
 from dlr.common.config import settings
 from dlr.common.worker_languages_v4 import valid_capabilities
-from dlr.control.models import Adapter, AdapterCredentialBinding, AdapterVersion, Execution, Worker
+from dlr.control.models import Adapter, AdapterVersion, Execution, Worker
 from dlr.control.models.platform import PackageSource
+from dlr.control.services import business_credentials_v4 as business_credentials
 from dlr.control.services.adapter import domain_error
 
 
@@ -72,6 +74,7 @@ def require_new_execution(
     trigger: str,
     input_source_type: str,
     dependency_check: bool = False,
+    target_worker_id: int | None = None,
 ) -> None:
     if not settings.worker_remote_v4_enabled:
         return
@@ -83,10 +86,20 @@ def require_new_execution(
         input_source_type=input_source_type,
         dependency_check=dependency_check,
     )
-    if reason is None and session.scalar(
-        select(exists().where(AdapterCredentialBinding.adapter_id == adapter.id))
-    ):
-        reason = "credentials"
+    if reason is None:
+        try:
+            refs = business_credentials.adapter_bindings(session, adapter.id)
+            if refs and not settings.master_key:
+                from dlr.control.services.secrets import _require_secret_store
+
+                _require_secret_store()
+            business_credentials.check(
+                session,
+                refs,
+                adapter.runtime_worker_id if target_worker_id is None else target_worker_id,
+            )
+        except BusinessCredentialError as error:
+            reason = error.reason
     if reason is None and session.scalar(
         select(
             exists().where(
@@ -106,7 +119,9 @@ def require_new_execution(
         _reject(reason)
 
 
-def execution_block_reason(session: Session, adapter: Adapter, execution: Execution) -> str | None:
+def execution_block_reason(
+    session: Session, adapter: Adapter, execution: Execution, *, lock_credentials: bool = False
+) -> str | None:
     """Inspect immutable responsibility; never replace it with current defaults."""
     reason = _configuration_reason(
         session,
@@ -127,7 +142,15 @@ def execution_block_reason(session: Session, adapter: Adapter, execution: Execut
     if unsupported[0]:
         return "builtin_packages"
     if unsupported[1]:
-        return "credentials"
+        try:
+            business_credentials.check(
+                session,
+                business_credentials.execution_bindings(session, execution.id),
+                execution.target_worker_id_snapshot,
+                lock=lock_credentials,
+            )
+        except BusinessCredentialError as error:
+            return error.reason
     return None
 
 
@@ -146,6 +169,7 @@ def dispatch_blocked(session: Session, execution_id: int) -> bool:
             Execution.credential_bindings_snapshot == [],
             func.coalesce(func.jsonb_typeof(Execution.builtin_package_snapshot), "null") == "null",
             Worker.capabilities,
+            Execution.target_worker_id_snapshot,
         )
         .select_from(Execution)
         .join(Adapter, Adapter.id == Execution.adapter_id)
@@ -158,7 +182,25 @@ def dispatch_blocked(session: Session, execution_id: int) -> bool:
     ).one_or_none()
     if row is None:
         return True
-    language, kind, trigger, source, dependency, empty, no_credentials, no_builtin, languages = row
+    (
+        language,
+        kind,
+        trigger,
+        source,
+        dependency,
+        empty,
+        no_credentials,
+        no_builtin,
+        languages,
+        target,
+    ) = row
+    if not no_credentials:
+        try:
+            business_credentials.check(
+                session, business_credentials.execution_bindings(session, execution_id), target
+            )
+        except BusinessCredentialError:
+            return True
     return not (
         language in {"python", "javascript"}
         and kind == "task"
@@ -166,7 +208,6 @@ def dispatch_blocked(session: Session, execution_id: int) -> bool:
         and source in {"none", "json"}
         and dependency is False
         and empty is True
-        and no_credentials is True
         and no_builtin is True
         and valid_capabilities(languages)
         and language in languages
