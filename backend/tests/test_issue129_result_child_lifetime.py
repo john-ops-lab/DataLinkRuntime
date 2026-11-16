@@ -21,8 +21,9 @@ from sqlalchemy.orm import sessionmaker
 from dlr.control.services import claim_coordinator_v4 as module
 
 _CHILD = """
-import ctypes,json,os,signal,socket,struct,sys
+import ctypes,json,os,resource,signal,socket,struct,sys
 fd,parent_pid,_limit=map(int,sys.argv[1:])
+resource.setrlimit(resource.RLIMIT_AS,(_limit,_limit))
 libc=ctypes.CDLL(None)
 assert libc.prctl(1,signal.SIGKILL,0,0,0)==0 and os.getppid()==parent_pid
 def read(channel,size):
@@ -50,7 +51,7 @@ with socket.socket(fileno=fd) as channel:
 
 
 @contextmanager
-def _world(seconds=10, slots=None):
+def _world(seconds=10, slots=None, real_resources=False):
     """A real IPC child with synthetic transaction frames, never a result proof."""
     with ExitStack() as stack:
         stack.enter_context(patch.object(module.settings, "worker_v4_control_slots", slots or 1))
@@ -83,12 +84,13 @@ def _world(seconds=10, slots=None):
                 self.closed = True
 
         try:
-            with (
-                patch.object(
-                    module.ClaimEnvelope, "open", side_effect=lambda **_kwargs: Envelope()
-                ),
-                patch.object(module.subprocess, "Popen", side_effect=launch),
-            ):
+            if not real_resources:
+                stack.enter_context(
+                    patch.object(
+                        module.ClaimEnvelope, "open", side_effect=lambda **_kwargs: Envelope()
+                    )
+                )
+            with patch.object(module.subprocess, "Popen", side_effect=launch):
                 yield coordinator, authority, children
         finally:
             coordinator.close()
@@ -280,7 +282,10 @@ class ResultChildLifetimeTests(unittest.TestCase):
             self.assertFalse(entry.spawn.thread.is_alive())
 
     def test_two_slots_keep_exact_results_and_reject_busy_prepare_before_spawn(self):
-        with _world(slots=2) as (pool, authority, children):
+        # Opt in only in the existing bounded Linux deployment fixture. Normal
+        # unit runs do not pretend an arbitrary runner has a private cgroup.
+        native = os.environ.get("DLR_TEST_CLAIM_PROCESS") == "1"
+        with _world(slots=2, real_resources=native) as (pool, authority, children):
             a = pool.begin_result(authority, metadata=_metadata(1), body_bytes=2)
             pool.send_result(a, b"{}")
             pool.finish_result(a)
@@ -288,6 +293,22 @@ class ResultChildLifetimeTests(unittest.TestCase):
             pool.send_result(b, b"{}")
             pool.finish_result(b)
             self.assertEqual(len(children), 2)
+            if native:
+                from pathlib import Path
+
+                self.assertIsNotNone(pool._envelope)
+                pool._envelope.check()
+                for child in children:
+                    self.assertEqual(Path(f"/proc/{child.pid}/cgroup").read_text(), "0::/\n")
+                    limit = next(
+                        line
+                        for line in Path(f"/proc/{child.pid}/limits").read_text().splitlines()
+                        if line.startswith("Max address space")
+                    )
+                    self.assertEqual(
+                        limit.split()[-3:-1],
+                        [str(module.settings.worker_v4_claim_child_address_space_bytes)] * 2,
+                    )
             for worker_id in (1, 3):
                 with self.assertRaises(module.ClaimCapacityBusy):
                     pool.prepare(
