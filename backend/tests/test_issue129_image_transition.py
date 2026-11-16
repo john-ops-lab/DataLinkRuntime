@@ -178,6 +178,49 @@ def _predecessor(f, tmp_path):
     return previous, intent
 
 
+@pytest.mark.parametrize("entry", ["parse", "check", "apply"])
+def test_predecessor_source_digest_cannot_become_g_target(offline, tmp_path, entry):
+    f = offline
+    previous, intent = _predecessor(f, tmp_path)
+    target = replace(
+        f.target,
+        authority=replace(f.target.authority, image_digest=previous.source.authority.image_digest),
+    )
+    instance, token = uuid4(), identity.new_instance_token()
+    with f.factory.begin() as session:
+        identity.register_control(
+            session, f.source.authority, instance_id=instance, instance_token=token
+        )
+    with f.engine.begin() as conn:
+        conn.execute(
+            text("UPDATE control_process_instances SET lease_until=clock_timestamp()-interval '1s'")
+        )
+
+    def state():
+        with f.engine.connect() as conn:
+            return {
+                name: conn.execute(text(f"SELECT row_to_json(t) FROM {name} t")).scalars().all()
+                for name in (
+                    "control_cluster_authority",
+                    "control_image_transitions",
+                    "control_process_instances",
+                )
+            }
+
+    before = state()
+    with pytest.raises(transition.TransitionUnavailable):
+        if entry == "parse":
+            transition.read_intent(str(f.path), f.source, target, predecessor=previous)
+        else:
+            # The writer also enforces the invariant for an already parsed
+            # object; rejection must precede CAS, receipt append and revocation.
+            bad = replace(intent, target=target)
+            with f.factory() as session:
+                getattr(transition, entry)(session, bad, settings)
+                session.commit()
+    assert state() == before
+
+
 @pytest.mark.parametrize("unknown_commit", [False, True])
 def test_exact_proved_predecessor_appends_one_child_and_reads_old_f_history(
     offline, tmp_path, unknown_commit

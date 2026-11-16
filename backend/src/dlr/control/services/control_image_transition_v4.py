@@ -131,6 +131,7 @@ def read_intent(
             or predecessor.target_sha not in _F_RELEASE_SHAS
             or predecessor.target != source
             or predecessor.control_slots != value["control_slots"]
+            or target.authority.image_digest == predecessor.source.authority.image_digest
         ):
             raise ValueError
         for deployment in (source, target):
@@ -416,6 +417,11 @@ def _new_source(session: Session, intent: ImageTransition, *, lock: bool = False
         or intent.target_schema != SCHEMA_REVISION
         or intent.source_sha not in _F_RELEASE_SHAS
         or intent.target_sha in _F_RELEASE_SHAS | {SOURCE_SHA}
+        or (
+            intent.predecessor is not None
+            and intent.target.authority.image_digest
+            == intent.predecessor.source.authority.image_digest
+        )
     ):
         raise TransitionUnavailable("image_transition_pair_unavailable")
     latest = _validate_chain(_chain(session, lock=lock), intent)

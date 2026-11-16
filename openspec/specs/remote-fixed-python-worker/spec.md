@@ -20,6 +20,10 @@ W1-G MUST 保留可信 Agent `language_mode=python` 默认值且不要求 Node�
 ### Requirement: JavaScript 必须复用原有界执行与责任链
 W1-G MUST 仅增加固定 Worker 上无第三方依赖 JavaScript 的 manual/schedule、none/JSON 路径，沿既有 ESM `handle(context, input)` 和结果/日志合同。接收、schedule 启用/触发、派发及最终 Claim MUST 核对冻结任务与固定目标的封闭语言能力；JS 按 npm、Python 按 PyPI 检查 builtin 包源。requirements、dependency check、材料/文件、credential bindings、secrets 和其他来源/语言 MUST 保持拒绝。已接受 Execution MUST 保留原快照，能力变化或资源等待不得改写它、不建新 Attempt、不消耗执行重试、不 fallback。
 
+#### Scenario: 执行截止在 Sandbox 准备阶段到达
+- **WHEN** 原执行定时器明确到期，没有同时观察到父进程、控制通道或辅助进程异常，且原监管器回收、cgroup 归空和输出排空均已独立确认
+- **THEN** 沿原超时结果、物理清理及 ACK 链完成，不延长预算；准备失败、时间比较或缺失可信停止观察 MUST 保留 unknown，不回填旧 stopped 或扩大 B/C 资格
+
 #### Scenario: JS 任务指向 Python-only 节点
 - **WHEN** 创建新执行/启用 schedule，或已接受工作派发/最终 Claim 时目标不具对应能力
 - **THEN** 新责任前明确拒绝；旧责任有界等待并保持可读，容量忙与能力不匹配分开，固定路由不迁移

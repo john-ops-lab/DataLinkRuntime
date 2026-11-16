@@ -15,14 +15,95 @@ import pytest
 from dlr.control.schemas.reliable_runtime import V4TaskPayload
 from dlr.worker import (
     agent_v4,
+    attempt_supervisor_child_v4,
+    attempt_supervisor_v4,
     broker_config_v4,
     cgroup_namespace,
+    claim_preparation_v4,
     claim_task_child_v4,
+    execution_supervision_v4,
     node_runtime_v4,
     sandbox,
     task_fingerprint_v4,
 )
 from worker_runtime_support import attempt_payload
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="real Linux seqpacket polling")
+@pytest.mark.parametrize("competing", [None, "control", "parent", "helper"])
+def test_gated_timer_is_not_classified_when_another_stop_source_is_ready(competing):
+    """Real poll/IPC arbitration only; physical cutoff is verified by G2."""
+    control, sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    helper, helper_sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    parent_r, parent_w = os.pipe()
+    timer_r, timer_w = os.pipe()
+    seen = []
+    try:
+        os.write(timer_w, b"timer")
+        if competing == "control":
+            sender.send(b'{"op":"stop"}')
+        elif competing == "parent":
+            os.write(parent_w, b"parent")
+        elif competing == "helper":
+            helper_sender.send(b"GATED")
+        assert not attempt_supervisor_child_v4._probe_wait_signal(
+            control, helper, parent_r, timer_r, b"GATED", lambda: seen.append("cutoff")
+        )
+        assert seen == (["cutoff"] if competing is None else [])
+    finally:
+        for stream in (control, sender, helper, helper_sender):
+            stream.close()
+        for fd in (parent_r, parent_w, timer_r, timer_w):
+            os.close(fd)
+
+
+@pytest.mark.parametrize(
+    "state,reason,expected",
+    [
+        ("observed", "execution_cutoff", True),
+        ("observed", None, False),
+        ("unknown", "execution_cutoff", False),
+    ],
+)
+def test_failed_launch_gate_requires_observed_cutoff_before_result_handoff(
+    monkeypatch, state, reason, expected
+):
+    """Control-flow gate only; this fixture supplies no physical stop proof."""
+    staged = object.__new__(claim_preparation_v4.StagedClaim)
+    object.__setattr__(
+        staged,
+        "prepared",
+        SimpleNamespace(
+            attempt=SimpleNamespace(
+                local_deadline=lambda: 1e20, send_with_authority=lambda _: False
+            ),
+            reservation=SimpleNamespace(
+                limits=SimpleNamespace(execution_timeout_seconds=1, stream_max_bytes=1024)
+            ),
+        ),
+    )
+    supervisor = SimpleNamespace(prepare_sandbox=lambda: False, request_stop=lambda: None)
+    owner = SimpleNamespace(
+        _watchdog=SimpleNamespace(start=lambda: None),
+        observe=lambda **_: SimpleNamespace(state=state, stop_reason=reason),
+    )
+    monkeypatch.setattr(
+        attempt_supervisor_v4,
+        "start_sandbox_supervisor",
+        lambda *_a, **_k: (
+            SimpleNamespace(code="supervisor_started"),
+            supervisor,
+            object(),
+        ),
+    )
+    monkeypatch.setattr(
+        execution_supervision_v4, "_OutputCollector", lambda *_: SimpleNamespace(start=lambda: None)
+    )
+    monkeypatch.setattr(execution_supervision_v4, "SupervisedExecution", lambda *_: owner)
+    stop = threading.Event()
+    result = execution_supervision_v4.start_execution(staged, stop=stop)
+    assert result is (owner if expected else None)
+    assert stop.is_set() is (not expected)
 
 
 def test_worker_requires_prebuilt_anchor_and_retains_unknown_journal(tmp_path, monkeypatch):

@@ -369,6 +369,8 @@ export async function handle(context, input) {
 
 JS 使用原监管器、CPU/memory/pids/tmp/nofile/no-swap、结果证明、物理清理、结账和 ACK 顺序。B/C 仅增加 JS 单语言允许文件集合：实际 inventory 可为 Python、JS 或共同文件子集，旧 Python 缺部分模板文件仍可读；混合语言、未知文件、链接和不匹配 binding 拒绝。没有完整可信 stopped 的 partial staging 仍为 unknown，不因语言扩展而获得新恢复资格。
 
+原执行截止也可能在 Sandbox 准备或放行前到达。只有监管器独立观察到原执行定时器到期、没有同时出现父进程/控制通道/辅助进程异常，且原监管器回收、cgroup 归空和输出排空均已确认，才沿原超时结果、清理和 ACK 链完成；不延长执行预算。仅看到准备失败、进程退出或本地时间超过截止都不够，仍保留 unknown。修复不回填历史 stopped，也不改变旧未结记录的恢复资格。
+
 ### 精确 F→G 后继
 
 G 的新 apply 只接受 F main `0417b82c4ab6f76aefdf3eafe38327f46cb18358` 或原交付中已核实同产品输入的 F 制品；各组件真实 digest 与 G 目标 SHA/digest 映射须在操作前冻结。源、目标 schema 都是 `0088_issue129_image_transition`，**不运行新迁移**。相同 schema 或 Node 版本不表示其他发布对兼容。
