@@ -27,6 +27,16 @@ from dlr.control.services.worker_remote_deployment_v4 import require_dedicated_d
 
 SOURCE_SCHEMA = "0087_issue129_disposition"
 SOURCE_SHA = "a37c9d3e19985acddb1f3e33ff6d3c7337147270"
+F_SOURCE_SHA = "0417b82c4ab6f76aefdf3eafe38327f46cb18358"
+# Verified F build inputs from its original delivery. Product provenance and
+# actual image digests remain an offline operator responsibility.
+_F_RELEASE_SHAS = frozenset(
+    {
+        F_SOURCE_SHA,
+        "49269698f63cd85128f16f60c0ad2ba684d55902",
+        "fd7b7d2c4064c8ff55d713a5d9324823afb14c2a",
+    }
+)
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _FIELDS = {
@@ -63,10 +73,17 @@ class ImageTransition:
     target_schema: str
     intent_sha256: str
     control_slots: int
+    source_sha: str
+    target_sha: str
+    predecessor: ImageTransition | None = field(default=None, repr=False)
 
 
 def read_intent(
-    path: str, source: DeploymentDeclaration, target: DeploymentDeclaration
+    path: str,
+    source: DeploymentDeclaration,
+    target: DeploymentDeclaration,
+    *,
+    predecessor: ImageTransition | None = None,
 ) -> ImageTransition:
     """Bind the closed intent to both declarations, excluding private values."""
     try:
@@ -82,17 +99,38 @@ def read_intent(
                 previous is not None
                 and (previous.int == 0 or str(previous) != value["previous_id"])
             )
-            or value["source_schema"] != SOURCE_SCHEMA
             or value["target_schema"] != SCHEMA_REVISION
-            or value["source_sha"] != SOURCE_SHA
+            or (value["source_schema"], value["source_sha"])
+            not in {
+                (SOURCE_SCHEMA, SOURCE_SHA),
+                *((SCHEMA_REVISION, sha) for sha in _F_RELEASE_SHAS),
+            }
             or type(value["target_sha"]) is not str
             or _SHA.fullmatch(value["target_sha"]) is None
-            or value["target_sha"] == SOURCE_SHA
+            or value["target_sha"] == value["source_sha"]
+            or (
+                value["source_schema"] == SCHEMA_REVISION
+                and value["target_sha"] in _F_RELEASE_SHAS | {SOURCE_SHA}
+            )
             or type(value["evidence_sha256"]) is not str
             or _HEX.fullmatch(value["evidence_sha256"]) is None
             or type(value["control_slots"]) is not int
             or value["control_slots"] not in (1, 2)
-            or previous is not None  # This first supported hop has no predecessor.
+            or (previous is None) != (predecessor is None)
+        ):
+            raise ValueError
+        if predecessor is not None and (
+            value["source_schema"] != SCHEMA_REVISION
+            or predecessor.operation_id != previous
+            or previous == operation
+            or predecessor.previous_id is not None
+            or predecessor.predecessor is not None
+            or predecessor.source_schema != SOURCE_SCHEMA
+            or predecessor.source_sha != SOURCE_SHA
+            or predecessor.target_schema != SCHEMA_REVISION
+            or predecessor.target_sha not in _F_RELEASE_SHAS
+            or predecessor.target != source
+            or predecessor.control_slots != value["control_slots"]
         ):
             raise ValueError
         for deployment in (source, target):
@@ -135,10 +173,13 @@ def read_intent(
             previous,
             source,
             target,
-            SOURCE_SCHEMA,
+            value["source_schema"],
             SCHEMA_REVISION,
             digest,
             value["control_slots"],
+            value["source_sha"],
+            value["target_sha"],
+            predecessor,
         )
     except Exception:
         raise TransitionUnavailable("image_transition_intent_unavailable") from None
@@ -308,6 +349,83 @@ def _receipt_matches(row: Any, intent: ImageTransition) -> bool:
     )
 
 
+def _receipt_ids(row: dict[str, Any]) -> dict[str, Any]:
+    for key in ("operation_id", "previous_id", "cluster_id", "authority_epoch"):
+        if row[key] is not None:
+            row[key] = UUID(str(row[key]))
+    return row
+
+
+def _chain(session: Session, *, lock: bool = False) -> list[Any]:
+    # Two receipts are the entire supported history. Fetch one excess row to
+    # reject wider/unknown chains without accepting unbounded historical input.
+    return list(
+        session.execute(
+            text(
+                "SELECT * FROM control_image_transitions ORDER BY operation_id LIMIT 3"
+                + (" FOR SHARE" if lock else "")
+            )
+        ).mappings()
+    )
+
+
+def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
+    """Validate either a fresh F root or the single proved E→F predecessor.
+
+    Historical E→F receipt observation accepts its one same-schema successor;
+    that does not authorize another hop, nor creation of a new E transition.
+    """
+    if len(rows) > 2:
+        raise TransitionUnavailable("image_transition_conflict")
+    indexed = {row["operation_id"]: row for row in rows}
+    if len(indexed) != len(rows):
+        raise TransitionUnavailable("image_transition_conflict")
+    expected_root = intent.predecessor or intent
+    root = indexed.get(expected_root.operation_id)
+    if not rows:
+        if intent.previous_id is not None:
+            raise TransitionUnavailable("image_transition_conflict")
+        return None
+    if root is None or not _receipt_matches(root, expected_root) or root["previous_id"] is not None:
+        raise TransitionUnavailable("image_transition_conflict")
+    others = [row for row in rows if row["operation_id"] != root["operation_id"]]
+    if not others:
+        return root
+    child = others[0]
+    if (
+        root["source_schema"] != SOURCE_SCHEMA
+        or root["target_schema"] != SCHEMA_REVISION
+        or child["previous_id"] != root["operation_id"]
+        or child["cluster_id"] != root["cluster_id"]
+        or child["authority_epoch"] != root["authority_epoch"]
+        or child["source_digest"] != root["target_digest"]
+        or child["source_schema"] != SCHEMA_REVISION
+        or child["target_schema"] != SCHEMA_REVISION
+        or child["source_digest"] == child["target_digest"]
+        or child["target_digest"] == root["source_digest"]
+        or child["writer_xid"] <= 0
+        or (intent.predecessor is not None and not _receipt_matches(child, intent))
+    ):
+        raise TransitionUnavailable("image_transition_conflict")
+    return child
+
+
+def _new_source(session: Session, intent: ImageTransition, *, lock: bool = False) -> None:
+    if (
+        intent.source_schema != SCHEMA_REVISION
+        or intent.target_schema != SCHEMA_REVISION
+        or intent.source_sha not in _F_RELEASE_SHAS
+        or intent.target_sha in _F_RELEASE_SHAS | {SOURCE_SHA}
+    ):
+        raise TransitionUnavailable("image_transition_pair_unavailable")
+    latest = _validate_chain(_chain(session, lock=lock), intent)
+    if intent.previous_id is None:
+        if latest is not None:
+            raise TransitionUnavailable("image_transition_conflict")
+    elif latest is None or latest["operation_id"] != intent.previous_id:
+        raise TransitionUnavailable("image_transition_conflict")
+
+
 def observe(session: Session, intent: ImageTransition) -> dict[str, object]:
     """One independent read-only snapshot; no pre-commit row counts as proof."""
     _limits(session, readonly=True)
@@ -322,6 +440,9 @@ def observe(session: Session, intent: ImageTransition) -> dict[str, object]:
         session.execute(
             text("""
         SELECT row_to_json(r) AS receipt, a.*, latest.operation_id AS latest_id,
+               (SELECT coalesce(json_agg(row_to_json(b)), '[]'::json)
+                FROM (SELECT * FROM control_image_transitions
+                      ORDER BY operation_id LIMIT 3) b) AS chain,
                latest.target_digest AS latest_digest, latest.target_schema AS latest_schema
         FROM (SELECT 1) seed
         LEFT JOIN control_image_transitions r ON r.operation_id = :operation
@@ -335,22 +456,19 @@ def observe(session: Session, intent: ImageTransition) -> dict[str, object]:
         .mappings()
         .one()
     )
+    rows = [_receipt_ids(dict(item)) for item in row["chain"]]
+    latest = _validate_chain(rows, intent)
+    if (latest["operation_id"] if latest is not None else None) != row["latest_id"]:
+        raise TransitionUnavailable("image_transition_conflict")
     receipt = row["receipt"]
     if receipt is None:
-        legal = (
-            _authority_matches(row, intent.source, intent.source_schema)
-            if row["latest_id"] is None
-            else (
-                _identity_matches(row, intent.target)
-                and row["image_digest"] == row["latest_digest"]
-                and row["schema_revision"] == row["latest_schema"]
-            )
+        legal = _authority_matches(row, intent.source, intent.source_schema) and (
+            row["latest_id"] is None or row["latest_id"] == intent.previous_id
         )
         if not legal:
             raise TransitionUnavailable("image_transition_conflict")
         return {"status": "not_found", "operation_id": str(intent.operation_id)}
-    for k in ("operation_id", "previous_id", "cluster_id", "authority_epoch"):
-        receipt[k] = UUID(receipt[k]) if receipt[k] is not None else None
+    receipt = _receipt_ids(receipt)
     if not _receipt_matches(receipt, intent):
         raise TransitionUnavailable("image_transition_conflict")
     if (
@@ -399,22 +517,22 @@ def check(session: Session, intent: ImageTransition, config: Settings) -> str:
             .one_or_none()
         )
         if receipt is not None:
-            if not _receipt_matches(receipt, intent) or not _authority_matches(
-                row, intent.target, intent.target_schema
+            latest = _validate_chain(_chain(session), intent)
+            if (
+                latest is None
+                or row is None
+                or not _receipt_matches(receipt, intent)
+                or not _identity_matches(row, intent.target)
+                or row["image_digest"] != latest["target_digest"]
+                or row["schema_revision"] != latest["target_schema"]
             ):
                 raise TransitionUnavailable("image_transition_conflict")
-            latest = session.scalar(
-                text(
-                    "SELECT operation_id FROM control_image_transitions t WHERE NOT EXISTS "
-                    "(SELECT 1 FROM control_image_transitions n "
-                    "WHERE n.previous_id=t.operation_id)"
-                )
+            return (
+                "committed_current"
+                if latest["operation_id"] == intent.operation_id
+                else "committed_superseded"
             )
-            if latest != intent.operation_id:
-                raise TransitionUnavailable("image_transition_conflict")
-            return "committed_current"
-        if session.scalar(text("SELECT EXISTS (SELECT 1 FROM control_image_transitions)")):
-            raise TransitionUnavailable("image_transition_conflict")
+        _new_source(session, intent)
     elif session.scalar(text("SELECT to_regclass('control_image_transitions')")) is not None:
         raise TransitionUnavailable("image_transition_schema_unavailable")
     if not _authority_matches(row, intent.source, intent.source_schema):
@@ -448,13 +566,20 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
         .one_or_none()
     )
     if receipt is not None:
-        if not _receipt_matches(receipt, intent) or not _identity_matches(row, intent.target):
+        latest = _validate_chain(_chain(session, lock=True), intent)
+        if (
+            latest is None
+            or row is None
+            or not _receipt_matches(receipt, intent)
+            or not _identity_matches(row, intent.target)
+            or row["image_digest"] != latest["target_digest"]
+            or row["schema_revision"] != latest["target_schema"]
+        ):
             raise TransitionUnavailable("image_transition_conflict")
         # Retried committed operations perform no fencing, even after restart.
         return
     _owner_fence(session, config)
-    if session.scalar(text("SELECT EXISTS (SELECT 1 FROM control_image_transitions)")):
-        raise TransitionUnavailable("image_transition_conflict")
+    _new_source(session, intent, lock=True)
     if not _authority_matches(row, intent.source, intent.source_schema):
         raise TransitionUnavailable("image_transition_authority_unavailable")
     session.execute(

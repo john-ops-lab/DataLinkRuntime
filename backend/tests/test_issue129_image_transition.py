@@ -39,7 +39,7 @@ from test_issue219_upgrade import migration_config, upgrade_database  # noqa: F4
 @pytest.fixture
 def offline(upgrade_database, tmp_path, monkeypatch):  # noqa: F811
     config = migration_config(upgrade_database)
-    command.upgrade(config, transition.SOURCE_SCHEMA)
+    command.upgrade(config, SCHEMA_REVISION)
     role = "w1f_runtime_" + uuid4().hex[:12]
     with upgrade_database.begin() as conn:
         conn.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
@@ -82,7 +82,7 @@ def offline(upgrade_database, tmp_path, monkeypatch):  # noqa: F811
             {
                 "cluster": source.authority.cluster_id,
                 "epoch": source.authority_epoch,
-                "schema": transition.SOURCE_SCHEMA,
+                "schema": SCHEMA_REVISION,
                 "image": source.authority.image_digest,
                 "master": proof.master_check,
                 "admin": proof.admin_check,
@@ -98,9 +98,9 @@ def offline(upgrade_database, tmp_path, monkeypatch):  # noqa: F811
     body = {
         "operation_id": str(uuid4()),
         "previous_id": None,
-        "source_schema": transition.SOURCE_SCHEMA,
+        "source_schema": SCHEMA_REVISION,
         "target_schema": SCHEMA_REVISION,
-        "source_sha": transition.SOURCE_SHA,
+        "source_sha": transition.F_SOURCE_SHA,
         "target_sha": "b" * 40,
         "evidence_sha256": "e" * 64,
         "control_slots": 2,
@@ -133,6 +133,143 @@ def offline(upgrade_database, tmp_path, monkeypatch):  # noqa: F811
 
 def _migrate(f):
     command.upgrade(f.config, SCHEMA_REVISION)
+
+
+def _predecessor(f, tmp_path):
+    """Database fixture for a committed legacy F root, not an upgrade proof."""
+    old = replace(
+        f.source, authority=replace(f.source.authority, image_digest="sha256:" + "0" * 64)
+    )
+    body = dict(
+        f.body,
+        source_schema=transition.SOURCE_SCHEMA,
+        source_sha=transition.SOURCE_SHA,
+        target_sha=transition.F_SOURCE_SHA,
+        operation_id=str(uuid4()),
+        previous_id=None,
+    )
+    path = tmp_path / "previous-intent.json"
+    path.write_text(json.dumps(body))
+    path.chmod(0o600)
+    previous = transition.read_intent(str(path), old, f.source)
+    with f.engine.begin() as conn:
+        conn.execute(
+            text("""
+            INSERT INTO control_image_transitions
+              (operation_id,cluster_id,authority_epoch,previous_id,source_digest,target_digest,
+               source_schema,target_schema,intent_sha256,writer_xid,committed_at)
+            VALUES (:id,:cluster,:epoch,NULL,:source,:target,:ss,:ts,:intent,
+                    txid_current(),clock_timestamp())
+        """),
+            {
+                "id": previous.operation_id,
+                "cluster": previous.source.authority.cluster_id,
+                "epoch": previous.source.authority_epoch,
+                "source": previous.source.authority.image_digest,
+                "target": previous.target.authority.image_digest,
+                "ss": previous.source_schema,
+                "ts": previous.target_schema,
+                "intent": previous.intent_sha256,
+            },
+        )
+    body = dict(f.body, previous_id=str(previous.operation_id))
+    f.path.write_text(json.dumps(body))
+    intent = transition.read_intent(str(f.path), f.source, f.target, predecessor=previous)
+    return previous, intent
+
+
+@pytest.mark.parametrize("unknown_commit", [False, True])
+def test_exact_proved_predecessor_appends_one_child_and_reads_old_f_history(
+    offline, tmp_path, unknown_commit
+):
+    f = offline
+    previous, intent = _predecessor(f, tmp_path)
+    with f.factory() as session:
+        assert transition.check(session, intent, settings) == "ready_to_apply"
+    with f.factory() as session:
+        assert transition.observe(session, intent)["status"] == "not_found"
+
+    class LostReply(Session):
+        def commit(self):
+            super().commit()
+            raise OSError("fixture COMMIT response lost")
+
+    factory = sessionmaker(f.engine, class_=LostReply) if unknown_commit else f.factory
+    assert maintain(factory, "apply", intent)["status"] == "committed_current"
+    with f.factory() as session:
+        assert transition.observe(session, previous)["status"] == "committed_superseded"
+    assert maintain(f.factory, "apply", previous)["status"] == "committed_superseded"
+    with f.factory() as session:
+        assert transition.check(session, previous, settings) == "committed_superseded"
+    assert maintain(f.factory, "apply", intent)["status"] == "committed_current"
+    with f.factory() as session:
+        assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == 2
+        rows = session.execute(
+            text("SELECT operation_id,previous_id,intent_sha256 FROM control_image_transitions")
+        ).all()
+        assert (previous.operation_id, None, previous.intent_sha256) in rows
+        assert (intent.operation_id, previous.operation_id, intent.intent_sha256) in rows
+
+
+@pytest.mark.parametrize(
+    "bad_kind",
+    [
+        "missing_evidence",
+        "digest",
+        "previous_id",
+        "slot_count",
+        "unknown_source",
+        "unknown_release",
+        "already_has_successor",
+        "aba",
+    ],
+)
+def test_predecessor_evidence_and_current_chain_refuse_without_new_writes(
+    offline, tmp_path, bad_kind
+):
+    f = offline
+    previous, intent = _predecessor(f, tmp_path)
+    if bad_kind == "missing_evidence":
+        with pytest.raises(transition.TransitionUnavailable):
+            transition.read_intent(str(f.path), f.source, f.target)
+        return
+    if bad_kind in {"digest", "previous_id", "slot_count", "unknown_source", "unknown_release"}:
+        changes = {
+            "digest": {"intent_sha256": "f" * 64},
+            "previous_id": {"operation_id": uuid4()},
+            "slot_count": {"control_slots": 1},
+            "unknown_source": {"source_sha": "c" * 40},
+            "unknown_release": {"target_sha": "c" * 40},
+        }[bad_kind]
+        bad_previous = replace(previous, **changes)
+        # Parser refuses invalid provenance before opening a database, or the
+        # stored receipt's exact digest rejects a changed historical intent.
+        try:
+            bad = transition.read_intent(str(f.path), f.source, f.target, predecessor=bad_previous)
+        except transition.TransitionUnavailable:
+            return
+    else:
+        assert maintain(f.factory, "apply", intent)["status"] == "committed_current"
+        if bad_kind == "aba":
+            with f.engine.begin() as conn:
+                conn.execute(
+                    text("UPDATE control_cluster_authority SET image_digest=:source"),
+                    {"source": f.source.authority.image_digest},
+                )
+        bad = replace(intent, operation_id=uuid4())
+    before = _snapshot(f)
+    with f.factory() as session, pytest.raises(transition.TransitionUnavailable):
+        transition.apply(session, bad, settings)
+    assert _snapshot(f) == before
+
+
+def test_g_binary_cannot_create_a_new_e_transition(offline, tmp_path):
+    f = offline
+    body = dict(f.body, source_schema=transition.SOURCE_SCHEMA, source_sha=transition.SOURCE_SHA)
+    f.path.write_text(json.dumps(body))
+    historical = transition.read_intent(str(f.path), f.source, f.target)
+    with f.factory() as session, pytest.raises(transition.TransitionUnavailable):
+        transition.apply(session, historical, settings)
 
 
 def _snapshot(f):
@@ -248,33 +385,23 @@ def _business_snapshot(f):
         }
 
 
-def test_source_check_zero_writes_and_intermediate_both_versions_refuse(offline, monkeypatch):
+def test_same_schema_f_source_check_is_readonly_and_target_waits_for_cas(offline):
     f = offline
     before = _snapshot(f)
     with f.factory() as session:
-        assert transition.check(session, f.intent, settings) == "source_checked"
-        assert session.scalar(text("SHOW transaction_read_only")) == "on"
-    with f.factory() as session:
-        assert transition.observe(session, f.intent)["status"] == "not_installed"
-    assert _snapshot(f) == before
-    _migrate(f)
-    assert _snapshot(f) == before
-    with f.factory() as session:
         assert transition.check(session, f.intent, settings) == "ready_to_apply"
-    for revision, declaration in (
-        (transition.SOURCE_SCHEMA, f.source),
-        (SCHEMA_REVISION, f.target),
-    ):
-        monkeypatch.setattr(identity, "SCHEMA_REVISION", revision)
-        with f.factory() as session, pytest.raises(identity.ControlIdentityUnavailable):
-            identity._authority(session, declaration.authority)
+        assert session.scalar(text("SHOW transaction_read_only")) == "on"
+    assert _snapshot(f) == before
+    # Same schema does not authorize the G declaration before the transition.
+    with f.factory() as session:
+        identity._authority(session, f.source.authority)
+    with f.factory() as session, pytest.raises(identity.ControlIdentityUnavailable):
+        identity._authority(session, f.target.authority)
     with f.factory() as session:
         assert transition.observe(session, f.intent)["status"] == "not_found"
-    with f.factory() as session:
-        transition.apply(session, f.intent, settings)
-        session.commit()
-    with f.factory() as session:
-        assert transition.observe(session, f.intent)["status"] == "committed_current"
+    assert maintain(f.factory, "apply", f.intent)["status"] == "committed_current"
+    with f.factory() as session, pytest.raises(identity.ControlIdentityUnavailable):
+        identity._authority(session, f.source.authority)
 
 
 @pytest.mark.parametrize("committed", [False, True])
@@ -535,8 +662,8 @@ def test_same_id_conflict_new_id_stale_predecessor_and_superseded_receipt(offlin
             text("UPDATE control_cluster_authority SET image_digest=:digest"),
             {"digest": f.source.authority.image_digest},
         )
-    with f.factory() as session:
-        assert transition.observe(session, f.intent)["status"] == "committed_superseded"
+    with f.factory() as session, pytest.raises(transition.TransitionUnavailable):
+        transition.observe(session, f.intent)
     with f.factory() as session, pytest.raises(transition.TransitionUnavailable):
         transition.apply(session, replace(f.intent, operation_id=uuid4()), settings)
 
@@ -681,7 +808,7 @@ def test_live_control_lease_blocks_then_expired_instance_is_permanently_revoked(
 ):
     f = offline
     instance, token = uuid4(), identity.new_instance_token()
-    monkeypatch.setattr(identity, "SCHEMA_REVISION", transition.SOURCE_SCHEMA)
+    monkeypatch.setattr(identity, "SCHEMA_REVISION", f.intent.source_schema)
     with f.factory.begin() as session:
         identity.register_control(
             session, f.source.authority, instance_id=instance, instance_token=token
@@ -733,8 +860,13 @@ def test_runtime_login_identity_cannot_apply_even_with_application_read_grants(o
     assert _snapshot(f) == before
 
 
-def test_competing_operation_waits_for_exclusive_gate_then_cannot_fork(offline):
+@pytest.mark.parametrize("has_predecessor", [False, True])
+def test_competing_operation_waits_for_exclusive_gate_then_cannot_fork(
+    offline, tmp_path, has_predecessor
+):
     f = offline
+    if has_predecessor:
+        _previous, f.intent = _predecessor(f, tmp_path)
     _migrate(f)
     waiting = Event()
     competitor = replace(f.intent, operation_id=uuid4())
@@ -759,7 +891,10 @@ def test_competing_operation_waits_for_exclusive_gate_then_cannot_fork(offline):
         with f.factory() as session:
             assert transition.observe(session, f.intent)["status"] == "committed_current"
         with f.factory() as session:
-            assert transition.observe(session, competitor)["status"] == "not_found"
-            assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == 1
+            with pytest.raises(transition.TransitionUnavailable):
+                transition.observe(session, competitor)
+            assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == (
+                2 if has_predecessor else 1
+            )
     finally:
         other_engine.dispose()

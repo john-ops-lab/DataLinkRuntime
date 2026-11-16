@@ -1,10 +1,11 @@
-"""Restricted fixed Python Worker capabilities at acceptance and final Claim."""
+"""Restricted dependency-free Worker tasks at acceptance and final Claim."""
 
 from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
-from dlr.control.models import Adapter, AdapterCredentialBinding, AdapterVersion, Execution
+from dlr.common.worker_languages_v4 import valid_capabilities
+from dlr.control.models import Adapter, AdapterCredentialBinding, AdapterVersion, Execution, Worker
 from dlr.control.models.platform import PackageSource
 from dlr.control.services.adapter import domain_error
 
@@ -23,7 +24,8 @@ def _reject(reason: str) -> None:
     raise domain_error(
         409,
         "worker_task_capability_unavailable",
-        "Remote Worker stage supports standard-library Python tasks with none/JSON input only",
+        "Remote Worker stage supports dependency-free Python/JavaScript tasks "
+        "with none/JSON input only",
         {"reason": reason},
     )
 
@@ -39,7 +41,7 @@ def _configuration_reason(
 ) -> str | None:
     if adapter.adapter_type != "task" or trigger not in {"manual", "schedule"}:
         return "trigger"
-    if adapter.language != "python":
+    if adapter.language not in {"python", "javascript"}:
         return "language"
     if dependency_check:
         return "dependency_check"
@@ -88,9 +90,14 @@ def require_new_execution(
     if reason is None and session.scalar(
         select(
             exists().where(
-                PackageSource.kind == "pypi",
+                PackageSource.kind == ("npm" if adapter.language == "javascript" else "pypi"),
                 PackageSource.is_default.is_(True),
-                PackageSource.index_url == "dlr-builtin://pypi",
+                PackageSource.index_url
+                == (
+                    "dlr-builtin://npm"
+                    if adapter.language == "javascript"
+                    else "dlr-builtin://pypi"
+                ),
             )
         )
     ):
@@ -122,3 +129,45 @@ def execution_block_reason(session: Session, adapter: Adapter, execution: Execut
     if unsupported[1]:
         return "credentials"
     return None
+
+
+def dispatch_blocked(session: Session, execution_id: int) -> bool:
+    """Recheck frozen work and target without loading code/input into Relay."""
+    if not settings.worker_remote_v4_enabled:
+        return False
+    row = session.execute(
+        select(
+            Adapter.language,
+            Adapter.adapter_type,
+            Execution.trigger,
+            Execution.input_source_type,
+            Execution.dependency_check,
+            AdapterVersion.requirements == "",
+            Execution.credential_bindings_snapshot == [],
+            func.coalesce(func.jsonb_typeof(Execution.builtin_package_snapshot), "null") == "null",
+            Worker.capabilities,
+        )
+        .select_from(Execution)
+        .join(Adapter, Adapter.id == Execution.adapter_id)
+        .join(
+            AdapterVersion,
+            (AdapterVersion.id == Execution.version_id) & (AdapterVersion.adapter_id == Adapter.id),
+        )
+        .outerjoin(Worker, Worker.id == Execution.target_worker_id_snapshot)
+        .where(Execution.id == execution_id)
+    ).one_or_none()
+    if row is None:
+        return True
+    language, kind, trigger, source, dependency, empty, no_credentials, no_builtin, languages = row
+    return not (
+        language in {"python", "javascript"}
+        and kind == "task"
+        and trigger in {"manual", "schedule"}
+        and source in {"none", "json"}
+        and dependency is False
+        and empty is True
+        and no_credentials is True
+        and no_builtin is True
+        and valid_capabilities(languages)
+        and language in languages
+    )

@@ -1,4 +1,4 @@
-# Dedicated new installation; one fixed Python Worker per Compose project/host.
+# Dedicated installation; one fixed Worker per Compose project/host.
 # W1-E permits two independent Workers with Control explicitly configured K=2.
 # No automatic restart
 # or empty replacement of persistent responsibility after an unknown result.
@@ -58,6 +58,7 @@ services:
       - --receive-memory-bytes
       - ${DLR_WORKER_RECEIVE_MEMORY_BYTES:-402653184}
     environment:
+      DLR_WORKER_LANGUAGE_MODE: ${DLR_WORKER_LANGUAGE_MODE:-python}
       DLR_WORKER_RECOVERY_OPERATION: ${DLR_WORKER_RECOVERY_OPERATION:-}
       SSL_CERT_FILE: /var/lib/dlr/private/ca.pem
       DLR_SANDBOX_BACKEND: cgroup_v2

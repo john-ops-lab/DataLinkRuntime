@@ -229,11 +229,10 @@ def valid_stopped(value: object, prepared: Mapping[str, Any]) -> bool:
         and (value["sandbox_mount_binding"] is None or _binding(value["sandbox_mount_binding"]))
         and isinstance(value["workspace_entries"], dict)
         and len(value["workspace_entries"]) <= 32
+        and prepared["dispatch"]["language"] in {"python", "javascript"}
         and all(
             name
             in {
-                ".dlr-harness.py",
-                "adapter.py",
                 "input.json",
                 "runtime_config.json",
                 "input_manifest.json",
@@ -243,6 +242,11 @@ def valid_stopped(value: object, prepared: Mapping[str, Any]) -> bool:
                 "temp",
                 "output",
             }
+            | (
+                {".dlr-harness.mjs", "adapter.mjs"}
+                if prepared["dispatch"]["language"] == "javascript"
+                else {".dlr-harness.py", "adapter.py"}
+            )
             and _binding(binding)
             for name, binding in value["workspace_entries"].items()
         )

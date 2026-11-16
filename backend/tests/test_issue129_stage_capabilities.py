@@ -19,7 +19,7 @@ from dlr.control.models import (
     Worker,
 )
 from dlr.control.models.platform import PackageSource
-from dlr.control.services.worker_stage_capability_v4 import execution_block_reason
+from dlr.control.services.worker_stage_capability_v4 import dispatch_blocked, execution_block_reason
 from test_adapters import create_adapter, save_version
 from test_credentials import create_credential, set_bindings
 from test_webhook_trigger import put_webhook
@@ -37,11 +37,12 @@ def _assert_no_responsibility(session_factory):
 @pytest.mark.parametrize(
     "unsupported", ["language", "requirements", "input_source", "credentials", "builtin_packages"]
 )
+@pytest.mark.parametrize("task_language", ["python", "javascript"])
 def test_unsupported_manual_and_schedule_take_no_responsibility(
-    api_client, session_factory, monkeypatch, unsupported
+    api_client, session_factory, monkeypatch, unsupported, task_language
 ):
     adapter = create_adapter(
-        api_client, language="javascript" if unsupported == "language" else "python"
+        api_client, language="java" if unsupported == "language" else task_language
     )
     save_version(
         api_client, adapter["id"], requirements="requests" if unsupported == "requirements" else ""
@@ -70,13 +71,14 @@ def test_unsupported_manual_and_schedule_take_no_responsibility(
             == 200
         )
     if unsupported == "builtin_packages":
+        kind = "npm" if task_language == "javascript" else "pypi"
         with session_factory.begin() as session:
             session.execute(update(PackageSource).values(is_default=False))
             session.add(
                 PackageSource(
                     name="stage-builtin",
-                    kind="pypi",
-                    index_url="dlr-builtin://pypi",
+                    kind=kind,
+                    index_url=f"dlr-builtin://{kind}",
                     is_default=True,
                 )
             )
@@ -164,3 +166,121 @@ def test_remote_stage_does_not_enable_webhook(api_client, session_factory, monke
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "worker_task_capability_unavailable"
     _assert_no_responsibility(session_factory)
+
+
+def _javascript_adapter(client, session_factory, monkeypatch):
+    adapter = create_adapter(client, language="javascript")
+    save_version(
+        client, adapter["id"], code="export async function handle(c, input) { return input; }"
+    )
+    with session_factory.begin() as session:
+        session.execute(
+            update(Worker).values(
+                protocol_version=4,
+                identity_lifecycle="reserved",
+                identity_enrolled_at=datetime.now(UTC),
+                capabilities=["python", "javascript"],
+            )
+        )
+    monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
+    return adapter
+
+
+@pytest.mark.parametrize("kind", ["pypi", "npm"])
+def test_javascript_uses_its_own_package_source_gate(
+    api_client, session_factory, monkeypatch, kind
+):
+    adapter = _javascript_adapter(api_client, session_factory, monkeypatch)
+    with session_factory.begin() as session:
+        session.execute(update(PackageSource).values(is_default=False))
+        session.add(
+            PackageSource(
+                name="language-builtin",
+                kind=kind,
+                index_url=f"dlr-builtin://{kind}",
+                is_default=True,
+            )
+        )
+    result = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    if kind == "npm":
+        assert result.status_code == 409, result.text
+        assert result.json()["detail"]["params"]["reason"] == "builtin_packages"
+        _assert_no_responsibility(session_factory)
+    else:
+        assert result.status_code == 202, result.text
+
+
+@pytest.mark.parametrize(
+    "languages",
+    [
+        ["python"],
+        ["javascript"],
+        ["javascript", "python"],
+        ["python", "javascript", "typescript"],
+        ["python", "python"],
+        [],
+    ],
+)
+def test_javascript_target_mismatch_refuses_manual_and_schedule_before_responsibility(
+    api_client, session_factory, monkeypatch, languages
+):
+    adapter = _javascript_adapter(api_client, session_factory, monkeypatch)
+    with session_factory.begin() as session:
+        session.execute(update(Worker).values(capabilities=languages))
+    result = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert result.status_code == 409, result.text
+    assert result.json()["detail"]["code"] == "runtime_worker_invalid"
+    assert (
+        api_client.patch(
+            f"/api/adapters/{adapter['id']}", json={"run_mode": "schedule"}
+        ).status_code
+        == 200
+    )
+    result = api_client.put(
+        f"/api/adapters/{adapter['id']}/schedule",
+        json={
+            "enabled": True,
+            "cron": "0 * * * *",
+            "timezone": "UTC",
+        },
+    )
+    assert result.status_code == 409, result.text
+    _assert_no_responsibility(session_factory)
+
+
+def test_frozen_javascript_dispatch_waits_without_attempt_or_retry_and_ignores_later_defaults(
+    api_client, session_factory, monkeypatch
+):
+    from dlr.control.services.outbox import lease_due_outbox
+
+    adapter = _javascript_adapter(api_client, session_factory, monkeypatch)
+    result = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert result.status_code == 202, result.text
+    execution_id = result.json()["id"]
+    with session_factory.begin() as session:
+        session.execute(update(Worker).values(capabilities=["python"]))
+    with session_factory() as session:
+        assert dispatch_blocked(session, execution_id)
+        assert lease_due_outbox(session, "test-g") == []
+        assert session.get(Execution, execution_id).attempt_count == 0
+        assert session.scalar(select(func.count()).select_from(ExecutionAttempt)) == 0
+        row = session.scalar(select(ExecutionOutbox))
+        assert row.status == "pending" and row.publish_attempts == 0
+        assert row.last_error_code == "worker_task_capability_unavailable"
+    with session_factory.begin() as session:
+        session.execute(update(Worker).values(capabilities=["python", "javascript"]))
+        session.execute(update(PackageSource).values(is_default=False))
+        session.add(
+            PackageSource(
+                name="later-npm", kind="npm", index_url="dlr-builtin://npm", is_default=True
+            )
+        )
+        assert not dispatch_blocked(session, execution_id)
+        execution = session.get(Execution, execution_id)
+        assert execution.builtin_package_snapshot is None
+        assert (
+            execution_block_reason(session, session.get(Adapter, adapter["id"]), execution) is None
+        )
+        execution.builtin_package_snapshot = {"unsupported": True}
+        session.flush()
+        assert dispatch_blocked(session, execution_id)

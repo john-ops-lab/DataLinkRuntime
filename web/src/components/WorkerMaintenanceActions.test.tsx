@@ -194,3 +194,23 @@ it("replaces the previous success notice immediately while a new POST is pending
   finish();
   await screen.findByText("本次操作已在独立查询中确认提交。");
 });
+
+
+it.each([["python"], ["python", "javascript"]].map((capabilities) => ({ capabilities })))("allows explicit activation for the closed set %s", async ({ capabilities }) => {
+  const snapshot = makeMaintenanceSnapshot({ scheduling_state: "disabled", capabilities });
+  const read = vi.fn(async () => snapshot);
+  const post = vi.spyOn(api, "maintainWorker").mockResolvedValue({});
+  vi.spyOn(api, "getWorkerMaintenanceOperation").mockImplementation(async (_id, id) => receipt("activate", id, "active"));
+  render(<WorkerMaintenanceActions worker={makeObservedWorker(snapshot)} onRead={read} onRefresh={async () => undefined} />);
+  await confirm("激活节点");
+  await screen.findByText("本次操作已在独立查询中确认提交。");
+  expect(post).toHaveBeenCalledTimes(1);
+});
+
+it.each([["javascript"], ["javascript", "python"], ["python", "python"], ["python", "go"]].map((capabilities) => ({ capabilities })))("blocks activation for unknown language sets %s", async ({ capabilities }) => {
+  const snapshot = makeMaintenanceSnapshot({ scheduling_state: "disabled", capabilities });
+  const post = vi.spyOn(api, "maintainWorker").mockResolvedValue({});
+  render(<WorkerMaintenanceActions worker={makeObservedWorker(snapshot)} onRead={async () => snapshot} onRefresh={async () => undefined} />);
+  expect((screen.getByRole("button", { name: "激活节点" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(post).not.toHaveBeenCalled();
+});

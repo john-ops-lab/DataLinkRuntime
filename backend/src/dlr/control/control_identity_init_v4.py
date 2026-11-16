@@ -52,10 +52,14 @@ def maintain(
 def _maintenance_main(args: list[str]) -> int:
     try:
         # Only filenames are arguments. Invalid input is never echoed by a parser.
-        if len(args) != 7 or args[0] not in {"check", "apply", "observe"}:
+        if len(args) not in {7, 11} or args[0] not in {"check", "apply", "observe"}:
             raise ValueError
         flags = dict(zip(args[1::2], args[2::2], strict=True))
-        if set(flags) != {"--source", "--target", "--intent"}:
+        required = {"--source", "--target", "--intent"}
+        if len(flags) != (len(args) - 1) // 2 or set(flags) not in (
+            required,
+            required | {"--previous-source", "--previous-intent"},
+        ):
             raise ValueError
         source = read_declaration(
             settings.model_copy(update={"control_identity_file": flags["--source"]})
@@ -63,7 +67,15 @@ def _maintenance_main(args: list[str]) -> int:
         target = read_declaration(
             settings.model_copy(update={"control_identity_file": flags["--target"]})
         )
-        intent = transition.read_intent(flags["--intent"], source, target)
+        predecessor = None
+        if "--previous-intent" in flags:
+            previous_source = read_declaration(
+                settings.model_copy(update={"control_identity_file": flags["--previous-source"]})
+            )
+            predecessor = transition.read_intent(
+                flags["--previous-intent"], previous_source, source
+            )
+        intent = transition.read_intent(flags["--intent"], source, target, predecessor=predecessor)
         engine = create_engine(
             settings.database_url,
             poolclass=NullPool,

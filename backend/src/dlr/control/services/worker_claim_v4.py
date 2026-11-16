@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session, defer
 
 from dlr.common.config import settings
 from dlr.common.managed_input import controlled_input_mount_name
+from dlr.common.worker_languages_v4 import valid_capabilities
 from dlr.control.models import (
     Adapter,
     AdapterExecutionAdmission,
@@ -525,13 +526,14 @@ def _claim_fixed(
         return _pause(session, "future_generation")
     if row.status == "superseded":
         return _pause(session, "dispatch_generation_not_active")
+    if not valid_capabilities(worker.capabilities) or adapter.language not in worker.capabilities:
+        return _pause(session, "worker_task_capability_unavailable")
     if (
         worker.scheduling_state != "active"
         or worker.capacity_state != "ready"
         or not worker_availability.is_effectively_online(worker, now=now)
         or worker.isolation_preflight_status != "passed"
         or not isolation_capabilities_ready(worker.isolation_capabilities)
-        or adapter.language not in worker.capabilities
     ):
         return _pause(session, "worker_not_ready")
     if worker_availability.has_unreconciled_v4_attempt(session, worker, now=now):

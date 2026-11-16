@@ -15,6 +15,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from dlr.common.worker_languages_v4 import valid_capabilities
 from dlr.control import db
 from dlr.control.api.worker_instance_v4 import _HEADERS, _process
 from dlr.control.models import ExecutionAttempt, Worker, WorkerMaintenanceOperation
@@ -288,7 +289,7 @@ def activate(
                 or worker.maintenance_version != payload.expected_version
                 or worker.capacity_state != "ready"
                 or worker.isolation_preflight_status != "passed"
-                or worker.capabilities != ["python"]
+                or not valid_capabilities(worker.capabilities)
                 or not isolation_capabilities_ready(worker.isolation_capabilities)
                 or not worker_availability.is_effectively_online(worker, now=now)
                 or worker_availability.has_unreconciled_v4_attempt(session, worker, now=now)

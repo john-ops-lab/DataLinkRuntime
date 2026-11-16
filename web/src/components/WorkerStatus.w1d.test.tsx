@@ -17,12 +17,26 @@ describe("W1-D limited remote Worker observations", () => {
     expect(workerFleetStatus([worker], false, null)).toBe("normal");
     render(<WorkerStatus workers={[worker]} loading={false} error={null} canManageCache />);
     expect(screen.getByText("状态观测正常")).toBeTruthy();
-    expect(screen.getByText("远程固定 Python（受限）")).toBeTruthy();
+    expect(screen.getByText("远程固定 Worker（受限）")).toBeTruthy();
     expect(screen.queryByText("执行接口不兼容")).toBeNull();
     expect(screen.queryByText("消息执行不可用")).toBeNull();
     expect(screen.queryByText("缓存管理")).toBeNull();
     expect(screen.getByText("未观察到历史阻塞")).toBeTruthy();
   });
+
+  it.each([["python"], ["python", "javascript"]].map((capabilities) => ({ capabilities })))("shows a fresh closed language set %s", ({ capabilities }) => {
+    const worker = makeObservedWorker({ capabilities });
+    expect(workerStatusLevel(worker)).toBe("normal");
+    render(<WorkerStatus workers={[worker]} loading={false} error={null} />);
+    expect(screen.getByText(capabilities.join(" / "))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "激活节点" })).toBeNull();
+  });
+
+  it.each([["javascript"], ["javascript", "python"], ["python", "python"], ["python", "go"], []].map((capabilities) => ({ capabilities })))(
+    "does not show unknown language sets as normal %s", ({ capabilities }) => {
+      expect(workerStatusLevel(makeObservedWorker({ capabilities }))).toBe("warning");
+    },
+  );
 
   it("keeps maintenance and expired observations distinct from protocol failures", () => {
     const worker = makeObservedWorker({ scheduling_state: "draining" });

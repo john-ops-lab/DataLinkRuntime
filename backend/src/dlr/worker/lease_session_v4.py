@@ -700,19 +700,24 @@ class WorkerLeaseSession:
                     raise
                 raise WorkerLeaseError("proof session unavailable") from None
 
-    def report_ready(self, flags: dict[str, bool]) -> None:
+    def report_ready(
+        self, flags: dict[str, bool], *, capabilities: list[str] | None = None
+    ) -> None:
         """Report a completed local fixed-Worker preflight under this proof."""
         if not self._same_process():
             raise WorkerLeaseError("proof session unavailable")
         with self._lock:
             try:
+                from dlr.common.worker_languages_v4 import valid_capabilities
                 from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
                 from dlr.worker.claim_http_v4 import request_proof
 
+                languages = ["python"] if capabilities is None else capabilities
                 if (
                     type(flags) is not dict
                     or set(flags) != REQUIRED_ISOLATION_CAPABILITIES
                     or any(value is not True for value in flags.values())
+                    or not valid_capabilities(languages)
                 ):
                     raise ValueError("preflight unavailable")
                 deadline = self._active_deadline()
@@ -726,7 +731,10 @@ class WorkerLeaseSession:
                     credential=self._credential,
                     instance=str(self._instance_id),
                     generation=claims.generation,
-                    body=json.dumps({"isolation_capabilities": flags}, separators=(",", ":")),
+                    body=json.dumps(
+                        {"isolation_capabilities": flags, "capabilities": languages},
+                        separators=(",", ":"),
+                    ),
                     instance_proof=proof,
                     attempt_proof=None,
                     timeout_seconds=min(self._timeout, cutoff - started),

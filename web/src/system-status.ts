@@ -141,8 +141,13 @@ export function workerStatusLevel(worker: Worker): SystemStatusLevel {
     && snapshot.scheduling_state === "active" && snapshot.capacity_state === "ready"
     && snapshot.isolation_preflight_status === "passed"
     && REQUIRED_ISOLATION_CAPABILITIES.every((key) => snapshot.isolation_capabilities[key] === true)
-    && snapshot.capabilities.length === 1 && snapshot.capabilities[0] === "python"
+    && restrictedWorkerCapabilities(snapshot.capabilities)
     && !snapshot.has_unreconciled_attempts ? "normal" : "warning";
+}
+
+export function restrictedWorkerCapabilities(value: readonly string[]): boolean {
+  return value[0] === "python" && (value.length === 1
+    || (value.length === 2 && value[1] === "javascript"));
 }
 
 export function workerFleetStatus(

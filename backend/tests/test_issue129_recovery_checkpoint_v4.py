@@ -87,6 +87,51 @@ def test_new_records_bind_both_frozen_charges_and_original_dispatch():
 
 
 @pytest.mark.parametrize(
+    "language,entries",
+    [
+        ("python", ["adapter.py"]),
+        ("python", [".dlr-harness.py", "input.json"]),
+        ("javascript", ["adapter.mjs"]),
+        ("javascript", [".dlr-harness.mjs", "runtime_config.json"]),
+        ("javascript", ["input", "temp", "output.json"]),
+    ],
+)
+def test_stopped_keeps_actual_single_language_subsets_and_old_python_records(language, entries):
+    prepared = _prepared()
+    prepared["dispatch"]["language"] = language
+    stopped = _stopped(prepared)
+    stopped["workspace_entries"] = {
+        name: {"device": 7, "inode": 30 + i} for i, name in enumerate(entries)
+    }
+    assert checkpoint.valid_stopped(stopped, prepared)
+    assert stopped["version"] == prepared["version"] == 1
+
+
+@pytest.mark.parametrize(
+    "language,entries",
+    [
+        ("python", ["adapter.mjs"]),
+        ("javascript", ["adapter.py"]),
+        ("javascript", [".dlr-harness.py", "adapter.mjs"]),
+        ("python", [".dlr-harness.py", ".dlr-harness.mjs"]),
+        ("javascript", ["package.json"]),
+        ("javascript", ["node_modules"]),
+        ("javascript", ["../adapter.mjs"]),
+        ("typescript", ["input.json"]),
+    ],
+)
+def test_language_does_not_widen_checkpoint_inventory_or_recovery_qualification(language, entries):
+    prepared = _prepared()
+    prepared["dispatch"]["language"] = language
+    stopped = _stopped(prepared)
+    stopped["workspace_entries"] = {
+        name: {"device": 7, "inode": 30 + i} for i, name in enumerate(entries)
+    }
+    assert not checkpoint.valid_stopped(stopped, prepared)
+    assert not checkpoint.valid_stopped(None, prepared)
+
+
+@pytest.mark.parametrize(
     "key,value",
     [
         ("version", True),

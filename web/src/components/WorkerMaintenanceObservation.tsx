@@ -28,6 +28,7 @@ export default function WorkerMaintenanceObservation({ worker }: { worker: Worke
             <dt>{t("worker.maintenance.observedOnline")}</dt><dd>{t(snapshot.online ? "worker.online" : "worker.offline")}</dd>
             <dt>{t("worker.maintenance.scheduling")}</dt><dd>{t(`worker.maintenance.state.${snapshot.scheduling_state}`)}</dd>
             <dt>{t("worker.maintenance.capacity")}</dt><dd>{t(`worker.maintenance.capacityState.${snapshot.capacity_state}`)}</dd>
+            <dt>{t("worker.maintenance.languages")}</dt><dd>{snapshot.capabilities.join(" / ") || "—"}</dd>
             <dt>{t("worker.maintenance.version")}</dt><dd data-testid="worker-maintenance-version">{snapshot.maintenance_version}</dd>
             <dt>{t("worker.maintenance.nominalLease")}</dt><dd>{format(snapshot.instance_lease_until)}</dd>
             <dt>{t("worker.maintenance.preflight")}</dt><dd>{t(`worker.maintenance.preflightState.${snapshot.isolation_preflight_status}`)} · {format(snapshot.isolation_preflight_at)}</dd>
