@@ -1,17 +1,20 @@
 """Real Linux child lifetime across one intent, with synthetic transaction frames."""
 
 import asyncio
+import json
 import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import unittest
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -47,55 +50,59 @@ with socket.socket(fileno=fd) as channel:
 
 
 @contextmanager
-def _world(seconds=10):
+def _world(seconds=10, slots=None):
     """A real IPC child with synthetic transaction frames, never a result proof."""
-    engine = create_engine("sqlite://")  # No connection or database operation is performed.
-    coordinator = module.ClaimCoordinator()
-    deadline = module._clock() + seconds
-    authority = SimpleNamespace(
-        _sessions=sessionmaker(bind=engine),
-        check_authority=lambda: None,
-        claim_child_identity=lambda: ("22222222-2222-4222-8222-222222222222", "test", deadline),
-        _deployment=SimpleNamespace(worker_proof_signing_key=b"s" * 32),
-    )
-    children = []
-    popen = subprocess.Popen
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(module.settings, "worker_v4_control_slots", slots or 1))
+        engine = create_engine("sqlite://")  # No connection or database operation is performed.
+        coordinator = module._ClaimSlot() if slots is None else module.ClaimCoordinator()
+        deadline = module._clock() + seconds
+        authority = SimpleNamespace(
+            _sessions=sessionmaker(bind=engine),
+            check_authority=lambda: None,
+            claim_child_identity=lambda: ("22222222-2222-4222-8222-222222222222", "test", deadline),
+            _deployment=SimpleNamespace(worker_proof_signing_key=b"s" * 32),
+        )
+        children = []
+        popen = subprocess.Popen
 
-    def launch(command, **kwargs):
-        child = popen([sys.executable, "-I", "-S", "-c", _CHILD, *command[3:]], **kwargs)
-        children.append(child)
-        return child
+        def launch(command, **kwargs):
+            child = popen([sys.executable, "-I", "-S", "-c", _CHILD, *command[3:]], **kwargs)
+            children.append(child)
+            return child
 
-    class Envelope:
-        def __init__(self):
-            self.closed = False
+        class Envelope:
+            def __init__(self):
+                self.closed = False
 
-        def check(self):
-            if self.closed:
-                raise ValueError("closed envelope")
+            def check(self):
+                if self.closed:
+                    raise ValueError("closed envelope")
 
-        def close(self):
-            self.closed = True
+            def close(self):
+                self.closed = True
 
-    try:
-        with (
-            patch.object(module.ClaimEnvelope, "open", side_effect=lambda **_kwargs: Envelope()),
-            patch.object(module.subprocess, "Popen", side_effect=launch),
-        ):
-            yield coordinator, authority, children
-    finally:
-        coordinator.close()
-        for child in children:
-            if child.poll() is None:
-                child.kill()
-            child.wait(timeout=2)
-        engine.dispose()
+        try:
+            with (
+                patch.object(
+                    module.ClaimEnvelope, "open", side_effect=lambda **_kwargs: Envelope()
+                ),
+                patch.object(module.subprocess, "Popen", side_effect=launch),
+            ):
+                yield coordinator, authority, children
+        finally:
+            coordinator.close()
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=2)
+            engine.dispose()
 
 
-def _metadata():
+def _metadata(worker_id=1):
     return {
         "operation": "stage",
-        "worker_id": 1,
+        "worker_id": worker_id,
         "attempt_id": 9,
         "credential": "test-only",
         "instance_id": str(uuid4()),
@@ -272,6 +279,205 @@ class ResultChildLifetimeTests(unittest.TestCase):
             entry.spawn.thread.join(timeout=2)
             self.assertFalse(entry.spawn.thread.is_alive())
 
+    def test_two_slots_keep_exact_results_and_reject_busy_prepare_before_spawn(self):
+        with _world(slots=2) as (pool, authority, children):
+            a = pool.begin_result(authority, metadata=_metadata(1), body_bytes=2)
+            pool.send_result(a, b"{}")
+            pool.finish_result(a)
+            b = pool.begin_result(authority, metadata=_metadata(2), body_bytes=2)
+            pool.send_result(b, b"{}")
+            pool.finish_result(b)
+            self.assertEqual(len(children), 2)
+            for worker_id in (1, 3):
+                with self.assertRaises(module.ClaimCapacityBusy):
+                    pool.prepare(
+                        authority,
+                        worker_id=worker_id,
+                        instance_id=uuid4(),
+                        generation=1,
+                        credential="test-only",
+                        instance_proof="test-only",
+                        message=None,
+                        wire_budget=4096,
+                    )
+            from starlette.requests import Request
+
+            from dlr.control.api import worker_claim_v4 as api
+            from dlr.control.services.dispatch import build_dispatch_message
+
+            message = build_dispatch_message(
+                execution_id=3,
+                dispatch_generation=1,
+                adapter_id=3,
+                language="python",
+                resource_class="standard",
+                target_worker_id=3,
+            )
+
+            async def receive():
+                return {
+                    "type": "http.request",
+                    "body": message.model_dump_json().encode(),
+                    "more_body": False,
+                }
+
+            request = Request(
+                {
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/claim/prepare",
+                    "query_string": b"",
+                    "headers": [(b"x-dlr-worker-claim-wire-bytes", b"4096")],
+                },
+                receive,
+            )
+            with (
+                patch.object(api, "_coordinator", return_value=pool),
+                patch.object(api, "_process", return_value=authority),
+                patch.object(
+                    api, "_proved_identity", return_value=("test-only", uuid4(), 1, "test-only")
+                ),
+            ):
+                response = asyncio.run(api.prepare(request, 3))
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                json.loads(response.body),
+                {
+                    "decision": "DEFER",
+                    "reason": "control_transport_busy",
+                    "retry_after_seconds": 1,
+                    "attempt_id": None,
+                    "cancel_requested": False,
+                    "payload": None,
+                },
+            )
+            self.assertNotIn("x-dlr-claim-proposal", response.headers)
+            self.assertEqual(len(children), 2)
+            with self.assertRaises(module.ClaimUnavailable):
+                pool.begin_result(
+                    authority, metadata={**a.pending_finalize, "worker_id": 2}, body_bytes=2
+                )
+            self.assertTrue(all(child.poll() is None for child in children))
+            for entry in (b, a):
+                final = pool.begin_result(
+                    authority,
+                    metadata={**entry.pending_finalize, "receipt_nonce": str(uuid4())},
+                    body_bytes=2,
+                )
+                self.assertIs(final, entry)
+                pool.send_result(final, b"{}")
+                self.assertEqual(pool.finish_result(final), {"result_receipt": "test-only-receipt"})
+            self.assertEqual(len(children), 2)
+            self.assertTrue(all(child.poll() is not None for child in children))
+            self.assertTrue(all(slot._worker_id is None for slot in pool._slots))
+
+    def test_closing_is_charged_without_blocking_other_slot_or_old_timer_reuse(self):
+        with _world(slots=2) as (pool, authority, children):
+            a = pool.begin_result(authority, metadata=_metadata(1), body_bytes=2)
+            b = pool.begin_result(authority, metadata=_metadata(2), body_bytes=2)
+            started, release = threading.Event(), threading.Event()
+            discard = a.owner._discard_unpublished
+
+            def slow(*args):
+                started.set()
+                if not release.wait(3):
+                    raise ValueError("test close timeout")
+                return discard(*args)
+
+            with patch.object(a.owner, "_discard_unpublished", side_effect=slow):
+                closer = threading.Thread(target=pool.end_result, args=(a,))
+                closer.start()
+                try:
+                    self.assertTrue(started.wait(2))
+                    with self.assertRaises(module.ClaimCapacityBusy):
+                        pool.prepare(
+                            authority,
+                            worker_id=3,
+                            instance_id=uuid4(),
+                            generation=1,
+                            credential="test-only",
+                            instance_proof="test-only",
+                            message=None,
+                            wire_budget=4096,
+                        )
+                    with self.assertRaises(module.ClaimUnavailable):
+                        pool.begin_result(authority, metadata=_metadata(1), body_bytes=2)
+                    pool.send_result(b, b"{}")
+                    pool.finish_result(b)
+                    self.assertEqual(len(children), 2)
+                finally:
+                    release.set()
+                    closer.join(timeout=3)
+                self.assertFalse(closer.is_alive())
+            c = pool.begin_result(authority, metadata=_metadata(3), body_bytes=2)
+            self.assertIs(c.owner, a.owner)
+            self.assertGreater(c.allocation, a.allocation)
+            self.assertFalse(a.owner.end_result(a))
+            self.assertFalse(pool.end_result(a))
+            self.assertIsNone(c.process.poll())
+            self.assertIsNone(b.process.poll())
+
+    def test_unknown_reap_poison_is_global_and_retains_one_charged_slot(self):
+        with _world(slots=2) as (pool, authority, _children):
+            a = pool.begin_result(authority, metadata=_metadata(1), body_bytes=2)
+            b = pool.begin_result(authority, metadata=_metadata(2), body_bytes=2)
+            wait = a.process.wait
+            with patch.object(a.process, "wait", side_effect=subprocess.TimeoutExpired("test", 2)):
+                self.assertFalse(pool.end_result(a))
+            self.assertTrue(pool._poisoned.is_set())
+            self.assertEqual(a.owner._worker_id, 1)
+            with self.assertRaises(module.ClaimUnavailable):
+                pool.send_result(b, b"{}")
+            wait(timeout=2)
+            os.close(a.pidfd)
+            a.spawn.release.set()
+            a.spawn.thread.join(timeout=2)
+
+    def test_envelope_requires_all_slots_and_pins_the_total_limit(self):
+        from dlr.control.services.claim_envelope_v4 import ClaimEnvelope, ClaimEnvelopeUnavailable
+
+        facts = {
+            "memory.max": str(300 * 1024**2),
+            "pids.max": "256",
+            "memory.swap.max": "0",
+            "memory.swap.current": "0",
+        }
+        with patch.object(module.settings, "worker_v4_control_slots", 2):
+            fd = os.open("/tmp", os.O_RDONLY | os.O_DIRECTORY)
+            envelope = ClaimEnvelope(fd, child_address_space_bytes=128 * 1024**2)
+            try:
+                with (
+                    patch.object(envelope, "_location"),
+                    patch.object(envelope, "_read", side_effect=lambda name: facts[name]),
+                ):
+                    with self.assertRaises(ClaimEnvelopeUnavailable):
+                        envelope.check()
+                    facts["memory.max"] = str(384 * 1024**2)
+                    envelope.check()
+                    facts["memory.max"] = str(385 * 1024**2)
+                    with self.assertRaises(ClaimEnvelopeUnavailable):
+                        envelope.check()
+            finally:
+                envelope.close()
+
+    def test_resource_change_is_not_reported_as_pretransaction_busy(self):
+        with _world(slots=1) as (pool, authority, _children):
+            pool.begin_result(authority, metadata=_metadata(1), body_bytes=2)
+            pool._envelope.close()
+            with self.assertRaises(module.ClaimUnavailable) as raised:
+                pool.prepare(
+                    authority,
+                    worker_id=2,
+                    instance_id=uuid4(),
+                    generation=1,
+                    credential="test-only",
+                    instance_proof="test-only",
+                    message=None,
+                    wire_budget=4096,
+                )
+            self.assertNotIsInstance(raised.exception, module.ClaimCapacityBusy)
+            self.assertTrue(pool._poisoned.is_set())
+
     def test_invalid_stage_proof_reaps_the_retained_child(self):
         from fastapi import HTTPException
         from starlette.requests import Request
@@ -318,3 +524,18 @@ class ResultChildLifetimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("value", [0, 3, -1, True, False, 1.0, "1.0", "true"])
+def test_control_slot_configuration_is_strict_and_bounded(value):
+    from dlr.common.config import Settings
+
+    with pytest.raises(ValueError):
+        Settings(DLR_WORKER_V4_CONTROL_SLOTS=value)
+
+
+@pytest.mark.parametrize("value, expected", [(1, 1), (2, 2), ("1", 1), ("2", 2)])
+def test_control_slot_configuration_accepts_explicit_deployment_values(value, expected):
+    from dlr.common.config import Settings
+
+    assert Settings(DLR_WORKER_V4_CONTROL_SLOTS=value).worker_v4_control_slots == expected

@@ -808,27 +808,27 @@ export function AdapterConsole({
     let cancelled = false;
     let inFlight: Promise<void> | null = null;
     let generation = 0;
-    let previousView: WorkerMaintenanceView | null = null;
-    let previousWorkerId: number | null = null;
-    let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+    const views = new Map<number, WorkerMaintenanceView>();
+    const expiryTimers = new Map<number, ReturnType<typeof setTimeout>>();
     let observationController: AbortController | null = null;
     let observationInFlight: Promise<WorkerMaintenanceSnapshot> | null = null;
     let observationGeneration = 0;
     let observationFlightGeneration = 0;
     let observationFlightWorkerId: number | null = null;
-    let observedWorkerId: number | null = null;
+    let observedWorkerIds = new Set<number>();
 
     const invalidateObservation = () => {
       generation += 1;
       observationGeneration += 1;
-      if (previousView) previousView = { ...previousView, fresh: false };
-      if (expiryTimer !== null) clearTimeout(expiryTimer);
+      for (const [id, view] of views) views.set(id, { ...view, fresh: false });
+      for (const timer of expiryTimers.values()) clearTimeout(timer);
+      expiryTimers.clear();
       setWorkers((current) => current.map((worker) => worker.maintenance
         ? { ...worker, maintenance: { ...worker.maintenance, fresh: false } } : worker));
     };
 
     function observeWorker(workerId: number): Promise<WorkerMaintenanceSnapshot> {
-      if (cancelled || workerMaintenanceScope === null || observedWorkerId !== workerId
+      if (cancelled || workerMaintenanceScope === null || !observedWorkerIds.has(workerId)
         || document.visibilityState === "hidden") return Promise.reject(new Error("worker_maintenance_unavailable"));
       if (observationInFlight !== null) {
         if (observationFlightGeneration !== observationGeneration || observationFlightWorkerId !== workerId) {
@@ -841,7 +841,7 @@ export function AdapterConsole({
       observationFlightWorkerId = workerId;
       const startedAt = performance.now();
       const flight: Promise<WorkerMaintenanceSnapshot> = (async () => {
-        const old = previousWorkerId === workerId ? previousView?.snapshot ?? null : null;
+        const old = views.get(workerId)?.snapshot ?? null;
         let view: WorkerMaintenanceView = { snapshot: old, fresh: false, error: null, scope: workerMaintenanceScope };
         const controller = new AbortController();
         observationController = controller;
@@ -867,21 +867,23 @@ export function AdapterConsole({
           clearTimeout(timeout);
           if (observationController === controller) observationController = null;
         }
-        if (cancelled || readGeneration !== observationGeneration || observedWorkerId !== workerId) {
+        if (cancelled || readGeneration !== observationGeneration || !observedWorkerIds.has(workerId)) {
           throw new Error("worker_maintenance_superseded");
         }
-        previousView = view;
-        previousWorkerId = workerId;
+        views.set(workerId, view);
         setWorkers((current) => current.map((worker) => worker.id === workerId && worker.protocol_version === 4
           ? { ...worker, maintenance: view } : worker));
-        if (expiryTimer !== null) clearTimeout(expiryTimer);
+        const oldTimer = expiryTimers.get(workerId);
+        if (oldTimer !== undefined) clearTimeout(oldTimer);
         if (view.fresh) {
           const observed = view.snapshot;
-          expiryTimer = setTimeout(() => {
+          expiryTimers.set(workerId, setTimeout(() => {
             if (cancelled) return;
+            const current = views.get(workerId);
+            if (current?.snapshot === observed) views.set(workerId, { ...current, fresh: false });
             setWorkers((current) => current.map((worker) => worker.maintenance?.snapshot === observed
               ? { ...worker, maintenance: { ...worker.maintenance, fresh: false } } : worker));
-          }, Math.max(0, WORKER_OBSERVATION_MAX_AGE_MS - (performance.now() - startedAt)));
+          }, Math.max(0, WORKER_OBSERVATION_MAX_AGE_MS - (performance.now() - startedAt))));
         }
         if (!view.snapshot || !view.fresh || view.error !== null) throw new Error("worker_maintenance_unavailable");
         return view.snapshot;
@@ -912,19 +914,29 @@ export function AdapterConsole({
           if (cancelled || requestGeneration !== generation) return;
           let next: Worker[] = list.map((worker) => ({ ...worker, maintenance: undefined }));
           const remote = list.filter((worker) => worker.protocol_version === 4);
-          observedWorkerId = remote.length === 1 ? remote[0].id : null;
-          // The enabled deployment supports exactly one v4 Worker. Never
-          // create per-row polling or silently broaden a corrupt catalog.
-          if (workerMaintenanceScope !== null && remote.length === 1) {
-            const workerId = remote[0].id;
-            if (document.visibilityState !== "hidden") {
-              try { await observeWorker(workerId); }
-              catch { /* The shared observation keeps its own unknown/error state. */ }
+          const ids = remote.map((worker) => worker.id);
+          const supported = remote.length <= 2 && new Set(ids).size === ids.length;
+          observedWorkerIds = new Set(supported ? ids : []);
+          for (const id of views.keys()) {
+            if (!observedWorkerIds.has(id)) {
+              views.delete(id);
+              const timer = expiryTimers.get(id);
+              if (timer !== undefined) clearTimeout(timer);
+              expiryTimers.delete(id);
             }
-            if (cancelled || requestGeneration !== generation) return;
-            const view: WorkerMaintenanceView = previousWorkerId === workerId && previousView !== null
-              ? previousView : { snapshot: null, fresh: false, error: null, scope: workerMaintenanceScope };
-            next = next.map((worker) => worker.id === workerId ? { ...worker, maintenance: view } : worker);
+          }
+          // One shared request stream, with at most two independent observations.
+          if (workerMaintenanceScope !== null && supported) {
+            for (const workerId of ids) {
+              if (document.visibilityState !== "hidden") {
+                try { await observeWorker(workerId); }
+                catch { /* Only this Worker's shared observation becomes unknown. */ }
+              }
+              if (cancelled || requestGeneration !== generation) return;
+              const view = views.get(workerId)
+                ?? { snapshot: null, fresh: false, error: null, scope: workerMaintenanceScope };
+              next = next.map((worker) => worker.id === workerId ? { ...worker, maintenance: view } : worker);
+            }
           }
           if (!cancelled && requestGeneration === generation) {
             setWorkers(next);
@@ -964,7 +976,8 @@ export function AdapterConsole({
       generation += 1;
       observationGeneration += 1;
       observationController?.abort();
-      if (expiryTimer !== null) clearTimeout(expiryTimer);
+      for (const timer of expiryTimers.values()) clearTimeout(timer);
+      expiryTimers.clear();
       if (workerRefreshRef.current === refreshWorkers) {
         workerRefreshRef.current = null;
       }
