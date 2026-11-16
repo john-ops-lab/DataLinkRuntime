@@ -61,6 +61,9 @@ export default function WorkerStatus({ workers, loading, error, canManageCache =
           <Typography.Text type="secondary" className="worker-execution-summary">
             {t(remote ? "worker.maintenance.summary" : "worker.executionSummary", { ready: readyCount, total: workers.length })}
           </Typography.Text>
+          {workers.filter((worker) => worker.protocol_version === 4).length > 2 && (
+            <p className="worker-hint" role="alert">{t("worker.fixedNodeLimit")}</p>
+          )}
           <List
             size="small"
             dataSource={workers}

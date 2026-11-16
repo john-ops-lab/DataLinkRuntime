@@ -148,7 +148,7 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
     setStorageBlocked(false);
     if (scope !== null) {
       try {
-        const intent = readWorkerMaintenanceIntent(scope);
+        const intent = readWorkerMaintenanceIntent(scope, worker.id);
         if (intent !== null) {
           setPending(intent);
           if (intent.worker_id !== worker.id || (identity !== null && intent.worker_identity_id !== identity)) {

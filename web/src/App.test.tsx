@@ -8438,3 +8438,60 @@ it.each(["task", "webhook"] as const)("allows the first unsaved starter version 
   fireEvent.click(save());
   expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/versions") && init?.method === "POST")).toHaveLength(1);
 });
+
+it("W1-E serializes two admin observations and keeps both independent", async () => {
+  let release!: (value: RouteResponse) => void;
+  let bCalls = 0;
+  const first = new Promise<RouteResponse>((resolve) => { release = resolve; });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }), emptyAdaptersRoute,
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [7, 8].map((id) => makeReadyWorker({ id, protocol_version: 4 })) }) },
+    { method: "GET", match: "/api/workers/7/v4/status", respond: () => first },
+    { method: "GET", match: "/api/workers/8/v4/status", respond: () => {
+      bCalls += 1;
+      return { body: makeMaintenanceSnapshot({ worker_id: 8, maintenance_version: 6,
+        worker_identity_id: "88888888-8888-4888-8888-888888888888" }) };
+    } },
+  ]);
+  render(<App />);
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/workers/7/v4/status", expect.anything()));
+  await act(async () => { await Promise.resolve(); });
+  expect(bCalls).toBe(0);
+  act(() => { window.dispatchEvent(new Event("focus")); window.dispatchEvent(new Event("focus")); });
+  await act(async () => { release({ body: makeMaintenanceSnapshot() }); });
+  await waitFor(() => expect(screen.getByTestId("system-status-summary").textContent).toBe("系统正常"));
+  expect(bCalls).toBe(1);
+  fireEvent.click(screen.getByTestId("system-status-summary"));
+  expect(await screen.findAllByTestId("worker-v4-observation")).toHaveLength(2);
+  expect(screen.getAllByTestId("worker-maintenance-version").map((item) => item.textContent)).toEqual(["4", "6"]);
+});
+
+it("W1-E does not poison B observation when A fails", async () => {
+  stubFetch([
+    healthRoute({ status: "ok", database: true }), emptyAdaptersRoute,
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [7, 8].map((id) => makeReadyWorker({ id, protocol_version: 4 })) }) },
+    { method: "GET", match: "/api/workers/7/v4/status", respond: () => ({ status: 503, body: { detail: { code: "unavailable", message: "unavailable" } } }) },
+    { method: "GET", match: "/api/workers/8/v4/status", respond: () => ({ body: makeMaintenanceSnapshot({ worker_id: 8,
+      worker_identity_id: "88888888-8888-4888-8888-888888888888" }) }) },
+  ]);
+  render(<App />);
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/workers/8/v4/status", expect.anything()));
+  fireEvent.click(screen.getByTestId("system-status-summary"));
+  await waitFor(() => expect(screen.getAllByTestId("worker-maintenance-actions")).toHaveLength(2));
+  expect(screen.getAllByText("状态观测正常")).toHaveLength(1);
+});
+
+it("W1-E refuses to expand admin polling beyond two fixed nodes", async () => {
+  const mocked = stubFetch([
+    healthRoute({ status: "ok", database: true }), emptyAdaptersRoute,
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [7, 8, 9].map((id) => makeReadyWorker({ id, protocol_version: 4 })) }) },
+  ]);
+  render(<App />);
+  fireEvent.click(screen.getByTestId("system-status-summary"));
+  expect(await screen.findAllByTestId("worker-item")).toHaveLength(3);
+  expect(await screen.findByText("当前版本最多支持两个固定远程节点的管理观察；已停止新增维护写入，请核对部署范围。")).not.toBeNull();
+  expect(screen.queryAllByTestId("worker-maintenance-actions")).toHaveLength(0);
+  expect(screen.queryAllByRole("button", { name: /申请排空|激活节点|确认本次排空/ })).toHaveLength(0);
+  expect(mocked.mock.calls.some(([url]) => String(url).includes("/v4/"))).toBe(false);
+  expect(mocked.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+});

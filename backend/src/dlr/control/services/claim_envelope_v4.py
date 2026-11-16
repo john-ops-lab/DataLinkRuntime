@@ -8,6 +8,7 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 
+from dlr.common.config import settings
 from dlr.worker import cgroup_namespace, sandbox
 
 
@@ -28,6 +29,10 @@ class ClaimEnvelope:
         self._fd = fd
         self._pid = os.getpid()
         self._child_address_space_bytes = child_address_space_bytes
+        slots = settings.worker_v4_control_slots
+        if type(slots) is not int or slots not in {1, 2}:
+            raise ValueError("invalid Control slot limit")
+        self._slots = slots
         current = os.fstat(fd)
         namespace = os.stat("/proc/self/ns/cgroup")
         self._identity = (current.st_dev, current.st_ino)
@@ -127,8 +132,9 @@ class ClaimEnvelope:
                 or not memory.isdecimal()
                 or not pids.isascii()
                 or not pids.isdecimal()
-                or int(pids) < 2
-                or int(memory) < self._child_address_space_bytes + 128 * 1024 * 1024
+                or settings.worker_v4_control_slots != self._slots
+                or int(pids) < 1 + self._slots
+                or int(memory) < self._slots * self._child_address_space_bytes + 128 * 1024 * 1024
                 or self._read("memory.swap.max") != "0"
                 or self._read("memory.swap.current") != "0"
                 or self._read("memory.swap.max") != "0"

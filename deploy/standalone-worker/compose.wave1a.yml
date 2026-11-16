@@ -1,4 +1,6 @@
-# Dedicated new installation; one fixed Python Worker. No automatic restart
+# Dedicated new installation; one fixed Python Worker per Compose project/host.
+# W1-E permits two independent Workers with Control explicitly configured K=2.
+# No automatic restart
 # or empty replacement of persistent responsibility after an unknown result.
 services:
   worker:

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定义 Wave 1-A 专用新部署、W1-B 已提交结果受控恢复、W1-C 未提交结果的显式终态处置及 W1-D 受限运维界面的单 Control、单固定 Worker、标准库 Python 远程运行合同。该能力不替代既有默认 v3 部署，不声明 Pool、HA、旧部署迁移或异常历史自动恢复。
+定义 Wave 1-A 专用新部署、W1-B 已提交结果受控恢复、W1-C 未提交结果的显式终态处置、W1-D 受限运维界面及 W1-E 有界双固定 Worker 的单 Control、标准库 Python 远程运行合同。默认一个 Worker，显式两槽时支持两个各自单并发的固定 Worker。该能力不替代既有默认 v3 部署，不声明 Pool、HA、旧部署迁移或异常历史自动恢复。
 
 ## Requirements
 
@@ -90,6 +90,32 @@ W1-D 管理员 status 和精确 drain/activate 回执 MUST 由独立只读会话
 #### Scenario: 后续激活仍存在 C 处置
 - **WHEN** status 返回最近 C 摘要和原 Execution/Attempt 终态
 - **THEN** 界面持续显示原业务结果未知、结清不重试也不回滚；disabled/零计数/在线均不能替代物理停止、本地预算或当前 channel ACK，界面不提供强制清账或恢复向导
+
+### Requirement: 双固定 Worker 必须使用有限且精确归属的传输槽
+W1-E MUST 仅支持部署级 K=1/2、默认 1，在同一 Control 内预分配 K 个槽，每 Worker 最多一个。spawn 前 MUST 计费，Claim→结果 stage/finalize MUST 原位保留同 child 和预算；关闭、回收未知及 creator 未结束仍占名额。全局登记锁 MUST NOT 跨 IO、进程等待或业务事务。Control MUST 验证并固定实际 cgroup/namespace、内存和 PID 限额，满足 `memory.max >= K × child地址空间 + 128 MiB`、`pids.max >= K+1`、无 swap，并保持现有有限 CPU/PID/连接总边界。
+
+#### Scenario: A 保留结果槽时 B 准备任务
+- **WHEN** K=2，A 的 Claim 已提交且保留结果 child，B 具有独立固定路由、凭据和当前证明
+- **THEN** B 可以取得另一槽并提交自己的唯一 Attempt；proposal、身份/代际、Attempt/fence、nonce、超时及清理不跨 Worker 复用；各自 result 使用原槽，无 entry 的合法重入也先取 K 内名额且不重做 Claim
+
+#### Scenario: 新 prepare 确定在 Claim 事务前满槽
+- **WHEN** 当前 Control 权威和总资源已核验，但 spawn 和 Claim 事务前没有名额
+- **THEN** 仅本次返回 HTTP 200 六字段 DEFER：`control_transport_busy`、retry=1、attempt/payload=null、cancel=false，无 proposal/proof、Attempt、Retry 消耗或 ACK；原 consumer 有界退避，该响应不证明旧未知请求回滚
+
+#### Scenario: 子进程关闭或权威失效
+- **WHEN** A 的 IO 失败且可确认回收，或任意槽 child/creator 无法确认回收，或共享 Control 权威/总资源失效
+- **THEN** 可确认的 A 关闭只释放 A；未知回收保留计费并全局拒绝新 Claim/Result，权威/资源失效和已发 finalize/结果提交未知仍走原 503/未知，不伪装 DEFER；旧 timer、CAS、重复 finally 不关闭新槽或 B
+
+### Requirement: 双固定 Worker 的维护和浏览器意图必须独立
+A/B MUST 使用不同固定 Adapter、独立 HTTP/Broker 凭据和队列，单 Worker 仍为 Slot 0、prefetch=1；A 排空只拒绝 A 新 Claim，A 旧责任不自动转给 B。共享目录中管理员 MUST 最多观察两个 v4 节点，逐个 GET、全局最多一个在途，各有 5 秒超时、30 秒新鲜度及身份/代际/版本防乱序；单节点失败不污染另一节点。超两节点或目录不可信 MUST 禁止新维护写入，普通用户不读取管理员明细。
+
+#### Scenario: A 未知时操作 B 或从旧存储升级
+- **WHEN** 同一 tab 当前认证范围存在 A 未决 tuple，用户明确操作 B，或恢复旧 v1 tuple
+- **THEN** 固定 v2 容器最多保存两份非敏感 tuple、总计 8192 字节，每 Worker 一份且按稳定身份区分，不覆盖或驱逐未知；旧 v1 严格校验并持久化 v2、完整回读相等后才删除；冲突或存储失败保留原记录并零新 POST，刷新只读，同 tuple 显式重试，登出/Principal 改变清除两版本，迟到响应不清除另一份记录
+
+#### Scenario: 启用两槽或回退为单节点
+- **WHEN** 部署匹配 Control/Web，显式改变 K 或回退旧 Web/单节点
+- **THEN** 先排空并核对所有业务、结果、原卷记录和真实 child/creator 已结束后停 Control，K 只能离线改为 1/2；回退旧 Web 前 v2 无未决 tuple，保留第二节点的绑定、历史和排队责任，不靠重启、删记录、降 K 或转给 A 假装结清；B/C、默认 v3、协议和数据库合同保持，不声明 Pool、预留或 HA
 
 ### Requirement: 接收、解析和结果进程必须保持真实资源归属
 Control/Worker 存活的父子进程、业务数据副本和 IO MUST 受有限 cgroup 硬限及禁止 swap 条件约束。解析/结果子进程 MUST 在接收业务材料前应用其地址空间限额；真实结束/回收不明时不得提前释放资源账目。Control 可在同一 Attempt 内保留同一个有限资源子进程完成 Claim、结果 stage 和 finalize，但 MUST 每次重新验证当前 Control/Worker/Attempt 权威，原 Claim 期限和资源保留期限不得成为新授权。不同任务不得共享该子进程。

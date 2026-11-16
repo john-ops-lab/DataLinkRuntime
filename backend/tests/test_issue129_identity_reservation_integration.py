@@ -746,6 +746,162 @@ def test_reserved_identity_cannot_be_taken_over_by_legacy_worker(
         assert worker.status == "offline" and worker.scheduling_state == "disabled"
 
 
+def _assert_two_fixed_worker_scopes(client, factory, process, lease, trust_file, dispatch):
+    """Real PG/API ownership; native child concurrency is verified separately."""
+    from fastapi import HTTPException
+
+    reservation = client.post(
+        "/api/workers/v4/identities", json={"name": "remote-two", "request_id": str(uuid4())}
+    )
+    assert reservation.status_code == 201
+    second = reservation.json()["worker_id"]
+    issued = client.post(f"/api/workers/{second}/credentials/enrollment", json={})
+    assert issued.status_code == 201
+    exchanged = client.post(
+        f"/api/workers/{second}/credentials/exchange",
+        headers={"Authorization": "Bearer " + issued.json()["credential_id"]},
+    )
+    assert exchanged.status_code == 201
+    secret = exchanged.json()["credential_id"]
+    other = lease_session_v4.WorkerLeaseSession.from_trusted_file(
+        trust_file=trust_file,
+        base_url="https://control.example",
+        worker_id=second,
+        worker_identity_id=UUID(reservation.json()["worker_identity_id"]),
+        credential=secret,
+        credential_record_id=exchanged.json()["credential_record_id"],
+        instance_id=uuid4(),
+    )
+    other.register()
+    assert other._claims is not None and lease._claims is not None
+    # API fixture readiness only; no claim of a real local isolation preflight.
+    with factory.begin() as session:
+        worker = session.get(Worker, second)
+        worker.capacity_state = "ready"
+        worker.capabilities = ["python"]
+        worker.isolation_preflight_status = "passed"
+        worker.isolation_capabilities = {key: True for key in REQUIRED_ISOLATION_CAPABILITIES}
+    assert (
+        client.post(
+            f"/api/workers/{second}/v4/activate",
+            json={"request_id": str(uuid4()), "expected_version": 1},
+        ).status_code
+        == 200
+    )
+    headers = {
+        "Authorization": "Bearer " + secret,
+        "X-DLR-Worker-Instance": str(other._instance_id),
+        "X-DLR-Worker-Generation": str(other._claims.generation),
+        "X-DLR-Worker-Lease-Proof": other._proof,
+    }
+    assert (
+        client.post(
+            f"/api/workers/{lease._worker_id}/v4/proof-heartbeat", headers=headers
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            f"/api/workers/{second}/v4/proof-heartbeat",
+            headers={**headers, "X-DLR-Worker-Lease-Proof": lease._proof},
+        ).status_code
+        == 409
+    )
+    adapter = create_adapter(client, name="remote-claim-two")
+    assert (
+        client.patch(
+            f"/api/adapters/{adapter['id']}", json={"runtime_worker_id": second}
+        ).status_code
+        == 200
+    )
+    save_version(client, adapter["id"])
+    accepted = client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert accepted.status_code == 202
+    with factory() as session:
+        message = deserialize_dispatch_message(
+            session.scalar(
+                select(ExecutionOutbox).where(ExecutionOutbox.execution_id == accepted.json()["id"])
+            ).payload_json
+        )
+
+    def prepare(worker, message, *, credential=None, proof=None, proposal=None):
+        with factory() as session:
+            fence = process.worker_fence(session)
+            arguments = dict(
+                wire_budget=ClaimWireBudget(100000),
+                proof_context=ClaimProofContext(
+                    process.worker_proof_authority(session), proof or worker._proof
+                ),
+            )
+            authority = V4AttemptAuthority(
+                credential or worker._credential, worker._instance_id, worker._claims.generation
+            )
+            if proposal is not None:
+                return finalize_claim(
+                    session, worker._worker_id, message, authority, proposal=proposal, **arguments
+                )
+            return prepare_claim(
+                session,
+                worker._worker_id,
+                message,
+                authority,
+                check_authority=lambda: (fence.check(), process.check_authority()),
+                **arguments,
+            )
+
+    for arguments, code in (({"credential": secret}, 401), ({"proof": other._proof}, 409)):
+        with pytest.raises(HTTPException) as invalid:
+            prepare(lease, dispatch, **arguments)
+        assert invalid.value.status_code == code
+    wrong, absent = prepare(other, dispatch)
+    assert wrong.decision == "PAUSE_CONSUMER" and absent is None
+    first, first_proposal = prepare(lease, dispatch)
+    second_decision, second_proposal = prepare(other, message)
+    assert first.decision == second_decision.decision == "EXECUTE"
+    assert first_proposal is not None and second_proposal is not None
+    assert prepare(lease, dispatch, proposal=second_proposal).decision == "PAUSE_CONSUMER"
+    assert prepare(other, message, proposal=first_proposal).decision == "PAUSE_CONSUMER"
+    current = client.get(f"/api/workers/{lease._worker_id}/v4/status").json()
+    assert (
+        client.post(
+            f"/api/workers/{lease._worker_id}/v4/drain",
+            json={"request_id": str(uuid4()), "expected_version": current["maintenance_version"]},
+        ).status_code
+        == 200
+    )
+    paused, absent = prepare(lease, dispatch)
+    assert paused.decision == "PAUSE_CONSUMER" and absent is None
+    assert prepare(other, message)[0].decision == "EXECUTE"
+    with factory() as session:
+        for execution_id, target in (
+            (dispatch.execution_id, lease._worker_id),
+            (message.execution_id, second),
+        ):
+            execution = session.get(Execution, execution_id)
+            assert execution.attempt_count == 0 and execution.target_worker_id == target
+        assert session.scalar(select(func.count()).select_from(ExecutionAttempt)) == 0
+    # No Attempt was committed: restore A, stop B, preserve B's queued fixed target.
+    assert (
+        client.post(
+            f"/api/workers/{lease._worker_id}/v4/activate",
+            json={
+                "request_id": str(uuid4()),
+                "expected_version": current["maintenance_version"] + 1,
+            },
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/api/workers/{second}/v4/drain",
+            json={"request_id": str(uuid4()), "expected_version": 2},
+        ).status_code
+        == 200
+    )
+    other.retire()
+    return current["maintenance_version"] + 2
+
+
 @pytest.mark.parametrize(
     "controlled_recovery",
     [
@@ -1145,6 +1301,15 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             message = dict(row.payload_json)
         dispatch = deserialize_dispatch_message(message)
         worker_authority = V4AttemptAuthority(runtime_secret, instance, renewed.generation)
+
+        if (
+            controlled_recovery is False
+            and os.environ.get("DLR_TEST_CLAIM_PROCESS") != "1"
+            and os.environ.get("DLR_TEST_FIXED_WORKER_E2E") != "1"
+        ):
+            maintenance_version = _assert_two_fixed_worker_scopes(
+                client, runtime_sessions, process, lease, trust_file, dispatch
+            )
 
         def check_claim_authority() -> None:
             fence.check()

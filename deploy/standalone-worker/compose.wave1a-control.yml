@@ -32,6 +32,7 @@ services:
       - --ssl-keyfile
       - /run/dlr-private/tls-key.pem
     environment:
+      DLR_WORKER_V4_CONTROL_SLOTS: ${DLR_WORKER_V4_CONTROL_SLOTS:-1}
       DLR_WORKER_REMOTE_V4_ENABLED: 'true'
       DLR_WORKER_IDENTITY_RESERVATION_ENABLED: 'true'
       DLR_CONTROL_IDENTITY_FILE: /run/dlr-private/control.json

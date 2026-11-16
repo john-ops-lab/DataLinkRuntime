@@ -1,6 +1,6 @@
 # Wave 1-A 远程固定 Python Worker
 
-本阶段是专用新部署的受限功能：一个 Control 应用进程、一个固定 Worker、单并发执行；支持标准库 Python、none/JSON 输入及普通手动/定时任务。候选已完成两个独立 Linux 宿主上的真实运行、正常维护/停启和直接故障验证；最终代码审查及 CI 门禁以阶段 PR 为准。正式合同见 [remote-fixed-python-worker](../../openspec/specs/remote-fixed-python-worker/spec.md)。
+本阶段是专用新部署的受限功能：一个 Control 应用进程，默认一个固定 Worker；W1-E 显式配置后允许两个固定 Worker 各自单并发执行。支持标准库 Python、none/JSON 输入及普通手动/定时任务。W1-A 的两个独立 Linux 宿主验证只覆盖当时的单 Worker；W1-E 的三宿主并行及各阶段最终审查、CI 结果以相应 PR 为准。正式合同见 [remote-fixed-python-worker](../../openspec/specs/remote-fixed-python-worker/spec.md)。
 
 不支持第三方依赖、托管文件、内置包、业务凭据注入、其他语言、Webhook/事件/批次、旧身份迁移、异常后的自动恢复、Pool 或 HA。不能把业务凭据写入代码来绕过限制。#129 在阶段 PR 后保持开放。
 
@@ -219,7 +219,7 @@ docker compose -p dlr-wave1a-worker --env-file /ABSOLUTE/PRIVATE/worker.env \
 
 v4 分别展示观测在线、调度状态、容量、活动 Attempt、平台未结责任及历史阻塞。正常运行中的责任不等于历史恢复阻塞；“状态观测正常”只表示这一份观察满足显示条件，不授予 Claim 权限，也不承诺下一项任务可执行。服务端 Claim 仍重新检查当前身份、证明、期限、资源和冻结任务。
 
-观察复用共享 Worker 刷新：单固定 v4 部署中管理员最多追加一个状态 GET，普通用户不请求管理员明细。页面可见时沿用 30 秒周期，聚焦、手动刷新和操作后刷新共用单飞请求；隐藏页面不新增维护轮询。30 秒未成功刷新、隐藏恢复、缺字段或读取失败时，旧观察只作为带时间的历史记录，操作不可据此放行。每次打开确认及最终提交前都重新读取，身份、代际或维护版本变化时停止本次新写入。
+观察复用共享 Worker 刷新：W1-E 支持最多两个 v4 节点，同周期逐个 GET，全局最多一个管理观察 GET 在途，分别保持 5 秒超时及 30 秒新鲜度；一节点错误只使该节点未知。目录超过两节点或不可信时显示范围限制并禁用新维护写入。普通用户不请求管理员明细。页面可见时沿用 30 秒周期，聚焦、手动刷新和操作后刷新共用单飞请求；隐藏页面不新增维护轮询。30 秒未成功刷新、隐藏恢复、缺字段或读取失败时，旧观察只作为带时间的历史记录，操作不可据此放行。每次打开确认及最终提交前都重新读取，身份、代际或维护版本变化时停止本次新写入。
 
 ### 管理员 API
 
@@ -247,6 +247,8 @@ disabled、零计数、在线及历史回执均不能证明物理停止、原目
 
 POST 前，本页只把 origin、当前认证范围、Worker/稳定身份、action、request ID 和 expected_version 暂存到该标签页的 sessionStorage 并回读核对；不保存 Token、证明或恢复材料。存储失败则不发送。一个 Worker 同时只保留一个未决意图。
 
+W1-E 使用固定 `dlr-worker-maintenance-v2` 容器，每个认证范围最多两份、总计不超过 8192 字节，按 Worker ID 与稳定身份隔离。A 的未知请求不会被 B 覆盖，不驱逐未决记录给新动作腾位置。旧 v1 记录仅在严格校验、v2 持久化并回读完全相等后删除；迁入冲突或存储失败保留原记录并禁止新 POST。登出或 Principal 改变清除两版本；迟到回执只能清除它自己的精确 tuple。
+
 超时、断线或 503 后先查询一次精确回执；未见行或读取失败继续显示“待确认”，不将其当作回滚。刷新页面仅恢复原 tuple 并 GET，不自动重发。用户可选择“重试同一请求”并再次确认，始终发送原 ID/版本/动作，不能自动换版本或新建意图。当前版本已被后续操作替代时，显示“原操作已提交，当前已被替代”。首次明确拒绝的 409 需重新核对当前状态；已有未知请求重试得到 409 再查到 404 时，仍保留原意图，因为这次拒绝不能阻止原在途请求迟到提交。权限变化和登出清除本地意图，后端鉴权仍是权威。其他管理员可观察原 drain，但不能冒用原 request ID 完成排空。
 
 最近 C 处置始终显示固定未知原因和原 Execution/Attempt 终态，包括后续已激活时；“结清不重试也不回滚”，不代表业务成功。处置后的可信宿主与恢复操作仍按 [W1-B](remote-worker-wave1b.md) / [W1-C](remote-worker-wave1c.md) 执行，页面没有恢复或强制清账表单。
@@ -254,6 +256,26 @@ POST 前，本页只把 origin、当前认证范围、Worker/稳定身份、acti
 ### 版本配对与回退
 
 W1-D 使用现有 v4 开关与迁移链，不改变固定 React/Ant Design 基线。部署匹配 Web/Control；新 Web 遇到旧 Control 缺少完整观察 schema/回执接口时只读展示有限事实，提示管理版本需匹配并禁用新操作，不以旧 POST 200 替代独立读回。旧 Web 可继续原列表功能。停用新 Web 不回滚已提交维护意愿；若回退到没有旧 drain 版本围栏的 Control，应先停止管理写入并保留未决 tuple/审计，使用匹配版本向前修复，不能重置版本或覆盖旧数据库。
+
+## 有界双固定 Worker（W1-E）
+
+在私有 **Compose 环境文件**设置 `DLR_WORKER_V4_CONTROL_SLOTS=2`，并同步运行环境文件；Compose 的显式 environment 优先于 env_file。只接受 1 或 2，默认 1，不支持在线修改。每个 Worker 各用独立宿主、身份、HTTP/Broker 凭据、队列、runtime volume、journal 锚点及 Compose project；逐个 enrollment、真实 preflight、显式 activate。两个 Adapter 分别固定到 A/B。A 排空、离线或不兼容时，固定 A 的旧责任仍等待 A，不会转给 B。
+
+Control 进程内仅有 K 个固定 Claim/Result 槽，每 Worker 最多一个。spawn 前登记，Claim 后原位保留同 child，stage/finalize 沿用同槽与预算；无保留句柄的合法结果重入也须先取 K 内名额，不重做 Claim。全局登记锁不跨网络、进程等待或业务事务，各槽独立 IO。proof、proposal、instance/generation、Attempt/fence、nonce 及维护请求不得跨节点使用。
+
+有限 Control cgroup 须满足 `memory.max >= K × child_address_space_bytes + 128 MiB`、`pids.max >= K + 1`、swap 上限和当前用量为零，并保持现有 CPU/PID/连接总限制。实际内存和 PID 限额在首次使用后固定，变化即拒绝；默认 1.5 GiB Control、每 child 512 MiB 可覆盖两槽。Worker 宿主父级还须在全部容器硬限之和外给 keeper 留至少 0.05 CPU、16 MiB 及有限 PID 余量，仍须通过真实 preflight。
+
+仅新 prepare 已核对当前 Control 权威与总资源、且确定在 spawn 和 Claim 事务前没有名额时，返回 HTTP 200 的既有六字段 envelope：
+
+```json
+{"decision":"DEFER","reason":"control_transport_busy","retry_after_seconds":1,"attempt_id":null,"cancel_requested":false,"payload":null}
+```
+
+该响应无 proposal/proof，不产生 Attempt、不消耗执行 Retry、不 ACK；沿原 consumer 有界退避。它只说明本次 prepare 未进入 Claim 事务，不证明旧未知请求回滚。已发送 finalize、结果提交未知、权威/资源不可确认或 IO/进程状态不明仍沿原 503/未知路径，不改写持久未知意图。A 可确认回收的断连/超时只关闭 A 槽；无法确认 child/creator 回收时保留计费并全局拒绝新 Claim/Result。共享 Control/DB/Broker 故障也不在节点独立维护承诺内。
+
+升级先排空现有节点，核对业务、结果、本地记录和 Control child/creator 全部结束，再停 Control；保留数据库、身份和原卷，部署匹配 Control/Web 并显式启用 K=2。改变 K 或回退前同样须无在途/未知槽，不能用降 K、重启、换卷或删 pending 假装结清。回退旧 Web 前先确认 v2 无未决 tuple；回退为一节点时停止第二节点的新接收，保留其绑定、历史和排队责任，不静默转给 A。B/C 原恢复和阻断规则不变，无新迁移、协议升版、Pool、数据库资源预留或 HA。
+
+上述步骤仍受原 Control 权威声明门禁约束：数据库精确绑定声明的 `image_digest`。本批提供专用新部署和匹配声明下的停启/K 配置变更，不提供已有集群跨镜像的权威替换入口。新镜像与原声明不匹配时必须停止升级，不能直接改声明、epoch、数据库或用旧 digest 冒充新镜像；跨镜像权威更新仍需后续独立审计的部署能力。
 
 ## 诊断与停止边界
 

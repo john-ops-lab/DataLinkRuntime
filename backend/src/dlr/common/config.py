@@ -4,7 +4,7 @@ from os.path import isabs
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -46,12 +46,25 @@ class Settings(BaseSettings):
     worker_v4_database_admin_roles: list[str] = Field(
         default_factory=list, validation_alias="DLR_WORKER_V4_DATABASE_ADMIN_ROLES"
     )
+    worker_v4_control_slots: int = Field(
+        default=1, ge=1, le=2, validation_alias="DLR_WORKER_V4_CONTROL_SLOTS"
+    )
     worker_v4_claim_child_address_space_bytes: int = Field(
         default=512 * 1024 * 1024,
         ge=128 * 1024 * 1024,
         le=1 << 40,
         validation_alias="DLR_WORKER_V4_CLAIM_CHILD_ADDRESS_SPACE_BYTES",
     )
+
+    @field_validator("worker_v4_control_slots", mode="before")
+    @classmethod
+    def control_slots(cls, value: object) -> int:
+        if type(value) is int and value in {1, 2}:
+            return value
+        if type(value) is str and value in {"1", "2"}:
+            return int(value)
+        raise ValueError("Control slot limit must be 1 or 2")
+
     control_identity_file: str | None = Field(
         default=None, validation_alias="DLR_CONTROL_IDENTITY_FILE"
     )

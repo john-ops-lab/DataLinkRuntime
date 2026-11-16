@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import re
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from dlr.control.api.worker_instance_v4 import _HEADERS, _one_header, _process, _proved_identity
-from dlr.control.services.claim_coordinator_v4 import ClaimCoordinator
+from dlr.control.services.claim_coordinator_v4 import ClaimCapacityBusy, ClaimCoordinator
 from dlr.control.services.dispatch import deserialize_dispatch_message
 
 router = APIRouter()
@@ -46,7 +46,7 @@ def _invalid_constant(_value: str) -> None:
 
 
 @router.post("/api/workers/{worker_id}/v4/claim/prepare")
-async def prepare(request: Request, worker_id: int) -> StreamingResponse:
+async def prepare(request: Request, worker_id: int) -> Response:
     credential, instance, generation, instance_proof = _proved_identity(request, worker_id)
     raw_budget = _one_header(request, "x-dlr-worker-claim-wire-bytes")
     if (
@@ -79,6 +79,18 @@ async def prepare(request: Request, worker_id: int) -> StreamingResponse:
             instance_proof=instance_proof,
             message=message,
             wire_budget=int(raw_budget),
+        )
+    except ClaimCapacityBusy:
+        return JSONResponse(
+            {
+                "decision": "DEFER",
+                "reason": "control_transport_busy",
+                "retry_after_seconds": 1,
+                "attempt_id": None,
+                "cancel_requested": False,
+                "payload": None,
+            },
+            headers=_HEADERS,
         )
     except Exception:  # noqa: BLE001 - child and transaction status may be unknown
         raise _error(503) from None
