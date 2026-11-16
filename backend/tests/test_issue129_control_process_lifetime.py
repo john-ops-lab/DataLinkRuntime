@@ -4,12 +4,15 @@ import threading
 
 import pytest
 
+from dlr.common.config import Settings
 from dlr.control.services import control_process_v4
 
 
 @pytest.mark.parametrize("launch_before_error", [False, True])
 def test_lifecycle_start_failure_cannot_start_a_second_thread(monkeypatch, launch_before_error):
-    process = control_process_v4.ControlProcess(None, None, None)
+    process = control_process_v4.ControlProcess(
+        Settings(DLR_WORKER_REMOTE_V4_ENABLED=False), None, None
+    )
     entered, release = threading.Event(), threading.Event()
     launched = []
     original = threading.Thread.start
@@ -45,7 +48,9 @@ def test_lifecycle_start_failure_cannot_start_a_second_thread(monkeypatch, launc
 
 
 def test_probe_start_failure_keeps_one_unknown_inflight_probe(monkeypatch):
-    process = control_process_v4.ControlProcess(None, None, None)
+    process = control_process_v4.ControlProcess(
+        Settings(DLR_WORKER_REMOTE_V4_ENABLED=False), None, None
+    )
     process._state = "registered"
     process._confirmed_until = 60.0
     monkeypatch.setattr(control_process_v4, "_cache_clock", lambda: 1.0)
@@ -83,7 +88,9 @@ def test_probe_start_failure_keeps_one_unknown_inflight_probe(monkeypatch):
 
 
 def test_probe_start_failure_before_launch_stays_unknown_without_retries(monkeypatch):
-    process = control_process_v4.ControlProcess(None, None, None)
+    process = control_process_v4.ControlProcess(
+        Settings(DLR_WORKER_REMOTE_V4_ENABLED=False), None, None
+    )
     process._state = "registered"
     process._confirmed_until = 60.0
     monkeypatch.setattr(control_process_v4, "_cache_clock", lambda: 1.0)

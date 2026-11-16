@@ -180,6 +180,17 @@ def test_real_result_child_uses_exact_launch_snapshot_before_result_mac(tmp_path
     from dlr.worker import claim_task_child_v4 as ipc
     from dlr.worker import sandbox
 
+    seal_api = (
+        "F_ADD_SEALS",
+        "F_GET_SEALS",
+        "F_SEAL_WRITE",
+        "F_SEAL_GROW",
+        "F_SEAL_SHRINK",
+        "F_SEAL_SEAL",
+    )
+    if any(type(getattr(sandbox.fcntl, name, None)) is not int for name in seal_api):
+        pytest.skip("Python build lacks Linux memfd sealing constants; Worker fails closed")
+
     secret, shorter = (
         ("D", "E") if case == "short_values" else ("canary-秘密-abcdef", "canary-秘密")
     )

@@ -2,13 +2,13 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import event, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from dlr.common.config import Settings
 from dlr.control.services import control_cluster_identity as control
 from dlr.control.services import control_process_v4 as lifecycle
 from dlr.control.services.control_declaration_v4 import DeploymentDeclaration
@@ -115,7 +115,7 @@ def _process(factory, declaration, monkeypatch):
     deployment = DeploymentDeclaration(authority=declaration, authority_epoch=epoch)
     monkeypatch.setattr(lifecycle, "read_declaration", lambda _: deployment)
     return lifecycle.ControlProcess(
-        SimpleNamespace(worker_remote_v4_enabled=True), factory, deployment
+        Settings(DLR_WORKER_REMOTE_V4_ENABLED=True), factory, deployment
     )
 
 
