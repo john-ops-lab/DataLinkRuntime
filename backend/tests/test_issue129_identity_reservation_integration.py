@@ -1497,7 +1497,8 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
         dispatch = deserialize_dispatch_message(message)
         worker_authority = V4AttemptAuthority(runtime_secret, instance, renewed.generation)
 
-        if business_credential is not None:
+        if business_credential is not None and os.environ.get("DLR_TEST_CLAIM_PROCESS") == "1":
+            # Only the limited Linux/TLS fixture can run the native Control child.
             # Reproduce the observed prepare 503 with a controlled interleaving:
             # a proof copied before a committed renewal is no longer current.
             copied_headers = {**current_headers, "X-DLR-Worker-Claim-Wire-Bytes": "4096"}
