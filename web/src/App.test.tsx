@@ -8454,7 +8454,8 @@ it("W1-E serializes two admin observations and keeps both independent", async ()
     } },
   ]);
   render(<App />);
-  await waitFor(() => expect(fetch).toHaveBeenCalled());
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/workers/7/v4/status", expect.anything()));
+  await act(async () => { await Promise.resolve(); });
   expect(bCalls).toBe(0);
   act(() => { window.dispatchEvent(new Event("focus")); window.dispatchEvent(new Event("focus")); });
   await act(async () => { release({ body: makeMaintenanceSnapshot() }); });
@@ -8486,6 +8487,11 @@ it("W1-E refuses to expand admin polling beyond two fixed nodes", async () => {
     { method: "GET", match: "/api/workers", respond: () => ({ body: [7, 8, 9].map((id) => makeReadyWorker({ id, protocol_version: 4 })) }) },
   ]);
   render(<App />);
-  await waitFor(() => expect(mocked.mock.calls.some(([url]) => String(url) === "/api/workers")).toBe(true));
+  fireEvent.click(screen.getByTestId("system-status-summary"));
+  expect(await screen.findAllByTestId("worker-item")).toHaveLength(3);
+  expect(await screen.findByText("当前版本最多支持两个固定远程节点的管理观察；已停止新增维护写入，请核对部署范围。")).not.toBeNull();
+  expect(screen.queryAllByTestId("worker-maintenance-actions")).toHaveLength(0);
+  expect(screen.queryAllByRole("button", { name: /申请排空|激活节点|确认本次排空/ })).toHaveLength(0);
   expect(mocked.mock.calls.some(([url]) => String(url).includes("/v4/"))).toBe(false);
+  expect(mocked.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
 });

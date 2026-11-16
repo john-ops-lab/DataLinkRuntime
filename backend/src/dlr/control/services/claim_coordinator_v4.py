@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import math
 import os
 import secrets
@@ -24,9 +25,11 @@ from dlr.common.config import settings
 from dlr.control.schemas.reliable_runtime import AttemptActionBody
 from dlr.control.services.attempt_lease_candidates_v4 import AttemptCandidateRef
 from dlr.control.services.claim_child_v4 import _clock, _read_exact, _read_frame, _send_frame
-from dlr.control.services.claim_envelope_v4 import ClaimEnvelope
+from dlr.control.services.claim_envelope_v4 import ClaimEnvelope, ClaimEnvelopeUnavailable
 from dlr.control.services.control_process_v4 import ControlProcess
 from dlr.control.services.dispatch import DispatchMessage
+
+logger = logging.getLogger(__name__)
 
 
 class ClaimUnavailable(Exception):
@@ -123,6 +126,37 @@ class _ClaimSlot:
         if self._coordinator is not None:
             self._coordinator._poisoned.set()
 
+    def _open_envelope(self, *, child_address_space_bytes: int) -> ClaimEnvelope:
+        try:
+            return ClaimEnvelope.open(child_address_space_bytes=child_address_space_bytes)
+        except ClaimEnvelopeUnavailable:
+            self._poison()
+            raise
+
+    def _check_envelope(
+        self, envelope: ClaimEnvelope, *, entry: _Claim | _Result | None = None
+    ) -> None:
+        with self._lock:
+            self._live()
+            # An ordinary timer/close may win after IO. Reject that old entry
+            # before inspecting its already closed handle; it is not evidence
+            # that the shared resource envelope failed.
+            if entry is not None and (
+                (
+                    isinstance(entry, _Claim)
+                    and (self._current is not entry or entry.state == "closed")
+                )
+                or (isinstance(entry, _Result) and (self._result is not entry or entry.closed))
+            ):
+                raise ClaimUnavailable("Claim unavailable")
+            try:
+                envelope.check()
+            except ClaimEnvelopeUnavailable:
+                # Latch every observed live boundary failure, including checks
+                # during stream/finalize/result, even if limits later recover.
+                self._poison()
+                raise
+
     def _notify_idle(self) -> None:
         if self._coordinator is None:
             return
@@ -135,9 +169,11 @@ class _ClaimSlot:
                 or self._unresolved
                 or self._poisoned
             )
-            allocation = self._allocation
-        if idle:
-            self._coordinator._release_idle(self, allocation)
+            if idle:
+                # Keep the idle facts stable through registry release. The
+                # only nested lock order is slot -> registry; registry callers
+                # release their lock before entering any slot or doing IO.
+                self._coordinator._release_idle(self, self._allocation)
 
     def _spawn_child(
         self,
@@ -272,7 +308,7 @@ class _ClaimSlot:
         try:
             process.check_authority()
             address_space_bytes = settings.worker_v4_claim_child_address_space_bytes
-            envelope = ClaimEnvelope.open(child_address_space_bytes=address_space_bytes)
+            envelope = self._open_envelope(child_address_space_bytes=address_space_bytes)
             control_instance, control_token, confirmed_deadline = process.claim_child_identity()
             deadline = min(confirmed_deadline, math.nextafter(_clock() + 25.0, -math.inf))
             if deadline <= _clock() or type(wire_budget) is not int or not 0 < wire_budget < 2**63:
@@ -296,7 +332,7 @@ class _ClaimSlot:
                 or not spawn.thread.is_alive()
             ):
                 raise ValueError("Claim child unavailable")
-            envelope.check()
+            self._check_envelope(envelope)
             process.check_authority()
             _send_frame(
                 channel,
@@ -326,7 +362,7 @@ class _ClaimSlot:
             ):
                 raise ValueError("Claim unavailable")
             process.check_authority()
-            envelope.check()
+            self._check_envelope(envelope)
             entry = _Claim(
                 child,
                 spawn,
@@ -392,7 +428,7 @@ class _ClaimSlot:
                     if self._current is not entry or entry.state != "streaming":
                         raise ClaimUnavailable("Claim unavailable")
                     entry.authority.check_authority()
-                    entry.envelope.check()
+                    self._check_envelope(entry.envelope, entry=entry)
                     timeout = min(5.0, entry.deadline - _clock())
                     if timeout <= 0:
                         raise ClaimUnavailable("Claim unavailable")
@@ -407,7 +443,7 @@ class _ClaimSlot:
                         if self._current is not entry or entry.state != "streaming":
                             raise ClaimUnavailable("Claim unavailable")
                         entry.authority.check_authority()
-                        entry.envelope.check()
+                        self._check_envelope(entry.envelope, entry=entry)
                         if _clock() >= entry.deadline:
                             raise ClaimUnavailable("Claim unavailable")
                         if entry.decision == "EXECUTE":
@@ -442,7 +478,7 @@ class _ClaimSlot:
             ):
                 raise ClaimUnavailable("Claim unavailable")
             entry.authority.check_authority()
-            entry.envelope.check()
+            self._check_envelope(entry.envelope, entry=entry)
             timeout = min(5.0, entry.deadline - _clock())
             if timeout <= 0:
                 raise ClaimUnavailable("Claim unavailable")
@@ -494,12 +530,12 @@ class _ClaimSlot:
             ):
                 raise ClaimUnavailable("Claim unavailable")
             entry.authority.check_authority()
-            entry.envelope.check()
+            self._check_envelope(entry.envelope, entry=entry)
             proof = entry.authority.observe_attempt_candidate(
                 candidate, credential, instance_proof, action
             )
             entry.authority.check_authority()
-            entry.envelope.check()
+            self._check_envelope(entry.envelope, entry=entry)
             if _clock() >= entry.deadline:
                 raise ClaimUnavailable("Claim unavailable")
             self._retain_result_from_claim(
@@ -542,7 +578,7 @@ class _ClaimSlot:
             ):
                 raise ClaimUnavailable("result retention unavailable")
             entry.authority.check_authority()
-            entry.envelope.check()
+            self._check_envelope(entry.envelope, entry=entry)
             entry.state = "closed"
             self._current = None
             if entry.timer is not None:
@@ -659,7 +695,7 @@ class _ClaimSlot:
             address_space = settings.worker_v4_claim_child_address_space_bytes
             if type(body_bytes) is not int or not 0 < body_bytes <= address_space:
                 raise ValueError("result unavailable")
-            envelope = ClaimEnvelope.open(child_address_space_bytes=address_space)
+            envelope = self._open_envelope(child_address_space_bytes=address_space)
             control_instance, control_token, confirmed_deadline = process.claim_child_identity()
             deadline = min(confirmed_deadline, math.nextafter(_clock() + 25.0, -math.inf))
             if deadline <= _clock():
@@ -684,7 +720,7 @@ class _ClaimSlot:
                 or not spawn.thread.is_alive()
             ):
                 raise ValueError("result child unavailable")
-            envelope.check()
+            self._check_envelope(envelope)
             process.check_authority()
             _send_frame(
                 channel,
@@ -700,7 +736,7 @@ class _ClaimSlot:
             del control_token
             if _read_frame(channel) != {"state": "ready"}:
                 raise ValueError("result child unavailable")
-            envelope.check()
+            self._check_envelope(envelope)
             process.check_authority()
             entry = _Result(
                 child,
@@ -754,7 +790,7 @@ class _ClaimSlot:
         """End idle retention with fresh authority; never extend an intent deadline."""
         try:
             entry.authority.check_authority()
-            entry.envelope.check()
+            self._check_envelope(entry.envelope, entry=entry)
             bind = entry.authority._sessions.kw.get("bind")
             if not isinstance(bind, Engine):
                 raise ValueError("result unavailable")
@@ -809,7 +845,7 @@ class _ClaimSlot:
                 if self._result is not entry or entry.closed or _clock() >= entry.deadline:
                     raise ValueError("result unavailable")
                 entry.authority.check_authority()
-                entry.envelope.check()
+                self._check_envelope(entry.envelope, entry=entry)
             return entry
         except BaseException as error:
             self.end_result(entry)
@@ -829,7 +865,7 @@ class _ClaimSlot:
             ):
                 raise ClaimUnavailable("result unavailable")
             entry.authority.check_authority()
-            entry.envelope.check()
+            self._check_envelope(entry.envelope, entry=entry)
             timeout = min(5.0, entry.deadline - _clock())
             if timeout <= 0:
                 raise ClaimUnavailable("result unavailable")
@@ -847,7 +883,7 @@ class _ClaimSlot:
             if self._result is not entry or entry.closed or entry.sent != entry.size:
                 raise ClaimUnavailable("result unavailable")
             entry.authority.check_authority()
-            entry.envelope.check()
+            self._check_envelope(entry.envelope, entry=entry)
             timeout = min(5.0, entry.deadline - _clock())
             if timeout <= 0:
                 raise ClaimUnavailable("result unavailable")
@@ -856,7 +892,7 @@ class _ClaimSlot:
         try:
             response = _read_frame(entry.channel)
             entry.authority.check_authority()
-            entry.envelope.check()
+            self._check_envelope(entry.envelope, entry=entry)
             if entry.metadata.get("operation") == "stage":
                 if (
                     set(response) != {"intent_id", "result_proof"}
@@ -975,6 +1011,7 @@ class ClaimCoordinator:
         self._resource_lock = threading.Lock()
         self._envelope: ClaimEnvelope | None = None
         self._poisoned = threading.Event()
+        self._shutdown_failures: list[BaseException] = []
         self._slots = tuple(_ClaimSlot(self) for _ in range(limit))
 
     def _live(self) -> None:
@@ -1143,8 +1180,23 @@ class ClaimCoordinator:
 
     def close(self) -> None:
         self._poisoned.set()
+        failures: list[BaseException] = []
         for slot in self._slots:
-            slot.close()
+            try:
+                slot.close()
+            except BaseException as error:
+                failures.append(error)
         with self._resource_lock:
             if self._envelope is not None:
-                self._envelope.close()
+                try:
+                    self._envelope.close()
+                except BaseException as error:
+                    failures.append(error)
+        self._shutdown_failures.extend(failures)
+        if failures:
+            # Retain the objects/errors and report an incomplete shutdown, but
+            # let the app stop its Control authority and other resources too.
+            logger.error("Control transport shutdown incomplete: failures=%d", len(failures))
+            for failure in failures:
+                if not isinstance(failure, Exception):
+                    raise failure

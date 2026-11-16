@@ -19,6 +19,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from dlr.control.services import claim_coordinator_v4 as module
+from dlr.control.services.claim_envelope_v4 import ClaimEnvelopeUnavailable
 
 _CHILD = """
 import ctypes,json,os,resource,signal,socket,struct,sys
@@ -541,6 +542,128 @@ class ResultChildLifetimeTests(unittest.TestCase):
             self.assertIsNotNone(children[0].poll())
             self.assertIsNone(coordinator._result)
             self.assertFalse(coordinator._unresolved)
+
+    def test_idle_notification_cannot_release_a_new_same_worker_result(self):
+        with _world(slots=2) as (pool, authority, _children):
+            old = pool.begin_result(authority, metadata=_metadata(1), body_bytes=2)
+            slot = old.owner
+            idle_checked = threading.Event()
+            release_idle = threading.Event()
+            begin_entered = threading.Event()
+            published = threading.Event()
+            results = []
+            errors = []
+            release = pool._release_idle
+            begin = slot.begin_result
+
+            def paused_release(owner, allocation):
+                if owner is slot and owner._calls == 0 and not idle_checked.is_set():
+                    idle_checked.set()
+                    if not release_idle.wait(2):
+                        raise AssertionError("idle release barrier expired")
+                return release(owner, allocation)
+
+            def entered_begin(*args, **kwargs):
+                begin_entered.set()
+                return begin(*args, **kwargs)
+
+            def run(operation):
+                try:
+                    result = operation()
+                    if isinstance(result, module._Result):
+                        results.append(result)
+                        published.set()
+                except BaseException as error:
+                    errors.append(error)
+
+            closing = threading.Thread(target=run, args=(lambda: pool.end_result(old),))
+            opening = threading.Thread(
+                target=run,
+                args=(lambda: pool.begin_result(authority, metadata=_metadata(1), body_bytes=2),),
+            )
+            with (
+                patch.object(pool, "_release_idle", side_effect=paused_release),
+                patch.object(slot, "begin_result", side_effect=entered_begin),
+            ):
+                closing.start()
+                try:
+                    self.assertTrue(idle_checked.wait(2))
+                    # If the old notification dropped its lock, force B to
+                    # publish before allowing that stale release to continue.
+                    # A lock-held implementation may instead serialize B.
+                    acquired = slot._lock.acquire(blocking=False)
+                    if acquired:
+                        slot._lock.release()
+                    opening.start()
+                    self.assertTrue(begin_entered.wait(2))
+                    if acquired:
+                        self.assertTrue(published.wait(2))
+                finally:
+                    release_idle.set()
+                    closing.join(2)
+                    if opening.ident is not None:
+                        opening.join(2)
+            self.assertFalse(closing.is_alive() or opening.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(len(results), 1)
+            current = results[0]
+            self.assertEqual(current.owner._worker_id, 1)
+            pool.send_result(current, b"{}")
+            self.assertEqual(pool.finish_result(current)["result_proof"], "test-only-intent")
+
+    def test_shutdown_attempts_both_slots_and_envelope_after_first_close_error(self):
+        with _world(slots=2) as (pool, authority, children):
+            first = pool.begin_result(authority, metadata=_metadata(1), body_bytes=2)
+            second = pool.begin_result(authority, metadata=_metadata(2), body_bytes=2)
+            with (
+                patch.object(first.envelope, "close", side_effect=OSError("test-close")),
+                self.assertLogs("dlr.control.services.claim_coordinator_v4", level="ERROR") as logs,
+            ):
+                pool.close()
+            self.assertTrue(pool._poisoned.is_set())
+            self.assertEqual(len(pool._shutdown_failures), 1)
+            self.assertIn(first, first.owner._unresolved)
+            self.assertTrue(second.closed and pool._envelope.closed)
+            self.assertTrue(all(child.poll() is not None for child in children))
+            self.assertIn("shutdown incomplete", logs.output[0])
+
+    def test_live_resource_failure_stays_global_after_limits_recover(self):
+        for phase in ("send", "finish"):
+            with self.subTest(phase=phase), _world(slots=2) as (pool, authority, _children):
+                a = pool.begin_result(authority, metadata=_metadata(1), body_bytes=2)
+                b = pool.begin_result(authority, metadata=_metadata(2), body_bytes=2)
+                if phase == "finish":
+                    pool.send_result(a, b"{}")
+                with (
+                    patch.object(
+                        a.envelope,
+                        "check",
+                        side_effect=ClaimEnvelopeUnavailable("test-boundary"),
+                    ),
+                    self.assertRaises(ClaimEnvelopeUnavailable),
+                ):
+                    if phase == "send":
+                        pool.send_result(a, b"{}")
+                    else:
+                        pool.finish_result(a)
+                pool.end_result(a)
+                # Restore the envelope before B checks it: the original loss
+                # must remain latched rather than silently recovering.
+                b.envelope.check()
+                self.assertTrue(pool._poisoned.is_set())
+                with self.assertRaises(module.ClaimUnavailable):
+                    pool.send_result(b, b"{}")
+
+    def test_closed_entry_check_does_not_poison_another_live_worker(self):
+        with _world(slots=2) as (pool, authority, _children):
+            a = pool.begin_result(authority, metadata=_metadata(1), body_bytes=2)
+            b = pool.begin_result(authority, metadata=_metadata(2), body_bytes=2)
+            pool.end_result(a)
+            with self.assertRaises(module.ClaimUnavailable):
+                a.owner._check_envelope(a.envelope, entry=a)
+            self.assertFalse(pool._poisoned.is_set())
+            pool.send_result(b, b"{}")
+            self.assertEqual(pool.finish_result(b)["result_proof"], "test-only-intent")
 
 
 if __name__ == "__main__":
