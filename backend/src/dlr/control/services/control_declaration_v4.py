@@ -78,9 +78,9 @@ def _read_signing_key(path: str) -> bytes:
         os.close(fd)
 
 
-def read_declaration(config: Settings) -> DeploymentDeclaration:
+def read_private_json(path: str) -> Any:
+    """Read bounded owner-only JSON without following or accepting file races."""
     try:
-        path = config.control_identity_file
         if not isinstance(path, str) or not Path(path).is_absolute() or not path or "\x00" in path:
             raise ValueError
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
@@ -134,7 +134,17 @@ def read_declaration(config: Settings) -> DeploymentDeclaration:
                 value[key] = item
             return value
 
-        value = json.loads(raw, object_pairs_hook=unique)
+        return json.loads(raw, object_pairs_hook=unique)
+    except Exception:
+        raise DeclarationUnavailable("control declaration unavailable") from None
+
+
+def read_declaration(config: Settings) -> DeploymentDeclaration:
+    try:
+        path = config.control_identity_file
+        if not isinstance(path, str) or not Path(path).is_absolute() or not path or "\x00" in path:
+            raise ValueError
+        value = read_private_json(path)
         if type(value) is not dict or set(value) not in (
             _FIELDS,
             _FIELDS | {"worker_proof_public_key"},
