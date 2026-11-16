@@ -214,7 +214,8 @@ def _history(f):
             worker_instance_generation=1,
             fencing_token=1,
             lease_expires_at=past,
-            recovery_not_before=past,
+            # Normal production v4 Claim leaves this optional field unset.
+            recovery_not_before=None,
             status="succeeded",
             claimed_at=past,
             ended_at=past,
@@ -604,6 +605,7 @@ def test_settled_history_and_identity_preserved_for_original_slot_configuration(
         "nominal_lease",
         "counter",
         "cleanup_request",
+        "recovery_guard",
     ],
 )
 def test_pending_business_and_signed_boundaries_refuse_without_changing_history(offline, block):
@@ -619,6 +621,14 @@ def test_pending_business_and_signed_boundaries_refuse_without_changing_history(
         elif block == "cleanup_unknown":
             conn.execute(
                 text("UPDATE execution_attempts SET cleanup_settled_at=NULL WHERE id=:id"),
+                {"id": attempt},
+            )
+        elif block == "recovery_guard":
+            conn.execute(
+                text(
+                    "UPDATE execution_attempts SET recovery_not_before="
+                    "clock_timestamp()+interval '1 minute' WHERE id=:id"
+                ),
                 {"id": attempt},
             )
         elif block == "worker_lease":

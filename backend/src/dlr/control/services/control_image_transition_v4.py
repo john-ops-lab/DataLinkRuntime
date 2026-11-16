@@ -269,7 +269,6 @@ def _clean(session: Session) -> None:
                           WHERE outstanding_count <> 0 OR outstanding_bytes <> 0)
           AND NOT EXISTS (SELECT 1 FROM execution_attempts
                           WHERE status IN ('claimed','running') OR cleanup_settled_at IS NULL
-                            OR recovery_not_before IS NULL
                             OR recovery_not_before >= clock_timestamp()
                             OR lease_expires_at >= clock_timestamp())
           AND NOT EXISTS (SELECT 1 FROM adapter_execution_slots WHERE active_attempt_id IS NOT NULL)
