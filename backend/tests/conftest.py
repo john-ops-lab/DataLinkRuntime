@@ -112,7 +112,8 @@ def _truncate(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE TABLE control_process_instances, control_cluster_authority, "
+                "TRUNCATE TABLE control_image_transitions, "
+                "control_process_instances, control_cluster_authority, "
                 "ingress_capacity_configurations, ingress_capacity_audits, "
                 "adapter_batches, subscription_quotas, user_templates, "
                 "builtin_packages, "

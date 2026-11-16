@@ -194,3 +194,4 @@ __all__ = [
     "User",
     "UserSession",
 ]
+from dlr.control.models.control_image_transition import ControlImageTransition  # noqa: F401

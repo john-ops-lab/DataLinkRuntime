@@ -1,3 +1,3 @@
 """Exact schema revision understood by this Control build."""
 
-SCHEMA_REVISION = "0087_issue129_disposition"
+SCHEMA_REVISION = "0088_issue129_image_transition"

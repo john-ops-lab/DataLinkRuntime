@@ -8,7 +8,7 @@ class RemoteDeploymentUnavailable(RuntimeError):
     """A stable diagnostic which contains no database or credential details."""
 
 
-def require_dedicated_deployment(session: Session) -> None:
+def require_dedicated_deployment(session: Session, *, readonly: bool = False) -> None:
     """Check persistent provenance before disabling the legacy Worker APIs.
 
     Valid stage data remains valid across ordinary Control restarts. An empty
@@ -18,12 +18,13 @@ def require_dedicated_deployment(session: Session) -> None:
     """
     session.execute(text("SET LOCAL lock_timeout = '500ms'"))
     session.execute(text("SET LOCAL statement_timeout = '2000ms'"))
-    session.execute(
-        text(
-            "LOCK TABLE workers, worker_identity_reservations, "
-            "executions, execution_attempts IN SHARE MODE"
+    if not readonly:
+        session.execute(
+            text(
+                "LOCK TABLE workers, worker_identity_reservations, "
+                "executions, execution_attempts IN SHARE MODE"
+            )
         )
-    )
     incompatible = session.scalar(
         text("""
         SELECT EXISTS (

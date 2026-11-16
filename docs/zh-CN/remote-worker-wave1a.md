@@ -97,6 +97,8 @@ REVOKE INSERT, UPDATE, DELETE ON alembic_version FROM dlr_wave1a_runtime;
 REVOKE DELETE ON worker_lease_candidates_v4, attempt_lease_candidates_v4,
   attempt_result_intents_v4, worker_cleanup_intents_v4,
   worker_maintenance_operations FROM dlr_wave1a_runtime;
+-- W1-F 及以后：新建部署的批量 GRANT 也不能暴露 owner 专属回执。
+REVOKE ALL ON control_image_transitions FROM dlr_wave1a_runtime;
 ```
 
 运行角色不能是数据库、schema、表或受保护函数的所有者，不能继承管理员权限、创建 schema 或改变触发器。迁移账号仅供部署操作使用；`DLR_WORKER_V4_DATABASE_ADMIN_ROLES` 明确列出可信管理员角色，初始化完毕后退出管理员数据库连接。签发和运行围栏会拒绝其他可连接的旧登录角色、旧会话及 prepared transaction；不能通过缩小查询或放宽权限绕过。
@@ -116,7 +118,7 @@ Control 私有目录预置 `control.json`、`proof-key`、`tls-cert.pem`、`tls-
 }
 ```
 
-四个指纹分别对应已冻结的存储命名空间和容量配置，使用其规范化声明的 SHA-256；它们只作声明一致性比较，不能证明共享存储或物理容量。集群、epoch、公钥、密钥和声明需持久保留，不能在每次启动时重新生成。初始化只创建首次权威或核对完全一致的已有权威，不提供升级、替换和旧部署迁移。
+四个指纹分别对应已冻结的存储命名空间和容量配置，使用其规范化声明的 SHA-256；它们只作声明一致性比较，不能证明共享存储或物理容量。集群、epoch、公钥、密钥和声明需持久保留，不能在每次启动时重新生成。默认初始化只创建首次权威或核对完全一致的已有权威；受控换镜像使用下方 W1-F 显式维护命令，不通过 init 覆盖。
 
 Control 和 Broker 使用部署 PKI 签发的服务器证书，SAN 必须匹配实际连接的主机名或 IP；CA/叶证书提供完整链及正确的 Basic Constraints、Key Usage、SKI/AKI。`ca.pem` 是相应信任包；需要访问其他 HTTPS 目标时包含其授权信任链。客户端始终验证链和主机名。
 
@@ -275,7 +277,71 @@ Control 进程内仅有 K 个固定 Claim/Result 槽，每 Worker 最多一个�
 
 升级先排空现有节点，核对业务、结果、本地记录和 Control child/creator 全部结束，再停 Control；保留数据库、身份和原卷，部署匹配 Control/Web 并显式启用 K=2。改变 K 或回退前同样须无在途/未知槽，不能用降 K、重启、换卷或删 pending 假装结清。回退旧 Web 前先确认 v2 无未决 tuple；回退为一节点时停止第二节点的新接收，保留其绑定、历史和排队责任，不静默转给 A。B/C 原恢复和阻断规则不变，无新迁移、协议升版、Pool、数据库资源预留或 HA。
 
-上述步骤仍受原 Control 权威声明门禁约束：数据库精确绑定声明的 `image_digest`。本批提供专用新部署和匹配声明下的停启/K 配置变更，不提供已有集群跨镜像的权威替换入口。新镜像与原声明不匹配时必须停止升级，不能直接改声明、epoch、数据库或用旧 digest 冒充新镜像；跨镜像权威更新仍需后续独立审计的部署能力。
+上述 W1-E 步骤仍受原 Control 权威声明门禁约束：数据库精确绑定声明的 `image_digest`。W1-E 本身只提供专用新部署和匹配声明下的停启/K 配置变更。W1-F 的显式换镜像合同如下；新镜像不匹配时不能直接改声明、epoch、数据库或用旧 digest 冒充新镜像。
+
+## 清洁排空后的停机换镜像（W1-F）
+
+首个发布对仅为 W1-E main `a37c9d3e19985acddb1f3e33ff6d3c7337147270`、schema `0087_issue129_disposition` 到本批匹配制品、schema `0088_issue129_image_transition`。完整源/目标 SHA、各组件实际 digest 和制品来源在升级前冻结于私有记录及原 PR 交付证据，不把可变标签当 digest。后续同 schema 发布对、任意旧版本迁移和在线混版本运行均未授权。
+
+原数据库、Broker/vhost/队列、所有命名卷和 journal/runtime 根、cluster/epoch/proof key、Master Key/admin/legacy Token、四项指纹、K=1/2、Worker ID/凭据/固定绑定原样保留。新 Worker 仍使用原凭据和原卷，只产生新 instance/generation，保持 disabled 后分别显式 activate。转换不处理 queued、retry_wait 或未知责任，不改变业务结果，也不支持回退旧镜像。
+
+### 停写与停止
+
+1. 通过原 Adapter 设置停用所有 schedule，并在现有客户端/入口控制层阻断 manual、Replay/重试、配置和激活等新写入。保留源 Control 让已接受工作完成，然后逐个 drain 并用原请求确认 disabled。**drain 不阻止创建新 Execution**，不能替代入口停写。
+2. 分别核对无 queued/running/retry_wait、未结 Attempt/cleanup、占用 Slot、活动输入 Lease、未发布/leased Outbox、未处置 Infrastructure DLQ；Broker ready/unacked/确认未知、Worker journal/runtime、Control retained/closing/creator/IO 及浏览器 pending tuple 也须清洁。已结失败/取消、B/C 历史和独立 Hold 保留。不能 purge、取消、删行或换空目录凑空。
+3. 用原 Compose 停止全部 Control（包含 scheduler/Relay/reconciler）与全部 Worker，禁用自动重启源；可信操作者从原生 Docker/Linux 核对整个进程树、cgroup 和 IO 结束、宿主/原卷独占。保存原容器/boot/挂载和实际镜像证据。CLI 不远程证明这些事实，人工摘要也不构成证明。
+4. 数据库管理员将 runtime role 设为 `NOLOGIN`，排除残留连接、其他写入口和 prepared transaction；`NOLOGIN` 本身不终止既有会话，CLI 不任意 kill 会话。保持单操作者、唯一 owner 维护连接，并禁止其他管理员同时修改角色/授权/复制或写库。按 DB 时间等待所有旧 nominal lease、guard、已签证明最晚期限过去，保留租约行，不提前改时间。
+
+### 私有输入与命令
+
+保留原 `source.json`，准备只改变 `image_digest` 的 `target.json`；沿用原 proof-key 和 owner 环境的三个凭据。三个 JSON 文件均为本机实际运行 UID 所有、0600、单硬链接、非符号链接且不超过 16 KiB；未知/重复字段拒绝。私有 `intent.json` 采用以下封闭字段：
+
+```json
+{
+  "operation_id": "REPLACE_WITH_NONZERO_UUID",
+  "previous_id": null,
+  "source_schema": "0087_issue129_disposition",
+  "target_schema": "0088_issue129_image_transition",
+  "source_sha": "a37c9d3e19985acddb1f3e33ff6d3c7337147270",
+  "target_sha": "REPLACE_WITH_VERIFIED_40_LOWERCASE_HEX_SHA",
+  "control_slots": 2,
+  "evidence_sha256": "REPLACE_WITH_64_LOWERCASE_HEX"
+}
+```
+
+第一跳只接受空前序；回执表以唯一根和唯一后继保存链，旧请求不能靠 digest 往返再次匹配。`control_slots` 填源部署冻结的原 K（1 或 2），check/apply 同时核对目标 owner 配置，不在升级中改变 K。`evidence_sha256` 仅为操作者已核对的原生记录摘要，不是远程硬件、镜像供应链或物理停止证明。intent 摘要另外绑定源/目标声明的非秘密字段；明文凭据不进入回执或输出。
+
+下面每次运行均使用**目标镜像**和原隔离网络，owner 环境的 `DLR_WORKER_REMOTE_V4_ENABLED=true`、runtime role/admin role 配置沿用原值；维护进程使用短连接，不启动产品后台。密钥和密码只从私有文件/环境读取：
+
+```sh
+docker run --rm --network DEDICATED_NETWORK --env-file /ABSOLUTE/PRIVATE/owner.env \
+  --mount type=bind,src=/ABSOLUTE/PRIVATE/control,dst=/run/dlr-private,readonly \
+  TARGET_CONTROL_IMAGE_DIGEST python -m dlr.control.control_identity_init_v4 check \
+  --source /run/dlr-private/source.json --target /run/dlr-private/target.json \
+  --intent /run/dlr-private/intent.json
+```
+
+`source_checked` 后，沿原 Alembic 入口在同一停机围栏下运行 `alembic upgrade 0088_issue129_image_transition`。此迁移只新增回执元数据，不改 authority；数据库 schema 已新而 authority 仍旧时，两个版本都没有正常启动资格。迁移提交不明先独立读回 revision/表结构，精确源态可重跑同一迁移，精确目标态向前进入 apply，混合/未知保持停机。
+
+再次运行同一个 check 应返回 `ready_to_apply`。将上述命令的 `check` 分别替换为 `apply`、`observe`，保持原两个声明和原 operation ID。apply 使用 READ COMMITTED 顶层事务，沿 exclusive schema gate → authority → receipt/旧实例固定锁序，复核角色、会话、清洁责任、所有旧期限和源凭据。CAS digest/schema、唯一回执及永久 revoke 旧 Control 实例同事务提交；不改 Worker 维护版本或业务账本。连接/锁等待有界至 5 秒，语句不超过 10 秒；失败整笔回滚，不能用 CLI exit 0、自读或 `RETURNING` 证明提交。
+
+| 输出状态 | 允许动作 |
+| --- | --- |
+| `not_installed` | 源 revision 下尚无回执表；只说明元数据未安装，可核对后执行指定迁移 |
+| `not_found` | 本次 ID 未在独立快照读到；不等于旧未知请求已经回滚。重新检查原前序、清洁与停写前提后才可显式再次 apply |
+| `committed_current` | 完整 intent、回执和当前 authority/链末端一致，可以继续安装该目标；已提交重复 apply 不再 revoke 新实例 |
+| `committed_superseded` | 仅证明历史提交，禁止按旧回执安装旧声明；停机核对当前转换，不自动追随其他目标 |
+| `refused` / `unknown` / 读取失败 | 维持停机和角色围栏，保留原 ID 与输入；不猜测回滚，不重新 init、不反向 CAS |
+
+apply 会关闭写连接后另开只读事务读回，COMMIT 回复丢失也按同一规则观察。只有独立观察 `committed_current` 才可继续。`committed_at` 为回执在事务内记录的 DB 时间，提交可见性以独立事务读回为准。
+
+### 原子安装与恢复服务
+
+由可信操作者在**原私有目录**写入目标声明临时文件，设置原 UID/0600，fsync 文件后 rename 到原 `control.json`，再 fsync 目录并读回核对。DB 事务不做文件 IO。安装及启动前再次 observe；并行部署操作者不在支持范围。提交后安装前中断，可复用原 ID 只读确认并继续同一安装。schema 前进或转换提交后只支持向前完成，不能降 schema、覆盖旧备份或换回旧镜像。
+
+核对目标 Control/Web/全部 Worker 为匹配发布，原配置和 K 未改；owner 连接退出、旧启动源仍被阻断后恢复 runtime 登录。沿原 Compose 启动单 Control 和原 Worker，核对信任、稳定 ID、原卷和新 instance/generation，仍 disabled；逐个显式 activate 后恢复获授权的 schedule/manual 入口。用新业务键分别核对目标效果、唯一 Attempt/Slot、cleanup 和 ACK，不能以 online 或版本页代替。
+
+普通 runtime/Worker/Web admin Token 无转换权限。回执保留 operation/前序、cluster/epoch、源目标 digest/schema、非敏感 intent SHA-256、事务 ID 和 DB 时间；无自动 TTL。有回执或目标 authority 引用时 Alembic 拒绝降级删除，原 cluster/epoch/proof key 的 ALWAYS 不可变触发器保持。默认 v3 不进入此路径，B/C 的异常恢复资格不扩展。
 
 ## 诊断与停止边界
 

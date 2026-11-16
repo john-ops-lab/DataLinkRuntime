@@ -2,9 +2,45 @@
 
 ## Purpose
 
-定义 Wave 1-A 专用新部署、W1-B 已提交结果受控恢复、W1-C 未提交结果的显式终态处置、W1-D 受限运维界面及 W1-E 有界双固定 Worker 的单 Control、标准库 Python 远程运行合同。默认一个 Worker，显式两槽时支持两个各自单并发的固定 Worker。该能力不替代既有默认 v3 部署，不声明 Pool、HA、旧部署迁移或异常历史自动恢复。
+定义 Wave 1-A 专用新部署、W1-B 已提交结果受控恢复、W1-C 未提交结果的显式终态处置、W1-D 受限运维界面、W1-E 有界双固定 Worker 及 W1-F 清洁排空后受控停机换镜像的单 Control、标准库 Python 远程运行合同。默认一个 Worker，显式两槽时支持两个各自单并发的固定 Worker。该能力不替代既有默认 v3 部署，不声明 Pool、HA、任意旧部署迁移或异常历史自动恢复。
 
 ## Requirements
+
+### Requirement: 停机换镜像必须绑定精确发布对并保留稳定身份
+W1-F MUST 仅支持 W1-E main `a37c9d3e19985acddb1f3e33ff6d3c7337147270`、schema `0087_issue129_disposition` 到经核实的本批目标制品、schema `0088_issue129_image_transition`。可信操作者 MUST 冻结各组件 SHA/digest、协议/检查点兼容和真实制品来源，MUST NOT 用声明 digest 代替镜像或物理证据。原 cluster/epoch/proof key、三个私有凭据、四项指纹、K、PG/Broker/队列、Worker ID/凭据/固定绑定及原卷 MUST 保持。
+
+#### Scenario: 未支持的源或目标改变不可变条件
+- **WHEN** 源发布对不符、意图字段重复/超限、凭据/指纹/epoch/key/K 改变，或无法核实原身份与原卷
+- **THEN** 保持停机并拒绝转换，不借普通 init、重 enrollment、换空卷或旧 digest 继续
+
+### Requirement: 升级资格必须同时具备清洁责任和独立停写事实
+操作者 MUST 先停用 schedule、持续封闭新增责任入口，完成既有任务与 drain/disabled，物理停止全部 Control/Worker/后代和 IO、排除自动重启及共享写入。CLI MUST 复核专用来源、无 queued/running/retry_wait、未结 cleanup/Attempt、占用 Slot、活动输入 Lease、待发布 Outbox、未处置 DLQ、非零 Admission 和所有旧 nominal/guard/proof 期限。runtime MUST NOLOGIN，唯一 owner 维护连接、无其他客户端/已准备事务；管理员 MUST 保持角色/授权与写入口围栏。
+
+#### Scenario: 已 disabled 但仍排队、旧期限有效或存在残留会话
+- **WHEN** 任一数据库拒绝条件成立，或 Broker/journal/Control retained/creator/IO/浏览器意图、物理停止和原卷独占事实未知
+- **THEN** 拒绝升级，保留原责任；disabled、时间经过、NOLOGIN 和证据摘要各自不能代替其他条件，不 purge/取消/删行凑空
+
+### Requirement: 转换必须由独立本地 owner 事务原子提交并可前向重入
+默认 init MUST 仍只初始化/核对原 authority。本地 check/apply/observe MUST 只读取有限、封闭、owner 0600 私有源/目标声明和固定 operation/前序意图，不启动应用后台或增加公开 API。普通 runtime/Worker/Web admin MUST 无转换权限。首次迁移 MUST 只添加 append-only 回执表与目标 revision，不先改 authority；两个版本在 schema/authority 中间态 MUST 拒绝服务。apply MUST 在有界 exclusive schema gate → authority → receipt/旧实例锁序下以 READ COMMITTED 顶层事务复核全部前提，CAS digest/schema/前序、唯一回执及永久 revoke 旧 Control 实例原子提交，不修改业务结果、Worker 身份或维护版本。
+
+#### Scenario: 同 ID 冲突、竞争或迟到 ABA 请求
+- **WHEN** 相同 operation 内容不同、前序已变化，或另一个转换已经提交
+- **THEN** 拒绝冲突，不分叉；匹配的已提交重入只读原回执，不再次 revoke 新实例，已结历史与独立 Hold 保持
+
+#### Scenario: 迁移或转换回复丢失
+- **WHEN** 迁移/语句/COMMIT 结果不明，或转换已提交而声明尚未安装
+- **THEN** 关闭原写连接，以独立只读连接核对真实 revision/表结构及原 operation；精确源态才可重做指定迁移，精确目标中间态前向 apply；未知保持停机，不以预提交行、自读、RETURNING、CLI exit 0 或相同目标 digest 宣称提交
+
+### Requirement: 独立回执观察必须约束声明安装与服务恢复
+observe MUST 以同一语句快照核对完整 intent、回执、链末端和当前 authority，区分 not_installed/not_found/committed_current/committed_superseded/unknown。只有 committed_current MAY 授权原目标声明的操作者原子安装、fsync/rename/读回；安装和启动前 MUST 再观察。schema 前进或转换提交后 MUST 仅向前完成，不自动 downgrade/反向 CAS。有回执或目标 authority 引用时 MUST 拒绝降级丢弃元数据。
+
+#### Scenario: 原回执已被后续转换取代或安装中断
+- **WHEN** 回执为 committed_superseded、读取失败/冲突，或安装/启动未完成
+- **THEN** 禁止用旧回执安装旧声明；保持原 ID、私有输入、数据与角色围栏，未知不猜测回滚；提交后安装前中断可原 ID 只读确认后继续
+
+#### Scenario: 匹配目标恢复业务
+- **WHEN** 当前回执确认、匹配 Control/Web/全部 Worker 已安装、owner 已退出且原启动源仍封闭
+- **THEN** 恢复 runtime 登录、启动原身份/原卷的单 Control 和 Worker；Worker 仅产生新 instance/generation，保持 disabled 后逐个显式 activate；两节点各用新键验证唯一 Attempt/Slot、目标效果、cleanup 和 ACK，进程 online 不能代替业务可用
 
 ### Requirement: 专用部署必须先建立可信身份和有限资源
 远程模式 MUST 默认关闭。启用时 Control MUST 拒绝旧 Worker 身份、非阶段来源的执行责任、不可确认的运行角色及第二个有效 Control 应用进程。部署 MUST 预建持久 journal 锚点，固定身份、信任声明、签名密钥及镜像，保留正常停启所用的原 runtime volume。Worker MUST 使用验证证书链和主机名的 HTTPS/AMQPS，不得依赖数据库权限、Control 业务共享目录或业务入站端口。

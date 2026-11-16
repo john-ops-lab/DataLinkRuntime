@@ -4,15 +4,87 @@ from __future__ import annotations
 
 import json
 import sys
+from contextlib import suppress
 
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from dlr.common.config import settings
 from dlr.common.schema_gate import try_control_gate
 from dlr.control import db
 from dlr.control.services import control_cluster_identity as identity
+from dlr.control.services import control_image_transition_v4 as transition
 from dlr.control.services.control_declaration_v4 import DeploymentDeclaration, read_declaration
+
+
+def maintain(
+    factory: sessionmaker[Session], command: str, intent: transition.ImageTransition
+) -> dict[str, object]:
+    """Close the writer before independent readback, including a lost COMMIT reply."""
+    if command == "check":
+        with factory() as session:
+            return {"status": transition.check(session, intent, settings)}
+    if command == "apply":
+        # A failed statement/COMMIT is never assumed to have rolled back.
+        # Close this connection before a separate read-only snapshot resolves it.
+        refused = False
+        with factory() as session:
+            try:
+                transition.apply(session, intent, settings)
+                session.commit()
+            except transition.TransitionUnavailable:
+                refused = True
+                with suppress(Exception):
+                    session.rollback()
+            except Exception:
+                with suppress(Exception):
+                    session.rollback()
+        with factory() as session:
+            observed = transition.observe(session, intent)
+        return {"status": "refused", "observed_status": observed["status"]} if refused else observed
+    if command == "observe":
+        with factory() as session:
+            return transition.observe(session, intent)
+    raise ValueError
+
+
+def _maintenance_main(args: list[str]) -> int:
+    try:
+        # Only filenames are arguments. Invalid input is never echoed by a parser.
+        if len(args) != 7 or args[0] not in {"check", "apply", "observe"}:
+            raise ValueError
+        flags = dict(zip(args[1::2], args[2::2], strict=True))
+        if set(flags) != {"--source", "--target", "--intent"}:
+            raise ValueError
+        source = read_declaration(
+            settings.model_copy(update={"control_identity_file": flags["--source"]})
+        )
+        target = read_declaration(
+            settings.model_copy(update={"control_identity_file": flags["--target"]})
+        )
+        intent = transition.read_intent(flags["--intent"], source, target)
+        engine = create_engine(
+            settings.database_url,
+            poolclass=NullPool,
+            connect_args={
+                "connect_timeout": 5,
+                "options": "-c statement_timeout=10000 -c lock_timeout=5000",
+            },
+        )
+        try:
+            result = maintain(sessionmaker(engine), args[0], intent)
+        finally:
+            engine.dispose()
+        print(json.dumps(result))
+        return (
+            0
+            if result["status"] in {"source_checked", "ready_to_apply", "committed_current"}
+            else 1
+        )
+    except Exception:
+        print(json.dumps({"status": "unknown"}))
+        return 1
 
 
 def initialize(session: Session, deployment: DeploymentDeclaration) -> str:
@@ -47,6 +119,8 @@ def initialize(session: Session, deployment: DeploymentDeclaration) -> str:
 
 
 def main() -> int:
+    if len(sys.argv) > 1:
+        return _maintenance_main(sys.argv[1:])
     try:
         deployment = read_declaration(settings)
         with db.SessionLocal() as session:
