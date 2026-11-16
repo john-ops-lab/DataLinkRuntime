@@ -664,7 +664,12 @@ def start_supervisor(
                     )
                 ):
                     raise ValueError("supervisor placement unverified")
-                _deadline(initial)  # Handshake delay may have consumed the authority.
+                if execution_deadline is None or deadline != execution_deadline:
+                    _deadline(initial)
+                # An elapsed execution cap does not discard this verified
+                # supervisor handle. Its kernel timer still forbids launch;
+                # collect must prove the cutoff and physical stop. Expiry of
+                # an earlier signed authority deadline remains uncertain.
         handle = AttemptSupervisor(
             live,
             parent,

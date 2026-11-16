@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import NoReturn
 from uuid import UUID, uuid4
 
+from dlr.common.worker_languages_v4 import mode_capabilities
 from dlr.common.worker_protocol_v4 import INSTANCE_HEARTBEAT_SECONDS, validate_control_url
 from dlr.worker import (
     broker_config_v4,
@@ -48,6 +49,7 @@ class WorkerConfig:
     result_wire_budget_bytes: int = 16 * 1024 * 1024
     receive_memory_bytes: int = 384 * 1024 * 1024
     recovery_operation: UUID | None = None
+    language_mode: str = "python"
 
 
 def run(config: WorkerConfig, stop: threading.Event) -> str:
@@ -57,6 +59,8 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
         or type(config) is not WorkerConfig
         or not isinstance(stop, threading.Event)
         or type(config.worker_id) is not int
+        or type(config.language_mode) is not str
+        or config.language_mode not in {"python", "python_javascript"}
         or not 0 < config.worker_id < 2**63
         or type(config.worker_identity_id) is not UUID
         or config.worker_identity_id.int == 0
@@ -299,6 +303,15 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                 }
                 if details.get("status") != "passed" or not all(flags.values()):
                     return "preflight_unavailable"
+                if config.language_mode == "python_javascript":
+                    from dlr.worker import node_runtime_v4
+
+                    if not node_runtime_v4.run_preflight(
+                        sandbox_config,
+                        recovery_root=recovery_root,
+                        runtime_root=config.runtime_root,
+                    ):
+                        return "preflight_unavailable"
                 if (
                     startup_v4_gate.inspect_local_startup(
                         runtime_root=config.runtime_root,
@@ -355,7 +368,7 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     assert flags is not None and budget is not None and receive_limits is not None
                     assert config.broker_config_file is not None
                     phase = "readiness"
-                    lease.report_ready(flags)
+                    lease.report_ready(flags, capabilities=mode_capabilities(config.language_mode))
                     consumer = FixedWorkerConsumer(
                         broker_file=config.broker_config_file,
                         lease=lease,
@@ -369,6 +382,7 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                         wire_budget=config.claim_wire_budget_bytes,
                         result_wire_budget=config.result_wire_budget_bytes,
                         stop=stop,
+                        capabilities=mode_capabilities(config.language_mode),
                     )
                     consumer_thread = threading.Thread(
                         target=consumer.run, name="dlr-v4-broker", daemon=True
@@ -442,6 +456,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--request-timeout-seconds", type=float, default=5.0)
     parser.add_argument("--broker-config-file", type=Path)
+    parser.add_argument(
+        "--language-mode", default=os.environ.get("DLR_WORKER_LANGUAGE_MODE", "python")
+    )
     parser.add_argument("--claim-child-address-space-bytes", type=int, default=256 * 1024 * 1024)
     parser.add_argument("--claim-wire-budget-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--result-wire-budget-bytes", type=int, default=16 * 1024 * 1024)

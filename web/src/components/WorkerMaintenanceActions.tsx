@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { ApiError, api } from "../api";
 import { useOverlayFocus } from "../hooks/useOverlayFocus";
-import { REQUIRED_ISOLATION_CAPABILITIES } from "../system-status";
+import { REQUIRED_ISOLATION_CAPABILITIES, restrictedWorkerCapabilities } from "../system-status";
 import type { Worker, WorkerMaintenanceAction, WorkerMaintenanceReceipt, WorkerMaintenanceSnapshot } from "../types";
 import {
   parseWorkerMaintenanceReceipt, WORKER_MAINTENANCE_TIMEOUT_MS,
@@ -22,7 +22,7 @@ function canActivate(snapshot: WorkerMaintenanceSnapshot): boolean {
   return snapshot.scheduling_state === "disabled" && snapshot.enrolled && snapshot.online
     && snapshot.capacity_state === "ready" && snapshot.isolation_preflight_status === "passed"
     && snapshot.unsettled_attempts === 0 && !snapshot.has_unreconciled_attempts
-    && snapshot.capabilities.length === 1 && snapshot.capabilities[0] === "python"
+    && restrictedWorkerCapabilities(snapshot.capabilities)
     && REQUIRED_ISOLATION_CAPABILITIES.every((key) => snapshot.isolation_capabilities[key] === true);
 }
 

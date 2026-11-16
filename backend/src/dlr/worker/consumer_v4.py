@@ -11,6 +11,7 @@ from typing import Literal
 import pika
 
 from dlr.common.dispatch_protocol import deserialize_dispatch_message
+from dlr.common.worker_languages_v4 import valid_capabilities
 from dlr.worker import (
     broker_config_v4,
     cgroup_namespace,
@@ -68,6 +69,7 @@ class FixedWorkerConsumer:
         wire_budget: int,
         result_wire_budget: int,
         stop: threading.Event,
+        capabilities: list[str] | None = None,
     ) -> None:
         self._broker_file, self._lease = broker_file, lease
         self._root_lock, self._runtime_root = root_lock, runtime_root
@@ -80,6 +82,10 @@ class FixedWorkerConsumer:
         self._child_address_space_bytes = child_address_space_bytes
         self._wire_budget, self._result_wire_budget = wire_budget, result_wire_budget
         self._stop = stop
+        languages = ["python"] if capabilities is None else capabilities
+        if not valid_capabilities(languages):
+            raise ValueError("Worker capabilities unavailable")
+        self._languages = tuple(languages)
         self.failed = threading.Event()
         self._preparer = claim_preparation_v4.ClaimPreparer()
 
@@ -92,6 +98,8 @@ class FixedWorkerConsumer:
                 message = deserialize_dispatch_message(body)
                 if message.target_worker_id != self._lease._worker_id:
                     return "reject"
+                if message.language not in self._languages:
+                    return "retry"
             except Exception:
                 return "reject"
             stage = "claim"

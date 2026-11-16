@@ -113,8 +113,9 @@ def _receive_directory(channel: socket.socket) -> int:
 def _stage_python(
     channel: socket.socket, task: Any, fingerprint: str, command: dict[str, Any]
 ) -> None:
-    """Stage a bounded simple Python snapshot while this child owns its payload."""
-    from dlr.runtime import harness
+    """Stage a bounded Python/JavaScript snapshot while this child owns its payload."""
+    from dlr.common.worker_languages_v4 import NODE_EXECUTABLE
+    from dlr.runtime import harness, node_harness
     from dlr.worker import sandbox, task_fingerprint_v4
 
     if set(command) != {
@@ -193,25 +194,38 @@ def _stage_python(
             finally:
                 os.close(fd)
 
-        source = Path(harness.__file__).resolve(strict=True)
-        source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        try:
-            before = os.fstat(source_fd)
-            if not stat.S_ISREG(before.st_mode) or before.st_size > remaining:
-                raise ValueError("task staging unavailable")
-            write(".dlr-harness.py", iter(lambda: os.read(source_fd, 4096), b""))
-            after = os.fstat(source_fd)
-            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
-                after.st_dev,
-                after.st_ino,
-                after.st_size,
-                after.st_mtime_ns,
-            ):
-                raise ValueError("task staging unavailable")
-        finally:
-            os.close(source_fd)
+        if task.language == "python":
+            source = Path(harness.__file__).resolve(strict=True)
+            source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                before = os.fstat(source_fd)
+                if not stat.S_ISREG(before.st_mode) or before.st_size > remaining:
+                    raise ValueError("task staging unavailable")
+                write(".dlr-harness.py", iter(lambda: os.read(source_fd, 4096), b""))
+                after = os.fstat(source_fd)
+                if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                ):
+                    raise ValueError("task staging unavailable")
+            finally:
+                os.close(source_fd)
+            write("adapter.py", (task.code,))
+            argv = [sys.executable, "-I", str(Path(path) / ".dlr-harness.py"), path]
+        elif task.language == "javascript":
+            write(".dlr-harness.mjs", (node_harness.SOURCE,))
+            write("adapter.mjs", (task.code,))
+            argv = [
+                NODE_EXECUTABLE,
+                str(Path(path) / ".dlr-harness.mjs"),
+                path,
+                str(Path(path) / "adapter.mjs"),
+            ]
+        else:
+            raise ValueError("task staging unavailable")
         encoder = json.JSONEncoder(ensure_ascii=False, allow_nan=False)
-        write("adapter.py", (task.code,))
         write("input.json", encoder.iterencode(task.input))
         write("runtime_config.json", encoder.iterencode(task.runtime_config))
         write(
@@ -221,9 +235,13 @@ def _stage_python(
         os.fsync(directory)
         if task_fingerprint_v4.fingerprint(task, task.claim_token).hex() != fingerprint:
             raise ValueError("task staging unavailable")
-        environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        environment = (
+            {"PATH": "/usr/bin:/bin"}
+            if task.language == "javascript"
+            else {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        )
         launch_fd = sandbox.create_sealed_launch(
-            [sys.executable, "-I", str(Path(path) / ".dlr-harness.py"), path],
+            argv,
             environment,
             max_bytes=launch_bytes,
         )
@@ -413,7 +431,7 @@ def _prepare(channel: socket.socket) -> None:
     ):
         raise ValueError("Claim response unavailable")
     if (
-        task.language != "python"
+        task.language not in {"python", "javascript"}
         or task.requirements
         or task.input_files
         or task.builtin_package_snapshot is not None

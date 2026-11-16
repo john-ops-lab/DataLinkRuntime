@@ -28,7 +28,7 @@ from fastapi.testclient import TestClient
 from psycopg import sql as pg_sql
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.attempt_lease_proof_wire_v4 import verify_attempt_proof_signature
 from dlr.common.config import settings
@@ -903,17 +903,18 @@ def _assert_two_fixed_worker_scopes(client, factory, process, lease, trust_file,
 
 
 @pytest.mark.parametrize(
-    "controlled_recovery",
+    "controlled_recovery,language",
     [
-        False,
-        True,
-        ("worker_lost", "dead_letter"),
-        ("worker_lost", "cancelled"),
-        ("cancelled", "cancelled"),
+        (False, "python"),
+        (False, "javascript"),
+        (True, "python"),
+        (("worker_lost", "dead_letter"), "python"),
+        (("worker_lost", "cancelled"), "python"),
+        (("cancelled", "cancelled"), "python"),
     ],
 )
 def test_enrollment_requires_isolated_database_role_and_exchanges_once(
-    api_client, test_engine, session_factory, tmp_path, monkeypatch, controlled_recovery
+    api_client, test_engine, session_factory, tmp_path, monkeypatch, controlled_recovery, language
 ):
     """Exercise the actual API against a restricted PostgreSQL login."""
     if controlled_recovery and os.environ.get("DLR_TEST_CLAIM_PROCESS") == "1":
@@ -1226,14 +1227,104 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             **heartbeat_headers,
             "X-DLR-Worker-Lease-Proof": renewed_proof,
         }
-        # Readiness is test setup only; this does not assert local preflight.
-        with runtime_sessions.begin() as session:
-            worker = session.get(Worker, worker_id)
-            worker.scheduling_state = "disabled"
-            worker.capacity_state = "ready"
-            worker.capabilities = ["python"]
-            worker.isolation_preflight_status = "passed"
-            worker.isolation_capabilities = {key: True for key in REQUIRED_ISOLATION_CAPABILITIES}
+        # Trusted reports exercise real PG transactions, not physical isolation.
+        endpoint = f"/api/workers/{worker_id}/v4/ready"
+        flags = {key: True for key in REQUIRED_ISOLATION_CAPABILITIES}
+        if controlled_recovery is False:
+            for capabilities in [
+                [],
+                ["javascript"],
+                ["javascript", "python"],
+                ["python", "python"],
+                ["python", "javascript", "go"],
+                None,
+                {"python": True},
+                [True],
+            ]:
+                result = client.post(
+                    endpoint,
+                    headers=current_headers,
+                    json={"isolation_capabilities": flags, "capabilities": capabilities},
+                )
+                assert result.status_code == 422, result.text
+            for body in [
+                {"isolation_capabilities": flags, "capabilities": ["python"], "extra": True},
+                {"isolation_capabilities": {**flags, "unknown": True}},
+            ]:
+                assert client.post(endpoint, headers=current_headers, json=body).status_code == 422
+            duplicate = (
+                '{"isolation_capabilities":'
+                + json.dumps(flags)
+                + ',"capabilities":["python"],"capabilities":["python"]}'
+            )
+            assert (
+                client.post(endpoint, headers=current_headers, content=duplicate).status_code == 422
+            )
+            assert (
+                client.post(endpoint, headers=current_headers, content=b" " * 4097).status_code
+                == 422
+            )
+            result = client.post(
+                endpoint, headers=heartbeat_headers, json={"isolation_capabilities": flags}
+            )
+            assert result.status_code == 503  # Superseded instance proof.
+        # Missing field keeps the legacy Python-only ready contract.
+        result = client.post(
+            endpoint, headers=current_headers, json={"isolation_capabilities": flags}
+        )
+        assert result.status_code == 200, result.text
+        with runtime_sessions() as session:
+            assert session.get(Worker, worker_id).capabilities == ["python"]
+        if language == "javascript":
+            # Change a valid report to another valid set after its commit.
+            # Independent observation must compare the entire same set.
+            original_commit = Session.commit
+            changed = []
+
+            def change_after_commit(session):
+                report_write = any(
+                    isinstance(row, Worker)
+                    and row.id == worker_id
+                    and row.capabilities == ["python", "javascript"]
+                    for row in session.identity_map.values()
+                )
+                original_commit(session)
+                if report_write and not changed:
+                    changed.append(True)
+                    with test_engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "UPDATE workers SET capabilities='[\"python\"]'::jsonb WHERE id=:id"
+                            ),
+                            {"id": worker_id},
+                        )
+                    # Leave only the intended capability race, not a pooled
+                    # privileged connection that would independently fence IO.
+                    test_engine.dispose()
+
+            with monkeypatch.context() as race:
+                race.setattr(Session, "commit", change_after_commit)
+                result = client.post(
+                    endpoint,
+                    headers=current_headers,
+                    json={
+                        "isolation_capabilities": flags,
+                        "capabilities": ["python", "javascript"],
+                    },
+                )
+                assert changed, "the post-commit capability race was not injected"
+                assert result.status_code == 503, result.text
+            result = client.post(
+                endpoint,
+                headers=current_headers,
+                json={
+                    "isolation_capabilities": flags,
+                    "capabilities": ["python", "javascript"],
+                },
+            )
+            assert result.status_code == 200, result.text
+            with runtime_sessions() as session:
+                assert session.get(Worker, worker_id).capabilities == ["python", "javascript"]
         activation_body = {"request_id": str(uuid4()), "expected_version": 1}
         with runtime_sessions() as concurrent_operation:
             ordinary_fence = process.worker_fence(concurrent_operation)
@@ -1279,17 +1370,26 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             == 401
         )
         maintenance_version = 4
-        if controlled_recovery is False and os.environ.get("DLR_TEST_CLAIM_PROCESS") != "1":
+        if (
+            controlled_recovery is False
+            and language == "python"
+            and os.environ.get("DLR_TEST_CLAIM_PROCESS") != "1"
+        ):
             from maintenance_observation_fixtures import assert_maintenance_observations
 
             maintenance_version = assert_maintenance_observations(
                 client, runtime_sessions, worker_id, activation_body, runtime_secret
             )
-        adapter = create_adapter(client, name="remote-claim")
+        adapter = create_adapter(client, name="remote-claim", language=language)
         save_version(
             client,
             adapter["id"],
-            code="def handle(context, input):\n    return input\n#" + "x" * 5000,
+            code=(
+                "export async function handle(c, input) { return input; }\n//"
+                if language == "javascript"
+                else "def handle(context, input):\n    return input\n#"
+            )
+            + "x" * 5000,
         )
         created = client.post(f"/api/adapters/{adapter['id']}/executions", json={})
         assert created.status_code == 202, created.text
@@ -1304,6 +1404,7 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
 
         if (
             controlled_recovery is False
+            and language == "python"
             and os.environ.get("DLR_TEST_CLAIM_PROCESS") != "1"
             and os.environ.get("DLR_TEST_FIXED_WORKER_E2E") != "1"
         ):
@@ -1408,6 +1509,28 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 check_authority=check_claim_authority,
             )
             assert tentative.decision == "EXECUTE" and proposal is not None
+        if language == "javascript":
+            # A valid tentative parse does not reserve language permission:
+            # the final Claim checks the current instance's whole capability.
+            with runtime_sessions.begin() as session:
+                session.get(Worker, worker_id).capabilities = ["python"]
+            with runtime_sessions() as session:
+                fence = process.worker_fence(session)
+                authority = process.worker_proof_authority(session)
+                refused = finalize_claim(
+                    session,
+                    worker_id,
+                    dispatch,
+                    worker_authority,
+                    wire_budget=ClaimWireBudget(100000),
+                    proof_context=ClaimProofContext(authority, renewed_proof),
+                    proposal=proposal,
+                )
+                assert refused.decision == "PAUSE_CONSUMER"
+                assert refused.reason == "worker_task_capability_unavailable"
+            with runtime_sessions.begin() as session:
+                assert session.get(Execution, execution_id).attempt_count == 0
+                session.get(Worker, worker_id).capabilities = ["python", "javascript"]
         if os.environ.get("DLR_TEST_CLAIM_PROCESS") == "1":
             with _claim_task_process(lease, message, 4096) as (waiting, _channel):
                 assert waiting == {
@@ -1472,7 +1595,11 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                         channel, deadline, 65536
                     )
                     os.close(launch_fd)
-                    assert (workdir / "adapter.py").read_text().endswith("x" * 5000)
+                    assert (
+                        (workdir / ("adapter.mjs" if language == "javascript" else "adapter.py"))
+                        .read_text()
+                        .endswith("x" * 5000)
+                    )
                     assert json.loads((workdir / "input_manifest.json").read_text()) == {
                         "execution_id": execution_id,
                         "files": [],

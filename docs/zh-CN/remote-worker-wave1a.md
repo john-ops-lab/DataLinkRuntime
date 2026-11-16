@@ -1,8 +1,8 @@
-# Wave 1-A 远程固定 Python Worker
+# 远程固定 Worker（W1-A 至 W1-G）
 
-本阶段是专用新部署的受限功能：一个 Control 应用进程，默认一个固定 Worker；W1-E 显式配置后允许两个固定 Worker 各自单并发执行。支持标准库 Python、none/JSON 输入及普通手动/定时任务。W1-A 的两个独立 Linux 宿主验证只覆盖当时的单 Worker；W1-E 的三宿主并行及各阶段最终审查、CI 结果以相应 PR 为准。正式合同见 [remote-fixed-python-worker](../../openspec/specs/remote-fixed-python-worker/spec.md)。
+本阶段使用一个 Control 应用进程，默认一个固定 Worker；W1-E 显式配置后允许两个固定 Worker 各自单并发执行。默认支持标准库 Python，W1-G 可显式启用无第三方依赖的 JavaScript，输入仍限 none/JSON，触发仍限普通手动/定时任务。旧部署进入 G 只支持下方明确的 F→G 停机发布对。W1-A 的两个独立 Linux 宿主验证只覆盖当时的单 Worker；各阶段真实拓扑、版本、审查和 CI 以相应 PR 为准。正式合同仍位于原 [remote-fixed-python-worker](../../openspec/specs/remote-fixed-python-worker/spec.md) 路径。
 
-不支持第三方依赖、托管文件、内置包、业务凭据注入、其他语言、Webhook/事件/批次、旧身份迁移、异常后的自动恢复、Pool 或 HA。不能把业务凭据写入代码来绕过限制。#129 在阶段 PR 后保持开放。
+不支持第三方依赖、托管文件、内置包、业务凭据注入、TypeScript/Java/Go、Webhook/事件/批次、旧身份迁移、异常后的自动恢复、Pool 或 HA。不能把业务凭据写入代码来绕过限制。#129 在阶段 PR 后保持开放。
 
 W1-B 新检查点与管理员显式恢复的增量合同、旧残留限制及宿主操作流程见 [Wave 1-B](remote-worker-wave1b.md)。完整 stopped 后未提交结果的受控结清见 [Wave 1-C](remote-worker-wave1c.md)。以下故障阻断记录是 W1-A 的历史边界，不能当作 W1-B 恢复通过证据。
 
@@ -15,7 +15,8 @@ W1-D 在现有系统状态页增加受限 v4 观察和标准排空/激活操作�
 | Control 应用 | `control/app.py` 中显式开启的 identity/enrollment/instance/activation/attempt/claim/result/cleanup v4 API | 只有此处实际挂载的业务入口属于阶段运行路径 |
 | 独立 Worker | `worker/agent_v4.py` → `consumer_v4.py` | 完成可信启动、真实 preflight、实例心跳和逐条 Broker 投递；配置无 Broker 时仅对账，不代表可执行 |
 | 有预算领取 | `claim_preparation_v4.py`、`claim_http*_v4.py`、`claim_task_child_v4.py`、Control `claim_{coordinator,child,envelope}_v4.py` | 解析准备与最终 Claim 分开；未知提交与明确容量等待不得混淆 |
-| 执行 | `execution_supervision_v4.py`、`attempt_session_v4.py`、`attempt_supervisor_v4.py`及`attempt_supervisor_child_v4.py` | 监管子进程由父进程按文件路径启动，不是未使用文件；业务使用既有 Python harness/Sandbox |
+| 执行 | `execution_supervision_v4.py`、`attempt_session_v4.py`、`attempt_supervisor_v4.py`及`attempt_supervisor_child_v4.py` | 监管子进程由父进程按文件路径启动；Python/JavaScript 复用既有 harness/Sandbox |
+| 语言资格 | `common/worker_languages_v4.py`、`worker/node_runtime_v4.py` | 默认 Python；显式双语言须通过固定 Node 22 和真实标准 Sandbox/harness 探针及清理 |
 | 本机责任 | `journal*_v4.py`、`cgroup_intent_v4.py`、`workspace_{fs,live}_v4.py`、`sandbox.py`、`cgroup_namespace.py` | 保持原根目录句柄、持久意图、物理执行归属与实际资源账目 |
 | 结果/清理 | `result_build_child_v4.py`、`result_exchange_v4.py`、`cleanup_execution_v4.py`及Control对应intent/finalize服务 | 结果确认、物理清理、服务端结算及本地释放完成后再 ACK |
 | 身份与证明 | enrollment/runtime credential/trust/lease session、proof wire、Control candidate/intent/authority/token fence | 对当前已启用操作验证身份、期限与提交归属；Control 身份记录不表示支持双 Control |
@@ -281,7 +282,7 @@ Control 进程内仅有 K 个固定 Claim/Result 槽，每 Worker 最多一个�
 
 ## 清洁排空后的停机换镜像（W1-F）
 
-首个发布对仅为 W1-E main `a37c9d3e19985acddb1f3e33ff6d3c7337147270`、schema `0087_issue129_disposition` 到本批匹配制品、schema `0088_issue129_image_transition`。完整源/目标 SHA、各组件实际 digest 和制品来源在升级前冻结于私有记录及原 PR 交付证据，不把可变标签当 digest。后续同 schema 发布对、任意旧版本迁移和在线混版本运行均未授权。
+历史首个发布对为 W1-E main `a37c9d3e19985acddb1f3e33ff6d3c7337147270`、schema `0087_issue129_disposition` 到 W1-F 匹配制品、schema `0088_issue129_image_transition`。以下首跳须使用匹配的 **F 镜像**；G 二进制只允许新做下方 F→G，不允许直接 E→G。完整源/目标 SHA、各组件实际 digest 和制品来源在升级前冻结于私有记录及原 PR 交付证据，不把可变标签当 digest。除下方明确 G 发布对外，任意版本迁移和在线混版本仍不支持。
 
 原数据库、Broker/vhost/队列、所有命名卷和 journal/runtime 根、cluster/epoch/proof key、Master Key/admin/legacy Token、四项指纹、K=1/2、Worker ID/凭据/固定绑定原样保留。新 Worker 仍使用原凭据和原卷，只产生新 instance/generation，保持 disabled 后分别显式 activate。转换不处理 queued、retry_wait 或未知责任，不改变业务结果，也不支持回退旧镜像。
 
@@ -342,6 +343,70 @@ apply 会关闭写连接后另开只读事务读回，COMMIT 回复丢失也按�
 核对目标 Control/Web/全部 Worker 为匹配发布，原配置和 K 未改；owner 连接退出、旧启动源仍被阻断后恢复 runtime 登录。沿原 Compose 启动单 Control 和原 Worker，核对信任、稳定 ID、原卷和新 instance/generation，仍 disabled；逐个显式 activate 后恢复获授权的 schedule/manual 入口。用新业务键分别核对目标效果、唯一 Attempt/Slot、cleanup 和 ACK，不能以 online 或版本页代替。
 
 普通 runtime/Worker/Web admin Token 无转换权限。回执保留 operation/前序、cluster/epoch、源目标 digest/schema、非敏感 intent SHA-256、事务 ID 和 DB 时间；无自动 TTL。有回执或目标 authority 引用时 Alembic 拒绝降级删除，原 cluster/epoch/proof key 的 ALWAYS 不可变触发器保持。默认 v3 不进入此路径，B/C 的异常恢复资格不扩展。
+
+## 受限 JavaScript 与 F→G（W1-G）
+
+### 显式语言模式
+
+Worker 私有 Compose 环境中的 `DLR_WORKER_LANGUAGE_MODE` 默认是 `python`，不要求安装 Node。需要执行 JavaScript 的节点显式设为 `python_javascript`；未知值拒绝启动。原 Python 任务、K=1/2、固定节点和 Slot 0 保持。
+
+双语言节点先完成原隔离预检，再在同一实际 Sandbox 和原标准任务硬限制内运行固定 `/usr/local/bin/node` 的完整 ESM harness 小样本，核对 Node 22、隔离身份/namespace、JSON 结果与物理清理。Node 缺失、来源路径可写、版本不符、资源或清理失败都不发送新 ready，不自动降级成 Python-ready。可信部署须保证镜像和运行时根不可被 Adapter 或其他低权进程替换。
+
+ready 的可选 `capabilities` 字段只接受 `['python']` 或 `['python','javascript']`，缺字段只表示 Python；重复、乱序或其他值拒绝。新 instance 清空旧能力；心跳不授予新能力、不解除 disabled。报告是可信 Worker 的本机观察，不是远程硬件证明。系统状态显示已报告语言；过期/未知观察不开放激活，普通用户仍只读。
+
+JavaScript 沿用 ESM `handle(context, input)`：
+
+```javascript
+export async function handle(context, input) {
+  context.logger.info("normalizing input");
+  return { value: input?.value ?? null, mode: context.config.mode ?? "default" };
+}
+```
+
+只承诺 Node 内置模块和镜像内运行时，不安装 npm 包，不创建 nodeenv、依赖 cache 或 node_modules。`requirements` 必须为空；dependency check、文件、builtin snapshot、credential bindings、secrets 及其他触发方式仍拒绝。JS 按 npm 包源核验 builtin 限制，Python 按 PyPI；已接受 Execution 使用原冻结材料/凭据快照，不受后来的默认包源覆盖。
+
+新接收和 schedule 启用/触发都要求固定目标具备对应封闭语言能力；容量忙、维护或暂时离线仍按原排队合同处理，不 fallback。派发和最终 Claim 再核对冻结责任及当前能力，不兼容时有界等待且不创建 Attempt、不增加执行重试。Worker 对消息、payload、任务指纹、目录句柄和预算再核对，在原有界 Claim child 内写 `adapter.mjs` / `.dlr-harness.mjs`；封存 argv 使用固定 Node/harness/workspace/adapter 路径，不经 shell，也不继承 `NODE_OPTIONS`、`NODE_PATH` 或 npm 环境。
+
+JS 使用原监管器、CPU/memory/pids/tmp/nofile/no-swap、结果证明、物理清理、结账和 ACK 顺序。B/C 仅增加 JS 单语言允许文件集合：实际 inventory 可为 Python、JS 或共同文件子集，旧 Python 缺部分模板文件仍可读；混合语言、未知文件、链接和不匹配 binding 拒绝。没有完整可信 stopped 的 partial staging 仍为 unknown，不因语言扩展而获得新恢复资格。
+
+原执行截止也可能在 Sandbox 准备或放行前到达。只有监管器独立观察到原执行定时器到期、没有同时出现父进程/控制通道/辅助进程异常，且原监管器回收、cgroup 归空和输出排空均已确认，才沿原超时结果、清理和 ACK 链完成；不延长执行预算。仅看到准备失败、进程退出或本地时间超过截止都不够，仍保留 unknown。修复不回填历史 stopped，也不改变旧未结记录的恢复资格。
+
+### 精确 F→G 后继
+
+G 的新 apply 只接受 F main `0417b82c4ab6f76aefdf3eafe38327f46cb18358` 或原交付中已核实同产品输入的 F 制品；各组件真实 digest 与 G 目标 SHA/digest 映射须在操作前冻结。源、目标 schema 都是 `0088_issue129_image_transition`，**不运行新迁移**。相同 schema 或 Node 版本不表示其他发布对兼容。
+
+沿上方全部停写、清洁责任、真实进程/IO 停止、租约上界、唯一 owner 和 runtime NOLOGIN 前提操作。保持原库、Broker、身份、凭据、K、卷、四指纹、epoch 和 key：
+
+| F 来源 | 新 G 意图 | 允许回执 |
+| --- | --- | --- |
+| 合法 fresh-F，当前 F authority，回执为空 | `previous_id=null` | 唯一 G root |
+| 恰有一个合法 E→F root，当前 authority 等于其 F 目标 | `previous_id=原 root ID`，同时提供原 E 声明与原 E→F 意图 | 唯一 G child，原 root 保持 |
+| 任意更多链、未知/陈旧前序、摘要或当前 authority 不匹配 | 拒绝 | 不新增、不回退 |
+
+原表没有 source/target SHA 原文字段。后继通过有界、owner-only 私有文件重建原 E→F 意图摘要，并与回执精确比对；原意图的 F 目标就是本次 F 源声明。缺少原件或无法核实制品来源时保持不支持，不能改摘要、SQL 补回执或换空卷凑前序。
+
+G `intent.json` 仍使用上述八字段：`source_schema` 与 `target_schema` 均填 `0088_issue129_image_transition`，`source_sha` 填已核实 F SHA，`target_sha` 填本批 G 的完整 SHA，`operation_id` 为新 UUID，K 不变，前序依来源填写。fresh-F 使用原三个文件参数；有前序时每次 check/apply/observe 都带以下两个附加文件参数：
+
+```sh
+docker run --rm --network DEDICATED_NETWORK --env-file /ABSOLUTE/PRIVATE/owner.env \
+  --mount type=bind,src=/ABSOLUTE/PRIVATE/control,dst=/run/dlr-private,readonly \
+  G_CONTROL_IMAGE_DIGEST python -m dlr.control.control_identity_init_v4 check \
+  --source /run/dlr-private/f-source.json --target /run/dlr-private/g-target.json \
+  --intent /run/dlr-private/g-intent.json \
+  --previous-source /run/dlr-private/e-source.json \
+  --previous-intent /run/dlr-private/e-to-f-intent.json
+```
+
+check 应返回 `ready_to_apply`。保持全部参数和原 ID，将 `check` 换成 `apply`，关闭写连接后的独立 observe 必须为 `committed_current`，才可按上方 fsync/rename 流程安装 G 声明及匹配 Control/Web/全部 Worker。apply 按原锁序核对完整允许链及当前 latest，原子提交源 CAS、旧 Control 实例永久 revoke 和 append；同 ID 已提交重入不再 fencing 新实例。新请求不能用摘要/目标 digest 相等绕过陈旧前序或 ABA。
+
+| 同 schema 时点 | authority / 回执 | 启动与操作 |
+| --- | --- | --- |
+| 转换前 | F / 空表或原 F root | 保持停机，G 声明拒绝；不伪造迁移中间态 |
+| G 提交后、安装前 | G / G root 或 F root→G child | 旧 F 声明拒绝；只按原 G ID 向前安装 |
+| 安装并确认 current 后 | G / 同上 | owner 退出后恢复 runtime，启动原身份/原卷；各 Worker 仍分别显式激活 |
+| 只读原 E→F 历史 | 保留原 root；G 已为 latest | `committed_superseded` 只证明历史，不能回装 F；旧 F CLI 不用于处理 G 后继 |
+
+提交未知、安装中断和旧回执仍沿原只读状态表处理，不支持 G→F 反向 CAS、数据库回档覆盖或混版本滚动。真实发布对和升级后 Python/JS 混合执行、JS schedule、目标效果、Attempt/Slot/cleanup/ACK 的验收回执补原 PR 与私有记录；文档命令本身不代表验收通过。
 
 ## 诊断与停止边界
 

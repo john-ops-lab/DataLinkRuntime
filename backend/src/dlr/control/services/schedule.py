@@ -607,6 +607,8 @@ def upsert_schedule(
             trigger="schedule",
             input_source_type=config.source_type,
         )
+        if settings.worker_remote_v4_enabled:
+            resolve_queue_target_worker(session, adapter)
         input_config_service.validate_saved_config(config, session=session)
     now = worker_availability.current_time(session)
     next_run_at = next_run_after(cron, tz_name, now) if data.enabled else None

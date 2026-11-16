@@ -395,12 +395,18 @@ def start_execution(
         )
         collector.start()
         owner._watchdog.start()
-        if (
-            stop.is_set()
-            or not supervisor.prepare_sandbox()
-            or not supervisor.release_sandbox(send_with_authority=attempt.send_with_authority)
-        ):
+        if stop.is_set():
             raise ValueError("execution gate unavailable")
+        if not supervisor.prepare_sandbox() or not supervisor.release_sandbox(
+            send_with_authority=attempt.send_with_authority
+        ):
+            # The original execution timer can win during preparation. Only
+            # the supervisor's exact cutoff plus reaped/empty-cgroup and output
+            # observations permit the normal timed-out result path. An IPC,
+            # parent or authority failure still retains unknown responsibility.
+            observed = owner.observe(timeout=2.0)
+            if observed.state != "observed" or observed.stop_reason != "execution_cutoff":
+                raise ValueError("execution gate unavailable")
         return owner
     except BaseException as error:
         stop.set()

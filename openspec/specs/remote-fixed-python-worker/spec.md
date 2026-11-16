@@ -1,13 +1,61 @@
-# Remote Fixed Python Worker Specification
+# Remote Fixed Worker Specification
 
 ## Purpose
 
-定义 Wave 1-A 专用新部署、W1-B 已提交结果受控恢复、W1-C 未提交结果的显式终态处置、W1-D 受限运维界面、W1-E 有界双固定 Worker 及 W1-F 清洁排空后受控停机换镜像的单 Control、标准库 Python 远程运行合同。默认一个 Worker，显式两槽时支持两个各自单并发的固定 Worker。该能力不替代既有默认 v3 部署，不声明 Pool、HA、任意旧部署迁移或异常历史自动恢复。
+定义 W1-A 至 W1-F 的专用身份、受限恢复/结清、运维、双固定节点与停机换镜像，以及 W1-G 无第三方依赖 JavaScript 和精确 F→G 发布对的单 Control 远程运行合同。默认 Python 和一个 Worker，显式双语言及两槽时支持相应能力与两个各自单并发的固定 Worker。原规格路径保持。该能力不替代既有默认 v3 部署，不声明 Pool、HA、任意升级链或异常历史自动恢复。
 
 ## Requirements
 
+### Requirement: 第二语言必须由当前实例在原资源内预检后封闭报告
+W1-G MUST 保留可信 Agent `language_mode=python` 默认值且不要求 Node，仅显式 `python_javascript` MAY 报告双语言；未知模式 MUST 拒绝启动。双语言 MUST 在可信固定 `/usr/local/bin/node`、Node 22、原标准任务硬预算与实际 Sandbox 内完成完整 ESM harness 小样本和物理清理后才发送 ready，失败 MUST NOT 降级虚报新 ready。ready MUST 仅接受规范 `['python']` 或 `['python','javascript']`，旧缺字段报告只为 Python；重复、乱序、未知字段/语言拒绝。新 instance MUST 清空旧能力，Control MUST 在原事务与独立提交观察中核对完整同一集合。
+
+#### Scenario: Python-only 自定义 Worker 没有 Node
+- **WHEN** 使用默认 Python 模式启动且原 Python/隔离预检通过
+- **THEN** 保留原 ready 路径，不执行 Node 探针，不由 Control 或镜像名推断 JavaScript 能力
+
+#### Scenario: 显式双语言预检失败或报告不合法
+- **WHEN** Node 不可用/版本或可信路径不符、标准硬限内运行或清理失败，或报告未知/重复/乱序能力
+- **THEN** 不获得新的双语言 ready；旧/过期实例证明不得恢复资格，心跳不增能力、不激活 disabled
+
+### Requirement: JavaScript 必须复用原有界执行与责任链
+W1-G MUST 仅增加固定 Worker 上无第三方依赖 JavaScript 的 manual/schedule、none/JSON 路径，沿既有 ESM `handle(context, input)` 和结果/日志合同。接收、schedule 启用/触发、派发及最终 Claim MUST 核对冻结任务与固定目标的封闭语言能力；JS 按 npm、Python 按 PyPI 检查 builtin 包源。requirements、dependency check、材料/文件、credential bindings、secrets 和其他来源/语言 MUST 保持拒绝。已接受 Execution MUST 保留原快照，能力变化或资源等待不得改写它、不建新 Attempt、不消耗执行重试、不 fallback。
+
+#### Scenario: 执行截止在 Sandbox 准备阶段到达
+- **WHEN** 原执行定时器明确到期，没有同时观察到父进程、控制通道或辅助进程异常，且原监管器回收、cgroup 归空和输出排空均已独立确认
+- **THEN** 沿原超时结果、物理清理及 ACK 链完成，不延长预算；准备失败、时间比较或缺失可信停止观察 MUST 保留 unknown，不回填旧 stopped 或扩大 B/C 资格
+
+#### Scenario: JS 任务指向 Python-only 节点
+- **WHEN** 创建新执行/启用 schedule，或已接受工作派发/最终 Claim 时目标不具对应能力
+- **THEN** 新责任前明确拒绝；旧责任有界等待并保持可读，容量忙与能力不匹配分开，固定路由不迁移
+
+#### Scenario: JS 准备与运行
+- **WHEN** 受支持任务经两阶段 Claim 领取
+- **THEN** 业务 payload 保持在原有界 child，按指纹/目录 FD/预算生成 adapter.mjs 与原 Node SOURCE；sealed launch 仅固定 Node/harness/workspace/adapter argv 与最小环境，不经 shell、不继承 NODE_OPTIONS/NODE_PATH/npm 配置、不安装包/cache/node_modules；原监管器、硬资源、结果 proof、物理清理、结账和 ACK 顺序保持
+
+### Requirement: 第二语言不扩大恢复和维护授权
+W1-G MUST 保持 B/C 检查点 version、MAC、实际 inventory/binding 和原同宿主/boot/原卷/旧进程停止/平台终态资格；仅将文件白名单扩为匹配 dispatch 语言的 Python、JS 或共同文件实际子集。旧 Python 缺部分模板文件 MUST 仍可读；混合语言、未知文件、symlink、不一致 binding 或缺可信 stopped MUST 拒绝。激活及现有 UI MUST 使用同一封闭集合，同时保留维护版本、权限、隔离/无未结责任、新鲜度、未知回执和 K=2 观察上限。
+
+#### Scenario: partial staging 或未知快照
+- **WHEN** 只有部分 JS 文件而没有可信 stopped，或页面能力未知/过期
+- **THEN** 不补造恢复资格、不开放管理；普通用户仍只读，显式 activate/drain 沿原 request ID / expected version 合同
+
+### Requirement: F到G仅允许原回执表上的一个精确同schema发布对
+G 二进制的新 apply MUST 仅接受 F main `0417b82c4ab6f76aefdf3eafe38327f46cb18358` 或原交付已核实同产品输入的 F 制品到本批匹配 G 制品，源目标 schema 均为 `0088_issue129_image_transition`，MUST NOT 新增迁移。来源 MUST 是合法 fresh-F 空回执表，或当前 authority 匹配唯一合法 E→F root 的 F 目标；后者 MUST 以 owner-only 有界原意图/原 E 声明重建摘要并逐字段核对原 root/current latest，仅追加一个 G child。原表没有发布 SHA 原文，MUST NOT 用任意标签或 SQL 伪造来源。
+
+#### Scenario: 前序未知、陈旧、ABA或已有后继
+- **WHEN** 原意图/制品不可核实、链形状不合法或超过两个回执、当前 authority/前序不匹配，或另一个 G 已提交
+- **THEN** 不新增转换、不分叉、不反向 CAS，保持原数据和停机围栏；同 ID 内容完整匹配的已提交重入只读回原回执，不重复 revoke 新实例
+
+#### Scenario: 同schema转换提交未知与历史回执
+- **WHEN** F→G 语句/提交回复未知、安装中断，或读取原 E→F 回执
+- **THEN** 保留原 F 清洁/物理停止/租约/角色前提，沿 schema gate→authority→前序/latest→旧实例锁序原子 CAS/revoke/append；关闭原写连接再独立 observe，只有 G committed_current 可安装启动；原 E→F 已被取代者为 committed_superseded，不授予回装 F 或新做 E→G 的许可
+
+#### Scenario: 原F来源进入G并恢复业务
+- **WHEN** 从合法来源在原库/原卷/原身份完成 G 转换、匹配制品安装和显式激活
+- **THEN** 按冻结 G1–G5 证明两独立 Linux Worker 宿主上 JS manual/JSON 与默认 Python manual/none 并行、一次 JS schedule/none 及效果/Attempt/Slot/结果/cleanup/ACK；制品/原历史/首败分别记录，不用旧 F 通过或文档校验替代 G 验收
+
 ### Requirement: 停机换镜像必须绑定精确发布对并保留稳定身份
-W1-F MUST 仅支持 W1-E main `a37c9d3e19985acddb1f3e33ff6d3c7337147270`、schema `0087_issue129_disposition` 到经核实的本批目标制品、schema `0088_issue129_image_transition`。可信操作者 MUST 冻结各组件 SHA/digest、协议/检查点兼容和真实制品来源，MUST NOT 用声明 digest 代替镜像或物理证据。原 cluster/epoch/proof key、三个私有凭据、四项指纹、K、PG/Broker/队列、Worker ID/凭据/固定绑定及原卷 MUST 保持。
+历史 W1-F 镜像 MUST 仅支持 W1-E main `a37c9d3e19985acddb1f3e33ff6d3c7337147270`、schema `0087_issue129_disposition` 到经核实 F 制品、schema `0088_issue129_image_transition`；G 的后继以本规格 W1-G 要求为准，不把旧首跳放宽为 E→G。可信操作者 MUST 冻结各组件 SHA/digest、协议/检查点兼容和真实制品来源，MUST NOT 用声明 digest 代替镜像或物理证据。原 cluster/epoch/proof key、三个私有凭据、四项指纹、K、PG/Broker/队列、Worker ID/凭据/固定绑定及原卷 MUST 保持。
 
 #### Scenario: 未支持的源或目标改变不可变条件
 - **WHEN** 源发布对不符、意图字段重复/超限、凭据/指纹/epoch/key/K 改变，或无法核实原身份与原卷
@@ -54,7 +102,7 @@ observe MUST 以同一语句快照核对完整 intent、回执、链末端和当
 - **THEN** Worker 不进入可领取状态，不以新空目录替换原责任
 
 ### Requirement: 新任务与最终 Claim 都必须核对阶段能力
-远程阶段 MUST 只接受固定到阶段身份的标准库 Python 普通手动/定时任务及 none/JSON 输入。第三方依赖、内置包、业务凭据、托管文件、其他语言和其他触发方式 MUST 在新责任接受/启用之前拒绝。最终 Claim MUST 重新核对冻结快照；不兼容的旧责任不得被改写、删除或误报为已完成。
+远程阶段 MUST 只接受固定到阶段身份的标准库 Python，以及 W1-G 显式双语言节点上的无第三方依赖 JavaScript 普通手动/定时任务及 none/JSON 输入。第三方依赖、内置包、业务凭据、托管文件、其他语言和其他触发方式 MUST 在新责任接受/启用之前拒绝。最终 Claim MUST 重新核对冻结快照；不兼容的旧责任不得被改写、删除或误报为已完成。
 
 #### Scenario: 不支持的新请求
 - **WHEN** 新执行或定时启用包含不支持的能力

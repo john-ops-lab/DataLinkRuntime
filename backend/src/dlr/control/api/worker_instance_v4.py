@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError
 from sqlalchemy.orm import Session
 
+from dlr.common.worker_languages_v4 import valid_capabilities
 from dlr.control import db
 from dlr.control.models import Worker
 from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
@@ -29,6 +30,7 @@ class _ReadyReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     isolation_capabilities: dict[str, StrictBool]
+    capabilities: list[str] = ["python"]
 
 
 def _pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -186,7 +188,11 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
             json.loads(raw, object_pairs_hook=_pairs, parse_constant=_constant)
         )
         flags = report.isolation_capabilities
-        if set(flags) != REQUIRED_ISOLATION_CAPABILITIES or not all(flags.values()):
+        if (
+            set(flags) != REQUIRED_ISOLATION_CAPABILITIES
+            or not all(flags.values())
+            or not valid_capabilities(report.capabilities)
+        ):
             raise ValueError
     except (ValueError, UnicodeError, RecursionError, ValidationError):
         raise _error(422) from None
@@ -219,7 +225,7 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
 
         fence = process.worker_fence(session)
         worker = verify()
-        worker.capabilities = ["python"]
+        worker.capabilities = list(report.capabilities)
         worker.isolation_capabilities = dict(flags)
         worker.isolation_preflight_status = "passed"
         worker.isolation_preflight_at = worker_availability.current_time(session)
@@ -236,7 +242,7 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
         worker = verify()
         if (
             worker.capacity_state != "ready"
-            or worker.capabilities != ["python"]
+            or worker.capabilities != report.capabilities
             or worker.isolation_capabilities != flags
             or worker.isolation_preflight_status != "passed"
         ):

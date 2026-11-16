@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
+from dlr.common.worker_languages_v4 import valid_capabilities
 from dlr.control.models import Adapter, AdapterCredentialBinding, AdapterVersion, Execution, Worker
 from dlr.control.services import admission, idempotency, outbox
 from dlr.control.services.adapter import domain_error
@@ -167,7 +168,9 @@ def resolve_queue_target_worker(
             "runtime_worker_invalid",
             "The configured runtime Worker does not exist",
         )
-    if adapter.language not in worker.capabilities:
+    if adapter.language not in worker.capabilities or (
+        settings.worker_remote_v4_enabled and not valid_capabilities(worker.capabilities)
+    ):
         raise domain_error(
             409,
             "runtime_worker_invalid",

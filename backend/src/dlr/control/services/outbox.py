@@ -374,6 +374,13 @@ def lease_due_outbox(
     lease_until = effective_now + timedelta(seconds=settings.rabbitmq_outbox_lease_seconds)
     leased: list[LeasedOutbox] = []
     for row in rows:
+        if settings.worker_remote_v4_enabled:
+            from dlr.control.services.worker_stage_capability_v4 import dispatch_blocked
+
+            if dispatch_blocked(session, row.execution_id):
+                row.last_error_code = "worker_task_capability_unavailable"
+                row.available_at = effective_now + timedelta(seconds=30)
+                continue
         row.lease_owner = owner
         row.lease_expires_at = lease_until
         row.publish_attempts += 1

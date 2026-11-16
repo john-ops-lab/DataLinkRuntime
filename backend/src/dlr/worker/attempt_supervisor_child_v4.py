@@ -11,6 +11,7 @@ import signal
 import socket
 import sys
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -481,6 +482,7 @@ def _probe_spawn(
     slow: bool,
     children: list[int],
     launch: _SandboxLaunch | None = None,
+    on_execution_timer: Callable[[], None] | None = None,
 ) -> socket.socket:
     """Place a protected namespace init before it starts its gated helper."""
     supervisor, guardian = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -517,7 +519,9 @@ def _probe_spawn(
     guardian.close()
     os.close(supervisor_fd)
     try:
-        if not _probe_wait_signal(control, supervisor, parent_fd, timer_fd, b"ARMED"):
+        if not _probe_wait_signal(
+            control, supervisor, parent_fd, timer_fd, b"ARMED", on_execution_timer
+        ):
             raise ValueError("guardian protection unconfirmed")
         fd = os.open("cgroup.procs", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
         try:
@@ -538,13 +542,22 @@ def _probe_spawn(
 
 
 def _probe_wait_signal(
-    control: socket.socket, helper: socket.socket, parent_fd: int, timer_fd: int, expected: bytes
+    control: socket.socket,
+    helper: socket.socket,
+    parent_fd: int,
+    timer_fd: int,
+    expected: bytes,
+    on_execution_timer: Callable[[], None] | None = None,
 ) -> bool:
     poller = select.poll()
     for fd in (control.fileno(), helper.fileno(), parent_fd, timer_fd):
         poller.register(fd, select.POLLIN | select.POLLHUP | select.POLLERR)
     while True:
         events = poller.poll()
+        if events == [(timer_fd, select.POLLIN)] and on_execution_timer is not None:
+            # A cutoff while the helper is still gated is also an execution
+            # deadline. Competing parent/control/helper events remain unknown.
+            on_execution_timer()
         if any(fd in {parent_fd, timer_fd, control.fileno()} for fd, _ in events):
             # Consume a queued packet before closing the socket. Leaving the
             # stop unread may reset the connection and discard the stop reply.
@@ -600,6 +613,17 @@ def _run(
         probe_gated = False
         execution_deadline: float | None = None
         pending_renewal: tuple[_KernelKillTimer, float] | None = None
+
+        def note_execution_timer() -> None:
+            if active and execution_deadline is not None and deadline == execution_deadline:
+                count = os.read(timer_fd, 8)
+                if (
+                    len(count) == 8
+                    and int.from_bytes(count, sys.byteorder) > 0
+                    and stop_reasons is not None
+                ):
+                    stop_reasons.append("execution_cutoff")
+
         while True:
             now = _clock()
             if now < previous or now >= deadline:
@@ -610,18 +634,8 @@ def _run(
                 return
             timer_flags = next((flags for fd, flags in events if fd == timer_fd), 0)
             if timer_flags:
-                if (
-                    timer_flags & select.POLLIN
-                    and execution_deadline is not None
-                    and deadline == execution_deadline
-                    and probe is not None
-                    and not probe_gated
-                    and stop_reasons is not None
-                    and not any(fd in {sock.fileno(), probe.fileno()} for fd, _ in events)
-                ):
-                    count = os.read(timer_fd, 8)
-                    if len(count) == 8 and int.from_bytes(count, sys.byteorder) > 0:
-                        stop_reasons.append("execution_cutoff")
+                if events == [(timer_fd, select.POLLIN)]:
+                    note_execution_timer()
                 return
             if any(
                 fd == sock.fileno() and flags & (select.POLLHUP | select.POLLERR)
@@ -673,8 +687,19 @@ def _run(
             if launch is not None and message == {"op": "sandbox_prepare"}:
                 if not active or probe is not None:
                     raise ValueError("sandbox unavailable")
-                probe = _probe_spawn(sock, directory, parent_fd, timer_fd, False, children, launch)
-                if not _probe_wait_signal(sock, probe, parent_fd, timer_fd, b"GATED"):
+                probe = _probe_spawn(
+                    sock,
+                    directory,
+                    parent_fd,
+                    timer_fd,
+                    False,
+                    children,
+                    launch,
+                    note_execution_timer,
+                )
+                if not _probe_wait_signal(
+                    sock, probe, parent_fd, timer_fd, b"GATED", note_execution_timer
+                ):
                     return
                 now = _clock()
                 if now < previous or now >= deadline:
@@ -701,7 +726,9 @@ def _run(
                 if probe.send(b"GO", socket.MSG_DONTWAIT) != 2:
                     raise OSError("probe release failed")
                 probe_gated = False
-                if not _probe_wait_signal(sock, probe, parent_fd, timer_fd, b"RUNNING"):
+                if not _probe_wait_signal(
+                    sock, probe, parent_fd, timer_fd, b"RUNNING", note_execution_timer
+                ):
                     return
                 _send(sock, {"event": "sandbox_released"})
                 continue
