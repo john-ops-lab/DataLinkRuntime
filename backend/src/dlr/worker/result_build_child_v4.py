@@ -6,6 +6,7 @@ import ctypes
 import fcntl
 import json
 import os
+import re
 import signal
 import socket
 import stat
@@ -65,10 +66,19 @@ def _read_file(directory: int, name: str, limit: int) -> bytes:
         os.close(fd)
 
 
+def _redaction_pattern(secrets: tuple[str, ...]) -> re.Pattern[str] | None:
+    # Match only original text. Replacing generated markers again can amplify
+    # short values exponentially and exhaust the bounded result child.
+    return (
+        re.compile("|".join(re.escape(item) for item in sorted(secrets, key=len, reverse=True)))
+        if secrets
+        else None
+    )
+
+
 def _redact_text(value: str, secrets: tuple[str, ...]) -> str:
-    for secret in secrets:
-        value = value.replace(secret, "[REDACTED]")
-    return value
+    pattern = _redaction_pattern(secrets)
+    return pattern.sub("[REDACTED]", value) if pattern is not None else value
 
 
 class _RedactionCollision(ValueError):
@@ -78,6 +88,11 @@ class _RedactionCollision(ValueError):
 def _redact_json(value: Any, secrets: tuple[str, ...]) -> Any:
     # Iterative traversal avoids adding a smaller recursion limit to an
     # otherwise valid bounded JSON result. No input is mutated.
+    pattern = _redaction_pattern(secrets)
+
+    def redact(item: str) -> str:
+        return pattern.sub("[REDACTED]", item) if pattern is not None else item
+
     root: list[Any] = [None]
     stack: list[tuple[Any, Any, Any]] = [(value, root, 0)]
     while stack:
@@ -85,7 +100,7 @@ def _redact_json(value: Any, secrets: tuple[str, ...]) -> Any:
         if isinstance(current, dict):
             result: Any = {}
             for old_key, item in current.items():
-                new_key = _redact_text(old_key, secrets)
+                new_key = redact(old_key)
                 if new_key in result:
                     raise _RedactionCollision("output_redaction_conflict")
                 result[new_key] = None
@@ -94,7 +109,7 @@ def _redact_json(value: Any, secrets: tuple[str, ...]) -> Any:
             result = [None] * len(current)
             stack.extend((item, result, i) for i, item in enumerate(current))
         elif isinstance(current, str):
-            result = _redact_text(current, secrets)
+            result = redact(current)
         else:
             result = current
         parent[key] = result
@@ -177,9 +192,6 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
                 raise ValueError("redaction snapshot unavailable")
             _, environment = sandbox._read_sealed_launch(redaction_fd, request["launch_max_bytes"])
             secret_values = launch_values(environment)
-            stdout = (
-                "[REDACTED]" if request["stdout_truncated"] else _redact_text(stdout, secret_values)
-            )
         elif request["redaction_identity"] is not None:
             raise ValueError("redaction snapshot unavailable")
         result: dict[str, Any] = {
@@ -287,10 +299,14 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
         else:
             raise ValueError("result stop unverified")
         if secret_values:
-            for key in ("error", "stdout", "stderr", "output_preview"):
+            for key in ("error", "stdout", "stderr"):
                 item = result.get(key)
                 if type(item) is str:
-                    result[key] = _redact_text(item, secret_values)
+                    result[key] = (
+                        "[REDACTED]"
+                        if key == "stdout" and request["stdout_truncated"]
+                        else _redact_text(item, secret_values)
+                    )
         action = AttemptResultBody.model_validate(result)
         body = {
             name: getattr(action, name)

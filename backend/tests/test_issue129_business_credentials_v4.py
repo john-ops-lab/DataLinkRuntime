@@ -157,6 +157,7 @@ def test_redaction_precedes_result_encoding_and_never_overwrites_keys():
     "case",
     [
         "normal",
+        "short_values",
         "collision",
         "truncated_stream",
         "truncated_output",
@@ -179,7 +180,9 @@ def test_real_result_child_uses_exact_launch_snapshot_before_result_mac(tmp_path
     from dlr.worker import claim_task_child_v4 as ipc
     from dlr.worker import sandbox
 
-    secret, shorter = "canary-秘密-abcdef", "canary-秘密"
+    secret, shorter = (
+        ("D", "E") if case == "short_values" else ("canary-秘密-abcdef", "canary-秘密")
+    )
     output = {secret: [secret, shorter]} if case != "collision" else {secret: 1, "[REDACTED]": 2}
     raw_output = json.dumps(output, ensure_ascii=False).encode()
     if case == "truncated_output":
@@ -278,7 +281,10 @@ def test_real_result_child_uses_exact_launch_snapshot_before_result_mac(tmp_path
         document = json.loads(raw)
         token = document.pop("claim_token")
         assert result_body_mac(document, token, 65536).hex() == answer["body_mac"]
-        assert secret.encode() not in raw and shorter.encode() not in raw
+        if case == "short_values":
+            assert document["stdout"] == "x" * 4093 + "[REDACTED][REDACTED]"
+        else:
+            assert secret.encode() not in raw and shorter.encode() not in raw
         assert process.wait(timeout=5) == 0
         if case == "collision":
             assert document["status"] == "succeeded"
@@ -315,3 +321,9 @@ def test_repeated_bounded_value_can_still_exceed_original_encoded_launch_limit()
             {"PATH": "/usr/bin:/bin", **{f"DLR_SECRET_{k}": v for k, v in selected.items()}},
             65536,
         )
+
+
+def test_redaction_does_not_rescan_or_amplify_its_fixed_marker():
+    selected = ("D", "E")
+    assert _redact_text("D", selected) == "[REDACTED]"
+    assert _redact_json({"D": "ED"}, selected) == {"[REDACTED]": "[REDACTED][REDACTED]"}
