@@ -43,6 +43,10 @@ def offline(upgrade_database, tmp_path, monkeypatch):  # noqa: F811
     role = "w1f_runtime_" + uuid4().hex[:12]
     with upgrade_database.begin() as conn:
         conn.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
+        database = upgrade_database.url.database
+        assert database.startswith("dlr_219_upgrade_") and database.replace("_", "").isalnum()
+        conn.execute(text(f'REVOKE CONNECT,TEMPORARY ON DATABASE "{database}" FROM PUBLIC'))
+        conn.execute(text(f'GRANT CONNECT ON DATABASE "{database}" TO "{role}"'))
     monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
     monkeypatch.setattr(settings, "worker_v4_database_role", role)
     monkeypatch.setattr(settings, "worker_v4_database_admin_roles", [])
@@ -379,6 +383,10 @@ def test_changed_invariants_or_credentials_refuse_without_writes(offline, field)
 def test_offline_fences_and_unsettled_responsibilities_refuse(offline, block):
     f = offline
     _migrate(f)
+    if block == "prepared":
+        with f.engine.connect() as conn:
+            if int(conn.scalar(text("SHOW max_prepared_transactions"))) == 0:
+                pytest.skip("server requires max_prepared_transactions > 0 for this scenario")
     other = None
     gid = "w1f_" + uuid4().hex
     try:
