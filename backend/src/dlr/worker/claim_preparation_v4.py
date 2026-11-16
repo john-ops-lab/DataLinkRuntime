@@ -547,6 +547,8 @@ class ClaimPreparer:
             if receive is None:
                 return ClaimPreparation("blocked", "claim_receive_capacity_unavailable")
             phase = "instance_authority"
+            # Renewal replaces the current candidate. Keep its proof stable through
+            # the bounded tentative exchange; release before re-entering lease APIs.
             with lease._lock:
                 deadline = lease._active_deadline()
                 started = lease._require_before(deadline)
@@ -570,65 +572,68 @@ class ClaimPreparer:
                     "timeout": min(timeout_seconds, io_deadline - started),
                     "business_credentials": self._business_credentials,
                 }
-            transport_start = claim_http_v4._clock()
-            io_deadline = min(io_deadline, transport_start + timeout_seconds)
-            numerator, denominator = deadline.as_integer_ratio()
-            deadline_ns = numerator * 1_000_000_000 // denominator
-            encoded = json.dumps(request, separators=(",", ":")).encode("utf-8")
-            if not 0 < len(encoded) <= 65_536:
-                raise ValueError("Claim request unavailable")
-            channel, child_channel = socket.socketpair()
-            channel.setblocking(False)
-            ticket = claim_http_v4._Spawn(child=child_channel)
-            command = [
-                sys.executable,
-                "-m",
-                "dlr.worker.claim_task_child_v4",
-                str(child_channel.fileno()),
-                str(os.getpid()),
-                str(deadline_ns),
-                str(child_address_space_bytes),
-            ]
-            child_channel = None  # the creator owns this descriptor from now on
-            environment = {
-                key: value
-                for key, value in os.environ.items()
-                if key in {"PATH", "PYTHONPATH", "SSL_CERT_FILE", "SSL_CERT_DIR"}
-                or key.lower() in {"http_proxy", "https_proxy", "no_proxy", "all_proxy"}
-            }
-            phase = "claim_child"
-            claim_http_v4._spawn_until(
-                ticket,
-                io_deadline,
-                deadline_ns,
-                child_address_space_bytes,
-                (lease._lost, stop),
-                _process_command=command,
-                _process_env=environment,
-            )
-            with ticket.lock:
-                if ticket.abandoned or ticket.process is None:
+                transport_start = claim_http_v4._clock()
+                io_deadline = min(io_deadline, transport_start + timeout_seconds)
+                numerator, denominator = deadline.as_integer_ratio()
+                deadline_ns = numerator * 1_000_000_000 // denominator
+                encoded = json.dumps(request, separators=(",", ":")).encode("utf-8")
+                if not 0 < len(encoded) <= 65_536:
+                    raise ValueError("Claim request unavailable")
+                channel, child_channel = socket.socketpair()
+                channel.setblocking(False)
+                ticket = claim_http_v4._Spawn(child=child_channel)
+                command = [
+                    sys.executable,
+                    "-m",
+                    "dlr.worker.claim_task_child_v4",
+                    str(child_channel.fileno()),
+                    str(os.getpid()),
+                    str(deadline_ns),
+                    str(child_address_space_bytes),
+                ]
+                child_channel = None  # the creator owns this descriptor from now on
+                environment = {
+                    key: value
+                    for key, value in os.environ.items()
+                    if key in {"PATH", "PYTHONPATH", "SSL_CERT_FILE", "SSL_CERT_DIR"}
+                    or key.lower() in {"http_proxy", "https_proxy", "no_proxy", "all_proxy"}
+                }
+                phase = "claim_child"
+                claim_http_v4._spawn_until(
+                    ticket,
+                    io_deadline,
+                    deadline_ns,
+                    child_address_space_bytes,
+                    (lease._lost, stop),
+                    _process_command=command,
+                    _process_env=environment,
+                )
+                with ticket.lock:
+                    if ticket.abandoned or ticket.process is None:
+                        raise ValueError("Claim child unavailable")
+                pidfd = os.pidfd_open(ticket.process.pid, 0)  # type: ignore[attr-defined, unused-ignore]
+                if (
+                    claim_http_v4._receive(channel, 1, io_deadline, (lease._lost, stop)) != b"R"
+                    or ticket.thread is None
+                    or not ticket.thread.is_alive()
+                ):
                     raise ValueError("Claim child unavailable")
-            pidfd = os.pidfd_open(ticket.process.pid, 0)  # type: ignore[attr-defined, unused-ignore]
-            if (
-                claim_http_v4._receive(channel, 1, io_deadline, (lease._lost, stop)) != b"R"
-                or ticket.thread is None
-                or not ticket.thread.is_alive()
-            ):
-                raise ValueError("Claim child unavailable")
-            claim_http_v4._send_all(
-                channel, struct.pack("!I", len(encoded)) + encoded, io_deadline, (lease._lost, stop)
-            )
-            del encoded, request
-            phase = "claim_response"
-            size = struct.unpack(
-                "!I", claim_http_v4._receive(channel, 4, io_deadline, (lease._lost, stop))
-            )[0]
-            if not 0 < size <= 65_536:
-                raise ValueError("Claim response unavailable")
-            result = json.loads(
-                claim_http_v4._receive(channel, size, io_deadline, (lease._lost, stop))
-            )
+                claim_http_v4._send_all(
+                    channel,
+                    struct.pack("!I", len(encoded)) + encoded,
+                    io_deadline,
+                    (lease._lost, stop),
+                )
+                del encoded, request
+                phase = "claim_response"
+                size = struct.unpack(
+                    "!I", claim_http_v4._receive(channel, 4, io_deadline, (lease._lost, stop))
+                )[0]
+                if not 0 < size <= 65_536:
+                    raise ValueError("Claim response unavailable")
+                result = json.loads(
+                    claim_http_v4._receive(channel, size, io_deadline, (lease._lost, stop))
+                )
             check_resources()
             if type(result) is not dict or not lease.is_usable():
                 raise ValueError("Claim response unavailable")

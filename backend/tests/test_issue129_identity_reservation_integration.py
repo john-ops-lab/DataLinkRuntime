@@ -1497,6 +1497,29 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
         dispatch = deserialize_dispatch_message(message)
         worker_authority = V4AttemptAuthority(runtime_secret, instance, renewed.generation)
 
+        if business_credential is not None:
+            # Reproduce the observed prepare 503 with a controlled interleaving:
+            # a proof copied before a committed renewal is no longer current.
+            copied_headers = {**current_headers, "X-DLR-Worker-Claim-Wire-Bytes": "4096"}
+            current = client.post(
+                f"/api/workers/{worker_id}/v4/claim/prepare",
+                headers=copied_headers,
+                json=message,
+            )
+            assert current.status_code == 200
+            assert current.json()["reason"] == "claim_response_budget_exceeded"
+            lease.heartbeat()
+            renewed_proof = lease._proof
+            renewed = verify_worker_proof_signature(renewed_proof, public_key_bytes(signing_key))
+            assert renewed is not None
+            current_headers["X-DLR-Worker-Lease-Proof"] = renewed_proof
+            stale = client.post(
+                f"/api/workers/{worker_id}/v4/claim/prepare",
+                headers=copied_headers,
+                json=message,
+            )
+            assert stale.status_code == 503
+
         if (
             controlled_recovery is False
             and language == "python"

@@ -19,6 +19,7 @@ from dlr.worker import (
     attempt_supervisor_v4,
     broker_config_v4,
     cgroup_namespace,
+    claim_http_v4,
     claim_preparation_v4,
     claim_task_child_v4,
     execution_supervision_v4,
@@ -27,6 +28,152 @@ from dlr.worker import (
     task_fingerprint_v4,
 )
 from worker_runtime_support import attempt_payload
+
+
+@pytest.mark.parametrize("ending", ["decision", "deadline", "stop"])
+def test_claim_prepare_keeps_copied_proof_current_until_tentative_reply(
+    tmp_path, monkeypatch, ending
+):
+    """Thread/transport arbitration only; PG verifies successor proof rejection."""
+    now = [100.0]
+    renewed, waiting = threading.Event(), threading.Event()
+    stop = threading.Event()
+    lease = SimpleNamespace(
+        _lock=threading.Lock(),
+        _worker_id=1,
+        _base_url="https://control.example",
+        _identity_id=uuid4(),
+        _instance_id=uuid4(),
+        _cluster_id=uuid4(),
+        _authority_epoch=uuid4(),
+        _verification_key=b"k" * 32,
+        _credential="test-only",
+        _claims=SimpleNamespace(generation=1),
+        _proof="initial-test-proof",
+        _lost=threading.Event(),
+        _same_process=lambda: True,
+        _active_deadline=lambda: 110.0,
+        _require_before=lambda deadline: now[0],
+    )
+
+    def usable():
+        with lease._lock:  # A non-reentrant lease must be released before this call.
+            return True
+
+    lease.is_usable = usable
+    envelope = SimpleNamespace(cpu_cores=3, memory_bytes=2**31, pids=512, tmp_bytes=2**32)
+    envelope.source = "test-only"
+    snapshot = {
+        "accounting_state": "unflagged",
+        "envelope_source": envelope.source,
+        "capacity": {"cpu": 3, "memory": 2**31, "pids": 512, "tmp": 2**32},
+        "agent_reserve": {"cpu": 1, "memory": 2**30, "pids": 256, "tmp": 2**31},
+    }
+    released, requests, deadlines = [], [], []
+    charge = object()
+    budget = SimpleNamespace(
+        snapshot=lambda: snapshot,
+        try_reserve=lambda _: charge,
+        release=released.append,
+    )
+    config = SimpleNamespace(cgroup_path=tmp_path, **vars(envelope))
+    monkeypatch.setattr(sandbox, "validate_private_cgroup_namespace", lambda _: None)
+    monkeypatch.setattr(sandbox, "read_verified_resource_envelope", lambda _: envelope)
+    monkeypatch.setattr(sandbox, "_read", lambda _: "0")
+    monkeypatch.setattr(claim_http_v4, "_clock", lambda: now[0])
+    monkeypatch.setattr(claim_preparation_v4.os, "pidfd_open", lambda *_: 99, raising=False)
+
+    def heartbeat():
+        waiting.set()
+        with lease._lock:
+            lease._proof = "successor-test-proof"
+            renewed.set()
+
+    renewer = threading.Thread(target=heartbeat)
+
+    def spawn(ticket, deadline, *_args, **_kwargs):
+        deadlines.append(deadline)
+        renewer.start()
+        assert waiting.wait(1)
+        renewed.wait(0.05)  # Unprotected old code lets the renewal commit here.
+        ticket.process = SimpleNamespace(pid=123)
+        ticket.thread = SimpleNamespace(is_alive=lambda: True)
+
+    def send(_channel, raw, deadline, *_events):
+        deadlines.append(deadline)
+        requests.append(json.loads(raw[4:]))
+
+    reply = json.dumps(
+        {
+            "state": "decision",
+            "decision": "ACK_NOOP",
+            "reason": "stale_generation",
+            "retry_after_seconds": None,
+        }
+    ).encode()
+    frames = iter([b"R", struct.pack("!I", len(reply)), reply])
+
+    def receive(_channel, _size, deadline, events):
+        deadlines.append(deadline)
+        if requests:
+            # Models the existing DB contract: a committed successor rejects this proof.
+            if requests[0]["instance_proof"] != lease._proof:
+                raise OSError("test-only stale proof")
+            if ending == "deadline":
+                now[0] = deadline + 1
+            elif ending == "stop":
+                stop.set()
+        claim_http_v4._check_cancelled(events)
+        if now[0] >= deadline:
+            raise TimeoutError
+        return next(frames)
+
+    preparer = claim_preparation_v4.ClaimPreparer()
+
+    def reap(ticket, _pidfd, channel):
+        if ticket is not None:
+            ticket.child.close()
+        if channel is not None:
+            channel.close()
+        return True
+
+    monkeypatch.setattr(claim_http_v4, "_spawn_until", spawn)
+    monkeypatch.setattr(claim_http_v4, "_send_all", send)
+    monkeypatch.setattr(claim_http_v4, "_receive", receive)
+    monkeypatch.setattr(preparer, "_stop_uncommitted", reap)
+    result = preparer._prepare_locked(
+        lease=lease,
+        dispatch={
+            "schema_version": 1,
+            "message_id": str(uuid4()),
+            "execution_id": 1,
+            "dispatch_generation": 1,
+            "adapter_id": 1,
+            "language": "python",
+            "resource_class": "standard",
+            "target_worker_id": 1,
+        },
+        root_lock=None,
+        runtime_root=tmp_path,
+        attempt_journal_root=tmp_path,
+        sandbox_config=config,
+        budget=budget,
+        receive_limits=object(),
+        child_address_space_bytes=2**28,
+        wire_budget=65536,
+        result_wire_budget=65536,
+        timeout_seconds=5.0,
+        stop=stop,
+    )
+    renewer.join(timeout=1)
+    assert not renewer.is_alive() and renewed.is_set()
+    assert result.state == ("decision" if ending == "decision" else "blocked")
+    assert result.reason == (
+        "stale_generation" if ending == "decision" else "claim_preparation_unavailable"
+    )
+    assert requests[0]["instance_proof"] == "initial-test-proof"
+    assert set(deadlines) == {105.0} and requests[0]["timeout"] == 5.0
+    assert released == [charge] and not preparer._poisoned
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="real Linux seqpacket polling")

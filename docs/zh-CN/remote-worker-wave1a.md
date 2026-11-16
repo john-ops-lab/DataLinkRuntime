@@ -430,6 +430,8 @@ Control 的私有运行环境可配置 `DLR_WORKER_BUSINESS_CREDENTIAL_POLICY_FI
 
 Execution 冻结 Credential ID/field/env_key 及原不可删除引用，不冻结接受时真值。Claim 按原锁前缀后追加 Credential ID 升序行锁；prepare 仅向获准 Worker 的有界 child 提供 tentative 材料，不能运行；finalize 重建精确 wire，有效真值改变须回滚、零有效 Attempt。提交后的 Attempt 保持该次值；后续合法重试可读新值。删除/更新平台凭据不会即时收回已发值，上游撤销与原取消是独立操作。
 
+Worker 从复制实例证明到原 Claim child 完整接收 tentative 回复，使用同一原续租锁防止旧证明与新 candidate 竞争；仍受原本机期限、最多 5 秒传输预算和 stop/失权信号约束。交换结束或异常即释放锁，再重检资源、持久意图和最终 Claim；不放宽服务端证明验证、不延长租约或改动未知责任/ACK 条件。
+
 原固定 argv/harness 的 sealed launch 仅加入本次绑定 `DLR_SECRET_<env_key>`，不继承宿主同名值、额外秘密或 NODE_OPTIONS 等环境。父进程只持同一 launch 内核对象的有限 opaque dup fd 与身份/尺寸；原结果 child 在清理前读取它，所有 reader/IO 确认结束后关闭最后引用再结账。无需普通秘密文件、新秘密进程、重启后重新解密或扩大原资源档。
 
 原 Agent 有界 stdout ring 仍可能暂存业务回显的原值，不将其写入普通日志/进度/诊断。结果 child 先对完整非截断流、JSON 字符串键和值按长值优先做字面替换，再计算 size/preview/MAC；原始截断 stdout 仅给 `[REDACTED]`，截断/非法 JSON 不给原文 preview。净化后键碰撞整份 output 省略、preview 为空、`output_redaction_conflict`，保留成功且不因此重跑。fd/净化/物理停止未知时不外发原文、不伪造清理/ACK，B/C 格式与恢复资格不变。这不是任意编码/拆分变换的 DLP，也不隔离恶意授权代码、root 或宿主管理员。

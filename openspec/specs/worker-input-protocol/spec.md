@@ -21,6 +21,17 @@ W1-H SHALL 只为原无依赖Python/JavaScript、manual/schedule、none/JSON、s
 - **WHEN** 合法目标已收到有界prepare payload，但final Claim/当前证明未被确认，或提交可能成功而响应丢失
 - **THEN** tentative真值仅处于已授权目标的受限Claim child内，不授权业务启动；沿原未知责任和物理对账合同保留，不重建Attempt或提前ACK
 
+### Requirement: Claim准备在原时限内保持当前实例证明
+Worker MUST 在复制当前实例证明至原Claim child完整接收tentative回复期间，与同进程实例续租互斥，避免续租提交新candidate后继续发送旧证明；MUST 保持原本机期限、最多5秒传输预算及stop/失权信号，不续期或放宽Control验证。该区间结束或异常时释放原锁，再进行资源/journal及finalize等需要重新进入lease的操作；未确认child/IO回收仍保留原责任和计费，不能凭互斥伪造Claim、结果或ACK。
+
+#### Scenario: 复制证明后实例续租开始
+- **WHEN** Claim已复制当前证明，续租线程在child交接或tentative接收期间请求更新candidate
+- **THEN** 续租等待这一次有界交换结束；prepare只发送当时仍为当前版本的证明，随后沿原续租及最终Claim证明流程继续，不开放旧证明兼容窗口
+
+#### Scenario: 准备期间到期或失权
+- **WHEN** 原准备期限到达、stop/失权信号触发或交换失败
+- **THEN** 在原预算内失败并释放互斥；只有原child/IO确认回收后才释放相应预算，未知责任不自动重试业务或ACK，不延长期限以等待续租
+
 ### Requirement: H凭据注入有固定上限且不继承宿主secret
 W1-H SHALL 遵守以下固定上限：最多16绑定、env_key为64字符内的固定环境名，单值4096/总值16384 UTF-8 bytes且无NUL，ciphertext单项32768/不同凭据合计65536 bytes；先在DB检查计数/长度，再在原有界Claim child解密与验证。Worker MUST 校验映射与冻结绑定完全匹配，复核原全字段HMAC，仅将本次值加入封闭sealed launch的DLR_SECRET_*；原65536-byte launch、Claim/结果硬预算及standard资源限额保持，不扩大任意env或写普通凭据文件。
 
