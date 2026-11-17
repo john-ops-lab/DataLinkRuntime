@@ -50,6 +50,7 @@ class WorkerConfig:
     receive_memory_bytes: int = 384 * 1024 * 1024
     recovery_operation: UUID | None = None
     language_mode: str = "python"
+    business_credentials_mode: str = "disabled"
 
 
 def run(config: WorkerConfig, stop: threading.Event) -> str:
@@ -61,6 +62,8 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
         or type(config.worker_id) is not int
         or type(config.language_mode) is not str
         or config.language_mode not in {"python", "python_javascript"}
+        or type(config.business_credentials_mode) is not str
+        or config.business_credentials_mode not in {"disabled", "bindings"}
         or not 0 < config.worker_id < 2**63
         or type(config.worker_identity_id) is not UUID
         or config.worker_identity_id.int == 0
@@ -368,7 +371,11 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     assert flags is not None and budget is not None and receive_limits is not None
                     assert config.broker_config_file is not None
                     phase = "readiness"
-                    lease.report_ready(flags, capabilities=mode_capabilities(config.language_mode))
+                    lease.report_ready(
+                        flags,
+                        capabilities=mode_capabilities(config.language_mode),
+                        business_credentials=config.business_credentials_mode == "bindings",
+                    )
                     consumer = FixedWorkerConsumer(
                         broker_file=config.broker_config_file,
                         lease=lease,
@@ -383,6 +390,7 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                         result_wire_budget=config.result_wire_budget_bytes,
                         stop=stop,
                         capabilities=mode_capabilities(config.language_mode),
+                        business_credentials=config.business_credentials_mode == "bindings",
                     )
                     consumer_thread = threading.Thread(
                         target=consumer.run, name="dlr-v4-broker", daemon=True
@@ -462,6 +470,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--claim-child-address-space-bytes", type=int, default=256 * 1024 * 1024)
     parser.add_argument("--claim-wire-budget-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--result-wire-budget-bytes", type=int, default=16 * 1024 * 1024)
+    parser.add_argument(
+        "--business-credentials-mode",
+        default=os.environ.get("DLR_WORKER_BUSINESS_CREDENTIALS_MODE", "disabled"),
+    )
     parser.add_argument("--receive-memory-bytes", type=int, default=384 * 1024 * 1024)
     parser.add_argument(
         "--recovery-operation",

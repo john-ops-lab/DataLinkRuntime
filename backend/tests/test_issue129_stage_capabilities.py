@@ -90,7 +90,9 @@ def test_unsupported_manual_and_schedule_take_no_responsibility(
     )
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "worker_task_capability_unavailable"
-    assert response.json()["detail"]["params"]["reason"] == unsupported
+    assert response.json()["detail"]["params"]["reason"] == (
+        "credentials_mode" if unsupported == "credentials" else unsupported
+    )
     assert (
         api_client.patch(
             f"/api/adapters/{adapter['id']}", json={"run_mode": "schedule"}
@@ -284,3 +286,244 @@ def test_frozen_javascript_dispatch_waits_without_attempt_or_retry_and_ignores_l
         execution.builtin_package_snapshot = {"unsupported": True}
         session.flush()
         assert dispatch_blocked(session, execution_id)
+
+
+def _business_adapter(
+    client, session_factory, monkeypatch, *, kind="token", fields=None, field="token"
+):
+    from dlr.common import business_credentials_v4 as contract
+    from dlr.control.services import business_credentials_v4 as business
+
+    adapter = create_adapter(client)
+    save_version(client, adapter["id"])
+    credential = create_credential(client, type_=kind, fields=fields or {"token": "private-canary"})
+    assert (
+        set_bindings(
+            client,
+            adapter["id"],
+            [{"env_key": "BOUND", "credential_id": credential["id"], "field": field}],
+        ).status_code
+        == 200
+    )
+    with session_factory.begin() as session:
+        worker = session.scalar(select(Worker).order_by(Worker.id))
+        adapter["runtime_worker_id"] = worker.id
+        session.get(Adapter, adapter["id"]).runtime_worker_id = worker.id
+        worker.protocol_version = 4
+        worker.identity_lifecycle = "reserved"
+        worker.identity_enrolled_at = datetime.now(UTC)
+        worker.isolation_capabilities = {contract.CAPABILITY: True}
+        policy = business.Policy(
+            (business.Grant(worker.id, worker.identity_id, (credential["id"],)),)
+        )
+    monkeypatch.setattr(settings, "_business_credential_policy", policy)
+    monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
+    return adapter, credential
+
+
+@pytest.mark.parametrize(
+    "kind,fields,field,expected",
+    [
+        ("password", {"username": "user", "password": "pass"}, "username", "user"),
+        ("token", {"token": "token-value"}, "token", "token-value"),
+        (
+            "access_key",
+            {"access_key_id": "id", "access_key_secret": "secret"},
+            "access_key_id",
+            "id",
+        ),
+        ("secret", {"value": "custom-value"}, "value", "custom-value"),
+    ],
+)
+def test_business_binding_freezes_references_but_resolves_current_value(
+    api_client, session_factory, monkeypatch, kind, fields, field, expected
+):
+    from dlr.control.services import business_credentials_v4 as business
+
+    adapter, credential = _business_adapter(
+        api_client, session_factory, monkeypatch, kind=kind, fields=fields, field=field
+    )
+    result = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert result.status_code == 202, result.text
+    execution_id = result.json()["id"]
+    with session_factory() as session:
+        execution = session.get(Execution, execution_id)
+        refs = business.execution_bindings(session, execution_id)
+        assert refs[0].credential_id == credential["id"]
+        assert not dispatch_blocked(session, execution_id)
+        assert business.resolve_values(
+            session, execution, session.get(Worker, adapter["runtime_worker_id"])
+        ) == {"BOUND": expected}
+    changed = dict(fields, **{field: "rotated-value"})
+    assert (
+        api_client.patch(
+            f"/api/credentials/{credential['id']}", json={"fields": changed}
+        ).status_code
+        == 200
+    )
+    assert set_bindings(api_client, adapter["id"], []).status_code == 200
+    # RESTRICT still protects accepted references after the current binding is removed.
+    assert api_client.delete(f"/api/credentials/{credential['id']}").status_code == 409
+    with session_factory() as session:
+        execution = session.get(Execution, execution_id)
+        assert business.resolve_values(
+            session, execution, session.get(Worker, adapter["runtime_worker_id"])
+        ) == {"BOUND": "rotated-value"}
+        assert (
+            execution_block_reason(session, session.get(Adapter, adapter["id"]), execution) is None
+        )
+
+
+@pytest.mark.parametrize(
+    "blocked",
+    ["no_policy", "wrong_identity", "capability_missing", "ciphertext", "bindings", "key_missing"],
+)
+def test_business_denied_before_new_responsibility(
+    api_client, session_factory, monkeypatch, blocked
+):
+    from uuid import uuid4
+
+    from dlr.control.models.platform import Credential
+    from dlr.control.services import business_credentials_v4 as business
+
+    adapter, credential = _business_adapter(api_client, session_factory, monkeypatch)
+    if blocked == "no_policy":
+        monkeypatch.setattr(settings, "_business_credential_policy", business.Policy())
+    elif blocked == "wrong_identity":
+        monkeypatch.setattr(
+            settings,
+            "_business_credential_policy",
+            business.Policy(
+                (business.Grant(adapter["runtime_worker_id"], uuid4(), (credential["id"],)),)
+            ),
+        )
+    elif blocked == "capability_missing":
+        with session_factory.begin() as session:
+            session.get(Worker, adapter["runtime_worker_id"]).isolation_capabilities = {}
+    elif blocked == "ciphertext":
+        with session_factory.begin() as session:
+            session.get(Credential, credential["id"]).ciphertext = "x" * 32769
+    elif blocked == "bindings":
+        assert (
+            set_bindings(
+                api_client,
+                adapter["id"],
+                [
+                    {"env_key": "B" + str(n), "credential_id": credential["id"], "field": "token"}
+                    for n in range(17)
+                ],
+            ).status_code
+            == 200
+        )
+    elif blocked == "key_missing":
+        monkeypatch.setattr(settings, "master_key", None)
+    result = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert result.status_code == (503 if blocked == "key_missing" else 409), result.text
+    _assert_no_responsibility(session_factory)
+    if blocked == "no_policy":
+        assert (
+            api_client.patch(
+                f"/api/adapters/{adapter['id']}", json={"run_mode": "schedule"}
+            ).status_code
+            == 200
+        )
+        assert (
+            api_client.put(
+                f"/api/adapters/{adapter['id']}/schedule",
+                json={"enabled": True, "cron": "0 * * * *", "timezone": "UTC"},
+            ).status_code
+            == 409
+        )
+        _assert_no_responsibility(session_factory)
+
+
+def test_ciphertext_bound_precedes_plaintext_and_frozen_snapshot_tamper_is_rejected(
+    api_client, session_factory, monkeypatch
+):
+    from dlr.common.business_credentials_v4 import BusinessCredentialError
+    from dlr.control.models.platform import Credential
+    from dlr.control.services import business_credentials_v4 as business
+    from dlr.control.services import secrets
+
+    adapter, credential = _business_adapter(api_client, session_factory, monkeypatch)
+    result = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert result.status_code == 202, result.text
+    execution_id = result.json()["id"]
+    for value in ["中" * 1366, "bad\x00value", ""]:
+        with session_factory.begin() as session:
+            session.get(Credential, credential["id"]).ciphertext = secrets.encrypt_fields(
+                {"token": value}
+            )
+        with session_factory() as session, pytest.raises(BusinessCredentialError):
+            business.resolve_values(
+                session,
+                session.get(Execution, execution_id),
+                session.get(Worker, adapter["runtime_worker_id"]),
+            )
+    with session_factory.begin() as session:
+        session.get(Credential, credential["id"]).ciphertext = "x" * 32769
+
+    def forbidden(_ciphertext):
+        raise AssertionError("unbounded ciphertext reached decryption")
+
+    monkeypatch.setattr(secrets, "decrypt_fields", forbidden)
+    with (
+        session_factory() as session,
+        pytest.raises(BusinessCredentialError, match="credentials_budget"),
+    ):
+        business.resolve_values(
+            session,
+            session.get(Execution, execution_id),
+            session.get(Worker, adapter["runtime_worker_id"]),
+        )
+    with session_factory.begin() as session:
+        session.get(Execution, execution_id).credential_bindings_snapshot = [{"bad": True}]
+    with session_factory() as session, pytest.raises(BusinessCredentialError):
+        business.execution_bindings(session, execution_id)
+
+
+def test_distinct_ciphertext_total_is_checked_before_any_decryption(
+    api_client, session_factory, monkeypatch
+):
+    from dlr.common.business_credentials_v4 import BusinessCredentialError
+    from dlr.control.models.platform import Credential
+    from dlr.control.services import business_credentials_v4 as business
+
+    adapter, first = _business_adapter(api_client, session_factory, monkeypatch)
+    ids = [first["id"]]
+    for number in range(2):
+        ids.append(
+            create_credential(
+                api_client, name=f"extra-{number}", type_="token", fields={"token": "canary"}
+            )["id"]
+        )
+    assert (
+        set_bindings(
+            api_client,
+            adapter["id"],
+            [
+                {"env_key": f"K{n}", "field": "token", "credential_id": cid}
+                for n, cid in enumerate(ids)
+            ],
+        ).status_code
+        == 200
+    )
+    with session_factory.begin() as session:
+        worker = session.get(Worker, adapter["runtime_worker_id"])
+        monkeypatch.setattr(
+            settings,
+            "_business_credential_policy",
+            business.Policy((business.Grant(worker.id, worker.identity_id, tuple(ids)),)),
+        )
+        for cid in ids:
+            session.get(Credential, cid).ciphertext = "x" * 22000
+    with (
+        session_factory() as session,
+        pytest.raises(BusinessCredentialError, match="credentials_budget"),
+    ):
+        business.check(
+            session, business.adapter_bindings(session, adapter["id"]), adapter["runtime_worker_id"]
+        )
+    result = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert result.status_code == 409, result.text
+    _assert_no_responsibility(session_factory)

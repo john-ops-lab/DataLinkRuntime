@@ -100,7 +100,7 @@ def offline(upgrade_database, tmp_path, monkeypatch):  # noqa: F811
         "previous_id": None,
         "source_schema": SCHEMA_REVISION,
         "target_schema": SCHEMA_REVISION,
-        "source_sha": transition.F_SOURCE_SHA,
+        "source_sha": transition.G_SOURCE_SHA,
         "target_sha": "b" * 40,
         "evidence_sha256": "e" * 64,
         "control_slots": 2,
@@ -135,45 +135,64 @@ def _migrate(f):
     command.upgrade(f.config, SCHEMA_REVISION)
 
 
-def _predecessor(f, tmp_path):
-    """Database fixture for a committed legacy F root, not an upgrade proof."""
+def _predecessor(f, tmp_path, *, longest=False, root_f_sha=transition.F_SOURCE_SHA):
+    """Synthetic committed original prefix; physical provenance belongs to H4."""
     old = replace(
         f.source, authority=replace(f.source.authority, image_digest="sha256:" + "0" * 64)
     )
+    root = None
+    if longest:
+        earliest = replace(old, authority=replace(old.authority, image_digest="sha256:" + "a" * 64))
+        root_path = tmp_path / "root-intent.json"
+        root_path.write_text(
+            json.dumps(
+                dict(
+                    f.body,
+                    source_schema=transition.SOURCE_SCHEMA,
+                    source_sha=transition.SOURCE_SHA,
+                    target_sha=root_f_sha,
+                    operation_id=str(uuid4()),
+                    previous_id=None,
+                )
+            )
+        )
+        root_path.chmod(0o600)
+        root = transition.read_intent(str(root_path), earliest, old)
     body = dict(
         f.body,
-        source_schema=transition.SOURCE_SCHEMA,
-        source_sha=transition.SOURCE_SHA,
-        target_sha=transition.F_SOURCE_SHA,
+        source_schema=SCHEMA_REVISION,
+        source_sha=transition.F_SOURCE_SHA,
+        target_sha=transition.G_SOURCE_SHA,
         operation_id=str(uuid4()),
-        previous_id=None,
+        previous_id=str(root.operation_id) if root else None,
     )
     path = tmp_path / "previous-intent.json"
     path.write_text(json.dumps(body))
     path.chmod(0o600)
-    previous = transition.read_intent(str(path), old, f.source)
+    previous = transition.read_intent(str(path), old, f.source, predecessor=root)
     with f.engine.begin() as conn:
-        conn.execute(
-            text("""
-            INSERT INTO control_image_transitions
-              (operation_id,cluster_id,authority_epoch,previous_id,source_digest,target_digest,
-               source_schema,target_schema,intent_sha256,writer_xid,committed_at)
-            VALUES (:id,:cluster,:epoch,NULL,:source,:target,:ss,:ts,:intent,
-                    txid_current(),clock_timestamp())
-        """),
-            {
-                "id": previous.operation_id,
-                "cluster": previous.source.authority.cluster_id,
-                "epoch": previous.source.authority_epoch,
-                "source": previous.source.authority.image_digest,
-                "target": previous.target.authority.image_digest,
-                "ss": previous.source_schema,
-                "ts": previous.target_schema,
-                "intent": previous.intent_sha256,
-            },
-        )
-    body = dict(f.body, previous_id=str(previous.operation_id))
-    f.path.write_text(json.dumps(body))
+        for item in [root, previous] if root else [previous]:
+            conn.execute(
+                text("""
+                INSERT INTO control_image_transitions
+                  (operation_id,cluster_id,authority_epoch,previous_id,source_digest,target_digest,
+                   source_schema,target_schema,intent_sha256,writer_xid,committed_at)
+                VALUES (:id,:cluster,:epoch,:previous,:source,:target,:ss,:ts,:intent,
+                        txid_current(),clock_timestamp())
+            """),
+                {
+                    "id": item.operation_id,
+                    "cluster": item.source.authority.cluster_id,
+                    "epoch": item.source.authority_epoch,
+                    "previous": item.previous_id,
+                    "source": item.source.authority.image_digest,
+                    "target": item.target.authority.image_digest,
+                    "ss": item.source_schema,
+                    "ts": item.target_schema,
+                    "intent": item.intent_sha256,
+                },
+            )
+    f.path.write_text(json.dumps(dict(f.body, previous_id=str(previous.operation_id))))
     intent = transition.read_intent(str(f.path), f.source, f.target, predecessor=previous)
     return previous, intent
 
@@ -241,7 +260,10 @@ def test_exact_proved_predecessor_appends_one_child_and_reads_old_f_history(
     assert maintain(factory, "apply", intent)["status"] == "committed_current"
     with f.factory() as session:
         assert transition.observe(session, previous)["status"] == "committed_superseded"
-    assert maintain(f.factory, "apply", previous)["status"] == "committed_superseded"
+    assert maintain(f.factory, "apply", previous) == {
+        "status": "refused",
+        "observed_status": "committed_superseded",
+    }
     with f.factory() as session:
         assert transition.check(session, previous, settings) == "committed_superseded"
     assert maintain(f.factory, "apply", intent)["status"] == "committed_current"
@@ -306,9 +328,18 @@ def test_predecessor_evidence_and_current_chain_refuse_without_new_writes(
     assert _snapshot(f) == before
 
 
-def test_g_binary_cannot_create_a_new_e_transition(offline, tmp_path):
+@pytest.mark.parametrize(
+    "schema,source_sha,target_sha",
+    [
+        (transition.SOURCE_SCHEMA, transition.SOURCE_SHA, transition.F_SOURCE_SHA),
+        (SCHEMA_REVISION, transition.F_SOURCE_SHA, transition.G_SOURCE_SHA),
+    ],
+)
+def test_h_binary_cannot_create_old_release_pairs(
+    offline, tmp_path, schema, source_sha, target_sha
+):
     f = offline
-    body = dict(f.body, source_schema=transition.SOURCE_SCHEMA, source_sha=transition.SOURCE_SHA)
+    body = dict(f.body, source_schema=schema, source_sha=source_sha, target_sha=target_sha)
     f.path.write_text(json.dumps(body))
     historical = transition.read_intent(str(f.path), f.source, f.target)
     with f.factory() as session, pytest.raises(transition.TransitionUnavailable):
@@ -941,3 +972,93 @@ def test_competing_operation_waits_for_exclusive_gate_then_cannot_fork(
             )
     finally:
         other_engine.dispose()
+
+
+@pytest.mark.parametrize("unknown_commit", [False, True])
+def test_longest_chain_appends_third_preserves_both_original_hashes_and_readonly_history(
+    offline, tmp_path, unknown_commit
+):
+    f = offline
+    previous, intent = _predecessor(f, tmp_path, longest=True)
+    root = previous.predecessor
+    before = [(item.operation_id, item.intent_sha256) for item in (root, previous)]
+
+    class LostReply(Session):
+        def commit(self):
+            super().commit()
+            raise OSError("fixture lost COMMIT response")
+
+    with f.factory() as session:
+        assert transition.check(session, intent, settings) == "ready_to_apply"
+    factory = sessionmaker(f.engine, class_=LostReply) if unknown_commit else f.factory
+    assert maintain(factory, "apply", intent)["status"] == "committed_current"
+    for item in (root, previous):
+        with f.factory() as session:
+            assert transition.observe(session, item)["status"] == "committed_superseded"
+        assert maintain(f.factory, "apply", item)["status"] == "refused"
+    with f.factory() as session:
+        rows = session.execute(
+            text("SELECT operation_id,intent_sha256 FROM control_image_transitions")
+        ).all()
+        assert len(rows) == 3 and all(row in rows for row in before)
+
+
+@pytest.mark.parametrize("ancestor", ["e", "f", "g"])
+@pytest.mark.parametrize("entry", ["parse", "check", "apply"])
+def test_longest_chain_refuses_every_ancestor_digest_before_write(
+    offline, tmp_path, ancestor, entry
+):
+    f = offline
+    previous, intent = _predecessor(f, tmp_path, longest=True)
+    digest = {
+        "e": previous.predecessor.source.authority.image_digest,
+        "f": previous.source.authority.image_digest,
+        "g": previous.target.authority.image_digest,
+    }[ancestor]
+    target = replace(f.target, authority=replace(f.target.authority, image_digest=digest))
+    before = _snapshot(f)
+    with pytest.raises(transition.TransitionUnavailable):
+        if entry == "parse":
+            transition.read_intent(str(f.path), f.source, target, predecessor=previous)
+        else:
+            with f.factory() as session:
+                getattr(transition, entry)(session, replace(intent, target=target), settings)
+                session.commit()
+    assert _snapshot(f) == before
+    with f.factory() as session:
+        assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == 2
+
+
+def test_fourth_receipt_is_never_observable_as_supported_history(offline, tmp_path):
+    f = offline
+    previous, intent = _predecessor(f, tmp_path, longest=True)
+    assert maintain(f.factory, "apply", intent)["status"] == "committed_current"
+    with f.engine.begin() as conn:
+        conn.execute(
+            text("""INSERT INTO control_image_transitions
+            SELECT :id,cluster_id,authority_epoch,operation_id,target_digest,:target,
+                target_schema,target_schema,:hash,txid_current(),clock_timestamp()
+            FROM control_image_transitions WHERE operation_id=:previous"""),
+            {
+                "id": uuid4(),
+                "target": "sha256:" + "d" * 64,
+                "hash": "f" * 64,
+                "previous": intent.operation_id,
+            },
+        )
+    for item in (previous.predecessor, previous, intent):
+        with f.factory() as session, pytest.raises(transition.TransitionUnavailable):
+            transition.observe(session, item)
+
+
+def test_original_verified_f_aliases_need_no_historical_intent_rewrite(offline, tmp_path):
+    f = offline
+    previous, intent = _predecessor(
+        f, tmp_path, longest=True, root_f_sha="49269698f63cd85128f16f60c0ad2ba684d55902"
+    )
+    assert previous.predecessor.target_sha != previous.source_sha
+    with f.factory() as session:
+        assert transition.check(session, intent, settings) == "ready_to_apply"
+    assert maintain(f.factory, "apply", intent)["status"] == "committed_current"
+    with f.factory() as session:
+        assert transition.observe(session, previous.predecessor)["status"] == "committed_superseded"

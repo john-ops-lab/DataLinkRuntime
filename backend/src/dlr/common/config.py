@@ -4,7 +4,7 @@ from os.path import isabs
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     worker_proof_signing_key_file: str | None = Field(
         default=None, validation_alias="DLR_WORKER_PROOF_SIGNING_KEY_FILE"
     )
+    worker_business_credential_policy_file: str | None = Field(
+        default=None, validation_alias="DLR_WORKER_BUSINESS_CREDENTIAL_POLICY_FILE"
+    )
+    # Frozen non-secret deployment policy, excluded from environment/wire settings.
+    _business_credential_policy: object | None = PrivateAttr(default=None)
 
     # M4.1 effective-online lease window. Worker rows keep their last
     # self-reported stored status; Control derives current availability from

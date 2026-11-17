@@ -6,6 +6,66 @@
 
 ## Requirements
 
+### Requirement: H业务凭据只沿冻结引用与合法Claim交付
+W1-H SHALL 只为原无依赖Python/JavaScript、manual/schedule、none/JSON、strict fixed/Slot 0及K=1/2任务增加现有password/token/access_key/secret的绑定字段；引用在接受时冻结，值在合法Claim流程按原Credential ID解密。MUST 同时满足当前目标的H处理能力和绑定稳定 Worker ID/identity 与 Credential ID 的冻结私有部署许可，接收、schedule启用/触发、派发及两阶段Claim全部重检；不改用当前Adapter绑定，不向Broker发送secrets或完整TaskPayload，不新增公开明文查询。
+
+#### Scenario: 未许可的新任务或旧节点
+- **WHEN** 节点仅有Python/JS能力但未开启H能力，或本次冻结Credential ID未获该稳定身份许可
+- **THEN** 新请求在创建Execution/Admission/Outbox前明确拒绝，已接受责任保持原路由并有界暂停；不得转发给另一节点、增加Attempt或从自报能力推导许可
+
+#### Scenario: 引用不变而真值在领取期间更新
+- **WHEN** 当前Adapter绑定已替换，或同一Credential ID的值在prepare与finalize之间改变
+- **THEN** 继续按原不可变引用校验；两阶段在原锁前缀后按Credential ID升序锁定并核对精确wire，不相同则回滚候选、零有效新Attempt；已提交Attempt使用已下发值，不重新解密净化结果，后续合法Retry可按原引用取得新值
+
+#### Scenario: tentative响应与提交未知
+- **WHEN** 合法目标已收到有界prepare payload，但final Claim/当前证明未被确认，或提交可能成功而响应丢失
+- **THEN** tentative真值仅处于已授权目标的受限Claim child内，不授权业务启动；沿原未知责任和物理对账合同保留，不重建Attempt或提前ACK
+
+### Requirement: Claim准备在原时限内保持当前实例证明
+Worker MUST 在复制当前实例证明至原Claim child完整接收tentative回复期间，与同进程实例续租互斥，避免续租提交新candidate后继续发送旧证明；MUST 保持原本机期限、最多5秒传输预算及stop/失权信号，不续期或放宽Control验证。该区间结束或异常时释放原锁，再进行资源/journal及finalize等需要重新进入lease的操作；未确认child/IO回收仍保留原责任和计费，不能凭互斥伪造Claim、结果或ACK。
+
+#### Scenario: 复制证明后实例续租开始
+- **WHEN** Claim已复制当前证明，续租线程在child交接或tentative接收期间请求更新candidate
+- **THEN** 续租等待这一次有界交换结束；prepare只发送当时仍为当前版本的证明，随后沿原续租及最终Claim证明流程继续，不开放旧证明兼容窗口
+
+#### Scenario: 准备期间到期或失权
+- **WHEN** 原准备期限到达、stop/失权信号触发或交换失败
+- **THEN** 在原预算内失败并释放互斥；只有原child/IO确认回收后才释放相应预算，未知责任不自动重试业务或ACK，不延长期限以等待续租
+
+### Requirement: H凭据注入有固定上限且不继承宿主secret
+W1-H SHALL 遵守以下固定上限：最多16绑定、env_key为64字符内的固定环境名，单值4096/总值16384 UTF-8 bytes且无NUL，ciphertext单项32768/不同凭据合计65536 bytes；先在DB检查计数/长度，再在原有界Claim child解密与验证。Worker MUST 校验映射与冻结绑定完全匹配，复核原全字段HMAC，仅将本次值加入封闭sealed launch的DLR_SECRET_*；原65536-byte launch、Claim/结果硬预算及standard资源限额保持，不扩大任意env或写普通凭据文件。
+
+#### Scenario: 超大值、密文或编码膨胀
+- **WHEN** 绑定/ciphertext/解密值超限，字段缺失、Master Key不可用，或精确环境/TaskPayload编码超过原预算
+- **THEN** fail closed，不在Control父进程先解密超大对象；确定Claim前不生成有效Attempt，已可能提交则保持unknown，不以固定UTF-8限额冒充完整内存上界
+
+#### Scenario: Agent环境或映射被污染
+- **WHEN** 宿主存在同名DLR_SECRET_*、NODE_OPTIONS/NODE_PATH，或TaskPayload多出/缺少/修改绑定值
+- **THEN** 只使用本次规范映射与原固定启动参数；不合并宿主secret，不经shell，指纹/归属/字段异常在业务启动前拒绝并保留相应已Claim责任
+
+### Requirement: H结果脱敏使用原Attempt的易失封印材料
+W1-H SHALL 在launch交接前保留同一封印内核对象的有限opaque duplicate，绑定原Attempt及fd身份/长度/seals并计入原task预算，只交给既有结果child读取本次环境；父进程不解析新增secret映射，原有界原始输出缓冲不能被打印、落普通诊断文件或外发。MUST 在结果child中对完整流和JSON字符串键值进行本次值的精确字面量脱敏，净化后才编码preview/size/结果MAC；截断流和截断/非法output不得返回原始片段。无凭据路径、原结果语义、B/C版本及cleanup/结账/ACK条件保持，不承诺恶意变换外泄防护或宿主root隔离。
+
+#### Scenario: 完整输出跨读取块或包含秘密的JSON键值
+- **WHEN** 业务将高熵canary分块写入stdout/合并stderr，或写入完整JSON字符串键和值
+- **THEN** 净化后的全部可读结果不含原值，JSON遍历及长值优先替换在preview/截断和MAC之前完成；先前分块不能绕过最终完整有界数据检查
+
+#### Scenario: JSON键在脱敏后碰撞
+- **WHEN** 两个原字符串键在字面量净化后成为同一键
+- **THEN** 不静默覆盖，整份output返回null/空preview并标记output_redaction_conflict，按实际净化body重算size/MAC，原成功终态保持且不触发业务Retry
+
+#### Scenario: 原始流或output已经截断
+- **WHEN** 凭据任务的原流被ring截断，或output因超限/非法而无法完整解析
+- **THEN** 对应原始片段不外发为preview，使用固定非敏感省略标记/空preview并保留原truncated、错误和业务终态；不凭匹配不到完整秘密断言片段安全
+
+#### Scenario: 脱敏fd缺失、被替换或跨Attempt
+- **WHEN** 结果child不能验证同一sealed对象，或最后读者/IO停止不明
+- **THEN** 不提交未净化结果，不把业务退出当作完整cleanup/预算释放/ACK；跟踪所有fd引用及原责任，不能以重读最新Credential替代失去的本次值
+
+#### Scenario: 重启后原易失材料消失
+- **WHEN** 原任务停止后重启，只有既有持久检查点而无本次脱敏fd
+- **THEN** 只在原B/C资格内观察已存在的净化结果或清理，不重建/补提交业务结果，不往journal补存secret，不扩大无stopped或取消失权的恢复窗口
+
 ### Requirement: Worker 注册显式协商协议版本
 Worker 注册 SHALL 携带 `protocol_version`；缺失或显式 JSON `null` 按 v1 兼容，支持 Claim/Cleanup Token 与持久清理日志的 Worker 使用 v2。TaskPayload 中非空版本 MUST 是整数 `1` 或 `2`，不得把 bool、float 或数字字符串强制转换为协议版本。Control MUST 保存并在调度判断中使用该版本。
 

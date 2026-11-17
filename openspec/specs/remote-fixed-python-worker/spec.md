@@ -2,9 +2,57 @@
 
 ## Purpose
 
-定义 W1-A 至 W1-F 的专用身份、受限恢复/结清、运维、双固定节点与停机换镜像，以及 W1-G 无第三方依赖 JavaScript 和精确 F→G 发布对的单 Control 远程运行合同。默认 Python 和一个 Worker，显式双语言及两槽时支持相应能力与两个各自单并发的固定 Worker。原规格路径保持。该能力不替代既有默认 v3 部署，不声明 Pool、HA、任意升级链或异常历史自动恢复。
+定义 W1-A 至 W1-F 的专用身份、受限恢复/结清、运维、双固定节点与停机换镜像，以及 W1-G 无第三方依赖 JavaScript、历史 F→G 和 W1-H 有界业务凭据/G→H 的单 Control 远程运行合同。默认 Python 和一个 Worker，显式双语言及两槽时支持相应能力与两个各自单并发的固定 Worker。原规格路径保持。该能力不替代既有默认 v3 部署，不声明 Pool、HA、任意升级链或异常历史自动恢复。
 
 ## Requirements
+
+### Requirement: H业务凭据能力与节点使用许可独立
+W1-H SHALL 默认禁用业务凭据处理，可信Worker配置仅接受disabled/bindings；ready的可缺省business_credentials_v1为严格bool，缺失=false，沿原提交后完整独立观察保存于独立能力键，新实例清除旧观察。Control MUST 另核对以下私有部署许可：version=1、最多2个Worker、每节点最多16个Credential ID、文件最多16KiB，worker_id与稳定identity同时匹配；名称、语言、标签、自报能力、HTTP/AMQP身份凭据或Pool不能自动授予业务Credential权限。
+
+#### Scenario: 旧报告与无凭据任务
+- **WHEN** 合法当前实例未报告业务凭据能力或配置disabled
+- **THEN** 不授予业务凭据路径；符合原G条件的无凭据Python/JS任务及其维护操作仍按原合同工作，不把缺省解释成许可
+
+#### Scenario: 自授权、报告迟到或类型混淆
+- **WHEN** Worker自报business_credentials_v1但无匹配许可，或以旧generation/旧证明、数字/字符串代替bool报告
+- **THEN** 不获得新增授权或ready观察；不能继承上一个实例的业务凭据能力，相关不兼容新任务在承担责任前拒绝
+
+#### Scenario: A冒用B或普通用户读取凭据
+- **WHEN** A以自己的身份领取B的Execution/冻结凭据，或普通用户请求凭据真值/修改绑定
+- **THEN** 沿原Worker/Attempt归属、证明和现有Credential/Adapter owner/admin ACL拒绝，不返回真值；合法绑定及代码执行者可使用其已获许可值，不宣称API元数据隔离能阻止授权代码读取
+
+### Requirement: H部署许可固定且秘密只在必要执行边界可见
+W1-H SHALL 从可选私有DLR_WORKER_BUSINESS_CREDENTIAL_POLICY_FILE读取封闭、0600且受信所有者的有界配置，防链接/替换并在单Control启动时冻结同一非秘密策略/digest供各入口及有界child使用；无配置为空许可，已配置而非法/不可读时拒绝受影响启动。MUST 不热重读更宽策略、不新增策略UI/服务，不复用四项namespace/capacity指纹表达许可。Master Key与Worker运行/proof/AMQP凭据不能注入业务；业务值不进入Broker、普通API、浏览器、AI Prompt或持久journal/结果历史。
+
+#### Scenario: 策略丢失、被改写或试图热放宽
+- **WHEN** 已配置策略不完整/超限/字段或身份重复，或运行中替换私有文件
+- **THEN** 非法启动不默认全允许；运行请求和Claim child只使用原受信冻结版本，许可变更须停止新责任、排空及受控重启，不从请求体或Worker报告取得策略
+
+#### Scenario: 业务值轮换或原实例失权
+- **WHEN** 管理员更新Credential真值，或当前Worker/Attempt凭据及证明失效
+- **THEN** 已提交任务不会自动换值，失权按原监管器停止与unknown合同处理；更新/删除不宣称即时收回已发出的业务凭据，必要的上游撤销与原取消是独立操作，H不新增此类轮换/强制清账服务
+
+### Requirement: H只增加有界且精确的G到H发布对
+W1-H SHALL 保持schema0088、原转换表和K=1/2，仅将经制品核实的G main `a4a9da204659c36ec6b843bb28c8f13e5f355582` 或已核实同产品输入 `530ab2e8e5e7efaa7a1492a2c754a461cb6d4ba7` / `8d216d3a052a6643fdf1bee74b1538e1ddd8a891` 来源升级至本批H。仅允许fresh-G→H一笔、F→G→H两笔、E→F→G→H三笔；MUST 以最多两套有界原私有source/intent重建原摘要并核对完整相邻声明及当前latest/authority，最多查询四行以拒绝更长历史，不新增迁移、任意递归升级、旧E/F新apply或反向回退。
+
+#### Scenario: 合法已有F到G前序或最长来源
+- **WHEN** 当前G分别具有唯一F→G root，或唯一E→F root和F→G child，且所有原私有意图、发布来源及摘要匹配
+- **THEN** 只能以当前F→G operation为previous_id追加一个H，旧回执/摘要/数据保持；fresh-G空表只在实际G制品可核实时允许新root，空表和同schema本身不构成来源证明
+
+#### Scenario: 多余历史、伪前序或旧版本跳升
+- **WHEN** 存在第四笔、分叉/循环、缺失前序文件或摘要不符，或试图E→G/F→H/H→G及其他来源
+- **THEN** 拒绝并保留原数据/权威；不只放宽LIMIT或把旧表不存在的SHA当作可读证据，不SQL补回执获得资格
+
+### Requirement: H后继保留原子围栏和全部祖先ABA防护
+W1-H SHALL 沿原清洁停机/角色/lease/物理前提和exclusive gate→authority→完整chain→旧Control实例锁序，在同事务CAS源及latest、永久revoke旧实例并append；read_intent、check、apply及observe均核对目标SHA不回到已知E/F/G发布，目标digest不回到任何已提供祖先的source/target。MUST 在writer关闭后独立观察原operation ID，仅committed_current可前向原子安装H与匹配私有策略，原Worker新generation仍disabled并显式activate。原身份、四指纹、Master Key/proof、Credential ciphertext/引用/历史及卷保持，不改K或抹去未决责任。
+
+#### Scenario: 并发、ABA或提交响应丢失
+- **WHEN** 两个G→H意图竞争同前序、目标回到任一祖先digest，或COMMIT结果未知
+- **THEN** 最多一个合法后继提交，ABA在写前拒绝；未知先独立读回而非换ID重写，不能把superseded或旧E/F/G历史回执当作当前H安装许可
+
+#### Scenario: 已提交但声明尚未安装
+- **WHEN** H回执已持久提交而本机仍为G声明，或旧G实例尝试恢复
+- **THEN** 保持停机并前向安装/启动匹配H，旧实例/旧声明不能续权；提交前且源权威未变才可终止操作恢复G，提交后禁止直接回退G
 
 ### Requirement: 第二语言必须由当前实例在原资源内预检后封闭报告
 W1-G MUST 保留可信 Agent `language_mode=python` 默认值且不要求 Node，仅显式 `python_javascript` MAY 报告双语言；未知模式 MUST 拒绝启动。双语言 MUST 在可信固定 `/usr/local/bin/node`、Node 22、原标准任务硬预算与实际 Sandbox 内完成完整 ESM harness 小样本和物理清理后才发送 ready，失败 MUST NOT 降级虚报新 ready。ready MUST 仅接受规范 `['python']` 或 `['python','javascript']`，旧缺字段报告只为 Python；重复、乱序、未知字段/语言拒绝。新 instance MUST 清空旧能力，Control MUST 在原事务与独立提交观察中核对完整同一集合。
@@ -102,7 +150,7 @@ observe MUST 以同一语句快照核对完整 intent、回执、链末端和当
 - **THEN** Worker 不进入可领取状态，不以新空目录替换原责任
 
 ### Requirement: 新任务与最终 Claim 都必须核对阶段能力
-远程阶段 MUST 只接受固定到阶段身份的标准库 Python，以及 W1-G 显式双语言节点上的无第三方依赖 JavaScript 普通手动/定时任务及 none/JSON 输入。第三方依赖、内置包、业务凭据、托管文件、其他语言和其他触发方式 MUST 在新责任接受/启用之前拒绝。最终 Claim MUST 重新核对冻结快照；不兼容的旧责任不得被改写、删除或误报为已完成。
+远程阶段 MUST 只接受固定到阶段身份的标准库 Python，以及 W1-G 显式双语言节点上的无第三方依赖 JavaScript 普通手动/定时任务及 none/JSON 输入。仅 W1-H 可按本规格的显式能力及冻结部署许可使用绑定业务凭据。第三方依赖、内置包、未许可业务凭据、托管文件、其他语言和其他触发方式 MUST 在新责任接受/启用之前拒绝。最终 Claim MUST 重新核对冻结快照；不兼容的旧责任不得被改写、删除或误报为已完成。
 
 #### Scenario: 不支持的新请求
 - **WHEN** 新执行或定时启用包含不支持的能力

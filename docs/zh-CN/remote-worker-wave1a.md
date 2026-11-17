@@ -1,8 +1,8 @@
-# 远程固定 Worker（W1-A 至 W1-G）
+# 远程固定 Worker（W1-A 至 W1-H）
 
-本阶段使用一个 Control 应用进程，默认一个固定 Worker；W1-E 显式配置后允许两个固定 Worker 各自单并发执行。默认支持标准库 Python，W1-G 可显式启用无第三方依赖的 JavaScript，输入仍限 none/JSON，触发仍限普通手动/定时任务。旧部署进入 G 只支持下方明确的 F→G 停机发布对。W1-A 的两个独立 Linux 宿主验证只覆盖当时的单 Worker；各阶段真实拓扑、版本、审查和 CI 以相应 PR 为准。正式合同仍位于原 [remote-fixed-python-worker](../../openspec/specs/remote-fixed-python-worker/spec.md) 路径。
+本阶段使用一个 Control 应用进程，默认一个固定 Worker；W1-E 显式配置后允许两个固定 Worker 各自单并发执行。默认支持标准库 Python，W1-G 可显式启用无第三方依赖的 JavaScript，输入仍限 none/JSON，触发仍限普通手动/定时任务。W1-H 显式允许本次绑定的业务凭据，并只支持下方精确 G→H 停机发布对；历史 F/G 操作仍须使用对应原二进制。W1-A 的两个独立 Linux 宿主验证只覆盖当时的单 Worker；各阶段真实拓扑、版本、审查和 CI 以相应 PR 为准。正式合同仍位于原 [remote-fixed-python-worker](../../openspec/specs/remote-fixed-python-worker/spec.md) 路径。
 
-不支持第三方依赖、托管文件、内置包、业务凭据注入、TypeScript/Java/Go、Webhook/事件/批次、旧身份迁移、异常后的自动恢复、Pool 或 HA。不能把业务凭据写入代码来绕过限制。#129 在阶段 PR 后保持开放。
+不支持第三方依赖、托管文件、内置包、未许可业务凭据、TypeScript/Java/Go、Webhook/事件/批次、旧身份迁移、异常后的自动恢复、Pool 或 HA。不能把业务凭据写入代码来绕过限制。#129 在阶段 PR 后保持开放。
 
 W1-B 新检查点与管理员显式恢复的增量合同、旧残留限制及宿主操作流程见 [Wave 1-B](remote-worker-wave1b.md)。完整 stopped 后未提交结果的受控结清见 [Wave 1-C](remote-worker-wave1c.md)。以下故障阻断记录是 W1-A 的历史边界，不能当作 W1-B 恢复通过证据。
 
@@ -195,9 +195,9 @@ Agent 通过真实本地隔离预检、注册及 ready 后，管理员读取 `GE
 
 ## 运行、排空和正常重启
 
-任务保存标准库 Python 版本并绑定该 Worker，使用 none/JSON 输入。手动 `POST /api/adapters/{id}/executions` 和已启用定时任务共用接收门禁；语言、依赖、文件、内置包、凭据或非阶段触发方式不支持时，在接受责任前返回 `worker_task_capability_unavailable`。旧快照仍在最终 Claim 复核，保留原责任并给出等待原因。
+任务保存标准库 Python 版本并绑定该 Worker，使用 none/JSON 输入。手动 `POST /api/adapters/{id}/executions` 和已启用定时任务共用接收门禁；语言、依赖、文件、内置包、未许可凭据或非阶段触发方式不支持时，在接受责任前返回 `worker_task_capability_unavailable`。旧快照仍在最终 Claim 复核，保留原责任并给出等待原因。
 
-新部署可能为新建 Adapter 预填演示凭据绑定。阶段任务应在接受执行前将其绑定集设为空；`PUT /api/adapters/{id}/credential-bindings` 的请求体为 `{"bindings":[]}`，不会删除平台凭据。门禁不会静默忽略已配置的绑定。
+新部署可能为新建 Adapter 预填演示凭据绑定。无业务凭据任务应在接受执行前将其绑定集设为空；`PUT /api/adapters/{id}/credential-bindings` 的请求体为 `{"bindings":[]}`，不会删除平台凭据。门禁不会静默忽略已配置的绑定。
 
 正常排空按以下顺序进行：
 
@@ -282,7 +282,7 @@ Control 进程内仅有 K 个固定 Claim/Result 槽，每 Worker 最多一个�
 
 ## 清洁排空后的停机换镜像（W1-F）
 
-历史首个发布对为 W1-E main `a37c9d3e19985acddb1f3e33ff6d3c7337147270`、schema `0087_issue129_disposition` 到 W1-F 匹配制品、schema `0088_issue129_image_transition`。以下首跳须使用匹配的 **F 镜像**；G 二进制只允许新做下方 F→G，不允许直接 E→G。完整源/目标 SHA、各组件实际 digest 和制品来源在升级前冻结于私有记录及原 PR 交付证据，不把可变标签当 digest。除下方明确 G 发布对外，任意版本迁移和在线混版本仍不支持。
+历史首个发布对为 W1-E main `a37c9d3e19985acddb1f3e33ff6d3c7337147270`、schema `0087_issue129_disposition` 到 W1-F 匹配制品、schema `0088_issue129_image_transition`。以下首跳须使用匹配的 **F 镜像**；原 G 二进制只允许新做下方 F→G；H 二进制只允许新做 G→H，不允许跳级。完整源/目标 SHA、各组件实际 digest 和制品来源在升级前冻结于私有记录及原 PR 交付证据，不把可变标签当 digest。除下方明确 G 发布对外，任意版本迁移和在线混版本仍不支持。
 
 原数据库、Broker/vhost/队列、所有命名卷和 journal/runtime 根、cluster/epoch/proof key、Master Key/admin/legacy Token、四项指纹、K=1/2、Worker ID/凭据/固定绑定原样保留。新 Worker 仍使用原凭据和原卷，只产生新 instance/generation，保持 disabled 后分别显式 activate。转换不处理 queued、retry_wait 或未知责任，不改变业务结果，也不支持回退旧镜像。
 
@@ -407,6 +407,62 @@ check 应返回 `ready_to_apply`。保持全部参数和原 ID，将 `check` 换
 | 只读原 E→F 历史 | 保留原 root；G 已为 latest | `committed_superseded` 只证明历史，不能回装 F；旧 F CLI 不用于处理 G 后继 |
 
 提交未知、安装中断和旧回执仍沿原只读状态表处理，不支持 G→F 反向 CAS、数据库回档覆盖或混版本滚动。真实发布对和升级后 Python/JS 混合执行、JS schedule、目标效果、Attempt/Slot/cleanup/ACK 的验收回执补原 PR 与私有记录；文档命令本身不代表验收通过。
+
+## 绑定业务凭据与 G→H（W1-H）
+
+### 配置与许可
+
+沿原 Credential CRUD、Adapter owner/admin 绑定权限、Fernet/HKDF 和 Master Key 使用四类字段：password 的 username/password、token 的 token、access_key 的 access_key_id/access_key_secret、secret 的 value；旧 access_key/secret_key 字段别名仍可读。不增加秘密服务、数据库迁移、策略页面或通用环境变量入口。
+
+Worker 私有 Compose 环境默认 `DLR_WORKER_BUSINESS_CREDENTIALS_MODE=disabled`；仅显式 `bindings` 启用。新 ready 可缺省严格 bool `business_credentials_v1`，缺失为 false；Control 保存在独立能力键，完整提交观察失败不授予 ready，新 generation 清除旧观察。此能力不授予 Credential 权限，语言、名称、标签和 Worker HTTP/AMQP 身份也不授予权限。
+
+Control 的私有运行环境可配置 `DLR_WORKER_BUSINESS_CREDENTIAL_POLICY_FILE=/run/dlr-private/business-credentials.json`，复用现有私有只读挂载。文件必须为实际 UID 所有的 0600、单硬链接普通文件，绝对规范路径且无符号链接，最多 16 KiB，采用以下封闭 JSON（ID/UUID 均为示例）：
+
+```json
+{"version":1,"workers":[{"worker_id":1,"worker_identity_id":"11111111-1111-4111-8111-111111111111","credential_ids":[10,11]}]}
+```
+
+最多两个不同 Worker，每项同时匹配稳定数字 ID 与 identity UUID，最多 16 个不同正整数 Credential ID；重复键/身份/ID、未知字段、bool/字符串/float ID 拒绝。缺省策略只拒绝携凭据任务；已配置而非法/缺失时拒绝启动。单 Control 启动冻结策略及 digest，只经私有 IPC 传递同一非秘密快照，运行中不热重读文件。许可变更应停止新责任、排空、停机并受控重启；不改四项 namespace/capacity 指纹。
+
+每 Execution 最多 16 个绑定；env_key 为 `[A-Za-z_][A-Za-z0-9_]{0,63}` 且唯一。单值非空、无 NUL、合法 UTF-8，最多 4096 bytes，全部绑定值合计 16384 bytes；引用的完整 ciphertext 单项最多 32768 bytes、不同 Credential 合计 65536 bytes。数据库先查引用计数/长度，再在有界 Claim child 解密。接收、schedule 启用/触发、派发与最终 Claim 都重检原引用、目标能力和部署许可；新任务不兼容时不承担 Execution/Admission/Outbox 责任，旧任务保留原路由有界等待。
+
+### 值时点、结果与本地责任
+
+Execution 冻结 Credential ID/field/env_key 及原不可删除引用，不冻结接受时真值。Claim 按原锁前缀后追加 Credential ID 升序行锁；prepare 仅向获准 Worker 的有界 child 提供 tentative 材料，不能运行；finalize 重建精确 wire，有效真值改变须回滚、零有效 Attempt。提交后的 Attempt 保持该次值；后续合法重试可读新值。删除/更新平台凭据不会即时收回已发值，上游撤销与原取消是独立操作。
+
+Worker 从复制实例证明到原 Claim child 完整接收 tentative 回复，使用同一原续租锁防止旧证明与新 candidate 竞争；仍受原本机期限、最多 5 秒传输预算和 stop/失权信号约束。交换结束或异常即释放锁，再重检资源、持久意图和最终 Claim；不放宽服务端证明验证、不延长租约或改动未知责任/ACK 条件。
+
+原固定 argv/harness 的 sealed launch 仅加入本次绑定 `DLR_SECRET_<env_key>`，不继承宿主同名值、额外秘密或 NODE_OPTIONS 等环境。父进程只持同一 launch 内核对象的有限 opaque dup fd 与身份/尺寸；原结果 child 在清理前读取它，所有 reader/IO 确认结束后关闭最后引用再结账。无需普通秘密文件、新秘密进程、重启后重新解密或扩大原资源档。
+
+原 Agent 有界 stdout ring 仍可能暂存业务回显的原值，不将其写入普通日志/进度/诊断。结果 child 先对完整非截断流、JSON 字符串键和值按长值优先做字面替换，再计算 size/preview/MAC；原始截断 stdout 仅给 `[REDACTED]`，截断/非法 JSON 不给原文 preview。净化后键碰撞整份 output 省略、preview 为空、`output_redaction_conflict`，保留成功且不因此重跑。fd/净化/物理停止未知时不外发原文、不伪造清理/ACK，B/C 格式与恢复资格不变。这不是任意编码/拆分变换的 DLP，也不隔离恶意授权代码、root 或宿主管理员。
+
+### 精确 G→H 停机后继
+
+H 新 apply 源仅为 G main `a4a9da204659c36ec6b843bb28c8f13e5f355582`，或原交付核实的 `530ab2e8e5e7efaa7a1492a2c754a461cb6d4ba7` / `8d216d3a052a6643fdf1bee74b1538e1ddd8a891` 同产品输入。原早期未修复 G 不在来源内。目标 H 的完整源码 SHA、构建输入与各组件真实 digest 在私有升级记录冻结；不复用旧 digest 冒称新构建。schema 始终为 `0088_issue129_image_transition`，**不运行新迁移**，K 保持原 1 或 2。
+
+| 原 G 历史 | H 后唯一链 | 本次额外私有文件 |
+| --- | --- | --- |
+| 经核实 fresh-G、空转换表 | G→H，一笔 | 无 |
+| fresh-F 经原 G 原生转换 | F→G→H，两笔 | previous-source / previous-intent |
+| 原 E→F、F→G 连续回执 | E→F→G→H，三笔 | previous-source / previous-intent，加 root-source / root-intent |
+
+保留原三文件 `--source G.json --target H.json --intent G-H.json`；按上表有前序时，每次 check/apply/observe 使用完整原文件：
+
+```sh
+python -m dlr.control.control_identity_init_v4 check \
+  --source /run/dlr-private/G.json --target /run/dlr-private/H.json \
+  --intent /run/dlr-private/G-H.json \
+  --previous-source /run/dlr-private/F.json --previous-intent /run/dlr-private/F-G.json \
+  --root-source /run/dlr-private/E.json --root-intent /run/dlr-private/E-F.json
+```
+
+fresh-G 省略后两行；只有 F→G root 省略最后一行。不接受半套/重复标志或任意递归文件列表。八个 intent 字段和原摘要算法不变；G-H 的 source/target schema 均填 0088，previous_id 绑定当前 F-G operation 或 null；原回执不存 SHA，须用原始意图与声明重建核对，不能从表猜版本。按 previous_id 重建因果链、固定 UUID 锁序最多取四行拒绝更长历史；H 目标 digest 不得等于任何已提供祖先 source/target，target SHA 不得退回 E/F/G，检查/写事务/读回均验证。
+
+沿前述所有停写、物理进程/IO 停止、旧租约上界、原卷独占、唯一 owner/runtime NOLOGIN、无 prepared xact、Broker/journal/Admission/cleanup 清洁前提。exclusive gate→authority→完整 chain→旧实例下 CAS/revoke/append 同一事务，关闭 writer 后原 operation 独立只读观察；只有 `committed_current` 才前向安装。原 E/F/G 回执可只读区分 current/superseded，H 拒绝旧 E/F 的新 apply，也拒绝重新 apply 历史 E/F intent；superseded 不授权安装。
+
+声明和策略分别沿原目录 fsync/rename 安装，不是跨文件原子事务；保持入口关闭，全部文件及预冻 policy digest 读回一致后才启动匹配 Control/Web/原身份原卷 Worker，新 generation 仍 disabled 并显式 activate。预定非空策略缺失不能用默认空策略冒充安装完成。原 DB、Broker/vhost/队列、cluster/epoch/密钥/四指纹、Worker ID、Credential ciphertext/引用/历史和卷保持。提交前且源权威未改可中止并按 G 恢复；提交后不回退 G。
+
+本批真实验收只重建一套合法新 F→G 来源，保留两笔 G 无凭据已结历史后同库追加 H；旧含 unknown 归档不能清账作来源。两个不同 Linux boot 的 Worker VM 最多各 2GiB，源目标复用、结束回收；不常驻 dlr-preview。验收使用非生产 canary，oracle 只记业务键/鉴权布尔/效果数，泄漏扫描只输出布尔/计数。真实结果与精确制品映射由原 PR/私有证据记录，不能以 HTTP 200、online、文档或 CI 冒充完整结算。
 
 ## 诊断与停止边界
 

@@ -70,6 +70,7 @@ class PreparedClaim:
     child_address_space_bytes: int
     result_wire_budget: int
     deadline: float
+    business_credentials: bool = False
     dispatch: dict[str, Any] = field(default_factory=dict, repr=False)
     stage_state: str = "claimed"
 
@@ -146,16 +147,22 @@ class StagedClaim:
     workspace: Any = field(repr=False)
     launch_fd: int = field(repr=False)
     launch_max_bytes: int
+    redaction_fd: int = field(default=-1, repr=False)
+    redaction_identity: tuple[int, int, int] | None = field(default=None, repr=False)
 
 
 class ClaimPreparer:
     """One in-flight Claim; uncertain local responsibility blocks further intake."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, business_credentials: bool = False) -> None:
+        if type(business_credentials) is not bool:
+            raise ValueError("Worker capability unavailable")
+        self._business_credentials = business_credentials
         self._pid = os.getpid()
         self._lock = threading.Lock()
         self._poisoned = False
         self._active: PreparedClaim | None = None
+        self._staged: StagedClaim | None = None
         self._retained: list[object] = []
 
     @staticmethod
@@ -302,7 +309,7 @@ class ClaimPreparer:
                 return None
             prepared.stage_state = "staging"
             live_cgroup = live_workspace = None
-            launch_fd = -1
+            launch_fd = redaction_fd = -1
             try:
                 prepared.attempt.start()
                 instance = WorkerInstance(
@@ -371,12 +378,20 @@ class ClaimPreparer:
                     raise ValueError("task authority unavailable")
                 prepared.stage_state = "staged"
                 staged = StagedClaim(prepared, live_cgroup, live_workspace, launch_fd, launch_max)
+                if prepared.business_credentials:
+                    redaction_fd = os.dup(launch_fd)
+                    info = os.fstat(redaction_fd)
+                    staged.redaction_fd = redaction_fd
+                    staged.redaction_identity = (info.st_dev, info.st_ino, info.st_size)
+                self._staged = staged
                 recovery_checkpoint_v4.persist_prepared(staged)
                 return staged
             except BaseException as error:
                 self._poisoned = True
                 prepared.stage_state = "unknown"
-                self._retained.append((prepared, live_cgroup, live_workspace, launch_fd))
+                self._retained.append(
+                    (prepared, live_cgroup, live_workspace, launch_fd, redaction_fd)
+                )
                 if not isinstance(error, Exception):
                     raise
                 return None
@@ -532,6 +547,8 @@ class ClaimPreparer:
             if receive is None:
                 return ClaimPreparation("blocked", "claim_receive_capacity_unavailable")
             phase = "instance_authority"
+            # Renewal replaces the current candidate. Keep its proof stable through
+            # the bounded tentative exchange; release before re-entering lease APIs.
             with lease._lock:
                 deadline = lease._active_deadline()
                 started = lease._require_before(deadline)
@@ -553,66 +570,70 @@ class ClaimPreparer:
                     "dispatch": message.model_dump(mode="json"),
                     "wire_budget": wire_budget,
                     "timeout": min(timeout_seconds, io_deadline - started),
+                    "business_credentials": self._business_credentials,
                 }
-            transport_start = claim_http_v4._clock()
-            io_deadline = min(io_deadline, transport_start + timeout_seconds)
-            numerator, denominator = deadline.as_integer_ratio()
-            deadline_ns = numerator * 1_000_000_000 // denominator
-            encoded = json.dumps(request, separators=(",", ":")).encode("utf-8")
-            if not 0 < len(encoded) <= 65_536:
-                raise ValueError("Claim request unavailable")
-            channel, child_channel = socket.socketpair()
-            channel.setblocking(False)
-            ticket = claim_http_v4._Spawn(child=child_channel)
-            command = [
-                sys.executable,
-                "-m",
-                "dlr.worker.claim_task_child_v4",
-                str(child_channel.fileno()),
-                str(os.getpid()),
-                str(deadline_ns),
-                str(child_address_space_bytes),
-            ]
-            child_channel = None  # the creator owns this descriptor from now on
-            environment = {
-                key: value
-                for key, value in os.environ.items()
-                if key in {"PATH", "PYTHONPATH", "SSL_CERT_FILE", "SSL_CERT_DIR"}
-                or key.lower() in {"http_proxy", "https_proxy", "no_proxy", "all_proxy"}
-            }
-            phase = "claim_child"
-            claim_http_v4._spawn_until(
-                ticket,
-                io_deadline,
-                deadline_ns,
-                child_address_space_bytes,
-                (lease._lost, stop),
-                _process_command=command,
-                _process_env=environment,
-            )
-            with ticket.lock:
-                if ticket.abandoned or ticket.process is None:
+                transport_start = claim_http_v4._clock()
+                io_deadline = min(io_deadline, transport_start + timeout_seconds)
+                numerator, denominator = deadline.as_integer_ratio()
+                deadline_ns = numerator * 1_000_000_000 // denominator
+                encoded = json.dumps(request, separators=(",", ":")).encode("utf-8")
+                if not 0 < len(encoded) <= 65_536:
+                    raise ValueError("Claim request unavailable")
+                channel, child_channel = socket.socketpair()
+                channel.setblocking(False)
+                ticket = claim_http_v4._Spawn(child=child_channel)
+                command = [
+                    sys.executable,
+                    "-m",
+                    "dlr.worker.claim_task_child_v4",
+                    str(child_channel.fileno()),
+                    str(os.getpid()),
+                    str(deadline_ns),
+                    str(child_address_space_bytes),
+                ]
+                child_channel = None  # the creator owns this descriptor from now on
+                environment = {
+                    key: value
+                    for key, value in os.environ.items()
+                    if key in {"PATH", "PYTHONPATH", "SSL_CERT_FILE", "SSL_CERT_DIR"}
+                    or key.lower() in {"http_proxy", "https_proxy", "no_proxy", "all_proxy"}
+                }
+                phase = "claim_child"
+                claim_http_v4._spawn_until(
+                    ticket,
+                    io_deadline,
+                    deadline_ns,
+                    child_address_space_bytes,
+                    (lease._lost, stop),
+                    _process_command=command,
+                    _process_env=environment,
+                )
+                with ticket.lock:
+                    if ticket.abandoned or ticket.process is None:
+                        raise ValueError("Claim child unavailable")
+                pidfd = os.pidfd_open(ticket.process.pid, 0)  # type: ignore[attr-defined, unused-ignore]
+                if (
+                    claim_http_v4._receive(channel, 1, io_deadline, (lease._lost, stop)) != b"R"
+                    or ticket.thread is None
+                    or not ticket.thread.is_alive()
+                ):
                     raise ValueError("Claim child unavailable")
-            pidfd = os.pidfd_open(ticket.process.pid, 0)  # type: ignore[attr-defined, unused-ignore]
-            if (
-                claim_http_v4._receive(channel, 1, io_deadline, (lease._lost, stop)) != b"R"
-                or ticket.thread is None
-                or not ticket.thread.is_alive()
-            ):
-                raise ValueError("Claim child unavailable")
-            claim_http_v4._send_all(
-                channel, struct.pack("!I", len(encoded)) + encoded, io_deadline, (lease._lost, stop)
-            )
-            del encoded, request
-            phase = "claim_response"
-            size = struct.unpack(
-                "!I", claim_http_v4._receive(channel, 4, io_deadline, (lease._lost, stop))
-            )[0]
-            if not 0 < size <= 65_536:
-                raise ValueError("Claim response unavailable")
-            result = json.loads(
-                claim_http_v4._receive(channel, size, io_deadline, (lease._lost, stop))
-            )
+                claim_http_v4._send_all(
+                    channel,
+                    struct.pack("!I", len(encoded)) + encoded,
+                    io_deadline,
+                    (lease._lost, stop),
+                )
+                del encoded, request
+                phase = "claim_response"
+                size = struct.unpack(
+                    "!I", claim_http_v4._receive(channel, 4, io_deadline, (lease._lost, stop))
+                )[0]
+                if not 0 < size <= 65_536:
+                    raise ValueError("Claim response unavailable")
+                result = json.loads(
+                    claim_http_v4._receive(channel, size, io_deadline, (lease._lost, stop))
+                )
             check_resources()
             if type(result) is not dict or not lease.is_usable():
                 raise ValueError("Claim response unavailable")
@@ -651,8 +672,11 @@ class ClaimPreparer:
                     "claim_token",
                     "cleanup_token",
                     "resource_profile",
+                    "business_credentials",
                 }
                 or result.get("state") != "prepared"
+                or type(result.get("business_credentials")) is not bool
+                or (result["business_credentials"] and not self._business_credentials)
                 or result.get("execution_id") != message.execution_id
                 or type(result.get("execution_id")) is not int
                 or any(
@@ -812,6 +836,7 @@ class ClaimPreparer:
                 result_wire_budget=result_wire_budget,
                 deadline=deadline,
                 dispatch=message.model_dump(mode="json"),
+                business_credentials=result["business_credentials"],
             )
             self._active = prepared
             transferred = True

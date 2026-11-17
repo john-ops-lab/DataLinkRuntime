@@ -701,7 +701,11 @@ class WorkerLeaseSession:
                 raise WorkerLeaseError("proof session unavailable") from None
 
     def report_ready(
-        self, flags: dict[str, bool], *, capabilities: list[str] | None = None
+        self,
+        flags: dict[str, bool],
+        *,
+        capabilities: list[str] | None = None,
+        business_credentials: bool = False,
     ) -> None:
         """Report a completed local fixed-Worker preflight under this proof."""
         if not self._same_process():
@@ -718,6 +722,7 @@ class WorkerLeaseSession:
                     or set(flags) != REQUIRED_ISOLATION_CAPABILITIES
                     or any(value is not True for value in flags.values())
                     or not valid_capabilities(languages)
+                    or type(business_credentials) is not bool
                 ):
                     raise ValueError("preflight unavailable")
                 deadline = self._active_deadline()
@@ -732,7 +737,11 @@ class WorkerLeaseSession:
                     instance=str(self._instance_id),
                     generation=claims.generation,
                     body=json.dumps(
-                        {"isolation_capabilities": flags, "capabilities": languages},
+                        {
+                            "isolation_capabilities": flags,
+                            "capabilities": languages,
+                            **({"business_credentials_v1": True} if business_credentials else {}),
+                        },
                         separators=(",", ":"),
                     ),
                     instance_proof=proof,

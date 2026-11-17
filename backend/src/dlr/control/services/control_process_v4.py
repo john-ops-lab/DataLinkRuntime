@@ -58,6 +58,9 @@ class ControlProcess:
     def __init__(
         self, config: Settings, sessions: sessionmaker[Session], deployment: DeploymentDeclaration
     ) -> None:
+        from dlr.control.services.business_credentials_v4 import freeze
+
+        freeze(config)
         self._config, self._sessions, self._deployment = config, sessions, deployment
         self._pid = os.getpid()
         self._instance, self._token = uuid4(), identity.new_instance_token()
