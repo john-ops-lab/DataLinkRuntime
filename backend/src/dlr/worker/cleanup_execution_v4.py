@@ -89,7 +89,22 @@ def settle_execution(
                 stopped_checkpoint = journal_v4._read(directory, last)
                 if frozen is None or stopped_checkpoint is None:
                     raise ValueError("recovery checkpoint unavailable")
-                recovery_local_v4.physical_intent(directory, frozen, stopped_checkpoint)
+                recovery_local_v4.physical_intent(
+                    directory, frozen, stopped_checkpoint, _active_files=prepared.managed_files
+                )
+                if prepared.managed_files:
+                    # The exact live owner and reaped supervisor were checked
+                    # above. Enable deletion only for the frozen private copy.
+                    input_fd = recovery_checkpoint_v4.open_file_input(staged)
+                    try:
+                        info = os.fstat(input_fd)
+                        if {"device": info.st_dev, "inode": info.st_ino} != frozen[
+                            "input_directory"
+                        ]:
+                            raise ValueError("file cleanup binding unavailable")
+                        os.fchmod(input_fd, 0o700)
+                    finally:
+                        os.close(input_fd)
             stopped = cgroup_intent_v4.stop_live_cgroup(
                 live,
                 config=live._config,
@@ -299,7 +314,7 @@ def settle_execution(
                                 raise ValueError("physical deletion progress unavailable")
                             records[name] = record
                     terminal = {
-                        "version": 1,
+                        "version": 3 if prepared.managed_files else 1,
                         "prepared": frozen,
                         "stopped": stopped_checkpoint,
                         "attempt_record": prepared.journal,
@@ -316,6 +331,7 @@ def settle_execution(
                         preparer._entry(root_lock, live._runtime_root),
                         terminal,
                         allow_missing=False,
+                        _active_files=prepared.managed_files,
                     )
                 # Keep the runtime intent until the journal directory is durable.
                 # The runtime root is intentionally 0711 so the sandbox can

@@ -706,6 +706,7 @@ class WorkerLeaseSession:
         *,
         capabilities: list[str] | None = None,
         business_credentials: bool = False,
+        managed_files: bool = False,
     ) -> None:
         """Report a completed local fixed-Worker preflight under this proof."""
         if not self._same_process():
@@ -723,6 +724,7 @@ class WorkerLeaseSession:
                     or any(value is not True for value in flags.values())
                     or not valid_capabilities(languages)
                     or type(business_credentials) is not bool
+                    or type(managed_files) is not bool
                 ):
                     raise ValueError("preflight unavailable")
                 deadline = self._active_deadline()
@@ -741,6 +743,7 @@ class WorkerLeaseSession:
                             "isolation_capabilities": flags,
                             "capabilities": languages,
                             **({"business_credentials_v1": True} if business_credentials else {}),
+                            **({"managed_files_v1": True} if managed_files else {}),
                         },
                         separators=(",", ":"),
                     ),

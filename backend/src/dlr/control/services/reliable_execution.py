@@ -429,6 +429,8 @@ def accept_execution(
         input_source_type=input_source_type,
         dependency_check=dependency_check,
         target_worker_id=worker_id_override,
+        artifact_ids=artifact_ids,
+        input_snapshot=input_snapshot,
     )
     worker = resolve_queue_target_worker(session, adapter, worker_id_override)
     if not rabbitmq.ingress_configuration_ready(session, worker_id=worker.id):

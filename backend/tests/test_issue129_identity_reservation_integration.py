@@ -131,7 +131,9 @@ def _local_tls_control(app, directory, monkeypatch):
 
 
 @contextmanager
-def _claim_task_process(lease, message, wire_budget, *, business_credentials=False):
+def _claim_task_process(
+    lease, message, wire_budget, *, business_credentials=False, managed_files=False
+):
     """Run the same bounded Claim receiver and creator lifecycle as the Worker."""
     parent, child = socket.socketpair()
     parent.setblocking(False)
@@ -158,6 +160,7 @@ def _claim_task_process(lease, message, wire_budget, *, business_credentials=Fal
                 "wire_budget": wire_budget,
                 "timeout": 5.0,
                 "business_credentials": business_credentials,
+                "managed_files": managed_files,
             }
         io_deadline = min(deadline, claim_http_v4._clock() + 5.0)
         numerator, denominator = deadline.as_integer_ratio()

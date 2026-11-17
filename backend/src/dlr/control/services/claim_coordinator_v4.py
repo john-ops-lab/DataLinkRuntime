@@ -93,6 +93,17 @@ class _Result:
     timer: threading.Timer | None = field(default=None, repr=False)
     owner: _ClaimSlot | None = field(default=None, repr=False)
     allocation: int = 0
+    input_active: bool = False
+
+
+@dataclass(eq=False)
+class _Input:
+    result: _Result = field(repr=False)
+    deadline: float
+    size: int
+    received: int = 0
+    closed: bool = False
+    io_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
 class _ClaimSlot:
@@ -650,6 +661,180 @@ class _ClaimSlot:
                 self._unresolved.append((process, pidfd, spawn))
             return False
 
+    def begin_input(self, process: ControlProcess, metadata: dict[str, object]) -> _Input:
+        """Use the retained Claim child, never reserve another resource slot."""
+        with self._lock:
+            self._live()
+            entry = self._result
+            if (
+                self._closing
+                or self._spawning
+                or self._current is not None
+                or entry is None
+                or entry.closed
+                or entry.input_active
+                or entry.pending_stage is None
+                or entry.pending_finalize is not None
+                or entry.authority is not process
+                or entry.retention_deadline is None
+                or any(
+                    metadata.get(k) != v for k, v in entry.pending_stage.items() if k != "operation"
+                )
+            ):
+                raise ClaimUnavailable("input unavailable")
+            self._spawning = True
+            entry.input_active = True
+        stream = None
+        try:
+            process.check_authority()
+            self._check_envelope(entry.envelope, entry=entry)
+            bind = process._sessions.kw.get("bind")
+            if not isinstance(bind, Engine) or entry.process.poll() is not None:
+                raise ClaimUnavailable("input unavailable")
+            configuration = settings.model_dump(mode="json")
+            configuration["database_url"] = bind.url.render_as_string(hide_password=False)
+            if configuration != entry.configuration:
+                raise ClaimUnavailable("input unavailable")
+            control_instance, control_token, confirmed = process.claim_child_identity()
+            deadline = min(entry.retention_deadline, confirmed, _clock() + 5.0)
+            if deadline <= _clock():
+                raise ClaimUnavailable("input unavailable")
+            stream = _Input(entry, deadline, 0)
+            entry.channel.settimeout(max(0.001, deadline - _clock()))
+            _send_frame(
+                entry.channel,
+                {
+                    **metadata,
+                    "operation": "input",
+                    "settings": entry.configuration,
+                    "control_instance": control_instance,
+                    "control_token": control_token,
+                    "control_deadline": deadline,
+                },
+            )
+            reply = _read_frame(entry.channel)
+            if reply == {"state": "input_rejected"}:
+                self._finish_input(stream)
+                raise ClaimUnavailable("input unavailable")
+            size, child_deadline = reply.get("size"), reply.get("control_deadline")
+            if (
+                reply.get("state") != "input_ready"
+                or set(reply)
+                != (
+                    {"state", "size", "stream_id", "control_deadline"}
+                    | ({"closed"} if size == 0 else set())
+                )
+                or (size == 0 and reply.get("closed") is not True)
+                or type(size) is not int
+                or not 0 <= size <= 1024 * 1024
+                or not isinstance(child_deadline, (int, float))
+                or isinstance(child_deadline, bool)
+                or not math.isfinite(child_deadline)
+                or not _clock() < child_deadline <= deadline
+                or type(reply.get("stream_id")) is not str
+                or str(UUID(reply["stream_id"])) != reply["stream_id"]
+                or UUID(reply["stream_id"]).int == 0
+            ):
+                raise ClaimUnavailable("input unavailable")
+            stream.size, stream.deadline = size, float(child_deadline)
+            process.check_authority()
+            self._check_envelope(entry.envelope, entry=entry)
+            if _clock() >= stream.deadline:
+                raise ClaimUnavailable("input unavailable")
+            if size == 0:
+                self._finish_input(stream)
+            return stream
+        except BaseException:
+            if stream is None or not stream.closed:
+                self.end_result(entry)
+            raise
+
+    def _finish_input(self, stream: _Input) -> None:
+        with self._lock:
+            entry = stream.result
+            if self._result is not entry or entry.closed or not entry.input_active:
+                raise ClaimUnavailable("input unavailable")
+            stream.closed = True
+            entry.input_active = False
+            self._spawning = False
+
+    def read_input(self, stream: _Input) -> bytes:
+        with stream.io_lock:
+            if stream.closed:
+                if stream.received == stream.size:
+                    return b""
+                raise ClaimUnavailable("input unavailable")
+            entry = stream.result
+            try:
+                with self._lock:
+                    self._live()
+                    if (
+                        self._result is not entry
+                        or entry.closed
+                        or stream.closed
+                        or not entry.input_active
+                    ):
+                        raise ClaimUnavailable("input unavailable")
+                    entry.authority.check_authority()
+                    self._check_envelope(entry.envelope, entry=entry)
+                    timeout = min(5.0, stream.deadline - _clock())
+                    if timeout <= 0:
+                        raise ClaimUnavailable("input unavailable")
+                    entry.channel.settimeout(timeout)
+                _send_frame(entry.channel, {"op": "read_input"})
+                reply = _read_frame(entry.channel)
+                if reply == {"state": "input_closed"}:
+                    if stream.received != stream.size:
+                        raise ClaimUnavailable("input unavailable")
+                    self._finish_input(stream)
+                    return b""
+                if reply == {"state": "input_failed"}:
+                    self._finish_input(stream)
+                    raise ClaimUnavailable("input unavailable")
+                count = reply.get("bytes")
+                if (
+                    set(reply)
+                    != {"state", "bytes"} | ({"closed"} if reply.get("closed") is True else set())
+                    or reply["state"] != "input_chunk"
+                    or type(count) is not int
+                    or not 0 < count <= 65_536
+                    or stream.received + count > stream.size
+                    or (stream.received + count == stream.size) != (reply.get("closed") is True)
+                ):
+                    raise ClaimUnavailable("input unavailable")
+                data = _read_exact(entry.channel, count)
+                stream.received += len(data)
+                entry.authority.check_authority()
+                self._check_envelope(entry.envelope, entry=entry)
+                if reply.get("closed") is True:
+                    self._finish_input(stream)
+                return data
+            except BaseException:
+                if not stream.closed:
+                    self.end_result(entry)
+                raise
+
+    def close_input(self, stream: _Input) -> None:
+        if stream.closed:
+            return
+        if not stream.io_lock.acquire(timeout=max(0.0, min(5.0, stream.deadline - _clock()))):
+            self.end_result(stream.result)
+            return
+        try:
+            if stream.closed:
+                return
+            entry = stream.result
+            entry.channel.settimeout(max(0.001, min(0.5, stream.deadline - _clock())))
+            _send_frame(entry.channel, {"op": "cancel_input"})
+            reply = _read_frame(entry.channel)
+            if reply not in ({"state": "input_closed"}, {"state": "input_failed"}):
+                raise ClaimUnavailable("input unavailable")
+            self._finish_input(stream)
+        except Exception:
+            self.end_result(stream.result)
+        finally:
+            stream.io_lock.release()
+
     def begin_result(
         self, process: ControlProcess, *, metadata: dict[str, object], body_bytes: int
     ) -> _Result:
@@ -929,6 +1114,11 @@ class _ClaimSlot:
         with self._lock:
             if self._result is not entry or entry.closed:
                 return False
+            if entry.input_active:
+                # A lost read/HTTP scope is not proof that its actual I/O
+                # ended. Keep this allocation unavailable, even after reap.
+                self._poison()
+                self._unresolved.append(entry)
             entry.closed = True
             self._result = None
             self._closing = True
@@ -1153,6 +1343,30 @@ class ClaimCoordinator:
         slot = self._take(metadata.get("worker_id"), existing=True)
         try:
             return slot.begin_result(process, metadata=metadata, body_bytes=body_bytes)
+        finally:
+            self._return(slot)
+
+    def begin_input(self, process: ControlProcess, *, metadata: dict[str, object]) -> _Input:
+        self._check_resources(process)
+        slot = self._take(metadata.get("worker_id"), existing=True)
+        try:
+            return slot.begin_input(process, metadata)
+        finally:
+            self._return(slot)
+
+    def read_input(self, entry: _Input) -> bytes:
+        slot = self._entry_slot(entry.result)
+        try:
+            return slot.read_input(entry)
+        finally:
+            self._return(slot)
+
+    def close_input(self, entry: _Input) -> None:
+        if entry.closed:
+            return
+        slot = self._entry_slot(entry.result)
+        try:
+            slot.close_input(entry)
         finally:
             self._return(slot)
 

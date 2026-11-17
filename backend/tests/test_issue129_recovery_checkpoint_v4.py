@@ -75,6 +75,89 @@ def _stopped(prepared):
     }
 
 
+@pytest.mark.parametrize("failed", [False, True])
+def test_file_v3_is_only_valid_for_the_current_live_owner_not_bc_recovery(failed):
+    from dlr.worker import recovery_local_v4
+
+    prepared = _prepared()
+    prepared.update(
+        version=3,
+        input_directory={"device": 7, "inode": 30},
+        input_files=[]
+        if failed
+        else [
+            {
+                "mount_name": "input-00.txt",
+                "size_bytes": 0,
+                "sha256": "0" * 64,
+                "device": 7,
+                "inode": 31,
+            }
+        ],
+        preparation_failed=failed,
+    )
+    stopped = _stopped(prepared)
+    stopped.update(version=3, stop_reason="preparation_failed" if failed else None)
+    assert not checkpoint.valid_prepared(prepared)
+    assert not checkpoint.valid_stopped(stopped, prepared)
+    assert checkpoint.valid_prepared(prepared, _active_files=True)
+    assert checkpoint.valid_stopped(stopped, prepared, _active_files=True)
+    terminal = {
+        "version": 3,
+        "prepared": prepared,
+        "stopped": stopped,
+        "attempt_record": {},
+        "finalization_id": str(uuid4()),
+        "completion_id": str(uuid4()),
+        "records": {},
+        "runtime_records": {},
+    }
+    assert not recovery_local_v4.valid_terminal(terminal)
+    assert recovery_local_v4.valid_terminal(terminal, _active_files=True)
+    stopped["stop_reason"] = None if failed else "preparation_failed"
+    assert not checkpoint.valid_stopped(stopped, prepared, _active_files=True)
+
+
+def test_file_checkpoint_requires_exact_readonly_original_objects(tmp_path):
+    from types import SimpleNamespace
+
+    (tmp_path / "input").mkdir(mode=0o700)
+    path = tmp_path / "input" / "input-00.txt"
+    path.write_bytes(b"file")
+    path.chmod(0o444)
+    path.parent.chmod(0o555)
+    info = path.stat()
+    root = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    staged = SimpleNamespace(
+        prepared=SimpleNamespace(managed_files=True),
+        preparation_failed=False,
+        workspace=SimpleNamespace(_leaf=root),
+        input_files=[
+            {
+                "mount_name": path.name,
+                "size_bytes": 4,
+                "sha256": "0" * 64,
+                "device": info.st_dev,
+                "inode": info.st_ino,
+            }
+        ],
+    )
+    try:
+        os.close(checkpoint.open_file_input(staged))
+        # Same name and bytes cannot replace the frozen object binding.
+        path.parent.chmod(0o700)
+        replacement = path.parent / "replacement"
+        replacement.write_bytes(b"file")
+        replacement.chmod(0o444)
+        replacement.replace(path)
+        path.parent.chmod(0o555)
+        with pytest.raises(ValueError, match="file checkpoint unavailable"):
+            checkpoint.open_file_input(staged)
+    finally:
+        path.parent.chmod(0o700)
+        os.close(root)
+
+
 def test_new_records_bind_both_frozen_charges_and_original_dispatch():
     prepared = _prepared()
     assert checkpoint.valid_prepared(prepared)

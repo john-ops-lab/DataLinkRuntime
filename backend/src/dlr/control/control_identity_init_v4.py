@@ -52,7 +52,7 @@ def maintain(
 def _maintenance_main(args: list[str]) -> int:
     try:
         # Only filenames are arguments. Invalid input is never echoed by a parser.
-        if len(args) not in {7, 11, 15} or args[0] not in {"check", "apply", "observe"}:
+        if len(args) not in {7, 11, 15, 19} or args[0] not in {"check", "apply", "observe"}:
             raise ValueError
         flags = dict(zip(args[1::2], args[2::2], strict=True))
         required = {"--source", "--target", "--intent"}
@@ -60,6 +60,15 @@ def _maintenance_main(args: list[str]) -> int:
             required,
             required | {"--previous-source", "--previous-intent"},
             required | {"--previous-source", "--previous-intent", "--root-source", "--root-intent"},
+            required
+            | {
+                "--previous-source",
+                "--previous-intent",
+                "--root-source",
+                "--root-intent",
+                "--origin-source",
+                "--origin-intent",
+            },
         ):
             raise ValueError
         source = read_declaration(
@@ -78,7 +87,19 @@ def _maintenance_main(args: list[str]) -> int:
                 root_source = read_declaration(
                     settings.model_copy(update={"control_identity_file": flags["--root-source"]})
                 )
-                root = transition.read_intent(flags["--root-intent"], root_source, previous_source)
+                origin = None
+                if "--origin-intent" in flags:
+                    origin_source = read_declaration(
+                        settings.model_copy(
+                            update={"control_identity_file": flags["--origin-source"]}
+                        )
+                    )
+                    origin = transition.read_intent(
+                        flags["--origin-intent"], origin_source, root_source
+                    )
+                root = transition.read_intent(
+                    flags["--root-intent"], root_source, previous_source, predecessor=origin
+                )
             predecessor = transition.read_intent(
                 flags["--previous-intent"], previous_source, source, predecessor=root
             )

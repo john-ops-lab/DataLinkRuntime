@@ -2,9 +2,32 @@
 
 ## Purpose
 
-定义 W1-A 至 W1-F 的专用身份、受限恢复/结清、运维、双固定节点与停机换镜像，以及 W1-G 无第三方依赖 JavaScript、历史 F→G 和 W1-H 有界业务凭据/G→H 的单 Control 远程运行合同。默认 Python 和一个 Worker，显式双语言及两槽时支持相应能力与两个各自单并发的固定 Worker。原规格路径保持。该能力不替代既有默认 v3 部署，不声明 Pool、HA、任意升级链或异常历史自动恢复。
+定义 W1-A 至 W1-F 的专用身份、受限恢复/结清、运维、双固定节点与停机换镜像，以及 W1-G 无第三方依赖 JavaScript、历史 F→G 和 W1-H 有界业务凭据/G→H，以及W1-I受限文件输入/H→I 的单 Control 远程运行合同。默认 Python 和一个 Worker，显式双语言及两槽时支持相应能力与两个各自单并发的固定 Worker。原规格路径保持。该能力不替代既有默认 v3 部署，不声明 Pool、HA、任意升级链或异常历史自动恢复。
 
 ## Requirements
+
+### Requirement: I文件模式默认禁用且恢复资格独立
+W1-I SHALL 在单Control、K=1/2、strict fixed/Slot 0、无依赖Python/JavaScript及manual/schedule范围增加托管文件；Worker可信input mode仅接受disabled/managed_files，默认disabled。MUST 经当前启动内受限文件写入/核对/清理探针后才报告可缺省严格bool managed_files_v1，缺失=false，新实例清除旧事实；能力不授予Artifact或H业务Credential权限。文件与H绑定可组合，但H冻结引用、节点许可及结果净化上限全部保持。
+
+#### Scenario: 缺能力、非法文件或当前配置变化
+- **WHEN** 目标未报告本次文件能力，或文件数/字节/元数据不合法
+- **THEN** 在新Execution/Admission/Outbox/Lease前拒绝；已接受责任沿原快照/Lease及固定目标等待或失败，不替换当前配置、不增加文件级重试
+
+### Requirement: I文件version3仅供同次活动责任结账
+W1-I文件 SHALL 使用私有prepared/stopped/terminal version3，封闭记录最多4项受控mount名、size/hash和对象绑定，不含原文件名/正文/Secret/Token。MUST 只在原同进程owner、物理停止及当前授权成立时走正常监督/cleanup；B/C跨进程恢复入口拒绝version3，崩溃残留保留unknown，不重新下载或运行业务。none/JSON保留原prepared/stopped v1、正常terminal v1及C处置terminal v2。
+
+#### Scenario: 文件准备失败与关闭未知
+- **WHEN** 原准备期限内文件失败，或原期限已到
+- **THEN** 只有同一nonbusiness staging child/creator/fd/IO实际结束、原guardian确认空cgroup及当前v4授权成立，才凭独立“业务未启动”观察走原净化/结果提交/独立观察/cleanup/本地结账及自身ACK；冻结Retry Policy/截止/退避和真实Attempt保持，未证明条件继续保留全部责任
+
+### Requirement: I只增加精确H到I封闭发布对
+W1-I SHALL 保持schema0088、原DB/卷/cluster/epoch/key/四指纹/K、Worker身份及凭据，来源仅为H main 9d7cd67f483950d4a6f96ebc9342005636f61348、最终PR HEAD ed925887f28704001117825d0d46488dacbfe595及原H真实制品72f2aa23bd9b680f820d16b82283b950533c6775，并逐个绑定已核实声明/构建/镜像digest。MUST 以至多3套原私有前序核验fresh-H/G→H/F→G→H/E→F→G→H的完整链，最多4笔、第五行拒绝；保留原摘要，核对全部祖先ABA/latest/authority和相邻声明，原锁序下CAS/revoke/append及提交未知只读观察、提交后前向安装。不新增E/F/G写资格或任意递归版本链。
+
+#### Scenario: 最长合法来源或旧意图
+- **WHEN** 完整原生E→F→G→H及原私有三套前序可核，旧业务/IO/授权已清洁停止
+- **THEN** 只能以当前G→H operation追加H→I；历史回执/摘要保持并可只读观察，I二进制不重新apply旧阶段；缺前序、任何祖先ABA、分叉/超长/unknown均拒绝，启动新generation后仍须显式activate
+
+下方H/F/G发布对要求记录对应历史二进制；I写资格以本节H→I为准，不继承旧阶段写许可。
 
 ### Requirement: H业务凭据能力与节点使用许可独立
 W1-H SHALL 默认禁用业务凭据处理，可信Worker配置仅接受disabled/bindings；ready的可缺省business_credentials_v1为严格bool，缺失=false，沿原提交后完整独立观察保存于独立能力键，新实例清除旧观察。Control MUST 另核对以下私有部署许可：version=1、最多2个Worker、每节点最多16个Credential ID、文件最多16KiB，worker_id与稳定identity同时匹配；名称、语言、标签、自报能力、HTTP/AMQP身份凭据或Pool不能自动授予业务Credential权限。

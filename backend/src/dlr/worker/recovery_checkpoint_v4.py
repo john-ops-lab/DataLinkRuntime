@@ -22,6 +22,7 @@ from dlr.common.dispatch_protocol import deserialize_dispatch_message
 from dlr.worker import cgroup_namespace, journal_v4, sandbox, workspace_fs_v4
 
 VERSION = 1
+FILE_VERSION = 3
 MAX_RECORDS = 128
 _HEX = re.compile(r"[0-9a-f]{64}")
 _PREPARED_FIELDS = frozenset(
@@ -156,12 +157,31 @@ def _valid_charge(value: object) -> bool:
         return False
 
 
-def valid_prepared(value: object) -> bool:
-    if not isinstance(value, dict) or set(value) != _PREPARED_FIELDS:
+def valid_prepared(value: object, *, _active_files: bool = False) -> bool:
+    files = isinstance(value, dict) and value.get("version") == FILE_VERSION and _active_files
+    expected = (
+        _PREPARED_FIELDS | {"input_files", "input_directory", "preparation_failed"}
+        if files
+        else _PREPARED_FIELDS
+    )
+    if not isinstance(value, dict) or set(value) != expected:
         return False
+    if files:
+        from dlr.worker.managed_files_v4 import receipt
+
+        try:
+            receipt(value["input_files"])
+        except (ValueError, TypeError):
+            return False
+        if (
+            type(value["preparation_failed"]) is not bool
+            or not _binding(value["input_directory"])
+            or (not value["input_files"]) != value["preparation_failed"]
+        ):
+            return False
     if (
         type(value["version"]) is not int
-        or value["version"] != VERSION
+        or value["version"] != (FILE_VERSION if files else VERSION)
         or value["phase"] != "prepared"
         or not all(
             _positive(value[key])
@@ -209,13 +229,23 @@ def valid_prepared(value: object) -> bool:
         return False
 
 
-def valid_stopped(value: object, prepared: Mapping[str, Any]) -> bool:
-    if not isinstance(value, dict) or set(value) != _STOPPED_FIELDS:
+def valid_stopped(
+    value: object, prepared: Mapping[str, Any], *, _active_files: bool = False
+) -> bool:
+    files = prepared.get("version") == FILE_VERSION and _active_files
+    expected = _STOPPED_FIELDS | {"stop_reason"} if files else _STOPPED_FIELDS
+    if not isinstance(value, dict) or set(value) != expected:
         return False
+    if files:
+        if prepared.get("preparation_failed"):
+            if value["stop_reason"] != "preparation_failed":
+                return False
+        elif value["stop_reason"] not in (None, "execution_cutoff"):
+            return False
     return bool(
-        valid_prepared(dict(prepared))
+        valid_prepared(dict(prepared), _active_files=_active_files)
         and type(value["version"]) is int
-        and value["version"] == VERSION
+        and value["version"] == (FILE_VERSION if files else VERSION)
         and value["phase"] == "stopped"
         and type(value["attempt_id"]) is int
         and value["attempt_id"] == prepared["attempt_id"]
@@ -360,8 +390,8 @@ def prepared_record(staged: Any) -> dict[str, Any]:
             f"physical-{identity.attempt_id}.intent.json": ws._record,
             f"physical-{identity.attempt_id}.bound.json": ws._bound,
         }
-        return {
-            "version": VERSION,
+        record = {
+            "version": FILE_VERSION if prepared.managed_files else VERSION,
             "phase": "prepared",
             "worker_id": prepared.intent["worker_id"],
             "worker_identity_id": str(identity.worker_identity_id),
@@ -387,12 +417,66 @@ def prepared_record(staged: Any) -> dict[str, Any]:
             },
             "process": process_identity(),
         }
+        if prepared.managed_files:
+            fd = open_file_input(staged)
+            try:
+                record.update(
+                    input_files=list(staged.input_files),
+                    input_directory=binding(fd),
+                    preparation_failed=staged.preparation_failed,
+                )
+            finally:
+                os.close(fd)
+        return record
+
+
+def open_file_input(staged: Any) -> int:
+    """Verify only the frozen metadata; never hash file contents in the Agent."""
+    from dlr.worker.managed_files_v4 import receipt
+
+    records = receipt(staged.input_files)
+    if not staged.prepared.managed_files or (not records) != staged.preparation_failed:
+        raise ValueError("file checkpoint unavailable")
+    fd = os.open(
+        "input",
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=staged.workspace._leaf,
+    )
+    try:
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != (
+            0o555 if records else 0o700
+        ):
+            raise ValueError("file checkpoint unavailable")
+        with os.scandir(fd) as entries:
+            names_seen = set()
+            for entry in entries:
+                names_seen.add(entry.name)
+                if len(names_seen) > 4:
+                    raise ValueError("file checkpoint unavailable")
+        if names_seen != {item["mount_name"] for item in records}:
+            raise ValueError("file checkpoint unavailable")
+        for item in records:
+            value = os.stat(item["mount_name"], dir_fd=fd, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(value.st_mode)
+                or value.st_uid != os.geteuid()
+                or value.st_nlink != 1
+                or stat.S_IMODE(value.st_mode) != 0o444
+                or value.st_size != item["size_bytes"]
+                or (value.st_dev, value.st_ino) != (item["device"], item["inode"])
+            ):
+                raise ValueError("file checkpoint unavailable")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def persist_prepared(staged: Any) -> None:
     cg = staged.cgroup
     record = prepared_record(staged)
-    if not valid_prepared(record):
+    if not valid_prepared(record, _active_files=staged.prepared.managed_files):
         raise ValueError("recovery checkpoint invalid")
     with cg._root_lock.borrow(cg._runtime_root, [cg._attempt_journal_root]):
         persist(
@@ -467,7 +551,11 @@ def persist_stopped(
                     info.st_uid != os.geteuid()
                     or (
                         is_directory
-                        and (not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700)
+                        and (
+                            not stat.S_ISDIR(info.st_mode)
+                            or stat.S_IMODE(info.st_mode)
+                            != (0o555 if item.name == "input" and staged.input_files else 0o700)
+                        )
                     )
                     or (
                         not is_directory
@@ -500,14 +588,14 @@ def persist_stopped(
             first, last = names(staged.prepared.identity.attempt_id)
             prepared = journal_v4._read(directory, first)
             if (
-                not valid_prepared(prepared)
+                not valid_prepared(prepared, _active_files=staged.prepared.managed_files)
                 or prepared is None
                 or prepared != current
                 or journal_v4._read(directory, result_name) != result_record
             ):
                 raise ValueError("recovery provenance unavailable")
             stopped = {
-                "version": VERSION,
+                "version": current["version"],
                 "phase": "stopped",
                 "attempt_id": prepared["attempt_id"],
                 "prepared_sha256": digest(prepared),
@@ -519,6 +607,8 @@ def persist_stopped(
                 "sandbox_mount_expected": ws._sandbox_mount_expected,
                 "sandbox_mount_binding": mount_binding,
             }
-            if not valid_stopped(stopped, prepared):
+            if staged.prepared.managed_files:
+                stopped["stop_reason"] = owner._observation.stop_reason
+            if not valid_stopped(stopped, prepared, _active_files=staged.prepared.managed_files):
                 raise ValueError("recovery stop checkpoint invalid")
             persist(directory, last, stopped)

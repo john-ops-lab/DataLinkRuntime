@@ -51,6 +51,7 @@ class WorkerConfig:
     recovery_operation: UUID | None = None
     language_mode: str = "python"
     business_credentials_mode: str = "disabled"
+    input_mode: str = "disabled"
 
 
 def run(config: WorkerConfig, stop: threading.Event) -> str:
@@ -64,6 +65,8 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
         or config.language_mode not in {"python", "python_javascript"}
         or type(config.business_credentials_mode) is not str
         or config.business_credentials_mode not in {"disabled", "bindings"}
+        or type(config.input_mode) is not str
+        or config.input_mode not in {"disabled", "managed_files"}
         or not 0 < config.worker_id < 2**63
         or type(config.worker_identity_id) is not UUID
         or config.worker_identity_id.int == 0
@@ -291,7 +294,10 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                 budget.release(receive)
                 phase = "sandbox_preflight"
                 result = sandbox.run_preflight(
-                    sandbox_config, recovery_root=recovery_root, runtime_root=config.runtime_root
+                    sandbox_config,
+                    recovery_root=recovery_root,
+                    runtime_root=config.runtime_root,
+                    managed_files=config.input_mode == "managed_files",
                 )
                 capabilities, details = result.get("capabilities"), result.get("details")
                 if not isinstance(capabilities, dict) or not isinstance(details, dict):
@@ -305,6 +311,11 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     for key in REQUIRED_ISOLATION_CAPABILITIES
                 }
                 if details.get("status") != "passed" or not all(flags.values()):
+                    return "preflight_unavailable"
+                if (
+                    config.input_mode == "managed_files"
+                    and capabilities.get("managed_files_v1") is not True
+                ):
                     return "preflight_unavailable"
                 if config.language_mode == "python_javascript":
                     from dlr.worker import node_runtime_v4
@@ -375,6 +386,7 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                         flags,
                         capabilities=mode_capabilities(config.language_mode),
                         business_credentials=config.business_credentials_mode == "bindings",
+                        managed_files=config.input_mode == "managed_files",
                     )
                     consumer = FixedWorkerConsumer(
                         broker_file=config.broker_config_file,
@@ -391,6 +403,7 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                         stop=stop,
                         capabilities=mode_capabilities(config.language_mode),
                         business_credentials=config.business_credentials_mode == "bindings",
+                        managed_files=config.input_mode == "managed_files",
                     )
                     consumer_thread = threading.Thread(
                         target=consumer.run, name="dlr-v4-broker", daemon=True
@@ -467,6 +480,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--language-mode", default=os.environ.get("DLR_WORKER_LANGUAGE_MODE", "python")
     )
+    parser.add_argument("--input-mode", default=os.environ.get("DLR_WORKER_INPUT_MODE", "disabled"))
     parser.add_argument("--claim-child-address-space-bytes", type=int, default=256 * 1024 * 1024)
     parser.add_argument("--claim-wire-budget-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--result-wire-budget-bytes", type=int, default=16 * 1024 * 1024)

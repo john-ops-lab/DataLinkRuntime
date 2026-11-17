@@ -71,6 +71,9 @@ class PreparedClaim:
     result_wire_budget: int
     deadline: float
     business_credentials: bool = False
+    managed_files: bool = False
+    execution_deadline: float | None = None
+    input_deadline: float | None = None
     dispatch: dict[str, Any] = field(default_factory=dict, repr=False)
     stage_state: str = "claimed"
 
@@ -149,21 +152,85 @@ class StagedClaim:
     launch_max_bytes: int
     redaction_fd: int = field(default=-1, repr=False)
     redaction_identity: tuple[int, int, int] | None = field(default=None, repr=False)
+    preparation_failed: bool = False
+    input_files: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
 
 class ClaimPreparer:
     """One in-flight Claim; uncertain local responsibility blocks further intake."""
 
-    def __init__(self, *, business_credentials: bool = False) -> None:
-        if type(business_credentials) is not bool:
+    def __init__(self, *, business_credentials: bool = False, managed_files: bool = False) -> None:
+        if type(business_credentials) is not bool or type(managed_files) is not bool:
             raise ValueError("Worker capability unavailable")
         self._business_credentials = business_credentials
+        self._managed_files = managed_files
         self._pid = os.getpid()
         self._lock = threading.Lock()
         self._poisoned = False
         self._active: PreparedClaim | None = None
         self._staged: StagedClaim | None = None
         self._retained: list[object] = []
+
+    @staticmethod
+    def _stage_frame(
+        prepared: PreparedClaim, deadline: float, stop: threading.Event
+    ) -> dict[str, Any]:
+        size = struct.unpack("!I", claim_http_v4._receive(prepared.channel, 4, deadline, (stop,)))[
+            0
+        ]
+        if not 0 < size <= 4096:
+            raise ValueError("task handoff unavailable")
+        result = json.loads(claim_http_v4._receive(prepared.channel, size, deadline, (stop,)))
+        if type(result) is not dict:
+            raise ValueError("task handoff unavailable")
+        return result
+
+    @staticmethod
+    def _stage_send(
+        prepared: PreparedClaim, value: dict[str, Any], deadline: float, stop: threading.Event
+    ) -> None:
+        raw = json.dumps(value, separators=(",", ":")).encode("utf-8")
+        if len(raw) > 16_384:
+            raise ValueError("input authorization unavailable")
+        claim_http_v4._send_all(
+            prepared.channel, struct.pack("!I", len(raw)) + raw, deadline, (stop,)
+        )
+
+    def _authorize_file(
+        self, prepared: PreparedClaim, ordinal: int, deadline: float, stop: threading.Event
+    ) -> None:
+        attempt, parent = prepared.attempt, prepared.attempt._parent
+        # Match the existing Attempt -> instance-session order. Hold only
+        # until Control admission; never wait for a body under these locks.
+        with attempt._lock, parent._lock:
+            _, proof, current = attempt._live_locked()
+            if not attempt._start_confirmed or parent._proof is None or parent._claims is None:
+                raise ValueError("input authority unavailable")
+            deadline = min(deadline, current)
+            self._stage_send(
+                prepared,
+                {
+                    "base_url": parent._base_url,
+                    "worker_id": parent._worker_id,
+                    "instance_id": str(parent._instance_id),
+                    "generation": parent._claims.generation,
+                    "credential": parent._credential,
+                    "instance_proof": parent._proof,
+                    "attempt_proof": proof,
+                    "claim_token": attempt._claim_token,
+                    "deadline": deadline,
+                },
+                deadline,
+                stop,
+            )
+            admitted = self._stage_frame(prepared, deadline, stop)
+            if admitted not in (
+                {"state": "input_admitted", "ordinal": ordinal},
+                {"state": "input_rejected", "ordinal": ordinal},
+            ):
+                raise ValueError("input admission unavailable")
+            attempt._live_locked()
+        self._stage_send(prepared, {"op": "read_input"}, deadline, stop)
 
     @staticmethod
     def _entry(root_lock: cgroup_namespace.RootLockHandle, root: Path) -> int:
@@ -311,7 +378,12 @@ class ClaimPreparer:
             live_cgroup = live_workspace = None
             launch_fd = redaction_fd = -1
             try:
+                started = claim_http_v4._clock()
                 prepared.attempt.start()
+                if prepared.managed_files:
+                    prepared.execution_deadline = math.nextafter(
+                        started + prepared.reservation.limits.execution_timeout_seconds, -math.inf
+                    )
                 instance = WorkerInstance(
                     prepared.identity.worker_identity_id,
                     prepared.identity.instance_id,
@@ -350,34 +422,94 @@ class ClaimPreparer:
                         "launch_bytes": launch_max,
                         "fingerprint": prepared.task_fingerprint,
                     }
+                    input_deadline = deadline
+                    if prepared.managed_files:
+                        if prepared.execution_deadline is None or prepared.input_deadline is None:
+                            raise ValueError("input deadline unavailable")
+                        input_deadline = min(
+                            deadline, prepared.execution_deadline, prepared.input_deadline
+                        )
+                        command["input_deadline"] = input_deadline
                     raw = json.dumps(command, separators=(",", ":")).encode("utf-8")
                     claim_http_v4._send_all(
                         prepared.channel, struct.pack("!I", len(raw)) + raw, deadline, (stop,)
                     )
                     claim_http_v4._send_fd(prepared.channel, directory, deadline, (stop,))
-                    size = struct.unpack(
-                        "!I", claim_http_v4._receive(prepared.channel, 4, deadline, (stop,))
-                    )[0]
-                    if not 0 < size <= 4096:
-                        raise ValueError("task handoff unavailable")
-                    answer = json.loads(
-                        claim_http_v4._receive(prepared.channel, size, deadline, (stop,))
-                    )
-                    if answer != {
-                        "state": "staged",
+                    expected = {
+                        "state": "input_staging" if prepared.managed_files else "staged",
                         "fingerprint": prepared.task_fingerprint,
                         "launch_bytes": launch_max,
-                    }:
+                    }
+                    if self._stage_frame(prepared, input_deadline, stop) != expected:
                         raise ValueError("task handoff unavailable")
-                    launch_fd = self._receive_sealed_launch(prepared.channel, deadline, launch_max)
-                    if not self._stop_uncommitted(prepared.task, prepared.pidfd, prepared.channel):
+                    launch_fd = self._receive_sealed_launch(
+                        prepared.channel, input_deadline, launch_max
+                    )
+                    input_files: list[dict[str, Any]] = []
+                    failed, reaped = False, False
+                    if prepared.managed_files:
+                        from dlr.worker import managed_files_v4
+
+                        ordinal = 0
+                        try:
+                            while True:
+                                answer = self._stage_frame(prepared, input_deadline, stop)
+                                if answer == {"state": "input_authorization", "ordinal": ordinal}:
+                                    if ordinal >= 4:
+                                        raise ValueError("input count unavailable")
+                                    self._authorize_file(prepared, ordinal, input_deadline, stop)
+                                    ordinal += 1
+                                    continue
+                                if (
+                                    set(answer) != {"state", "fingerprint", "launch_bytes", "files"}
+                                    or answer["fingerprint"] != prepared.task_fingerprint
+                                    or answer["launch_bytes"] != launch_max
+                                    or answer["state"] not in {"staged", "preparation_failed"}
+                                ):
+                                    raise ValueError("input staging unavailable")
+                                input_files = managed_files_v4.receipt(answer["files"])
+                                failed = answer["state"] == "preparation_failed"
+                                if (failed and input_files) or (
+                                    not failed and len(input_files) != ordinal
+                                ):
+                                    raise ValueError("input staging unavailable")
+                                break
+                        except Exception:
+                            # An elapsed original preparation cutoff is
+                            # distinguishable from lost authority/protocol.
+                            # Reap this exact nonbusiness process first, then
+                            # discard only its bounded controlled objects.
+                            if stop.is_set() or claim_http_v4._clock() < input_deadline:
+                                raise
+                            if not self._stop_uncommitted(
+                                prepared.task, prepared.pidfd, prepared.channel
+                            ):
+                                raise ValueError("input stop unavailable") from None
+                            reaped = True
+                            if not prepared.attempt.is_usable():
+                                raise ValueError("input authority unavailable") from None
+                            managed_files_v4.discard_after_reap(
+                                directory, prepared.identity.execution_id
+                            )
+                            failed, input_files = True, []
+                    if not reaped and not self._stop_uncommitted(
+                        prepared.task, prepared.pidfd, prepared.channel
+                    ):
                         raise ValueError("task child unavailable")
                     with live_cgroup._mutex:
                         live_workspace._external_io_inflight = False
                 if stop.is_set() or not prepared.attempt.is_usable():
                     raise ValueError("task authority unavailable")
                 prepared.stage_state = "staged"
-                staged = StagedClaim(prepared, live_cgroup, live_workspace, launch_fd, launch_max)
+                staged = StagedClaim(
+                    prepared,
+                    live_cgroup,
+                    live_workspace,
+                    launch_fd,
+                    launch_max,
+                    preparation_failed=failed,
+                    input_files=input_files,
+                )
                 if prepared.business_credentials:
                     redaction_fd = os.dup(launch_fd)
                     info = os.fstat(redaction_fd)
@@ -571,6 +703,7 @@ class ClaimPreparer:
                     "wire_budget": wire_budget,
                     "timeout": min(timeout_seconds, io_deadline - started),
                     "business_credentials": self._business_credentials,
+                    "managed_files": self._managed_files,
                 }
                 transport_start = claim_http_v4._clock()
                 io_deadline = min(io_deadline, transport_start + timeout_seconds)
@@ -673,10 +806,13 @@ class ClaimPreparer:
                     "cleanup_token",
                     "resource_profile",
                     "business_credentials",
+                    "managed_files",
                 }
                 or result.get("state") != "prepared"
                 or type(result.get("business_credentials")) is not bool
                 or (result["business_credentials"] and not self._business_credentials)
+                or type(result.get("managed_files")) is not bool
+                or (result["managed_files"] and not self._managed_files)
                 or result.get("execution_id") != message.execution_id
                 or type(result.get("execution_id")) is not int
                 or any(
@@ -798,6 +934,7 @@ class ClaimPreparer:
             if not self._alive(pidfd) or stop.is_set() or not lease.is_usable():
                 raise ValueError("Claim authority unavailable")
             phase = "claim_finalize"
+            finalize_started = claim_http_v4._clock()
             attempt = AttemptLeaseSession.finalize_prepared(
                 lease,
                 proposal=result["proposal"],
@@ -837,6 +974,10 @@ class ClaimPreparer:
                 deadline=deadline,
                 dispatch=message.model_dump(mode="json"),
                 business_credentials=result["business_credentials"],
+                managed_files=result["managed_files"],
+                input_deadline=math.nextafter(finalize_started + 5.0, -math.inf)
+                if result["managed_files"]
+                else None,
             )
             self._active = prepared
             transferred = True

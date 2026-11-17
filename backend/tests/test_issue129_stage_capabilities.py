@@ -1,6 +1,7 @@
 """Restricted-stage ingress rejects unsupported work before taking responsibility."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select, update
@@ -23,6 +24,117 @@ from dlr.control.services.worker_stage_capability_v4 import dispatch_blocked, ex
 from test_adapters import create_adapter, save_version
 from test_credentials import create_credential, set_bindings
 from test_webhook_trigger import put_webhook
+
+
+def _file_adapter(client, factory, monkeypatch, *, count=1, size=8, capable=True):
+    """Producer-only metadata fixture, without claiming download or physical execution."""
+    from dlr.common.managed_files_v4 import CAPABILITY
+    from dlr.control.models import ManagedInputArtifact
+    from test_issue127_c0 import _bind_artifacts, _create_staged_artifact
+
+    adapter = create_adapter(client)
+    save_version(client, adapter["id"])
+    ids = [
+        _create_staged_artifact(factory, adapter["id"], f"fixture-{index}.txt")
+        for index in range(count)
+    ]
+    with factory.begin() as session:
+        for key in ids:
+            session.get(ManagedInputArtifact, key).size_bytes = size
+        now = datetime.now(UTC)
+        session.execute(
+            update(Worker).values(
+                protocol_version=4,
+                identity_lifecycle="reserved",
+                identity_enrolled_at=now,
+                instance_id=uuid4(),
+                instance_generation=1,
+                instance_lease_until=now + timedelta(seconds=30),
+                isolation_capabilities={CAPABILITY: capable},
+            )
+        )
+    _bind_artifacts(client, adapter["id"], ids)
+    monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
+    return adapter, ids
+
+
+@pytest.mark.parametrize("case", ["count", "bytes", "capability"])
+def test_file_limits_and_current_target_gate_before_manual_or_schedule_responsibility(
+    api_client, session_factory, monkeypatch, case
+):
+    from dlr.control.models import ExecutionInputArtifactLease
+
+    adapter, _ = _file_adapter(
+        api_client,
+        session_factory,
+        monkeypatch,
+        count=5 if case == "count" else 1,
+        size=(1 << 20) + 1 if case == "bytes" else 8,
+        capable=case != "capability",
+    )
+    response = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "worker_task_capability_unavailable"
+    assert (
+        api_client.patch(
+            f"/api/adapters/{adapter['id']}", json={"run_mode": "schedule"}
+        ).status_code
+        == 200
+    )
+    response = api_client.put(
+        f"/api/adapters/{adapter['id']}/schedule",
+        json={
+            "enabled": True,
+            "cron": "0 * * * *",
+            "timezone": "UTC",
+        },
+    )
+    assert response.status_code == 409, response.text
+    _assert_no_responsibility(session_factory)
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(ExecutionInputArtifactLease)) == 0
+
+
+def test_file_execution_keeps_original_lease_when_current_adapter_selection_changes(
+    api_client, session_factory, monkeypatch
+):
+    from dlr.control.models import ExecutionInputArtifactLease, ManagedInputArtifact
+    from test_issue127_c0 import _create_staged_artifact
+
+    adapter, ids = _file_adapter(api_client, session_factory, monkeypatch)
+    response = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert response.status_code == 202, response.text
+    execution_id = response.json()["id"]
+    replacement = _create_staged_artifact(session_factory, adapter["id"], "later.txt")
+    changed = api_client.put(
+        f"/api/adapters/{adapter['id']}/input-config",
+        json={
+            "expected_revision": 2,
+            "source_type": "managed_files",
+            "artifact_ids": [replacement],
+            "retention": {"mode": "system_default", "seconds": None},
+        },
+    )
+    assert changed.status_code == 200, changed.text
+    with session_factory.begin() as session:
+        execution = session.get(Execution, execution_id)
+        assert (
+            session.scalar(
+                select(ExecutionInputArtifactLease.artifact_id).where(
+                    ExecutionInputArtifactLease.execution_id == execution_id
+                )
+            )
+            == ids[0]
+        )
+        assert execution.input_snapshot["artifacts"][0]["original_filename"] == "fixture-0.txt"
+        assert (
+            execution_block_reason(session, session.get(Adapter, adapter["id"]), execution) is None
+        )
+        assert not dispatch_blocked(session, execution_id)
+        session.get(ManagedInputArtifact, ids[0]).sha256 = "b" * 64
+    with session_factory() as session:
+        assert dispatch_blocked(session, execution_id)
+        assert session.scalar(select(func.count()).select_from(ExecutionAttempt)) == 0
 
 
 def _assert_no_responsibility(session_factory):
@@ -52,7 +164,7 @@ def test_unsupported_manual_and_schedule_take_no_responsibility(
             session.execute(
                 update(AdapterInputConfig)
                 .where(AdapterInputConfig.adapter_id == adapter["id"])
-                .values(source_type="managed_files", json_value=None)
+                .values(source_type="remote_files", json_value=None)
             )
     if unsupported == "credentials":
         credential = create_credential(api_client)

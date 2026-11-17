@@ -53,41 +53,66 @@ def _run(
 
     envelope = ClaimEnvelope.open(child_address_space_bytes=address_space_bytes)
     try:
-        if _idle_deadline is not None:
-            remaining_idle = _idle_deadline - _clock()
-            if not math.isfinite(remaining_idle) or remaining_idle <= 0:
-                raise ValueError("result lifetime unavailable")
-            channel.settimeout(remaining_idle)
-        if _finalize_binding is not None:
-            bound_deadline = _finalize_binding["control_deadline"]
-            if not isinstance(bound_deadline, (int, float)):
-                raise ValueError("result authority unavailable")
-            remaining = float(bound_deadline) - _clock()
-            if remaining <= 0:
-                raise ValueError("result authority unavailable")
-            channel.settimeout(remaining)
-        request = _read_frame(channel)
-        if _stage_binding is not None and any(
-            request.get(name) != value for name, value in _stage_binding.items()
-        ):
-            raise ValueError("result binding unavailable")
-        if _finalize_binding is not None and any(
-            request.get(name) != value for name, value in _finalize_binding.items()
-        ):
-            raise ValueError("result binding unavailable")
-        from dlr.common import config
+        input_requests = 0
+        input_artifacts: set[int] = set()
+        while True:
+            if _idle_deadline is not None:
+                remaining_idle = _idle_deadline - _clock()
+                if not math.isfinite(remaining_idle) or remaining_idle <= 0:
+                    raise ValueError("result lifetime unavailable")
+                channel.settimeout(remaining_idle)
+            if _finalize_binding is not None:
+                bound_deadline = _finalize_binding["control_deadline"]
+                if not isinstance(bound_deadline, (int, float)):
+                    raise ValueError("result authority unavailable")
+                remaining = float(bound_deadline) - _clock()
+                if remaining <= 0:
+                    raise ValueError("result authority unavailable")
+                channel.settimeout(remaining)
+            request = _read_frame(channel)
+            input_request = request.get("operation") == "input"
+            if _stage_binding is not None and any(
+                request.get(name) != value
+                for name, value in _stage_binding.items()
+                if not (input_request and name == "operation")
+            ):
+                raise ValueError("result binding unavailable")
+            if _finalize_binding is not None and any(
+                request.get(name) != value for name, value in _finalize_binding.items()
+            ):
+                raise ValueError("result binding unavailable")
+            from dlr.common import config
 
-        snapshot = request["settings"]
-        if type(snapshot) is not dict or set(snapshot) != set(config.Settings.model_fields):
-            raise ValueError("result configuration unavailable")
-        aliases: dict[str, Any] = {}
-        for name, item in config.Settings.model_fields.items():
-            alias = item.validation_alias or name
-            if type(alias) is not str:
+            snapshot = request["settings"]
+            if type(snapshot) is not dict or set(snapshot) != set(config.Settings.model_fields):
                 raise ValueError("result configuration unavailable")
-            aliases[alias] = snapshot[name]
-        config.settings = config.Settings(**aliases)
-        del snapshot, aliases
+            aliases: dict[str, Any] = {}
+            for name, item in config.Settings.model_fields.items():
+                alias = item.validation_alias or name
+                if type(alias) is not str:
+                    raise ValueError("result configuration unavailable")
+                aliases[alias] = snapshot[name]
+            config.settings = config.Settings(**aliases)
+            del snapshot, aliases
+
+            if not input_request:
+                break
+            from dlr.common.managed_files_v4 import MAX_FILES
+            from dlr.control.services.input_child_v4 import serve
+
+            if _stage_binding is None or _finalize_binding is not None or _idle_deadline is None:
+                raise ValueError("input unavailable")
+            artifact = request.get("artifact_id")
+            if (
+                input_requests >= MAX_FILES
+                or type(artifact) is not int
+                or artifact in input_artifacts
+            ):
+                _send_frame(channel, {"state": "input_rejected"})
+                continue
+            input_requests += 1
+            input_artifacts.add(artifact)
+            serve(channel, request, envelope, idle_until=_idle_deadline)
 
         from dlr.control import db
         from dlr.control.schemas.reliable_runtime import AttemptResultBody

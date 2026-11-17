@@ -6,6 +6,20 @@
 
 ## Requirements
 
+### Requirement: I接受复用有界冻结文件与原Lease
+W1-I SHALL 仅在限定单Control/固定Worker路径冻结1–4个文件，允许0字节，单项≤1MiB、合计≤4MiB，并受原平台配额、Claim wire和完整staging预算约束；不得更改全平台上传上限。MUST 在新接受、schedule启用/触发、dispatch及两阶段Claim复核目标managed_files_v1、metadata/size/hash/ordinal和Lease/原快照，不新增解析器、URL/宿主路径/共享卷输入。
+
+#### Scenario: 接受后替换当前Adapter文件
+- **WHEN** 当前选择发生变化或旧对象进入待删
+- **THEN** 已接受Execution仍使用原Lease和冻结元数据；不能替换最新文件，内容不可用保留真实责任并失败/阻断，新超限或不合格目标零新增Execution/Admission/Outbox/Lease
+
+### Requirement: 本地对象读写删除使用稳定有界互斥
+LocalFileArtifactStore SHALL 在受信root下保留至多256个稳定0600条带锁文件，以storage_key固定SHA-256首字节选择。MUST 在对象open前持共享非阻塞flock直至实际fd关闭，commit/delete/quarantine取独占非阻塞锁；验证锁目录/条目身份，锁文件不随对象删除，不得unlink/替换锁namespace“解锁”。所有GC/手动/retention/detached删除沿原机制保留busy待办与charge，只有实际删除成功后才结账；关闭未知不释放读保护，不据此声明shared_posix或多Control。
+
+#### Scenario: reader与GC删除或原子发布竞争
+- **WHEN** reader实际fd仍开着，或共享条带发生冲突
+- **THEN** writer稳定返回暂不可用并保留原对象/待办/charge和退避，不在DB事务内等待；最后reader实际关闭后才允许取独占锁删除/发布，不把Lease消失当作IO终止
+
 ### Requirement: Managed Input 设置具有单一权威来源
 系统 SHALL 以数据库单例和管理员 API 管理默认保留期、单文件/Adapter/平台配额、手动删除许可、自定义保留上限、磁盘低水位和 STAGED TTL；所有值 MUST 非空、有界，只有管理员可写。ArtifactStore 根路径、feature flag、后台任务间隔和 Worker 协议/清理超时 MUST 仅由部署环境变量提供。
 

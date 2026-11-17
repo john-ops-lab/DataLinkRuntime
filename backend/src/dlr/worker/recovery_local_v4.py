@@ -56,9 +56,15 @@ def _absent(directory: int, name: str) -> bool:
     return False
 
 
-def physical_intent(directory: int, prepared: dict[str, Any], stopped: dict[str, Any]) -> str:
+def physical_intent(
+    directory: int,
+    prepared: dict[str, Any],
+    stopped: dict[str, Any],
+    *,
+    _active_files: bool = False,
+) -> str:
     """Persist before either the normal owner or recovery deletes any object."""
-    if not checkpoint.valid_stopped(stopped, prepared):
+    if not checkpoint.valid_stopped(stopped, prepared, _active_files=_active_files):
         raise ValueError("recovery checkpoint unavailable")
     name = progress_name(prepared["attempt_id"])
     checkpoint.persist(
@@ -391,7 +397,7 @@ def clean_workspace(
                 os.close(fd)
 
 
-def valid_terminal(terminal: object) -> bool:
+def valid_terminal(terminal: object, *, _active_files: bool = False) -> bool:
     if not isinstance(terminal, dict):
         return False
     base = {
@@ -407,7 +413,12 @@ def valid_terminal(terminal: object) -> bool:
         terminal.get("completion_id")
     ):
         return False
-    if terminal["version"] == 1:
+    if terminal["version"] == 1 or (
+        _active_files
+        and terminal["version"] == checkpoint.FILE_VERSION
+        and isinstance(terminal.get("prepared"), dict)
+        and terminal["prepared"].get("version") == checkpoint.FILE_VERSION
+    ):
         return set(terminal) == base | {"finalization_id"} and checkpoint._uuid(
             terminal["finalization_id"]
         )
@@ -425,12 +436,13 @@ def retire(
     terminal: dict[str, Any],
     *,
     allow_missing: bool,
+    _active_files: bool = False,
 ) -> None:
     """The self-contained terminal survives every journal/runtime unlink."""
-    if not valid_terminal(terminal):
+    if not valid_terminal(terminal, _active_files=_active_files):
         raise ValueError("recovery terminal invalid")
     prepared, stopped = terminal["prepared"], terminal["stopped"]
-    if not checkpoint.valid_stopped(stopped, prepared):
+    if not checkpoint.valid_stopped(stopped, prepared, _active_files=_active_files):
         raise ValueError("recovery terminal invalid")
     name = terminal_name(prepared["attempt_id"])
     records, runtime_records = terminal["records"], terminal["runtime_records"]

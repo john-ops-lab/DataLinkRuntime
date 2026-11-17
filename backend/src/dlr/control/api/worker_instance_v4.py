@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError
 from sqlalchemy.orm import Session
 
 from dlr.common.business_credentials_v4 import CAPABILITY
+from dlr.common.managed_files_v4 import CAPABILITY as MANAGED_FILES_CAPABILITY
 from dlr.common.worker_languages_v4 import valid_capabilities
 from dlr.control import db
 from dlr.control.models import Worker
@@ -33,6 +34,7 @@ class _ReadyReport(BaseModel):
     isolation_capabilities: dict[str, StrictBool]
     capabilities: list[str] = ["python"]
     business_credentials_v1: StrictBool = False
+    managed_files_v1: StrictBool = False
 
 
 def _pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -199,6 +201,8 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
         expected_flags: dict[str, object] = dict(flags)
         if report.business_credentials_v1:
             expected_flags[CAPABILITY] = True
+        if report.managed_files_v1:
+            expected_flags[MANAGED_FILES_CAPABILITY] = True
     except (ValueError, UnicodeError, RecursionError, ValidationError):
         raise _error(422) from None
 

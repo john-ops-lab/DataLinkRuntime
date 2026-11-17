@@ -36,10 +36,11 @@ class _SandboxLaunch:
     gid: int
     cgroup_root: str
     cgroup_path: str
+    preparation_only: bool = False
 
     @classmethod
     def parse(cls, args: list[str], *, sock_fd: int, cgroup_fd: int) -> _SandboxLaunch:
-        if len(args) != 15 or args[0] != "sandbox":
+        if len(args) != 15 or args[0] not in {"sandbox", "preparation"}:
             raise ValueError("invalid sandbox launch")
         value = cls(
             launch_fd=int(args[1]),
@@ -56,6 +57,7 @@ class _SandboxLaunch:
             gid=int(args[12]),
             cgroup_root=args[13],
             cgroup_path=args[14],
+            preparation_only=args[0] == "preparation",
         )
         fds = (
             sock_fd,
@@ -206,6 +208,7 @@ def _report_terminal(
     exit_code: int | None = None,
     *,
     execution_cutoff: bool = False,
+    preparation_failed: bool = False,
 ) -> bool:
     """Keep IPC open until the parent acknowledges the terminal observation.
 
@@ -215,7 +218,9 @@ def _report_terminal(
     acknowledgement arrives; lack of acknowledgement remains unknown.
     """
     response: dict[str, object] = {"event": "stopped", "cgroup_drained": drained}
-    if exit_code is not None:
+    if drained and preparation_failed and exit_code is None and not execution_cutoff:
+        response["stop_reason"] = "preparation_failed"
+    elif exit_code is not None:
         response["exit_code"] = exit_code
     elif drained and execution_cutoff:
         response["stop_reason"] = "execution_cutoff"
@@ -658,6 +663,27 @@ def _run(
             message = _receive(sock)
             if message == {"op": "stop"}:
                 return
+            if (
+                launch is not None
+                and launch.preparation_only
+                and message == {"op": "preparation_failed"}
+            ):
+                if not active or probe is not None or pending_renewal is not None:
+                    raise ValueError("preparation stop unavailable")
+                if stop_reasons is None:
+                    raise ValueError("preparation stop unavailable")
+                stop_reasons.append("preparation_failed")
+                return
+            if (
+                launch is not None
+                and launch.preparation_only
+                and message.get("op")
+                in {
+                    "sandbox_prepare",
+                    "sandbox_release",
+                }
+            ):
+                raise ValueError("business launch forbidden")
             if pending_renewal is not None:
                 successor, new_deadline = pending_renewal
                 now = _clock()
@@ -869,6 +895,7 @@ def main() -> int:
             drained,
             exit_codes[0] if len(exit_codes) == 1 else None,
             execution_cutoff=stop_reasons == ["execution_cutoff"],
+            preparation_failed=stop_reasons == ["preparation_failed"],
         )
     sock.close()
     return 0 if drained else 1
