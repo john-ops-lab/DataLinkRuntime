@@ -156,6 +156,7 @@ def admit(
         lease.guard_until,
         instance.nominal_until,
         instance.guard_until,
+        attempt.claimed_at + timedelta(seconds=contract.FILE_TIMEOUT_SECONDS),
         attempt.started_at + timedelta(seconds=execution.timeout_seconds_snapshot),
     )
     if expires is not None:

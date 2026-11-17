@@ -153,6 +153,7 @@ def _claimed_child(coordinator, authority):
         2,
         configuration=configuration,
         state="finalizing",
+        input_cutoff=module._clock() + 5,
     )
     coordinator._current = entry
     coordinator._retain_result_from_claim(
@@ -171,6 +172,7 @@ class ResultChildLifetimeTests(unittest.TestCase):
     def test_claim_handoff_keeps_one_child_and_requires_fresh_operation_authority(self):
         with _world() as (coordinator, authority, children):
             old, retained = _claimed_child(coordinator, authority)
+            self.assertEqual(old.input_cutoff, retained.input_cutoff)
             self.assertFalse(coordinator._expire(old))
             self.assertIsNone(old.process.poll())
             time.sleep(0.2)  # Only resource ownership survives the old Claim deadline.

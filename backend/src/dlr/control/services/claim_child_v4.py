@@ -192,10 +192,16 @@ def _run(channel: socket.socket, address_space_bytes: int) -> dict[str, object] 
             raise ValueError("Claim authority unavailable")
         channel.settimeout(remaining)
         command = _read_frame(channel)
-        if set(command) != {"op", "instance_proof"} or command["op"] != "finalize":
+        if set(command) != {"op", "instance_proof", "input_cutoff"} or command["op"] != "finalize":
             raise ValueError("Claim confirmation unavailable")
         final_proof = command["instance_proof"]
-        if type(final_proof) is not str:
+        input_cutoff = command["input_cutoff"]
+        if (
+            type(final_proof) is not str
+            or type(input_cutoff) is not float
+            or not math.isfinite(input_cutoff)
+            or input_cutoff > _clock() + 5.0
+        ):
             raise ValueError("Claim confirmation unavailable")
         local_check()
         with db.SessionLocal() as session:
@@ -262,6 +268,7 @@ def _run(channel: socket.socket, address_space_bytes: int) -> dict[str, object] 
             "control_instance": request["control_instance"],
             "control_token": request["control_token"],
             "result_idle_until": idle_until,
+            "input_cutoff": input_cutoff,
         }
     finally:
         envelope.close()
@@ -283,6 +290,9 @@ def main() -> int:
                 from dlr.control.services.result_child_v4 import _run as result_exchange
 
                 idle_until = binding.pop("result_idle_until")
+                input_cutoff = binding.pop("input_cutoff")
+                if type(input_cutoff) is not float:
+                    raise ValueError("input deadline unavailable")
                 if not isinstance(idle_until, (int, float)):
                     raise ValueError("result lifetime unavailable")
                 result_exchange(
@@ -290,6 +300,7 @@ def main() -> int:
                     address_space_bytes,
                     _stage_binding=binding,
                     _idle_deadline=float(idle_until),
+                    _input_cutoff=input_cutoff,
                 )
         return 0
     except BaseException:

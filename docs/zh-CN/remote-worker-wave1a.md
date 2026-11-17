@@ -482,7 +482,8 @@ Worker 私有 Compose 配置默认 `DLR_WORKER_INPUT_MODE=disabled`；只有显�
 | 下载 | 独立 v4 GET；TLS、当前运行凭据、实例和 Attempt 双证明、fence、Claim Token、冻结 Artifact/Lease 同时核验；拒绝 v3 旁路、query Token、Range、重定向、压缩 |
 | 期限与资源 | 复用同一已持有的 Control Claim/Result child 和 Worker staging child；顺序最多 4 次完整 GET，无文件级重试/续传；块 ≤64KiB、单侧最多两块在途；普通续租不延长已准入流 |
 
-Claim finalize 前即冻结 5 秒准备上限，且受原执行/证明期限约束；不能从 staging
+Control在其finalize入场前冻结同一slot/child的单调时钟准备截止，Worker也在发起finalize前
+独立冻结5秒上限；同时取不可续期的claimed_at+5秒及原执行/证明期限，不能从首次GET或staging
 重算 5 秒或按四个文件累加 20 秒。Agent 不读取或哈希业务文件正文。Control child
 先验证已打开对象，Worker child 独立核对 size/hash；完整集合及 manifest 校验并同步后
 发布 input（文件 0444、目录 0555），manifest 最后发布，业务启动门保持关闭直至成功。

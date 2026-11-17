@@ -424,6 +424,31 @@ def test_pg_file_admission_requires_both_current_proofs_and_exact_frozen_lease(
             module.admit(session, **{**kwargs, **changed})
 
 
+def test_pg_fresh_proofs_do_not_restart_original_claim_preparation_cutoff(
+    file_grant, session_factory
+):
+    from datetime import timedelta
+
+    from sqlalchemy import func, select
+
+    from dlr.control.models import AdapterExecutionSlot, ExecutionAttempt
+    from dlr.control.services import managed_input_download_v4 as module
+
+    kwargs, facts, candidate = file_grant
+    with session_factory.begin() as session:
+        now = session.scalar(select(func.clock_timestamp()))
+        session.get(ExecutionAttempt, candidate.attempt_id).claimed_at = now - timedelta(seconds=6)
+    with session_factory() as session, pytest.raises(module.InputDownloadUnavailable):
+        module.admit(session, **kwargs)
+    with session_factory() as session:
+        attempt = session.get(ExecutionAttempt, candidate.attempt_id)
+        assert attempt.status == "running"
+        assert (
+            session.get(AdapterExecutionSlot, (facts["adapter_id"], 0)).active_attempt_id
+            == candidate.attempt_id
+        )
+
+
 def test_pg_renewal_keeps_original_read_grant_but_old_proof_cannot_start_another(
     file_grant, session_factory
 ):
@@ -819,6 +844,7 @@ def input_frames(monkeypatch, serve):
         configuration=configuration,
         pending_stage=bound,
         retention_deadline=now + 30,
+        input_cutoff=now + 4,
     )
     coordinator._result = entry
     monkeypatch.setattr(coordinator, "_discard_unpublished", lambda *_args: True)
@@ -911,6 +937,133 @@ def test_empty_file_releases_read_phase_before_headers_without_another_rpc(monke
         stream = slot.begin_input(authority, metadata)
         assert stream.closed and not entry.input_active and not slot._spawning
         assert slot.read_input(stream) == b""
+
+
+def test_control_file_cutoff_is_frozen_before_finalize_rpc(monkeypatch):
+    from dlr.control.services import claim_coordinator_v4 as module
+
+    clock = [100.0]
+    monkeypatch.setattr(module, "_clock", lambda: clock[0])
+    instance = uuid4()
+    entry = SimpleNamespace(
+        state="ready",
+        token="proposal",
+        worker_id=1,
+        instance_id=instance,
+        generation=1,
+        credential="test-only",
+        authority=SimpleNamespace(check_authority=lambda: None),
+        envelope=object(),
+        deadline=120.0,
+        input_cutoff=None,
+        channel=SimpleNamespace(settimeout=lambda _value: None),
+    )
+    slot = module._ClaimSlot()
+    slot._current = entry
+    monkeypatch.setattr(slot, "_check_envelope", lambda *_a, **_k: None)
+    monkeypatch.setattr(slot, "_expire", lambda _entry: True)
+    observed = []
+
+    def sending(_channel, request):
+        observed.append(request["input_cutoff"])
+        # A blocked RPC cannot move the already frozen preparation deadline.
+        clock[0] = 104.0
+        assert entry.input_cutoff == request["input_cutoff"] < 105.0
+        raise OSError("test-only RPC failure")
+
+    monkeypatch.setattr(module, "_send_frame", sending)
+    with pytest.raises(module.ClaimUnavailable):
+        slot.finalize(
+            token="proposal",
+            worker_id=1,
+            instance_id=instance,
+            generation=1,
+            credential="test-only",
+            instance_proof="test-only",
+        )
+    assert len(observed) == 1 and entry.input_cutoff == observed[0]
+
+
+def test_later_file_gets_share_original_cutoff_and_late_get_keeps_result_owner(monkeypatch):
+    seen = []
+
+    def server(channel, module):
+        for _ in range(2):
+            request = module._read_frame(channel)
+            seen.append(request["control_deadline"])
+            module._send_frame(
+                channel,
+                {
+                    "state": "input_ready",
+                    "size": 0,
+                    "stream_id": str(uuid4()),
+                    "control_deadline": request["control_deadline"],
+                    "closed": True,
+                },
+            )
+
+    with input_frames(monkeypatch, server) as (slot, entry, authority, metadata, module):
+        now = time.monotonic()
+        clock = [now]
+        monkeypatch.setattr(module, "_clock", lambda: clock[0])
+        cutoff = entry.input_cutoff
+        assert slot.begin_input(authority, metadata).closed
+        clock[0] += 2
+        assert slot.begin_input(authority, {**metadata, "artifact_id": 4}).closed
+        assert seen == [cutoff, cutoff]
+        clock[0] = cutoff + 0.01
+        with pytest.raises(module.ClaimUnavailable):
+            slot.begin_input(authority, {**metadata, "artifact_id": 5})
+        assert slot._result is entry and not slot._poisoned
+        assert not slot._spawning and not entry.input_active
+
+
+def test_result_child_clamps_every_file_to_claim_cutoff_and_rejects_late_get(monkeypatch):
+    from dlr.common import config
+    from dlr.control.services import claim_envelope_v4, input_child_v4, result_child_v4
+
+    clock = [100.0]
+    closed, sent, served = [], [], []
+    monkeypatch.setattr(config, "settings", config.settings)
+    snapshot = config.settings.model_dump(mode="json")
+    monkeypatch.setattr(result_child_v4, "_clock", lambda: clock[0])
+    monkeypatch.setattr(
+        claim_envelope_v4.ClaimEnvelope,
+        "open",
+        lambda **_kw: SimpleNamespace(close=lambda: closed.append(True)),
+    )
+    requests = iter([(101.0, 1), (103.0, 2), (105.0, 3)])
+
+    def read(_channel):
+        try:
+            clock[0], artifact = next(requests)
+        except StopIteration:
+            raise EOFError from None
+        return {
+            "operation": "input",
+            "artifact_id": artifact,
+            "settings": snapshot,
+            "control_deadline": clock[0] + 5,
+        }
+
+    monkeypatch.setattr(result_child_v4, "_read_frame", read)
+    monkeypatch.setattr(result_child_v4, "_send_frame", lambda _c, value: sent.append(value))
+    monkeypatch.setattr(
+        input_child_v4,
+        "serve",
+        lambda _c, request, _e, **_kw: served.append(request["control_deadline"]),
+    )
+    with pytest.raises(EOFError):
+        result_child_v4._run(
+            SimpleNamespace(settimeout=lambda _t: None),
+            512 * 1024 * 1024,
+            _stage_binding={"operation": "stage"},
+            _idle_deadline=120.0,
+            _input_cutoff=104.0,
+        )
+    assert served == [104.0, 104.0]
+    assert sent == [{"state": "input_rejected"}]
+    assert closed == [True]
 
 
 def test_last_data_without_physical_close_marker_retains_unknown_slot(monkeypatch):

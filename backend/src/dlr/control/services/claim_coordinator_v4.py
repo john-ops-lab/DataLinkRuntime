@@ -71,6 +71,7 @@ class _Claim:
     timer: threading.Timer | None = field(default=None, repr=False)
     owner: _ClaimSlot | None = field(default=None, repr=False)
     allocation: int = 0
+    input_cutoff: float | None = None
 
 
 @dataclass(eq=False)
@@ -94,6 +95,7 @@ class _Result:
     owner: _ClaimSlot | None = field(default=None, repr=False)
     allocation: int = 0
     input_active: bool = False
+    input_cutoff: float | None = None
 
 
 @dataclass(eq=False)
@@ -496,9 +498,19 @@ class _ClaimSlot:
             if timeout <= 0:
                 raise ClaimUnavailable("Claim unavailable")
             entry.state = "finalizing"
+            # Freeze before the child enters finalize, including its DB/IPC
+            # work. Neither a later GET nor a renewal can restart this clock.
+            entry.input_cutoff = math.nextafter(_clock() + 5.0, -math.inf)
             entry.channel.settimeout(timeout)
         try:
-            _send_frame(entry.channel, {"op": "finalize", "instance_proof": instance_proof})
+            _send_frame(
+                entry.channel,
+                {
+                    "op": "finalize",
+                    "instance_proof": instance_proof,
+                    "input_cutoff": entry.input_cutoff,
+                },
+            )
             response = _read_frame(entry.channel)
             if (
                 set(response)
@@ -617,6 +629,7 @@ class _ClaimSlot:
                 retention_deadline=float(idle_until),
                 owner=self,
                 allocation=self._allocation,
+                input_cutoff=entry.input_cutoff,
             )
             self._result = retained
             self._spawning = False
@@ -677,6 +690,9 @@ class _ClaimSlot:
                 or entry.pending_finalize is not None
                 or entry.authority is not process
                 or entry.retention_deadline is None
+                or type(entry.input_cutoff) is not float
+                or not math.isfinite(entry.input_cutoff)
+                or _clock() >= entry.input_cutoff
                 or any(
                     metadata.get(k) != v for k, v in entry.pending_stage.items() if k != "operation"
                 )
@@ -696,7 +712,7 @@ class _ClaimSlot:
             if configuration != entry.configuration:
                 raise ClaimUnavailable("input unavailable")
             control_instance, control_token, confirmed = process.claim_child_identity()
-            deadline = min(entry.retention_deadline, confirmed, _clock() + 5.0)
+            deadline = min(entry.retention_deadline, confirmed, entry.input_cutoff, _clock() + 5.0)
             if deadline <= _clock():
                 raise ClaimUnavailable("input unavailable")
             stream = _Input(entry, deadline, 0)

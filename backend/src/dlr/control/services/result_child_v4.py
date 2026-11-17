@@ -48,6 +48,7 @@ def _run(
     _finalize_binding: dict[str, object] | None = None,
     _stage_binding: dict[str, object] | None = None,
     _idle_deadline: float | None = None,
+    _input_cutoff: float | None = None,
 ) -> None:
     from dlr.control.services.claim_envelope_v4 import ClaimEnvelope
 
@@ -102,6 +103,21 @@ def _run(
 
             if _stage_binding is None or _finalize_binding is not None or _idle_deadline is None:
                 raise ValueError("input unavailable")
+            if (
+                type(_input_cutoff) is not float
+                or not math.isfinite(_input_cutoff)
+                or _clock() >= _input_cutoff
+            ):
+                _send_frame(channel, {"state": "input_rejected"})
+                continue
+            supplied = request.get("control_deadline")
+            if (
+                not isinstance(supplied, (int, float))
+                or isinstance(supplied, bool)
+                or not math.isfinite(supplied)
+            ):
+                raise ValueError("input unavailable")
+            request["control_deadline"] = min(float(supplied), _input_cutoff)
             artifact = request.get("artifact_id")
             if (
                 input_requests >= MAX_FILES
