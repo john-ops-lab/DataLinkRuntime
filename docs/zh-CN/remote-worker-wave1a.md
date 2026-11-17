@@ -499,6 +499,8 @@ HTTP 断开、超时或租约到期本身不允许清账，也不追溯释放原
 文件的 prepared/stopped/terminal 使用私有 version 3，只供同一次活动责任监督与清理，
 最多记录 4 项 mount 名、size/hash 和对象绑定，不存原文件名、正文或凭据。B/C 的跨进程
 恢复明确拒绝文件 version 3；崩溃残留保持 unknown，不重取文件、不重跑业务。
+正常活动 owner 在物理停止、持久清理意图及 cgroup 移除后，按冻结绑定删除最多四份原输入
+副本，再复用原空目录清理；文件绑定、unlink、fsync 或 fd 关闭不明仍保留责任，不发送清理成功或 ACK。
 none/JSON 仍使用原 prepared/stopped v1、正常 terminal v1、C 处置 terminal v2。
 启用前应接受这一恢复边界，不能靠删除卷、journal 或换身份继续验收。
 

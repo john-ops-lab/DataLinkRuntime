@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
+from collections.abc import Mapping
 from uuid import uuid4
 
 from dlr.common.cleanup_intent_proof_v4 import verify_cleanup_intent_proof
@@ -33,6 +35,40 @@ def _remove_exact(directory: int, records: dict[str, object]) -> None:
     for name in records:
         os.unlink(name, dir_fd=directory)
     os.fsync(directory)
+
+
+def _remove_frozen_input(
+    staged: claim_preparation_v4.StagedClaim, frozen: Mapping[str, object]
+) -> None:
+    """Delete only the live owner's verified input after its cgroup was removed.
+
+    The caller already persisted the whole-tree physical intent and observed
+    the supervisor/IO stop. This is not a historical file recovery entry point.
+    """
+    if staged.input_files != frozen.get("input_files"):
+        raise ValueError("file cleanup binding unavailable")
+    descriptor = recovery_checkpoint_v4.open_file_input(staged)
+    try:
+        if recovery_checkpoint_v4.binding(descriptor) != frozen["input_directory"]:
+            raise ValueError("file cleanup binding unavailable")
+        os.fchmod(descriptor, 0o700)
+        for item in staged.input_files:
+            info = os.stat(item["mount_name"], dir_fd=descriptor, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o444
+                or info.st_size != item["size_bytes"]
+                or (info.st_dev, info.st_ino) != (item["device"], item["inode"])
+            ):
+                raise ValueError("file cleanup binding unavailable")
+            os.unlink(item["mount_name"], dir_fd=descriptor)
+        os.fsync(descriptor)
+        if not workspace_fs_v4._directory_is_empty(descriptor):
+            raise ValueError("file cleanup residue unavailable")
+    finally:
+        os.close(descriptor)
 
 
 def settle_execution(
@@ -92,19 +128,6 @@ def settle_execution(
                 recovery_local_v4.physical_intent(
                     directory, frozen, stopped_checkpoint, _active_files=prepared.managed_files
                 )
-                if prepared.managed_files:
-                    # The exact live owner and reaped supervisor were checked
-                    # above. Enable deletion only for the frozen private copy.
-                    input_fd = recovery_checkpoint_v4.open_file_input(staged)
-                    try:
-                        info = os.fstat(input_fd)
-                        if {"device": info.st_dev, "inode": info.st_ino} != frozen[
-                            "input_directory"
-                        ]:
-                            raise ValueError("file cleanup binding unavailable")
-                        os.fchmod(input_fd, 0o700)
-                    finally:
-                        os.close(input_fd)
             stopped = cgroup_intent_v4.stop_live_cgroup(
                 live,
                 config=live._config,
@@ -115,6 +138,9 @@ def settle_execution(
             )
             if stopped.code != "cgroup_removed":
                 raise ValueError("cgroup cleanup unavailable")
+            if prepared.managed_files:
+                with root_lock.borrow(live._runtime_root, [live._attempt_journal_root]):
+                    _remove_frozen_input(staged, frozen)
             removed = workspace_live_v4.cleanup_live_workspace(workspace)
             if removed.code != "workspace_removed":
                 raise ValueError("workspace cleanup unavailable")

@@ -13,6 +13,132 @@ from test_issue129_recovery_checkpoint_v4 import _prepared, _stopped
 
 
 @pytest.fixture
+def live_file_copy(tmp_path):
+    """Real input objects only; this fixture grants no supervisor or recovery authority."""
+    import hashlib
+    from types import SimpleNamespace
+
+    root = tmp_path / "workspace"
+    inputs = root / "input"
+    inputs.mkdir(parents=True, mode=0o700)
+    records = []
+    for ordinal, body in enumerate([b"original private copy", b""]):
+        path = inputs / f"input-{ordinal:02d}.txt"
+        path.write_bytes(body)
+        path.chmod(0o444)
+        info = path.stat()
+        records.append(
+            {
+                "mount_name": path.name,
+                "size_bytes": len(body),
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "device": info.st_dev,
+                "inode": info.st_ino,
+            }
+        )
+    inputs.chmod(0o555)
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    info = inputs.stat()
+    staged = SimpleNamespace(
+        prepared=SimpleNamespace(managed_files=True),
+        preparation_failed=False,
+        workspace=SimpleNamespace(_leaf=descriptor),
+        input_files=records,
+    )
+    frozen = {
+        "input_directory": {"device": info.st_dev, "inode": info.st_ino},
+        "input_files": records,
+    }
+    try:
+        yield staged, frozen, inputs
+    finally:
+        inputs.chmod(0o700)
+        os.close(descriptor)
+
+
+@pytest.mark.parametrize("preparation_failed", [False, True])
+def test_live_cleanup_removes_only_verified_frozen_copies_before_empty_directory_cleanup(
+    live_file_copy, preparation_failed
+):
+    from dlr.worker.cleanup_execution_v4 import _remove_frozen_input
+
+    staged, frozen, inputs = live_file_copy
+    if preparation_failed:
+        inputs.chmod(0o700)
+        for child in inputs.iterdir():
+            child.unlink()
+        staged.preparation_failed = True
+        staged.input_files = frozen["input_files"] = []
+    _remove_frozen_input(staged, frozen)
+    assert list(inputs.iterdir()) == []
+    assert inputs.stat().st_mode & 0o777 == 0o700
+    assert staged.input_files == frozen["input_files"]
+
+
+@pytest.mark.parametrize("damage", ["record", "directory", "extra", "link"])
+def test_live_cleanup_refuses_changed_input_before_unlinking_originals(live_file_copy, damage):
+    from dlr.worker.cleanup_execution_v4 import _remove_frozen_input
+
+    staged, frozen, inputs = live_file_copy
+    outside = inputs.parent / "outside"
+    outside.write_bytes(b"must remain")
+    inputs.chmod(0o700)
+    if damage == "record":
+        frozen["input_files"] = [{**staged.input_files[0], "inode": 0}]
+    elif damage == "directory":
+        frozen["input_directory"] = {**frozen["input_directory"], "inode": 0}
+    elif damage == "extra":
+        (inputs / "foreign").write_bytes(b"untracked")
+    else:
+        (inputs / "input-00.txt").unlink()
+        (inputs / "input-00.txt").symlink_to(outside)
+    inputs.chmod(0o555)
+    with pytest.raises(ValueError):
+        _remove_frozen_input(staged, frozen)
+    assert (inputs / "input-01.txt").exists()
+    assert outside.read_bytes() == b"must remain"
+
+
+@pytest.mark.parametrize("failure", ["unlink", "fsync", "close"])
+def test_live_cleanup_io_failure_never_returns_a_successful_empty_copy(
+    live_file_copy, monkeypatch, failure
+):
+    from dlr.worker import cleanup_execution_v4 as module
+
+    staged, frozen, inputs = live_file_copy
+    real_unlink, real_close = os.unlink, os.close
+    calls = []
+
+    def unlink(name, *, dir_fd):
+        calls.append(name)
+        if len(calls) == 2:
+            raise OSError("injected unlink uncertainty")
+        real_unlink(name, dir_fd=dir_fd)
+
+    def fail_fsync(_descriptor):
+        raise OSError("injected fsync uncertainty")
+
+    def close(descriptor):
+        is_input = os.fstat(descriptor).st_ino == frozen["input_directory"]["inode"]
+        real_close(descriptor)
+        if is_input:
+            calls.append("closed_once")
+            raise OSError("injected close uncertainty")
+
+    monkeypatch.setattr(
+        module.os, failure, {"unlink": unlink, "fsync": fail_fsync, "close": close}[failure]
+    )
+    with pytest.raises(OSError):
+        module._remove_frozen_input(staged, frozen)
+    if failure == "unlink":
+        assert not (inputs / "input-00.txt").exists()
+        assert (inputs / "input-01.txt").exists()
+    elif failure == "close":
+        assert calls == ["closed_once"]
+    assert frozen["input_files"] and inputs.exists()
+
+
+@pytest.fixture
 def original(tmp_path, monkeypatch):
     # macOS lacks Linux mountinfo. These tests validate actual file operations
     # only; actual mount/namespace rejection is a separate Linux acceptance.
