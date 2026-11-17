@@ -52,24 +52,16 @@ def maintain(
 def _maintenance_main(args: list[str]) -> int:
     try:
         # Only filenames are arguments. Invalid input is never echoed by a parser.
-        if len(args) not in {7, 11, 15, 19} or args[0] not in {"check", "apply", "observe"}:
+        if len(args) not in {7, 11, 15, 19, 23} or args[0] not in {"check", "apply", "observe"}:
             raise ValueError
         flags = dict(zip(args[1::2], args[2::2], strict=True))
         required = {"--source", "--target", "--intent"}
-        if len(flags) != (len(args) - 1) // 2 or set(flags) not in (
-            required,
-            required | {"--previous-source", "--previous-intent"},
-            required | {"--previous-source", "--previous-intent", "--root-source", "--root-intent"},
-            required
-            | {
-                "--previous-source",
-                "--previous-intent",
-                "--root-source",
-                "--root-intent",
-                "--origin-source",
-                "--origin-intent",
-            },
-        ):
+        levels = ("previous", "root", "origin", "ancestor")
+        accepted = [
+            required | {f"--{name}-{part}" for name in levels[:n] for part in ("source", "intent")}
+            for n in range(5)
+        ]
+        if len(flags) != (len(args) - 1) // 2 or set(flags) not in accepted:
             raise ValueError
         source = read_declaration(
             settings.model_copy(update={"control_identity_file": flags["--source"]})
@@ -77,31 +69,21 @@ def _maintenance_main(args: list[str]) -> int:
         target = read_declaration(
             settings.model_copy(update={"control_identity_file": flags["--target"]})
         )
-        predecessor = None
-        if "--previous-intent" in flags:
-            previous_source = read_declaration(
-                settings.model_copy(update={"control_identity_file": flags["--previous-source"]})
+        sources = [source]
+        paths = []
+        for name in levels:
+            if f"--{name}-intent" not in flags:
+                break
+            sources.append(
+                read_declaration(
+                    settings.model_copy(update={"control_identity_file": flags[f"--{name}-source"]})
+                )
             )
-            root = None
-            if "--root-intent" in flags:
-                root_source = read_declaration(
-                    settings.model_copy(update={"control_identity_file": flags["--root-source"]})
-                )
-                origin = None
-                if "--origin-intent" in flags:
-                    origin_source = read_declaration(
-                        settings.model_copy(
-                            update={"control_identity_file": flags["--origin-source"]}
-                        )
-                    )
-                    origin = transition.read_intent(
-                        flags["--origin-intent"], origin_source, root_source
-                    )
-                root = transition.read_intent(
-                    flags["--root-intent"], root_source, previous_source, predecessor=origin
-                )
+            paths.append(flags[f"--{name}-intent"])
+        predecessor = None
+        for index in reversed(range(len(paths))):
             predecessor = transition.read_intent(
-                flags["--previous-intent"], previous_source, source, predecessor=root
+                paths[index], sources[index + 1], sources[index], predecessor=predecessor
             )
         intent = transition.read_intent(flags["--intent"], source, target, predecessor=predecessor)
         engine = create_engine(

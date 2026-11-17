@@ -313,6 +313,15 @@ def create_app() -> FastAPI:
         the Template Gallery. Other API routes retain FastAPI's default
         validation response for compatibility.
         """
+        route_path = getattr(request.scope.get("route"), "path", "")
+        if isinstance(route_path, str) and route_path.startswith(
+            "/api/workers/{worker_id}/credentials/runtime"
+        ):
+            return JSONResponse(
+                status_code=422,
+                content={"detail": {"code": "worker_credential_request_invalid"}},
+                headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+            )
         if request.url.path.startswith("/api/event-subscriptions"):
             return JSONResponse(
                 status_code=422,

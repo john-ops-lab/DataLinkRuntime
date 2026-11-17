@@ -26,6 +26,7 @@ from dlr.control.services.control_declaration_v4 import DeploymentDeclaration, r
 from dlr.control.services.worker_remote_deployment_v4 import require_dedicated_deployment
 
 SOURCE_SCHEMA = "0087_issue129_disposition"
+LEGACY_SCHEMA = "0088_issue129_image_transition"
 SOURCE_SHA = "a37c9d3e19985acddb1f3e33ff6d3c7337147270"
 F_SOURCE_SHA = "0417b82c4ab6f76aefdf3eafe38327f46cb18358"
 # Verified F build inputs from its original delivery. Product provenance and
@@ -51,6 +52,14 @@ _H_RELEASE_SHAS = frozenset(
         H_SOURCE_SHA,
         "ed925887f28704001117825d0d46488dacbfe595",
         "72f2aa23bd9b680f820d16b82283b950533c6775",
+    }
+)
+I_SOURCE_SHA = "c9b21a4ae3f05c4e382e070fa180dbd07f58d350"
+_I_RELEASE_SHAS = frozenset(
+    {
+        I_SOURCE_SHA,
+        "227cc637292f23cb8432cd10ba24f06a9090546e",
+        "4e513d1ceb34999c45c9ca42f08135704f72faa7",
     }
 )
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
@@ -115,20 +124,20 @@ def read_intent(
                 previous is not None
                 and (previous.int == 0 or str(previous) != value["previous_id"])
             )
-            or value["target_schema"] != SCHEMA_REVISION
+            or value["target_schema"] not in (LEGACY_SCHEMA, SCHEMA_REVISION)
             or (value["source_schema"], value["source_sha"])
             not in {
                 (SOURCE_SCHEMA, SOURCE_SHA),
                 *(
-                    (SCHEMA_REVISION, sha)
-                    for sha in _F_RELEASE_SHAS | _G_RELEASE_SHAS | _H_RELEASE_SHAS
+                    (LEGACY_SCHEMA, sha)
+                    for sha in _F_RELEASE_SHAS | _G_RELEASE_SHAS | _H_RELEASE_SHAS | _I_RELEASE_SHAS
                 ),
             }
             or type(value["target_sha"]) is not str
             or _SHA.fullmatch(value["target_sha"]) is None
             or value["target_sha"] == value["source_sha"]
             or (
-                value["source_schema"] == SCHEMA_REVISION
+                value["source_schema"] == LEGACY_SCHEMA
                 and value["target_sha"] in _F_RELEASE_SHAS | {SOURCE_SHA}
             )
             or type(value["evidence_sha256"]) is not str
@@ -179,7 +188,7 @@ def read_intent(
             source,
             target,
             value["source_schema"],
-            SCHEMA_REVISION,
+            value["target_schema"],
             digest,
             value["control_slots"],
             value["source_sha"],
@@ -193,11 +202,15 @@ def read_intent(
 
 
 def _kind(intent: ImageTransition) -> int:
-    if intent.source_schema == SOURCE_SCHEMA and intent.source_sha == SOURCE_SHA:
+    if (
+        intent.source_schema == SOURCE_SCHEMA
+        and intent.source_sha == SOURCE_SHA
+        and intent.target_schema == LEGACY_SCHEMA
+    ):
         # Historical receipts retain the original hash algorithm and release pair.
         if intent.target_sha in _F_RELEASE_SHAS:
             return 0
-    elif intent.source_schema == SCHEMA_REVISION:
+    elif intent.source_schema == LEGACY_SCHEMA and intent.target_schema == LEGACY_SCHEMA:
         if intent.source_sha in _F_RELEASE_SHAS and intent.target_sha in _G_RELEASE_SHAS:
             return 1
         if (
@@ -211,17 +224,25 @@ def _kind(intent: ImageTransition) -> int:
             not in _F_RELEASE_SHAS | _G_RELEASE_SHAS | _H_RELEASE_SHAS | {SOURCE_SHA}
         ):
             return 3
+    elif (
+        intent.source_schema == LEGACY_SCHEMA
+        and intent.source_sha in _I_RELEASE_SHAS
+        and intent.target_schema == SCHEMA_REVISION
+        and intent.target_sha
+        not in _F_RELEASE_SHAS | _G_RELEASE_SHAS | _H_RELEASE_SHAS | _I_RELEASE_SHAS | {SOURCE_SHA}
+    ):
+        return 4
     raise TransitionUnavailable("image_transition_pair_unavailable")
 
 
 def _intent_prefix(intent: ImageTransition) -> list[ImageTransition]:
-    """Closed EF/FG/GH/HI prefix, independent of UUID order; at most three ancestors."""
+    """Closed EF/FG/GH/HI/IJ prefix; four ancestors, retaining each original schema/hash."""
     reverse: list[ImageTransition] = []
     current: ImageTransition | None = intent
-    while current is not None and len(reverse) < 5:
+    while current is not None and len(reverse) < 6:
         reverse.append(current)
         current = current.predecessor
-    if current is not None or len(reverse) > 4:
+    if current is not None or len(reverse) > 5:
         raise TransitionUnavailable("image_transition_conflict")
     prefix = list(reversed(reverse))
     ids = set()
@@ -231,7 +252,6 @@ def _intent_prefix(intent: ImageTransition) -> list[ImageTransition]:
         if (
             item.operation_id in ids
             or item.operation_id.int == 0
-            or item.target_schema != SCHEMA_REVISION
             or item.target.authority.image_digest in digests
             or (index == 0 and item.previous_id is not None)
         ):
@@ -244,10 +264,14 @@ def _intent_prefix(intent: ImageTransition) -> list[ImageTransition]:
             if (
                 kind != _kind(previous) + 1
                 or previous.target_sha
-                not in {1: _F_RELEASE_SHAS, 2: _G_RELEASE_SHAS, 3: _H_RELEASE_SHAS}.get(
-                    kind, frozenset()
-                )
+                not in {
+                    1: _F_RELEASE_SHAS,
+                    2: _G_RELEASE_SHAS,
+                    3: _H_RELEASE_SHAS,
+                    4: _I_RELEASE_SHAS,
+                }.get(kind, frozenset())
                 or item.previous_id != previous.operation_id
+                or previous.target_schema != item.source_schema
                 or previous.target != item.source
                 or previous.control_slots != item.control_slots
             ):
@@ -402,7 +426,7 @@ def _clean(session: Session) -> None:
 
 def _revision(session: Session) -> str:
     versions = session.execute(text("SELECT version_num FROM alembic_version")).scalars().all()
-    if len(versions) != 1 or versions[0] not in (SOURCE_SCHEMA, SCHEMA_REVISION):
+    if len(versions) != 1 or versions[0] not in (SOURCE_SCHEMA, LEGACY_SCHEMA, SCHEMA_REVISION):
         raise TransitionUnavailable("image_transition_schema_unavailable")
     return str(versions[0])
 
@@ -433,7 +457,7 @@ def _chain(session: Session, *, lock: bool = False) -> list[Any]:
     return list(
         session.execute(
             text(
-                "SELECT * FROM control_image_transitions ORDER BY operation_id LIMIT 5"
+                "SELECT * FROM control_image_transitions ORDER BY operation_id LIMIT 6"
                 + (" FOR SHARE" if lock else "")
             )
         ).mappings()
@@ -442,7 +466,7 @@ def _chain(session: Session, *, lock: bool = False) -> list[Any]:
 
 def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
     prefix = _intent_prefix(intent)
-    if len(rows) > 4:
+    if len(rows) > 5:
         raise TransitionUnavailable("image_transition_conflict")
     if not rows:
         if intent.previous_id is not None:
@@ -460,7 +484,8 @@ def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
     while True:
         row = ordered[-1]
         if (
-            row["target_schema"] != SCHEMA_REVISION
+            row["target_schema"]
+            != (SCHEMA_REVISION if _kind(prefix[0]) + len(ordered) - 1 == 4 else LEGACY_SCHEMA)
             or row["writer_xid"] <= 0
             or row["target_digest"] in digests
         ):
@@ -469,19 +494,19 @@ def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
         children = [r for r in rows if r["previous_id"] == row["operation_id"]]
         if not children:
             break
-        if len(children) != 1 or len(ordered) >= 4:
+        if len(children) != 1 or len(ordered) >= 5:
             raise TransitionUnavailable("image_transition_conflict")
         child = children[0]
         if (
             child["source_digest"] != row["target_digest"]
-            or child["source_schema"] != SCHEMA_REVISION
+            or child["source_schema"] != row["target_schema"]
             or child["cluster_id"] != root["cluster_id"]
             or child["authority_epoch"] != root["authority_epoch"]
         ):
             raise TransitionUnavailable("image_transition_conflict")
         ordered.append(child)
     # Only known descendants of a historical EF/FG receipt can be observed.
-    if len(ordered) != len(rows) or len(rows) > 4 - _kind(prefix[0]):
+    if len(ordered) != len(rows) or len(rows) > 5 - _kind(prefix[0]):
         raise TransitionUnavailable("image_transition_conflict")
     for index, item in enumerate(prefix):
         if index < len(ordered):
@@ -495,7 +520,7 @@ def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
 
 
 def _new_source(session: Session, intent: ImageTransition, *, lock: bool = False) -> None:
-    if _kind(intent) != 3:
+    if _kind(intent) != 4:
         raise TransitionUnavailable("image_transition_pair_unavailable")
     _intent_prefix(intent)
     latest = _validate_chain(_chain(session, lock=lock), intent)
@@ -522,7 +547,7 @@ def observe(session: Session, intent: ImageTransition) -> dict[str, object]:
         SELECT row_to_json(r) AS receipt, a.*, latest.operation_id AS latest_id,
                (SELECT coalesce(json_agg(row_to_json(b)), '[]'::json)
                 FROM (SELECT * FROM control_image_transitions
-                      ORDER BY operation_id LIMIT 4) b) AS chain,
+                      ORDER BY operation_id LIMIT 6) b) AS chain,
                latest.target_digest AS latest_digest, latest.target_schema AS latest_schema
         FROM (SELECT 1) seed
         LEFT JOIN control_image_transitions r ON r.operation_id = :operation
@@ -536,6 +561,8 @@ def observe(session: Session, intent: ImageTransition) -> dict[str, object]:
         .mappings()
         .one()
     )
+    if row["schema_revision"] != revision:
+        raise TransitionUnavailable("image_transition_schema_unavailable")
     rows = [_receipt_ids(dict(item)) for item in row["chain"]]
     latest = _validate_chain(rows, intent)
     if (latest["operation_id"] if latest is not None else None) != row["latest_id"]:
@@ -586,7 +613,9 @@ def check(session: Session, intent: ImageTransition, config: Settings) -> str:
         .mappings()
         .one_or_none()
     )
-    if revision == SCHEMA_REVISION:
+    if row is None or row["schema_revision"] != revision:
+        raise TransitionUnavailable("image_transition_schema_unavailable")
+    if revision in (LEGACY_SCHEMA, SCHEMA_REVISION):
         _owner_authorized(session, config)
         receipt = (
             session.execute(
@@ -618,18 +647,19 @@ def check(session: Session, intent: ImageTransition, config: Settings) -> str:
     if not _authority_matches(row, intent.source, intent.source_schema):
         raise TransitionUnavailable("image_transition_authority_unavailable")
     _clean(session)
-    return "source_checked" if revision == SOURCE_SCHEMA else "ready_to_apply"
+    return "source_checked" if revision == LEGACY_SCHEMA else "ready_to_apply"
 
 
 def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
     """Stage one top-level transaction. Caller commits, closes, then observes."""
-    if _kind(intent) != 3:
+    if _kind(intent) != 4:
         raise TransitionUnavailable("image_transition_pair_unavailable")
     if session.in_transaction() or config.worker_v4_control_slots != intent.control_slots:
         raise TransitionUnavailable("image_transition_transaction_unavailable")
     _limits(session, readonly=False)
     acquire_migration_gate(session)
-    if _revision(session) != SCHEMA_REVISION:
+    revision = _revision(session)
+    if revision not in (LEGACY_SCHEMA, SCHEMA_REVISION):
         raise TransitionUnavailable("image_transition_schema_unavailable")
     _owner_authorized(session, config)
     row = (
@@ -669,6 +699,9 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
     ).all()
     _clean(session)
     _owner_fence(session, config)
+    if revision != LEGACY_SCHEMA:
+        raise TransitionUnavailable("image_transition_schema_unavailable")
+    _migrate_http_receipts(session)
     changed = session.execute(
         text("""
         UPDATE control_cluster_authority SET image_digest=:target, schema_revision=:schema
@@ -705,3 +738,20 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
         },
     )
     session.execute(text("UPDATE control_process_instances SET revoked=true WHERE NOT revoked"))
+
+
+def _migrate_http_receipts(session: Session) -> None:
+    """Join this already fenced owner transaction; Alembic must not commit it."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    migration = Config()
+    migration.set_main_option(
+        "script_location", str(Path(__file__).resolve().parents[4] / "alembic")
+    )
+    migration.attributes["connection"] = session.connection()
+    command.upgrade(migration, SCHEMA_REVISION)
+    if _revision(session) != SCHEMA_REVISION:
+        raise TransitionUnavailable("image_transition_schema_unavailable")

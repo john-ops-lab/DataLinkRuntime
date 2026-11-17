@@ -1,6 +1,8 @@
 """Transactional audit facts for the Worker credential lifecycle."""
 
 from datetime import datetime
+from typing import Any
+from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
@@ -10,8 +12,10 @@ from sqlalchemy import (
     Identity,
     Index,
     String,
+    Uuid,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dlr.control.db import Base
@@ -56,6 +60,16 @@ class WorkerCredentialAudit(Base):
             "AND related_credential_record_id IS NULL)",
             name="ck_worker_credential_audit_related_shape",
         ),
+        CheckConstraint(
+            "(request_id IS NULL AND request_fingerprint IS NULL AND result_metadata IS NULL) OR "
+            "(request_id IS NOT NULL AND "
+            "request_id <> '00000000-0000-0000-0000-000000000000'::uuid "
+            "AND request_fingerprint IS NOT NULL AND request_fingerprint ~ '^[0-9a-f]{64}$' "
+            "AND result_metadata IS NOT NULL AND jsonb_typeof(result_metadata) = 'object' "
+            "AND octet_length(result_metadata::text) <= 2048 "
+            "AND event_kind IN ('rotate', 'revoke'))",
+            name="ck_worker_credential_operation",
+        ),
         Index("ix_worker_credential_audit_worker", "worker_id", "id"),
     )
 
@@ -69,3 +83,7 @@ class WorkerCredentialAudit(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.pg_catalog.clock_timestamp()
     )
+
+    request_id: Mapped[UUID | None] = mapped_column(Uuid, unique=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    result_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

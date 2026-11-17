@@ -39,6 +39,15 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode (connect to the database)."""
+    supplied = config.attributes.get("connection")
+    if supplied is not None:
+        if not supplied.in_transaction():
+            raise RuntimeError("owner migration requires an existing transaction")
+        acquire_migration_gate(supplied)
+        context.configure(connection=supplied, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+        return
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

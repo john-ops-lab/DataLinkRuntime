@@ -2,9 +2,32 @@
 
 ## Purpose
 
-定义 W1-A 至 W1-F 的专用身份、受限恢复/结清、运维、双固定节点与停机换镜像，以及 W1-G 无第三方依赖 JavaScript、历史 F→G 和 W1-H 有界业务凭据/G→H，以及W1-I受限文件输入/H→I 的单 Control 远程运行合同。默认 Python 和一个 Worker，显式双语言及两槽时支持相应能力与两个各自单并发的固定 Worker。原规格路径保持。该能力不替代既有默认 v3 部署，不声明 Pool、HA、任意升级链或异常历史自动恢复。
+定义 W1-A 至 W1-F 的专用身份、受限恢复/结清、运维、双固定节点与停机换镜像，以及 W1-G 无第三方依赖 JavaScript、历史 F→G 和 W1-H 有界业务凭据/G→H，以及W1-I受限文件输入/H→I 及W1-J有界HTTP运行凭据/I→J的单 Control 远程运行合同。默认 Python 和一个 Worker，显式双语言及两槽时支持相应能力与两个各自单并发的固定 Worker。原规格路径保持。该能力不替代既有默认 v3 部署，不声明 Pool、HA、任意升级链或异常历史自动恢复。
 
 ## Requirements
+
+### Requirement: J管理员HTTP凭据管理不扩大其他授权
+J SHALL 仅为已enrolled专用v4 reserved身份提供管理员HTTP runtime元数据、rotate、节点级revoke及非秘密操作查询。rotate MUST 核对identity/latest-issued-record（包括expired/revoked）/维护CAS及disabled/无未结Attempt，严格0–600秒、最多新旧两份且不延旧截止；revoke可以在active/unknown时撤销节点全部HTTP行但不动B/AMQP/H或原Slot/Lease/journal/预算/ACK。维护版本、instance/generation、原proof期限和I文件version3恢复资格保持。
+
+#### Scenario: 同nonce并发与提交未知
+- **WHEN** 同nonce并发、已提交后重复POST或原事务确证回滚后显式重发
+- **THEN** 同nonce至多一次持久签发，已提交重复只返非秘密回执、不重发原文；确证回滚无原nonce/凭据行，显式新请求须当前全部资格。未知客户端仅GET观察，absence不证明回滚、不自动POST/换nonce，原文丢失须另一次显式recover
+
+### Requirement: J原文交付兼容严格安装格式
+J首次成功201正文 SHALL 只有worker_id/worker_identity_id/credential_id/credential_record_id，Location所指GET提供有界非秘密元数据；原文只在commit、独立读回及当前权威核对后交付一次，原审计回执以0089保存唯一nonce/请求指纹/≤2KiB不可变非秘密结果。MUST 不保存可重发secret/密文/digest或在普通错误中暴露它；200重复回执及非201不得覆盖安装文件，不放宽原安装器schema。
+
+#### Scenario: 私有安装与旧lease失效
+- **WHEN** 受信操作者以原0600文件/0700目录和既有CLI安装，Agent在原心跳点重载
+- **THEN** 保持同identity及单调记录、原instance/proof截止和文件锁/fsync/未知保留；不自动activate，不新增安装确认握手，零窗口/迟到安装不得复活已失效lease或unknown
+
+### Requirement: J只新增I到J同事务发布
+J SHALL 只接受经逐镜像可信映射的I来源c9b21a4ae3f05c4e382e070fa180dbd07f58d350、227cc637292f23cb8432cd10ba24f06a9090546e、4e513d1ceb34999c45c9ca42f08135704f72faa7，清洁排空/真实停机及原owner围栏下，以同连接事务执行0089 DDL/版本、authority CAS/revoke/append。MUST 保留原数据/身份/凭据/namespace及各祖先原schema/摘要，最多五笔封闭相邻链、四套材料、第六行拒绝；旧阶段新apply、任意跳升和降级不获得资格。
+
+#### Scenario: DDL失败或COMMIT回复丢失
+- **WHEN** 迁移/权威写入失败或提交不明
+- **THEN** DDL/版本/权威/回执共同回滚或提交；关闭写连接后独立observe，裂分阻断、absence不作回滚，已提交仅前向安装J，不复用旧unknown或伪造来源取得资格
+
+下方I及更早发布对属于对应历史二进制合同；当前J写资格仅为本节I→J。真实J4及发布结果另按适用候选记录，不由规格同步宣称完成。
 
 ### Requirement: I文件模式默认禁用且恢复资格独立
 W1-I SHALL 在单Control、K=1/2、strict fixed/Slot 0、无依赖Python/JavaScript及manual/schedule范围增加托管文件；Worker可信input mode仅接受disabled/managed_files，默认disabled。MUST 经当前启动内受限文件写入/核对/清理探针后才报告可缺省严格bool managed_files_v1，缺失=false，新实例清除旧事实；能力不授予Artifact或H业务Credential权限。文件与H绑定可组合，但H冻结引用、节点许可及结果净化上限全部保持。
