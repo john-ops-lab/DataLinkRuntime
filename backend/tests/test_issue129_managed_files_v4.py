@@ -1018,6 +1018,34 @@ def test_later_file_gets_share_original_cutoff_and_late_get_keeps_result_owner(m
         assert not slot._spawning and not entry.input_active
 
 
+@pytest.mark.parametrize("crossing", ["authority", "identity"])
+def test_cutoff_crossed_before_input_ipc_preserves_original_result_owner(monkeypatch, crossing):
+    with input_frames(monkeypatch, lambda *_: None) as (slot, entry, authority, metadata, module):
+        clock = [entry.input_cutoff - 1.0]
+        monkeypatch.setattr(module, "_clock", lambda: clock[0])
+        identity = authority.claim_child_identity
+
+        def expire():
+            clock[0] = entry.input_cutoff
+
+        def identify():
+            expire()
+            return identity()
+
+        if crossing == "authority":
+            authority.check_authority = expire
+        else:
+            authority.claim_child_identity = identify
+        sent = []
+        monkeypatch.setattr(module, "_send_frame", lambda *_: sent.append(True))
+        with pytest.raises(module.ClaimUnavailable):
+            slot.begin_input(authority, metadata)
+        assert not sent
+        assert slot._result is entry and not entry.closed
+        assert not slot._spawning and not entry.input_active
+        assert not slot._poisoned and not slot._unresolved
+
+
 def test_result_child_clamps_every_file_to_claim_cutoff_and_rejects_late_get(monkeypatch):
     from dlr.common import config
     from dlr.control.services import claim_envelope_v4, input_child_v4, result_child_v4

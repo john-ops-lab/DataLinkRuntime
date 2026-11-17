@@ -1,5 +1,6 @@
 """Restricted dependency-free Worker tasks at acceptance and final Claim."""
 
+import json
 from typing import Any
 
 from sqlalchemy import Text, cast, exists, func, select
@@ -165,6 +166,38 @@ def _file_reason(
         return (
             error.reason if isinstance(error, files.ManagedFilesError) else "input_files_snapshot"
         )
+    # Reject an already impossible file-copy budget before creating new
+    # responsibility. Existing work keeps its frozen profile, never today's
+    # deployment default. The child still checks the full remaining budget
+    # including code/harness and any later capacity drift.
+    tmp_bytes = (
+        settings.sandbox_tmp_bytes
+        if execution_id is None
+        else session.scalar(
+            select(Execution.resource_profile_snapshot["tmp_bytes"]).where(
+                Execution.id == execution_id
+            )
+        )
+    )
+    manifest = [
+        {"artifact_id": item["id"], **{k: v for k, v in item.items() if k != "id"}}
+        for item in metadata
+    ]
+    # Before acceptance, 1 is a lower bound for the positive Execution ID's
+    # encoded length. This avoids rejecting work using an invented larger ID.
+    manifest_bytes = len(
+        json.dumps(
+            {"execution_id": execution_id if execution_id is not None else 1, "files": manifest},
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    if (
+        type(tmp_bytes) is not int
+        or 2 * (sum(item["size_bytes"] for item in metadata) + manifest_bytes) > tmp_bytes
+    ):
+        return "input_files_budget"
     if snapshot is not None or execution_id is not None or artifact_ids is not None:
         frozen = [
             {k: v for k, v in item.items() if k not in {"id", "mount_name"}} for item in metadata

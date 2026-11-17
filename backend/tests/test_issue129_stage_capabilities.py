@@ -58,7 +58,7 @@ def _file_adapter(client, factory, monkeypatch, *, count=1, size=8, capable=True
     return adapter, ids
 
 
-@pytest.mark.parametrize("case", ["count", "bytes", "capability"])
+@pytest.mark.parametrize("case", ["count", "bytes", "capability", "tmp", "manifest_tmp"])
 def test_file_limits_and_current_target_gate_before_manual_or_schedule_responsibility(
     api_client, session_factory, monkeypatch, case
 ):
@@ -69,9 +69,11 @@ def test_file_limits_and_current_target_gate_before_manual_or_schedule_responsib
         session_factory,
         monkeypatch,
         count=5 if case == "count" else 1,
-        size=(1 << 20) + 1 if case == "bytes" else 8,
+        size={"bytes": (1 << 20) + 1, "tmp": 1 << 20, "manifest_tmp": 1 << 19}.get(case, 8),
         capable=case != "capability",
     )
+    if case in {"tmp", "manifest_tmp"}:
+        monkeypatch.setattr(settings, "sandbox_tmp_bytes", 1 << 20)
     response = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "worker_task_capability_unavailable"
@@ -101,10 +103,12 @@ def test_file_execution_keeps_original_lease_when_current_adapter_selection_chan
     from dlr.control.models import ExecutionInputArtifactLease, ManagedInputArtifact
     from test_issue127_c0 import _create_staged_artifact
 
-    adapter, ids = _file_adapter(api_client, session_factory, monkeypatch)
+    adapter, ids = _file_adapter(api_client, session_factory, monkeypatch, size=1 << 20)
     response = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
     assert response.status_code == 202, response.text
     execution_id = response.json()["id"]
+    # A changed default must not shrink the already accepted frozen budget.
+    monkeypatch.setattr(settings, "sandbox_tmp_bytes", 1 << 20)
     replacement = _create_staged_artifact(session_factory, adapter["id"], "later.txt")
     changed = api_client.put(
         f"/api/adapters/{adapter['id']}/input-config",
@@ -131,6 +135,15 @@ def test_file_execution_keeps_original_lease_when_current_adapter_selection_chan
             execution_block_reason(session, session.get(Adapter, adapter["id"]), execution) is None
         )
         assert not dispatch_blocked(session, execution_id)
+        original_profile = dict(execution.resource_profile_snapshot)
+        execution.resource_profile_snapshot = {**original_profile, "tmp_bytes": 1}
+        assert (
+            execution_block_reason(session, session.get(Adapter, adapter["id"]), execution)
+            == "input_files_budget"
+        )
+        session.flush()
+        assert dispatch_blocked(session, execution_id)
+        execution.resource_profile_snapshot = original_profile
         session.get(ManagedInputArtifact, ids[0]).sha256 = "b" * 64
     with session_factory() as session:
         assert dispatch_blocked(session, execution_id)

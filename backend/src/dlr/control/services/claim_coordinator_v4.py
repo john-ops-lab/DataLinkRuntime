@@ -713,9 +713,12 @@ class _ClaimSlot:
                 raise ClaimUnavailable("input unavailable")
             control_instance, control_token, confirmed = process.claim_child_identity()
             deadline = min(entry.retention_deadline, confirmed, entry.input_cutoff, _clock() + 5.0)
-            if deadline <= _clock():
-                raise ClaimUnavailable("input unavailable")
             stream = _Input(entry, deadline, 0)
+            if deadline <= _clock():
+                # No input command or file I/O has started. Preserve the
+                # original Result owner for the known preparation failure.
+                self._finish_input(stream)
+                raise ClaimUnavailable("input unavailable")
             entry.channel.settimeout(max(0.001, deadline - _clock()))
             _send_frame(
                 entry.channel,
