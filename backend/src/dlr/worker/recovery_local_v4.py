@@ -272,8 +272,12 @@ def clean_workspace(
     runtime_path: Path,
     prepared: dict[str, Any],
     stopped: dict[str, Any],
+    *,
+    _active_files: bool = False,
 ) -> None:
     """Reopen only stopped original objects; no synthetic live owner is built."""
+    if not checkpoint.valid_stopped(stopped, prepared, _active_files=_active_files):
+        raise ValueError("recovery checkpoint unavailable")
     attempt, execution = prepared["attempt_id"], prepared["execution_id"]
     parent_name, leaf_name = f"attempt-{attempt}", f"dlr-exec-{execution}"
     if not workspace_fs_v4._mounts_safe(runtime_path, runtime_path / "workspaces" / parent_name):
@@ -337,7 +341,7 @@ def clean_workspace(
             leaf = -1
         # Persist a whole-tree intent only after all still-visible objects
         # were matched. Individual intents cover earlier deletion windows.
-        physical_intent(directory, prepared, stopped)
+        physical_intent(directory, prepared, stopped, _active_files=_active_files)
         if _absent(parent, leaf_name):
             checkpoint.persist(
                 directory,
