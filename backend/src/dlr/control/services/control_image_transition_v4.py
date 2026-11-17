@@ -45,6 +45,14 @@ _G_RELEASE_SHAS = frozenset(
         "8d216d3a052a6643fdf1bee74b1538e1ddd8a891",
     }
 )
+H_SOURCE_SHA = "9d7cd67f483950d4a6f96ebc9342005636f61348"
+_H_RELEASE_SHAS = frozenset(
+    {
+        H_SOURCE_SHA,
+        "ed925887f28704001117825d0d46488dacbfe595",
+        "72f2aa23bd9b680f820d16b82283b950533c6775",
+    }
+)
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _FIELDS = {
@@ -111,7 +119,10 @@ def read_intent(
             or (value["source_schema"], value["source_sha"])
             not in {
                 (SOURCE_SCHEMA, SOURCE_SHA),
-                *((SCHEMA_REVISION, sha) for sha in _F_RELEASE_SHAS | _G_RELEASE_SHAS),
+                *(
+                    (SCHEMA_REVISION, sha)
+                    for sha in _F_RELEASE_SHAS | _G_RELEASE_SHAS | _H_RELEASE_SHAS
+                ),
             }
             or type(value["target_sha"]) is not str
             or _SHA.fullmatch(value["target_sha"]) is None
@@ -194,17 +205,23 @@ def _kind(intent: ImageTransition) -> int:
             and intent.target_sha not in _F_RELEASE_SHAS | _G_RELEASE_SHAS | {SOURCE_SHA}
         ):
             return 2
+        if (
+            intent.source_sha in _H_RELEASE_SHAS
+            and intent.target_sha
+            not in _F_RELEASE_SHAS | _G_RELEASE_SHAS | _H_RELEASE_SHAS | {SOURCE_SHA}
+        ):
+            return 3
     raise TransitionUnavailable("image_transition_pair_unavailable")
 
 
 def _intent_prefix(intent: ImageTransition) -> list[ImageTransition]:
-    """Closed EF/FG/GH prefix, independent of UUID ordering; at most two ancestors."""
+    """Closed EF/FG/GH/HI prefix, independent of UUID order; at most three ancestors."""
     reverse: list[ImageTransition] = []
     current: ImageTransition | None = intent
-    while current is not None and len(reverse) < 4:
+    while current is not None and len(reverse) < 5:
         reverse.append(current)
         current = current.predecessor
-    if current is not None or len(reverse) > 3:
+    if current is not None or len(reverse) > 4:
         raise TransitionUnavailable("image_transition_conflict")
     prefix = list(reversed(reverse))
     ids = set()
@@ -226,6 +243,10 @@ def _intent_prefix(intent: ImageTransition) -> list[ImageTransition]:
             # still match exactly, and no original intent is rewritten.
             if (
                 kind != _kind(previous) + 1
+                or previous.target_sha
+                not in {1: _F_RELEASE_SHAS, 2: _G_RELEASE_SHAS, 3: _H_RELEASE_SHAS}.get(
+                    kind, frozenset()
+                )
                 or item.previous_id != previous.operation_id
                 or previous.target != item.source
                 or previous.control_slots != item.control_slots
@@ -412,7 +433,7 @@ def _chain(session: Session, *, lock: bool = False) -> list[Any]:
     return list(
         session.execute(
             text(
-                "SELECT * FROM control_image_transitions ORDER BY operation_id LIMIT 4"
+                "SELECT * FROM control_image_transitions ORDER BY operation_id LIMIT 5"
                 + (" FOR SHARE" if lock else "")
             )
         ).mappings()
@@ -421,7 +442,7 @@ def _chain(session: Session, *, lock: bool = False) -> list[Any]:
 
 def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
     prefix = _intent_prefix(intent)
-    if len(rows) > 3:
+    if len(rows) > 4:
         raise TransitionUnavailable("image_transition_conflict")
     if not rows:
         if intent.previous_id is not None:
@@ -448,7 +469,7 @@ def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
         children = [r for r in rows if r["previous_id"] == row["operation_id"]]
         if not children:
             break
-        if len(children) != 1 or len(ordered) >= 3:
+        if len(children) != 1 or len(ordered) >= 4:
             raise TransitionUnavailable("image_transition_conflict")
         child = children[0]
         if (
@@ -460,7 +481,7 @@ def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
             raise TransitionUnavailable("image_transition_conflict")
         ordered.append(child)
     # Only known descendants of a historical EF/FG receipt can be observed.
-    if len(ordered) != len(rows) or len(rows) > 3 - _kind(prefix[0]):
+    if len(ordered) != len(rows) or len(rows) > 4 - _kind(prefix[0]):
         raise TransitionUnavailable("image_transition_conflict")
     for index, item in enumerate(prefix):
         if index < len(ordered):
@@ -474,7 +495,7 @@ def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
 
 
 def _new_source(session: Session, intent: ImageTransition, *, lock: bool = False) -> None:
-    if _kind(intent) != 2:
+    if _kind(intent) != 3:
         raise TransitionUnavailable("image_transition_pair_unavailable")
     _intent_prefix(intent)
     latest = _validate_chain(_chain(session, lock=lock), intent)
@@ -602,7 +623,7 @@ def check(session: Session, intent: ImageTransition, config: Settings) -> str:
 
 def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
     """Stage one top-level transaction. Caller commits, closes, then observes."""
-    if _kind(intent) != 2:
+    if _kind(intent) != 3:
         raise TransitionUnavailable("image_transition_pair_unavailable")
     if session.in_transaction() or config.worker_v4_control_slots != intent.control_slots:
         raise TransitionUnavailable("image_transition_transaction_unavailable")

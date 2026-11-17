@@ -13,7 +13,133 @@ from test_issue129_recovery_checkpoint_v4 import _prepared, _stopped
 
 
 @pytest.fixture
-def original(tmp_path, monkeypatch):
+def live_file_copy(tmp_path):
+    """Real input objects only; this fixture grants no supervisor or recovery authority."""
+    import hashlib
+    from types import SimpleNamespace
+
+    root = tmp_path / "workspace"
+    inputs = root / "input"
+    inputs.mkdir(parents=True, mode=0o700)
+    records = []
+    for ordinal, body in enumerate([b"original private copy", b""]):
+        path = inputs / f"input-{ordinal:02d}.txt"
+        path.write_bytes(body)
+        path.chmod(0o444)
+        info = path.stat()
+        records.append(
+            {
+                "mount_name": path.name,
+                "size_bytes": len(body),
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "device": info.st_dev,
+                "inode": info.st_ino,
+            }
+        )
+    inputs.chmod(0o555)
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    info = inputs.stat()
+    staged = SimpleNamespace(
+        prepared=SimpleNamespace(managed_files=True),
+        preparation_failed=False,
+        workspace=SimpleNamespace(_leaf=descriptor),
+        input_files=records,
+    )
+    frozen = {
+        "input_directory": {"device": info.st_dev, "inode": info.st_ino},
+        "input_files": records,
+    }
+    try:
+        yield staged, frozen, inputs
+    finally:
+        inputs.chmod(0o700)
+        os.close(descriptor)
+
+
+@pytest.mark.parametrize("preparation_failed", [False, True])
+def test_live_cleanup_removes_only_verified_frozen_copies_before_empty_directory_cleanup(
+    live_file_copy, preparation_failed
+):
+    from dlr.worker.cleanup_execution_v4 import _remove_frozen_input
+
+    staged, frozen, inputs = live_file_copy
+    if preparation_failed:
+        inputs.chmod(0o700)
+        for child in inputs.iterdir():
+            child.unlink()
+        staged.preparation_failed = True
+        staged.input_files = frozen["input_files"] = []
+    _remove_frozen_input(staged, frozen)
+    assert list(inputs.iterdir()) == []
+    assert inputs.stat().st_mode & 0o777 == 0o700
+    assert staged.input_files == frozen["input_files"]
+
+
+@pytest.mark.parametrize("damage", ["record", "directory", "extra", "link"])
+def test_live_cleanup_refuses_changed_input_before_unlinking_originals(live_file_copy, damage):
+    from dlr.worker.cleanup_execution_v4 import _remove_frozen_input
+
+    staged, frozen, inputs = live_file_copy
+    outside = inputs.parent / "outside"
+    outside.write_bytes(b"must remain")
+    inputs.chmod(0o700)
+    if damage == "record":
+        frozen["input_files"] = [{**staged.input_files[0], "inode": 0}]
+    elif damage == "directory":
+        frozen["input_directory"] = {**frozen["input_directory"], "inode": 0}
+    elif damage == "extra":
+        (inputs / "foreign").write_bytes(b"untracked")
+    else:
+        (inputs / "input-00.txt").unlink()
+        (inputs / "input-00.txt").symlink_to(outside)
+    inputs.chmod(0o555)
+    with pytest.raises(ValueError):
+        _remove_frozen_input(staged, frozen)
+    assert (inputs / "input-01.txt").exists()
+    assert outside.read_bytes() == b"must remain"
+
+
+@pytest.mark.parametrize("failure", ["unlink", "fsync", "close"])
+def test_live_cleanup_io_failure_never_returns_a_successful_empty_copy(
+    live_file_copy, monkeypatch, failure
+):
+    from dlr.worker import cleanup_execution_v4 as module
+
+    staged, frozen, inputs = live_file_copy
+    real_unlink, real_close = os.unlink, os.close
+    calls = []
+
+    def unlink(name, *, dir_fd):
+        calls.append(name)
+        if len(calls) == 2:
+            raise OSError("injected unlink uncertainty")
+        real_unlink(name, dir_fd=dir_fd)
+
+    def fail_fsync(_descriptor):
+        raise OSError("injected fsync uncertainty")
+
+    def close(descriptor):
+        is_input = os.fstat(descriptor).st_ino == frozen["input_directory"]["inode"]
+        real_close(descriptor)
+        if is_input:
+            calls.append("closed_once")
+            raise OSError("injected close uncertainty")
+
+    monkeypatch.setattr(
+        module.os, failure, {"unlink": unlink, "fsync": fail_fsync, "close": close}[failure]
+    )
+    with pytest.raises(OSError):
+        module._remove_frozen_input(staged, frozen)
+    if failure == "unlink":
+        assert not (inputs / "input-00.txt").exists()
+        assert (inputs / "input-01.txt").exists()
+    elif failure == "close":
+        assert calls == ["closed_once"]
+    assert frozen["input_files"] and inputs.exists()
+
+
+@pytest.fixture
+def original(tmp_path, monkeypatch, request):
     # macOS lacks Linux mountinfo. These tests validate actual file operations
     # only; actual mount/namespace rejection is a separate Linux acceptance.
     monkeypatch.setattr(workspace_fs_v4, "_mounts_safe", lambda *_: True)
@@ -37,6 +163,46 @@ def original(tmp_path, monkeypatch):
         owner.bind(lock)
         fd, runtime_fd = checkpoint._root_fd(lock, attempts), checkpoint._root_fd(lock, runtime)
         prepared = _prepared()
+        file_case = getattr(request, "param", None)
+        if file_case is not None:
+            import hashlib
+
+            language, failed = file_case
+            prepared["version"] = 3
+            prepared["dispatch"]["language"] = language
+            prepared["preparation_failed"] = failed
+            prepared["input_files"] = []
+            if language == "javascript":
+                (leaf / "adapter.py").rename(leaf / "adapter.mjs")
+            harness = ".dlr-harness.mjs" if language == "javascript" else ".dlr-harness.py"
+            for name in (
+                harness,
+                ".dlr-output-meta",
+                "input_manifest.json",
+                "runtime_config.json",
+                "output.json",
+            ):
+                (leaf / name).write_text("{}")
+                (leaf / name).chmod(0o600)
+            if not failed:
+                for ordinal, body in enumerate([b"frozen input", b""]):
+                    path = leaf / "input" / f"input-{ordinal:02d}.txt"
+                    path.write_bytes(body)
+                    path.chmod(0o444)
+                    info = path.stat()
+                    prepared["input_files"].append(
+                        {
+                            "mount_name": path.name,
+                            "size_bytes": len(body),
+                            "sha256": hashlib.sha256(body).hexdigest(),
+                            "device": info.st_dev,
+                            "inode": info.st_ino,
+                        }
+                    )
+                (leaf / "input").chmod(0o555)
+            info = (leaf / "input").stat()
+            prepared["input_directory"] = {"device": info.st_dev, "inode": info.st_ino}
+            (parent / ".dlr-sandbox-mount").mkdir(mode=0o700)
         prepared["roots"] = {
             "runtime": checkpoint.binding(runtime_fd),
             "anchor": checkpoint.binding(owner.fd),
@@ -82,6 +248,13 @@ def original(tmp_path, monkeypatch):
         prepared["journal_records"] = {attempt_name: checkpoint.digest(attempt_record)}
         prepared["runtime_record"] = {"claim-test.pending.json": checkpoint.digest(pending)}
         stopped = _stopped(prepared)
+        if file_case is not None:
+            info = (parent / ".dlr-sandbox-mount").stat()
+            stopped.update(
+                version=3,
+                stop_reason="preparation_failed" if failed else None,
+                sandbox_mount_binding={"device": info.st_dev, "inode": info.st_ino},
+            )
         result = {"version": 1, "intent_id": stopped["intent_id"], "body_mac": stopped["body_mac"]}
         checkpoint.persist(fd, "result-8-test.intent.json", result)
         stopped["result_record"] = {"result-8-test.intent.json": checkpoint.digest(result)}
@@ -166,16 +339,18 @@ def test_each_physical_unlink_or_rmdir_can_reenter(original, monkeypatch, interr
     assert mutations
 
 
-def _terminal(original):
+def _terminal(original, *, _active_files=False):
     _, runtime, _, prepared, stopped, attempt_record, directory, runtime_fd = original
-    local.clean_workspace(directory, runtime_fd, runtime, prepared, stopped)
+    local.clean_workspace(
+        directory, runtime_fd, runtime, prepared, stopped, _active_files=_active_files
+    )
     records = {
         name: checkpoint.digest(journal_v4._read(directory, name))
         for name in local._entries(directory)
         if name != ".dlr-instance.lock"
     }
     return {
-        "version": 1,
+        "version": 3 if _active_files else 1,
         "prepared": prepared,
         "stopped": stopped,
         "attempt_record": attempt_record,
@@ -184,6 +359,47 @@ def _terminal(original):
         "records": records,
         "runtime_records": prepared["runtime_record"],
     }
+
+
+@pytest.mark.parametrize(
+    "original",
+    [(language, failed) for language in ("python", "javascript") for failed in (False, True)],
+    indirect=True,
+)
+def test_file_live_path_removes_whole_tree_and_retires_v3_without_enabling_recovery(original):
+    """Full filesystem/journal path with synthetic ownership, never a physical-stop proof."""
+    from types import SimpleNamespace
+
+    from dlr.worker.cleanup_execution_v4 import _remove_frozen_input
+
+    _, runtime, _, prepared, stopped, _, directory, runtime_fd = original
+    leaf = runtime / "workspaces/attempt-8/dlr-exec-5"
+    assert not checkpoint.valid_stopped(stopped, prepared)
+    before = set(local._entries(directory))
+    with pytest.raises(ValueError, match="recovery checkpoint"):
+        local.clean_workspace(directory, runtime_fd, runtime, prepared, stopped)
+    assert leaf.exists() and set(local._entries(directory)) == before
+    local.physical_intent(directory, prepared, stopped, _active_files=True)
+    fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        staged = SimpleNamespace(
+            prepared=SimpleNamespace(managed_files=True),
+            preparation_failed=prepared["preparation_failed"],
+            workspace=SimpleNamespace(_leaf=fd),
+            input_files=prepared["input_files"],
+        )
+        _remove_frozen_input(staged, prepared)
+    finally:
+        os.close(fd)
+    terminal = _terminal(original, _active_files=True)
+    assert not (runtime / "workspaces/attempt-8").exists()
+    assert not local.valid_terminal(terminal)
+    assert local.valid_terminal(terminal, _active_files=True)
+    with pytest.raises(ValueError):
+        local.retire(directory, runtime_fd, terminal, allow_missing=False)
+    local.retire(directory, runtime_fd, terminal, allow_missing=False, _active_files=True)
+    assert local._entries(directory) == {".dlr-instance.lock"}
+    assert local._entries(runtime_fd) == {".dlr-instance.lock", "workspaces"}
 
 
 @pytest.mark.parametrize(

@@ -1,8 +1,8 @@
-# 远程固定 Worker（W1-A 至 W1-H）
+# 远程固定 Worker（W1-A 至 W1-I）
 
-本阶段使用一个 Control 应用进程，默认一个固定 Worker；W1-E 显式配置后允许两个固定 Worker 各自单并发执行。默认支持标准库 Python，W1-G 可显式启用无第三方依赖的 JavaScript，输入仍限 none/JSON，触发仍限普通手动/定时任务。W1-H 显式允许本次绑定的业务凭据，并只支持下方精确 G→H 停机发布对；历史 F/G 操作仍须使用对应原二进制。W1-A 的两个独立 Linux 宿主验证只覆盖当时的单 Worker；各阶段真实拓扑、版本、审查和 CI 以相应 PR 为准。正式合同仍位于原 [remote-fixed-python-worker](../../openspec/specs/remote-fixed-python-worker/spec.md) 路径。
+本阶段使用一个 Control 应用进程，默认一个固定 Worker；W1-E 显式配置后允许两个固定 Worker 各自单并发执行。默认支持标准库 Python，W1-G 可显式启用无第三方依赖的 JavaScript；触发仍限普通手动/定时任务。输入默认限 none/JSON，W1-I 可显式启用下方受限托管文件。W1-H 的业务凭据许可保持；I 只增加精确 H→I 停机发布对，历史 F/G/H 写操作仍须使用对应原二进制。各阶段真实拓扑、版本、审查和 CI 以相应 PR 为准。正式合同仍位于原 [remote-fixed-python-worker](../../openspec/specs/remote-fixed-python-worker/spec.md) 路径。
 
-不支持第三方依赖、托管文件、内置包、未许可业务凭据、TypeScript/Java/Go、Webhook/事件/批次、旧身份迁移、异常后的自动恢复、Pool 或 HA。不能把业务凭据写入代码来绕过限制。#129 在阶段 PR 后保持开放。
+不支持第三方依赖、任意 URL/宿主路径/共享卷输入、内置包、未许可业务凭据、TypeScript/Java/Go、Webhook/事件/批次、旧身份迁移、文件任务的历史恢复、异常后的自动恢复、Pool 或 HA。不能把业务凭据写入代码来绕过限制。#129 在阶段 PR 后保持开放。
 
 W1-B 新检查点与管理员显式恢复的增量合同、旧残留限制及宿主操作流程见 [Wave 1-B](remote-worker-wave1b.md)。完整 stopped 后未提交结果的受控结清见 [Wave 1-C](remote-worker-wave1c.md)。以下故障阻断记录是 W1-A 的历史边界，不能当作 W1-B 恢复通过证据。
 
@@ -17,6 +17,7 @@ W1-D 在现有系统状态页增加受限 v4 观察和标准排空/激活操作�
 | 有预算领取 | `claim_preparation_v4.py`、`claim_http*_v4.py`、`claim_task_child_v4.py`、Control `claim_{coordinator,child,envelope}_v4.py` | 解析准备与最终 Claim 分开；未知提交与明确容量等待不得混淆 |
 | 执行 | `execution_supervision_v4.py`、`attempt_session_v4.py`、`attempt_supervisor_v4.py`及`attempt_supervisor_child_v4.py` | 监管子进程由父进程按文件路径启动；Python/JavaScript 复用既有 harness/Sandbox |
 | 语言资格 | `common/worker_languages_v4.py`、`worker/node_runtime_v4.py` | 默认 Python；显式双语言须通过固定 Node 22 和真实标准 Sandbox/harness 探针及清理 |
+| 文件输入 | `common/managed_files_v4.py`、Control `worker_input_v4.py`/`input_child_v4.py`、Worker `managed_files_v4.py` | 默认 disabled；复用原 Claim/Result 槽与 staging child，当前双证明准入，顺序有界下载后发布完整只读集合 |
 | 本机责任 | `journal*_v4.py`、`cgroup_intent_v4.py`、`workspace_{fs,live}_v4.py`、`sandbox.py`、`cgroup_namespace.py` | 保持原根目录句柄、持久意图、物理执行归属与实际资源账目 |
 | 结果/清理 | `result_build_child_v4.py`、`result_exchange_v4.py`、`cleanup_execution_v4.py`及Control对应intent/finalize服务 | 结果确认、物理清理、服务端结算及本地释放完成后再 ACK |
 | 身份与证明 | enrollment/runtime credential/trust/lease session、proof wire、Control candidate/intent/authority/token fence | 对当前已启用操作验证身份、期限与提交归属；Control 身份记录不表示支持双 Control |
@@ -463,6 +464,83 @@ fresh-G 省略后两行；只有 F→G root 省略最后一行。不接受半套
 声明和策略分别沿原目录 fsync/rename 安装，不是跨文件原子事务；保持入口关闭，全部文件及预冻 policy digest 读回一致后才启动匹配 Control/Web/原身份原卷 Worker，新 generation 仍 disabled 并显式 activate。预定非空策略缺失不能用默认空策略冒充安装完成。原 DB、Broker/vhost/队列、cluster/epoch/密钥/四指纹、Worker ID、Credential ciphertext/引用/历史和卷保持。提交前且源权威未改可中止并按 G 恢复；提交后不回退 G。
 
 本批真实验收只重建一套合法新 F→G 来源，保留两笔 G 无凭据已结历史后同库追加 H；旧含 unknown 归档不能清账作来源。两个不同 Linux boot 的 Worker VM 最多各 2GiB，源目标复用、结束回收；不常驻 dlr-preview。验收使用非生产 canary，oracle 只记业务键/鉴权布尔/效果数，泄漏扫描只输出布尔/计数。真实结果与精确制品映射由原 PR/私有证据记录，不能以 HTTP 200、online、文档或 CI 冒充完整结算。
+
+## 受限文件输入与 H→I（W1-I）
+
+### 显式输入模式与失败责任
+
+Worker 私有 Compose 配置默认 `DLR_WORKER_INPUT_MODE=disabled`；只有显式改为
+`managed_files` 并重新启动、通过本次受限文件写入/读回/清理探针，才报告严格 bool
+`managed_files_v1=true`。新实例清除旧报告。该能力不是 Artifact 权限，也不授予 H 的
+业务 Credential 许可。I 的完整真实升级和业务验收仍须绑定实际 PR/制品，本文不代替验收。
+
+| 项目 | I 的范围 |
+| --- | --- |
+| 来源与语言 | 单 Control、K=1/2、strict fixed/Slot 0，无依赖 Python/JavaScript，manual/schedule |
+| 文件 | 每 Execution 冻结 1–4 个；允许空文件；单项 ≤1MiB、合计 ≤4MiB；同时满足原配额、Claim wire 和全部 staging/tmp 预算 |
+| 内容与名称 | 复用原后缀白名单、受控 mount 名和 manifest；原字节交付，不安装解析器、不解压、不接受 URL/宿主路径/共享卷 |
+| 下载 | 独立 v4 GET；TLS、当前运行凭据、实例和 Attempt 双证明、fence、Claim Token、冻结 Artifact/Lease 同时核验；拒绝 v3 旁路、query Token、Range、重定向、压缩 |
+| 期限与资源 | 复用同一已持有的 Control Claim/Result child 和 Worker staging child；顺序最多 4 次完整 GET，无文件级重试/续传；块 ≤64KiB、单侧最多两块在途；普通续租不延长已准入流 |
+
+Control在其finalize入场前冻结同一slot/child的单调时钟准备截止，Worker也在发起finalize前
+独立冻结5秒上限；同时取不可续期的claimed_at+5秒及原执行/证明期限，不能从首次GET或staging
+重算 5 秒或按四个文件累加 20 秒。Agent 不读取或哈希业务文件正文。Control child
+先验证已打开对象，Worker child 独立核对 size/hash；完整集合及 manifest 校验并同步后
+发布 input（文件 0444、目录 0555），manifest 最后发布，业务启动门保持关闭直至成功。
+原 staging 与 Sandbox 副本并存计入预算。权限只是防误写，同 UID 并非强只读隔离；
+业务仅得到独立副本，不能改变 Control 原件或冻结快照。
+
+文件准备失败保留真实 Attempt、原 Retry Policy/截止和退避。只有同一 staging child
+及 creator 已回收、IO/fd 已关闭、原 guardian 确认 cgroup 为空，才以明确的“业务未启动”
+回执走原 v4 结果提交/独立观察、H 净化、cleanup、本地结账和自身 ACK；不伪造业务 exit。
+任何物理关闭、归属、授权或提交未知仍保留 Slot/Lease/journal/K/charge，停止新接收。
+HTTP 断开、超时或租约到期本身不允许清账，也不追溯释放原 unknown。
+
+文件的 prepared/stopped/terminal 使用私有 version 3，只供同一次活动责任监督与清理，
+最多记录 4 项 mount 名、size/hash 和对象绑定，不存原文件名、正文或凭据。B/C 的跨进程
+恢复明确拒绝文件 version 3；崩溃残留保持 unknown，不重取文件、不重跑业务。
+正常活动 owner 在物理停止、持久清理意图及 cgroup 移除后，按冻结绑定删除最多四份原输入
+副本，再复用原空目录清理；文件绑定、unlink、fsync 或 fd 关闭不明仍保留责任，不发送清理成功或 ACK。
+none/JSON 仍使用原 prepared/stopped v1、正常 terminal v1、C 处置 terminal v2。
+启用前应接受这一恢复边界，不能靠删除卷、journal 或换身份继续验收。
+
+### 唯一 H→I 停机后继
+
+schema 保持 `0088_issue129_image_transition`。只认 H main
+`9d7cd67f483950d4a6f96ebc9342005636f61348`、最终 PR HEAD
+`ed925887f28704001117825d0d46488dacbfe595`、原真实 H 验收制品
+`72f2aa23bd9b680f820d16b82283b950533c6775`。对实际采用的来源逐个核对原声明、构建输入和
+镜像 digest，私有冻结目标 I 的完整 SHA/digest；不能按任意同 tree 或空表推定资格。
+
+| 原 H 历史 | I 后唯一链 | 原私有前序文件 |
+| --- | --- | --- |
+| 合法 fresh-H | H→I | 无 |
+| G→H | G→H→I | previous-source / previous-intent |
+| F→G→H | F→G→H→I | previous，加 root-source / root-intent |
+| E→F→G→H | E→F→G→H→I | previous、root，加 origin-source / origin-intent |
+
+完整最长来源的同一套原文件分别用于 check/apply/observe：
+
+```sh
+python -m dlr.control.control_identity_init_v4 check \
+  --source /run/dlr-private/H.json --target /run/dlr-private/I.json \
+  --intent /run/dlr-private/H-I.json \
+  --previous-source /run/dlr-private/G.json --previous-intent /run/dlr-private/G-H.json \
+  --root-source /run/dlr-private/F.json --root-intent /run/dlr-private/F-G.json \
+  --origin-source /run/dlr-private/E.json --origin-intent /run/dlr-private/E-F.json
+```
+
+短来源按表省略最早的整套标志。八个原 intent 字段和历史摘要算法不变；重建完整因果链，
+最多三套前序/四笔转换，查询第五行即拒绝；检查全部祖先 ABA、latest、authority 和原相邻
+声明，不能只放宽 LIMIT。I 二进制拒绝 E/F/G 的新 apply；原合法历史仅只读观察。
+
+先停止所有触发/接收，清洁排空 queued/Outbox/Attempt/cleanup 及本地责任，显式 disabled，
+真实停旧进程/IO 并等待原授权上界；原 unknown 阻断升级。保持原 DB/卷、身份、密钥、
+四指纹、K、HTTP/AMQP 凭据、H 策略/ciphertext/引用及历史。
+原 gate→authority→chain→旧实例锁序下 CAS/revoke/append；提交未知只读 observe，只有
+`committed_current` 才前向安装原文件。启动匹配 I 制品后获取新 generation，重新探针、
+报告能力，并另行显式 activate；提交后不回退旧二进制/DB。I4 仍需两个不同 Linux boot
+的临时 Worker，最多各 2GiB，源目标复用且结束回收；dlr-preview 不常驻。
 
 ## 诊断与停止边界
 

@@ -6,6 +6,20 @@
 
 ## Requirements
 
+### Requirement: I下载由当前双证明授权且有原截止
+W1-I SHALL 使用只读GET `/api/workers/{worker_id}/v4/executions/{execution_id}/input-artifacts/{artifact_id}/content`，同时核验TLS、运行凭据、当前instance/generation/proof、Attempt/fence/proof、Claim Token及冻结Artifact/活动Lease。MUST 拒绝prepare-only、旧/过期/跨节点或Attempt证明、cleanup-only、query Token、Range、重定向和压缩；无v3旁路，不暴露storage key/宿主路径，响应no-store。
+
+#### Scenario: 普通续租、撤销或取消
+- **WHEN** 同一实例/Attempt正常推进证明，或出现撤销/取消/归属失效
+- **THEN** 已准入只读流保留原有限截止，普通续租不延长，旧证明不新开流；每个≤64KiB块间重检原身份/fence/Slot/Lease及撤销/取消，失效或不明停止新读取/发送，不宣称撤回已发字节
+
+### Requirement: I文件IO复用原资源且校验后才启动
+W1-I SHALL 复用同一已持有的K份Control Claim/Result child和Worker staging child，最多K流/每Attempt一流，顺序最多4次完整GET、无文件级重试或续传。MUST 限块≤64KiB、单侧最多两块在途，父进程不读取或哈希业务文件正文；fd/IPC/内存/pids/nofile/tmp及原件/part/发布输入/Sandbox并存副本计入真实预算，不能另抢第二槽。DB事务结束后才进行存储/网络IO；Worker沿原Attempt→实例会话锁序只串行到有界准入，不持续租锁读正文。
+
+#### Scenario: 有界准备、只读发布与失败
+- **WHEN** 已合法finalize/start的任务准备文件
+- **THEN** 使用Claim finalize前冻结的5秒准备上限、原执行/实例/Attempt截止和每文件开始+5秒的最早者，不从staging重算或累加20秒；Control核验同fd原件，Worker独立核对size/hash和对象身份，全部内容/manifest校验同步后发布0444/0555 input并最后发布manifest，业务启动门直至成功才打开；权限仅防误写，同UID不作强只读承诺，Sandbox得到独立副本
+
 ### Requirement: H业务凭据只沿冻结引用与合法Claim交付
 W1-H SHALL 只为原无依赖Python/JavaScript、manual/schedule、none/JSON、strict fixed/Slot 0及K=1/2任务增加现有password/token/access_key/secret的绑定字段；引用在接受时冻结，值在合法Claim流程按原Credential ID解密。MUST 同时满足当前目标的H处理能力和绑定稳定 Worker ID/identity 与 Credential ID 的冻结私有部署许可，接收、schedule启用/触发、派发及两阶段Claim全部重检；不改用当前Adapter绑定，不向Broker发送secrets或完整TaskPayload，不新增公开明文查询。
 

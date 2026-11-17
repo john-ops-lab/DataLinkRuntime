@@ -53,10 +53,11 @@ class _SandboxLaunch:
     gid: int
     cgroup_root: str
     cgroup_path: str
+    preparation_only: bool = False
 
     def arguments(self) -> list[str]:
         return [
-            "sandbox",
+            "preparation" if self.preparation_only else "sandbox",
             str(self.launch_fd),
             str(self.max_bytes),
             str(self.stdout_fd),
@@ -162,7 +163,7 @@ def _is_terminal(value: dict[str, object]) -> bool:
     if set(value) == {"event", "cgroup_drained"}:
         return True
     if set(value) == {"event", "cgroup_drained", "stop_reason"}:
-        return value.get("stop_reason") == "execution_cutoff"
+        return value.get("stop_reason") in {"execution_cutoff", "preparation_failed"}
     code = value.get("exit_code")
     return (
         set(value) == {"event", "cgroup_drained", "exit_code"}
@@ -219,6 +220,7 @@ class AttemptSupervisor:
         *,
         sandbox_launch: bool = False,
         execution_deadline: float | None = None,
+        preparation_only: bool = False,
     ) -> None:
         self._pid = os.getpid()
         self._live, self._sock, self._process = live, sock, process
@@ -231,6 +233,7 @@ class AttemptSupervisor:
         self._probe_state = "unused"
         self._sandbox_launch = sandbox_launch
         self._execution_deadline = execution_deadline
+        self._preparation_only = preparation_only
 
     def _watch_exit(self) -> None:
         """If the supervisor dies, attempt local stop but keep cleanup unknown.
@@ -338,9 +341,28 @@ class AttemptSupervisor:
 
     def prepare_sandbox(self) -> bool:
         """Place the bound sandbox helper behind its still-closed gate."""
-        if not self._sandbox_launch:
+        if not self._sandbox_launch or self._preparation_only:
             return False
         return self._prepare_helper({"op": "sandbox_prepare"}, "sandbox_gated")
+
+    def finish_preparation_failure(self) -> bool:
+        """Request a never-launched receipt from the explicit nonbusiness mode."""
+        with self._lock:
+            if (
+                self._pid != os.getpid()
+                or not self._preparation_only
+                or self._closed
+                or self._stop_requested.is_set()
+                or self._probe_state != "unused"
+            ):
+                return False
+            try:
+                _send(self._sock, {"op": "preparation_failed"})
+                self._probe_state = "preparation_stopping"
+                return True
+            except Exception:
+                self._abandon()
+                return False
 
     def _prepare_helper(self, message: dict[str, object], expected: str) -> bool:
         if self._pid != os.getpid():
@@ -374,7 +396,7 @@ class AttemptSupervisor:
 
     def release_sandbox(self, *, send_with_authority: Callable[[Callable[[], None]], bool]) -> bool:
         """Release a sandbox only through the caller's one-shot authority gate."""
-        if not self._sandbox_launch:
+        if not self._sandbox_launch or self._preparation_only:
             return False
         if not callable(send_with_authority):
             self.request_stop()
@@ -514,7 +536,12 @@ class AttemptSupervisor:
         """Finish one observed terminal message while holding the IPC lock."""
         if not _is_terminal(response) or response["cgroup_drained"] is not True:
             raise ValueError("cgroup stop unverified")
-        if response.get("stop_reason") is not None and self._execution_deadline is None:
+        if response.get("stop_reason") == "preparation_failed":
+            if not self._preparation_only or self._probe_state != "preparation_stopping":
+                raise ValueError("preparation stop unverified")
+        elif self._preparation_only:
+            raise ValueError("preparation stop unverified")
+        elif response.get("stop_reason") is not None and self._execution_deadline is None:
             raise ValueError("execution cutoff unverified")
         # No stop can be queued after the acknowledgement.
         with self._stop_lock:
@@ -676,6 +703,7 @@ def start_supervisor(
             process,
             sandbox_launch=_sandbox_launch is not None,
             execution_deadline=execution_deadline,
+            preparation_only=_sandbox_launch.preparation_only,
         )
         threading.Thread(
             target=handle._watch_exit, name="dlr-v4-supervisor-watch", daemon=True
@@ -833,8 +861,9 @@ def start_sandbox_supervisor(
                 live._config.payload_gid,
                 str(live._config.cgroup_path),
                 str(live._config.cgroup_path / live._name),
+                staged.preparation_failed,
             )
-            workspace._sandbox_mount_expected = True
+            workspace._sandbox_mount_expected = not staged.preparation_failed
             started = True
             observation, supervisor = start_supervisor(
                 live, initial, _sandbox_launch=launch, execution_deadline=execution_deadline

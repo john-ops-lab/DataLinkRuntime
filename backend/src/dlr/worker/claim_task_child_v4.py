@@ -127,7 +127,7 @@ def _stage_python(
     from dlr.runtime import harness, node_harness
     from dlr.worker import sandbox, task_fingerprint_v4
 
-    if set(command) != {
+    expected = {
         "op",
         "workspace",
         "workspace_device",
@@ -135,7 +135,10 @@ def _stage_python(
         "staging_bytes",
         "launch_bytes",
         "fingerprint",
-    }:
+    }
+    if task.input_files:
+        expected.add("input_deadline")
+    if set(command) != expected:
         raise ValueError("task staging unavailable")
     path = command["workspace"]
     staging_bytes, launch_bytes = command["staging_bytes"], command["launch_bytes"]
@@ -237,10 +240,11 @@ def _stage_python(
         encoder = json.JSONEncoder(ensure_ascii=False, allow_nan=False)
         write("input.json", encoder.iterencode(task.input))
         write("runtime_config.json", encoder.iterencode(task.runtime_config))
-        write(
-            "input_manifest.json",
-            encoder.iterencode({"execution_id": task.execution_id, "files": []}),
-        )
+        if not task.input_files:
+            write(
+                "input_manifest.json",
+                encoder.iterencode({"execution_id": task.execution_id, "files": []}),
+            )
         os.fsync(directory)
         if task_fingerprint_v4.fingerprint(task, task.claim_token).hex() != fingerprint:
             raise ValueError("task staging unavailable")
@@ -260,6 +264,50 @@ def _stage_python(
             environment,
             max_bytes=launch_bytes,
         )
+        if task.input_files:
+            from dlr.worker import managed_files_v4
+
+            # The parent first owns the sealed redaction/launch snapshot. If
+            # this nonbusiness child must be stopped, no payload is rerun or
+            # secrets re-decrypted to construct the fixed failure result.
+            _send(
+                channel,
+                {
+                    "state": "input_staging",
+                    "fingerprint": fingerprint,
+                    "launch_bytes": launch_bytes,
+                },
+            )
+            if (
+                channel.sendmsg(
+                    [b"D"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("i", launch_fd))]
+                )
+                != 1
+            ):
+                raise ValueError("launch handoff unavailable")
+            try:
+                records, manifest, used = managed_files_v4.stage(
+                    channel, task, directory, budget=remaining, deadline=command["input_deadline"]
+                )
+                remaining -= 2 * used
+                failed = False
+            except managed_files_v4.FilePreparationFailed:
+                records, manifest, failed = [], [], True
+                write(
+                    "input_manifest.json",
+                    encoder.iterencode({"execution_id": task.execution_id, "files": manifest}),
+                )
+            os.fsync(directory)
+            _send(
+                channel,
+                {
+                    "state": "preparation_failed" if failed else "staged",
+                    "fingerprint": fingerprint,
+                    "launch_bytes": launch_bytes,
+                    "files": records,
+                },
+            )
+            return
         _send(
             channel, {"state": "staged", "fingerprint": fingerprint, "launch_bytes": launch_bytes}
         )
@@ -300,6 +348,7 @@ def _prepare(channel: socket.socket) -> None:
         "wire_budget",
         "timeout",
         "business_credentials",
+        "managed_files",
     }
     if set(value) != expected:
         raise ValueError("Claim request unavailable")
@@ -319,6 +368,7 @@ def _prepare(channel: socket.socket) -> None:
     claims = verify_worker_proof_signature(proof, key)
     if (
         type(value["business_credentials"]) is not bool
+        or type(value["managed_files"]) is not bool
         or type(worker_id) is not int
         or not 0 < worker_id < 2**63
         or type(generation) is not int
@@ -450,7 +500,7 @@ def _prepare(channel: socket.socket) -> None:
     if (
         task.language not in {"python", "javascript"}
         or task.requirements
-        or task.input_files
+        or (task.input_files and not value["managed_files"])
         or task.builtin_package_snapshot is not None
         or task.dependency_check
         or ((task.secrets or task.credential_bindings) and not value["business_credentials"])
@@ -468,6 +518,10 @@ def _prepare(channel: socket.socket) -> None:
     from dlr.common import business_credentials_v4 as business_contract
 
     business_contract.values(business_contract.bindings(task.credential_bindings), task.secrets)
+    if task.input_files:
+        from dlr.common import managed_files_v4
+
+        managed_files_v4.descriptors([item.model_dump(mode="json") for item in task.input_files])
     task_fingerprint = task_fingerprint_v4.fingerprint(task, task.claim_token).hex()
     del buffer, document, request, value, credential, proof
     # The business snapshot remains here; the Agent receives only bounded
@@ -489,6 +543,7 @@ def _prepare(channel: socket.socket) -> None:
             "cleanup_token": task.cleanup_token,
             "resource_profile": task.resource_profile.model_dump(mode="json"),
             "business_credentials": bool(task.credential_bindings),
+            "managed_files": bool(task.input_files),
         },
     )
     command = _receive(channel)

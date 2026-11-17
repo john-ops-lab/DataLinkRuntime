@@ -47,6 +47,23 @@ this runbook, and the contract test together. This limit does not widen any
 other API route. A proxy `413` identifies the fixed total envelope; Control's
 structured response remains authoritative for the policy boundary and `L+1`.
 
+## Dedicated protocol 4 file subset
+
+W1-I is opt-in (`DLR_WORKER_INPUT_MODE=managed_files`, default `disabled`) for a single
+Control and fixed Python/JavaScript manual/schedule tasks: 1–4 frozen files,
+0–1 MiB each, at most 4 MiB total, within the existing quotas and full staging budget.
+Its separate v4 GET requires the runtime credential, current instance and Attempt
+proofs, fence, Claim Token and frozen Artifact Lease; the legacy download/cleanup
+Token is insufficient. No Range, redirects, compression, arbitrary URLs or resume.
+File version 3 checkpoints only support normal settlement by the same live owner;
+B/C restart recovery refuses them. Unknown responsibility stays retained.
+
+LocalFileArtifactStore uses at most 256 permanent private stripe locks. Readers
+hold a nonblocking shared lock from before open until actual fd close; publish,
+delete and quarantine require the exclusive lock. Busy deletion keeps its pending
+work, charge and backoff. Never remove or replace the lock namespace to unlock it.
+This is a single-Control local-store boundary, not shared-storage qualification.
+
 ## Single Control and LocalFileArtifactStore
 
 Only the Control process owns and writes `LocalFileArtifactStore`. In Compose,

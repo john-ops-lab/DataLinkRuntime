@@ -164,6 +164,7 @@ def test_redaction_precedes_result_encoding_and_never_overwrites_keys():
         "invalid_json",
         "failure",
         "cutoff",
+        "preparation_failure",
         "replaced_fd",
         "missing_fd",
     ],
@@ -256,8 +257,16 @@ def test_real_result_child_uses_exact_launch_snapshot_before_result_mac(tmp_path
             "attempt_id": 2,
             "fencing_token": 1,
             "claim_token": "test-claim-token",
-            "exit_code": 1 if case == "failure" else None if case == "cutoff" else 0,
-            "stop_reason": "execution_cutoff" if case == "cutoff" else None,
+            "exit_code": 1
+            if case == "failure"
+            else None
+            if case in {"cutoff", "preparation_failure"}
+            else 0,
+            "stop_reason": "execution_cutoff"
+            if case == "cutoff"
+            else "preparation_failed"
+            if case == "preparation_failure"
+            else None,
             "stdout_bytes": len(stdout),
             "stdout_truncated": case == "truncated_stream",
             "output_max_bytes": limit,
@@ -309,6 +318,11 @@ def test_real_result_child_uses_exact_launch_snapshot_before_result_mac(tmp_path
             assert document["status"] == "failed"
         elif case == "cutoff":
             assert document["status"] == "timed_out"
+        elif case == "preparation_failure":
+            assert document["status"] == "failed"
+            assert document["error_class"] == "platform_transient"
+            assert document["error_code"] == "attempt_prepare_failed"
+            assert document["output"] is None
         else:
             assert document["output"] == {"[REDACTED]": ["[REDACTED]", "[REDACTED]"]}
     finally:

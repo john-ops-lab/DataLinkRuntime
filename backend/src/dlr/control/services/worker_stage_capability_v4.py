@@ -1,12 +1,25 @@
 """Restricted dependency-free Worker tasks at acceptance and final Claim."""
 
-from sqlalchemy import exists, func, select
+import json
+from typing import Any
+
+from sqlalchemy import Text, cast, exists, func, select
 from sqlalchemy.orm import Session
 
+from dlr.common import managed_files_v4 as files
 from dlr.common.business_credentials_v4 import BusinessCredentialError
 from dlr.common.config import settings
+from dlr.common.managed_input import controlled_input_mount_name
 from dlr.common.worker_languages_v4 import valid_capabilities
-from dlr.control.models import Adapter, AdapterVersion, Execution, Worker
+from dlr.control.models import (
+    Adapter,
+    AdapterInputArtifactBinding,
+    AdapterVersion,
+    Execution,
+    ExecutionInputArtifactLease,
+    ManagedInputArtifact,
+    Worker,
+)
 from dlr.control.models.platform import PackageSource
 from dlr.control.services import business_credentials_v4 as business_credentials
 from dlr.control.services.adapter import domain_error
@@ -18,7 +31,7 @@ def require_trigger(trigger: str) -> None:
 
 
 def require_input_source(source_type: str) -> None:
-    if settings.worker_remote_v4_enabled and source_type not in {"none", "json"}:
+    if settings.worker_remote_v4_enabled and source_type not in {"none", "json", "managed_files"}:
         _reject("input_source")
 
 
@@ -27,7 +40,7 @@ def _reject(reason: str) -> None:
         409,
         "worker_task_capability_unavailable",
         "Remote Worker stage supports dependency-free Python/JavaScript tasks "
-        "with none/JSON input only",
+        "with qualified none/JSON or bounded managed file input",
         {"reason": reason},
     )
 
@@ -47,7 +60,7 @@ def _configuration_reason(
         return "language"
     if dependency_check:
         return "dependency_check"
-    if input_source_type not in {"none", "json"}:
+    if input_source_type not in {"none", "json", "managed_files"}:
         return "input_source"
     # Do not load business code or dependency text into the Control parent.
     if (
@@ -66,6 +79,141 @@ def _configuration_reason(
     return None
 
 
+def _file_reason(
+    session: Session,
+    adapter_id: int,
+    target: int | None,
+    *,
+    artifact_ids: tuple[int, ...] | None = None,
+    snapshot: dict[str, Any] | None = None,
+    execution_id: int | None = None,
+) -> str | None:
+    """Bound metadata before a new responsibility or a frozen Claim is allowed."""
+    from dlr.control.services.worker import READABLE_ARTIFACT_STATUSES
+
+    worker = session.get(Worker, target) if target is not None else None
+    if (
+        worker is None
+        or worker.protocol_version != 4
+        or worker.identity_lifecycle != "reserved"
+        or worker.instance_id is None
+        or (worker.isolation_capabilities or {}).get(files.CAPABILITY) is not True
+    ):
+        return "input_files_capability"
+    if artifact_ids is not None and (
+        not 1 <= len(artifact_ids) <= files.MAX_FILES
+        or any(type(item) is not int or not 0 < item < 2**63 for item in artifact_ids)
+        or len(set(artifact_ids)) != len(artifact_ids)
+    ):
+        return "input_files_budget"
+    columns = (
+        ManagedInputArtifact.id,
+        ManagedInputArtifact.original_filename,
+        ManagedInputArtifact.content_type,
+        ManagedInputArtifact.size_bytes,
+        ManagedInputArtifact.sha256,
+        ManagedInputArtifact.status,
+    )
+    statement = select(*columns).where(ManagedInputArtifact.adapter_id == adapter_id)
+    if execution_id is not None:
+        statement = (
+            statement.add_columns(ExecutionInputArtifactLease.ordinal)
+            .join(
+                ExecutionInputArtifactLease,
+                ExecutionInputArtifactLease.artifact_id == ManagedInputArtifact.id,
+            )
+            .where(ExecutionInputArtifactLease.execution_id == execution_id)
+            .order_by(ExecutionInputArtifactLease.ordinal)
+        )
+    elif artifact_ids is None:
+        statement = (
+            statement.add_columns(AdapterInputArtifactBinding.ordinal)
+            .join(
+                AdapterInputArtifactBinding,
+                AdapterInputArtifactBinding.artifact_id == ManagedInputArtifact.id,
+            )
+            .where(AdapterInputArtifactBinding.adapter_id == adapter_id)
+            .order_by(AdapterInputArtifactBinding.ordinal)
+        )
+    else:
+        statement = statement.where(ManagedInputArtifact.id.in_(artifact_ids))
+    rows = [dict(row) for row in session.execute(statement.limit(files.MAX_FILES + 1)).mappings()]
+    if artifact_ids is not None:
+        indexed = {row["id"]: row for row in rows}
+        if len(indexed) != len(artifact_ids):
+            return "input_files_snapshot"
+        rows = [dict(indexed[key], ordinal=index) for index, key in enumerate(artifact_ids)]
+    metadata = []
+    try:
+        for row in rows:
+            if row["status"] not in READABLE_ARTIFACT_STATUSES:
+                return "input_files_snapshot"
+            metadata.append(
+                {
+                    "id": row["id"],
+                    "ordinal": row["ordinal"],
+                    "mount_name": controlled_input_mount_name(
+                        row["ordinal"], row["original_filename"]
+                    ),
+                    **{
+                        key: row[key]
+                        for key in ("original_filename", "content_type", "size_bytes", "sha256")
+                    },
+                }
+            )
+        files.descriptors(metadata)
+    except (files.ManagedFilesError, ValueError, TypeError) as error:
+        return (
+            error.reason if isinstance(error, files.ManagedFilesError) else "input_files_snapshot"
+        )
+    # Reject an already impossible file-copy budget before creating new
+    # responsibility. Existing work keeps its frozen profile, never today's
+    # deployment default. The child still checks the full remaining budget
+    # including code/harness and any later capacity drift.
+    tmp_bytes = (
+        settings.sandbox_tmp_bytes
+        if execution_id is None
+        else session.scalar(
+            select(Execution.resource_profile_snapshot["tmp_bytes"]).where(
+                Execution.id == execution_id
+            )
+        )
+    )
+    manifest = [
+        {"artifact_id": item["id"], **{k: v for k, v in item.items() if k != "id"}}
+        for item in metadata
+    ]
+    # Before acceptance, 1 is a lower bound for the positive Execution ID's
+    # encoded length. This avoids rejecting work using an invented larger ID.
+    manifest_bytes = len(
+        json.dumps(
+            {"execution_id": execution_id if execution_id is not None else 1, "files": manifest},
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    if (
+        type(tmp_bytes) is not int
+        or 2 * (sum(item["size_bytes"] for item in metadata) + manifest_bytes) > tmp_bytes
+    ):
+        return "input_files_budget"
+    if snapshot is not None or execution_id is not None or artifact_ids is not None:
+        frozen = [
+            {k: v for k, v in item.items() if k not in {"id", "mount_name"}} for item in metadata
+        ]
+        if (
+            type(snapshot) is not dict
+            or set(snapshot) != {"source_type", "revision", "artifacts"}
+            or snapshot.get("source_type") != "managed_files"
+            or type(snapshot.get("revision")) is not int
+            or snapshot["revision"] <= 0
+            or snapshot.get("artifacts") != frozen
+        ):
+            return "input_files_snapshot"
+    return None
+
+
 def require_new_execution(
     session: Session,
     adapter: Adapter,
@@ -75,6 +223,8 @@ def require_new_execution(
     input_source_type: str,
     dependency_check: bool = False,
     target_worker_id: int | None = None,
+    artifact_ids: tuple[int, ...] | None = None,
+    input_snapshot: dict[str, Any] | None = None,
 ) -> None:
     if not settings.worker_remote_v4_enabled:
         return
@@ -86,6 +236,14 @@ def require_new_execution(
         input_source_type=input_source_type,
         dependency_check=dependency_check,
     )
+    if reason is None and input_source_type == "managed_files":
+        reason = _file_reason(
+            session,
+            adapter.id,
+            adapter.runtime_worker_id if target_worker_id is None else target_worker_id,
+            artifact_ids=artifact_ids,
+            snapshot=input_snapshot,
+        )
     if reason is None:
         try:
             refs = business_credentials.adapter_bindings(session, adapter.id)
@@ -133,6 +291,16 @@ def execution_block_reason(
     )
     if reason is not None:
         return reason
+    if execution.input_source_type == "managed_files":
+        reason = _file_reason(
+            session,
+            adapter.id,
+            execution.target_worker_id_snapshot,
+            snapshot=execution.input_snapshot,
+            execution_id=execution.id,
+        )
+        if reason is not None:
+            return reason
     unsupported = session.execute(
         select(
             func.coalesce(func.jsonb_typeof(Execution.builtin_package_snapshot), "null") != "null",
@@ -170,6 +338,7 @@ def dispatch_blocked(session: Session, execution_id: int) -> bool:
             func.coalesce(func.jsonb_typeof(Execution.builtin_package_snapshot), "null") == "null",
             Worker.capabilities,
             Execution.target_worker_id_snapshot,
+            Execution.adapter_id,
         )
         .select_from(Execution)
         .join(Adapter, Adapter.id == Execution.adapter_id)
@@ -193,7 +362,30 @@ def dispatch_blocked(session: Session, execution_id: int) -> bool:
         no_builtin,
         languages,
         target,
+        adapter_id,
     ) = row
+    if source == "managed_files":
+        size = session.scalar(
+            select(func.octet_length(cast(Execution.input_snapshot, Text))).where(
+                Execution.id == execution_id
+            )
+        )
+        if size is None or size > 16_384:
+            return True
+        snapshot = session.scalar(
+            select(Execution.input_snapshot).where(Execution.id == execution_id)
+        )
+        if (
+            _file_reason(
+                session,
+                execution_id=execution_id,
+                adapter_id=adapter_id,
+                target=target,
+                snapshot=snapshot,
+            )
+            is not None
+        ):
+            return True
     if not no_credentials:
         try:
             business_credentials.check(
@@ -205,7 +397,7 @@ def dispatch_blocked(session: Session, execution_id: int) -> bool:
         language in {"python", "javascript"}
         and kind == "task"
         and trigger in {"manual", "schedule"}
-        and source in {"none", "json"}
+        and source in {"none", "json", "managed_files"}
         and dependency is False
         and empty is True
         and no_builtin is True

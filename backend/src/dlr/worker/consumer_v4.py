@@ -71,6 +71,7 @@ class FixedWorkerConsumer:
         stop: threading.Event,
         capabilities: list[str] | None = None,
         business_credentials: bool = False,
+        managed_files: bool = False,
     ) -> None:
         self._broker_file, self._lease = broker_file, lease
         self._root_lock, self._runtime_root = root_lock, runtime_root
@@ -89,7 +90,7 @@ class FixedWorkerConsumer:
         self._languages = tuple(languages)
         self.failed = threading.Event()
         self._preparer = claim_preparation_v4.ClaimPreparer(
-            business_credentials=business_credentials
+            business_credentials=business_credentials, managed_files=managed_files
         )
 
     def _execute(self, body: bytes) -> _Outcome:

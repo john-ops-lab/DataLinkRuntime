@@ -8,10 +8,14 @@ service layer. User supplied file names never participate in path creation.
 from __future__ import annotations
 
 import errno
+import fcntl
+import hashlib
+import io
 import os
 import re
 import secrets
 import stat as stat_module
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -41,6 +45,40 @@ class ArtifactStoreObjectExistsError(ArtifactStoreError, FileExistsError):
 
 class ArtifactStoreAtomicityError(ArtifactStoreError, OSError):
     """Raised when the local store cannot provide an atomic same-device move."""
+
+
+class ArtifactStoreBusyError(ArtifactStoreError, BlockingIOError):
+    """An existing reader or publisher still owns this bounded lock stripe."""
+
+
+class _ObjectReader(io.BufferedReader):
+    """Keep the stable stripe locked until the actual object close succeeds."""
+
+    def __init__(self, raw: io.FileIO, lock_fd: int) -> None:
+        self._store_lock_fd = lock_fd
+        self._store_close_lock = threading.Lock()
+        self._store_close_unknown = False
+        super().__init__(raw)
+
+    def close(self) -> None:
+        with self._store_close_lock:
+            if self._store_lock_fd < 0:
+                return
+            if self._store_close_unknown:
+                raise ArtifactStoreError("ArtifactStore reader close is uncertain")
+            try:
+                super().close()
+            except BaseException:
+                # Retain the kernel lock through uncertainty. In the v4 path
+                # the owning child/slot is retained until physical reaping.
+                self._store_close_unknown = True
+                raise
+            try:
+                os.close(self._store_lock_fd)
+            except BaseException:
+                self._store_close_unknown = True
+                raise
+            self._store_lock_fd = -1
 
 
 @dataclass(frozen=True)
@@ -88,11 +126,88 @@ class LocalFileArtifactStore:
         self.objects_root = self.root / "objects"
         self.parts_root = self.root / "parts"
         self.quarantine_root = self.root / "quarantine"
+        self.locks_root = self.root / ".read-locks"
         self._ensure_directory(self.root)
         self._ensure_directory(self.objects_root)
         self._ensure_directory(self.parts_root)
         self._ensure_directory(self.quarantine_root)
+        self._ensure_directory(self.locks_root)
+        self._lock_root_identity = self._private_directory_identity(self.locks_root)
         self._ensure_same_filesystem()
+
+    @staticmethod
+    def _private_directory_identity(path: Path) -> tuple[int, int]:
+        info = path.lstat()
+        if (
+            not stat_module.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat_module.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise ArtifactStoreSecurityError("ArtifactStore lock directory is unavailable")
+        return info.st_dev, info.st_ino
+
+    def _acquire_object_lock(self, storage_key: str, *, shared: bool) -> int:
+        """Nonblocking lock on one of at most 256 permanent, private stripes.
+
+        The trusted operator must not replace the store/lock namespace. Within
+        this store instance every acquisition checks the pinned directory and
+        the descriptor's current directory entry, including after flock.
+        """
+        key = self.validate_storage_key(storage_key)
+        directory = descriptor = -1
+        try:
+            if self._private_directory_identity(self.locks_root) != self._lock_root_identity:
+                raise ArtifactStoreSecurityError("ArtifactStore lock directory changed")
+            directory = os.open(
+                self.locks_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+            info = os.fstat(directory)
+            if (info.st_dev, info.st_ino) != self._lock_root_identity:
+                raise ArtifactStoreSecurityError("ArtifactStore lock directory changed")
+            name = hashlib.sha256(key.encode("ascii")).hexdigest()[:2]
+            descriptor = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                0o600,
+                dir_fd=directory,
+            )
+
+            def verify() -> None:
+                opened = os.fstat(descriptor)
+                visible = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if (
+                    not stat_module.S_ISREG(opened.st_mode)
+                    or opened.st_uid != os.geteuid()
+                    or opened.st_nlink != 1
+                    or stat_module.S_IMODE(opened.st_mode) != 0o600
+                    or (opened.st_dev, opened.st_ino) != (visible.st_dev, visible.st_ino)
+                    or self._private_directory_identity(self.locks_root) != self._lock_root_identity
+                ):
+                    raise ArtifactStoreSecurityError("ArtifactStore lock is unavailable")
+
+            verify()
+            try:
+                fcntl.flock(
+                    descriptor, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB
+                )
+            except BlockingIOError:
+                raise ArtifactStoreBusyError("ArtifactStore object is busy") from None
+            verify()
+            result, descriptor = descriptor, -1
+            return result
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if directory >= 0:
+                os.close(directory)
+
+    @contextmanager
+    def _object_writer(self, storage_key: str) -> Iterator[None]:
+        descriptor = self._acquire_object_lock(storage_key, shared=False)
+        try:
+            yield
+        finally:
+            os.close(descriptor)
 
     @staticmethod
     def _ensure_directory(path: Path) -> None:
@@ -246,6 +361,10 @@ class LocalFileArtifactStore:
 
     def commit(self, storage_key: str) -> None:
         """Publish a part with one atomic same-filesystem rename."""
+        with self._object_writer(storage_key):
+            self._commit_locked(storage_key)
+
+    def _commit_locked(self, storage_key: str) -> None:
         self._ensure_same_filesystem()
         part = self.part_path(storage_key)
         object_path = self.object_path(storage_key)
@@ -270,11 +389,31 @@ class LocalFileArtifactStore:
 
     def open(self, storage_key: str) -> BinaryIO:
         """Open a published object read-only without following symlinks."""
-        path = self._path(self.objects_root, storage_key, create=False)
-        if self._regular_info(path) is None:
-            raise FileNotFoundError("ArtifactStore object is missing")
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        return os.fdopen(descriptor, "rb")
+        lock = self._acquire_object_lock(storage_key, shared=True)
+        descriptor = -1
+        try:
+            path = self._path(self.objects_root, storage_key, create=False)
+            before = self._regular_info(path)
+            if before is None:
+                raise FileNotFoundError("ArtifactStore object is missing")
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+            info = os.fstat(descriptor)
+            if (
+                not stat_module.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or (info.st_dev, info.st_ino) != (before.st_dev, before.st_ino)
+            ):
+                raise ArtifactStoreSecurityError("ArtifactStore object changed")
+            raw = io.FileIO(descriptor, "rb", closefd=True)
+            descriptor = -1
+            result = _ObjectReader(raw, lock)
+            lock = -1
+            return result
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if lock >= 0:
+                os.close(lock)
 
     def stat(self, storage_key: str) -> ArtifactObjectStat | None:
         """Return safe size/time facts, or ``None`` for a missing object."""
@@ -301,6 +440,10 @@ class LocalFileArtifactStore:
         )
 
     def delete(self, storage_key: str) -> bool:
+        with self._object_writer(storage_key):
+            return self._delete_locked(storage_key)
+
+    def _delete_locked(self, storage_key: str) -> bool:
         """Delete an object idempotently; a missing object counts as success."""
         path = self._path(self.objects_root, storage_key, create=False)
         if self._regular_info(path) is None:
@@ -347,6 +490,10 @@ class LocalFileArtifactStore:
 
     def quarantine(self, storage_key: str) -> bool:
         """Move one unreferenced object into quarantine, idempotently."""
+        with self._object_writer(storage_key):
+            return self._quarantine_locked(storage_key)
+
+    def _quarantine_locked(self, storage_key: str) -> bool:
         self._ensure_same_filesystem()
         source = self._path(self.objects_root, storage_key, create=False)
         destination = self.quarantine_path(storage_key)
@@ -439,6 +586,7 @@ __all__ = [
     "ArtifactAuditResult",
     "ArtifactObjectStat",
     "ArtifactStoreAtomicityError",
+    "ArtifactStoreBusyError",
     "ArtifactStoreError",
     "ArtifactStoreObjectExistsError",
     "ArtifactStoreSecurityError",

@@ -206,7 +206,14 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
             "workspace_cleanup_error_code": "workspace_cleanup_failed",
         }
         exit_code, stop_reason = request["exit_code"], request["stop_reason"]
-        if stop_reason == "execution_cutoff" and exit_code is None:
+        if stop_reason == "preparation_failed" and exit_code is None:
+            result.update(
+                status="failed",
+                error="input preparation failed",
+                error_code="attempt_prepare_failed",
+                error_class="platform_transient",
+            )
+        elif stop_reason == "execution_cutoff" and exit_code is None:
             result.update(
                 status="timed_out",
                 error="execution timed out",

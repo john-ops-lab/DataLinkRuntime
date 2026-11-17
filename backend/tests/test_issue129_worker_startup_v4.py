@@ -30,6 +30,132 @@ from dlr.worker import (
 from worker_runtime_support import attempt_payload
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="sealed launch and SCM_RIGHTS require Linux")
+@pytest.mark.parametrize("failure", [None, "known", "unknown"])
+def test_file_stage_keeps_frozen_h_fd_and_never_launches_business(tmp_path, monkeypatch, failure):
+    """Actual staging and descriptor handoff; no cgroup or Control authority claim."""
+    import hashlib
+    import time
+
+    from dlr.worker import managed_files_v4
+
+    seal_api = (
+        "F_ADD_SEALS",
+        "F_GET_SEALS",
+        "F_SEAL_WRITE",
+        "F_SEAL_GROW",
+        "F_SEAL_SHRINK",
+        "F_SEAL_SEAL",
+    )
+    if any(type(getattr(sandbox.fcntl, name, None)) is not int for name in seal_api):
+        with pytest.raises(ValueError, match="launch unavailable"):
+            sandbox.create_sealed_launch(
+                ["/usr/bin/python", "/attempt-2/harness.py"],
+                {"PATH": "/usr/bin:/bin"},
+                max_bytes=65536,
+            )
+        pytest.skip("Python build lacks Linux memfd sealing constants; Worker fails closed")
+
+    body = b"file-fixture"
+    entry = {
+        "id": 1,
+        "ordinal": 0,
+        "mount_name": "input-00.txt",
+        "original_filename": "fixture.txt",
+        "content_type": "text/plain",
+        "size_bytes": len(body),
+        "sha256": hashlib.sha256(body).hexdigest(),
+    }
+    task = V4TaskPayload.model_validate(
+        attempt_payload(
+            {
+                "protocol_version": 4,
+                "execution_id": 1,
+                "attempt_id": 2,
+                "adapter_id": 3,
+                "version_id": 4,
+                "latest_version_id": 4,
+                "worker_identity_id": str(uuid4()),
+                "instance_id": str(uuid4()),
+                "instance_generation": 1,
+                "language": "python",
+                "code": "raise AssertionError('business must never run in staging')",
+                "input": None,
+                "input_source_type": "managed_files",
+                "input_snapshot": {
+                    "source_type": "managed_files",
+                    "revision": 1,
+                    "artifacts": [
+                        {k: v for k, v in entry.items() if k not in {"id", "mount_name"}}
+                    ],
+                },
+                "input_files": [entry],
+            }
+        )
+    )
+    task.credential_bindings = [
+        {"binding_id": 1, "credential_id": 2, "env_key": "BOUND", "field": "token"}
+    ]
+    task.secrets = {"BOUND": "test-only-frozen-secret"}
+    fingerprint = task_fingerprint_v4.fingerprint(task, task.claim_token).hex()
+    root = tmp_path / "attempt-2" / "dlr-exec-1"
+    root.mkdir(parents=True, mode=0o700)
+    parent, child = socket.socketpair()
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    info = os.fstat(directory)
+
+    def fetch(_channel, _task, _descriptor, fd, _cutoff):
+        os.write(fd, body)
+        if failure == "known":
+            raise managed_files_v4.FilePreparationFailed()
+        if failure == "unknown":
+            raise managed_files_v4.FileIOUnknown()
+
+    monkeypatch.setattr(managed_files_v4, "_fetch", fetch)
+    command = {
+        "op": "stage",
+        "workspace": str(root),
+        "workspace_device": info.st_dev,
+        "workspace_inode": info.st_ino,
+        "staging_bytes": 1 << 20,
+        "launch_bytes": 65536,
+        "fingerprint": fingerprint,
+        "input_deadline": time.clock_gettime(time.CLOCK_BOOTTIME) + 5,
+    }
+    launch_fd = -1
+    try:
+        parent.sendmsg(
+            [b"D"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("i", directory))]
+        )
+        if failure == "unknown":
+            with pytest.raises(managed_files_v4.FileIOUnknown):
+                claim_task_child_v4._stage_python(child, task, fingerprint, command)
+        else:
+            claim_task_child_v4._stage_python(child, task, fingerprint, command)
+        assert claim_task_child_v4._receive(parent)["state"] == "input_staging"
+        launch_fd = claim_task_child_v4._receive_fd(parent)
+        _, environment = sandbox._read_sealed_launch(launch_fd, 65536)
+        assert environment["DLR_SECRET_BOUND"] == "test-only-frozen-secret"
+        assert not (root / "output.json").exists()
+        if failure == "unknown":
+            assert (root / "input.part").exists()
+            assert not (root / "input_manifest.json").exists()
+        else:
+            frame = claim_task_child_v4._receive(parent)
+            assert frame["state"] == ("preparation_failed" if failure else "staged")
+            manifest = json.loads((root / "input_manifest.json").read_text())
+            assert len(manifest["files"]) == (0 if failure else 1)
+            assert not (root / "input.part").exists()
+    finally:
+        if (root / "input").exists():
+            (root / "input").chmod(0o700)
+        if launch_fd >= 0:
+            os.close(launch_fd)
+        os.close(directory)
+        parent.close()
+        child.close()
+
+
 @pytest.mark.parametrize("ending", ["decision", "deadline", "stop"])
 def test_claim_prepare_keeps_copied_proof_current_until_tentative_reply(
     tmp_path, monkeypatch, ending
@@ -221,6 +347,7 @@ def test_failed_launch_gate_requires_observed_cutoff_before_result_handoff(
         staged,
         "prepared",
         SimpleNamespace(
+            managed_files=False,
             attempt=SimpleNamespace(
                 local_deadline=lambda: 1e20, send_with_authority=lambda _: False
             ),

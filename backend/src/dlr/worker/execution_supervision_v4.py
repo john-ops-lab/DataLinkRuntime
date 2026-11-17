@@ -403,6 +403,14 @@ def start_execution(
         execution_deadline = math.nextafter(
             now + staged.prepared.reservation.limits.execution_timeout_seconds, -math.inf
         )
+        if staged.preparation_failed:
+            # Nonbusiness mode has no execution gate or new business time.
+            # Its short physical observation stays inside existing authority.
+            execution_deadline = min(attempt.local_deadline(), now + 5.0)
+        elif staged.prepared.managed_files:
+            if staged.prepared.execution_deadline is None:
+                raise ValueError("execution deadline unavailable")
+            execution_deadline = staged.prepared.execution_deadline
         initial = V4Renewal("renewed", min(attempt.local_deadline(), execution_deadline))
         observation, supervisor, streams = attempt_supervisor_v4.start_sandbox_supervisor(
             staged, initial, execution_deadline=execution_deadline
@@ -419,6 +427,13 @@ def start_execution(
         owner._watchdog.start()
         if stop.is_set():
             raise ValueError("execution gate unavailable")
+        if staged.preparation_failed:
+            if not staged.prepared.managed_files or not supervisor.finish_preparation_failure():
+                raise ValueError("preparation stop unavailable")
+            observed = owner.observe(timeout=2.0)
+            if observed.state != "observed" or observed.stop_reason != "preparation_failed":
+                raise ValueError("preparation stop unavailable")
+            return owner
         if not supervisor.prepare_sandbox() or not supervisor.release_sandbox(
             send_with_authority=attempt.send_with_authority
         ):

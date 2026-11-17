@@ -507,6 +507,7 @@ def cleanup_live_workspace(
                     cg._runtime_root,
                     prepared,
                     stopped,
+                    _active_files=cg._prepared.managed_files,
                 )
             live._close_locked()
             live._cleanup_confirmed = True

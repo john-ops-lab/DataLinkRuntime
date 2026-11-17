@@ -2976,7 +2976,11 @@ def _new_preflight_identity() -> str:
 
 
 def run_preflight(
-    config: SandboxConfig, *, recovery_root: Path, runtime_root: Path | None = None
+    config: SandboxConfig,
+    *,
+    recovery_root: Path,
+    runtime_root: Path | None = None,
+    managed_files: bool = False,
 ) -> dict[str, Any]:
     """Run one disposable real probe and return a sanitized capability receipt."""
 
@@ -2999,6 +3003,15 @@ def run_preflight(
         "adapter_mount_blocked": False,
         "sandbox_cleanup": False,
     }
+    if type(managed_files) is not bool:
+        raise ValueError("invalid input probe mode")
+    if managed_files:
+        capabilities["managed_files_v1"] = False
+        from dlr.worker.managed_files_v4 import PREFLIGHT_CODE
+
+        input_probe = PREFLIGHT_CODE
+    else:
+        input_probe = "managed_probe=False\n"
     try:
         parent = validate_delegated_parent(config)
         validate_private_cgroup_namespace(parent)
@@ -3112,7 +3125,13 @@ def run_preflight(
         "assert control_pipe_fds == []\n"
         "adapter_mount=mount_blocked()\n"
         "hidden_paths={'/sys/fs/cgroup':inaccessible(pathlib.Path('/sys/fs/cgroup')),str(hidden_target):inaccessible(hidden_target)}\n"
-        "pathlib.Path('output.json').write_text(json.dumps({'ok':True,'identity':{'uid':os.getuid(),'gid':os.getgid(),'Groups':field('Groups'),'CapPrm':field('CapPrm'),'CapEff':field('CapEff'),'CapInh':field('CapInh'),'CapBnd':cap_bnd,'CapAmb':field('CapAmb'),'NoNewPrivs':field('NoNewPrivs')},'adapter_mount':adapter_mount,'hidden_cgroup_paths':hidden_paths,'control_pipe_fds':control_pipe_fds}))\n"
+        + input_probe
+        + "pathlib.Path('output.json').write_text(json.dumps({'ok':True,"
+        "'managed_files_v1':managed_probe,'identity':{'uid':os.getuid(),'gid':os.getgid(),"
+        "'Groups':field('Groups'),'CapPrm':field('CapPrm'),'CapEff':field('CapEff'),"
+        "'CapInh':field('CapInh'),'CapBnd':cap_bnd,'CapAmb':field('CapAmb'),"
+        "'NoNewPrivs':field('NoNewPrivs')},'adapter_mount':adapter_mount,"
+        "'hidden_cgroup_paths':hidden_paths,'control_pipe_fds':control_pipe_fds}))\n"
         "saw=False\n"
         "for index in range(1,5):\n"
         "    try:\n"
@@ -3232,6 +3251,10 @@ def run_preflight(
             except (OSError, UnicodeError, TypeError, ValueError):
                 receipt = None
             if isinstance(receipt, dict):
+                if managed_files:
+                    capabilities["managed_files_v1"] = (
+                        cleanup_completed and receipt.get("managed_files_v1") is True
+                    )
                 details["adapter_identity"] = receipt.get("identity")
                 hidden_paths = receipt.get("hidden_cgroup_paths")
                 control_pipe_fds = receipt.get("control_pipe_fds")

@@ -41,6 +41,17 @@ Nginx；若将来修改应用最大值或 multipart 预留，必须同步两套�
 
 ## 单 Control 与 LocalFileArtifactStore
 
+专用 protocol 4 的 W1-I 文件路径见 [远程固定 Worker](remote-worker-wave1a.md)。
+它默认禁用，只允许单 Control、固定 Python/JS manual/schedule、1–4 文件、单项 ≤1MiB、
+合计 ≤4MiB；这些上限不改变全平台上传策略。v4 读接口同时要求当前运行凭据、实例/Attempt
+双证明、fence/Claim Token 与冻结 Lease，不能用下方旧协议的共享 Token 或清理 Token 旁路。
+
+本地 Store 在受信 root 下保留至多 256 个稳定的 0600 条带锁文件。reader 从对象 open 前
+持共享非阻塞 flock，实际 fd 关闭后才释放；commit/delete/quarantine 取独占非阻塞锁。
+锁忙不等于对象已删除：原删除待办/charge 和退避继续保持，所有删除成功后才结账。
+锁文件不随对象删除，禁止清理或替换锁目录/文件以“解锁”；关闭未知也不允许释放读保护。
+此互斥不构成共享存储或多 Control 资格。
+
 `LocalFileArtifactStore` 只由 Control 进程持有并写入。Compose 中唯一的
 `dlr_artifact_store` 挂载属于 Control；Worker 不挂载该卷，只能用带 claim token 的
 内部下载接口取得当前 Execution 被 Lease 授权的文件。浏览器和 Worker 永远不接触
