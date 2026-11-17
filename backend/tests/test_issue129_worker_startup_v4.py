@@ -39,6 +39,23 @@ def test_file_stage_keeps_frozen_h_fd_and_never_launches_business(tmp_path, monk
 
     from dlr.worker import managed_files_v4
 
+    seal_api = (
+        "F_ADD_SEALS",
+        "F_GET_SEALS",
+        "F_SEAL_WRITE",
+        "F_SEAL_GROW",
+        "F_SEAL_SHRINK",
+        "F_SEAL_SEAL",
+    )
+    if any(type(getattr(sandbox.fcntl, name, None)) is not int for name in seal_api):
+        with pytest.raises(ValueError, match="launch unavailable"):
+            sandbox.create_sealed_launch(
+                ["/usr/bin/python", "/attempt-2/harness.py"],
+                {"PATH": "/usr/bin:/bin"},
+                max_bytes=65536,
+            )
+        pytest.skip("Python build lacks Linux memfd sealing constants; Worker fails closed")
+
     body = b"file-fixture"
     entry = {
         "id": 1,

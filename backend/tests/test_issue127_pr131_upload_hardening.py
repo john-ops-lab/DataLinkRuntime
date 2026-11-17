@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import re
+import stat
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -36,6 +39,24 @@ def _create_task(api_client: Any, name: str) -> dict[str, Any]:
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def _assert_no_uploaded_data(store_root: Path) -> None:
+    """Cleanup leaves no data; permanent, bounded lock stripes are metadata."""
+    lock_files = []
+    for path in store_root.rglob("*"):
+        info = path.lstat()
+        assert not stat.S_ISLNK(info.st_mode)
+        if stat.S_ISDIR(info.st_mode):
+            continue
+        assert path.parent == store_root / ".read-locks"
+        assert re.fullmatch(r"[0-9a-f]{2}", path.name)
+        assert stat.S_ISREG(info.st_mode)
+        assert info.st_uid == os.geteuid()
+        assert stat.S_IMODE(info.st_mode) == 0o600
+        assert info.st_nlink == 1 and info.st_size == 0
+        lock_files.append(path)
+    assert len(lock_files) <= 256
 
 
 def _set_max_file_bytes(session_factory: sessionmaker[Session], max_file_bytes: int) -> None:
@@ -359,7 +380,7 @@ def test_upload_rejects_large_ordinary_field_with_bounded_cleanup(
         capacity = session.get(ManagedInputCapacity, 1)
         assert capacity is not None
         assert capacity.actual_bytes == capacity.reserved_bytes == 0
-    assert not [path for path in store_root.rglob("*") if path.is_file()]
+    _assert_no_uploaded_data(store_root)
 
 
 def test_upload_rejects_second_file_without_pulling_its_body(
@@ -409,7 +430,7 @@ def test_upload_rejects_second_file_without_pulling_its_body(
         capacity = session.get(ManagedInputCapacity, 1)
         assert capacity is not None
         assert capacity.actual_bytes == capacity.reserved_bytes == 0
-    assert not [path for path in store_root.rglob("*") if path.is_file()]
+    _assert_no_uploaded_data(store_root)
 
 
 def test_cancel_after_finalize_commit_preserves_staged_blob(
