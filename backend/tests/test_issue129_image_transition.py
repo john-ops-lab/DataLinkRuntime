@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import pytest
 from alembic import command
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import MetaData, Table, create_engine, event, insert, text, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
@@ -22,7 +22,6 @@ from dlr.control.models import (
     Adapter,
     AdapterVersion,
     Execution,
-    ExecutionAttempt,
     Worker,
     WorkerIdentityReservation,
     WorkerInstanceHistory,
@@ -594,28 +593,34 @@ def _history(f):
     with f.factory.begin() as session:
         now = session.scalar(text("SELECT clock_timestamp()"))
         past = now - timedelta(minutes=5)
-        worker = Worker(
-            name="kept",
-            status="offline",
-            capabilities=["python"],
-            protocol_version=4,
-            identity_lifecycle="reserved",
-            identity_enrolled_at=past,
-            scheduling_state="disabled",
-            capacity_state="ready",
-        )
-        session.add(worker)
-        session.flush()
+        # Fixtures for an old schema must write the old row shape even when
+        # the application models have already acquired later columns.
+        legacy = MetaData()
+        workers = Table("workers", legacy, autoload_with=session.connection(), resolve_fks=False)
+        worker = session.execute(
+            insert(workers)
+            .values(
+                name="kept",
+                status="offline",
+                capabilities=["python"],
+                protocol_version=4,
+                identity_lifecycle="reserved",
+                identity_enrolled_at=past,
+                scheduling_state="disabled",
+                capacity_state="ready",
+            )
+            .returning(workers.c.id, workers.c.identity_id, workers.c.name)
+        ).one()
         session.add(
             WorkerIdentityReservation(
                 request_id=uuid4(), worker_id=worker.id, name=worker.name, actor_kind="superadmin"
             )
         )
         instance = uuid4()
-        worker.instance_id, worker.instance_generation, worker.instance_lease_until = (
-            instance,
-            1,
-            past,
+        session.execute(
+            update(workers)
+            .where(workers.c.id == worker.id)
+            .values(instance_id=instance, instance_generation=1, instance_lease_until=past)
         )
         session.add(WorkerInstanceHistory(worker_id=worker.id, instance_id=instance, generation=1))
         session.flush()
@@ -657,27 +662,30 @@ def _history(f):
         )
         session.add(execution)
         session.flush()
-        attempt = ExecutionAttempt(
-            execution_id=execution.id,
-            adapter_id=adapter.id,
-            attempt_no=1,
-            worker_id=worker.id,
-            worker_identity_id=worker.identity_id,
-            worker_instance_id=instance,
-            worker_instance_generation=1,
-            fencing_token=1,
-            lease_expires_at=past,
-            # Normal production v4 Claim leaves this optional field unset.
-            recovery_not_before=None,
-            status="succeeded",
-            claimed_at=past,
-            ended_at=past,
-            cleanup_settled_at=past,
-            output_summary={"kept": True},
+        attempts = Table(
+            "execution_attempts", legacy, autoload_with=session.connection(), resolve_fks=False
         )
-        session.add(attempt)
-        session.flush()
-        return worker.id, execution.id, attempt.id, adapter.id
+        attempt_id = session.scalar(
+            insert(attempts)
+            .values(
+                execution_id=execution.id,
+                adapter_id=adapter.id,
+                attempt_no=1,
+                worker_id=worker.id,
+                worker_identity_id=worker.identity_id,
+                worker_instance_id=instance,
+                worker_instance_generation=1,
+                fencing_token=1,
+                lease_expires_at=past,
+                status="succeeded",
+                claimed_at=past,
+                ended_at=past,
+                cleanup_settled_at=past,
+                output_summary={"kept": True},
+            )
+            .returning(attempts.c.id)
+        )
+        return worker.id, execution.id, attempt_id, adapter.id
 
 
 def _business_snapshot(f):

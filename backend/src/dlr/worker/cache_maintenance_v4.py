@@ -292,8 +292,11 @@ class CacheMaintenance:
         context = {"cleanup_id": cleanup_id, "claim_attempt": ticket["claim_attempt"]}
         self._cleanup = context
         try:
-            self._deletion.recover_round(max_items=_MAX_KEYS, max_seconds=2)
-            if self._deletion.cleanup_state(cleanup_id) != "clear":
+            state = self._deletion.cleanup_state(cleanup_id)
+            if state == "pending":
+                self._deletion.recover_round(max_items=_MAX_KEYS, max_seconds=2)
+                state = self._deletion.cleanup_state(cleanup_id)
+            if state != "clear":
                 return False
             keys = self._cleanup_keys(aid, cleanup_id, ticket["claim_attempt"])
             if keys is None:
@@ -324,9 +327,12 @@ class CacheMaintenance:
                 )
                 if result.status != "completed":
                     return False
-            # A fresh round observes the original root with no selected files
-            # and reads the committed terminal guard receipts before release.
-            return False
+            # Rescan the unchanged original scope after physical removal.
+            # Control independently refuses a complete ticket with any live guard.
+            return (
+                self._deletion.cleanup_state(cleanup_id) == "clear"
+                and self._cleanup_keys(aid, cleanup_id, ticket["claim_attempt"]) == []
+            )
         finally:
             self._cleanup = None
 
