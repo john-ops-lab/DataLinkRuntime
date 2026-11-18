@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import pytest
+from alembic import command
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -30,6 +31,7 @@ from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from conftest import api_client_for_database
 from dlr.common.attempt_lease_proof_wire_v4 import verify_attempt_proof_signature
 from dlr.common.config import settings
 from dlr.common.lease_proof_wire_v4 import verify_worker_proof_signature
@@ -68,6 +70,7 @@ from dlr.worker import (
 )
 from test_adapters import create_adapter, save_version
 from test_issue127_c0 import _register_worker
+from test_issue219_upgrade import migration_config, upgrade_database  # noqa: F401
 
 
 @contextmanager
@@ -1018,6 +1021,25 @@ def _assert_two_fixed_worker_scopes(client, factory, process, lease, trust_file,
     return current["maintenance_version"] + 2
 
 
+@pytest.fixture
+def restricted_control_database(request, controlled_recovery, monkeypatch):
+    if controlled_recovery != "legacy_adoption":
+        yield (
+            request.getfixturevalue("api_client"),
+            request.getfixturevalue("test_engine"),
+            request.getfixturevalue("session_factory"),
+        )
+        return
+
+    # Opening the immutable legacy window permanently changes the database's
+    # shared-token eligibility. Give this upgrade case its own database.
+    engine = request.getfixturevalue("upgrade_database")
+    command.upgrade(migration_config(engine), "head")
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with api_client_for_database(engine, factory, monkeypatch) as client:
+        yield client, engine, factory
+
+
 @pytest.mark.parametrize(
     "controlled_recovery,language",
     [
@@ -1036,13 +1058,14 @@ def _assert_two_fixed_worker_scopes(client, factory, process, lease, trust_file,
     ],
 )
 def test_enrollment_requires_isolated_database_role_and_exchanges_once(
-    api_client, test_engine, session_factory, tmp_path, monkeypatch, controlled_recovery, language
+    restricted_control_database, tmp_path, monkeypatch, controlled_recovery, language
 ):
     """Exercise the actual API against a restricted PostgreSQL login."""
     if controlled_recovery and os.environ.get("DLR_TEST_CLAIM_PROCESS") == "1":
         pytest.skip(
             "controlled recovery uses the restricted-role API fixture, not Claim process mode"
         )
+    api_client, test_engine, session_factory = restricted_control_database
     old_worker = blocked_worker = adapter = accepted = None
     if controlled_recovery == "legacy_adoption":
         old_worker = _register_worker(api_client, "retained-legacy-worker")
