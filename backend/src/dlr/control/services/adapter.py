@@ -28,6 +28,7 @@ from dlr.control.models import (
     WorkerIdentityReservation,
 )
 from dlr.control.models.platform import AdapterCredentialBinding
+from dlr.control.models.reliable_execution import WorkerAdapterStorageOwnerV4
 from dlr.control.schemas.adapter import (
     AdapterCreate,
     AdapterResponse,
@@ -403,6 +404,13 @@ def _require_cleanup_workers(
     if adapter.runtime_worker_id is not None:
         worker_ids.add(adapter.runtime_worker_id)
     worker_ids.update(
+        session.scalars(
+            select(WorkerAdapterStorageOwnerV4.worker_id).where(
+                WorkerAdapterStorageOwnerV4.adapter_id == adapter.id
+            )
+        )
+    )
+    worker_ids.update(
         worker_id
         for worker_id in session.scalars(
             select(Execution.worker_id).where(
@@ -645,11 +653,19 @@ def _delete_adapter_attempt(
         ),
         ExecutionAttempt.worker_identity_id.is_not(None),
     )
-    has_v4_attempts = session.scalar(v4_attempts.limit(1)) is not None
+    has_v4_storage = (
+        session.scalar(v4_attempts.limit(1)) is not None
+        or session.scalar(
+            select(WorkerAdapterStorageOwnerV4.worker_id)
+            .where(WorkerAdapterStorageOwnerV4.adapter_id == adapter_id)
+            .limit(1)
+        )
+        is not None
+    )
     # The temporary archive satisfies the DB batch guard. On any failure the
     # surrounding savepoint restores both database and ORM state; never write
     # a replacement flag into an already-failed SQL transaction.
-    if not has_v4_attempts or finalize_v4:
+    if not has_v4_storage or finalize_v4:
         archived_at = adapter.archived_at
         adapter.archived_at = worker_availability.current_time(session)
         session.flush()
@@ -686,7 +702,7 @@ def _delete_adapter_attempt(
     _settle_terminal_rabbitmq_responsibilities(session, adapter.id)
     cleanup_workers = _require_cleanup_workers(session, adapter, confirmed_v4=finalize_v4)
     fixed_workers = [worker for worker in cleanup_workers if worker.protocol_version == 4]
-    if has_v4_attempts and not finalize_v4:
+    if has_v4_storage and not finalize_v4:
         # Freeze the Adapter first. Control settlement precedes retirement of
         # the original local journal, which may still need its proof rows.
         adapter.archived_at = worker_availability.current_time(session)

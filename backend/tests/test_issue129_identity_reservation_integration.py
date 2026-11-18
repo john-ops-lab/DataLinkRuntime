@@ -641,7 +641,8 @@ def _assert_cleanup_protocol(
 def _assert_live_history_retention(
     client, factory, worker_id, lease, claimed, previous_proof, *, cap, monkeypatch
 ):
-    from dlr.control.models import Adapter, WorkerCleanupIntentV4
+    from dlr.control.models import Adapter, WorkerCleanupIntentV4, WorkerCleanupRequest
+    from dlr.control.models.reliable_execution import WorkerAdapterStorageOwnerV4
     from dlr.control.services.retention import cleanup_execution_retention
 
     task = claimed.payload
@@ -711,6 +712,32 @@ def _assert_live_history_retention(
         assert session.get(ExecutionAttempt, task.attempt_id) is None
         assert session.get(WorkerCleanupIntentV4, task.attempt_id) is None
         assert session.get(Adapter, task.adapter_id).archived_at is None
+        scope = session.get(WorkerAdapterStorageOwnerV4, (task.adapter_id, worker_id))
+        assert scope.worker_identity_id == lease._identity_id
+    if cap:
+        # Removing the active assignment after retention must not lose the
+        # previous Worker's local storage scope.
+        ready = client.post(
+            f"/api/workers/{worker_id}/v4/ready",
+            headers=headers,
+            json={
+                "isolation_capabilities": {key: True for key in REQUIRED_ISOLATION_CAPABILITIES},
+                "adapter_ephemeral_cleanup_v1": True,
+            },
+        )
+        assert ready.status_code == 200, ready.text
+        unbound = client.patch(f"/api/adapters/{task.adapter_id}", json={"runtime_worker_id": None})
+        assert unbound.status_code == 200, unbound.text
+        deleted = client.delete(f"/api/adapters/{task.adapter_id}?stop=true")
+        assert deleted.status_code == 202, deleted.text
+        with factory() as session:
+            assert session.get(Adapter, task.adapter_id).archived_at is not None
+            ticket = session.scalar(
+                select(WorkerCleanupRequest).where(
+                    WorkerCleanupRequest.adapter_id == task.adapter_id
+                )
+            )
+            assert ticket.worker_id == worker_id and ticket.v4_identity_id == lease._identity_id
 
 
 def test_identity_reservation_is_disabled_by_default(api_client):

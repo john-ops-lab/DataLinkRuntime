@@ -10,7 +10,8 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
@@ -489,24 +490,17 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     lease.heartbeat(stop=stop)
                     if consumer is not None and started >= next_cleanup and not stop.is_set():
                         next_cleanup = started + 15.0
-                        phase = "adapter_cleanup"
-                        try:
-                            if cache is not None:
-                                phase = "cache_maintenance"
+                        if cache is not None:
+                            phase = "cache_maintenance"
+                            with _maintenance_observation(phase):
                                 cache.poll()
-                            if consumer.idle.is_set():
-                                phase = "adapter_cleanup"
+                        if consumer.idle.is_set():
+                            phase = "adapter_cleanup"
+                            with _maintenance_observation(phase):
                                 _settle_adapter_cleanup(config, root_lock, lease, stop, cache)
-                                phase = "history_retirement"
+                            phase = "history_retirement"
+                            with _maintenance_observation(phase):
                                 _retire_local_history(config, root_lock, lease, stop)
-                        except (
-                            lease_session_v4.WorkerLeaseError,
-                            CacheError,
-                            ControlUnavailableError,
-                        ):
-                            # Unknown transport or local scope keeps the row
-                            # charged. Only the same live instance can retry.
-                            logger.warning("fixed Worker maintenance observation unavailable")
                     phase = "heartbeat_roots"
                     verify_roots()
                     next_heartbeat = started + config.heartbeat_seconds
@@ -535,6 +529,16 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
     finally:
         if recovery_lease is not None:
             recovery_lease.close()
+
+
+@contextmanager
+def _maintenance_observation(phase: str) -> Iterator[None]:
+    try:
+        yield
+    except (lease_session_v4.WorkerLeaseError, CacheError, ControlUnavailableError):
+        # Keep the unresolved responsibility charged while the other
+        # independent maintenance paths retain their own authority checks.
+        logger.warning("fixed Worker maintenance observation unavailable: phase=%s", phase)
 
 
 def _local_storage_empty(config: WorkerConfig, lock: cgroup_namespace.RootLockHandle) -> bool:

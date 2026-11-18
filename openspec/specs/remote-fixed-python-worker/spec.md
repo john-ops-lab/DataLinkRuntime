@@ -68,6 +68,13 @@ Worker SHALL 在显式配置的独立 0700 私有缓存根上核对集群、稳�
 - **WHEN** 新实例在原锚点发现已暂存的结果 journal，而对应 stopped 后继尚未发布
 - **THEN** 先只读核对原对象与结果记录，再取得当前代际签名观察并验证其绑定、nonce 和有效期限，才可进行恢复变更。旧证明、歧义后继及绑定不一致均拒绝，保留历史。
 
+### Requirement: 在用 Adapter 的执行历史须在本地 journal 退役确认后才能进入常规保留清理
+Worker SHALL 先用有效实例证明读取同一实例/代际已提交的终态清理回执，随后核对原物理根已静默，只确认相同 Execution、Attempt、fence 和 completion ID。Control MUST 持锁核对该绑定，提交后在独立事务重验当前权威并读回。运行历史的天数与每 Adapter 条数策略须保护全部尚未确认退役的 v4 Attempt，并继续核对其他已有保留条件。
+
+#### Scenario: 在线 Adapter 超过历史保留上限
+- **WHEN** 终态执行超过适用 TTL 或每 Adapter 行数上限
+- **THEN** 仅在该执行全部 v4 Attempt 都已确认 journal 退役、原有订阅/幂等/Outbox 等保护全部解除时，才可通过常规保留策略删除。原代际不匹配、回执不明或仍有本地对象时保留，等待受控清理；独立读回失败不能作为退役确认。
+
 ### Requirement: J管理员HTTP凭据管理不扩大其他授权
 J SHALL 仅为已enrolled专用v4 reserved身份提供管理员HTTP runtime元数据、rotate、节点级revoke及非秘密操作查询。rotate MUST 核对identity/latest-issued-record（包括expired/revoked）/维护CAS及disabled/无未结Attempt，严格0–600秒、最多新旧两份且不延旧截止；revoke可以在active/unknown时撤销节点全部HTTP行但不动B/AMQP/H或原Slot/Lease/journal/预算/ACK。维护版本、instance/generation、原proof期限和I文件version3恢复资格保持。
 

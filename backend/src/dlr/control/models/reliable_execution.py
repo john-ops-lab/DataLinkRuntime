@@ -470,6 +470,26 @@ class RuntimeReconciliationCursor(Base):
     )
 
 
+class WorkerAdapterStorageOwnerV4(Base):
+    """Keep an Adapter's fixed Worker cleanup scope after its last Attempt ages out."""
+
+    __tablename__ = "worker_adapter_storage_owners_v4"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["worker_id", "worker_identity_id"],
+            ["workers.id", "workers.identity_id"],
+            name="fk_worker_adapter_storage_owner_v4_identity",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    adapter_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("adapters.id", ondelete="CASCADE"), primary_key=True
+    )
+    worker_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    worker_identity_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+
+
 class AdapterExecutionSlot(Base):
     """Explicit per-Adapter concurrency authority; B1 seeds Slot 0 only."""
 

@@ -204,6 +204,17 @@ def upgrade() -> None:
         """)
     _attempt_receipt_fks("CASCADE")
     op.execute("""
+        CREATE TABLE worker_adapter_storage_owners_v4 (
+            adapter_id BIGINT NOT NULL REFERENCES adapters (id) ON DELETE CASCADE,
+            worker_id BIGINT NOT NULL,
+            worker_identity_id UUID NOT NULL,
+            PRIMARY KEY (adapter_id, worker_id),
+            CONSTRAINT fk_worker_adapter_storage_owner_v4_identity
+                FOREIGN KEY (worker_id, worker_identity_id)
+                REFERENCES workers (id, identity_id) ON DELETE RESTRICT
+        )
+    """)
+    op.execute("""
         ALTER TABLE execution_attempts ADD COLUMN journal_retired_at TIMESTAMPTZ
     """)
     op.execute("""
@@ -265,6 +276,14 @@ def upgrade() -> None:
             ) THEN
                 RAISE EXCEPTION 'v4 Attempt has retained local responsibility'
                     USING ERRCODE='23514';
+            END IF;
+            IF OLD.worker_identity_id IS NOT NULL THEN
+                INSERT INTO worker_adapter_storage_owners_v4 (
+                    adapter_id, worker_id, worker_identity_id
+                )
+                SELECT a.id, OLD.worker_id, OLD.worker_identity_id
+                FROM adapters a WHERE a.id=OLD.adapter_id AND a.archived_at IS NULL
+                ON CONFLICT (adapter_id, worker_id) DO NOTHING;
             END IF;
             RETURN OLD;
         END $$
@@ -383,7 +402,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute(
         "LOCK TABLE worker_legacy_window, control_proof_rotations, worker_maintenance_operations, "
-        "worker_cleanup_requests, execution_attempts IN ACCESS EXCLUSIVE MODE"
+        "worker_cleanup_requests, execution_attempts, worker_adapter_storage_owners_v4 "
+        "IN ACCESS EXCLUSIVE MODE"
     )
     op.execute("""
         DO $$ BEGIN
@@ -403,6 +423,9 @@ def downgrade() -> None:
             IF EXISTS (SELECT 1 FROM execution_attempts WHERE journal_retired_at IS NOT NULL) THEN
                 RAISE EXCEPTION 'v4 journal retirement history prevents downgrade';
             END IF;
+            IF EXISTS (SELECT 1 FROM worker_adapter_storage_owners_v4) THEN
+                RAISE EXCEPTION 'v4 Adapter storage ownership prevents downgrade';
+            END IF;
         END $$
     """)
     _maintenance_checks(_LEGACY_ACTION, _LEGACY_DISPOSITION)
@@ -415,6 +438,7 @@ def downgrade() -> None:
     op.execute("DROP TRIGGER dlr_v4_confirm_journal_retirement ON execution_attempts")
     op.execute("DROP FUNCTION dlr_v4_confirm_journal_retirement()")
     op.execute("ALTER TABLE execution_attempts DROP COLUMN journal_retired_at")
+    op.drop_table("worker_adapter_storage_owners_v4")
     _attempt_receipt_fks("RESTRICT")
     for table, constraint in _CACHE_OWNERS:
         op.execute(f"LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE")

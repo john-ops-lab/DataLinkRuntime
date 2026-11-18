@@ -692,11 +692,15 @@ python -m dlr.control.control_identity_init_v4 proof-authority-apply \
 
 原生固定 Worker 的 Adapter 若有 v4 历史，删除先冻结 Adapter 并保留原 Attempt 及回执。短期存储节点核对原本地根和当前 Broker 通道。有专用缓存卷的节点另用原清理票据及对象级 guard 回收该 Adapter 的缓存。当前身份和 generation 报告已确认的本地清理后，Control 才移除已归档 Adapter。旧 Attempt、对象身份或清理未知时，删除与保留作业均继续保护原责任。
 
+仍在使用的 Adapter 沿现有按日期和条数的历史保留策略回收 Execution。完成清理的 Worker 从当前签名会话读取已提交的清理回执，检查原本地 journal 已退役，再按 Attempt、fence 和清理回执逐项确认。Control 独立读回确认后，保留作业再次检查每个 v4 Attempt 及其 Slot、文件 Lease、回放和事件引用。升级前尚无本地退役回执的历史继续保留，由适用的受控恢复或 Adapter 清理处理。
+
 ### TLS 与时钟
 
 模式 A 和 B 的 v4 Worker 链路使用验证证书链与 DNS 名称的 HTTPS 和 AMQPS。Standalone Control 在 TLS 监听端口关闭代理头处理。若使用反向代理，部署方应让代理验证上游 Control 证书链和名称，禁止代理到 Control 之间降级为 HTTP。验收时分别核对 Worker→代理与代理→Control 的实际证书、名称和拒绝路径。
 
 Control 的 PostgreSQL 时间和每台 Worker 的 Linux elapsed clock 在租期内须保持已登记的相对速率边界。应持续监测时钟同步状态、偏差与跳变，重启、休眠或时钟不明后先保留责任并重新核对时钟。Worker 对每次签名观察继续核对原请求窗口、相对经过时间及保守的两秒余量。
+
+使用现有主机监控持续采集 PostgreSQL 宿主和各 Worker 的 NTP 同步状态、偏差及采样新鲜度。在使用 `systemd-timesyncd` 的主机上，用 `timedatectl show -p NTPSynchronized -p NTP` 核对状态，用 `timedatectl timesync-status` 核对偏差和轮询间隔，并监视服务日志中的失步。Worker 日志出现 `fixed Worker clock observation unavailable` 或 `phase=heartbeat_exchange` 时核对当前租约和容量。出现失步、跳变或监控中断时暂停新提交，保留并对账现有责任。重新取得可信时钟观察并完成结清后，按原维护流程显式激活。
 
 ## 阶段验证及限制
 
