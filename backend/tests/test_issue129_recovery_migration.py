@@ -7,8 +7,10 @@ from alembic import command
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from dlr.common.schema_version import SCHEMA_REVISION
 from test_issue219_upgrade import migration_config, upgrade_database  # noqa: F401
+
+RECOVERY = "0086_issue129_recovery"
+DISPOSITION = "0087_issue129_disposition"
 
 
 @pytest.mark.parametrize("guard", ["v4_identity", "audit"])
@@ -26,7 +28,7 @@ def test_recovery_increment_preserves_legacy_and_blocks_responsibility_downgrade
                 "RETURNING id,identity_id,protocol_version,maintenance_version"
             )
         ).one()
-    command.upgrade(config, "head")
+    command.upgrade(config, RECOVERY)
     with upgrade_database.begin() as connection:
         assert (
             connection.execute(
@@ -57,7 +59,7 @@ def test_recovery_increment_preserves_legacy_and_blocks_responsibility_downgrade
     with pytest.raises(DBAPIError, match="recovery provenance prevents downgrade"):
         command.downgrade(config, "0085_issue129_cleanup_intent")
     with upgrade_database.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_REVISION
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == RECOVERY
         assert (
             connection.scalar(
                 text("SELECT identity_id FROM workers WHERE id=:id"), {"id": legacy.id}
@@ -75,7 +77,7 @@ def test_disposition_increment_preserves_old_audit_and_refuses_downgrade(
     import json
 
     config = migration_config(upgrade_database)
-    command.upgrade(config, "0086_issue129_recovery")
+    command.upgrade(config, RECOVERY)
     request = uuid4()
     with upgrade_database.begin() as connection:
         worker = connection.scalar(
@@ -93,7 +95,7 @@ def test_disposition_increment_preserves_old_audit_and_refuses_downgrade(
             ),
             {"request": request, "worker": worker},
         )
-    command.upgrade(config, "head")
+    command.upgrade(config, DISPOSITION)
     with upgrade_database.begin() as connection:
         assert connection.execute(
             text(
@@ -140,9 +142,9 @@ def test_disposition_increment_preserves_old_audit_and_refuses_downgrade(
                 connection.execute(statement, {**params, **update})
         connection.execute(statement, params)
     with pytest.raises(DBAPIError, match="disposition responsibility prevents downgrade"):
-        command.downgrade(config, "0086_issue129_recovery")
+        command.downgrade(config, RECOVERY)
     with upgrade_database.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_REVISION
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == DISPOSITION
         assert (
             connection.scalar(
                 text(

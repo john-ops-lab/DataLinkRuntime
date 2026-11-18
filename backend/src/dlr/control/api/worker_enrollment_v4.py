@@ -2,18 +2,21 @@
 
 from contextlib import suppress
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
-from sqlalchemy import select
+from sqlalchemy import or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from dlr.common.schema_gate import try_control_gate
 from dlr.control import db
-from dlr.control.models import Worker
+from dlr.control.models import Worker, WorkerCredential
 from dlr.control.models.worker_identity_reservation import WorkerIdentityReservation
 from dlr.control.security import TOKEN_ENTRY_MODE, Principal, require_admin_principal, require_entry
+from dlr.control.services import worker_credential_operations as operations
 from dlr.control.services import worker_credentials as credentials
 from dlr.control.services import worker_enrollment_exchange_v4 as exchange_service
 from dlr.control.services.control_process_v4 import ControlProcess
@@ -234,4 +237,191 @@ def exchange_enrollment(
         worker_identity_id=issued.worker_identity_id,
         credential_id=issued.secret,
         credential_record_id=issued.credential_record_id,
+    )
+
+
+def _credential_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={"code": "worker_credential_operation_unavailable"},
+        headers=_HEADERS,
+    )
+
+
+def _credential_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=409, detail={"code": "worker_credential_operation_conflict"}, headers=_HEADERS
+    )
+
+
+def _credential_read(session: Session) -> None:
+    session.execute(text("SET TRANSACTION READ ONLY"))
+    try_control_gate(session)
+    session.execute(text("SET LOCAL statement_timeout = '3000ms'"))
+    session.execute(text("SET LOCAL lock_timeout = '1000ms'"))
+    # Independent observations hold the normal schema gate, without row locks or writes.
+
+
+@router.get("/api/workers/{worker_id}/credentials/runtime")
+def runtime_metadata(
+    worker_id: int, request: Request, response: Response, principal: AdminPrincipal
+) -> dict[str, object]:
+    try:
+        process = _process(request)
+        process.check_authority()
+        with db.SessionLocal() as session:
+            _credential_read(session)
+            row = operations.worker(session, worker_id, lock=False)
+            latest = operations.latest(session, worker_id)
+            now = credentials._now(session)
+            current = list(
+                session.scalars(
+                    select(WorkerCredential)
+                    .where(
+                        WorkerCredential.worker_id == worker_id,
+                        WorkerCredential.kind == "runtime",
+                        WorkerCredential.revoked_at.is_(None),
+                        or_(
+                            WorkerCredential.expires_at.is_(None), WorkerCredential.expires_at > now
+                        ),
+                    )
+                    .order_by(WorkerCredential.id)
+                    .limit(3)
+                )
+            )
+            if len(current) > 2:
+                raise operations.OperationConflict
+            result = {
+                "worker_id": row.id,
+                "worker_identity_id": str(row.identity_id),
+                "latest_credential_record_id": latest.id,
+                "credentials": [
+                    {"credential_record_id": c.id, "expires_at": c.expires_at} for c in current
+                ],
+            }
+        process.check_authority()
+    except operations.OperationConflict:
+        raise _credential_conflict() from None
+    except Exception:
+        raise _credential_unavailable() from None
+    response.headers.update(_HEADERS)
+    return result
+
+
+@router.get("/api/workers/{worker_id}/credentials/runtime/operations/{request_id}")
+def runtime_operation(
+    worker_id: int,
+    request_id: UUID,
+    request: Request,
+    response: Response,
+    principal: AdminPrincipal,
+) -> dict[str, object]:
+    if request_id.int == 0:
+        raise HTTPException(
+            status_code=422, detail={"code": "worker_credential_request_invalid"}, headers=_HEADERS
+        )
+    try:
+        process = _process(request)
+        process.check_authority()
+        with db.SessionLocal() as session:
+            _credential_read(session)
+            result = operations.read_receipt(session, worker_id, request_id, principal)
+        process.check_authority()
+    except operations.OperationConflict:
+        raise _credential_conflict() from None
+    except Exception:
+        raise _credential_unavailable() from None
+    response.headers.update(_HEADERS)
+    return result
+
+
+def _runtime_mutation(
+    worker_id: int,
+    payload: operations.RevokeRequest,
+    request: Request,
+    response: Response,
+    session: Session,
+    principal: AdminPrincipal,
+    *,
+    action: Literal["rotate", "revoke"],
+) -> RuntimeSecret | dict[str, object]:
+    committed = False
+    try:
+        process = _process(request)
+        fence = process.worker_fence(session, issue_credentials=True)
+        _receipt, issued = operations.execute(session, worker_id, payload, principal, action=action)
+        if issued is not None:
+            fence.check_candidate(issued.secret)
+        else:
+            fence.check()
+        process.check_authority()
+        session.commit()
+        committed = True
+        session.close()
+        process.check_authority()
+        with db.SessionLocal() as observer:
+            # A separate, non-mutating transaction checks the actual current
+            # Control/database fence; a cached local lease alone cannot issue.
+            observed_fence = process.worker_fence(observer)
+            observed = operations.read_receipt(observer, worker_id, payload.request_id, principal)
+            if observed["status"] != "committed":
+                raise operations.OperationConflict
+            if issued is not None:
+                metadata = operations.ReceiptMetadata.model_validate(observed["metadata"])
+                if (
+                    not observed["currently_usable"]
+                    or metadata.credential_record_id != issued.credential_id
+                    or metadata.worker_identity_id != payload.worker_identity_id
+                ):
+                    raise operations.OperationConflict
+                credentials.authenticate_runtime_credential(observer, worker_id, issued.secret)
+            observed_fence.check()
+        process.check_authority()
+    except (operations.OperationConflict, IntegrityError):
+        _rollback(session)
+        raise (_credential_unavailable() if committed else _credential_conflict()) from None
+    except Exception:
+        _rollback(session)
+        raise _credential_unavailable() from None
+    response.headers.update(_HEADERS)
+    response.headers["Location"] = (
+        f"/api/workers/{worker_id}/credentials/runtime/operations/{payload.request_id}"
+    )
+    if issued is None:
+        response.status_code = 200
+        return observed
+    response.status_code = 201
+    return RuntimeSecret(
+        worker_id=worker_id,
+        worker_identity_id=payload.worker_identity_id,
+        credential_id=issued.secret,
+        credential_record_id=issued.credential_id,
+    )
+
+
+@router.post("/api/workers/{worker_id}/credentials/runtime/rotate", response_model=None)
+def rotate_runtime(
+    worker_id: int,
+    payload: operations.RotateRequest,
+    request: Request,
+    response: Response,
+    session: DbSession,
+    principal: AdminPrincipal,
+) -> RuntimeSecret | dict[str, object]:
+    return _runtime_mutation(
+        worker_id, payload, request, response, session, principal, action="rotate"
+    )
+
+
+@router.post("/api/workers/{worker_id}/credentials/runtime/revoke", response_model=None)
+def revoke_runtime(
+    worker_id: int,
+    payload: operations.RevokeRequest,
+    request: Request,
+    response: Response,
+    session: DbSession,
+    principal: AdminPrincipal,
+) -> RuntimeSecret | dict[str, object]:
+    return _runtime_mutation(
+        worker_id, payload, request, response, session, principal, action="revoke"
     )

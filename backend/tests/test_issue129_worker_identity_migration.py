@@ -15,6 +15,7 @@ from test_issue219_upgrade import migration_config, upgrade_database  # noqa: F4
 
 PREVIOUS = "0054_issue222_receipt_ttl_guard"
 CURRENT = "0055_issue129_worker_identity"
+CLEANUP_INTENT = "0085_issue129_cleanup_intent"
 
 
 def test_complete_stage_chain_preserves_legacy_history_and_refuses_downgrade(
@@ -67,6 +68,15 @@ def test_complete_stage_chain_preserves_legacy_history_and_refuses_downgrade(
             "WHERE t.id=:attempt"
         )
         before = conn.execute(query, {"attempt": attempt}).one()
+    command.upgrade(config, CLEANUP_INTENT)
+    with pytest.raises(
+        RuntimeError, match="Worker cleanup intent responsibilities cannot be safely downgraded"
+    ):
+        command.downgrade(config, PREVIOUS)
+    with upgrade_database.connect() as conn:
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == CLEANUP_INTENT
+        assert conn.execute(query, {"attempt": attempt}).one() == before
+
     command.upgrade(config, "head")
     with upgrade_database.connect() as conn:
         assert conn.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_REVISION
@@ -93,11 +103,6 @@ def test_complete_stage_chain_preserves_legacy_history_and_refuses_downgrade(
             "worker_cleanup_intents_v4",
         ):
             assert conn.scalar(text(f"SELECT count(*) FROM {table}")) == 0
-    with pytest.raises(RuntimeError, match="cannot be safely downgraded"):
-        command.downgrade(config, PREVIOUS)
-    with upgrade_database.connect() as conn:
-        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_REVISION
-        assert conn.execute(query, {"attempt": attempt}).one() == before
 
 
 def test_upgrade_backfills_distinct_identity_and_preserves_worker_binding(

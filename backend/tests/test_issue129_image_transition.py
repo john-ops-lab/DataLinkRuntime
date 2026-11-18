@@ -39,7 +39,7 @@ from test_issue219_upgrade import migration_config, upgrade_database  # noqa: F4
 @pytest.fixture
 def offline(upgrade_database, tmp_path, monkeypatch):  # noqa: F811
     config = migration_config(upgrade_database)
-    command.upgrade(config, SCHEMA_REVISION)
+    command.upgrade(config, transition.LEGACY_SCHEMA)
     role = "w1f_runtime_" + uuid4().hex[:12]
     with upgrade_database.begin() as conn:
         conn.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
@@ -82,7 +82,7 @@ def offline(upgrade_database, tmp_path, monkeypatch):  # noqa: F811
             {
                 "cluster": source.authority.cluster_id,
                 "epoch": source.authority_epoch,
-                "schema": SCHEMA_REVISION,
+                "schema": transition.LEGACY_SCHEMA,
                 "image": source.authority.image_digest,
                 "master": proof.master_check,
                 "admin": proof.admin_check,
@@ -98,9 +98,9 @@ def offline(upgrade_database, tmp_path, monkeypatch):  # noqa: F811
     body = {
         "operation_id": str(uuid4()),
         "previous_id": None,
-        "source_schema": SCHEMA_REVISION,
+        "source_schema": transition.LEGACY_SCHEMA,
         "target_schema": SCHEMA_REVISION,
-        "source_sha": transition.H_SOURCE_SHA,
+        "source_sha": transition.I_SOURCE_SHA,
         "target_sha": "b" * 40,
         "evidence_sha256": "e" * 64,
         "control_slots": 2,
@@ -131,20 +131,27 @@ def offline(upgrade_database, tmp_path, monkeypatch):  # noqa: F811
         upgrade_database.dispose()
 
 
+def _register_source_control(session, declaration, **kwargs):
+    # Simulate the real I source build; J must not start against schema 0088.
+    with pytest.MonkeyPatch.context() as source_build:
+        source_build.setattr(identity, "SCHEMA_REVISION", transition.LEGACY_SCHEMA)
+        return identity.register_control(session, declaration, **kwargs)
+
+
 def _migrate(f):
-    command.upgrade(f.config, SCHEMA_REVISION)
+    assert f.intent.source_schema == transition.LEGACY_SCHEMA
 
 
-@pytest.mark.parametrize("source_sha", sorted(transition._H_RELEASE_SHAS))
-def test_only_the_three_verified_h_release_sources_can_start_i(offline, source_sha):
+@pytest.mark.parametrize("source_sha", sorted(transition._I_RELEASE_SHAS))
+def test_only_the_three_verified_i_release_sources_can_start_j(offline, source_sha):
     f = offline
     f.path.write_text(json.dumps(dict(f.body, source_sha=source_sha)))
     candidate = transition.read_intent(str(f.path), f.source, f.target)
-    assert transition._kind(candidate) == 3
+    assert transition._kind(candidate) == 4
     assert maintain(f.factory, "apply", candidate)["status"] == "committed_current"
 
 
-def test_cli_reads_three_original_private_predecessor_sets(offline, tmp_path, monkeypatch, capsys):
+def test_cli_reads_four_original_private_predecessor_sets(offline, tmp_path, monkeypatch, capsys):
     from dlr.control import control_identity_init_v4 as cli
 
     f = offline
@@ -155,22 +162,24 @@ def test_cli_reads_three_original_private_predecessor_sets(offline, tmp_path, mo
         "previous": previous.source,
         "root": previous.predecessor.source,
         "origin": previous.predecessor.predecessor.source,
+        "ancestor": previous.predecessor.predecessor.predecessor.source,
     }
     monkeypatch.setattr(
         cli, "read_declaration", lambda config: declarations[config.control_identity_file]
     )
     monkeypatch.setattr(cli, "create_engine", lambda *_a, **_k: f.engine)
     args = ["check", "--source", "source", "--target", "target", "--intent", str(f.path)]
-    for name in ("previous", "root", "origin"):
+    for name in ("previous", "root", "origin", "ancestor"):
         args.extend(
             [f"--{name}-source", name, f"--{name}-intent", str(tmp_path / f"{name}-intent.json")]
         )
     assert cli._maintenance_main(args) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "ready_to_apply"
+    assert json.loads(capsys.readouterr().out)["status"] == "source_checked"
 
 
 def _predecessor(f, tmp_path, *, longest=False, root_f_sha=transition.F_SOURCE_SHA):
     """Synthetic original EF/FG/GH receipts; physical provenance belongs to I4."""
+    h = replace(f.source, authority=replace(f.source.authority, image_digest="sha256:" + "7" * 64))
     g = replace(f.source, authority=replace(f.source.authority, image_digest="sha256:" + "0" * 64))
     prefix = []
 
@@ -181,6 +190,7 @@ def _predecessor(f, tmp_path, *, longest=False, root_f_sha=transition.F_SOURCE_S
                 dict(
                     f.body,
                     source_schema=schema,
+                    target_schema=transition.LEGACY_SCHEMA,
                     source_sha=source_sha,
                     target_sha=target_sha,
                     operation_id=str(uuid4()),
@@ -198,12 +208,25 @@ def _predecessor(f, tmp_path, *, longest=False, root_f_sha=transition.F_SOURCE_S
     if longest:
         e = replace(g, authority=replace(g.authority, image_digest="sha256:" + "9" * 64))
         old_f = replace(g, authority=replace(g.authority, image_digest="sha256:" + "a" * 64))
-        original("origin", e, old_f, transition.SOURCE_SCHEMA, transition.SOURCE_SHA, root_f_sha)
+        original("ancestor", e, old_f, transition.SOURCE_SCHEMA, transition.SOURCE_SHA, root_f_sha)
         original(
-            "root", old_f, g, SCHEMA_REVISION, transition.F_SOURCE_SHA, transition.G_SOURCE_SHA
+            "origin",
+            old_f,
+            g,
+            transition.LEGACY_SCHEMA,
+            transition.F_SOURCE_SHA,
+            transition.G_SOURCE_SHA,
+        )
+        original(
+            "root", g, h, transition.LEGACY_SCHEMA, transition.G_SOURCE_SHA, transition.H_SOURCE_SHA
         )
     previous = original(
-        "previous", g, f.source, SCHEMA_REVISION, transition.G_SOURCE_SHA, transition.H_SOURCE_SHA
+        "previous",
+        h,
+        f.source,
+        transition.LEGACY_SCHEMA,
+        transition.H_SOURCE_SHA,
+        transition.I_SOURCE_SHA,
     )
     with f.engine.begin() as conn:
         for item in prefix:
@@ -242,7 +265,7 @@ def test_predecessor_source_digest_cannot_become_g_target(offline, tmp_path, ent
     )
     instance, token = uuid4(), identity.new_instance_token()
     with f.factory.begin() as session:
-        identity.register_control(
+        _register_source_control(
             session, f.source.authority, instance_id=instance, instance_token=token
         )
     with f.engine.begin() as conn:
@@ -282,7 +305,7 @@ def test_exact_proved_predecessor_appends_one_child_and_reads_old_f_history(
     f = offline
     previous, intent = _predecessor(f, tmp_path)
     with f.factory() as session:
-        assert transition.check(session, intent, settings) == "ready_to_apply"
+        assert transition.check(session, intent, settings) == "source_checked"
     with f.factory() as session:
         assert transition.observe(session, intent)["status"] == "not_found"
 
@@ -367,15 +390,21 @@ def test_predecessor_evidence_and_current_chain_refuse_without_new_writes(
     "schema,source_sha,target_sha",
     [
         (transition.SOURCE_SCHEMA, transition.SOURCE_SHA, transition.F_SOURCE_SHA),
-        (SCHEMA_REVISION, transition.F_SOURCE_SHA, transition.G_SOURCE_SHA),
-        (SCHEMA_REVISION, transition.G_SOURCE_SHA, transition.H_SOURCE_SHA),
+        (transition.LEGACY_SCHEMA, transition.F_SOURCE_SHA, transition.G_SOURCE_SHA),
+        (transition.LEGACY_SCHEMA, transition.G_SOURCE_SHA, transition.H_SOURCE_SHA),
     ],
 )
 def test_i_binary_cannot_create_old_release_pairs(
     offline, tmp_path, schema, source_sha, target_sha
 ):
     f = offline
-    body = dict(f.body, source_schema=schema, source_sha=source_sha, target_sha=target_sha)
+    body = dict(
+        f.body,
+        source_schema=schema,
+        target_schema=transition.LEGACY_SCHEMA,
+        source_sha=source_sha,
+        target_sha=target_sha,
+    )
     f.path.write_text(json.dumps(body))
     historical = transition.read_intent(str(f.path), f.source, f.target)
     with f.factory() as session, pytest.raises(transition.TransitionUnavailable):
@@ -499,11 +528,12 @@ def test_same_schema_h_source_check_is_readonly_and_target_waits_for_cas(offline
     f = offline
     before = _snapshot(f)
     with f.factory() as session:
-        assert transition.check(session, f.intent, settings) == "ready_to_apply"
+        assert transition.check(session, f.intent, settings) == "source_checked"
         assert session.scalar(text("SHOW transaction_read_only")) == "on"
     assert _snapshot(f) == before
     # Same schema does not authorize the I declaration before the transition.
-    with f.factory() as session:
+    with f.factory() as session, pytest.MonkeyPatch.context() as source_build:
+        source_build.setattr(identity, "SCHEMA_REVISION", transition.LEGACY_SCHEMA)
         identity._authority(session, f.source.authority)
     with f.factory() as session, pytest.raises(identity.ControlIdentityUnavailable):
         identity._authority(session, f.target.authority)
@@ -527,6 +557,19 @@ def test_commit_unknown_readback_and_idempotence_do_not_revoke_new_instance(offl
 
     result = maintain(sessionmaker(f.engine, class_=LostReply), "apply", f.intent)
     assert result["status"] == ("committed_current" if committed else "not_found")
+    with f.engine.connect() as catalogue:
+        expected_schema = SCHEMA_REVISION if committed else transition.LEGACY_SCHEMA
+        assert catalogue.scalar(text("SELECT version_num FROM alembic_version")) == expected_schema
+        assert (
+            catalogue.scalar(text("SELECT schema_revision FROM control_cluster_authority"))
+            == expected_schema
+        )
+        assert catalogue.scalar(
+            text(
+                "SELECT count(*) FROM information_schema.columns "
+                "WHERE table_name='worker_credential_audit' AND column_name='request_id'"
+            )
+        ) == int(committed)
     if not committed:
         assert maintain(f.factory, "apply", f.intent)["status"] == "committed_current"
     instance, token = uuid4(), identity.new_instance_token()
@@ -726,7 +769,7 @@ def test_runtime_and_worker_no_receipt_access_and_owner_cannot_rewrite(offline):
             pytest.raises(DBAPIError, match="Image transition unavailable"),
         ):
             conn.execute(text(statement))
-    with pytest.raises(DBAPIError, match="Image transition prevents downgrade"):
+    with pytest.raises(RuntimeError, match="HTTP credential receipts require forward repair"):
         command.downgrade(f.config, transition.SOURCE_SCHEMA)
 
 
@@ -920,7 +963,7 @@ def test_live_control_lease_blocks_then_expired_instance_is_permanently_revoked(
     instance, token = uuid4(), identity.new_instance_token()
     monkeypatch.setattr(identity, "SCHEMA_REVISION", f.intent.source_schema)
     with f.factory.begin() as session:
-        identity.register_control(
+        _register_source_control(
             session, f.source.authority, instance_id=instance, instance_token=token
         )
     _migrate(f)
@@ -1011,13 +1054,13 @@ def test_competing_operation_waits_for_exclusive_gate_then_cannot_fork(
 
 
 @pytest.mark.parametrize("unknown_commit", [False, True])
-def test_longest_chain_appends_fourth_preserves_original_hashes_and_readonly_history(
+def test_longest_chain_appends_fifth_preserves_original_hashes_and_readonly_history(
     offline, tmp_path, unknown_commit
 ):
     f = offline
     previous, intent = _predecessor(f, tmp_path, longest=True)
-    root = previous.predecessor.predecessor
-    history = (root, previous.predecessor, previous)
+    root = previous.predecessor.predecessor.predecessor
+    history = (root, previous.predecessor.predecessor, previous.predecessor, previous)
     before = [(item.operation_id, item.intent_sha256) for item in history]
 
     class LostReply(Session):
@@ -1026,7 +1069,7 @@ def test_longest_chain_appends_fourth_preserves_original_hashes_and_readonly_his
             raise OSError("fixture lost COMMIT response")
 
     with f.factory() as session:
-        assert transition.check(session, intent, settings) == "ready_to_apply"
+        assert transition.check(session, intent, settings) == "source_checked"
     factory = sessionmaker(f.engine, class_=LostReply) if unknown_commit else f.factory
     assert maintain(factory, "apply", intent)["status"] == "committed_current"
     for item in history:
@@ -1037,10 +1080,10 @@ def test_longest_chain_appends_fourth_preserves_original_hashes_and_readonly_his
         rows = session.execute(
             text("SELECT operation_id,intent_sha256 FROM control_image_transitions")
         ).all()
-        assert len(rows) == 4 and all(row in rows for row in before)
+        assert len(rows) == 5 and all(row in rows for row in before)
 
 
-@pytest.mark.parametrize("ancestor", ["e", "f", "g", "h"])
+@pytest.mark.parametrize("ancestor", ["e", "f", "g", "h", "i"])
 @pytest.mark.parametrize("entry", ["parse", "check", "apply"])
 def test_longest_chain_refuses_every_ancestor_digest_before_write(
     offline, tmp_path, ancestor, entry
@@ -1048,10 +1091,11 @@ def test_longest_chain_refuses_every_ancestor_digest_before_write(
     f = offline
     previous, intent = _predecessor(f, tmp_path, longest=True)
     digest = {
-        "e": previous.predecessor.predecessor.source.authority.image_digest,
-        "f": previous.predecessor.source.authority.image_digest,
-        "g": previous.source.authority.image_digest,
-        "h": previous.target.authority.image_digest,
+        "e": previous.predecessor.predecessor.predecessor.source.authority.image_digest,
+        "f": previous.predecessor.predecessor.source.authority.image_digest,
+        "g": previous.predecessor.source.authority.image_digest,
+        "h": previous.source.authority.image_digest,
+        "i": previous.target.authority.image_digest,
     }[ancestor]
     target = replace(f.target, authority=replace(f.target.authority, image_digest=digest))
     before = _snapshot(f)
@@ -1064,10 +1108,10 @@ def test_longest_chain_refuses_every_ancestor_digest_before_write(
                 session.commit()
     assert _snapshot(f) == before
     with f.factory() as session:
-        assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == 3
+        assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == 4
 
 
-def test_fifth_receipt_is_never_observable_as_supported_history(offline, tmp_path):
+def test_sixth_receipt_is_never_observable_as_supported_history(offline, tmp_path):
     f = offline
     previous, intent = _predecessor(f, tmp_path, longest=True)
     assert maintain(f.factory, "apply", intent)["status"] == "committed_current"
@@ -1084,7 +1128,13 @@ def test_fifth_receipt_is_never_observable_as_supported_history(offline, tmp_pat
                 "previous": intent.operation_id,
             },
         )
-    for item in (previous.predecessor.predecessor, previous.predecessor, previous, intent):
+    for item in (
+        previous.predecessor.predecessor.predecessor,
+        previous.predecessor.predecessor,
+        previous.predecessor,
+        previous,
+        intent,
+    ):
         with f.factory() as session, pytest.raises(transition.TransitionUnavailable):
             transition.observe(session, item)
 
@@ -1094,12 +1144,44 @@ def test_original_verified_f_aliases_need_no_historical_intent_rewrite(offline, 
     previous, intent = _predecessor(
         f, tmp_path, longest=True, root_f_sha="49269698f63cd85128f16f60c0ad2ba684d55902"
     )
-    assert previous.predecessor.predecessor.target_sha != previous.predecessor.source_sha
+    assert (
+        previous.predecessor.predecessor.predecessor.target_sha
+        != previous.predecessor.predecessor.source_sha
+    )
     with f.factory() as session:
-        assert transition.check(session, intent, settings) == "ready_to_apply"
+        assert transition.check(session, intent, settings) == "source_checked"
     assert maintain(f.factory, "apply", intent)["status"] == "committed_current"
     with f.factory() as session:
         assert (
             transition.observe(session, previous.predecessor.predecessor)["status"]
             == "committed_superseded"
         )
+
+
+def test_j_ddl_failure_rolls_back_catalogue_authority_and_receipt(offline, monkeypatch):
+    f = offline
+    migrate = transition._migrate_http_receipts
+
+    def interrupted(session):
+        migrate(session)
+        raise OSError("fixture failure after transactional DDL")
+
+    monkeypatch.setattr(transition, "_migrate_http_receipts", interrupted)
+    before = _snapshot(f)
+    assert maintain(f.factory, "apply", f.intent)["status"] == "not_found"
+    assert _snapshot(f) == before
+    with f.factory() as session:
+        assert (
+            session.scalar(text("SELECT version_num FROM alembic_version"))
+            == transition.LEGACY_SCHEMA
+        )
+        assert (
+            session.scalar(
+                text(
+                    "SELECT count(*) FROM information_schema.columns "
+                    "WHERE table_name='worker_credential_audit' AND column_name='request_id'"
+                )
+            )
+            == 0
+        )
+        assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == 0

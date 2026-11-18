@@ -1,18 +1,23 @@
 """Private Worker credentials: one-time exchange, rotation, recovery and races."""
 
 import hashlib
+import json
 import secrets
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Barrier, Event
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import event, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.control.models import Worker, WorkerCredential
+from dlr.control.security import SUPERADMIN_PRINCIPAL
+from dlr.control.services import worker_credential_operations as operations
 from dlr.control.services import worker_credentials as credentials
+from dlr.control.services.worker_identity_reservation import reserve_identity
+from test_issue129_control_single_process import declaration  # noqa: F401
 
 
 def _worker(factory: sessionmaker[Session]) -> int:
@@ -376,3 +381,374 @@ def test_recovery_serializes_with_old_credential_authentication(
             release.set()
         recovery_future.result(timeout=10)
         assert auth_future.result(timeout=10) == "worker_credential_invalid"
+
+
+# J uses the existing real-PG credential suite, not an additional runner.
+
+
+@pytest.fixture
+def credential_operation(session_factory, declaration):  # noqa: F811
+    with session_factory.begin() as session:
+        reserved = reserve_identity(
+            session,
+            name="credential-j-" + uuid4().hex,
+            request_id=uuid4(),
+            principal=SUPERADMIN_PRINCIPAL,
+        )
+        worker_id = reserved.worker_id
+        identity = session.get(Worker, worker_id).identity_id
+        version = session.get(Worker, worker_id).maintenance_version
+    issued = _enrolled(session_factory, worker_id)
+    payload = operations.RotateRequest(
+        request_id=uuid4(),
+        worker_identity_id=identity,
+        expected_latest_credential_record_id=issued.credential_id,
+        expected_maintenance_version=version,
+        overlap_seconds=30,
+    )
+    return worker_id, issued, payload
+
+
+def test_operation_committed_nonce_is_nonsecret_and_cannot_change_parameters(
+    session_factory, credential_operation
+):
+    worker_id, old, payload = credential_operation
+    with session_factory.begin() as session:
+        receipt, issued = operations.execute(
+            session, worker_id, payload, SUPERADMIN_PRINCIPAL, action="rotate"
+        )
+        assert issued is not None
+        metadata = dict(receipt.result_metadata)
+        assert old.secret not in json.dumps(metadata) and issued.secret not in json.dumps(metadata)
+        assert len(json.dumps(metadata).encode()) < 2048
+    with session_factory.begin() as session:
+        again, secret = operations.execute(
+            session, worker_id, payload, SUPERADMIN_PRINCIPAL, action="rotate"
+        )
+        assert secret is None and again.result_metadata == metadata
+        assert (
+            session.get(Worker, worker_id).maintenance_version
+            == payload.expected_maintenance_version
+        )
+    with session_factory.begin() as session, pytest.raises(operations.OperationConflict):
+        operations.execute(
+            session,
+            worker_id,
+            payload.model_copy(update={"overlap_seconds": 31}),
+            SUPERADMIN_PRINCIPAL,
+            action="rotate",
+        )
+    with session_factory() as session:
+        result = operations.read_receipt(
+            session, worker_id, payload.request_id, SUPERADMIN_PRINCIPAL
+        )
+        assert result["status"] == "committed" and result["currently_usable"] is True
+        assert (
+            session.scalar(
+                text("SELECT count(*) FROM worker_credential_audit WHERE request_id=:id"),
+                {"id": payload.request_id},
+            )
+            == 1
+        )
+
+
+def test_operation_rollback_has_no_nonce_and_explicit_same_nonce_can_first_commit(
+    session_factory, credential_operation
+):
+    worker_id, old, payload = credential_operation
+    with session_factory() as session:
+        operations.execute(session, worker_id, payload, SUPERADMIN_PRINCIPAL, action="rotate")
+        session.rollback()  # The fixture knows this rolled back, unlike a lost reply.
+    with session_factory() as session:
+        assert (
+            operations.read_receipt(session, worker_id, payload.request_id, SUPERADMIN_PRINCIPAL)[
+                "status"
+            ]
+            == "not_observed"
+        )
+        assert operations.latest(session, worker_id).id == old.credential_id
+    with session_factory.begin() as session:
+        _, issued = operations.execute(
+            session, worker_id, payload, SUPERADMIN_PRINCIPAL, action="rotate"
+        )
+        assert issued is not None
+
+
+def test_operation_same_nonce_concurrency_only_one_durable_issue(
+    session_factory, credential_operation
+):
+    worker_id, old, payload = credential_operation
+    start = Barrier(2)
+
+    def rotate():
+        start.wait(timeout=5)
+        with session_factory.begin() as session:
+            _, issued = operations.execute(
+                session, worker_id, payload, SUPERADMIN_PRINCIPAL, action="rotate"
+            )
+            return issued is not None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(lambda _: rotate(), range(2))) == [False, True]
+    with session_factory() as session:
+        assert (
+            session.scalar(
+                text("SELECT count(*) FROM worker_credential_audit WHERE request_id=:id"),
+                {"id": payload.request_id},
+            )
+            == 1
+        )
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(WorkerCredential)
+                .where(WorkerCredential.worker_id == worker_id, WorkerCredential.kind == "runtime")
+            )
+            == 2
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"overlap_seconds": True},
+        {"overlap_seconds": 1.2},
+        {"overlap_seconds": -1},
+        {"overlap_seconds": 601},
+        {"expected_latest_credential_record_id": True},
+        {"expected_maintenance_version": False},
+        {"worker_identity_id": str(UUID(int=0))},
+        {"request_id": str(UUID(int=0))},
+        {"unexpected": "forbidden"},
+    ],
+)
+def test_operation_strict_public_payload(credential_operation, changes):
+    from pydantic import ValidationError
+
+    _, _, payload = credential_operation
+    with pytest.raises(ValidationError):
+        operations.RotateRequest.model_validate(payload.model_dump(mode="json") | changes)
+
+
+@pytest.mark.parametrize("overlap", [0, 600])
+def test_operation_exact_overlap_and_no_deadline_extension(
+    session_factory, credential_operation, overlap
+):
+    worker_id, old, payload = credential_operation
+    with session_factory.begin() as session:
+        session.execute(
+            text(
+                "UPDATE worker_credentials SET expires_at=clock_timestamp()+interval '2s' "
+                "WHERE id=:id"
+            ),
+            {"id": old.credential_id},
+        )
+        original = session.get(WorkerCredential, old.credential_id).expires_at
+        receipt, _ = operations.execute(
+            session,
+            worker_id,
+            payload.model_copy(update={"overlap_seconds": overlap}),
+            SUPERADMIN_PRINCIPAL,
+            action="rotate",
+        )
+        from datetime import datetime
+
+        deadline = datetime.fromisoformat(receipt.result_metadata["previous_expires_at"])
+        assert deadline <= original
+        if overlap == 0:
+            assert deadline <= credentials._now(session)
+
+
+def test_operation_latest_revoked_record_never_falls_back_to_overlap(
+    session_factory, credential_operation
+):
+    worker_id, old, payload = credential_operation
+    with session_factory.begin() as session:
+        _, issued = operations.execute(
+            session, worker_id, payload, SUPERADMIN_PRINCIPAL, action="rotate"
+        )
+        credentials.revoke_runtime_credential(session, worker_id, issued.credential_id)
+    with session_factory.begin() as session, pytest.raises(operations.OperationConflict):
+        operations.execute(
+            session,
+            worker_id,
+            payload.model_copy(
+                update={
+                    "request_id": uuid4(),
+                    "expected_latest_credential_record_id": issued.credential_id,
+                }
+            ),
+            SUPERADMIN_PRINCIPAL,
+            action="rotate",
+        )
+    with session_factory.begin() as session:
+        credentials.authenticate_runtime_credential(session, worker_id, old.secret)
+
+
+@pytest.mark.parametrize("first", ["activate", "recover"])
+def test_operation_activate_or_recover_before_rotate_rejects_old_cas(
+    session_factory, credential_operation, first
+):
+    worker_id, _, payload = credential_operation
+    with session_factory.begin() as session:
+        if first == "activate":
+            session.get(Worker, worker_id).scheduling_state = "active"
+        else:
+            credentials.recover_runtime_credential(session, worker_id)
+    with session_factory.begin() as session, pytest.raises(operations.OperationConflict):
+        operations.execute(session, worker_id, payload, SUPERADMIN_PRINCIPAL, action="rotate")
+
+
+def test_operation_revoke_all_including_expired_without_changing_other_worker(
+    session_factory, credential_operation
+):
+    worker_id, old, payload = credential_operation
+    other = _worker(session_factory)
+    other_secret = _enrolled(session_factory, other)
+    with session_factory.begin() as session:
+        _, issued = operations.execute(
+            session, worker_id, payload, SUPERADMIN_PRINCIPAL, action="rotate"
+        )
+        session.execute(
+            text(
+                "UPDATE worker_credentials SET expires_at=clock_timestamp()-interval '1s' "
+                "WHERE id=:id"
+            ),
+            {"id": old.credential_id},
+        )
+        row = session.get(Worker, worker_id)
+        row.scheduling_state = "active"
+        version = row.maintenance_version
+    with session_factory.begin() as session:
+        revoke = operations.RevokeRequest(
+            request_id=uuid4(),
+            worker_identity_id=payload.worker_identity_id,
+            expected_latest_credential_record_id=issued.credential_id,
+        )
+        operations.execute(session, worker_id, revoke, SUPERADMIN_PRINCIPAL, action="revoke")
+        assert session.get(Worker, worker_id).maintenance_version == version
+        assert session.get(Worker, worker_id).scheduling_state == "active"
+    with session_factory.begin() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(WorkerCredential)
+                .where(
+                    WorkerCredential.worker_id == worker_id,
+                    WorkerCredential.kind == "runtime",
+                    WorkerCredential.revoked_at.is_(None),
+                )
+            )
+            == 0
+        )
+        credentials.authenticate_runtime_credential(session, other, other_secret.secret)
+
+
+def test_operation_receipt_is_immutable_in_database(session_factory, credential_operation):
+    from sqlalchemy.exc import DBAPIError
+
+    worker_id, _, payload = credential_operation
+    with session_factory.begin() as session:
+        operations.execute(session, worker_id, payload, SUPERADMIN_PRINCIPAL, action="rotate")
+    for statement in [
+        "UPDATE worker_credential_audit SET request_id=NULL WHERE request_id=:id",
+        "DELETE FROM worker_credential_audit WHERE request_id=:id",
+    ]:
+        with session_factory.begin() as session, pytest.raises(DBAPIError):
+            session.execute(text(statement), {"id": payload.request_id})
+        with session_factory.begin() as session, pytest.raises(DBAPIError):
+            session.execute(text("SET LOCAL session_replication_role = replica"))
+            session.execute(text(statement), {"id": payload.request_id})
+
+
+def test_operation_nonce_and_receipt_cannot_cross_actor_or_worker(
+    session_factory, credential_operation
+):
+    from dlr.control.security import Principal
+
+    worker_id, _, payload = credential_operation
+    with session_factory.begin() as session:
+        operations.execute(session, worker_id, payload, SUPERADMIN_PRINCIPAL, action="rotate")
+        reserved = reserve_identity(
+            session,
+            name="other-j-" + uuid4().hex,
+            request_id=uuid4(),
+            principal=SUPERADMIN_PRINCIPAL,
+        )
+        second = reserved.worker_id
+    _enrolled(session_factory, second)
+    actor = Principal(kind="account", role="admin", user_id=123)
+    for target, principal in [(worker_id, actor), (second, SUPERADMIN_PRINCIPAL)]:
+        with session_factory.begin() as session, pytest.raises(operations.OperationConflict):
+            operations.execute(session, target, payload, principal, action="rotate")
+        with session_factory() as session, pytest.raises(operations.OperationConflict):
+            operations.read_receipt(session, target, payload.request_id, principal)
+
+
+def test_operation_regular_account_is_rejected_by_actual_admin_dependency(api_client, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from dlr.common.config import settings
+    from dlr.control.app import create_app
+    from dlr.control.security import Principal, require_principal
+
+    monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
+    app = create_app()
+    app.dependency_overrides.update(api_client.app.dependency_overrides)
+    client = TestClient(app)
+
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        require_principal,
+        lambda: Principal(kind="account", role="user", user_id=123),
+    )
+    endpoint = "/api/workers/1/credentials/runtime"
+    for path in (endpoint, endpoint + "/operations/" + str(uuid4())):
+        assert client.get(path).status_code == 403
+    for action in ("rotate", "revoke"):
+        response = client.post(
+            endpoint + "/" + action,
+            json={
+                "request_id": str(uuid4()),
+                "worker_identity_id": str(uuid4()),
+                "expected_latest_credential_record_id": 1,
+                **({"expected_maintenance_version": 1} if action == "rotate" else {}),
+            },
+        )
+        assert response.status_code == 403
+
+
+def test_operation_validation_never_echoes_rejected_values(api_client, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from dlr.common.config import settings
+    from dlr.control.app import create_app
+
+    monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
+    app = create_app()
+    app.dependency_overrides.update(api_client.app.dependency_overrides)
+    client = TestClient(app, headers={"Authorization": "Bearer test-admin-token"})
+    marker = "rejected-value-must-not-be-reflected"
+    for path in [
+        "/api/workers/1/credentials/runtime/rotate",
+        "/api/workers/1/credentials/runtime/revoke",
+    ]:
+        result = client.post(path, json={"unexpected": marker})
+        assert result.status_code == 422 and marker not in result.text
+        assert result.headers["cache-control"] == "no-store"
+    result = client.get("/api/workers/" + marker + "/credentials/runtime")
+    assert result.status_code == 422 and marker not in result.text
+
+
+def test_operation_zero_observation_id_is_a_fixed_invalid_request(api_client, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from dlr.common.config import settings
+    from dlr.control.app import create_app
+
+    monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
+    app = create_app()
+    app.dependency_overrides.update(api_client.app.dependency_overrides)
+    client = TestClient(app, headers={"Authorization": "Bearer test-admin-token"})
+    response = client.get("/api/workers/1/credentials/runtime/operations/" + str(UUID(int=0)))
+    assert response.status_code == 422 and response.headers["cache-control"] == "no-store"

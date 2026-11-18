@@ -1276,3 +1276,95 @@ def test_oversized_input_frame_retains_uncertain_slot(monkeypatch):
         with pytest.raises(module.ClaimUnavailable):
             slot.read_input(stream)
         assert slot._poisoned and entry in slot._unresolved
+
+
+def test_j_node_revoke_retains_running_file_attempt_and_all_existing_responsibility(
+    file_grant, session_factory, tmp_path
+):
+    """Real PG rows/file preservation; not a physical-stop or full Worker proof."""
+    from sqlalchemy import text
+
+    from dlr.control.models import Worker, WorkerIdentityReservation
+    from dlr.control.security import SUPERADMIN_PRINCIPAL
+    from dlr.control.services import control_cluster_identity as control
+    from dlr.control.services import managed_input_download_v4 as download
+    from dlr.control.services import worker_credential_operations as operations
+    from dlr.control.services import worker_credentials
+
+    kwargs, facts, _ = file_grant
+    declaration = control.ControlDeclaration(
+        cluster_id=uuid4(),
+        image_digest="sha256:" + "1" * 64,
+        managed_fingerprint="2" * 64,
+        builtin_fingerprint="3" * 64,
+        attachment_fingerprint="4" * 64,
+        capacity_fingerprint="5" * 64,
+        master_key="m" * 64,
+        admin_token="a" * 64,
+        worker_token="w" * 64,
+    )
+    with session_factory.begin() as session:
+        control.provision_authority(session, declaration, authority_epoch=uuid4())
+        row = session.get(Worker, facts["worker_id"])
+        row.scheduling_state = "disabled"
+        identity = row.identity_id
+        version = row.maintenance_version
+        session.add(
+            WorkerIdentityReservation(
+                request_id=uuid4(), worker_id=row.id, name=row.name, actor_kind="superadmin"
+            )
+        )
+    request = operations.RotateRequest(
+        request_id=uuid4(),
+        worker_identity_id=identity,
+        expected_latest_credential_record_id=facts["credential_id"],
+        expected_maintenance_version=version,
+    )
+    with session_factory.begin() as session, pytest.raises(operations.OperationConflict):
+        operations.execute(
+            session, facts["worker_id"], request, SUPERADMIN_PRINCIPAL, action="rotate"
+        )
+    with session_factory.begin() as session:
+        session.get(Worker, facts["worker_id"]).scheduling_state = "active"
+    with session_factory() as session:
+        grant, _ = download.admit(session, **kwargs)
+    journal = tmp_path / "retained-version3.json"
+    journal.write_text('{"version":3,"unknown":true}')
+    original = journal.read_bytes()
+    tables = (
+        "executions",
+        "execution_attempts",
+        "adapter_execution_slots",
+        "execution_input_artifact_leases",
+        "global_execution_admission",
+        "adapter_execution_admission",
+    )
+
+    def snapshot():
+        with session_factory() as session:
+            return {
+                t: session.execute(text(f"SELECT row_to_json(r) FROM {t} r")).scalars().all()
+                for t in tables
+            }
+
+    before = snapshot()
+    assert before["execution_input_artifact_leases"] and before["adapter_execution_slots"]
+    with session_factory.begin() as session:
+        payload = operations.RevokeRequest.model_validate(
+            {
+                k: v
+                for k, v in request.model_dump().items()
+                if k not in {"expected_maintenance_version", "overlap_seconds"}
+            }
+        )
+        operations.execute(
+            session, facts["worker_id"], payload, SUPERADMIN_PRINCIPAL, action="revoke"
+        )
+    assert snapshot() == before and journal.read_bytes() == original
+    with (
+        session_factory() as session,
+        pytest.raises(
+            (download.InputDownloadUnavailable, worker_credentials.WorkerCredentialError)
+        ),
+    ):
+        download.recheck(session, grant)

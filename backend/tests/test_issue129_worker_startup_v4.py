@@ -577,3 +577,85 @@ def test_bounded_stage_uses_same_task_directory_and_sealed_minimal_launch(
         os.close(directory)
         parent.close()
         child.close()
+
+
+@pytest.mark.parametrize("tamper", ["symlink", "hardlink", "older", "metadata"])
+def test_runtime_install_refuses_unsafe_response_without_overwriting_current(tmp_path, tamper):
+    from dlr.worker import runtime_credential_v4
+
+    identity = uuid4()
+    current = {
+        "worker_id": 1,
+        "worker_identity_id": str(identity),
+        "credential_id": "dlrw4_" + "a" * 64,
+        "credential_record_id": 2,
+    }
+    directory = tmp_path / "private"
+    directory.mkdir(mode=0o700)
+    target = directory / "runtime-credential.json"
+    target.write_text(json.dumps(current))
+    target.chmod(0o600)
+    staged = directory / "runtime-credential.recovery.json"
+    value = {**current, "credential_id": "dlrw4_" + "b" * 64, "credential_record_id": 3}
+    if tamper == "older":
+        value["credential_record_id"] = 1
+    if tamper == "metadata":
+        value["operation_id"] = str(uuid4())
+    staged.write_text(json.dumps(value))
+    staged.chmod(0o600)
+    if tamper == "symlink":
+        other = directory / "unsafe"
+        staged.rename(other)
+        staged.symlink_to(other)
+    elif tamper == "hardlink":
+        os.link(staged, directory / "second-link")
+    before = target.read_bytes()
+    with pytest.raises(runtime_credential_v4.RuntimeCredentialError):
+        runtime_credential_v4.install_recovered_credential(
+            directory, worker_id=1, worker_identity_id=identity
+        )
+    assert target.read_bytes() == before
+
+
+def test_new_http_credential_cannot_revive_expired_local_lease(monkeypatch):
+    from dlr.worker import lease_session_v4, runtime_credential_v4
+
+    identity = uuid4()
+    instance = uuid4()
+    lease = lease_session_v4.WorkerLeaseSession(
+        base_url="https://control.example",
+        worker_id=1,
+        worker_identity_id=identity,
+        credential="dlrw4_" + "a" * 64,
+        credential_record_id=1,
+        instance_id=instance,
+        verification_key=b"a" * 32,
+        cluster_id=uuid4(),
+        authority_epoch=uuid4(),
+        clock=lambda: 11.0,
+    )
+    # Explicitly synthetic clock/proof fixture; real authority/reload is covered
+    # by the restricted-PG API fixture, never inferred from these assignments.
+    lease._state = "registered"
+    lease._proof = "synthetic"
+    lease._claims = SimpleNamespace(generation=3)
+    lease._nominal_deadline = 10.0
+    lease._guard_deadline = 10.0
+    replacement = runtime_credential_v4.RuntimeCredential(
+        worker_id=1, worker_identity_id=identity, credential_record_id=2, secret="dlrw4_" + "b" * 64
+    )
+    with pytest.raises(lease_session_v4.WorkerLeaseError):
+        lease.replace_runtime_credential(replacement)
+    assert lease._credential_record_id is None and lease._instance_id == instance
+    assert lease._credential == "" and lease._claims is None
+    assert lease._lost.is_set()
+
+
+def test_missing_sealing_api_has_no_plaintext_launch_fallback(monkeypatch):
+    monkeypatch.delattr(sandbox.fcntl, "F_ADD_SEALS", raising=False)
+    with pytest.raises(ValueError, match="launch unavailable"):
+        sandbox.create_sealed_launch(
+            ["/usr/bin/python", "/attempt-2/harness.py"],
+            {"PATH": "/usr/bin:/bin", "DLR_SECRET_K": "test-only-value"},
+            max_bytes=65536,
+        )

@@ -1,6 +1,6 @@
-# 远程固定 Worker（W1-A 至 W1-I）
+# 远程固定 Worker（W1-A 至 W1-J）
 
-本阶段使用一个 Control 应用进程，默认一个固定 Worker；W1-E 显式配置后允许两个固定 Worker 各自单并发执行。默认支持标准库 Python，W1-G 可显式启用无第三方依赖的 JavaScript；触发仍限普通手动/定时任务。输入默认限 none/JSON，W1-I 可显式启用下方受限托管文件。W1-H 的业务凭据许可保持；I 只增加精确 H→I 停机发布对，历史 F/G/H 写操作仍须使用对应原二进制。各阶段真实拓扑、版本、审查和 CI 以相应 PR 为准。正式合同仍位于原 [remote-fixed-python-worker](../../openspec/specs/remote-fixed-python-worker/spec.md) 路径。
+本阶段使用一个 Control 应用进程，默认一个固定 Worker；W1-E 显式配置后允许两个固定 Worker 各自单并发执行。默认支持标准库 Python，W1-G 可显式启用无第三方依赖的 JavaScript；触发仍限普通手动/定时任务。输入默认限 none/JSON，W1-I 可显式启用下方受限托管文件。W1-H 的业务凭据许可保持；I历史只增加精确H→I；当前J增加HTTP凭据管理及唯一I→J同事务发布对，下方历史F/G/H/I写操作仍须使用对应原二进制。各阶段真实拓扑、版本、审查和 CI 以相应 PR 为准。正式合同仍位于原 [remote-fixed-python-worker](../../openspec/specs/remote-fixed-python-worker/spec.md) 路径。
 
 不支持第三方依赖、任意 URL/宿主路径/共享卷输入、内置包、未许可业务凭据、TypeScript/Java/Go、Webhook/事件/批次、旧身份迁移、文件任务的历史恢复、异常后的自动恢复、Pool 或 HA。不能把业务凭据写入代码来绕过限制。#129 在阶段 PR 后保持开放。
 
@@ -566,6 +566,73 @@ Control 为一次 Attempt 保留一个有限资源的 Claim 子进程，在 Clai
 保留子进程只保留资源，不保留授权：stage/finalize 必须重新核对当前 Control 权威、身份、证明和原 intent 期限。父进程从 Claim 句柄向结果句柄移交原 pidfd、socket 和创建者；在确认原子进程回收前不结束其 IO/资源名额。超期、失权或回收不明时停止或保持未知，不能重新创建一个句柄冒充原进程。
 
 Worker 的任务解析/结果构造进程在接收业务材料前施加地址空间限制；参考配置实测为 256 MiB，结果 HTTP 传输子进程为 128 MiB。Control 对应子进程为 512 MiB。子进程启动到设置限额之间、Agent、监管器及实际业务进程同时受外层 cgroup 的有限内存/CPU/PID 和零 swap 限制。业务另有独立的 512 MiB 任务 cgroup。父进程与解析/传输副本不能只靠 wire 字节数计账。
+
+## HTTP运行凭据管理与I→J（W1-J）
+
+J为已enrolled的专用v4固定Worker增加管理员HTTP凭据闭环。默认v3、旧身份迁移、AMQP账户轮换、H业务Credential、Control密钥及实例/Attempt证明都保持各自边界。J不提供活动业务无中断轮换、凭据管理页面或通用恢复。原I文件version3仍拒绝B/C历史恢复；撤销不能清除unknown、Slot、Lease、journal、预算或代替物理停止/ACK。
+
+### 管理入口和一次性原文
+
+以下入口均须真实管理员和当前Control资格，使用验证证书链/主机名的TLS；普通账号、Worker凭据不能调用。请求/错误无原文，响应使用no-store/no-cache。
+
+| 入口 | 合同 |
+| --- | --- |
+| `GET /api/workers/{id}/credentials/runtime` | 非秘密identity、最新已签发runtime记录ID（包含revoked/expired）和至多两条当前有效记录；不是ready或执行证明 |
+| `POST .../runtime/rotate` | 非零UUID request_id/worker_identity_id、严格正整数expected_latest_credential_record_id/expected_maintenance_version；overlap_seconds严格整数0–600，默认600。目标须disabled、无未结Attempt，identity/最新记录/维护CAS匹配且最新凭据有效 |
+| `POST .../runtime/revoke` | request_id、worker_identity_id、expected_latest_credential_record_id；允许active/unknown时紧急撤销A所有HTTP runtime行，包括已过期行，B/AMQP/H不变 |
+| `GET .../runtime/operations/{request_id}` | 原actor/Worker绑定的非秘密历史回执及当前可用性；not_observed不证明回滚，不能据此自动POST或换nonce |
+
+首次轮换成功201正文严格只有`worker_id`、`worker_identity_id`、`credential_id`、`credential_record_id`；原文只交付一次。`Location`指向原request_id的操作查询，旧截止和操作ID等元数据由该GET获取。已提交nonce重复POST为200非秘密回执，不再次签发/重放原文；异参/异actor/跨节点/旧CAS为409，非法类型/范围422，缺授权401/403，围栏或提交未知503。新旧最多两份有效，旧值已有截止只能缩短，绝不续长。
+
+同nonce并发至多一次持久签发；nonce和凭据同事务，若原事务确证回滚则显式同nonce新请求仍须全部当前资格，按首次持久签发处理，不提供跨回滚永久尝试记忆。客户端提交/响应未知只用GET观察，不自动重试POST/换nonce；已提交原文丢失需另一次明确的既有`credentials/recover`，它会撤销旧值并签发新值，不是J重试。
+
+### 安装、重载和撤销
+
+受信操作者使用原私有0700目录，HTTP原文只经0600文件或私有pipe暂存，禁止放argv、URL、普通stdout、业务环境或日志。管理员curl配置（含鉴权/TLS/URL）放私有文件；不使用`--insecure`、自动redirect或retry。先将响应写入独立暂存文件并单独取得HTTP状态，例如：
+
+```sh
+umask 077
+curl --config /run/dlr-private/admin-rotate.curl --request POST \
+  --data-binary @/run/dlr-private/rotate-request.json \
+  --dump-header /run/dlr-private/rotate.headers \
+  --output /run/dlr-private/rotate.response --write-out '%{http_code}\n'
+```
+
+**只有确认状态201且四字段身份匹配后**，才将该正文安全转交目标节点原`runtime-credential.recovery.json`；200回执或任何非201不得作为安装输入/覆盖现有凭据文件。离线安装沿原CLI，不新增安装程序：
+
+```sh
+python -m dlr.worker.recover_credential_v4_cli \
+  --worker-id WORKER_ID --worker-identity-id WORKER_IDENTITY_UUID \
+  --credential-directory /run/dlr-private/worker-credentials
+```
+
+原目录锁、属主/单链接、防symlink/替换、原子发布/fsync及记录防降级保持。安装/同步未知保留材料，仅用同一匹配材料重确认；“已安装”不证明Control接受。Agent在原心跳点重载同identity更高记录，保持instance/generation和原proof截止。零秒overlap不保证无缝，迟到安装不能复活已失效lease；必要时仅沿既有清洁重启/新实例资格处理。
+
+轮换本身不递增维护版本、不自动activate。运维应在新凭据心跳确认后显式activate；独立管理员activate仍按原合同执行，不新增“安装确认”握手。revoke提交可见后阻止后续HTTP授权，已发字节和有限proof不会倒退；Worker按原租约/监管器收敛，停止或清理不明保留责任。
+
+### 唯一I0088→J0089停机升级
+
+J使用`0089_issue129_credential_ops`。合法I来源仅为main `c9b21a4ae3f05c4e382e070fa180dbd07f58d350`、最终PR HEAD `227cc637292f23cb8432cd10ba24f06a9090546e`及实机候选`4e513d1ceb34999c45c9ca42f08135704f72faa7`的逐镜像可信映射；目标J完整SHA/digest在实际候选形成后冻结，不能用“同版本”猜测。
+
+原EF/FG/GH/HI每边继续按原schema/摘要及声明核验，不用0089重解释祖先。fresh-I无祖先合法；最长E→F→G→H→I→J五笔，读取第六行即拒绝，最多四套原私有前序。J只新增I→J apply；旧E/F/G/H新apply、任意跳升/反向操作均拒绝，历史只读observe保持。
+
+升级前先停新接收/调度，清洁排空并独立证明原Control/Worker物理停止及原卷、journal、IO、Broker责任结清；运行角色NOLOGIN、无其他会话/prepared事务及原K/身份/key/四指纹前提保持。**不要先单独运行Alembic升级远程I数据库**：可信owner的apply在同一连接/事务持有迁移独占gate，完成0089 DDL/版本、审计约束和原authority CAS/revoke/append。普通非远程/fresh-J迁移仍使用原Alembic gate。
+
+最长链CLI形式（fresh-I省略全部前序；其他来源只保留连续实际前序）：
+
+```sh
+python -m dlr.control.control_identity_init_v4 check \
+  --source /run/dlr-private/I.json --target /run/dlr-private/J.json \
+  --intent /run/dlr-private/I-J.json \
+  --previous-source /run/dlr-private/H.json --previous-intent /run/dlr-private/H-I.json \
+  --root-source /run/dlr-private/G.json --root-intent /run/dlr-private/G-H.json \
+  --origin-source /run/dlr-private/F.json --origin-intent /run/dlr-private/F-G.json \
+  --ancestor-source /run/dlr-private/E.json --ancestor-intent /run/dlr-private/E-F.json
+```
+
+`apply`和`observe`沿同一明确材料执行，不自动再生成intent。提交未知关闭写连接，独立observe只认可完整0088/I或0089/J及匹配回执；缺失不证明回滚，catalogue/authority裂分保持停机。已提交只前向安装J，新实例保持disabled后显式activate，不能回退数据库/旧二进制或清账旧unknown。
+
+J最小验收依次为定向PG/API、现有Linux安装/期限/责任、PG原子迁移/最长链，以及另获授权后的最多两台各2GiB真实I→J与三笔新业务；具体结果绑定实际候选及私有记录。当前说明不代表J4真实验收或发布已完成，也不关闭#129。
 
 ## 阶段验证及限制
 

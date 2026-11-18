@@ -2006,6 +2006,121 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 )
             assert finished_drain.json()["scheduling_state"] == "disabled"
             assert finished_drain.json()["unsettled_attempts"] == 0
+        if (
+            controlled_recovery is False
+            and language == "python"
+            and os.environ.get("DLR_TEST_CLAIM_PROCESS") != "1"
+        ):
+            # J: actual administrator/fence/API + restricted PG role + original
+            # private installer and the same reload primitive used by Agent.
+            endpoint_j = f"/api/workers/{worker_id}/credentials/runtime"
+            status_j = client.get(f"/api/workers/{worker_id}/v4/status").json()
+            metadata_j = client.get(endpoint_j)
+            assert metadata_j.status_code == 200
+            operation_j = {
+                "request_id": str(uuid4()),
+                "worker_identity_id": str(identity_id),
+                "expected_latest_credential_record_id": metadata_j.json()[
+                    "latest_credential_record_id"
+                ],
+                "expected_maintenance_version": status_j["maintenance_version"],
+                "overlap_seconds": 30,
+            }
+            for authorization in ("Bearer test-worker-token", f"Bearer {runtime_secret}"):
+                assert client.post(
+                    endpoint_j + "/rotate",
+                    json=operation_j,
+                    headers={"Authorization": authorization},
+                ).status_code in (401, 403)
+            first_j = client.post(endpoint_j + "/rotate", json=operation_j)
+            assert first_j.status_code == 201, first_j.text
+            assert set(first_j.json()) == {
+                "worker_id",
+                "worker_identity_id",
+                "credential_id",
+                "credential_record_id",
+            }
+            assert first_j.headers["cache-control"] == "no-store"
+            observed_j = client.get(first_j.headers["location"])
+            assert observed_j.status_code == 200 and observed_j.json()["status"] == "committed"
+            assert observed_j.json()["metadata"]["previous_expires_at"] is not None
+            repeat_j = client.post(endpoint_j + "/rotate", json=operation_j)
+            assert repeat_j.status_code == 200 and "credential_id" not in repeat_j.json()
+            assert first_j.json()["credential_id"] not in repeat_j.text
+            stage_j = credential_dir / "runtime-credential.recovery.json"
+            stage_j.write_bytes(first_j.content)
+            stage_j.chmod(0o600)
+            before_j = (
+                lease._instance_id,
+                lease._claims.generation,
+                lease._active_deadline(),
+                lease._proof,
+            )
+            runtime_credential_v4.install_recovered_credential(
+                credential_dir, worker_id=worker_id, worker_identity_id=identity_id
+            )
+            next_j = runtime_credential_v4.load_runtime_credential(
+                credential_dir, worker_id=worker_id, worker_identity_id=identity_id
+            )
+            lease.replace_runtime_credential(next_j)
+            assert (
+                lease._instance_id,
+                lease._claims.generation,
+                lease._active_deadline(),
+                lease._proof,
+            ) == before_j
+            with pytest.raises(runtime_credential_v4.RuntimeCredentialError):
+                # A receipt is not an installation response; the strict schema
+                # remains closed instead of silently accepting metadata.
+                stage_j.write_bytes(repeat_j.content)
+                stage_j.chmod(0o600)
+                runtime_credential_v4.install_recovered_credential(
+                    credential_dir, worker_id=worker_id, worker_identity_id=identity_id
+                )
+            assert (
+                runtime_credential_v4.load_runtime_credential(
+                    credential_dir, worker_id=worker_id, worker_identity_id=identity_id
+                )
+                == next_j
+            )
+            current_headers = {**current_headers, "Authorization": f"Bearer {next_j.secret}"}
+            activation_j = client.post(
+                f"/api/workers/{worker_id}/v4/activate",
+                json={
+                    "request_id": str(uuid4()),
+                    "expected_version": status_j["maintenance_version"],
+                },
+            )
+            assert activation_j.status_code == 200, activation_j.text
+            with runtime_sessions() as session:
+                persisted_deadline = session.scalar(
+                    text("SELECT expires_at FROM worker_credentials WHERE id=:id"),
+                    {"id": operation_j["expected_latest_credential_record_id"]},
+                )
+            assert persisted_deadline == datetime.fromisoformat(
+                observed_j.json()["metadata"]["previous_expires_at"]
+            )
+            active_version_j = client.get(f"/api/workers/{worker_id}/v4/status").json()[
+                "maintenance_version"
+            ]
+            assert (
+                client.post(
+                    endpoint_j + "/rotate",
+                    json={
+                        **operation_j,
+                        "request_id": str(uuid4()),
+                        "expected_latest_credential_record_id": next_j.credential_record_id,
+                        "expected_maintenance_version": active_version_j,
+                    },
+                ).status_code
+                == 409
+            )
+            drain_j = {"request_id": str(uuid4()), "expected_version": active_version_j}
+            drained_j = client.post(f"/api/workers/{worker_id}/v4/drain", json=drain_j)
+            assert drained_j.status_code == 200
+            if drained_j.json()["scheduling_state"] == "draining":
+                drained_j = client.post(f"/api/workers/{worker_id}/v4/drain", json=drain_j)
+            assert drained_j.json()["scheduling_state"] == "disabled"
         lease.retire()
         assert client.post(heartbeat_endpoint, headers=current_headers).status_code == 409
         if os.environ.get("DLR_TEST_FIXED_WORKER_E2E") == "1":
@@ -2042,6 +2157,52 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                     session, worker_id, recovered_secret
                 ).id
                 == worker_id
+            )
+        if (
+            controlled_recovery is False
+            and language == "python"
+            and os.environ.get("DLR_TEST_CLAIM_PROCESS") != "1"
+        ):
+
+            class LostCredentialReply(Session):
+                def commit(self):
+                    super().commit()
+                    raise OSError("fixture lost credential COMMIT reply")
+
+            def lost_credential_session():
+                with LostCredentialReply(runtime_engine) as session:
+                    yield session
+
+            current_j = client.get(f"/api/workers/{worker_id}/credentials/runtime").json()
+            state_j = client.get(f"/api/workers/{worker_id}/v4/status").json()
+            unknown_j = {
+                "request_id": str(uuid4()),
+                "worker_identity_id": str(identity_id),
+                "expected_latest_credential_record_id": current_j["latest_credential_record_id"],
+                "expected_maintenance_version": state_j["maintenance_version"],
+                "overlap_seconds": 30,
+            }
+            original_dependency = app.dependency_overrides[db.get_session]
+            app.dependency_overrides[db.get_session] = lost_credential_session
+            try:
+                unknown_response = client.post(
+                    f"/api/workers/{worker_id}/credentials/runtime/rotate", json=unknown_j
+                )
+            finally:
+                app.dependency_overrides[db.get_session] = original_dependency
+            assert unknown_response.status_code == 503
+            operation_response = client.get(
+                f"/api/workers/{worker_id}/credentials/runtime/operations/{unknown_j['request_id']}"
+            )
+            assert (
+                operation_response.status_code == 200
+                and operation_response.json()["status"] == "committed"
+            )
+            repeat_response = client.post(
+                f"/api/workers/{worker_id}/credentials/runtime/rotate", json=unknown_j
+            )
+            assert (
+                repeat_response.status_code == 200 and "credential_id" not in repeat_response.json()
             )
     finally:
         tls_stack.close()
