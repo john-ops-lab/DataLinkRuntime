@@ -742,6 +742,9 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
         # Row locks require UPDATE privilege on at least one column. The
         # owner-only trigger prevents even a no-op update by this role.
         session.execute(text(f"GRANT SELECT, UPDATE (id) ON worker_legacy_window TO {quoted_role}"))
+        session.execute(
+            text(f"GRANT SELECT, INSERT ON worker_adapter_storage_owners_v4 TO {quoted_role}")
+        )
     changed = session.execute(
         text("""
         UPDATE control_cluster_authority SET image_digest=:target, schema_revision=:schema

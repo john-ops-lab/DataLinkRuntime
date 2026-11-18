@@ -201,6 +201,16 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
         assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == (
             6 if previous else 1
         )
+        storage_role_rights = session.execute(
+            text("""
+                SELECT has_table_privilege(:role, 'worker_adapter_storage_owners_v4', 'SELECT'),
+                       has_table_privilege(:role, 'worker_adapter_storage_owners_v4', 'INSERT'),
+                       has_table_privilege(:role, 'worker_adapter_storage_owners_v4', 'UPDATE'),
+                       has_table_privilege(:role, 'worker_adapter_storage_owners_v4', 'DELETE')
+            """),
+            {"role": f.role},
+        ).one()
+        assert tuple(storage_role_rights) == (True, True, False, False)
     if previous is not None:
         with f.factory() as session:
             assert transition.observe(session, previous)["status"] == "committed_superseded"

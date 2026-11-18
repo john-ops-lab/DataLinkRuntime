@@ -101,6 +101,8 @@ REVOKE DELETE ON worker_lease_candidates_v4, attempt_lease_candidates_v4,
   worker_maintenance_operations FROM dlr_wave1a_runtime;
 -- W1-F 及以后：新建部署的批量 GRANT 也不能暴露 owner 专属回执。
 REVOKE ALL ON control_image_transitions FROM dlr_wave1a_runtime;
+-- 0090 及以后：常规保留作业只能记录和读取历史 Worker 存储归属。
+REVOKE UPDATE, DELETE ON worker_adapter_storage_owners_v4 FROM dlr_wave1a_runtime;
 ```
 
 运行角色不能是数据库、schema、表或受保护函数的所有者，不能继承管理员权限、创建 schema 或改变触发器。迁移账号仅供部署操作使用；`DLR_WORKER_V4_DATABASE_ADMIN_ROLES` 明确列出可信管理员角色，初始化完毕后退出管理员数据库连接。签发和运行围栏会拒绝其他可连接的旧登录角色、旧会话及 prepared transaction；不能通过缩小查询或放宽权限绕过。
@@ -692,7 +694,7 @@ python -m dlr.control.control_identity_init_v4 proof-authority-apply \
 
 原生固定 Worker 的 Adapter 若有 v4 历史，删除先冻结 Adapter 并保留原 Attempt 及回执。短期存储节点核对原本地根和当前 Broker 通道。有专用缓存卷的节点另用原清理票据及对象级 guard 回收该 Adapter 的缓存。当前身份和 generation 报告已确认的本地清理后，Control 才移除已归档 Adapter。旧 Attempt、对象身份或清理未知时，删除与保留作业均继续保护原责任。
 
-仍在使用的 Adapter 沿现有按日期和条数的历史保留策略回收 Execution。完成清理的 Worker 从当前签名会话读取已提交的清理回执，检查原本地 journal 已退役，再按 Attempt、fence 和清理回执逐项确认。Control 独立读回确认后，保留作业再次检查每个 v4 Attempt 及其 Slot、文件 Lease、回放和事件引用。升级前尚无本地退役回执的历史继续保留，由适用的受控恢复或 Adapter 清理处理。
+仍在使用的 Adapter 沿现有按日期和条数的历史保留策略回收 Execution。完成清理的 Worker 从当前签名会话读取已提交的清理回执，检查原本地 journal 已退役，再按 Attempt、fence 和清理回执逐项确认。退役事务提交后，保留作业可以在复核每个 v4 Attempt 及其 Slot、文件 Lease、回放和事件引用后回收历史，同时保存历史 Worker 的存储归属。API 对确认事务独立读回，回复未知时保留作业仍可能已合法回收该历史。升级前尚无本地退役回执的历史继续保留，由适用的受控恢复或 Adapter 清理处理。
 
 ### TLS 与时钟
 
@@ -700,7 +702,7 @@ python -m dlr.control.control_identity_init_v4 proof-authority-apply \
 
 Control 的 PostgreSQL 时间和每台 Worker 的 Linux elapsed clock 在租期内须保持已登记的相对速率边界。应持续监测时钟同步状态、偏差与跳变，重启、休眠或时钟不明后先保留责任并重新核对时钟。Worker 对每次签名观察继续核对原请求窗口、相对经过时间及保守的两秒余量。
 
-使用现有主机监控持续采集 PostgreSQL 宿主和各 Worker 的 NTP 同步状态、偏差及采样新鲜度。在使用 `systemd-timesyncd` 的主机上，用 `timedatectl show -p NTPSynchronized -p NTP` 核对状态，用 `timedatectl timesync-status` 核对偏差和轮询间隔，并监视服务日志中的失步。Worker 日志出现 `fixed Worker clock observation unavailable` 或 `phase=heartbeat_exchange` 时核对当前租约和容量。出现失步、跳变或监控中断时暂停新提交，保留并对账现有责任。重新取得可信时钟观察并完成结清后，按原维护流程显式激活。
+使用现有主机监控持续采集 PostgreSQL 宿主和各 Worker 的 NTP 同步状态、偏差及采样新鲜度。在使用 `systemd-timesyncd` 的主机上，用 `timedatectl show -p NTPSynchronized -p NTP` 核对状态，用 `timedatectl timesync-status` 核对偏差和轮询间隔，并监视服务日志中的失步。Worker 日志出现 `fixed Worker clock observation unavailable` 或 `phase=heartbeat_exchange` 时核对当前租约和容量。出现失步、跳变或监控中断时暂停新提交，保留并对账现有责任。恢复可信时钟观察后，读回当前维护状态、有效租约和容量。已恢复为可调度的 active Worker 可以重新开放入队。disabled Worker 按原维护流程显式激活后再开放入队。
 
 ## 阶段验证及限制
 
