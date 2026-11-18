@@ -293,8 +293,10 @@ class CacheMaintenance:
         self._cleanup = context
         try:
             state = self._deletion.cleanup_state(cleanup_id)
-            if state == "pending":
-                self._deletion.recover_round(max_items=_MAX_KEYS, max_seconds=2)
+            if state in {"pending", "unknown"}:
+                # Traverse old local records without requiring an unrelated
+                # remote guard page before confirming the exact ticket.
+                self._deletion.recover_round(max_items=_MAX_KEYS, max_pages=0, max_seconds=2)
                 state = self._deletion.cleanup_state(cleanup_id)
             if state != "clear":
                 return False
@@ -346,6 +348,7 @@ class CacheMaintenance:
         entries = self._manager.cache.entries
 
         def scope() -> tuple[int, ...]:
+            self._verify()
             info = entries.stat(follow_symlinks=False)
             if not stat.S_ISDIR(info.st_mode) or info.st_dev != os.fstat(self._fd).st_dev:
                 raise CacheError("cache_owner_unconfirmed")
@@ -457,3 +460,8 @@ class CacheMaintenance:
         completed = self._exchange("result", {"operation_id": str(operation), "result": previous})
         if completed != {"operation_id": str(operation), "status": "completed"}:
             raise CacheError("cache_operation_unknown")
+        if kind == "clean":
+            self._verify()
+            self._deletion.release_management_records(
+                operation, operation_ids=[uuid5(operation, key) for key in sorted(keys)]
+            )
