@@ -7,7 +7,8 @@ import os
 import re
 import stat
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +40,9 @@ class CacheMaintenance:
         self._worker_id = lease._worker_id
         self._command: UUID | None = None
         self._cleanup: dict[str, int] | None = None
+        self._cleanup_scan: Iterator[os.DirEntry[str]] | None = None
+        self._cleanup_scan_context = ExitStack()
+        self._cleanup_scan_scope: tuple[int, ...] | None = None
         self._fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
             fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -80,6 +84,7 @@ class CacheMaintenance:
                 journal_protected=self._journal_protected,
                 offline_protection=True,
                 bind_observed_identity=True,
+                mutation_authority=self._require_mutation,
             )
             self._manager = CachePolicyManager(root, cache, self._store, self._deletion, policy)
         except BaseException:
@@ -87,6 +92,7 @@ class CacheMaintenance:
             raise
 
     def close(self) -> None:
+        self._reset_cleanup_scan()
         os.close(self._fd)
 
     def _verify(self) -> None:
@@ -96,7 +102,7 @@ class CacheMaintenance:
             or (actual.st_dev, actual.st_ino) != (named.st_dev, named.st_ino)
             or actual.st_uid != os.geteuid()
             or stat.S_IMODE(actual.st_mode) != 0o700
-            or not workspace_fs_v4._mounts_safe(self._root, self._root / "version-cache" / "probe")
+            or not workspace_fs_v4._mounts_safe(self._root)
             or self._stop.is_set()
         ):
             raise CacheError("cache_owner_unconfirmed")
@@ -106,6 +112,17 @@ class CacheMaintenance:
         # Cache references and any v3 history are still checked by Control.
         self._verify()
         return False
+
+    def _require_mutation(self) -> None:
+        if not self._lease._same_process():
+            raise ControlUnavailableError("cache ownership unavailable")
+        with self._lease._lock:
+            try:
+                self._lease._require_before(self._lease._active_deadline())
+                if self._stop.is_set():
+                    raise WorkerLeaseError("cache ownership unavailable")
+            except WorkerLeaseError:
+                raise ControlUnavailableError("cache ownership unavailable") from None
 
     def _exchange(self, action: str, body: Mapping[str, object]) -> dict[str, Any] | None:
         self._verify()
@@ -214,8 +231,8 @@ class CacheMaintenance:
             },
         )
 
-    def _snapshot(self) -> None:
-        report = self._manager.management_snapshot(max_items=_MAX_KEYS)
+    def _snapshot(self, *, keys: frozenset[str] | None = None) -> None:
+        report = self._manager.management_snapshot(max_items=_MAX_KEYS, target_keys=keys)
         sample, path = uuid4(), self._store.state_root / "management-snapshot-sequence.json"
         current = _read_bounded_json(path, max_bytes=1024)
         sequence = 1
@@ -277,19 +294,14 @@ class CacheMaintenance:
             self._deletion.recover_round(max_items=_MAX_KEYS, max_seconds=2)
             if self._deletion.cleanup_state(cleanup_id) != "clear":
                 return False
-            keys: list[str] = []
-            with os.scandir(self._manager.cache.entries) as items:
-                for position, entry in enumerate(items):
-                    if position >= self._manager.policy.max_scan_entries_per_round:
-                        return False
-                    if re.fullmatch(r"[1-9][0-9]{0,18}-[1-9][0-9]{0,18}", entry.name) is None:
-                        return False
-                    if entry.name.startswith(f"{aid}-"):
-                        keys.append(entry.name)
+            keys = self._cleanup_keys(aid, cleanup_id, ticket["claim_attempt"])
+            if keys is None:
+                return False
             if not keys:
                 return True
+            self._snapshot(keys=frozenset(keys))
             policy = self._manager.policy
-            for key in keys[:_MAX_KEYS]:
+            for key in keys:
                 self._verify()
                 identity = self._store.lifecycle(key)
                 version_id = int(key.split("-")[1])
@@ -316,6 +328,55 @@ class CacheMaintenance:
             return False
         finally:
             self._cleanup = None
+
+    def _reset_cleanup_scan(self) -> None:
+        self._cleanup_scan_context.close()
+        self._cleanup_scan = self._cleanup_scan_scope = None
+
+    def _cleanup_keys(
+        self, adapter_id: int, cleanup_id: int, claim_attempt: int
+    ) -> list[str] | None:
+        entries = self._manager.cache.entries
+
+        def scope() -> tuple[int, ...]:
+            info = entries.stat(follow_symlinks=False)
+            if not stat.S_ISDIR(info.st_mode) or info.st_dev != os.fstat(self._fd).st_dev:
+                raise CacheError("cache_owner_unconfirmed")
+            return (
+                adapter_id,
+                cleanup_id,
+                claim_attempt,
+                info.st_dev,
+                info.st_ino,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+            )
+
+        initial = scope()
+        items = self._cleanup_scan
+        if items is None or initial != self._cleanup_scan_scope:
+            self._reset_cleanup_scan()
+            self._cleanup_scan = items = self._cleanup_scan_context.enter_context(
+                os.scandir(entries)
+            )
+            self._cleanup_scan_scope = initial
+        keys: list[str] = []
+        for _ in range(self._manager.policy.max_scan_entries_per_round):
+            entry = next(items, None)
+            if entry is None:
+                self._reset_cleanup_scan()
+                return keys if initial == scope() else None
+            if re.fullmatch(r"[1-9][0-9]{0,18}-[1-9][0-9]{0,18}", entry.name) is None:
+                self._reset_cleanup_scan()
+                return None
+            if entry.name.startswith(f"{adapter_id}-"):
+                keys.append(entry.name)
+                if len(keys) == _MAX_KEYS:
+                    break
+        if keys:
+            self._reset_cleanup_scan()
+            return keys if initial == scope() else None
+        return None
 
     def _command_result(self, operation: UUID, command: dict[str, Any]) -> None:
         kind = command["kind"]
@@ -353,6 +414,7 @@ class CacheMaintenance:
                     for row in (self._deletion.operation_result_fact(key) for key in pending)
                 }
                 if remaining:
+                    self._snapshot(keys=remaining)
                     changed = self._manager.run_round(
                         mode="manual", target_keys=remaining, operation_namespace=operation
                     )

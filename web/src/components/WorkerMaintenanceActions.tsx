@@ -74,9 +74,14 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
   const busyRef = useRef(false);
   const generation = useRef(0);
   const controller = useRef<AbortController | null>(null);
+  const confirmationTrigger = useRef<HTMLElement | null>(null);
   const refreshRef = useRef(onRefresh);
   const descriptionId = useId();
-  const restoreFocus = useOverlayFocus(confirmation !== null, '[data-testid="system-status-refresh"], [data-testid="worker-maintenance-recheck"]');
+  const restoreFocus = useOverlayFocus(
+    confirmation !== null,
+    '[data-testid="system-status-refresh"], [data-testid="worker-maintenance-recheck"]',
+    confirmationTrigger,
+  );
 
   useEffect(() => { refreshRef.current = onRefresh; }, [onRefresh]);
   // A separate health refresh failure does not undo an observed committed
@@ -189,8 +194,11 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
     && receipt.current.scheduling_state === "draining" && sameReceipt(receipt, pending)
     ? pending : undefined;
 
-  const prepare = async (action: WorkerMaintenanceAction, reuse?: WorkerMaintenanceIntent, retry = false) => {
+  const prepare = async (
+    trigger: HTMLElement, action: WorkerMaintenanceAction, reuse?: WorkerMaintenanceIntent, retry = false,
+  ) => {
     if (busyRef.current || scope === null || storageBlocked) return;
+    confirmationTrigger.current = trigger;
     busyRef.current = true;
     setBusy(true);
     const current = generation.current;
@@ -298,22 +306,22 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
     <div className="worker-maintenance-actions" data-testid="worker-maintenance-actions" aria-busy={busy}>
       <div className="worker-maintenance-buttons" aria-describedby={descriptionId}>
         {snapshot?.scheduling_state === "active" && (
-          <Button disabled={blocked || pending !== null} onClick={() => void prepare("drain")}>{t("worker.maintenance.drain")}</Button>
+          <Button disabled={blocked || pending !== null} onClick={(event) => void prepare(event.currentTarget, "drain")}>{t("worker.maintenance.drain")}</Button>
         )}
         {snapshot?.scheduling_state === "disabled" && (
-          <Button type="primary" disabled={blocked || pending !== null || !canActivate(snapshot)} onClick={() => void prepare("activate")}>{t("worker.maintenance.activate")}</Button>
+          <Button type="primary" disabled={blocked || pending !== null || !canActivate(snapshot)} onClick={(event) => void prepare(event.currentTarget, "activate")}>{t("worker.maintenance.activate")}</Button>
         )}
         {snapshot?.scheduling_state === "draining" && snapshot.current_maintenance_action !== "reconcile" && (
           <Button disabled={blocked || otherPending || continuation === null || !canConfirmDrain(snapshot, continuation)}
-            onClick={() => continuation && void prepare("drain", continuation)}>{t("worker.maintenance.confirmDrain")}</Button>
+            onClick={(event) => continuation && void prepare(event.currentTarget, "drain", continuation)}>{t("worker.maintenance.confirmDrain")}</Button>
         )}
         {snapshot && canStartAction(snapshot, "force_stop") && (
           <Button danger disabled={blocked || (pending !== null && !confirmedDrain)}
-            onClick={() => void prepare("force_stop")}>{t("worker.maintenance.forceStop")}</Button>
+            onClick={(event) => void prepare(event.currentTarget, "force_stop")}>{t("worker.maintenance.forceStop")}</Button>
         )}
         {snapshot?.scheduling_state === "draining" && snapshot.current_maintenance_action === "reconcile" && (
           <Button disabled={blocked || pending !== null || !canConfirmRecoveredDrain(snapshot)}
-            onClick={() => void prepare("drain")}>{t("worker.maintenance.confirmRecoveredDrain")}</Button>
+            onClick={(event) => void prepare(event.currentTarget, "drain")}>{t("worker.maintenance.confirmRecoveredDrain")}</Button>
         )}
       </div>
       <p id={descriptionId} className="worker-maintenance-hint">{t("worker.maintenance.actionBoundary")}</p>
@@ -341,7 +349,7 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
         <div className="worker-maintenance-pending">
           <p>{t("worker.maintenance.pendingRequest")} <code>{pending.request_id}</code> · {pending.expected_version}</p>
           <Button data-testid="worker-maintenance-recheck" disabled={busy || notice === "mismatch"} onClick={() => void recheck()}>{t("worker.maintenance.lookup")}</Button>
-          <Button disabled={blocked || notice === "mismatch"} onClick={() => void prepare(pending.action, pending, true)}>{t("worker.maintenance.retrySame")}</Button>
+          <Button disabled={blocked || notice === "mismatch"} onClick={(event) => void prepare(event.currentTarget, pending.action, pending, true)}>{t("worker.maintenance.retrySame")}</Button>
         </div>
       )}
       <Modal open={confirmation !== null} title={t(`worker.maintenance.${confirmation?.retry ? "retryTitle" : confirmTitle}`)}

@@ -36,7 +36,13 @@ from dlr.common.lease_proof_wire_v4 import verify_worker_proof_signature
 from dlr.control import db
 from dlr.control.app import create_app
 from dlr.control.control_identity_init_v4 import initialize
-from dlr.control.models import Execution, ExecutionAttempt, ExecutionOutbox, Worker
+from dlr.control.models import (
+    EventSubscription,
+    Execution,
+    ExecutionAttempt,
+    ExecutionOutbox,
+    Worker,
+)
 from dlr.control.schemas.reliable_runtime import AttemptActionBody
 from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
 from dlr.control.services import worker_credentials
@@ -2237,6 +2243,18 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                     terminal_status="cancelled",
                 )
             assert client.get(f"{base}/status").json()["unsettled_attempts"] == 0
+            with session_factory.begin() as owner:
+                subscription = EventSubscription(
+                    adapter_id=claimed.payload.adapter_id,
+                    source_type="kafka",
+                    name="drained-before-adapter-delete",
+                    source_epoch="adapter-delete-history",
+                    desired_state="disabled",
+                    deleted_at=datetime.now(UTC),
+                )
+                owner.add(subscription)
+                owner.flush()
+                subscription_id = subscription.id
             cleanup_headers = {**current_headers, "X-DLR-Worker-Lease-Proof": lease._proof}
             ready = client.post(
                 endpoint,
@@ -2251,6 +2269,7 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
 
             with runtime_sessions() as readback:
                 assert readback.get(Execution, execution_id) is not None
+                assert readback.get(EventSubscription, subscription_id) is not None
                 assert not finalize_one_v4_adapter_deletion(readback)
             cleanup_path = f"{base}/adapter-cleanup"
             assert (
@@ -2278,9 +2297,10 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 saved = client.post(cleanup_url + "/complete", headers=cleanup_headers, json=ticket)
                 assert saved.status_code == 200 and saved.json() == {"completed": ticket}
             with runtime_sessions() as readback:
-                assert finalize_one_v4_adapter_deletion(readback)
+                assert finalize_one_v4_adapter_deletion(readback) == claimed.payload.adapter_id
             with runtime_sessions() as readback:
                 assert readback.get(Execution, execution_id) is None
+                assert readback.get(EventSubscription, subscription_id) is None
             return
         result_pending = _assert_result_transaction_fences(
             runtime_sessions,

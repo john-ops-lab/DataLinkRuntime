@@ -294,6 +294,57 @@ def test_read_only_scan_retains_both_charges_and_rejects_missing_without_intent(
     assert (leaf / "input.json").exists()
 
 
+@pytest.mark.parametrize("conflict", [None, "physical", "result_binding"])
+def test_scan_distinguishes_atomic_force_stop_successor(original, conflict):
+    _, _, attempts, prepared, stopped, _, fd, _ = original
+    _, canonical = checkpoint.names(prepared["attempt_id"])
+    os.unlink(canonical, dir_fd=fd)
+    for name in stopped["result_record"]:
+        os.unlink(name, dir_fd=fd)
+    force = {
+        **{key: value for key, value in stopped.items() if key not in {"intent_id", "body_mac"}},
+        "phase": "force_stopped",
+        "force_stop_operation_id": str(uuid4()),
+        "result_record": {},
+    }
+    nonce = uuid4()
+    result_name = f"result-{prepared['attempt_id']}-{nonce.hex}.intent.json"
+    result = {
+        "version": 1,
+        **{
+            key: prepared[key]
+            for key in (
+                "worker_identity_id",
+                "instance_id",
+                "instance_generation",
+                "attempt_id",
+                "fencing_token",
+            )
+        },
+        "intent_id": stopped["intent_id"],
+        "body_mac": stopped["body_mac"],
+        "observation_nonce": str(nonce),
+        "result_proof": "recorded-test-proof",
+    }
+    if conflict == "result_binding":
+        result["instance_id"] = str(uuid4())
+    if conflict == "physical":
+        force["sandbox_mount_expected"] = not stopped["sandbox_mount_expected"]
+    successor = {**stopped, "result_record": {result_name: checkpoint.digest(result)}}
+    successor_name = f"recovery-{prepared['attempt_id']}.result-stopped.json"
+    for name, record in ((canonical, force), (result_name, result), (successor_name, successor)):
+        checkpoint.persist(fd, name, record)
+    before = tuple(sorted(attempts.iterdir()))
+    if conflict is None:
+        observed = scan(original)
+        assert observed.stopped == successor
+        assert observed.predecessor_sha256 == checkpoint.digest(force)
+    else:
+        with pytest.raises(ValueError, match="successor"):
+            scan(original)
+    assert tuple(sorted(attempts.iterdir())) == before
+
+
 @pytest.mark.parametrize("damage", ["replace", "extra", "nonempty", "symlink", "foreign_attempt"])
 def test_read_only_scan_refuses_changed_objects_before_registration(original, damage):
     leaf = original[1] / "workspaces/attempt-8/dlr-exec-5"

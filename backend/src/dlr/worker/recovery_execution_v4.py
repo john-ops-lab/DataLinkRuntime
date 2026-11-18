@@ -36,6 +36,46 @@ class RecoveryState:
     stopped: dict[str, Any]
     attempt_record: dict[str, Any]
     terminal: dict[str, Any] | None
+    predecessor_sha256: str | None = None
+
+
+def _read_result_successor(
+    directory: int, name: str, prepared: dict[str, Any], stopped: object, *, allow_files: bool
+) -> dict[str, Any]:
+    successor = journal_v4._read(directory, name)
+    if successor is None or not checkpoint.is_result_successor(
+        prepared, stopped, successor, allow_files=allow_files
+    ):
+        raise ValueError("recovery stop successor conflict")
+    references = successor["result_record"]
+    if len(references) != 1:
+        raise ValueError("recovery stop successor has invalid result journal")
+    result_name, digest = next(iter(references.items()))
+    result = journal_v4._read(directory, result_name)
+    binding = {
+        "worker_identity_id",
+        "instance_id",
+        "instance_generation",
+        "attempt_id",
+        "fencing_token",
+    }
+    if (
+        result is None
+        or checkpoint.digest(result) != digest
+        or set(result)
+        != binding | {"version", "intent_id", "body_mac", "observation_nonce", "result_proof"}
+        or type(result["version"]) is not int
+        or result["version"] != 1
+        or any(result[key] != prepared[key] for key in binding)
+        or any(result[key] != successor[key] for key in ("intent_id", "body_mac"))
+        or not checkpoint._uuid(result["observation_nonce"])
+        or result_name
+        != f"result-{prepared['attempt_id']}-{UUID(result['observation_nonce']).hex}.intent.json"
+        or not isinstance(result["result_proof"], str)
+        or not result["result_proof"]
+    ):
+        raise ValueError("recovery stop successor has invalid result journal")
+    return successor
 
 
 def scan(
@@ -63,6 +103,8 @@ def scan(
             name for name in names if re.fullmatch(r"recovery-[1-9][0-9]*\.prepared.json", name)
         ]
         terminal = None
+        predecessor_sha256 = None
+        successor_name = None
         if len(terminals) == 1:
             terminal = journal_v4._read(directory, terminals[0])
             if not recovery_local_v4.valid_terminal(terminal, _active_files=allow_files) or (
@@ -78,6 +120,15 @@ def scan(
             ):
                 raise ValueError("recovery prepared invalid")
             stopped = journal_v4._read(directory, checkpoint.names(prepared["attempt_id"])[1])
+            successor = f"recovery-{prepared['attempt_id']}.result-stopped.json"
+            if successor in names:
+                if stopped is None:
+                    raise ValueError("recovery stop predecessor unavailable")
+                selected = _read_result_successor(
+                    directory, successor, prepared, stopped, allow_files=allow_files
+                )
+                predecessor_sha256 = checkpoint.digest(stopped)
+                successor_name, stopped = successor, selected
             records = {
                 name: journal_v4._read(directory, name) for name in prepared["journal_records"]
             }
@@ -120,7 +171,14 @@ def scan(
             raise ValueError("recovery original storage unavailable")
         refs = {**prepared["journal_records"], **stopped["result_record"]}
         first, last = checkpoint.names(prepared["attempt_id"])
-        refs.update({first: checkpoint.digest(prepared), last: checkpoint.digest(stopped)})
+        refs.update(
+            {
+                first: checkpoint.digest(prepared),
+                last: predecessor_sha256 or checkpoint.digest(stopped),
+            }
+        )
+        if successor_name is not None:
+            refs[successor_name] = checkpoint.digest(stopped)
         original_refs = dict(refs)
         if terminal is not None:
             if (
@@ -259,7 +317,7 @@ def scan(
                     empty_layout(child, {})
                 finally:
                     os.close(child)
-        return RecoveryState(prepared, stopped, attempt_record, terminal)
+        return RecoveryState(prepared, stopped, attempt_record, terminal, predecessor_sha256)
 
 
 def read_operation(
@@ -573,6 +631,14 @@ def recover(
         if state.terminal is None:
             if lease._claims is None:
                 raise ValueError("recovery instance unavailable")
+            if state.predecessor_sha256 is not None:
+                attempt_id = state.prepared["attempt_id"]
+                successor = f"recovery-{attempt_id}.result-stopped.json"
+                last = checkpoint.names(attempt_id)[1]
+                checkpoint.persist(directory, successor, state.stopped)
+                lease._require_before(lease._active_deadline())
+                os.replace(successor, last, src_dir_fd=directory, dst_dir_fd=directory)
+                os.fsync(directory)
             checkpoint.persist(
                 directory,
                 f"recovery-{state.prepared['attempt_id']}.instance-{lease._instance_id.hex}.json",

@@ -436,6 +436,13 @@ class _DeleteBudget:
     deadline: float
     removed_nodes: int = 0
     removed_bytes: int = 0
+    mutation_authority: Callable[[], None] | None = None
+
+    def require_mutation(self) -> None:
+        if self.mutation_authority is not None:
+            if time.monotonic() >= self.deadline:
+                raise CacheError("cache_budget_exhausted")
+            self.mutation_authority()
 
 
 @dataclass
@@ -454,6 +461,7 @@ def _delete_some(path: Path, budget: _DeleteBudget, *, depth: int = 0) -> bool:
         size = info.st_size if stat.S_ISREG(info.st_mode) else 0
         if budget.removed_bytes + size > budget.bytes:
             return False
+        budget.require_mutation()
         path.unlink()
         budget.removed_nodes += 1
         budget.removed_bytes += size
@@ -462,6 +470,7 @@ def _delete_some(path: Path, budget: _DeleteBudget, *, depth: int = 0) -> bool:
     if not stat.S_ISDIR(info.st_mode):
         raise CacheError("cache_delete_path_invalid")
     if stat.S_IMODE(info.st_mode) & 0o300 != 0o300:
+        budget.require_mutation()
         os.chmod(path, stat.S_IMODE(info.st_mode) | 0o300, follow_symlinks=False)
     with os.scandir(path) as iterator:
         for item in iterator:
@@ -472,6 +481,7 @@ def _delete_some(path: Path, budget: _DeleteBudget, *, depth: int = 0) -> bool:
         return False
     try:
         _sync_directory(path, strict=True)
+        budget.require_mutation()
         path.rmdir()
     except OSError as error:
         if error.errno in {errno.ENOTEMPTY, errno.EEXIST}:
@@ -487,6 +497,7 @@ def _delete_contents(path: Path, budget: _DeleteBudget) -> bool:
     if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
         raise CacheError("cache_delete_path_invalid")
     if stat.S_IMODE(info.st_mode) & 0o300 != 0o300:
+        budget.require_mutation()
         os.chmod(path, stat.S_IMODE(info.st_mode) | 0o300, follow_symlinks=False)
     with os.scandir(path) as iterator:
         for item in iterator:
@@ -513,6 +524,7 @@ class CacheDeletionManager:
         offline_protection: bool = True,
         offline_mode: bool = False,
         bind_observed_identity: bool = False,
+        mutation_authority: Callable[[], None] | None = None,
         retry_seconds: float = 60.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -529,6 +541,7 @@ class CacheDeletionManager:
         self.offline_protection = offline_protection
         self.offline_mode = offline_mode
         self.bind_observed_identity = bind_observed_identity
+        self.mutation_authority = mutation_authority
 
     def make_round_budget(
         self,
@@ -542,7 +555,10 @@ class CacheDeletionManager:
     ) -> _RoundBudget:
         return _RoundBudget(
             deletion=_DeleteBudget(
-                nodes=max(1, max_nodes), bytes=max(1, max_bytes), deadline=deadline
+                nodes=max(1, max_nodes),
+                bytes=max(1, max_bytes),
+                deadline=deadline,
+                mutation_authority=self.mutation_authority,
             ),
             scan=CacheScanBudget(
                 nodes_remaining=max_scan_nodes,
@@ -1233,6 +1249,7 @@ class CacheDeletionManager:
                         ):
                             raise CacheError(latest_reason or "cache_not_eligible")
                         self._local_safe(key)
+                        budget.deletion.require_mutation()
                         os.replace(source, trash)
                         _sync_directory(self.cache.entries, strict=True)
                 else:
@@ -1259,6 +1276,7 @@ class CacheDeletionManager:
                 if trash.exists():
                     _assert_root_identity(trash, record)
                     try:
+                        budget.deletion.require_mutation()
                         trash.rmdir()
                     except OSError as error:
                         if error.errno in {errno.ENOTEMPTY, errno.EEXIST}:
@@ -1272,7 +1290,7 @@ class CacheDeletionManager:
                 record["updated_at"] = self.clock()
                 _write_record(path, record)
             if record["phase"] == "receipt_pending":
-                self._retire_deleted_instance(record)
+                self._retire_deleted_instance(record, budget.deletion)
                 response = self.client.finish_cache_guard(
                     self.worker_id,
                     operation_id,
@@ -1329,7 +1347,7 @@ class CacheDeletionManager:
                 operation_id, str(record["phase"]), reason=str(record["last_error"])
             )
 
-    def _retire_deleted_instance(self, record: Mapping[str, Any]) -> None:
+    def _retire_deleted_instance(self, record: Mapping[str, Any], budget: _DeleteBudget) -> None:
         """Retire the exact empty instance while its deletion guard is still held.
 
         Its durable receipt-pending record remains the recovery authority until
@@ -1365,7 +1383,9 @@ class CacheDeletionManager:
         from dlr.worker.cache_rebuild import _receipt_path
 
         try:
+            budget.require_mutation()
             _receipt_path(self.cache.root, key).unlink(missing_ok=True)
+            budget.require_mutation()
             sidecar.unlink(missing_ok=True)
             _sync_directory(self.lifecycle.lifecycle_root, strict=True)
             _sync_directory(self.lifecycle.state_root, strict=True)
@@ -1519,16 +1539,13 @@ class CacheDeletionManager:
         max_seconds: float = 10.0,
     ) -> int:
         deadline = time.monotonic() + max_seconds
-        round_budget = _RoundBudget(
-            deletion=_DeleteBudget(
-                nodes=max(1, max_nodes), bytes=max(1, max_bytes), deadline=deadline
-            ),
-            scan=CacheScanBudget(
-                nodes_remaining=max_scan_nodes,
-                hash_bytes_remaining=max_hash_bytes,
-                deadline=deadline,
-                max_depth=max_scan_depth,
-            ),
+        round_budget = self.make_round_budget(
+            max_nodes=max_nodes,
+            max_bytes=max_bytes,
+            max_scan_nodes=max_scan_nodes,
+            max_hash_bytes=max_hash_bytes,
+            deadline=deadline,
+            max_scan_depth=max_scan_depth,
         )
         processed = 0
         cursor_path = self.lifecycle.state_root / "deletion-recovery-cursor.json"
@@ -1575,6 +1592,7 @@ class CacheDeletionManager:
                     or record.get("retry_management_operation_id") is not None
                 ):
                     continue
+                round_budget.deletion.require_mutation()
                 path.unlink()
                 _sync_directory(self.lifecycle.deletion_root, strict=True)
                 continue

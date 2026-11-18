@@ -1,5 +1,6 @@
 """Adapter and immutable Revision domain service (M5.4.1)."""
 
+import logging
 import secrets as stdlib_secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -7,7 +8,7 @@ from datetime import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import JSON, delete, func, null, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from dlr.control.models import (
@@ -39,6 +40,8 @@ from dlr.control.services.execution_cancellation import (
     lock_nonterminal_executions,
     request_cancellation,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -628,7 +631,10 @@ def _delete_adapter_attempt(
 ) -> tuple[AdapterDeleteResult, int | None] | None:
     """One savepoint owns all history, quota and permanent-delete mutations."""
     from dlr.control.services import managed_input_gc
-    from dlr.control.services.subscription_delivery import purge_deleted_adapter_history
+    from dlr.control.services.subscription_delivery import (
+        lock_drained_adapter_subscriptions,
+        purge_deleted_adapter_history,
+    )
 
     adapter = session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
     if adapter is None or (adapter.archived_at is not None) != finalize_v4:
@@ -643,13 +649,15 @@ def _delete_adapter_attempt(
     # The temporary archive satisfies the DB batch guard. On any failure the
     # surrounding savepoint restores both database and ORM state; never write
     # a replacement flag into an already-failed SQL transaction.
-    if not has_v4_attempts:
+    if not has_v4_attempts or finalize_v4:
         archived_at = adapter.archived_at
         adapter.archived_at = worker_availability.current_time(session)
         session.flush()
         purge_deleted_adapter_history(session, adapter.id)
         adapter.archived_at = archived_at
         session.flush()
+    else:
+        lock_drained_adapter_subscriptions(session, adapter.id)
     # Acquire the RabbitMQ Admission scope before locking any Execution.  The
     # scope is harmless for a legacy-only Adapter and makes stop/delete follow
     # the same Adapter -> AdapterAdmission -> Global -> Execution/Outbox order
@@ -763,8 +771,8 @@ def _delete_adapter_attempt(
     )
 
 
-def finalize_one_v4_adapter_deletion(session: Session) -> bool:
-    """Retire one archived Adapter after all of its local scopes confirmed."""
+def finalize_one_v4_adapter_deletion(session: Session, *, after_adapter_id: int = 0) -> int | None:
+    """Visit one ready Adapter so a blocked owner cannot stall later cleanup."""
     pending = select(WorkerCleanupRequest.id).where(
         WorkerCleanupRequest.adapter_id == Adapter.id,
         WorkerCleanupRequest.v4_identity_id.is_not(None),
@@ -772,27 +780,40 @@ def finalize_one_v4_adapter_deletion(session: Session) -> bool:
     ready = pending.where(WorkerCleanupRequest.status != "completed")
     adapter = session.scalar(
         select(Adapter)
-        .where(Adapter.archived_at.is_not(None), pending.exists(), ~ready.exists())
+        .where(
+            Adapter.id > after_adapter_id,
+            Adapter.archived_at.is_not(None),
+            pending.exists(),
+            ~ready.exists(),
+        )
         .order_by(Adapter.id)
         .with_for_update(skip_locked=True)
         .limit(1)
     )
     if adapter is None:
         session.rollback()
-        return False
+        return None
     from dlr.control.services import managed_input_gc
 
-    managed_input_gc.ensure_no_active_upload(session, adapter.id)
-    result = _delete_adapter_attempt(session, adapter.id, stop=False, finalize_v4=True)
-    if result is None:
+    adapter_id = adapter.id
+    try:
+        managed_input_gc.ensure_no_active_upload(session, adapter_id)
+        result = _delete_adapter_attempt(session, adapter_id, stop=False, finalize_v4=True)
+        if result is None:
+            session.rollback()
+            return adapter_id
+        session.commit()
+    except (HTTPException, SQLAlchemyError) as error:
         session.rollback()
-        return False
-    session.commit()
+        logger.warning(
+            "Adapter %s finalization remains pending (%s)", adapter_id, type(error).__name__
+        )
+        return adapter_id
     _, deletion_job_id = result
     managed_input_gc.record_audit_event(
-        "adapter_delete", "success", adapter_id=adapter.id, deletion_job_id=deletion_job_id
+        "adapter_delete", "success", adapter_id=adapter_id, deletion_job_id=deletion_job_id
     )
-    return True
+    return adapter_id
 
 
 def list_versions(session: Session, adapter_id: int) -> list[AdapterVersion]:

@@ -19,7 +19,7 @@ Before rotating the Control proof key or changing the database primary, freeze i
 | `DLR_WORKER_BUILTIN_WHEEL_MODE` | `pure_python` requires managed-files mode and a separate sandbox probe. One frozen builtin PyPI wheel with an exact `name==version` requirement runs in the Attempt's own staging scope. |
 | `DLR_WORKER_CACHE_ROOT` | Optional absolute path to a separately mounted, Worker-owned local cache. Keep mode 0700 and preserve its existing v4 owner record. Admin preview and clean commands select at most eight observed keys. |
 
-Keep exactly one queue account per Worker. The credential can consume its own queue. Use a separate deployment account for topology and publishing. Drain the Worker and independently inspect ready and unacknowledged deliveries, stop and verify the old connection, revoke the old account, then replace the Broker configuration with the new credential. Retain the runtime HTTP credential, CA, stable identity, and original storage during this operation.
+Keep exactly one queue account per Worker. The credential can consume its own queue. Use a separate deployment account for topology and publishing. Pause new submissions to the target Worker and leave it active until queued work settles. Then drain it, verify that ready and unacknowledged deliveries are zero, and stop the Worker. Install the verified new Broker configuration atomically before revoking the old account. Verify the old connections are gone and the new account can access only its queue. After the original lease expires, start the Worker in the disabled state and activate it explicitly. Retain the runtime HTTP credential, CA, stable identity, and original storage during this operation.
 
 ## Maintenance and transport
 

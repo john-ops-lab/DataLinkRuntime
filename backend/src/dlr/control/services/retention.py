@@ -269,18 +269,22 @@ def cleanup_execution_retention(
     return report
 
 
-def _retention_tick() -> None:
+def _retention_tick(after_adapter_id: int = 0) -> int:
     """Run one blocking cleanup cycle in a short-lived database session."""
 
     from dlr.control.db import SessionLocal
 
     session = SessionLocal()
     try:
+        adapter_cursor = 0
         if settings.worker_remote_v4_enabled:
             from dlr.control.services.adapter import finalize_one_v4_adapter_deletion
 
-            finalize_one_v4_adapter_deletion(session)
+            adapter_cursor = (
+                finalize_one_v4_adapter_deletion(session, after_adapter_id=after_adapter_id) or 0
+            )
         cleanup_execution_retention(session)
+        return adapter_cursor
     finally:
         session.close()
 
@@ -293,9 +297,10 @@ async def retention_loop() -> None:
         settings.execution_retention_interval_seconds,
         settings.execution_retention_batch_size,
     )
+    adapter_cursor = 0
     while True:
         try:
-            await asyncio.to_thread(_retention_tick)
+            adapter_cursor = await asyncio.to_thread(_retention_tick, adapter_cursor)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - keep the service loop alive

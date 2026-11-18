@@ -680,10 +680,12 @@ class CachePolicyManager:
             "policy": self.policy.public_values(),
         }
 
-    def management_snapshot(self, *, max_items: int = 200) -> dict[str, Any]:
+    def management_snapshot(
+        self, *, max_items: int = 200, target_keys: frozenset[str] | None = None
+    ) -> dict[str, Any]:
         """Return one scan page; totals and keys share the same bounded observation."""
 
-        report = self.scan(mode="manual", page_limit=max_items)
+        report = self.scan(mode="manual", target_keys=target_keys, page_limit=max_items)
         failed_cursor_path = self.lifecycle.state_root / "management-failed-guard-cursor.json"
         failed_cursor_value = _read_bounded_json(failed_cursor_path, max_bytes=1024)
         failed_after = None
@@ -709,7 +711,7 @@ class CachePolicyManager:
         return {
             "schema": SCHEMA_VERSION,
             "sampled_at": self.clock(),
-            "complete": report.complete,
+            "complete": report.complete and target_keys is None,
             "cursor": report.cursor,
             "accounting": {
                 "committed_bytes": report.committed_bytes,

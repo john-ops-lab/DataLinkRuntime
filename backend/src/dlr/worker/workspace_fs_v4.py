@@ -7,7 +7,7 @@ import stat
 from pathlib import Path
 
 
-def _mounts_safe(root: Path, parent: Path) -> bool:
+def _mounts_safe(root: Path, parent: Path | None = None) -> bool:
     """Reject nested mounts and shared/slave propagation in this namespace only."""
     try:
         entries = []
@@ -26,6 +26,8 @@ def _mounts_safe(root: Path, parent: Path) -> bool:
         _, flags = max(ancestors, key=lambda item: len(item[0].parts))
         if any(flag.startswith(("shared:", "master:", "propagate_from:")) for flag in flags):
             return False
+        if parent is None:
+            return not any(root in path.parents for path, _ in entries)
         return not any(
             path == parent.parent or path == parent or parent in path.parents for path, _ in entries
         )

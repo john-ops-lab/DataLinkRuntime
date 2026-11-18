@@ -13,7 +13,7 @@
 
 #### Scenario: 管理员原地采用旧 Worker
 - **WHEN** 管理员提交与原 Worker 匹配的采用请求，提供可信停机证据摘要，且控制面核实原身份和未结责任
-- **THEN** 仅在满足停用与结清条件时沿原 ID/UUID 签发 enrollment，保留 Adapter 绑定；已迁身份拒绝旧共享 Token。有 queued 等未结责任时拒绝采用，保留原数据；摘要用于关联操作者的现场记录。
+- **THEN** 仅在满足停用与结清条件时沿原 ID/UUID 登记身份并返回含请求 ID、原 Worker ID/UUID 和名称的采用回执，保留 Adapter 绑定。确认回执后，管理员另行调用现有 enrollment 签发接口取得一次性凭据；已迁身份拒绝旧共享 Token。有 queued 等未结责任时拒绝采用，保留原数据；摘要用于关联操作者的现场记录。
 
 ### Requirement: 固定 Worker 仅报告经预检的语言组合
 Worker SHALL 默认报告 Python，显式配置可选择 Python/JavaScript、再加 TypeScript/Java、或再加 Go 的封闭组合。当前实例 MUST 在原隔离和资源配置下通过所选工具链预检后报告能力；接账和 Claim 均须检查目标 Worker 的实际能力及输入条件。

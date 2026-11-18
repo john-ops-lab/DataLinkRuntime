@@ -300,6 +300,30 @@ def valid_stopped(
     )
 
 
+def is_result_successor(
+    prepared: Mapping[str, Any], predecessor: object, successor: object, *, allow_files: bool
+) -> bool:
+    """Compare the two durable publications of one physical stop."""
+    return bool(
+        isinstance(predecessor, dict)
+        and isinstance(successor, dict)
+        and predecessor.get("phase") == "force_stopped"
+        and successor.get("phase") == "stopped"
+        and valid_stopped(predecessor, prepared, _active_files=allow_files)
+        and valid_stopped(successor, prepared, _active_files=allow_files)
+        and {
+            key: value
+            for key, value in predecessor.items()
+            if key not in {"phase", "force_stop_operation_id", "result_record"}
+        }
+        == {
+            key: value
+            for key, value in successor.items()
+            if key not in {"phase", "intent_id", "body_mac", "result_record"}
+        }
+    )
+
+
 def _root_fd(lock: cgroup_namespace.RootLockHandle, path: Path) -> int:
     item = next((item for item in lock._entries if item.path == path), None)
     if item is None:
@@ -661,17 +685,9 @@ def _persist_physical_stop(
                 raise ValueError("recovery stop checkpoint invalid")
             previous = journal_v4._read(directory, last)
             if result_record is not None and previous is not None and previous != stopped:
-                physical = {
-                    key: value
-                    for key, value in stopped.items()
-                    if key not in {"phase", "intent_id", "body_mac", "result_record"}
-                }
-                if previous != {
-                    **physical,
-                    "phase": "force_stopped",
-                    "force_stop_operation_id": str(force_operation),
-                    "result_record": {},
-                }:
+                if not is_result_successor(
+                    prepared, previous, stopped, allow_files=staged.prepared.managed_files
+                ) or previous["force_stop_operation_id"] != str(force_operation):
                     raise ValueError("force stop checkpoint changed")
                 successor = f"recovery-{prepared['attempt_id']}.result-stopped.json"
                 persist(directory, successor, stopped)

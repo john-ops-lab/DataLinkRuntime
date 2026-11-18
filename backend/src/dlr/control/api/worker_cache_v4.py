@@ -228,7 +228,9 @@ async def exchange(
                 verify()
                 selection = {"adapter_id": operation.adapter_id, "version_id": operation.version_id}
                 if cleanup_context is not None:
-                    ticket = session.get(WorkerCleanupRequest, cleanup_context.cleanup_id)
+                    ticket = session.get(
+                        WorkerCleanupRequest, cleanup_context.cleanup_id, populate_existing=True
+                    )
                     if (
                         ticket is None
                         or ticket.worker_id != worker_id
