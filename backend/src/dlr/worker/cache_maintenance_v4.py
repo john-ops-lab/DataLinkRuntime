@@ -114,6 +114,7 @@ class CacheMaintenance:
         return False
 
     def _require_mutation(self) -> None:
+        self._verify()
         if not self._lease._same_process():
             raise ControlUnavailableError("cache ownership unavailable")
         with self._lease._lock:

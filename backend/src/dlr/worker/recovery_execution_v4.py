@@ -39,18 +39,7 @@ class RecoveryState:
     predecessor_sha256: str | None = None
 
 
-def _read_result_successor(
-    directory: int, name: str, prepared: dict[str, Any], stopped: object, *, allow_files: bool
-) -> dict[str, Any]:
-    successor = journal_v4._read(directory, name)
-    if successor is None or not checkpoint.is_result_successor(
-        prepared, stopped, successor, allow_files=allow_files
-    ):
-        raise ValueError("recovery stop successor conflict")
-    references = successor["result_record"]
-    if len(references) != 1:
-        raise ValueError("recovery stop successor has invalid result journal")
-    result_name, digest = next(iter(references.items()))
+def _read_stop_result(directory: int, result_name: str, prepared: dict[str, Any]) -> dict[str, Any]:
     result = journal_v4._read(directory, result_name)
     binding = {
         "worker_identity_id",
@@ -61,13 +50,11 @@ def _read_result_successor(
     }
     if (
         result is None
-        or checkpoint.digest(result) != digest
         or set(result)
         != binding | {"version", "intent_id", "body_mac", "observation_nonce", "result_proof"}
         or type(result["version"]) is not int
         or result["version"] != 1
         or any(result[key] != prepared[key] for key in binding)
-        or any(result[key] != successor[key] for key in ("intent_id", "body_mac"))
         or not checkpoint._uuid(result["observation_nonce"])
         or result_name
         != f"result-{prepared['attempt_id']}-{UUID(result['observation_nonce']).hex}.intent.json"
@@ -75,7 +62,50 @@ def _read_result_successor(
         or not result["result_proof"]
     ):
         raise ValueError("recovery stop successor has invalid result journal")
-    return successor
+    return result
+
+
+def _result_successor(
+    directory: int,
+    names: set[str],
+    prepared: dict[str, Any],
+    stopped: dict[str, Any] | None,
+    *,
+    allow_files: bool,
+) -> tuple[dict[str, Any], str | None] | None:
+    attempt_id = prepared["attempt_id"]
+    name = f"recovery-{attempt_id}.result-stopped.json"
+    published = name in names
+    if stopped is None or stopped.get("phase") != "force_stopped":
+        if published:
+            raise ValueError("recovery stop predecessor unavailable")
+        return None
+    result_names = {
+        item
+        for item in names
+        if re.fullmatch(rf"result-{attempt_id}-[0-9a-f]{{32}}\.intent.json", item)
+    }
+    if not result_names and not published:
+        return None
+    if len(result_names) != 1:
+        raise ValueError("recovery stop successor has ambiguous result journal")
+    result_name = next(iter(result_names))
+    result = _read_stop_result(directory, result_name, prepared)
+    successor = {
+        **{key: value for key, value in stopped.items() if key != "force_stop_operation_id"},
+        "phase": "stopped",
+        "intent_id": result["intent_id"],
+        "body_mac": result["body_mac"],
+        "result_record": {result_name: checkpoint.digest(result)},
+    }
+    # A crash can leave only the verified physical checkpoint and exact
+    # result journal. No file is written until Control signs a matching
+    # observation in the new generation.
+    if not checkpoint.is_result_successor(
+        prepared, stopped, successor, allow_files=allow_files
+    ) or (published and journal_v4._read(directory, name) != successor):
+        raise ValueError("recovery stop successor conflict")
+    return successor, name if published else None
 
 
 def scan(
@@ -120,15 +150,12 @@ def scan(
             ):
                 raise ValueError("recovery prepared invalid")
             stopped = journal_v4._read(directory, checkpoint.names(prepared["attempt_id"])[1])
-            successor = f"recovery-{prepared['attempt_id']}.result-stopped.json"
-            if successor in names:
-                if stopped is None:
-                    raise ValueError("recovery stop predecessor unavailable")
-                selected = _read_result_successor(
-                    directory, successor, prepared, stopped, allow_files=allow_files
-                )
+            selected = _result_successor(
+                directory, names, prepared, stopped, allow_files=allow_files
+            )
+            if selected is not None and stopped is not None:
                 predecessor_sha256 = checkpoint.digest(stopped)
-                successor_name, stopped = successor, selected
+                stopped, successor_name = selected
             records = {
                 name: journal_v4._read(directory, name) for name in prepared["journal_records"]
             }

@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 import { makeMaintenanceSnapshot, makeObservedWorker } from "../../src/worker-maintenance.fixtures";
-import type { WorkerMaintenanceAction, WorkerMaintenanceReceipt } from "../../src/types";
+import type { WorkerDrainOperation, WorkerMaintenanceAction, WorkerMaintenanceReceipt } from "../../src/types";
 
 type Locale = "zh-CN" | "en";
 type RuntimeMode = "normal" | "warning" | "error";
@@ -229,12 +229,15 @@ for (const role of ["user", "admin"] as const) {
     let version = 4;
     let scheduling: "active" | "disabled" = "active";
     let lastAction: WorkerMaintenanceAction = "activate";
+    let currentDrain: WorkerDrainOperation | null = null;
     const receipts = new Map<string, WorkerMaintenanceReceipt>();
     const writes: Array<{ action: WorkerMaintenanceAction; version: number }> = [];
+    const ordinaryRequests: string[] = [];
     const snapshot = () => makeMaintenanceSnapshot({
       maintenance_version: version,
       scheduling_state: scheduling,
       current_maintenance_action: lastAction,
+      current_drain_operation: currentDrain,
     });
     await page.route("**/entry-mode.js", (route) => route.fulfill({
       contentType: "application/javascript",
@@ -257,6 +260,7 @@ for (const role of ["user", "admin"] as const) {
     await page.route("**/api/workers/7/v4/**", async (route) => {
       const path = new URL(route.request().url()).pathname;
       if (role === "user") {
+        ordinaryRequests.push(`${route.request().method()} ${path}`);
         return fulfillJson(route, { detail: { code: "account_admin_required" } }, 403);
       }
       if (path.endsWith("/status")) return fulfillJson(route, snapshot());
@@ -275,6 +279,10 @@ for (const role of ["user", "admin"] as const) {
       version += 1;
       lastAction = action;
       scheduling = action === "drain" ? "disabled" : "active";
+      currentDrain = action === "drain" ? {
+        request_id: body.request_id, action, expected_version: body.expected_version,
+        result_version: version, same_actor: true,
+      } : null;
       receipts.set(body.request_id, {
         operation: {
           request_id: body.request_id, worker_id: worker.id, action, same_actor: true,
@@ -294,6 +302,7 @@ for (const role of ["user", "admin"] as const) {
       await expect(page.getByRole("heading", { name: "适配器", exact: true })).toBeVisible();
       await expect(page.getByTestId("worker-maintenance-actions")).toHaveCount(0);
       await expect(page.getByRole("button", { name: "申请排空" })).toHaveCount(0);
+      expect(ordinaryRequests).toEqual([]);
     } else {
       await expect(page.getByText(worker.name, { exact: true })).toBeVisible();
       const drain = page.getByRole("button", { name: "申请排空" });

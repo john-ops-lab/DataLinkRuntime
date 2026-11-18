@@ -294,7 +294,7 @@ def test_read_only_scan_retains_both_charges_and_rejects_missing_without_intent(
     assert (leaf / "input.json").exists()
 
 
-@pytest.mark.parametrize("conflict", [None, "physical", "result_binding"])
+@pytest.mark.parametrize("conflict", [None, "result_only", "physical", "result_binding"])
 def test_scan_distinguishes_atomic_force_stop_successor(original, conflict):
     _, _, attempts, prepared, stopped, _, fd, _ = original
     _, canonical = checkpoint.names(prepared["attempt_id"])
@@ -332,10 +332,12 @@ def test_scan_distinguishes_atomic_force_stop_successor(original, conflict):
         force["sandbox_mount_expected"] = not stopped["sandbox_mount_expected"]
     successor = {**stopped, "result_record": {result_name: checkpoint.digest(result)}}
     successor_name = f"recovery-{prepared['attempt_id']}.result-stopped.json"
-    for name, record in ((canonical, force), (result_name, result), (successor_name, successor)):
+    for name, record in ((canonical, force), (result_name, result)):
         checkpoint.persist(fd, name, record)
+    if conflict != "result_only":
+        checkpoint.persist(fd, successor_name, successor)
     before = tuple(sorted(attempts.iterdir()))
-    if conflict is None:
+    if conflict in (None, "result_only"):
         observed = scan(original)
         assert observed.stopped == successor
         assert observed.predecessor_sha256 == checkpoint.digest(force)

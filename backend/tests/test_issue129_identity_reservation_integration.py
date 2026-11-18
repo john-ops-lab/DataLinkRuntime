@@ -2255,6 +2255,7 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 owner.add(subscription)
                 owner.flush()
                 subscription_id = subscription.id
+            test_engine.dispose()
             cleanup_headers = {**current_headers, "X-DLR-Worker-Lease-Proof": lease._proof}
             ready = client.post(
                 endpoint,
