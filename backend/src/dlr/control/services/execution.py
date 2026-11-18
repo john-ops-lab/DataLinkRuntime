@@ -185,16 +185,20 @@ def _create_pending_execution_locked(
         raise ValueError("unsupported execution backend")
     from dlr.control.services.builtin_package import snapshot as builtin_snapshot
 
-    dependency_snapshot = builtin_snapshot(session, adapter.language, force=dependency_check)
-    if settings.worker_remote_v4_enabled and dependency_snapshot is not None:
-        raise domain_error(
-            409,
-            "worker_task_capability_unavailable",
-            "Remote Worker stage does not support builtin packages",
-            {"reason": "builtin_packages"},
-        )
-    if dependency_snapshot is not None:
-        worker = session.get(Worker, target_worker_id)
+    worker = session.get(Worker, target_worker_id) if target_worker_id is not None else None
+    remote = settings.worker_remote_v4_enabled and (worker is None or worker.protocol_version == 4)
+    if remote:
+        from dlr.control.services.worker_stage_capability_v4 import freeze_worker_wheel
+
+        dependency_snapshot = freeze_worker_wheel(session, adapter, version_id, target_worker_id)
+    else:
+        dependency_snapshot = builtin_snapshot(session, adapter.language, force=dependency_check)
+    if dependency_snapshot is not None and not remote:
+        if settings.worker_remote_v4_enabled:
+            from dlr.control.services import worker_legacy_window
+
+            if worker is None or not worker_legacy_window.target_allowed(session, worker):
+                raise domain_error(409, "worker_legacy_window_unavailable", "Worker unavailable")
         if worker is None or worker.isolation_capabilities.get("builtin_packages_v1") is not True:
             raise domain_error(
                 409,

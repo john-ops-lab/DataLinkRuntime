@@ -18,13 +18,19 @@ from dlr.common.config import settings
 from dlr.control import db
 from dlr.control.models.builtin_package import BuiltinPackage, BuiltinPackageUpload
 from dlr.control.schemas.execution import ExecutionResponse
-from dlr.control.security import require_admin_principal, require_worker_token
+from dlr.control.security import (
+    reject_enrolled_legacy_worker,
+    require_admin_principal,
+    require_worker_token,
+)
 from dlr.control.services import builtin_package as library
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.worker import validate_claim_for_route
 
 router = APIRouter(prefix="/api/builtin-packages", dependencies=[Depends(require_admin_principal)])
-worker_router = APIRouter(dependencies=[Depends(require_worker_token)])
+worker_router = APIRouter(
+    dependencies=[Depends(require_worker_token), Depends(reject_enrolled_legacy_worker)]
+)
 DbSession = Annotated[Session, Depends(db.get_session)]
 
 

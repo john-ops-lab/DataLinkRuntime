@@ -361,6 +361,10 @@
       },
       "drain": "申请排空",
       "activate": "激活节点",
+      "forceStop": "强制停止",
+      "forceStopTitle": "强制停止此 Worker？",
+      "forceStopDescription": "请求取消运行中的任务，停止签发新的执行授权。待清理的责任会保留到对账完成。",
+      "forceStopPending": "已请求停止，正在等待原 Worker 停止并完成清理对账。",
       "confirmDrain": "确认本次排空",
       "confirmRecoveredDrain": "确认恢复后排空",
       "actionBoundary": "操作需要当前维护版本和明确确认；刷新只读，不会自动排空或激活。",
@@ -430,6 +434,7 @@
     "adapterRefreshFailed": "刷新适配器失败：{{error}}",
     "adapterSavedRefreshSummary": "适配器已保存，但{{details}}",
     "deleteWaitingForWorker": "已请求运行节点取消当前执行；收到已取消的确认后，才会继续删除。",
+    "deleteWaitingForCleanup": "Adapter 已停用。运行节点确认本地清理后，系统会完成永久删除。",
     "deleteWaitingTimeout": "运行节点仍未确认执行已取消，删除已暂停。请检查节点状态后重试。",
     "discardWarning": "该适配器存在未保存的编辑器修改。",
     "deletedAdapterWarning": "删除后它会从活跃列表移除。{{warning}}"

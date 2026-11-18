@@ -54,10 +54,16 @@ class _SandboxLaunch:
     cgroup_root: str
     cgroup_path: str
     preparation_only: bool = False
+    go: bool = False
 
     def arguments(self) -> list[str]:
+        mode = "sandbox"
+        if self.preparation_only:
+            mode = "preparation"
+        elif self.go:
+            mode = "go"
         return [
-            "preparation" if self.preparation_only else "sandbox",
+            mode,
             str(self.launch_fd),
             str(self.max_bytes),
             str(self.stdout_fd),
@@ -163,7 +169,11 @@ def _is_terminal(value: dict[str, object]) -> bool:
     if set(value) == {"event", "cgroup_drained"}:
         return True
     if set(value) == {"event", "cgroup_drained", "stop_reason"}:
-        return value.get("stop_reason") in {"execution_cutoff", "preparation_failed"}
+        return value.get("stop_reason") in {
+            "execution_cutoff",
+            "preparation_failed",
+            "toolchain_build_failed",
+        }
     code = value.get("exit_code")
     return (
         set(value) == {"event", "cgroup_drained", "exit_code"}
@@ -221,6 +231,7 @@ class AttemptSupervisor:
         sandbox_launch: bool = False,
         execution_deadline: float | None = None,
         preparation_only: bool = False,
+        go: bool = False,
     ) -> None:
         self._pid = os.getpid()
         self._live, self._sock, self._process = live, sock, process
@@ -234,6 +245,8 @@ class AttemptSupervisor:
         self._sandbox_launch = sandbox_launch
         self._execution_deadline = execution_deadline
         self._preparation_only = preparation_only
+        self._go = go
+        self._go_runtime_prepared = False
 
     def _watch_exit(self) -> None:
         """If the supervisor dies, attempt local stop but keep cleanup unknown.
@@ -403,6 +416,38 @@ class AttemptSupervisor:
             return False
         return self._release_helper("sandbox_release", "sandbox_released", send_with_authority)
 
+    def prepare_go_runtime(self) -> str:
+        """Observe a fully reaped build and gate the distinct runtime helper."""
+        if self._pid != os.getpid() or not self._go:
+            return "unavailable"
+        with self._lock:
+            if self._terminal is not None:
+                return "stopped"
+            if (
+                self._closed
+                or self._stop_requested.is_set()
+                or self._probe_state != "released"
+                or self._go_runtime_prepared
+            ):
+                return "unavailable"
+            try:
+                _send(self._sock, {"op": "go_prepare_run"})
+                response = _receive(self._sock)
+                if _is_terminal(response):
+                    self._terminal = response
+                    self._stop_requested.set()
+                    return "stopped"
+                if response == {"event": "build_pending"}:
+                    return "pending"
+                if response != {"event": "sandbox_gated"}:
+                    raise ValueError("Go runtime gate unavailable")
+                self._probe_state = "gated"
+                self._go_runtime_prepared = True
+                return "ready"
+            except Exception:
+                self._abandon()
+                return "unavailable"
+
     def _release_helper(
         self,
         operation: str,
@@ -539,6 +584,9 @@ class AttemptSupervisor:
         if response.get("stop_reason") == "preparation_failed":
             if not self._preparation_only or self._probe_state != "preparation_stopping":
                 raise ValueError("preparation stop unverified")
+        elif response.get("stop_reason") == "toolchain_build_failed":
+            if not self._go or self._go_runtime_prepared or self._probe_state != "released":
+                raise ValueError("toolchain stop unverified")
         elif self._preparation_only:
             raise ValueError("preparation stop unverified")
         elif response.get("stop_reason") is not None and self._execution_deadline is None:
@@ -704,6 +752,7 @@ def start_supervisor(
             sandbox_launch=_sandbox_launch is not None,
             execution_deadline=execution_deadline,
             preparation_only=_sandbox_launch.preparation_only,
+            go=_sandbox_launch.go,
         )
         threading.Thread(
             target=handle._watch_exit, name="dlr-v4-supervisor-watch", daemon=True
@@ -862,6 +911,7 @@ def start_sandbox_supervisor(
                 str(live._config.cgroup_path),
                 str(live._config.cgroup_path / live._name),
                 staged.preparation_failed,
+                not staged.preparation_failed and staged.prepared.dispatch.get("language") == "go",
             )
             workspace._sandbox_mount_expected = not staged.preparation_failed
             started = True

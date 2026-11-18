@@ -361,6 +361,10 @@
       },
       "drain": "Request drain",
       "activate": "Activate Worker",
+      "forceStop": "Force stop",
+      "forceStopTitle": "Force stop this Worker?",
+      "forceStopDescription": "Request cancellation of active tasks and stop issuing new execution authority. Pending cleanup remains visible until reconciled.",
+      "forceStopPending": "Stop requested. Waiting for the original Worker and its cleanup to be reconciled.",
       "confirmDrain": "Confirm this drain",
       "confirmRecoveredDrain": "Confirm drain after recovery",
       "actionBoundary": "Actions require the observed maintenance version and explicit confirmation. Refreshes only read; they never drain or activate automatically.",
@@ -430,6 +434,7 @@
     "adapterRefreshFailed": "Adapter refresh failed: {{error}}",
     "adapterSavedRefreshSummary": "Adapter saved, but {{details}}",
     "deleteWaitingForWorker": "The Worker was asked to cancel the active Execution; permanent deletion waits for cancelled.",
+    "deleteWaitingForCleanup": "The Adapter is disabled. Permanent deletion follows the Worker's local cleanup confirmation.",
     "deleteWaitingTimeout": "The Worker did not confirm cancelled in time. Waiting stopped safely; no force deletion was attempted. Check the Worker and try again.",
     "discardWarning": "This Adapter has unsaved editor changes.",
     "deletedAdapterWarning": "It will be removed from the active list.{{warning}}"

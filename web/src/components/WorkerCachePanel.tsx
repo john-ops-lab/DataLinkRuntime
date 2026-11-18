@@ -481,6 +481,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
   }
 
   const busy = loading || submitting || (activeOperation !== null && !TERMINAL_STATUSES.has(activeOperation.status));
+  const protectionSupported = worker.protocol_version !== 4;
   const policyControlSupported = worker.isolation_capabilities?.cache_policy_control_v1 === true;
   const updateAutomaticCleanup = (field: keyof CacheAutomaticCleanupUpdate, value: boolean) => {
     if (busy || !mutatingAllowed || !policyControlSupported || typeof policy?.[field] !== "boolean"
@@ -588,7 +589,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
             <Typography.Text>{item.cache_key}</Typography.Text>
             <p>{item.identity?.language ?? "—"}</p>
             <p>{t(`cache.rebuildability.${item.rebuildability}`)}</p>
-            {item.kind !== "staging" && <Button size="small" disabled={busy || !mutatingAllowed || item.identity === null || item.digest === null}
+            {protectionSupported && item.kind !== "staging" && <Button size="small" disabled={busy || !mutatingAllowed || item.identity === null || item.digest === null}
               onClick={() => { setProofTarget(item); setProofOpen(true); }}>{t("cache.proofDetails")}</Button>}
           </details>
         </div>
@@ -610,7 +611,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
     {
       title: t("cache.pinned"), key: "pinned", render: (_, item) => <Switch
         size="small" checked={item.pinned} aria-label={t("cache.pinLabel", { target: targetName(item) })}
-        disabled={busy || !mutatingAllowed || item.kind === "staging" || item.identity === null || item.digest === null}
+        disabled={!protectionSupported || busy || !mutatingAllowed || item.kind === "staging" || item.identity === null || item.digest === null}
         onChange={(pinned) => submitPin(item, pinned)} />,
     },
   ];
@@ -679,7 +680,7 @@ export default function WorkerCachePanel({ worker, open, onClose, adapters = [] 
     </div> },
     { title: t("cache.failureCode"), key: "reason", render: (_, item) => item.error
       ? t(`cache.errors.${item.error}`, { defaultValue: t("cache.operationFailed") }) : t("cache.operationFailed") },
-    { title: t("cache.actions"), key: "actions", render: (_, item) => item.retry
+    { title: t("cache.actions"), key: "actions", render: (_, item) => protectionSupported && item.retry
       ? <Button size="small" disabled={busy || !mutatingAllowed || item.retryDisabled} onClick={() => void submit(item.retry!)}>{t("cache.retry")}</Button>
       : <Typography.Text type="secondary">{item.route}</Typography.Text> },
   ];

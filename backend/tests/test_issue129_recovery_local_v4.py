@@ -267,7 +267,7 @@ def original(tmp_path, monkeypatch, request):
         yield lock, runtime, attempts, prepared, stopped, attempt_record, fd, runtime_fd
 
 
-def scan(original):
+def scan(original, *, allow_files=False):
     lock, runtime, attempts, prepared, *_ = original
     from uuid import UUID
 
@@ -278,6 +278,7 @@ def scan(original):
         worker_id=prepared["worker_id"],
         identity_id=UUID(prepared["worker_identity_id"]),
         boot_id=prepared["boot_id"],
+        allow_files=allow_files,
     )
 
 
@@ -400,6 +401,33 @@ def test_file_live_path_removes_whole_tree_and_retires_v3_without_enabling_recov
     local.retire(directory, runtime_fd, terminal, allow_missing=False, _active_files=True)
     assert local._entries(directory) == {".dlr-instance.lock"}
     assert local._entries(runtime_fd) == {".dlr-instance.lock", "workspaces"}
+
+
+@pytest.mark.parametrize("original", [("python", False)], indirect=True)
+def test_historical_file_recovery_requires_binding_and_resumes_after_unlink(original, monkeypatch):
+    _, runtime, _, prepared, stopped, _, directory, runtime_fd = original
+    with pytest.raises(ValueError, match="prepared invalid"):
+        scan(original)
+    assert scan(original, allow_files=True).prepared == prepared
+    inputs = runtime / "workspaces/attempt-8/dlr-exec-5/input"
+    first = prepared["input_files"][0]["mount_name"]
+    unlink = os.unlink
+
+    def interrupted(name, **kwargs):
+        unlink(name, **kwargs)
+        if name == first:
+            raise OSError("interrupted first input unlink")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(os, "unlink", interrupted)
+        with pytest.raises(OSError, match="interrupted"):
+            local.clean_workspace(
+                directory, runtime_fd, runtime, prepared, stopped, _active_files=True
+            )
+    assert not (inputs / first).exists()
+    assert scan(original, allow_files=True).stopped == stopped
+    local.clean_workspace(directory, runtime_fd, runtime, prepared, stopped, _active_files=True)
+    assert not (runtime / "workspaces/attempt-8").exists()
 
 
 @pytest.mark.parametrize(

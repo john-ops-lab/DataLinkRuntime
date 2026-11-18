@@ -23,6 +23,7 @@ from uuid import UUID
 
 from dlr.common.lease_proof_wire_v4 import UntrustedLeaseProof, verify_worker_proof_signature
 from dlr.common.worker_protocol_v4 import (
+    ADAPTER_CLEANUP_CAPABILITY,
     INSTANCE_LEASE_SECONDS,
     V4_LEASE_CLOCK_MARGIN_NS,
     is_worker_credential,
@@ -707,6 +708,9 @@ class WorkerLeaseSession:
         capabilities: list[str] | None = None,
         business_credentials: bool = False,
         managed_files: bool = False,
+        builtin_wheel: bool = False,
+        adapter_cleanup: bool = False,
+        cache_governance: bool = False,
     ) -> None:
         """Report a completed local fixed-Worker preflight under this proof."""
         if not self._same_process():
@@ -725,6 +729,11 @@ class WorkerLeaseSession:
                     or not valid_capabilities(languages)
                     or type(business_credentials) is not bool
                     or type(managed_files) is not bool
+                    or type(builtin_wheel) is not bool
+                    or type(adapter_cleanup) is not bool
+                    or type(cache_governance) is not bool
+                    or (cache_governance and adapter_cleanup)
+                    or (builtin_wheel and not managed_files)
                 ):
                     raise ValueError("preflight unavailable")
                 deadline = self._active_deadline()
@@ -744,6 +753,9 @@ class WorkerLeaseSession:
                             "capabilities": languages,
                             **({"business_credentials_v1": True} if business_credentials else {}),
                             **({"managed_files_v1": True} if managed_files else {}),
+                            **({"builtin_wheel_v1": True} if builtin_wheel else {}),
+                            **({ADAPTER_CLEANUP_CAPABILITY: True} if adapter_cleanup else {}),
+                            **({"cache_governance_v1": True} if cache_governance else {}),
                         },
                         separators=(",", ":"),
                     ),
@@ -772,6 +784,39 @@ class WorkerLeaseSession:
                 if not isinstance(error, Exception):
                     raise
                 raise WorkerLeaseError("proof session unavailable") from None
+
+    def _data_exchange(
+        self, route: str, payload: Mapping[str, object], stop: threading.Event
+    ) -> bytes:
+        if not self._same_process() or stop.is_set():
+            raise WorkerLeaseError("proof session unavailable")
+        with self._lock:
+            active_before = self._active_deadline()
+            started = self._require_before(active_before)
+            if self._claims is None or self._proof is None:
+                raise WorkerLeaseError("proof session unavailable")
+            deadline = min(active_before, started + 1.5)
+            request = urllib.request.Request(
+                f"{self._base_url}/api/workers/{self._worker_id}/v4/{route}",
+                data=json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8"),
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._credential}",
+                    "X-DLR-Worker-Instance": str(self._instance_id),
+                    "X-DLR-Worker-Generation": str(self._claims.generation),
+                    "X-DLR-Worker-Lease-Proof": self._proof,
+                },
+            )
+            body = self._post(
+                request,
+                timeout=min(self._timeout, 1.5),
+                deadline=deadline,
+                expected=200,
+                _cancellation_events=(stop,),
+            )
+            self._require_before(deadline)
+            return body
 
     def replace_runtime_credential(
         self, credential: runtime_credential_v4.RuntimeCredential

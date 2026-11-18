@@ -180,9 +180,6 @@ def upsert_webhook(
         raise domain_error(409, "adapter_type_mismatch", "Only webhook Adapters support Webhook")
     _require_not_archived(adapter)
     if data.enabled:
-        from dlr.control.services.worker_stage_capability_v4 import require_trigger
-
-        require_trigger("webhook")
         from dlr.control.services.subscription_guards import require_no_subscription
 
         require_no_subscription(session, adapter.id)
@@ -279,6 +276,17 @@ def upsert_webhook(
                 "worker_capability_missing",
                 f"The runtime Worker does not support {adapter.language}",
                 {"language": adapter.language},
+            )
+        if settings.worker_remote_v4_enabled:
+            from dlr.control.services.worker_stage_capability_v4 import require_new_execution
+
+            resolve_queue_target_worker(session, adapter)
+            require_new_execution(
+                session,
+                adapter,
+                version_id=adapter.latest_version_id,
+                trigger="webhook",
+                input_source_type="json",
             )
         if adapter_runtime.active_execution(session, adapter.id) is not None:
             raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")

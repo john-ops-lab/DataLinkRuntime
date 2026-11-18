@@ -56,6 +56,7 @@ def assert_controlled_recovery(
     *,
     terminal=None,
     pending=None,
+    force_stop_operation_id=None,
 ):
     task = claimed.payload
     assert task is not None and old._claims is not None
@@ -98,11 +99,15 @@ def assert_controlled_recovery(
             execution.ended_at,
             execution.attempt_count,
         )
-        intent_id, mac, finalization = (
-            str(result.intent_id),
-            bytes(result.body_mac).hex(),
-            result.finalization_id,
-        )
+        if force_stop_operation_id is None:
+            intent_id, mac, finalization = (
+                str(result.intent_id),
+                bytes(result.body_mac).hex(),
+                result.finalization_id,
+            )
+        else:
+            assert result is None
+            intent_id = mac = finalization = None
         version = worker.maintenance_version
     # Protocol metadata only: this does not qualify any physical checkpoint.
     prepared = {
@@ -129,18 +134,28 @@ def assert_controlled_recovery(
     }
     request = {"request_id": str(uuid4()), "expected_version": version, "binding": binding}
     stopped = {"intent_id": intent_id, "body_mac": mac}
+    if force_stop_operation_id is not None:
+        stopped = {"phase": "force_stopped", "force_stop_operation_id": force_stop_operation_id}
     if terminal is not None:
-        request.update(
-            mode="settle_stopped_uncommitted",
-            settlement={
-                "stopped_sha256": digest(stopped),
-                "result_intent_id": intent_id,
-                "body_mac": mac,
-                "attempt_status": terminal[0],
-                "execution_status": terminal[1],
-                "acknowledgement": "result_uncommitted_outcome_unknown",
-            },
-        )
+        settlement = {
+            "stopped_sha256": digest(stopped),
+            "attempt_status": terminal[0],
+            "execution_status": terminal[1],
+        }
+        if force_stop_operation_id is not None:
+            mode = "settle_force_stopped_no_result"
+            settlement.update(
+                force_stop_operation_id=force_stop_operation_id,
+                acknowledgement="force_stop_no_result_outcome_unknown",
+            )
+        else:
+            mode = "settle_stopped_uncommitted"
+            settlement.update(
+                result_intent_id=intent_id,
+                body_mac=mac,
+                acknowledgement="result_uncommitted_outcome_unknown",
+            )
+        request.update(mode=mode, settlement=settlement)
     admin_endpoint = f"/api/workers/{worker_id}/v4/recovery-intent"
     assert (
         client.post(
@@ -153,7 +168,15 @@ def assert_controlled_recovery(
     _expire(factory, worker_id)
     if terminal is not None:
         _terminalize_uncommitted(
-            client, factory, worker_id, task, terminal, admin_endpoint, request, pending
+            client,
+            factory,
+            worker_id,
+            task,
+            terminal,
+            admin_endpoint,
+            request,
+            pending,
+            force_stop_operation_id=force_stop_operation_id,
         )
         with factory() as session:
             execution = session.get(Execution, task.execution_id)
@@ -238,9 +261,9 @@ def assert_controlled_recovery(
     lookup = {
         "operation_id": request["request_id"],
         "binding": binding,
-        "result_intent_id": intent_id,
-        "body_mac": mac,
     }
+    if force_stop_operation_id is None:
+        lookup.update(result_intent_id=intent_id, body_mac=mac)
     if terminal is not None:
         lookup.update(
             mode=request["mode"],
@@ -307,13 +330,19 @@ def assert_controlled_recovery(
         assert proof is not None and proof.observation_nonce == nonce
         assert proof.operation_id == UUID(request["request_id"])
         assert proof.prepared_sha256.hex() == binding["prepared_sha256"]
-        assert proof.finalization_id == finalization and proof.body_mac.hex() == mac
+        assert proof.finalization_id == finalization
+        assert (proof.body_mac.hex() if proof.body_mac is not None else None) == mac
         if terminal is not None:
-            assert proof.kind == "platform_terminal" and proof.finalization_id is None
+            expected_kind = (
+                "force_stopped_no_result" if force_stop_operation_id else "platform_terminal"
+            )
+            assert proof.kind == expected_kind and proof.finalization_id is None
             assert str(proof.disposition_id) == lookup["disposition_id"]
             assert proof.stopped_sha256.hex() == digest(stopped)
             assert (proof.attempt_status, proof.execution_status) == terminal
-        assert proof.version == 2
+        assert proof.version == (3 if force_stop_operation_id else 2)
+        if force_stop_operation_id:
+            assert proof.result_intent_id is None
         if not observations:
             key = client.app.state.control_process_v4._deployment.worker_proof_signing_key
             if terminal is None:
@@ -350,7 +379,7 @@ def assert_controlled_recovery(
                 for key, value in lookup.items()
                 if key not in {"mode", "disposition_id", "settlement"}
             },
-            status=503,
+            status=422 if force_stop_operation_id else 503,
         )
     # A genuine API signature for a different nonce must not pass the client.
     state = RecoveryState(
@@ -389,7 +418,7 @@ def assert_controlled_recovery(
                     generation=lease._claims.generation,
                 )
             session.rollback()
-    else:
+    elif force_stop_operation_id is None:
         _assert_disposition_guards(factory, lookup, lease, worker_id)
     observe(lease, extra={"X-DLR-Cleanup-Token": "invalid"}, status=503)
     for key, value in (
@@ -397,7 +426,8 @@ def assert_controlled_recovery(
         ("result_intent_id", str(uuid4())),
         ("operation_id", str(uuid4())),
     ):
-        observe(lease, {**lookup, key: value}, status=503)
+        bad_status = 422 if force_stop_operation_id and key != "operation_id" else 503
+        observe(lease, {**lookup, key: value}, status=bad_status)
     foreign = deepcopy(lookup)
     foreign["binding"]["attempt"]["worker_identity_id"] = str(uuid4())
     observe(lease, foreign, status=503)
@@ -471,11 +501,15 @@ def assert_controlled_recovery(
             execution.attempt_count,
         ) == expected_business
         if terminal is not None:
-            assert session.get(AttemptResultIntentV4, task.attempt_id).finalization_id is None
+            result = session.get(AttemptResultIntentV4, task.attempt_id)
+            if force_stop_operation_id is None:
+                assert result.finalization_id is None
+            else:
+                assert result is None
             disposition = client.get(f"/api/workers/{worker_id}/v4/status").json()[
                 "last_recovery_disposition"
             ]
-            assert disposition["reason"] == "result_uncommitted_outcome_unknown"
+            assert disposition["reason"] == request["settlement"]["acknowledgement"]
             assert disposition["disposition_id"] == lookup["disposition_id"]
             assert set(disposition) == {
                 "operation_id",
@@ -498,7 +532,16 @@ def assert_controlled_recovery(
 
 
 def _terminalize_uncommitted(
-    client, factory, worker_id, task, terminal, endpoint, request, pending
+    client,
+    factory,
+    worker_id,
+    task,
+    terminal,
+    endpoint,
+    request,
+    pending,
+    *,
+    force_stop_operation_id=None,
 ):
     from dlr.control.services import attempt as attempts
     from dlr.control.services import attempt_result_finalize_v4 as finalizer
@@ -545,7 +588,7 @@ def _terminalize_uncommitted(
             raced = pool.submit(lambda: client.post(endpoint, json=request))
             assert recovered.result()
             assert raced.result().status_code in {200, 409}
-        if terminal[1] == "cancelled":
+        if terminal[1] == "cancelled" and force_stop_operation_id is None:
             with factory() as session:
                 execution = session.get(Execution, task.execution_id)
                 assert execution.status == "retry_wait"
@@ -571,24 +614,29 @@ def _terminalize_uncommitted(
                     session.get(Execution, task.execution_id).dispatch_generation
                     == dispatch_generation
                 )
-    context, ref, proof, nonce, fence = pending
-    # A late old result cannot supersede the platform terminal state.
-    with pytest.raises(finalizer.ResultFinalizeRejected):
-        finalizer.finalize_unconfirmed_result_from_token(
-            factory,
-            context,
-            ref,
-            proof.token,
-            observation_nonce=nonce,
-            control=fence,
-            max_body_bytes=100000,
-        )
+    if pending is not None:
+        context, ref, proof, nonce, fence = pending
+        # A late old result cannot supersede the platform terminal state.
+        with pytest.raises(finalizer.ResultFinalizeRejected):
+            finalizer.finalize_unconfirmed_result_from_token(
+                factory,
+                context,
+                ref,
+                proof.token,
+                observation_nonce=nonce,
+                control=fence,
+                max_body_bytes=100000,
+            )
     with factory() as session:
         execution = session.get(Execution, task.execution_id)
         attempt = session.get(ExecutionAttempt, task.attempt_id)
         assert (attempt.status, execution.status) == terminal
         assert execution.attempt_count == 1 and attempt.cleanup_settled_at is None
-        assert session.get(AttemptResultIntentV4, task.attempt_id).finalization_id is None
+        result = session.get(AttemptResultIntentV4, task.attempt_id)
+        if force_stop_operation_id is None:
+            assert result.finalization_id is None
+        else:
+            assert result is None
         assert (
             session.get(AdapterExecutionSlot, (task.adapter_id, 0)).active_attempt_id
             == task.attempt_id

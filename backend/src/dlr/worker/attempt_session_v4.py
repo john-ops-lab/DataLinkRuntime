@@ -1,6 +1,6 @@
 """Locally fenced proof session for one v4 Worker Attempt.
 
-This manages the small start/renew messages only. A caller must separately
+This manages the small start/renew/progress messages. A caller must separately
 supervise physical work, retain its journal and settle the result and cleanup.
 """
 
@@ -13,6 +13,7 @@ import re
 import threading
 import urllib.request
 from collections.abc import Callable
+from uuid import UUID
 
 from dlr.common.attempt_lease_proof_wire_v4 import (
     UntrustedAttemptProof,
@@ -27,6 +28,18 @@ class AttemptLeaseError(Exception):
 
 class AttemptCancelled(AttemptLeaseError):
     """Control observed cancellation before the Attempt could be started."""
+
+
+class AttemptForceStopRequested(AttemptLeaseError):
+    """Control confirmed a stop intent without issuing a successor proof."""
+
+    def __init__(self, operation_id: UUID) -> None:
+        super().__init__("Attempt stop requested")
+        self.operation_id = operation_id
+
+
+# The body cap allows this many bytes even if all need JSON escapes.
+PROGRESS_STDOUT_BYTES = 384
 
 
 class AttemptLeaseSession:
@@ -76,6 +89,7 @@ class AttemptLeaseSession:
         self._claim_token = ""
         self._deadline = 0.0
         self._start_confirmed = False
+        self._force_stopping = False
 
     def _bind_locked(
         self,
@@ -216,7 +230,9 @@ class AttemptLeaseSession:
         parent._require_before(deadline)
         return self._claims, self._proof, deadline
 
-    def _request_locked(self, operation: str) -> tuple[bytes, float, float]:
+    def _request_locked(
+        self, operation: str, *, stdout_chunk: str | None = None
+    ) -> tuple[bytes, float, float]:
         parent = self._parent
         old, proof, deadline = self._live_locked()
         instance = parent._claims
@@ -224,17 +240,22 @@ class AttemptLeaseSession:
         if instance is None or instance_proof is None:
             raise AttemptLeaseError("Attempt authority unavailable")
         started = parent._require_before(deadline)
+        body: dict[str, int | str] = {
+            "attempt_id": old.attempt_id,
+            "fencing_token": old.fencing_token,
+            "claim_token": self._claim_token,
+        }
+        timeout = parent._timeout
+        if stdout_chunk is not None:
+            body["stdout_chunk"] = stdout_chunk
+            # Optional output cannot consume the slack required for renewal.
+            deadline = min(deadline - 2.0, started + 0.5)
+            parent._require_before(deadline)
+            timeout = min(timeout, 0.5)
         request = urllib.request.Request(
             f"{parent._base_url}/api/workers/{parent._worker_id}/v4/attempts/"
             f"{old.attempt_id}/{operation}",
-            data=json.dumps(
-                {
-                    "attempt_id": old.attempt_id,
-                    "fencing_token": old.fencing_token,
-                    "claim_token": self._claim_token,
-                },
-                separators=(",", ":"),
-            ).encode("utf-8"),
+            data=json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
             method="POST",
             headers={
                 "Content-Type": "application/json",
@@ -247,7 +268,7 @@ class AttemptLeaseSession:
         )
         raw = parent._post(
             request,
-            timeout=parent._timeout,
+            timeout=timeout,
             deadline=deadline,
             expected=200,
             _cancellation_events=(self._lost,),
@@ -256,6 +277,35 @@ class AttemptLeaseSession:
         if self._lost.is_set():
             raise AttemptLeaseError("Attempt authority unavailable")
         return raw, started, finished
+
+    def progress(self, stdout_chunk: str) -> bool:
+        """Publish one bounded, non-retryable excerpt. Return an observed cancellation."""
+        if (
+            os.getpid() != self._pid
+            or not self._parent._same_process()
+            or not stdout_chunk
+            or len(stdout_chunk.encode("utf-8")) > PROGRESS_STDOUT_BYTES
+        ):
+            return False
+        with self._lock, self._parent._lock:
+            try:
+                claims, _, _ = self._live_locked()
+                if not self._start_confirmed:
+                    return False
+                raw, _, _ = self._request_locked("progress", stdout_chunk=stdout_chunk)
+                value = self._parent._body(
+                    raw, {"decision", "reason", "attempt_id", "cancel_requested"}
+                )
+                return (
+                    value["decision"] == "ACK_NOOP"
+                    and type(value["attempt_id"]) is int
+                    and value["attempt_id"] == claims.attempt_id
+                    and value["reason"] == "cancel_requested"
+                    and value["cancel_requested"] is True
+                )
+            except (AttemptLeaseError, WorkerLeaseError, ValueError):
+                # An unknown append must not be replayed or renew the proof.
+                return False
 
     def start(self) -> None:
         """Confirm a timely committed start before the caller releases work."""
@@ -304,6 +354,16 @@ class AttemptLeaseSession:
                     instance = parent._claims
                     assert instance is not None
                     raw, started, finished = self._request_locked("renew")
+                    if b'"stop_requested"' in raw:
+                        action = parent._body(raw, {"stop_requested", "operation_id"})
+                        raw_id = action["operation_id"]
+                        if action["stop_requested"] is not True or not isinstance(raw_id, str):
+                            raise ValueError("stop intent invalid")
+                        operation_id = UUID(raw_id)
+                        if not operation_id.int or str(operation_id) != raw_id:
+                            raise ValueError("stop intent invalid")
+                        self._force_stopping = True
+                        raise AttemptForceStopRequested(operation_id)
                     token = parent._body(raw, {"attempt_proof"})["attempt_proof"]
                     claims = verify_attempt_proof_signature(token, parent._verification_key)
                     if (
@@ -335,6 +395,10 @@ class AttemptLeaseSession:
                     parent._observation = (claims.observed_us, started, finished)
                     self._claims, self._proof, self._deadline = claims, token, new_deadline
             except BaseException as error:
+                if isinstance(error, AttemptForceStopRequested):
+                    # Existing authority may only settle the stopped Attempt.
+                    # Control rejects further work and issues no successor.
+                    raise
                 self._die()
                 if not isinstance(error, Exception):
                     raise
@@ -369,7 +433,7 @@ class AttemptLeaseSession:
             return False
         try:
             with self._lock, self._parent._lock:
-                if not self._start_confirmed:
+                if not self._start_confirmed or self._force_stopping:
                     return False
                 _, _, current_deadline = self._live_locked()
                 if deadline is not None and (

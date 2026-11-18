@@ -13,14 +13,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from dlr.common import builtin_wheel_v4 as wheels
 from dlr.common import managed_files_v4 as contract
 from dlr.common.managed_input import controlled_input_mount_name
 from dlr.control.models import (
     AdapterExecutionSlot,
+    AdapterVersion,
     AttemptLeaseCandidateV4,
+    BuiltinPackage,
     Execution,
     ExecutionAttempt,
     ExecutionInputArtifactLease,
@@ -53,6 +56,89 @@ class InputReadGrant:
     original_until: datetime
     storage_key: str = field(repr=False)
     credential: str = field(repr=False)
+    package_kind: str | None = None
+    version_id: int | None = None
+
+
+def _builtin_file(
+    session: Session, execution: Execution, file_id: int
+) -> tuple[contract.InputFile, str, str]:
+    snapshot = execution.builtin_package_snapshot
+    requirements = session.scalar(
+        select(AdapterVersion.requirements).where(
+            AdapterVersion.id == execution.version_id,
+            AdapterVersion.adapter_id == execution.adapter_id,
+            func.octet_length(AdapterVersion.requirements) <= 160,
+        )
+    )
+    try:
+        descriptor = wheels.descriptor(snapshot, requirements)
+    except ValueError:
+        raise InputDownloadUnavailable("input_download_unavailable") from None
+    if descriptor.artifact_id != file_id or not isinstance(snapshot, dict):
+        raise InputDownloadUnavailable("input_download_unavailable")
+    items = snapshot["files"]
+    assert isinstance(items, list)
+    frozen = items[0]
+    row = session.get(BuiltinPackage, file_id)
+    if (
+        row is None
+        or row.status != "uploaded"
+        or row.kind != snapshot["kind"]
+        or row.size_bytes != descriptor.size_bytes
+        or row.sha256 != descriptor.sha256
+        or row.filename != frozen.get("filename")
+        or row.repository_path != frozen.get("repository_path")
+        or row.package_metadata != frozen.get("metadata")
+    ):
+        raise InputDownloadUnavailable("input_download_unavailable")
+    return (
+        contract.InputFile(row.id, 0, row.filename, row.size_bytes, row.sha256),
+        row.storage_key,
+        row.kind,
+    )
+
+
+def _managed_file(
+    session: Session, execution: Execution, artifact_id: int
+) -> tuple[contract.InputFile, str]:
+    if execution.input_source_type != "managed_files" or type(execution.input_snapshot) is not dict:
+        raise InputDownloadUnavailable("input_download_unavailable")
+    rows = session.execute(
+        select(ExecutionInputArtifactLease, ManagedInputArtifact)
+        .join(
+            ManagedInputArtifact, ManagedInputArtifact.id == ExecutionInputArtifactLease.artifact_id
+        )
+        .where(ExecutionInputArtifactLease.execution_id == execution.id)
+        .order_by(ExecutionInputArtifactLease.ordinal)
+        .limit(contract.MAX_FILES + 1)
+    ).all()
+    metadata = []
+    for item, artifact in rows:
+        if (
+            artifact.adapter_id != execution.adapter_id
+            or artifact.status not in READABLE_ARTIFACT_STATUSES
+        ):
+            raise InputDownloadUnavailable("input_download_unavailable")
+        metadata.append(
+            {
+                "id": artifact.id,
+                "ordinal": item.ordinal,
+                "mount_name": controlled_input_mount_name(item.ordinal, artifact.original_filename),
+                "original_filename": artifact.original_filename,
+                "content_type": artifact.content_type,
+                "size_bytes": artifact.size_bytes,
+                "sha256": artifact.sha256,
+            }
+        )
+    files = contract.descriptors(metadata)
+    frozen = [{k: v for k, v in item.items() if k not in {"id", "mount_name"}} for item in metadata]
+    if frozen != execution.input_snapshot.get("artifacts"):
+        raise InputDownloadUnavailable("input_download_unavailable")
+    for file, (_, artifact) in zip(files, rows, strict=True):
+        if file.artifact_id == artifact_id:
+            return file, artifact.storage_key
+    raise InputDownloadUnavailable("input_download_unavailable")
 
 
 def admit(
@@ -68,6 +154,7 @@ def admit(
     attempt_proof: str,
     action: AttemptActionBody,
     authority: ProofAuthority,
+    builtin_package: bool = False,
 ) -> tuple[InputReadGrant, float]:
     """Admit only a running, finalized Attempt's exact frozen file.
 
@@ -108,47 +195,18 @@ def admit(
         or attempt.started_at is None
         or execution.status != "running"
         or execution.cancel_requested
-        or execution.input_source_type != "managed_files"
-        or type(execution.input_snapshot) is not dict
         or (worker.isolation_capabilities or {}).get(contract.CAPABILITY) is not True
         or type(execution.timeout_seconds_snapshot) is not int
         or execution.timeout_seconds_snapshot <= 0
     ):
         raise InputDownloadUnavailable("input_download_unavailable")
-    rows = session.execute(
-        select(ExecutionInputArtifactLease, ManagedInputArtifact)
-        .join(
-            ManagedInputArtifact, ManagedInputArtifact.id == ExecutionInputArtifactLease.artifact_id
-        )
-        .where(ExecutionInputArtifactLease.execution_id == execution_id)
-        .order_by(ExecutionInputArtifactLease.ordinal)
-        .limit(contract.MAX_FILES + 1)
-    ).all()
-    metadata = []
-    for item, artifact in rows:
-        if (
-            artifact.adapter_id != execution.adapter_id
-            or artifact.status not in READABLE_ARTIFACT_STATUSES
-        ):
+    package_kind = None
+    if builtin_package:
+        if worker.isolation_capabilities.get(wheels.CAPABILITY) is not True:
             raise InputDownloadUnavailable("input_download_unavailable")
-        metadata.append(
-            {
-                "id": artifact.id,
-                "ordinal": item.ordinal,
-                "mount_name": controlled_input_mount_name(item.ordinal, artifact.original_filename),
-                "original_filename": artifact.original_filename,
-                "content_type": artifact.content_type,
-                "size_bytes": artifact.size_bytes,
-                "sha256": artifact.sha256,
-            }
-        )
-    files = contract.descriptors(metadata)
-    frozen = [{k: v for k, v in item.items() if k not in {"id", "mount_name"}} for item in metadata]
-    if frozen != execution.input_snapshot.get("artifacts"):
-        raise InputDownloadUnavailable("input_download_unavailable")
-    index = next((i for i, item in enumerate(files) if item.artifact_id == artifact_id), None)
-    if index is None:
-        raise InputDownloadUnavailable("input_download_unavailable")
+        file, storage_key, package_kind = _builtin_file(session, execution, artifact_id)
+    else:
+        file, storage_key = _managed_file(session, execution, artifact_id)
     expires = candidates._credential_expiry(session, worker_id, credential)
     now = worker_availability.current_time(session)
     until = min(
@@ -174,10 +232,12 @@ def admit(
         execution_id,
         attempt.id,
         attempt.fencing_token,
-        files[index],
+        file,
         until,
-        rows[index][1].storage_key,
+        storage_key,
         credential,
+        package_kind=package_kind,
+        version_id=execution.version_id if builtin_package else None,
     )
     return grant, remaining
 
@@ -188,7 +248,7 @@ def recheck(session: Session, grant: InputReadGrant) -> None:
     now = worker_availability.current_time(session)
     if now >= grant.original_until:
         raise InputDownloadUnavailable("input_download_unavailable")
-    found = session.scalar(
+    scope = (
         select(ExecutionAttempt.id)
         .join(Execution, Execution.id == ExecutionAttempt.execution_id)
         .join(Worker, Worker.id == ExecutionAttempt.worker_id)
@@ -197,10 +257,6 @@ def recheck(session: Session, grant: InputReadGrant) -> None:
         .join(
             AdapterExecutionSlot,
             AdapterExecutionSlot.active_attempt_id == ExecutionAttempt.id,
-        )
-        .join(ExecutionInputArtifactLease, ExecutionInputArtifactLease.execution_id == Execution.id)
-        .join(
-            ManagedInputArtifact, ManagedInputArtifact.id == ExecutionInputArtifactLease.artifact_id
         )
         .where(
             ExecutionAttempt.id == grant.attempt_id,
@@ -213,7 +269,6 @@ def recheck(session: Session, grant: InputReadGrant) -> None:
             ExecutionAttempt.status == "running",
             ExecutionAttempt.lease_expires_at > now,
             Execution.status == "running",
-            Execution.input_source_type == "managed_files",
             Execution.cancel_requested.is_(False),
             AdapterExecutionSlot.adapter_id == Execution.adapter_id,
             AdapterExecutionSlot.slot_no == 0,
@@ -241,14 +296,48 @@ def recheck(session: Session, grant: InputReadGrant) -> None:
             AttemptLeaseCandidateV4.nominal_until == ExecutionAttempt.lease_expires_at,
             AttemptLeaseCandidateV4.nominal_until > now,
             AttemptLeaseCandidateV4.guard_until > now,
-            ExecutionInputArtifactLease.artifact_id == grant.file.artifact_id,
-            ExecutionInputArtifactLease.ordinal == grant.file.ordinal,
-            ManagedInputArtifact.adapter_id == Execution.adapter_id,
-            ManagedInputArtifact.storage_key == grant.storage_key,
-            ManagedInputArtifact.sha256 == grant.file.sha256,
-            ManagedInputArtifact.size_bytes == grant.file.size_bytes,
-            ManagedInputArtifact.status.in_(READABLE_ARTIFACT_STATUSES),
         )
     )
-    if found != grant.attempt_id:
+    if grant.package_kind is not None:
+        snapshot = Execution.builtin_package_snapshot
+        file_entry = snapshot["files"][grant.file.ordinal]
+        scope = scope.join(BuiltinPackage, BuiltinPackage.id == grant.file.artifact_id).where(
+            Execution.version_id == grant.version_id,
+            Worker.isolation_capabilities[wheels.CAPABILITY].as_boolean().is_(True),
+            snapshot["kind"].as_string() == grant.package_kind,
+            file_entry["id"].as_integer() == grant.file.artifact_id,
+            file_entry["size_bytes"].as_integer() == grant.file.size_bytes,
+            file_entry["sha256"].as_string() == grant.file.sha256,
+            file_entry["filename"].as_string() == grant.file.mount_name,
+            file_entry["metadata"] == {"dependencies": [], "requires_python": None},
+            BuiltinPackage.kind == grant.package_kind,
+            BuiltinPackage.storage_key == grant.storage_key,
+            BuiltinPackage.status == "uploaded",
+            BuiltinPackage.sha256 == grant.file.sha256,
+            BuiltinPackage.size_bytes == grant.file.size_bytes,
+            BuiltinPackage.filename == grant.file.mount_name,
+            BuiltinPackage.package_metadata == {"dependencies": [], "requires_python": None},
+        )
+    else:
+        scope = (
+            scope.join(
+                ExecutionInputArtifactLease,
+                ExecutionInputArtifactLease.execution_id == Execution.id,
+            )
+            .join(
+                ManagedInputArtifact,
+                ManagedInputArtifact.id == ExecutionInputArtifactLease.artifact_id,
+            )
+            .where(
+                Execution.input_source_type == "managed_files",
+                ExecutionInputArtifactLease.artifact_id == grant.file.artifact_id,
+                ExecutionInputArtifactLease.ordinal == grant.file.ordinal,
+                ManagedInputArtifact.adapter_id == Execution.adapter_id,
+                ManagedInputArtifact.storage_key == grant.storage_key,
+                ManagedInputArtifact.sha256 == grant.file.sha256,
+                ManagedInputArtifact.size_bytes == grant.file.size_bytes,
+                ManagedInputArtifact.status.in_(READABLE_ARTIFACT_STATUSES),
+            )
+        )
+    if session.scalar(scope) != grant.attempt_id:
         raise InputDownloadUnavailable("input_download_unavailable")

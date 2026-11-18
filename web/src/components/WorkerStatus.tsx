@@ -70,12 +70,13 @@ export default function WorkerStatus({ workers, loading, error, canManageCache =
             renderItem={(worker) => {
               const executionReady = isWorkerExecutionReady(worker);
               const remoteWorker = worker.protocol_version === 4;
+              const cacheSupported = !remoteWorker || worker.isolation_capabilities?.cache_governance_v1 === true;
               const level = workerStatusLevel(worker);
               return (
                 <List.Item
                   key={worker.id}
                   data-testid="worker-item"
-                  actions={canManageCache && !remoteWorker ? [
+                  actions={canManageCache && cacheSupported ? [
                     <Button key="cache" size="small" onClick={() => setCacheWorker(worker)}>
                       {t("worker.cacheManagement")}
                     </Button>,
@@ -93,6 +94,9 @@ export default function WorkerStatus({ workers, loading, error, canManageCache =
                             : executionReady ? t("worker.executionReady") : t("worker.executionUnavailable")}
                         </Tag>
                         {remoteWorker && <Tag>{t("worker.maintenance.remotePython")}</Tag>}
+                        {remoteWorker && worker.capabilities.length > 0 && (
+                          <Tag>{t("worker.languages", { languages: worker.capabilities.join(", ") })}</Tag>
+                        )}
                       </span>
                     )}
                     description={remoteWorker ? <>

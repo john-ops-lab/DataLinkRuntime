@@ -39,7 +39,7 @@ class AttemptResultIntentV4(Base):
                 "execution_attempts.fencing_token",
             ],
             name="fk_attempt_result_intent_attempt_binding",
-            ondelete="RESTRICT",
+            ondelete="CASCADE",
         ),
         ForeignKeyConstraint(
             ["worker_id", "instance_id", "instance_generation"],

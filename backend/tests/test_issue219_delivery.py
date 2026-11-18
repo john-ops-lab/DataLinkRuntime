@@ -27,6 +27,7 @@ from dlr.control.services import outbox, rabbitmq
 from dlr.control.services import subscription_delivery as service
 from dlr.control.services.event_envelope import event_id, validate_envelope
 from dlr.control.services.input_config import database_now
+from dlr.control.services.worker_stage_capability_v4 import dispatch_blocked
 
 
 @pytest.fixture
@@ -222,7 +223,18 @@ def test_lease_takeover_rejects_old_owner(world, session_factory):
         session.commit()
 
 
-def test_t2_is_atomic_repeatable_and_keeps_activation(world, session_factory):
+@pytest.mark.parametrize("remote_v4", [False, True])
+def test_t2_is_atomic_repeatable_and_keeps_activation(
+    world, session_factory, monkeypatch, remote_v4
+):
+    if remote_v4:
+        with session_factory.begin() as session:
+            adapter = session.get(Adapter, world["adapter"])
+            worker = session.get(Worker, adapter.runtime_worker_id)
+            worker.protocol_version = 4
+            worker.identity_lifecycle = "reserved"
+            worker.identity_enrolled_at = database_now(session)
+        monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
     with session_factory() as session:
         receipt = receive(session, world)
         session.commit()
@@ -238,6 +250,7 @@ def test_t2_is_atomic_repeatable_and_keeps_activation(world, session_factory):
         assert execution.version_id == world["revision"]
         assert execution.input_snapshot == {"source_type": "json", "revision": None}
         assert execution.trigger == "subscription"
+        assert not dispatch_blocked(session, execution.id)
         assert service.dispatch_delivery(session, did).id == execution.id
         assert session.scalar(select(func.count()).select_from(ExecutionOutbox)) == 1
         quota = session.get(SubscriptionQuota, "global")

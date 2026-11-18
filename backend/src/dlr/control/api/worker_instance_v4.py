@@ -11,9 +11,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError
 from sqlalchemy.orm import Session
 
+from dlr.common.builtin_wheel_v4 import CAPABILITY as BUILTIN_WHEEL_CAPABILITY
 from dlr.common.business_credentials_v4 import CAPABILITY
 from dlr.common.managed_files_v4 import CAPABILITY as MANAGED_FILES_CAPABILITY
 from dlr.common.worker_languages_v4 import valid_capabilities
+from dlr.common.worker_protocol_v4 import ADAPTER_CLEANUP_CAPABILITY
 from dlr.control import db
 from dlr.control.models import Worker
 from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
@@ -35,6 +37,9 @@ class _ReadyReport(BaseModel):
     capabilities: list[str] = ["python"]
     business_credentials_v1: StrictBool = False
     managed_files_v1: StrictBool = False
+    builtin_wheel_v1: StrictBool = False
+    adapter_ephemeral_cleanup_v1: StrictBool = False
+    cache_governance_v1: StrictBool = False
 
 
 def _pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -67,7 +72,7 @@ def _one_header(request: Request, name: str) -> str:
 
 def _identity(request: Request, worker_id: int) -> tuple[str, UUID]:
     require_entry(request, TOKEN_ENTRY_MODE)
-    if type(worker_id) is not int or not 0 < worker_id < 2**63:
+    if request.url.scheme != "https" or type(worker_id) is not int or not 0 < worker_id < 2**63:
         raise _error(401)
     credential = _bearer_token(_one_header(request, "authorization"))
     raw_instance = _one_header(request, "x-dlr-worker-instance")
@@ -196,6 +201,8 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
             set(flags) != REQUIRED_ISOLATION_CAPABILITIES
             or not all(flags.values())
             or not valid_capabilities(report.capabilities)
+            or (report.builtin_wheel_v1 and not report.managed_files_v1)
+            or (report.cache_governance_v1 and report.adapter_ephemeral_cleanup_v1)
         ):
             raise ValueError
         expected_flags: dict[str, object] = dict(flags)
@@ -203,6 +210,19 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
             expected_flags[CAPABILITY] = True
         if report.managed_files_v1:
             expected_flags[MANAGED_FILES_CAPABILITY] = True
+        if report.builtin_wheel_v1:
+            expected_flags[BUILTIN_WHEEL_CAPABILITY] = True
+        if report.adapter_ephemeral_cleanup_v1:
+            expected_flags[ADAPTER_CLEANUP_CAPABILITY] = True
+        if report.cache_governance_v1:
+            expected_flags["cache_governance_v1"] = True
+        storage = (
+            "managed_cache"
+            if report.cache_governance_v1
+            else "ephemeral"
+            if report.adapter_ephemeral_cleanup_v1
+            else None
+        )
     except (ValueError, UnicodeError, RecursionError, ValidationError):
         raise _error(422) from None
 
@@ -227,6 +247,7 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
                 or worker.identity_lifecycle != "reserved"
                 or worker.instance_id != instance
                 or worker.instance_generation != generation
+                or worker.v4_storage_profile not in {None, storage}
                 or worker_availability.has_unreconciled_v4_attempt(session, worker, now=now)
             ):
                 raise ValueError("Worker readiness unavailable")
@@ -236,6 +257,7 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
         worker = verify()
         worker.capabilities = list(report.capabilities)
         worker.isolation_capabilities = expected_flags
+        worker.v4_storage_profile = storage
         worker.isolation_preflight_status = "passed"
         worker.isolation_preflight_at = worker_availability.current_time(session)
         worker.capacity_state = "ready"
@@ -253,6 +275,7 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
             worker.capacity_state != "ready"
             or worker.capabilities != report.capabilities
             or worker.isolation_capabilities != expected_flags
+            or worker.v4_storage_profile != storage
             or worker.isolation_preflight_status != "passed"
         ):
             raise ValueError("Worker readiness unavailable")

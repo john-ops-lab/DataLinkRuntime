@@ -1804,6 +1804,7 @@ export function AdapterConsole({
       if (!confirmed || selectedAdapterIdRef.current !== targetId) return;
       setError(null);
       const deletion = await api.deleteAdapter(targetId, stopAndDelete);
+      let waitingForCleanup = deletion?.detail?.code === "adapter_delete_cleanup_pending";
       if (
         deletion?.detail?.code === "adapter_delete_waiting_for_worker"
       ) {
@@ -1822,6 +1823,7 @@ export function AdapterConsole({
             if (completed?.detail?.code === "adapter_delete_waiting_for_worker") {
               continue;
             }
+            waitingForCleanup = completed?.detail?.code === "adapter_delete_cleanup_pending";
             deleted = true;
             break;
           } catch (pollError) {
@@ -1838,6 +1840,7 @@ export function AdapterConsole({
           return;
         }
       }
+      if (waitingForCleanup) messageApi.info(t("messages.deleteWaitingForCleanup"));
       starterLocaleByAdapter.current.delete(selected.id);
       requestGeneration.current += 1;
       selectedAdapterIdRef.current = null;

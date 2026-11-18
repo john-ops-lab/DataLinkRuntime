@@ -101,6 +101,17 @@ def delete_adapter(
 ) -> Response | JSONResponse:
     adapter_access.require_adapter_access(session, adapter_id, principal, "delete")
     result = adapter_service.delete_adapter(session, adapter_id, stop=stop)
+    if result.waiting_for_cleanup:
+        return JSONResponse(
+            status_code=202,
+            content={
+                "detail": {
+                    "code": "adapter_delete_cleanup_pending",
+                    "message": "Adapter deletion is waiting for local Worker cleanup",
+                    "params": {"cleanup_request_id": result.cleanup_request_id},
+                },
+            },
+        )
     if result.waiting_for_worker:
         return JSONResponse(
             status_code=202,

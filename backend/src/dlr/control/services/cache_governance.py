@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,6 +33,25 @@ ACTIVE_EXECUTIONS = frozenset({"queued", "running", "retry_wait"})
 ACTIVE_ATTEMPTS = frozenset({"claimed", "running"})
 MAX_REFERENCE_RECORDS = 1_024
 MAX_CACHE_REFERENCE_BATCH_SECONDS = 2.0
+
+
+def _incomplete_attempt_cleanup() -> Any:
+    return or_(
+        and_(
+            ExecutionAttempt.worker_identity_id.is_not(None),
+            ExecutionAttempt.cleanup_settled_at.is_(None),
+        ),
+        func.coalesce(ExecutionAttempt.cleanup_summary["workspace_cleanup_status"].astext, "")
+        != "completed",
+    )
+
+
+def _observed_attempt_cleanup(attempt: Any) -> bool:
+    return bool(
+        (attempt.worker_identity_id is None or attempt.cleanup_settled_at is not None)
+        and isinstance(attempt.cleanup_summary, dict)
+        and attempt.cleanup_summary.get("workspace_cleanup_status") == "completed"
+    )
 
 
 @dataclass(frozen=True)
@@ -106,13 +126,7 @@ def reference_facts(
         ExecutionAttempt.worker_id == worker_id,
     )
     active_worker_attempt = worker_attempt.where(ExecutionAttempt.status.in_(ACTIVE_ATTEMPTS))
-    incomplete_worker_attempt = worker_attempt.where(
-        func.coalesce(
-            ExecutionAttempt.cleanup_summary["workspace_cleanup_status"].astext,
-            "",
-        )
-        != "completed"
-    )
+    incomplete_worker_attempt = worker_attempt.where(_incomplete_attempt_cleanup())
     attempt_count = (
         select(func.count(ExecutionAttempt.id))
         .where(ExecutionAttempt.execution_id == Execution.id)
@@ -188,6 +202,8 @@ def reference_facts(
                     ExecutionAttempt.worker_id,
                     ExecutionAttempt.status,
                     ExecutionAttempt.cleanup_summary,
+                    ExecutionAttempt.worker_identity_id,
+                    ExecutionAttempt.cleanup_settled_at,
                 )
                 .where(ExecutionAttempt.execution_id.in_(execution_ids))
                 .order_by(ExecutionAttempt.id)
@@ -253,7 +269,7 @@ def reference_facts(
                 reasons.add("attempt_active")
             elif not isinstance(attempt.cleanup_summary, dict):
                 reasons.add("attempt_cleanup_unknown")
-            elif attempt.cleanup_summary.get("workspace_cleanup_status") != "completed":
+            elif not _observed_attempt_cleanup(attempt):
                 reasons.add("attempt_cleanup_incomplete")
         actual_responsibility = execution.worker_id == worker_id or bool(attempts)
         if (
@@ -411,13 +427,7 @@ def _replacement_reference_facts(
         ExecutionAttempt.worker_id == worker_id,
     )
     active_worker_attempt = worker_attempt.where(ExecutionAttempt.status.in_(ACTIVE_ATTEMPTS))
-    incomplete_worker_attempt = worker_attempt.where(
-        func.coalesce(
-            ExecutionAttempt.cleanup_summary["workspace_cleanup_status"].astext,
-            "",
-        )
-        != "completed"
-    )
+    incomplete_worker_attempt = worker_attempt.where(_incomplete_attempt_cleanup())
     attempt_count = (
         select(func.count(ExecutionAttempt.id))
         .where(ExecutionAttempt.execution_id == Execution.id)
@@ -485,6 +495,8 @@ def _replacement_reference_facts(
                 ExecutionAttempt.worker_id,
                 ExecutionAttempt.status,
                 ExecutionAttempt.cleanup_summary,
+                ExecutionAttempt.worker_identity_id,
+                ExecutionAttempt.cleanup_settled_at,
             )
             .where(ExecutionAttempt.execution_id.in_(execution_ids))
             .order_by(ExecutionAttempt.id)
@@ -544,9 +556,7 @@ def _replacement_reference_facts(
             if any(row.id != current_attempt.id for row in rows):
                 for row in rows:
                     if row.id != current_attempt.id and (
-                        row.status in ACTIVE_ATTEMPTS
-                        or not isinstance(row.cleanup_summary, dict)
-                        or row.cleanup_summary.get("workspace_cleanup_status") != "completed"
+                        row.status in ACTIVE_ATTEMPTS or not _observed_attempt_cleanup(row)
                     ):
                         reasons.add("attempt_cleanup_incomplete")
             continue
@@ -556,10 +566,7 @@ def _replacement_reference_facts(
             for row in rows:
                 if row.status in ACTIVE_ATTEMPTS:
                     reasons.add("attempt_active")
-                elif (
-                    not isinstance(row.cleanup_summary, dict)
-                    or row.cleanup_summary.get("workspace_cleanup_status") != "completed"
-                ):
+                elif not _observed_attempt_cleanup(row):
                     reasons.add("attempt_cleanup_incomplete")
             if (
                 execution.worker_id == worker_id or any(row.worker_id == worker_id for row in rows)
@@ -571,10 +578,7 @@ def _replacement_reference_facts(
         if any(row.status in ACTIVE_ATTEMPTS for row in rows):
             reasons.add("attempt_active")
         for row in rows:
-            if row.status not in ACTIVE_ATTEMPTS and (
-                not isinstance(row.cleanup_summary, dict)
-                or row.cleanup_summary.get("workspace_cleanup_status") != "completed"
-            ):
+            if row.status not in ACTIVE_ATTEMPTS and not _observed_attempt_cleanup(row):
                 reasons.add("attempt_cleanup_incomplete")
         if rows and execution.workspace_cleanup_status != "completed":
             reasons.add("workspace_cleanup_incomplete")
@@ -698,6 +702,7 @@ def acquire_guard(
     cleanup_context: dict[str, Any] | None = None,
     observed_identity: dict[str, Any] | None = None,
     replacement_context: dict[str, Any] | None = None,
+    _before_commit: Callable[[WorkerCacheOperation], None] | None = None,
 ) -> WorkerCacheOperation:
     worker = session.get(Worker, worker_id)
     if worker is None:
@@ -793,23 +798,28 @@ def acquire_guard(
                 adapter=adapter,
                 replacement_context=replacement_context,
             )
+        if _before_commit is not None:
+            _before_commit(previous_operation)
         session.commit()
         session.refresh(previous_operation)
         return previous_operation
     excluded_cleanup_id: int | None = None
     if cleanup_context is not None:
-        cleanup = session.scalar(
-            select(WorkerCleanupRequest)
-            .where(WorkerCleanupRequest.id == cleanup_context["cleanup_id"])
-            .with_for_update()
+        cleanup_query = select(WorkerCleanupRequest).where(
+            WorkerCleanupRequest.id == cleanup_context["cleanup_id"]
         )
+        # The v4 callback validates the exact cleanup under its Worker
+        # lock. Taking the cleanup row first would invert that lock order.
+        if _before_commit is None:
+            cleanup_query = cleanup_query.with_for_update()
+        cleanup = session.scalar(cleanup_query)
         if (
             cleanup is None
             or cleanup.worker_id != worker_id
             or cleanup.adapter_id != adapter_id
             or cleanup.status != "running"
             or cleanup.attempts != cleanup_context["claim_attempt"]
-            or adapter is not None
+            or (adapter is not None and (_before_commit is None or adapter.archived_at is None))
         ):
             raise domain_error(409, "cleanup_stale_claim", "Cleanup claim is stale")
         excluded_cleanup_id = cleanup.id
@@ -862,6 +872,8 @@ def acquire_guard(
         replacement_context=replacement_binding,
     )
     session.add(operation)
+    if _before_commit is not None:
+        _before_commit(operation)
     session.commit()
     session.refresh(operation)
     return operation
@@ -888,6 +900,7 @@ def finish_guard(
     operation_id: uuid.UUID,
     generation: int,
     outcome: str,
+    _before_commit: Callable[[WorkerCacheOperation], None] | None = None,
 ) -> WorkerCacheOperation:
     operation = session.scalar(
         select(WorkerCacheOperation)
@@ -905,6 +918,8 @@ def finish_guard(
     if operation.phase != "acquired":
         if operation.phase != outcome:
             raise domain_error(409, "cache_guard_stale", "Cache guard result is inconsistent")
+        if _before_commit is not None:
+            _before_commit(operation)
         return operation
     guard = session.scalar(
         select(WorkerCacheGuard)
@@ -926,6 +941,8 @@ def finish_guard(
     guard.phase = "idle"
     operation.phase = outcome
     operation.finished_at = database_now(session)
+    if _before_commit is not None:
+        _before_commit(operation)
     session.commit()
     session.refresh(operation)
     return operation

@@ -6,6 +6,7 @@ This module cannot establish host-wide writer exclusion or Control authority.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 from pathlib import Path
@@ -13,6 +14,8 @@ from typing import Any
 
 from dlr.worker import cgroup_namespace, journal_v4, workspace_fs_v4
 from dlr.worker import recovery_checkpoint_v4 as checkpoint
+
+FILE_DISPOSITION_VERSION = 4
 
 
 def progress_name(attempt: int) -> str:
@@ -108,11 +111,91 @@ def expected_progress(
     )
     if stopped["sandbox_mount_binding"] is not None:
         objects.append(("sandbox", ".dlr-sandbox-mount", stopped["sandbox_mount_binding"], True))
+    if prepared["version"] == checkpoint.FILE_VERSION:
+        objects.extend(
+            (
+                f"input-{index}",
+                item["mount_name"],
+                {"device": item["device"], "inode": item["inode"]},
+                False,
+            )
+            for index, item in enumerate(prepared["input_files"])
+        )
     for suffix, name, binding, is_directory in objects:
         record = {"version": 1, "name": name, "binding": binding, "directory": is_directory}
         for phase in ("intent", "done"):
             result[f"recovery-{attempt}.delete-{suffix}.{phase}.json"] = record
     return result
+
+
+def _frozen_input(
+    leaf: int,
+    mount: int | None,
+    prepared: dict[str, Any],
+    *,
+    directory: int,
+    physical: bool,
+    delete: bool,
+) -> None:
+    """Reopen the original managed input; a file never authorizes a wider walk."""
+    fd = os.open("input", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=leaf)
+    try:
+        _same(fd, prepared["input_directory"], mount)
+        info = os.fstat(fd)
+        named = os.stat("input", dir_fd=leaf, follow_symlinks=False)
+        if (
+            info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) not in {0o555, 0o700}
+            or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)
+        ):
+            raise ValueError("recovery input directory changed")
+        files = prepared["input_files"]
+        if not _entries(fd, len(files) + 1) <= {item["mount_name"] for item in files}:
+            raise ValueError("recovery input contains an unrelated object")
+        present = []
+        for index, item in enumerate(files):
+            name = item["mount_name"]
+            marker = f"recovery-{prepared['attempt_id']}.delete-input-{index}"
+            record = {
+                "version": 1,
+                "name": name,
+                "binding": {"device": item["device"], "inode": item["inode"]},
+                "directory": False,
+            }
+            if _absent(fd, name):
+                if not physical and journal_v4._read(directory, f"{marker}.intent.json") != record:
+                    raise ValueError("recovery file missing without cleanup intent")
+                continue
+            source = os.open(
+                name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=fd
+            )
+            with os.fdopen(source, "rb") as stream:
+                original = os.fstat(source)
+                _same(source, record["binding"], mount)
+                if (
+                    not stat.S_ISREG(original.st_mode)
+                    or original.st_uid != os.geteuid()
+                    or original.st_nlink != 1
+                    or stat.S_IMODE(original.st_mode) != 0o444
+                    or original.st_size != item["size_bytes"]
+                    or hashlib.file_digest(stream, "sha256").hexdigest() != item["sha256"]
+                ):
+                    raise ValueError("recovery input file changed")
+            present.append((name, marker, record))
+        if delete:
+            os.fchmod(fd, 0o700)
+            for name, marker, record in present:
+                checkpoint.persist(directory, f"{marker}.intent.json", record)
+                current = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if {"device": current.st_dev, "inode": current.st_ino} != record["binding"]:
+                    raise ValueError("recovery input file changed")
+                os.unlink(name, dir_fd=fd)
+                os.fsync(fd)
+                checkpoint.persist(directory, f"{marker}.done.json", record)
+            if not workspace_fs_v4._directory_is_empty(fd):
+                raise ValueError("recovery input residue")
+    finally:
+        os.close(fd)
 
 
 def inspect_tree(
@@ -184,7 +267,11 @@ def inspect_tree(
             info = os.stat(name, dir_fd=leaf, follow_symlinks=False)
             if {"device": info.st_dev, "inode": info.st_ino} != expected:
                 raise ValueError("recovery object changed")
-            if name in {"input", "temp", "output"}:
+            if name == "input" and prepared["version"] == checkpoint.FILE_VERSION:
+                _frozen_input(
+                    leaf, mount, prepared, directory=directory, physical=physical, delete=False
+                )
+            elif name in {"input", "temp", "output"}:
                 fd = _child(leaf, name, expected, mount)
                 try:
                     if not workspace_fs_v4._directory_is_empty(fd):
@@ -312,6 +399,19 @@ def clean_workspace(
             leaf = _child(parent, leaf_name, prepared["objects"]["workspace"], mount)
             if not _entries(leaf) <= set(stopped["workspace_entries"]):
                 raise ValueError("unexpected recovery workspace object")
+            if (
+                _active_files
+                and prepared["version"] == checkpoint.FILE_VERSION
+                and not _absent(leaf, "input")
+            ):
+                _frozen_input(
+                    leaf,
+                    mount,
+                    prepared,
+                    directory=directory,
+                    physical=physical == expected,
+                    delete=True,
+                )
             for index, (name, binding) in enumerate(sorted(stopped["workspace_entries"].items())):
                 # Normal cleanup may have removed a prefix before exiting.
                 # Its durable whole-tree intent authorizes only original
@@ -417,19 +517,25 @@ def valid_terminal(terminal: object, *, _active_files: bool = False) -> bool:
         terminal.get("completion_id")
     ):
         return False
-    if terminal["version"] == 1 or (
-        _active_files
-        and terminal["version"] == checkpoint.FILE_VERSION
-        and isinstance(terminal.get("prepared"), dict)
-        and terminal["prepared"].get("version") == checkpoint.FILE_VERSION
-    ):
+    prepared = terminal.get("prepared")
+    if not isinstance(prepared, dict):
+        return False
+    files = prepared.get("version") == checkpoint.FILE_VERSION
+    if files and not _active_files:
+        return False
+    if terminal["version"] == (checkpoint.FILE_VERSION if files else checkpoint.VERSION):
         return set(terminal) == base | {"finalization_id"} and checkpoint._uuid(
             terminal["finalization_id"]
         )
+    stopped = terminal.get("stopped")
+    if not isinstance(stopped, dict):
+        return False
+    force_stopped = stopped.get("phase") == "force_stopped"
+    kind = "force_stopped_no_result" if force_stopped else "platform_terminal"
     return (
-        terminal["version"] == 2
+        terminal["version"] == (FILE_DISPOSITION_VERSION if files else 2)
         and set(terminal) == base | {"kind", "disposition_id"}
-        and terminal["kind"] == "platform_terminal"
+        and terminal["kind"] == kind
         and checkpoint._uuid(terminal["disposition_id"])
     )
 

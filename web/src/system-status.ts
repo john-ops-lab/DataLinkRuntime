@@ -146,8 +146,9 @@ export function workerStatusLevel(worker: Worker): SystemStatusLevel {
 }
 
 export function restrictedWorkerCapabilities(value: readonly string[]): boolean {
-  return value[0] === "python" && (value.length === 1
-    || (value.length === 2 && value[1] === "javascript"));
+  return value[0] === "python" && (value.length === 1 || (value[1] === "javascript"
+    && (value.length === 2 || (value[2] === "typescript" && value[3] === "java"
+      && (value.length === 4 || (value.length === 5 && value[4] === "go"))))));
 }
 
 export function workerFleetStatus(

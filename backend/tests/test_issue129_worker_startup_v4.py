@@ -129,9 +129,9 @@ def test_file_stage_keeps_frozen_h_fd_and_never_launches_business(tmp_path, monk
         )
         if failure == "unknown":
             with pytest.raises(managed_files_v4.FileIOUnknown):
-                claim_task_child_v4._stage_python(child, task, fingerprint, command)
+                claim_task_child_v4._stage_task(child, task, fingerprint, command)
         else:
-            claim_task_child_v4._stage_python(child, task, fingerprint, command)
+            claim_task_child_v4._stage_task(child, task, fingerprint, command)
         assert claim_task_child_v4._receive(parent)["state"] == "input_staging"
         launch_fd = claim_task_child_v4._receive_fd(parent)
         _, environment = sandbox._read_sealed_launch(launch_fd, 65536)
@@ -348,6 +348,7 @@ def test_failed_launch_gate_requires_observed_cutoff_before_result_handoff(
         "prepared",
         SimpleNamespace(
             managed_files=False,
+            business_credentials=False,
             attempt=SimpleNamespace(
                 local_deadline=lambda: 1e20, send_with_authority=lambda _: False
             ),
@@ -371,7 +372,9 @@ def test_failed_launch_gate_requires_observed_cutoff_before_result_handoff(
         ),
     )
     monkeypatch.setattr(
-        execution_supervision_v4, "_OutputCollector", lambda *_: SimpleNamespace(start=lambda: None)
+        execution_supervision_v4,
+        "_OutputCollector",
+        lambda *_, **__: SimpleNamespace(start=lambda: None),
     )
     monkeypatch.setattr(execution_supervision_v4, "SupervisedExecution", lambda *_: owner)
     stop = threading.Event()
@@ -541,9 +544,9 @@ def test_bounded_stage_uses_same_task_directory_and_sealed_minimal_launch(
         )
         if tamper:
             with pytest.raises(ValueError, match="task staging unavailable"):
-                claim_task_child_v4._stage_python(child, task, fingerprint, command)
+                claim_task_child_v4._stage_task(child, task, fingerprint, command)
             return
-        claim_task_child_v4._stage_python(child, task, fingerprint, command)
+        claim_task_child_v4._stage_task(child, task, fingerprint, command)
         assert claim_task_child_v4._receive(parent)["fingerprint"] == fingerprint
         data, ancillary, flags, _ = parent.recvmsg(1, socket.CMSG_SPACE(struct.calcsize("i")))
         assert data == b"D" and flags == 0

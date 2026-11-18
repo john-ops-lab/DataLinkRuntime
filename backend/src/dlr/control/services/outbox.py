@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
 from dlr.control.models import Adapter, Execution, ExecutionOutbox, WorkerCacheGuard
-from dlr.control.services import rabbitmq
+from dlr.control.services import rabbitmq, worker_legacy_window
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.dispatch import (
     DISPATCH_EXCHANGE,
@@ -307,6 +307,7 @@ def create_dispatch_outbox(
     )
     if existing is not None:
         return existing
+    worker_legacy_window.require_dispatch_target(session, execution.target_worker_id_snapshot)
     payload, body, routing_key, message_id = dispatch_payload_for_execution(
         session, execution, message_id=message_id
     )

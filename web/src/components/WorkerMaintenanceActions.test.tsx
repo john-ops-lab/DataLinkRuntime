@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { api, ApiError } from "../api";
 import { applyUiLocale } from "../i18n";
-import type { WorkerMaintenanceReceipt } from "../types";
+import type { WorkerMaintenanceAction, WorkerMaintenanceReceipt } from "../types";
 import {
   persistWorkerMaintenanceIntent, WORKER_MAINTENANCE_INTENT_KEY, type WorkerMaintenanceIntent,
 } from "../worker-maintenance-intent";
@@ -16,7 +16,7 @@ const intent: WorkerMaintenanceIntent = {
   schema: 1, origin: window.location.origin, scope: "token:deployment", worker_id: 7,
   worker_identity_id: base.worker_identity_id, action: "activate", request_id: requestId, expected_version: 4,
 };
-function receipt(action: "drain" | "activate", id: string, state: "draining" | "disabled" | "active", version = 5): WorkerMaintenanceReceipt {
+function receipt(action: WorkerMaintenanceAction, id: string, state: "draining" | "disabled" | "active", version = 5): WorkerMaintenanceReceipt {
   return {
     operation: { request_id: id, worker_id: 7, action, expected_version: 4, result_version: 5,
       same_actor: true, created_at: new Date().toISOString() },
@@ -64,6 +64,42 @@ it("keeps drain pending until explicit same-tuple confirmation reads disabled", 
   expect(post).toHaveBeenCalledTimes(2);
   expect(post.mock.calls[1][2]).toEqual(post.mock.calls[0][2]);
   expect(sessionStorage.getItem(WORKER_MAINTENANCE_INTENT_KEY)).toBeNull();
+});
+
+it("expressly replaces a confirmed drain with a force-stop intent and keeps cleanup visible", async () => {
+  const drain = { ...intent, action: "drain" as const };
+  persistWorkerMaintenanceIntent(drain);
+  let current = makeMaintenanceSnapshot({
+    scheduling_state: "draining", maintenance_version: 5, current_maintenance_action: "drain",
+    current_drain_operation: { action: "drain", request_id: requestId,
+      expected_version: 4, result_version: 5, same_actor: true },
+    force_stop_available: true, unsettled_attempts: 1, active_attempts: 1,
+  });
+  const post = vi.spyOn(api, "maintainWorker").mockImplementation(async (_id, action, tuple) => {
+    expect(action).toBe("force_stop");
+    expect(tuple.expected_version).toBe(5);
+    expect(tuple.request_id).not.toBe(requestId);
+    expect(sessionStorage.getItem(WORKER_MAINTENANCE_INTENT_KEY)).toContain(tuple.request_id);
+    current = { ...current, scheduling_state: "disabled", maintenance_version: 6,
+      capacity_state: "reconciling", current_maintenance_action: "force_stop",
+      current_drain_operation: null, force_stop_available: false };
+    throw new ApiError(503, "unavailable", "Unavailable");
+  });
+  vi.spyOn(api, "getWorkerMaintenanceOperation").mockImplementation(async (_id, id) => {
+    if (id === requestId) return receipt("drain", id, "draining");
+    const stopped = receipt("force_stop", id, "disabled", 6);
+    return { ...stopped, operation: { ...stopped.operation, expected_version: 5, result_version: 6 },
+      applies_to_current_version: true };
+  });
+  const props = { onRead: async () => current, onRefresh: async () => undefined };
+  const view = render(<WorkerMaintenanceActions worker={makeObservedWorker(current)} {...props} />);
+  await screen.findByText("排空意图已提交；当前仍在排空，未确认停用。");
+  await confirm("强制停止");
+  await screen.findByText("本次操作已在独立查询中确认提交。");
+  expect(post).toHaveBeenCalledTimes(1);
+  view.rerender(<WorkerMaintenanceActions worker={makeObservedWorker(current)} {...props} />);
+  expect(screen.getByText("已请求停止，正在等待原 Worker 停止并完成清理对账。")).not.toBeNull();
+  expect((screen.getByRole("button", { name: "激活节点" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
 it("reads a committed activation after 503 and restores pending intent with GET only", async () => {

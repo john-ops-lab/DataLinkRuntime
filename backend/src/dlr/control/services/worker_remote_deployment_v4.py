@@ -3,6 +3,8 @@
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from dlr.control.services import worker_legacy_window
+
 
 class RemoteDeploymentUnavailable(RuntimeError):
     """A stable diagnostic which contains no database or credential details."""
@@ -25,6 +27,28 @@ def require_dedicated_deployment(session: Session, *, readonly: bool = False) ->
                 "executions, execution_attempts IN SHARE MODE"
             )
         )
+    if worker_legacy_window.enabled_mode() and worker_legacy_window.has_history(session):
+        # An owner authorized this in-place upgrade. Historical v3 rows remain
+        # readable after the deadline. The shared-token route separately gates
+        # permissions using the current database time and exact Worker row.
+        incompatible_workers = session.scalar(
+            text("""
+            SELECT EXISTS (
+                SELECT 1 FROM workers w
+                WHERE NOT (
+                    (w.protocol_version=3 AND w.identity_lifecycle='legacy'
+                        AND w.identity_enrolled_at IS NULL)
+                    OR (w.protocol_version=4 AND w.identity_lifecycle='reserved'
+                        AND EXISTS (
+                            SELECT 1 FROM worker_identity_reservations r WHERE r.worker_id=w.id
+                        ))
+                )
+            )
+            """)
+        )
+        if incompatible_workers is not False:
+            raise RemoteDeploymentUnavailable("worker_remote_deployment_incompatible")
+        return
     incompatible = session.scalar(
         text("""
         SELECT EXISTS (

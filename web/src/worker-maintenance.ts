@@ -45,7 +45,8 @@ function drainOperation(value: unknown): value is WorkerDrainOperation {
 
 function disposition(value: unknown): value is WorkerRecoveryDisposition {
   return record(value) && isMaintenanceUuid(value.operation_id) && isMaintenanceUuid(value.disposition_id)
-    && value.kind === "platform_terminal" && value.reason === "result_uncommitted_outcome_unknown"
+    && ((value.kind === "platform_terminal" && value.reason === "result_uncommitted_outcome_unknown")
+      || (value.kind === "force_stopped_no_result" && value.reason === "force_stop_no_result_outcome_unknown"))
     && integer(value.execution_id, 1) && integer(value.attempt_id, 1)
     && ((value.attempt_status === "worker_lost"
       && (value.execution_status === "dead_letter" || value.execution_status === "cancelled"))
@@ -87,7 +88,9 @@ export function parseWorkerMaintenanceSnapshot(value: unknown, workerId: number)
     || value.active_attempts > value.unsettled_attempts || typeof value.has_unreconciled_attempts !== "boolean"
     || !(value.current_drain_operation === null || drainOperation(value.current_drain_operation))
     || !(value.current_maintenance_action === null || value.current_maintenance_action === "drain"
-      || value.current_maintenance_action === "activate" || value.current_maintenance_action === "reconcile")
+      || value.current_maintenance_action === "activate" || value.current_maintenance_action === "reconcile"
+      || value.current_maintenance_action === "force_stop")
+    || !(value.force_stop_available === undefined || typeof value.force_stop_available === "boolean")
     || !(value.last_recovery_disposition === null || disposition(value.last_recovery_disposition))) return null;
   if ((value.instance_id === null && value.instance_lease_until !== null)
     || (value.instance_id !== null && (value.instance_generation === 0 || value.instance_lease_until === null))
@@ -112,6 +115,7 @@ export function parseWorkerMaintenanceSnapshot(value: unknown, workerId: number)
     unsettled_attempts: value.unsettled_attempts, has_unreconciled_attempts: value.has_unreconciled_attempts,
     current_drain_operation: value.current_drain_operation === null ? null : pickDrain(value.current_drain_operation),
     current_maintenance_action: value.current_maintenance_action,
+    ...(value.force_stop_available === undefined ? {} : { force_stop_available: value.force_stop_available }),
     last_recovery_disposition: value.last_recovery_disposition === null ? null : pickDisposition(value.last_recovery_disposition),
   };
 }
@@ -121,7 +125,7 @@ export function parseWorkerMaintenanceReceipt(value: unknown, workerId: number, 
   const op = value.operation;
   const current = value.current;
   if (!isMaintenanceUuid(op.request_id) || op.request_id !== requestId || !integer(op.worker_id, 1) || op.worker_id !== workerId
-    || !(op.action === "drain" || op.action === "activate") || !integer(op.expected_version, 1)
+    || !(op.action === "drain" || op.action === "activate" || op.action === "force_stop") || !integer(op.expected_version, 1)
     || !integer(op.result_version, 2) || op.result_version !== op.expected_version + 1
     || typeof op.same_actor !== "boolean" || !time(op.created_at)
     || !isMaintenanceUuid(current.worker_identity_id) || !integer(current.maintenance_version, 1)

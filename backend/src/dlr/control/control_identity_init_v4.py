@@ -5,16 +5,19 @@ from __future__ import annotations
 import json
 import sys
 from contextlib import suppress
+from datetime import datetime
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
 from dlr.common.config import settings
-from dlr.common.schema_gate import try_control_gate
+from dlr.common.schema_gate import acquire_migration_gate, try_control_gate
 from dlr.control import db
 from dlr.control.services import control_cluster_identity as identity
 from dlr.control.services import control_image_transition_v4 as transition
+from dlr.control.services import control_proof_rotation_v4 as proof_rotation
+from dlr.control.services import worker_legacy_window
 from dlr.control.services.control_declaration_v4 import DeploymentDeclaration, read_declaration
 
 
@@ -52,14 +55,14 @@ def maintain(
 def _maintenance_main(args: list[str]) -> int:
     try:
         # Only filenames are arguments. Invalid input is never echoed by a parser.
-        if len(args) not in {7, 11, 15, 19, 23} or args[0] not in {"check", "apply", "observe"}:
+        if len(args) not in {7, 11, 15, 19, 23, 27} or args[0] not in {"check", "apply", "observe"}:
             raise ValueError
         flags = dict(zip(args[1::2], args[2::2], strict=True))
         required = {"--source", "--target", "--intent"}
-        levels = ("previous", "root", "origin", "ancestor")
+        levels = ("previous", "root", "origin", "ancestor", "initial")
         accepted = [
             required | {f"--{name}-{part}" for name in levels[:n] for part in ("source", "intent")}
-            for n in range(5)
+            for n in range(len(levels) + 1)
         ]
         if len(flags) != (len(args) - 1) // 2 or set(flags) not in accepted:
             raise ValueError
@@ -142,6 +145,10 @@ def initialize(session: Session, deployment: DeploymentDeclaration) -> str:
 
 def main() -> int:
     if len(sys.argv) > 1:
+        if sys.argv[1] in {"legacy-window-open", "legacy-window-close", "legacy-window-status"}:
+            return _legacy_window_main(sys.argv[1:])
+        if sys.argv[1] in {"proof-authority-apply", "proof-authority-observe"}:
+            return _proof_rotation_main(sys.argv[1:])
         return _maintenance_main(sys.argv[1:])
     try:
         deployment = read_declaration(settings)
@@ -153,6 +160,90 @@ def main() -> int:
     except Exception:
         # This includes a commit response loss: do not claim initialization.
         print(json.dumps({"status": "unavailable_or_commit_unknown"}))
+        return 1
+
+
+def _legacy_window_main(args: list[str]) -> int:
+    opening = args[0] == "legacy-window-open"
+    try:
+        if len(args) != (2 if opening else 1) or not worker_legacy_window.enabled_mode():
+            raise worker_legacy_window.LegacyWindowUnavailable
+        with db.SessionLocal() as session:
+            acquire_migration_gate(session)
+            transition._owner_fence(session, settings)
+            if opening:
+                deployment = read_declaration(settings)
+                # Verify existing authority if this is a restart of operator
+                # preparation; an unexpected declaration fails closed.
+                initialize(session, deployment)
+                worker_legacy_window.open_once(session, datetime.fromisoformat(args[1]))
+                result = "legacy_window_opened"
+            elif args[0] == "legacy-window-close":
+                worker_legacy_window.close(session)
+                result = "legacy_window_closed"
+            else:
+                # A separate connection is also used after a lost write reply.
+                row = (
+                    session.execute(
+                        text(
+                            "SELECT opened_at, deadline_at, closed_at "
+                            "FROM worker_legacy_window WHERE id=1"
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                print(json.dumps({"status": "observed", **row}, default=str))
+                return 0
+            transition._owner_fence(session, settings)
+            session.commit()
+        print(json.dumps({"status": result}))
+        return 0
+    except Exception:
+        print(json.dumps({"status": "legacy_window_unavailable_or_commit_unknown"}))
+        return 1
+
+
+def _proof_rotation_main(args: list[str]) -> int:
+    try:
+        if len(args) != 11:
+            raise ValueError
+        flags = dict(zip(args[1::2], args[2::2], strict=True))
+        if set(flags) != {"--source", "--source-key", "--target", "--target-key", "--intent"}:
+            raise ValueError
+        source, target = (
+            read_declaration(
+                settings.model_copy(
+                    update={
+                        "control_identity_file": flags[flag],
+                        "worker_proof_signing_key_file": flags[f"{flag}-key"],
+                    }
+                )
+            )
+            for flag in ("--source", "--target")
+        )
+        intent = proof_rotation.read_intent(flags["--intent"], source, target)
+        engine = create_engine(settings.database_url, poolclass=NullPool)
+        try:
+            factory = sessionmaker(engine)
+            if args[0] == "proof-authority-apply":
+                with factory() as session:
+                    try:
+                        proof_rotation.apply(session, intent, settings)
+                        session.commit()
+                    except Exception:
+                        # The commit may have reached PostgreSQL. Close this
+                        # connection before trying to observe the exact intent.
+                        with suppress(Exception):
+                            session.rollback()
+            with factory() as session:
+                result = proof_rotation.observe(session, intent)
+        finally:
+            engine.dispose()
+        print(json.dumps(result))
+        return 0 if result["status"] == "committed_current" else 1
+    except Exception:
+        print(json.dumps({"status": "proof_authority_unavailable_or_commit_unknown"}))
         return 1
 
 

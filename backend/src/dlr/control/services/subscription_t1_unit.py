@@ -673,6 +673,11 @@ class T1Unit:
                     and value.content_hash is not None
                     and self._activation is not None
                 )
+                from dlr.control.services import worker_legacy_window
+
+                worker_legacy_window.require_dispatch_target(
+                    self.session, self._activation.worker_id
+                )
                 receipt = EventReceipt(
                     subscription_id=self.subscription.id,
                     activation_id=self._activation.id,

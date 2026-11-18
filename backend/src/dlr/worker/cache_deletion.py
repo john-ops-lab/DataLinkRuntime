@@ -9,7 +9,7 @@ import stat
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -512,6 +512,7 @@ class CacheDeletionManager:
         replacement_resolve: Callable[[int, int | None], str | None] | None = None,
         offline_protection: bool = True,
         offline_mode: bool = False,
+        bind_observed_identity: bool = False,
         retry_seconds: float = 60.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -527,6 +528,7 @@ class CacheDeletionManager:
         self.replacement_resolve = replacement_resolve
         self.offline_protection = offline_protection
         self.offline_mode = offline_mode
+        self.bind_observed_identity = bind_observed_identity
 
     def make_round_budget(
         self,
@@ -794,6 +796,16 @@ class CacheDeletionManager:
             if original_bytes > max_bytes:
                 raise CacheError("cache_budget_exhausted")
             root_device, root_inode = _root_identity(entry)
+            if self.bind_observed_identity and eligibility.observed_identity is None:
+                eligibility = replace(
+                    eligibility,
+                    observed_identity={
+                        "store_id": owner["store_id"],
+                        "language": eligibility.identity["language"],
+                        "source_sha256": eligibility.identity["source_sha256"],
+                        "digest": eligibility.digest,
+                    },
+                )
             if eligibility.cleanup_context is None and eligibility.observed_identity is None:
                 response = self.client.acquire_cache_guard(
                     self.worker_id,

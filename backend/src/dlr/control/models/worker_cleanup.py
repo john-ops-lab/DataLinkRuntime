@@ -35,6 +35,12 @@ class WorkerCleanupRequest(Base):
             "status IN ('pending', 'running', 'completed', 'failed')",
             name="ck_worker_cleanup_requests_status",
         ),
+        CheckConstraint(
+            "((v4_instance_id IS NULL AND v4_generation IS NULL) OR "
+            "(v4_identity_id IS NOT NULL AND v4_instance_id IS NOT NULL "
+            "AND v4_generation IS NOT NULL AND v4_generation > 0))",
+            name="ck_worker_cleanup_v4_owner",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -68,3 +74,6 @@ class WorkerCleanupRequest(Base):
         nullable=True,
         unique=True,
     )
+    v4_identity_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
+    v4_instance_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
+    v4_generation: Mapped[int | None] = mapped_column(BigInteger)

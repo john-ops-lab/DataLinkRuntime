@@ -76,7 +76,7 @@ def _stopped(prepared):
 
 
 @pytest.mark.parametrize("failed", [False, True])
-def test_file_v3_is_only_valid_for_the_current_live_owner_not_bc_recovery(failed):
+def test_file_v3_requires_explicit_file_context_and_exact_input_binding(failed):
     from dlr.worker import recovery_local_v4
 
     prepared = _prepared()
@@ -98,6 +98,7 @@ def test_file_v3_is_only_valid_for_the_current_live_owner_not_bc_recovery(failed
     )
     stopped = _stopped(prepared)
     stopped.update(version=3, stop_reason="preparation_failed" if failed else None)
+    stopped["workspace_entries"]["input"] = prepared["input_directory"]
     assert not checkpoint.valid_prepared(prepared)
     assert not checkpoint.valid_stopped(stopped, prepared)
     assert checkpoint.valid_prepared(prepared, _active_files=True)
@@ -200,7 +201,8 @@ def test_stopped_keeps_actual_single_language_subsets_and_old_python_records(lan
         ("javascript", ["package.json"]),
         ("javascript", ["node_modules"]),
         ("javascript", ["../adapter.mjs"]),
-        ("typescript", ["input.json"]),
+        ("typescript", ["package.json"]),
+        ("go", ["go-business-binary"]),
     ],
 )
 def test_language_does_not_widen_checkpoint_inventory_or_recovery_qualification(language, entries):

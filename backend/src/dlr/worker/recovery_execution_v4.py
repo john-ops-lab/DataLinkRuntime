@@ -46,6 +46,7 @@ def scan(
     worker_id: int,
     identity_id: UUID,
     boot_id: str,
+    allow_files: bool = False,
 ) -> RecoveryState:
     """Read-only bounded discovery. Missing W1-A provenance remains blocked."""
     with lock.borrow(runtime, [attempts]):
@@ -64,13 +65,17 @@ def scan(
         terminal = None
         if len(terminals) == 1:
             terminal = journal_v4._read(directory, terminals[0])
-            if not recovery_local_v4.valid_terminal(terminal) or terminal is None:
+            if not recovery_local_v4.valid_terminal(terminal, _active_files=allow_files) or (
+                terminal is None
+            ):
                 raise ValueError("recovery terminal invalid")
             prepared, stopped = terminal["prepared"], terminal["stopped"]
             attempt_record = terminal["attempt_record"]
         elif not terminals and len(prepared_names) == 1:
             prepared = journal_v4._read(directory, prepared_names[0])
-            if not checkpoint.valid_prepared(prepared) or prepared is None:
+            if not checkpoint.valid_prepared(prepared, _active_files=allow_files) or (
+                prepared is None
+            ):
                 raise ValueError("recovery prepared invalid")
             stopped = journal_v4._read(directory, checkpoint.names(prepared["attempt_id"])[1])
             records = {
@@ -85,8 +90,8 @@ def scan(
         else:
             raise ValueError("recovery checkpoint unavailable")
         if (
-            not checkpoint.valid_prepared(prepared)
-            or not checkpoint.valid_stopped(stopped, prepared)
+            not checkpoint.valid_prepared(prepared, _active_files=allow_files)
+            or not checkpoint.valid_stopped(stopped, prepared, _active_files=allow_files)
             or prepared["worker_id"] != worker_id
             or prepared["worker_identity_id"] != str(identity_id)
             or prepared["boot_id"] != boot_id
@@ -313,31 +318,38 @@ def read_operation(
         or not checkpoint._uuid(binding["deployment_record_id"])
     ):
         raise ValueError("recovery operation conflict")
-    lookup = {
+    lookup: dict[str, Any] = {
         "operation_id": str(operation),
         "binding": binding,
-        "result_intent_id": state.stopped["intent_id"],
-        "body_mac": state.stopped["body_mac"],
     }
-    if "mode" in response:
-        settlement = response["settlement"]
+    stopped = state.stopped
+    no_result = stopped.get("phase") == "force_stopped"
+    if no_result:
+        mode = "settle_force_stopped_no_result"
+        acknowledgement = "force_stop_no_result_outcome_unknown"
+        reference = {"force_stop_operation_id": stopped["force_stop_operation_id"]}
+    else:
+        mode = "settle_stopped_uncommitted"
+        acknowledgement = "result_uncommitted_outcome_unknown"
+        reference = {"result_intent_id": stopped["intent_id"], "body_mac": stopped["body_mac"]}
+        lookup.update(reference)
+    if no_result or "mode" in response:
+        settlement = response.get("settlement")
         if (
-            response["mode"] != "settle_stopped_uncommitted"
-            or not checkpoint._uuid(response["disposition_id"])
+            response.get("mode") != mode
+            or not checkpoint._uuid(response.get("disposition_id"))
             or not isinstance(settlement, dict)
             or set(settlement)
-            != {
+            != set(reference)
+            | {
                 "stopped_sha256",
-                "result_intent_id",
-                "body_mac",
                 "attempt_status",
                 "execution_status",
                 "acknowledgement",
             }
-            or settlement["stopped_sha256"] != checkpoint.digest(state.stopped)
-            or settlement["result_intent_id"] != state.stopped["intent_id"]
-            or settlement["body_mac"] != state.stopped["body_mac"]
-            or settlement["acknowledgement"] != "result_uncommitted_outcome_unknown"
+            or settlement["stopped_sha256"] != checkpoint.digest(stopped)
+            or any(settlement[key] != value for key, value in reference.items())
+            or settlement["acknowledgement"] != acknowledgement
             or (settlement["attempt_status"], settlement["execution_status"])
             not in {
                 ("worker_lost", "dead_letter"),
@@ -409,6 +421,7 @@ class RecoveryExchange:
                 instance_token=lease._proof,
             )
             p, s = self.state.prepared, self.state.stopped
+            no_result = s.get("phase") == "force_stopped"
             if claims is None or (
                 claims.execution_id,
                 claims.attempt_id,
@@ -428,15 +441,15 @@ class RecoveryExchange:
                 p["fencing_token"],
                 UUID(self.lookup["operation_id"]),
                 bytes.fromhex(checkpoint.digest(p)),
-                UUID(s["intent_id"]),
-                bytes.fromhex(s["body_mac"]),
+                None if no_result else UUID(s["intent_id"]),
+                None if no_result else bytes.fromhex(s["body_mac"]),
                 nonce,
             ):
                 raise ValueError("recovery observation conflict")
-            if self.lookup.get("mode", "committed_result") == "settle_stopped_uncommitted":
+            if self.lookup.get("mode", "committed_result") != "committed_result":
                 settlement = self.lookup["settlement"]
                 if (
-                    claims.kind != "platform_terminal"
+                    claims.kind != ("force_stopped_no_result" if no_result else "platform_terminal")
                     or claims.finalization_id is not None
                     or str(claims.disposition_id) != self.lookup["disposition_id"]
                     or claims.stopped_sha256 != bytes.fromhex(checkpoint.digest(s))
@@ -538,6 +551,9 @@ def recover(
 ) -> None:
     exchange = RecoveryExchange(lease, state, lookup, stop)
     observed = exchange.observe()
+    files = state.prepared["version"] == checkpoint.FILE_VERSION
+    normal_version = checkpoint.FILE_VERSION if files else checkpoint.VERSION
+    disposition_version = recovery_local_v4.FILE_DISPOSITION_VERSION if files else 2
     with lock.borrow(runtime, [attempts]):
         directory, runtime_fd = (
             checkpoint._root_fd(lock, attempts),
@@ -550,6 +566,7 @@ def recover(
             worker_id=state.prepared["worker_id"],
             identity_id=UUID(state.prepared["worker_identity_id"]),
             boot_id=state.prepared["boot_id"],
+            allow_files=files,
         )
         if current != state:
             raise ValueError("recovery journal changed after observation")
@@ -569,7 +586,7 @@ def recover(
                 },
             )
             recovery_local_v4.clean_workspace(
-                directory, runtime_fd, runtime, state.prepared, state.stopped
+                directory, runtime_fd, runtime, state.prepared, state.stopped, _active_files=files
             )
     # All HTTP IO children have been reaped by the existing bounded transport;
     # physical cleanup is synchronous. A stalled IO never releases intake.
@@ -595,7 +612,7 @@ def recover(
                     raise ValueError("recovery retirement unavailable")
                 records[name] = checkpoint.digest(record)
             terminal = {
-                "version": 1,
+                "version": normal_version,
                 "prepared": state.prepared,
                 "stopped": state.stopped,
                 "attempt_record": state.attempt_record,
@@ -603,18 +620,20 @@ def recover(
                 "records": records,
                 "runtime_records": state.prepared["runtime_record"],
             }
-            if observed.kind == "platform_terminal":
+            if observed.kind != "committed_result":
                 terminal.update(
-                    version=2, kind=observed.kind, disposition_id=str(observed.disposition_id)
+                    version=disposition_version,
+                    kind=observed.kind,
+                    disposition_id=str(observed.disposition_id),
                 )
             else:
                 terminal["finalization_id"] = str(observed.finalization_id)
         if (
             terminal["completion_id"] != str(observed.completion_id)
             or (
-                observed.kind == "platform_terminal"
+                observed.kind != "committed_result"
                 and (
-                    terminal.get("version") != 2
+                    terminal.get("version") != disposition_version
                     or terminal.get("kind") != observed.kind
                     or terminal.get("disposition_id") != str(observed.disposition_id)
                 )
@@ -622,12 +641,16 @@ def recover(
             or (
                 observed.kind == "committed_result"
                 and (
-                    terminal.get("version") != 1
+                    terminal.get("version") != normal_version
                     or terminal.get("finalization_id") != str(observed.finalization_id)
                 )
             )
         ):
             raise ValueError("recovery terminal committed IDs conflict")
         recovery_local_v4.retire(
-            directory, runtime_fd, terminal, allow_missing=state.terminal is not None
+            directory,
+            runtime_fd,
+            terminal,
+            allow_missing=state.terminal is not None,
+            _active_files=files,
         )

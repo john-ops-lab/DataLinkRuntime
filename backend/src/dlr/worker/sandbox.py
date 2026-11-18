@@ -21,6 +21,7 @@ import base64
 import ctypes
 import errno
 import fcntl
+import hashlib
 import json
 import logging
 import math
@@ -51,6 +52,12 @@ logger = logging.getLogger("dlr.worker.sandbox")
 CGROUP_CONTROLLERS = ("cpu", "memory", "pids")
 LIMIT_FILES = ("cpu.max", "memory.max", "memory.swap.max", "pids.max")
 _LAUNCH_ENV_KEYS = frozenset({"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ", "USER"})
+GO_TOOL = "/usr/local/go/bin/go"
+GO_LAUNCH = "__dlr_go_v4__"
+_GO_ARTIFACT = ".dlr-go-artifact"
+_GO_DIGEST = ".dlr-go-artifact.sha256"
+_GO_DESTINATION = ".dlr-go-executable"
+_GO_TEMP_ARTIFACT = "temp/dlr-built.bin"
 ATTEMPT_NAME_PATTERN = re.compile(
     r"(?:attempt-[1-9][0-9]*-[1-9][0-9]*|dlr-preflight-[0-9a-f]{16,64})\Z"
 )
@@ -1493,7 +1500,9 @@ def _filesystem_identity(uid: int, gid: int) -> Iterator[None]:
             raise OSError(errno.EPERM, "filesystem identity restore failed")
 
 
-def _copy_tree_as_owner(source: Path, target: Path, uid: int, gid: int) -> None:
+def _copy_tree_as_owner(
+    source: Path, target: Path, uid: int, gid: int, *, omit: frozenset[str] = frozenset()
+) -> None:
     """Copy the staging tree as payload-owned nodes without following links.
 
     Source descriptors are opened while the supervisor still has filesystem
@@ -1513,7 +1522,9 @@ def _copy_tree_as_owner(source: Path, target: Path, uid: int, gid: int) -> None:
     def copy_directory(source_dir: Path, target_dir: Path) -> None:
         with os.scandir(source_dir) as entries:
             for entry in entries:
-                if entry.name == ".dlr-sandbox-mount":
+                if entry.name == ".dlr-sandbox-mount" or (
+                    source_dir == source and entry.name in omit
+                ):
                     continue
                 source_path = Path(entry.path)
                 target_path = target_dir / entry.name
@@ -1564,6 +1575,155 @@ def _copy_tree_as_owner(source: Path, target: Path, uid: int, gid: int) -> None:
                     raise OSError(errno.ELOOP, "unsupported workspace entry")
 
     copy_directory(source, target)
+
+
+def _go_artifact_limit(tmp_bytes: int) -> int:
+    return min(16 * 1024 * 1024, tmp_bytes // 8)
+
+
+def _go_artifact_readback(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        info.st_nlink,
+    )
+
+
+def _copy_go_artifact(
+    source_fd: int,
+    target: Path | str,
+    maximum: int,
+    *,
+    owner: int,
+    mode: int,
+    expected: bytes | None,
+    dir_fd: int | None = None,
+) -> bytes:
+    before = os.fstat(source_fd)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != owner
+        or before.st_nlink != 1
+        or not 64 <= before.st_size <= maximum
+    ):
+        raise ValueError("Go artifact unavailable")
+    elf = os.pread(source_fd, 64, 0)
+    machine = {"aarch64": 183, "x86_64": 62}.get(os.uname().machine)
+    if (
+        len(elf) != 64
+        or elf[:6] != b"\x7fELF\x02\x01"
+        or int.from_bytes(elf[16:18], "little") != 2
+        or int.from_bytes(elf[18:20], "little") != machine
+    ):
+        raise ValueError("Go artifact unavailable")
+    digest = hashlib.sha256()
+    descriptor = os.open(
+        target,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+        dir_fd=dir_fd,
+    )
+    with os.fdopen(descriptor, "wb") as stream:
+        total = 0
+        while total < before.st_size:
+            part = os.pread(source_fd, min(STREAM_COPY_CHUNK_BYTES, before.st_size - total), total)
+            if not part:
+                raise ValueError("Go artifact unavailable")
+            digest.update(part)
+            stream.write(part)
+            total += len(part)
+        value = digest.hexdigest().encode("ascii")
+        if _go_artifact_readback(os.fstat(source_fd)) != _go_artifact_readback(before) or (
+            expected is not None and value != expected
+        ):
+            raise ValueError("Go artifact unavailable")
+        os.fchmod(descriptor, mode)
+        stream.flush()
+        os.fsync(descriptor)
+    return value
+
+
+def _stage_go_artifact(source: Path, target: Path, maximum: int, uid: int, gid: int) -> None:
+    # The payload namespace init and its descendants have already been reaped.
+    # Resolve the private temporary leaf without following a user-created link.
+    with _filesystem_identity(uid, gid):
+        folder = os.open(
+            source / "temp", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+        try:
+            descriptor = os.open(
+                "dlr-built.bin",
+                os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=folder,
+            )
+        finally:
+            os.close(folder)
+    dir_fd = -1
+    try:
+        dir_fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        info = os.fstat(dir_fd)
+        if info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError("Go artifact workspace unavailable")
+        digest = _copy_go_artifact(
+            descriptor,
+            _GO_ARTIFACT,
+            maximum,
+            owner=uid,
+            mode=0o600,
+            expected=None,
+            dir_fd=dir_fd,
+        )
+        fd = os.open(
+            _GO_DIGEST,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=dir_fd,
+        )
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(digest)
+            stream.flush()
+            os.fsync(fd)
+        os.fsync(dir_fd)
+    finally:
+        os.close(descriptor)
+        if dir_fd >= 0:
+            os.close(dir_fd)
+
+
+def _install_go_artifact(source: Path, target: Path, maximum: int) -> Path:
+    # Only the privileged helper can write this private mount. Remount it
+    # read-only and verify the flags before a payload loses its gate.
+    fd = os.open(source / _GO_DIGEST, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        digest = os.read(fd, 65)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != 0
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1
+            or re.fullmatch(rb"[a-f0-9]{64}", digest) is None
+        ):
+            raise ValueError("Go artifact unavailable")
+    finally:
+        os.close(fd)
+    target.mkdir(mode=0o711)
+    _mount("tmpfs", str(target), "tmpfs", MS_NOSUID | MS_NODEV, f"size={maximum},mode=0711")
+    destination = target / "adapter"
+    fd = os.open(source / _GO_ARTIFACT, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        _copy_go_artifact(fd, destination, maximum, owner=0, mode=0o555, expected=digest)
+    finally:
+        os.close(fd)
+    _mount(None, str(target), None, MS_REMOUNT | MS_RDONLY | MS_NOSUID | MS_NODEV, None)
+    flags = os.statvfs(target).f_flag
+    required = os.ST_RDONLY | os.ST_NOSUID | os.ST_NODEV  # type: ignore[attr-defined, unused-ignore]
+    if flags & required != required or flags & os.ST_NOEXEC:  # type: ignore[attr-defined, unused-ignore]
+        raise ValueError("Go executable mount unavailable")
+    return destination
 
 
 def _mount_payload_temp_dirs(
@@ -1762,6 +1922,7 @@ def _helper_child(
     usage_fd: int,
     *,
     inherited_cgroup_fd: int | None = None,
+    go_phase: str | None = None,
 ) -> int:
     """Run a helper; an inherited cgroup fd requires a trusted supervisor."""
 
@@ -1799,11 +1960,24 @@ def _helper_child(
     workspace_relative: Path | None = None
     payload_workspace: Path | None = None
     payload_root: Path | None = None
+    go_mount: Path | None = None
     created_payload_root = False
     mounted_payload_bind = False
     hidden_mounts: list[str] = []
     stage = "ready_gate"
     try:
+        go_limit = 0
+        if go_phase is not None:
+            if (
+                command != [GO_LAUNCH]
+                or go_phase not in {"build", "run"}
+                or any(key.startswith("DLR_SECRET_") for key in os.environ)
+            ):
+                raise ValueError("Go launch unavailable")
+            go_limit = _go_artifact_limit(tmp_bytes)
+            if go_limit < 4096:
+                raise ValueError("Go artifact unavailable")
+            tmp_bytes -= go_limit
         original_cwd_fd = os.open(".", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         mount_parent_fd = os.open(
             mount_root.parent,
@@ -1875,7 +2049,21 @@ def _helper_child(
             os.chmod(workspace_relative, 0o700, follow_symlinks=False)
         payload_workspace = Path(f"/proc/self/fd/{inner_fd}/{host_workspace.name}")
         stage = "workspace_ownership"
-        _copy_tree_as_owner(host_workspace, workspace_relative, payload_uid, payload_gid)
+        _copy_tree_as_owner(
+            host_workspace,
+            workspace_relative,
+            payload_uid,
+            payload_gid,
+            omit=frozenset({_GO_ARTIFACT, _GO_DIGEST}) if go_phase == "run" else frozenset(),
+        )
+        if go_phase == "run":
+            stage = "go_artifact_install"
+            go_mount = payload_root / _GO_DESTINATION
+            executable = _install_go_artifact(host_workspace, go_mount, go_limit)
+            command = [
+                str(executable),
+                str(payload_root / host_workspace.name / host_workspace.name),
+            ]
 
         # PID namespaces only affect children, so fork after unshare. The v3
         # helper stays outside the Attempt and moves its gated payload in.
@@ -1940,6 +2128,33 @@ def _helper_child(
                         "TEMP": "/tmp",
                     }
                 )
+                if go_phase == "build":
+                    command = [
+                        GO_TOOL,
+                        "build",
+                        "-trimpath",
+                        "-buildvcs=false",
+                        "-p=1",
+                        "-ldflags=-s -w",
+                        "-o",
+                        _GO_TEMP_ARTIFACT,
+                        "adapter.go",
+                        "dlr_runtime.go",
+                    ]
+                    adapter_environment = {
+                        "PATH": "/usr/bin:/bin",
+                        "HOME": "/tmp/home",
+                        "TMPDIR": "/tmp",
+                        "GOCACHE": "/tmp/dlr-go-cache",
+                        "GOTMPDIR": "/tmp",
+                        "GOENV": "off",
+                        "GOTOOLCHAIN": "local",
+                        "GO111MODULE": "off",
+                        "GOPROXY": "off",
+                        "GOSUMDB": "off",
+                        "CGO_ENABLED": "0",
+                        "GOMAXPROCS": "1",
+                    }
                 # These are probe-only namespace assertions.  Production
                 # attempts do not provide DLR_PREFLIGHT_* values.
                 adapter_environment.update(
@@ -2073,6 +2288,15 @@ def _helper_child(
             )
         stage = "output_copy"
         assert workspace_relative is not None
+        if go_phase == "build":
+            stage = "go_artifact_stage"
+            if tmpfs_exhausted:
+                return 125
+            if exit_code == 0:
+                _stage_go_artifact(
+                    workspace_relative, host_workspace, go_limit, payload_uid, payload_gid
+                )
+            return exit_code
         output = workspace_relative / "output.json"
         output_fd = -1
         try:
@@ -2139,6 +2363,9 @@ def _helper_child(
         for target in reversed(hidden_mounts):
             with suppress(OSError):
                 _unmount(target)
+        if go_mount is not None:
+            with suppress(OSError):
+                _unmount(str(go_mount))
         if mounted_workspace_tmpfs and workspace_mount_relative is not None:
             with suppress(OSError):
                 if payload_outer_fd is not None:
@@ -2345,6 +2572,7 @@ def _helper_main(argv: list[str]) -> int:
     parser.add_argument("--ready-fd", required=True, type=int)
     parser.add_argument("--diagnostic-fd", required=True, type=int)
     parser.add_argument("--usage-fd", required=True, type=int)
+    parser.add_argument("--go-phase", choices=("build", "run"))
     args = parser.parse_args(argv)
     if not args.sandbox_child:
         return 125
@@ -2394,6 +2622,7 @@ def _helper_main(argv: list[str]) -> int:
             args.diagnostic_fd,
             args.usage_fd,
             inherited_cgroup_fd=args.inherited_cgroup_fd,
+            go_phase=args.go_phase,
         )
     except OSError as error:
         _write_helper_diagnostic(
@@ -2445,6 +2674,7 @@ class AttemptSandbox:
         mount_parent = (
             workspace
             if PREFLIGHT_CGROUP_NAME_PATTERN.fullmatch(self.cgroup_name)
+            and workspace.name == self.cgroup_name
             else workspace.parent
         )
         self.mount_root = (mount_parent / ".dlr-sandbox-mount").resolve()
@@ -2591,6 +2821,7 @@ class AttemptSandbox:
         *,
         stdout: Any,
         environment: Mapping[str, str] | None = None,
+        _go_phase: str | None = None,
     ) -> subprocess.Popen[bytes]:
         try:
             self.mount_root.mkdir(mode=0o700)
@@ -2654,6 +2885,7 @@ class AttemptSandbox:
                     str(diagnostic_write_fd),
                     "--usage-fd",
                     str(usage_write_fd),
+                    *(["--go-phase", _go_phase] if _go_phase is not None else []),
                 ],
                 stdout=stdout,
                 stderr=subprocess.STDOUT,
@@ -2981,6 +3213,7 @@ def run_preflight(
     recovery_root: Path,
     runtime_root: Path | None = None,
     managed_files: bool = False,
+    builtin_wheel: bool = False,
 ) -> dict[str, Any]:
     """Run one disposable real probe and return a sanitized capability receipt."""
 
@@ -3003,7 +3236,11 @@ def run_preflight(
         "adapter_mount_blocked": False,
         "sandbox_cleanup": False,
     }
-    if type(managed_files) is not bool:
+    if (
+        type(managed_files) is not bool
+        or type(builtin_wheel) is not bool
+        or (builtin_wheel and not managed_files)
+    ):
         raise ValueError("invalid input probe mode")
     if managed_files:
         capabilities["managed_files_v1"] = False
@@ -3012,6 +3249,12 @@ def run_preflight(
         input_probe = PREFLIGHT_CODE
     else:
         input_probe = "managed_probe=False\n"
+    builtin_probe = "builtin_probe=False\n"
+    if builtin_wheel:
+        from dlr.common.builtin_wheel_v4 import PREFLIGHT_CODE as BUILTIN_PREFLIGHT_CODE
+
+        capabilities["builtin_wheel_v1"] = False
+        builtin_probe = BUILTIN_PREFLIGHT_CODE
     try:
         parent = validate_delegated_parent(config)
         validate_private_cgroup_namespace(parent)
@@ -3126,8 +3369,10 @@ def run_preflight(
         "adapter_mount=mount_blocked()\n"
         "hidden_paths={'/sys/fs/cgroup':inaccessible(pathlib.Path('/sys/fs/cgroup')),str(hidden_target):inaccessible(hidden_target)}\n"
         + input_probe
+        + builtin_probe
         + "pathlib.Path('output.json').write_text(json.dumps({'ok':True,"
-        "'managed_files_v1':managed_probe,'identity':{'uid':os.getuid(),'gid':os.getgid(),"
+        "'managed_files_v1':managed_probe,'builtin_wheel_v1':builtin_probe,"
+        "'identity':{'uid':os.getuid(),'gid':os.getgid(),"
         "'Groups':field('Groups'),'CapPrm':field('CapPrm'),'CapEff':field('CapEff'),"
         "'CapInh':field('CapInh'),'CapBnd':cap_bnd,'CapAmb':field('CapAmb'),"
         "'NoNewPrivs':field('NoNewPrivs')},'adapter_mount':adapter_mount,"
@@ -3254,6 +3499,10 @@ def run_preflight(
                 if managed_files:
                     capabilities["managed_files_v1"] = (
                         cleanup_completed and receipt.get("managed_files_v1") is True
+                    )
+                if builtin_wheel:
+                    capabilities["builtin_wheel_v1"] = (
+                        cleanup_completed and receipt.get("builtin_wheel_v1") is True
                     )
                 details["adapter_identity"] = receipt.get("identity")
                 hidden_paths = receipt.get("hidden_cgroup_paths")

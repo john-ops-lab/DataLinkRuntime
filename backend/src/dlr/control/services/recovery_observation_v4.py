@@ -91,6 +91,14 @@ def observe(
             ):
                 raise ValueError
             candidate, before, now = cleanup._snapshot(session, frozen)
+            no_result = result is None
+            if no_result and disposition is None:
+                raise ValueError
+            kind = (
+                disposition.recovery_disposition["kind"]
+                if disposition is not None and disposition.recovery_disposition is not None
+                else "committed_result"
+            )
             claims = RecoveryClaims(
                 authority.cluster_id,
                 authority.authority_epoch,
@@ -107,15 +115,15 @@ def observe(
                 candidate.candidate_id,
                 lookup.operation_id,
                 bytes.fromhex(lookup.binding.prepared_sha256),
-                result.intent_id,
-                bytes(result.body_mac),
-                result.finalization_id,
+                result.intent_id if result is not None else None,
+                bytes(result.body_mac) if result is not None else None,
+                result.finalization_id if result is not None else None,
                 completion,
                 nonce,
                 attempt.status,
                 _timestamp(before),
                 _timestamp(now),
-                kind="platform_terminal" if disposition is not None else "committed_result",
+                kind=kind,
                 disposition_id=(
                     disposition.recovery_disposition_id if disposition is not None else None
                 ),
@@ -125,6 +133,7 @@ def observe(
                     else None
                 ),
                 execution_status=execution.status if disposition is not None else None,
+                version=3 if no_result else 2,
             )
             token = sign_observation(claims, authority.key)
             gate.check()

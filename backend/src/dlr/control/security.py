@@ -117,17 +117,43 @@ def require_admin_token(
 
 def require_worker_token(
     request: Request,
+    session: DbSession,
     authorization: AuthorizationHeader = None,
 ) -> None:
     """Protect worker-internal endpoints and keep them off the account entry."""
+    from dlr.control.services import worker_legacy_window
+
     if settings.worker_remote_v4_enabled:
-        # Remote v4 mode requires the old shared-token Worker path to stop.
-        raise HTTPException(
-            status_code=401,
-            detail={"code": "worker_credential_required", "message": "Worker credential required"},
-        )
+        from dlr.control.api.worker_instance_v4 import _process
+        from dlr.control.services.worker_token_fence_v4 import TokenFenceUnavailable
+
+        if not worker_legacy_window.enabled_mode():
+            raise _individual_worker_credential_required()
+        require_entry(request, TOKEN_ENTRY_MODE)
+        _require_token(authorization, settings.worker_token)
+        try:
+            process = _process(request)
+
+            def check_control(current: Session) -> None:
+                process.worker_fence(current).check()
+                process.check_authority()
+
+            check_control(session)
+            worker_legacy_window.gate(session, check_control=check_control)
+        except (worker_legacy_window.LegacyWindowUnavailable, TokenFenceUnavailable):
+            raise _individual_worker_credential_required() from None
+        return
     require_entry(request, TOKEN_ENTRY_MODE)
     _require_token(authorization, settings.worker_token)
+    if worker_legacy_window.has_history(session):
+        raise _individual_worker_credential_required()
+
+
+def _individual_worker_credential_required() -> HTTPException:
+    return HTTPException(
+        status_code=401,
+        detail={"code": "worker_credential_required", "message": "Worker credential required"},
+    )
 
 
 def reject_enrolled_legacy_worker(request: Request, session: DbSession) -> None:
@@ -144,15 +170,17 @@ def reject_enrolled_legacy_worker(request: Request, session: DbSession) -> None:
             status_code=404, detail={"code": "worker_not_found", "message": "Worker not found"}
         )
     from dlr.control.models import Worker
+    from dlr.control.services import worker_legacy_window
 
     worker = session.get(Worker, worker_id)
+    try:
+        worker_legacy_window.authorize_worker(session, worker)
+    except worker_legacy_window.LegacyWindowUnavailable:
+        raise _individual_worker_credential_required() from None
     if worker is not None and (
         worker.identity_enrolled_at is not None or worker.identity_lifecycle != "legacy"
     ):
-        raise HTTPException(
-            status_code=401,
-            detail={"code": "worker_credential_required", "message": "Worker credential required"},
-        )
+        raise _individual_worker_credential_required()
 
 
 def _account_principal(account_session: AccountSession) -> Principal:

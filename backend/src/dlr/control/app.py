@@ -43,7 +43,9 @@ from dlr.control.api import (
     users,
     webhooks,
     worker_activation_v4,
+    worker_adapter_cleanup_v4,
     worker_attempt_authority_v4,
+    worker_cache_v4,
     worker_claim_v4,
     worker_cleanup_v4,
     worker_enrollment_v4,
@@ -269,6 +271,16 @@ def create_app() -> FastAPI:
     # release gates validate all 51 before packaging.
     get_template_catalog()
     app = FastAPI(title="DLR Control", version="0.0.1", lifespan=lifespan)
+    from dlr.control.services.worker_legacy_window import LegacyWindowUnavailable
+
+    @app.exception_handler(LegacyWindowUnavailable)
+    async def _legacy_window_unavailable(
+        request: Request, exc: LegacyWindowUnavailable
+    ) -> JSONResponse:
+        return JSONResponse(
+            {"detail": {"code": "worker_legacy_window_unavailable"}}, status_code=409
+        )
+
     if settings.worker_remote_v4_enabled:
         from dlr.control.services.claim_coordinator_v4 import ClaimCoordinator
 
@@ -478,6 +490,8 @@ def create_app() -> FastAPI:
         app.include_router(worker_enrollment_v4.router)
         app.include_router(worker_instance_v4.router)
         app.include_router(worker_input_v4.router)
+        app.include_router(worker_adapter_cleanup_v4.router)
+        app.include_router(worker_cache_v4.router)
         app.include_router(worker_attempt_authority_v4.router)
         app.include_router(worker_claim_v4.router)
         app.include_router(worker_result_v4.router)

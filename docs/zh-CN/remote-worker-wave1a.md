@@ -634,6 +634,70 @@ python -m dlr.control.control_identity_init_v4 check \
 
 J最小验收依次为定向PG/API、现有Linux安装/期限/责任、PG原子迁移/最长链，以及另获授权后的最多两台各2GiB真实I→J与三笔新业务；具体结果绑定实际候选及私有记录。当前说明不代表J4真实验收或发布已完成，也不关闭#129。
 
+## 固定 Worker 的 AMQP 账户换代（W1-K）
+
+在原 J 镜像、schema0089、同一 Broker/vhost 和固定队列上维护单个 Worker。以下以 A 为换代目标、B 为对照。部署人员操作 RabbitMQ 内置账户，Control/部署账号继续创建拓扑并派发。A 的 HTTP runtime 凭据、稳定身份、TLS 信任、原 project、runtime 卷及 journal 锚点沿用。
+
+### 停写、排空和换代
+
+1. 找齐指向 A 的固定绑定和入队来源。在入口暂停这些 Adapter 的 manual、schedule、Replay 和会产生新责任的操作。保持 A `active`，让已排队及可继续的重试责任收敛，B 照常运行。进入 `drain` 后，尚未领取的任务已不能再 Claim。
+2. 使用 A 当前 `maintenance_version` 和单个 `request_id` 操作 drain。确认 `disabled` 后对账已接受执行、未结 Attempt/cleanup、Slot、输入 Lease、Outbox、A 的 DLQ 归属及队列 ready/unacked。已执行任务须有自己的 Broker ACK 与真实本地清理。遇到未结或无法识别的责任，保留现场。
+3. 在原 Compose project 正常停止 A，核对退出、旧进程/cgroup、workspace/journal 以及旧实例 lease 的截止。B 的消费者连接保持运行。用 Broker 管理侧核对旧账户仅属于 A，并记录其连接的归属。
+4. 通过 RabbitMQ 管理入口为 A 创建不同的新用户名，仅在原 vhost 授予 `configure=^$`、`write=^$` 及 `read=^dlr[.]worker[.]<A的数字ID>[.]q$`，账户无管理标签。秘密用已有私有渠道生成和分发。
+5. 在 A 原 0700 私有目录内预写实际 Worker UID 所有、0600、单链接的普通文件。沿 [原 Broker 配置格式](#新-worker-引导) 核对 schema、Worker ID/UUID、主机、端口、vhost 和 CA，只有用户名与密码换为新值。部署系统先同步暂存文件，再于同目录原子替换 `broker.json` 并同步父目录。原路径和挂载保持一致。
+6. 撤销旧 RabbitMQ 用户。独立核对旧用户不存在、按用户名查询的连接数为零、新用户的实际权限与 A 匹配。RabbitMQ 的连接缓存使只清权限不足以完成现存连接撤权，使用内置用户删除并核对结果。[RabbitMQ 4.3 撤权说明](https://www.rabbitmq.com/docs/4.3/access-control#revoke)
+7. 原 lease 届满且凭据文件与 Broker 证据一致后，以原配置启动 A。确认新 instance/generation 保持 `disabled`，并在 Broker 管理侧确认新用户名的消费者确实连接了 A 队列。随后用最新维护版本显式 activate，再开放指向 A 的新提交。
+
+安装、撤销、连接归属或清理结果未知时，保持 A 停机或 `disabled` 并只读对账。旧用户仍有效且原材料完整可核对时，可按原清洁停启路径中止换代。撤销确认后，以核实的新材料前向处理。操作记录只保存非秘密状态及时间，用户密码、密码哈希和本机配置保留在各自私有边界。
+
+### 验收与记录
+
+- 控制面、Broker 和本地分别核对 A 的原身份、HTTP 凭据、原卷、B 的原连接，以及旧用户删除前后的连接。隔离验收中可由受信操作者保持一条只认证、无消费者的旧用户 TLS 连接，确认撤销关闭该连接并拒绝同端点重新认证。[RabbitMQ 4.3 用户连接查询](https://www.rabbitmq.com/docs/4.3/http-api-reference#get-apiconnectionsusernameusername)
+- 实际确认新用户只能消费 A 队列。B 队列、DLQ、发布和拓扑操作的拒绝检查使用隔离的空夹具。Worker 账户的权限与控制面管理员保持分离。
+- 保留三笔新业务的独立目标、Attempt、清理和 ACK 记录。顺序为旧账号 A、旧账号已撤销且 A 仍 `disabled` 时的 B、新账号 A。继续使用接受至 Claim ≤10 秒、执行 ≤5 秒、退出至完整结算 ≤60 秒的门槛。原首败及未知责任单独保留。
+
+## 旧 Worker 原地升级与签名权威维护
+
+对既有单机部署启用兼容窗口时，在 Control 私有环境中设置 `DLR_WORKER_V4_DEPLOYMENT_MODE=A` 和 `DLR_WORKER_V4_CONTROL_SLOTS=1`。新部署从关闭状态开始。窗口只给已有、未绑定 v4 身份的固定 protocol 3 Worker 使用。
+
+1. 停止旧 Control 和数据库写入者，使用专用迁移所有者升级到 `0090_issue129_worker_cutover`。向运行角色授予 `worker_legacy_window` 的 `SELECT, UPDATE (id)`，以便取得行锁。窗口本身由迁移所有者登记。冻结旧节点的新输入及派发，留存 Broker 和未结责任读回。
+2. 以离线 owner 环境运行 `python -m dlr.control.control_identity_init_v4 legacy-window-open <RFC3339 截止>`。截止由数据库时间裁决，最多七天且只能登记一次。以同一环境运行 `legacy-window-status` 独立读回，核对后启动受围栏的 Control。
+3. 旧 Worker 完成已接业务和物理清理后，停机并核对原队列、连接、守卫、输入 Lease 和历史责任。管理员向 `POST /api/workers/{id}/v4/identity/adopt` 提交原稳定身份 `worker_identity_id`、非零 `request_id` 及私有停机证据的 `legacy_stop_evidence_sha256`。请求摘要用于审计，实际停机由部署操作者核对。服务保持原数值 ID、名称、绑定和历史，并登记停用的 v4 身份。读回后执行引导及显式激活。
+4. 到期后原共享认证失效。也可在离线 owner 维护中用 `legacy-window-close` 提前结束。所有未结记录继续用于对账，阻塞的旧 Worker 保留原归属。
+
+已有 J 专用 v4 制品使用同一离线镜像换代入口，intent 的源 schema 为 `0089_issue129_credential_ops`、目标 schema 为 `0090_issue129_worker_cutover`。最长历史链再增加一对 `--initial-source`、`--initial-intent`。沿用原源镜像、链头、全部祖先、快照和独立回执核对。
+
+在同一镜像上离线轮换签名权威时，准备两份现有格式的私有声明和与各自公钥匹配的签名密钥文件。保留集群 ID 与其他指纹，目标声明使用新 epoch 和新钥。intent 仅包含非零 `operation_id`、当前镜像回执 `image_transition_id`（fresh 为 null）和环境对账材料的 `evidence_sha256`：
+
+```sh
+python -m dlr.control.control_identity_init_v4 proof-authority-apply \
+  --source /ABSOLUTE/PRIVATE/source.json --source-key /ABSOLUTE/PRIVATE/source.key \
+  --target /ABSOLUTE/PRIVATE/target.json --target-key /ABSOLUTE/PRIVATE/target.key \
+  --intent /ABSOLUTE/PRIVATE/rotation.json
+```
+
+使用相同参数执行 `proof-authority-observe` 核对提交。记录外部可信的 epoch、操作号和链头指纹，随后原子安装匹配的 Control 声明与 Worker 信任文件。备份恢复或变更数据库主库时，先隔离旧写入者，再核对该外部记录与实际数据库状态。原镜像回执保留各自的历史 epoch。
+
+### 固定 Worker 的工具链与本地材料
+
+- 默认语言为 Python。按 Worker 选择 `python_javascript`、`python_javascript_typescript_java` 或 `python_javascript_typescript_java_go`，并重启到同一原卷。启动须通过各个启用语言的原生隔离预检。编译语言仅接收标准工具链、无外部依赖和无业务 Credential 的任务。Go 的构建和运行共用原 Attempt、cgroup 和执行截止，产物由可信步骤发布到只读执行层。
+- `DLR_WORKER_INPUT_MODE=managed_files` 才允许受控文件准备。在该模式同时设置 `DLR_WORKER_BUILTIN_WHEEL_MODE=pure_python`，并通过独立 wheel 探针后，Worker 才接收平台 builtin PyPI 来源的一份精确 `name==version` 纯 Python wheel。wheel 使用自身冻结的大小、SHA-256 与包身份，在本次 Attempt 的独立目录准备和清理。业务输入继续使用 none 或 JSON。
+- 专属模式 A 或 B 的默认执行区为短期存储。可为 Worker 单独挂载自有的 `0700` 本地版本缓存卷，将容器内的绝对挂载点设为 `DLR_WORKER_CACHE_ROOT`。该卷须独立于 runtime、journal 和凭据。新卷从空缓存开始，原有非空卷须提供该 Worker 和集群对应的 v4 owner 绑定。预览和清理命令最多选八个已观察键。当前协议按实例和命令固定 guard、对象身份与回执，未知操作持续保留。受管缓存及原地迁入的旧 Worker 若缺少可证明的 Adapter 存储归属，删除保持阻断。
+
+### 强停、清理和保留
+
+管理员在当前排空周期为活动 Attempt 提交期望维护版本、请求 ID 和原因。强停绑定原 Attempt、fence 和 instance generation，服务端立即停止新发执行证明。Worker 在原 cgroup、监管进程和 IO 已确认停止后写入本地检查点。强停受理后仍可能有未结责任，状态页继续展示。
+
+若主机停机时仅留下 `force_stopped` 检查点，沿原 B/C 停机、同 boot 原卷、锚点和显式恢复步骤处理。管理员对合法平台终态使用 `settle_force_stopped_no_result`，携带原强停操作 ID、停止检查点摘要、Attempt 与 Execution 终态以及 `force_stop_no_result_outcome_unknown`。Control 在原 Attempt 锁内验证无结果意图。新实例使用当前签名观察核对同一处置后，才执行受控清理；旧业务结果仍标记为未知。合法文件 journal v3 继续要求显式启用文件输入和同 boot、原根及每个对象的精确身份。
+
+原生固定 Worker 的 Adapter 若有 v4 历史，删除先冻结 Adapter 并保留原 Attempt 及回执。短期存储节点核对原本地根和当前 Broker 通道。有专用缓存卷的节点另用原清理票据及对象级 guard 回收该 Adapter 的缓存。当前身份和 generation 报告已确认的本地清理后，Control 才移除已归档 Adapter。旧 Attempt、对象身份或清理未知时，删除与保留作业均继续保护原责任。
+
+### TLS 与时钟
+
+模式 A 和 B 的 v4 Worker 链路使用验证证书链与 DNS 名称的 HTTPS 和 AMQPS。Standalone Control 在 TLS 监听端口关闭代理头处理。若使用反向代理，部署方应让代理验证上游 Control 证书链和名称，禁止代理到 Control 之间降级为 HTTP。验收时分别核对 Worker→代理与代理→Control 的实际证书、名称和拒绝路径。
+
+Control 的 PostgreSQL 时间和每台 Worker 的 Linux elapsed clock 在租期内须保持已登记的相对速率边界。应持续监测时钟同步状态、偏差与跳变，重启、休眠或时钟不明后先保留责任并重新核对时钟。Worker 对每次签名观察继续核对原请求窗口、相对经过时间及保守的两秒余量。
+
 ## 阶段验证及限制
 
 | 覆盖 | 已核对事实 | 边界 |

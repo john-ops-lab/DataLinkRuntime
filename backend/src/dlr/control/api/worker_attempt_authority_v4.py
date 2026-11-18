@@ -1,4 +1,4 @@
-"""Proof-bound start and renewal for a fixed v4 Worker Attempt.
+"""Proof-bound start, progress and renewal for a fixed v4 Worker Attempt.
 
 These endpoints do not admit a Claim or prove the Worker has stopped physical
 work. A Worker may launch only after a timely start observation and must stop
@@ -25,7 +25,8 @@ from dlr.control.api.worker_instance_v4 import (
     _rollback,
 )
 from dlr.control.models import Execution, ExecutionAttempt
-from dlr.control.schemas.reliable_runtime import AttemptActionBody
+from dlr.control.schemas.reliable_runtime import AttemptActionBody, AttemptProgressBody
+from dlr.control.services import attempt as attempt_service
 from dlr.control.services import attempt_lease_candidates_v4 as candidates
 from dlr.control.services import worker_availability
 
@@ -55,7 +56,7 @@ def _invalid_constant(_value: str) -> None:
     raise ValueError("invalid constant")
 
 
-async def _action(request: Request, attempt_id: int) -> AttemptActionBody:
+async def _action[T: AttemptActionBody](request: Request, attempt_id: int, model: type[T]) -> T:
     if (
         type(attempt_id) is not int
         or not 0 < attempt_id < 2**63
@@ -74,7 +75,7 @@ async def _action(request: Request, attempt_id: int) -> AttemptActionBody:
         value: Any = json.loads(
             raw, object_pairs_hook=_unique_pairs, parse_constant=_invalid_constant
         )
-        action = AttemptActionBody.model_validate(value)
+        action = model.model_validate(value)
         if action.attempt_id != attempt_id:
             raise ValueError("attempt mismatch")
         return action
@@ -173,18 +174,26 @@ def _renew(
         process = _process(request)
         fence = process.worker_fence(session)
         authority = process.worker_proof_authority(session)
-        candidate = candidates.stage_attempt_renewal(
-            session,
-            worker_id=worker_id,
-            attempt_id=attempt_id,
-            credential=credential,
-            instance_id=instance,
-            generation=generation,
-            instance_proof=instance_proof,
-            attempt_proof=attempt_proof,
-            action=action,
-            authority=authority,
-        )
+        try:
+            candidate = candidates.stage_attempt_renewal(
+                session,
+                worker_id=worker_id,
+                attempt_id=attempt_id,
+                credential=credential,
+                instance_id=instance,
+                generation=generation,
+                instance_proof=instance_proof,
+                attempt_proof=attempt_proof,
+                action=action,
+                authority=authority,
+            )
+        except candidates.AttemptForceStopRequested as error:
+            fence.check()
+            process.check_authority()
+            session.rollback()
+            return JSONResponse(
+                {"stop_requested": True, "operation_id": str(error.operation_id)}, headers=_HEADERS
+            )
         fence.check()
         process.check_authority()
         session.commit()
@@ -196,11 +205,71 @@ def _renew(
         raise _error(503) from None
 
 
+def _progress(
+    request: Request, session: Session, worker_id: int, attempt_id: int, action: AttemptProgressBody
+) -> JSONResponse:
+    credential, instance, generation, instance_proof = _proved_identity(request, worker_id)
+    attempt_proof = _one_header(request, "x-dlr-worker-attempt-proof")
+    try:
+        process = _process(request)
+        fence = process.worker_fence(session)
+        authority = process.worker_proof_authority(session)
+
+        def verify() -> None:
+            candidates.validate_current_attempt_proof(
+                session,
+                worker_id=worker_id,
+                attempt_id=attempt_id,
+                credential=credential,
+                instance_id=instance,
+                generation=generation,
+                instance_proof=instance_proof,
+                attempt_proof=attempt_proof,
+                action=action,
+                authority=authority,
+            )
+
+        verify()
+        attempt = session.get(ExecutionAttempt, attempt_id)
+        execution = session.get(Execution, attempt.execution_id) if attempt else None
+        if attempt is None or execution is None or attempt.status != "running":
+            raise candidates.AttemptLeaseCandidateError("Attempt unavailable")
+        cancelled = execution.cancel_requested
+        if cancelled:
+            session.rollback()
+        else:
+            # Credential-bound work publishes text only via the existing
+            # sealed, redacted result path. A progress call may report status.
+            if execution.credential_bindings_snapshot and (
+                action.stdout_chunk or action.stderr_chunk
+            ):
+                raise candidates.AttemptLeaseCandidateError("Attempt unavailable")
+            attempt_service.record_progress_locked(execution, attempt, action)
+            session.flush()
+            verify()
+            fence.check()
+            process.check_authority()
+            session.commit()
+            process.check_authority()
+        return JSONResponse(
+            {
+                "decision": "ACK_NOOP",
+                "reason": "cancel_requested" if cancelled else "progressed",
+                "attempt_id": attempt_id,
+                "cancel_requested": cancelled,
+            },
+            headers=_HEADERS,
+        )
+    except Exception:  # noqa: BLE001 - commit may be unknown
+        _rollback(session)
+        raise _error(503) from None
+
+
 @router.post("/api/workers/{worker_id}/v4/attempts/{attempt_id}/start")
 async def start(
     request: Request, worker_id: int, attempt_id: int, session: DbSession
 ) -> JSONResponse:
-    action = await _action(request, attempt_id)
+    action = await _action(request, attempt_id, AttemptActionBody)
     return await run_in_threadpool(_start, request, session, worker_id, attempt_id, action)
 
 
@@ -208,5 +277,13 @@ async def start(
 async def renew(
     request: Request, worker_id: int, attempt_id: int, session: DbSession
 ) -> JSONResponse:
-    action = await _action(request, attempt_id)
+    action = await _action(request, attempt_id, AttemptActionBody)
     return await run_in_threadpool(_renew, request, session, worker_id, attempt_id, action)
+
+
+@router.post("/api/workers/{worker_id}/v4/attempts/{attempt_id}/progress")
+async def progress(
+    request: Request, worker_id: int, attempt_id: int, session: DbSession
+) -> JSONResponse:
+    action = await _action(request, attempt_id, AttemptProgressBody)
+    return await run_in_threadpool(_progress, request, session, worker_id, attempt_id, action)

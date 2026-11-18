@@ -15,6 +15,7 @@ import sys
 from contextlib import suppress
 from typing import Any
 
+from dlr.common.worker_protocol_v4 import WORKER_FORCE_STOP_CODE
 from dlr.worker.claim_task_child_v4 import (
     _exact,
     _invalid_constant,
@@ -206,12 +207,26 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
             "workspace_cleanup_error_code": "workspace_cleanup_failed",
         }
         exit_code, stop_reason = request["exit_code"], request["stop_reason"]
-        if stop_reason == "preparation_failed" and exit_code is None:
+        if stop_reason == WORKER_FORCE_STOP_CODE and exit_code is None:
+            result.update(
+                status="cancelled",
+                error="Worker maintenance stopped the Attempt",
+                error_code=WORKER_FORCE_STOP_CODE,
+                error_class="cancelled",
+            )
+        elif stop_reason == "preparation_failed" and exit_code is None:
             result.update(
                 status="failed",
                 error="input preparation failed",
                 error_code="attempt_prepare_failed",
                 error_class="platform_transient",
+            )
+        elif stop_reason == "toolchain_build_failed" and exit_code is None:
+            result.update(
+                status="failed",
+                error="Go build failed before the Adapter started",
+                error_code="adapter_build_failed",
+                error_class="business_error",
             )
         elif stop_reason == "execution_cutoff" and exit_code is None:
             result.update(

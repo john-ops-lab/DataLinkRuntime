@@ -21,11 +21,27 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
 from dlr.common.config import settings
-from dlr.control.models import Execution, ExecutionIdempotencyRecord, ExecutionOutbox
+from dlr.control.models import (
+    Execution,
+    ExecutionAttempt,
+    ExecutionIdempotencyRecord,
+    ExecutionOutbox,
+)
 from dlr.control.services.execution import TERMINAL_STATUSES
 from dlr.control.services.idempotency import cleanup_expired_records
 
 logger = logging.getLogger("dlr.control.retention")
+
+
+def _v4_attempt_exists() -> Any:
+    # v4 receipt rows can outlive Control settlement until the original
+    # Worker has retired its local journals.
+    return exists(
+        select(1).where(
+            ExecutionAttempt.execution_id == Execution.id,
+            ExecutionAttempt.worker_identity_id.is_not(None),
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -79,6 +95,7 @@ def _terminal_query(policy: RetentionPolicy, adapter_id: int) -> Select[tuple[in
         Execution.status.in_(TERMINAL_STATUSES),
         Execution.admission_released_at.is_not(None),
         ~execution_protected(),
+        ~_v4_attempt_exists(),
         ~exists(
             select(1).where(
                 ExecutionIdempotencyRecord.execution_id == Execution.id,
@@ -119,6 +136,7 @@ def _delete_batch(session: Session, ids: list[int]) -> int:
                 Execution.status.in_(TERMINAL_STATUSES),
                 Execution.admission_released_at.is_not(None),
                 ~execution_protected(),
+                ~_v4_attempt_exists(),
                 ~exists(
                     select(1).where(
                         ExecutionIdempotencyRecord.execution_id == Execution.id,
@@ -258,6 +276,10 @@ def _retention_tick() -> None:
 
     session = SessionLocal()
     try:
+        if settings.worker_remote_v4_enabled:
+            from dlr.control.services.adapter import finalize_one_v4_adapter_deletion
+
+            finalize_one_v4_adapter_deletion(session)
         cleanup_execution_retention(session)
     finally:
         session.close()

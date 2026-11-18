@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from dlr.common.builtin_packages import KINDS, PackageValidationError, inspect_package, safe_path
 from dlr.common.config import settings
+from dlr.control.models import ExecutionAttempt
 from dlr.control.models.builtin_package import (
     BuiltinPackage,
     BuiltinPackageSettings,
@@ -313,6 +314,13 @@ def delete_package(session: Session, file_id: int) -> None:
             or_(
                 Execution.status.in_(("queued", "running", "retry_wait")),
                 Execution.workspace_cleanup_status.is_distinct_from("completed"),
+                select(ExecutionAttempt.id)
+                .where(
+                    ExecutionAttempt.execution_id == Execution.id,
+                    ExecutionAttempt.worker_identity_id.is_not(None),
+                    ExecutionAttempt.cleanup_settled_at.is_(None),
+                )
+                .exists(),
             ),
         )
         .limit(1)

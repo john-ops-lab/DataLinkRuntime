@@ -417,6 +417,7 @@ def _fence(session: Session, subscription: EventSubscription) -> None:
 def _activate(session: Session, subscription: EventSubscription) -> SubscriptionActivation:
     from dlr.control.services.reliable_execution import resolve_queue_target_worker
     from dlr.control.services.subscription_activation_policy import snapshot_policy
+    from dlr.control.services.worker_stage_capability_v4 import require_new_execution
 
     adapter = session.get(Adapter, subscription.adapter_id)
     assert adapter is not None
@@ -429,6 +430,14 @@ def _activate(session: Session, subscription: EventSubscription) -> Subscription
 
         require_revision_schema(session, adapter.latest_version_id)
     worker = resolve_queue_target_worker(session, adapter)
+    require_new_execution(
+        session,
+        adapter,
+        version_id=adapter.latest_version_id,
+        trigger="subscription",
+        input_source_type="json",
+        target_worker_id=worker.id,
+    )
     activation = SubscriptionActivation(
         subscription_id=subscription.id,
         config_version_id=current_config(session, subscription).id,
@@ -462,9 +471,6 @@ def enable_subscription(
 ) -> EventSubscription:
     subscription = get_subscription(session, subscription_id, principal, "edit", lock=True)
     check_version(subscription, expected)
-    from dlr.control.services.worker_stage_capability_v4 import require_trigger
-
-    require_trigger("subscription")
     require_source(subscription.source_type)
     require_verified_identity(current_config(session, subscription))
     if subscription.desired_state == "enabled":

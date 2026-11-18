@@ -386,8 +386,10 @@ def receive_event(
         raise domain_error(409, "subscription_activation_missing", "Activation is unavailable")
     config = session.get(SubscriptionConfigVersion, activation.config_version_id)
     assert config is not None
+    from dlr.control.services import worker_legacy_window
     from dlr.control.services.subscription_activation_policy import ensure_policy
 
+    worker_legacy_window.require_dispatch_target(session, activation.worker_id)
     adapter = session.get(Adapter, sub.adapter_id)
     assert adapter is not None
     ensure_policy(session, activation, adapter)

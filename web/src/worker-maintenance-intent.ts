@@ -26,7 +26,7 @@ function parseIntent(value: unknown): WorkerMaintenanceIntent {
     || item.schema !== 1 || typeof item.origin !== "string" || typeof item.scope !== "string"
     || item.scope.length > 128 || !Number.isSafeInteger(item.worker_id) || Number(item.worker_id) < 1
     || !isMaintenanceUuid(item.worker_identity_id) || !isMaintenanceUuid(item.request_id)
-    || !(item.action === "drain" || item.action === "activate")
+    || !(item.action === "drain" || item.action === "activate" || item.action === "force_stop")
     || !Number.isSafeInteger(item.expected_version) || Number(item.expected_version) < 1) return invalid();
   const intent: WorkerMaintenanceIntent = {
     schema: 1, origin: item.origin, scope: item.scope, worker_id: Number(item.worker_id),
@@ -102,12 +102,18 @@ export function readWorkerMaintenanceIntent(scope: string, workerId?: number): W
   return intents.find((intent) => workerId === undefined || intent.worker_id === workerId) ?? null;
 }
 
-export function persistWorkerMaintenanceIntent(value: WorkerMaintenanceIntent): void {
+export function persistWorkerMaintenanceIntent(
+  value: WorkerMaintenanceIntent, confirmedDrain?: WorkerMaintenanceIntent,
+): void {
   const intent = parseIntent(value);
   if (intent.origin !== window.location.origin) return invalid();
   const intents = readAll(intent.scope);
   const existing = intents.find((item) => item.worker_id === intent.worker_id);
-  if (existing && !same(existing, intent)) return invalid();
+  if (existing && !same(existing, intent)) {
+    if (intent.action !== "force_stop" || confirmedDrain?.action !== "drain"
+      || !same(existing, confirmedDrain)) return invalid();
+    intents[intents.indexOf(existing)] = intent;
+  }
   if (!existing) {
     if (intents.length === 2) return invalid();
     intents.push(intent);

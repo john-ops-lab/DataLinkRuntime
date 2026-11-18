@@ -36,7 +36,7 @@ from dlr.control.schemas.worker import (
 )
 from dlr.control.services import package_source as package_source_service
 from dlr.control.services import secrets as secrets_service
-from dlr.control.services import worker_availability
+from dlr.control.services import worker_availability, worker_legacy_window
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.artifact_store import ArtifactStoreError, LocalFileArtifactStore
 from dlr.control.services.worker_protocol import (
@@ -248,10 +248,11 @@ def apply_cleanup_receipt(
         ),
         None,
     )
-    if matched_attempt is None:
+    if matched_attempt is None or matched_attempt.worker_identity_id is not None:
         raise domain_error(
             422, "execution_cleanup_token_invalid", "A valid Cleanup Token is required"
         )
+    worker_legacy_window.authorize_worker(session, session.get(Worker, matched_attempt.worker_id))
     if matched_attempt.status not in V3_TERMINAL_ATTEMPT_STATUSES:
         raise domain_error(
             422,
@@ -307,6 +308,9 @@ def register_worker(session: Session, data: WorkerRegister) -> Worker:
     """
     worker = session.scalar(select(Worker).where(Worker.name == data.name).with_for_update())
     protocol_version = data.protocol_version
+    worker_legacy_window.authorize_worker(session, worker)
+    if settings.worker_remote_v4_enabled and protocol_version != 3:
+        raise domain_error(409, "worker_protocol_incompatible", "Worker protocol is unavailable")
     preflight_ready = isolation_capabilities_ready(data.isolation_capabilities)
     preflight_status = "passed" if preflight_ready else "failed"
     if worker is None:
@@ -503,6 +507,7 @@ def claim_cleanup(session: Session, worker_id: int) -> CleanupTaskPayload | None
         .where(
             WorkerCleanupRequest.worker_id == worker_id,
             WorkerCleanupRequest.status == "pending",
+            WorkerCleanupRequest.v4_identity_id.is_(None),
         )
         .order_by(WorkerCleanupRequest.created_at.asc(), WorkerCleanupRequest.id.asc())
         .limit(1)
@@ -569,7 +574,7 @@ def apply_cleanup_result(
     )
     if cleanup is None:
         raise domain_error(404, "cleanup_not_found", "Worker cleanup request not found")
-    if cleanup.worker_id != worker_id:
+    if cleanup.worker_id != worker_id or cleanup.v4_identity_id is not None:
         raise domain_error(
             409,
             "cleanup_not_owned",

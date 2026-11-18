@@ -119,11 +119,11 @@ def _receive_directory(channel: socket.socket) -> int:
         raise
 
 
-def _stage_python(
+def _stage_task(
     channel: socket.socket, task: Any, fingerprint: str, command: dict[str, Any]
 ) -> None:
-    """Stage a bounded Python/JavaScript snapshot while this child owns its payload."""
-    from dlr.common.worker_languages_v4 import NODE_EXECUTABLE
+    """Stage the bounded source snapshot while this child owns its payload."""
+    from dlr.common.worker_languages_v4 import COMPILED_LANGUAGES, NODE_EXECUTABLE
     from dlr.runtime import harness, node_harness
     from dlr.worker import sandbox, task_fingerprint_v4
 
@@ -136,7 +136,14 @@ def _stage_python(
         "launch_bytes",
         "fingerprint",
     }
-    if task.input_files:
+    from dlr.common import builtin_wheel_v4 as wheels
+
+    wheel = (
+        None
+        if task.builtin_package_snapshot is None
+        else wheels.descriptor(task.builtin_package_snapshot, task.requirements)
+    )
+    if task.input_files or wheel is not None:
         expected.add("input_deadline")
     if set(command) != expected:
         raise ValueError("task staging unavailable")
@@ -226,6 +233,8 @@ def _stage_python(
                 os.close(source_fd)
             write("adapter.py", (task.code,))
             argv = [sys.executable, "-I", str(Path(path) / ".dlr-harness.py"), path]
+            if wheel is not None:
+                argv.append("builtin-wheel")
         elif task.language == "javascript":
             write(".dlr-harness.mjs", (node_harness.SOURCE,))
             write("adapter.mjs", (task.code,))
@@ -235,12 +244,20 @@ def _stage_python(
                 path,
                 str(Path(path) / "adapter.mjs"),
             ]
+        elif task.language in COMPILED_LANGUAGES:
+            from dlr.worker import compiled_runtime_v4
+
+            if task.credential_bindings or task.secrets:
+                raise ValueError("task staging unavailable")
+            for name, content in compiled_runtime_v4.sources(task.language, task.code).items():
+                write(name, (content,))
+            argv = compiled_runtime_v4.command(task.language)
         else:
             raise ValueError("task staging unavailable")
         encoder = json.JSONEncoder(ensure_ascii=False, allow_nan=False)
         write("input.json", encoder.iterencode(task.input))
         write("runtime_config.json", encoder.iterencode(task.runtime_config))
-        if not task.input_files:
+        if not task.input_files and wheel is None:
             write(
                 "input_manifest.json",
                 encoder.iterencode({"execution_id": task.execution_id, "files": []}),
@@ -264,7 +281,7 @@ def _stage_python(
             environment,
             max_bytes=launch_bytes,
         )
-        if task.input_files:
+        if task.input_files or wheel is not None:
             from dlr.worker import managed_files_v4
 
             # The parent first owns the sealed redaction/launch snapshot. If
@@ -287,7 +304,12 @@ def _stage_python(
                 raise ValueError("launch handoff unavailable")
             try:
                 records, manifest, used = managed_files_v4.stage(
-                    channel, task, directory, budget=remaining, deadline=command["input_deadline"]
+                    channel,
+                    task,
+                    directory,
+                    budget=remaining,
+                    deadline=command["input_deadline"],
+                    wheel=wheel,
                 )
                 remaining -= 2 * used
                 failed = False
@@ -350,7 +372,10 @@ def _prepare(channel: socket.socket) -> None:
         "business_credentials",
         "managed_files",
     }
-    if set(value) != expected:
+    if set(value) - {"builtin_wheel"} != expected or (
+        "builtin_wheel" in value
+        and (value["builtin_wheel"] is not True or value["managed_files"] is not True)
+    ):
         raise ValueError("Claim request unavailable")
     base_url = value["base_url"]
     validate_control_url(base_url)
@@ -497,12 +522,31 @@ def _prepare(channel: socket.socket) -> None:
         != task.resource_profile.workspace_cleanup_total_timeout_seconds
     ):
         raise ValueError("Claim response unavailable")
+    from dlr.common import builtin_wheel_v4 as wheels
+    from dlr.common.worker_languages_v4 import COMPILED_LANGUAGES, SUPPORTED_LANGUAGES
+
+    package = task.builtin_package_snapshot is not None
+    supported_wheel = False
+    if package and (
+        task.language == "python"
+        and value["managed_files"]
+        and value.get("builtin_wheel") is True
+        and not task.input_files
+        and not task.credential_bindings
+        and not task.secrets
+    ):
+        try:
+            wheels.descriptor(task.builtin_package_snapshot, task.requirements)
+            supported_wheel = True
+        except ValueError:
+            pass
     if (
-        task.language not in {"python", "javascript"}
-        or task.requirements
+        task.language not in SUPPORTED_LANGUAGES
+        or (task.requirements and not supported_wheel)
         or (task.input_files and not value["managed_files"])
-        or task.builtin_package_snapshot is not None
+        or (package and not supported_wheel)
         or task.dependency_check
+        or (task.language in COMPILED_LANGUAGES and (task.secrets or task.credential_bindings))
         or ((task.secrets or task.credential_bindings) and not value["business_credentials"])
     ):
         _send(
@@ -543,12 +587,12 @@ def _prepare(channel: socket.socket) -> None:
             "cleanup_token": task.cleanup_token,
             "resource_profile": task.resource_profile.model_dump(mode="json"),
             "business_credentials": bool(task.credential_bindings),
-            "managed_files": bool(task.input_files),
+            "managed_files": bool(task.input_files) or supported_wheel,
         },
     )
     command = _receive(channel)
     if command.get("op") == "stage":
-        _stage_python(channel, task, task_fingerprint, command)
+        _stage_task(channel, task, task_fingerprint, command)
         command = _receive(channel)
     if command != {"op": "stop"}:
         raise ValueError("Claim handoff unavailable")

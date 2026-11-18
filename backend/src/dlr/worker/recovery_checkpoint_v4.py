@@ -19,6 +19,8 @@ from uuid import UUID
 
 from dlr.common.cpu_accounting import CPU_ACCOUNTING_VERSION, attempt_cpu_units
 from dlr.common.dispatch_protocol import deserialize_dispatch_message
+from dlr.common.worker_languages_v4 import WORKSPACE_LANGUAGE_FILES
+from dlr.common.worker_protocol_v4 import WORKER_FORCE_STOP_CODE
 from dlr.worker import cgroup_namespace, journal_v4, sandbox, workspace_fs_v4
 
 VERSION = 1
@@ -234,32 +236,51 @@ def valid_stopped(
 ) -> bool:
     files = prepared.get("version") == FILE_VERSION and _active_files
     expected = _STOPPED_FIELDS | {"stop_reason"} if files else _STOPPED_FIELDS
-    if not isinstance(value, dict) or set(value) != expected:
+    force = isinstance(value, dict) and value.get("phase") == "force_stopped"
+    if force:
+        expected = (expected - {"intent_id", "body_mac"}) | {"force_stop_operation_id"}
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected
+        or not valid_prepared(dict(prepared), _active_files=_active_files)
+    ):
         return False
     if files:
         if prepared.get("preparation_failed"):
             if value["stop_reason"] != "preparation_failed":
                 return False
-        elif value["stop_reason"] not in (None, "execution_cutoff"):
+        elif value["stop_reason"] not in (
+            None,
+            "execution_cutoff",
+            WORKER_FORCE_STOP_CODE,
+        ) and not (
+            value["stop_reason"] == "toolchain_build_failed"
+            and prepared.get("dispatch", {}).get("language") == "go"
+        ):
             return False
-    return bool(
-        valid_prepared(dict(prepared), _active_files=_active_files)
-        and type(value["version"]) is int
-        and value["version"] == (FILE_VERSION if files else VERSION)
-        and value["phase"] == "stopped"
-        and type(value["attempt_id"]) is int
-        and value["attempt_id"] == prepared["attempt_id"]
-        and value["prepared_sha256"] == digest(prepared)
-        and _uuid(value["intent_id"])
+    exact_result = (
+        _uuid(value["force_stop_operation_id"]) and value["result_record"] == {}
+        if force
+        else _uuid(value["intent_id"])
         and isinstance(value["body_mac"], str)
         and _HEX.fullmatch(value["body_mac"])
         and _refs(value["result_record"])
+    )
+    return bool(
+        type(value["version"]) is int
+        and value["version"] == (FILE_VERSION if files else VERSION)
+        and value["phase"] in {"stopped", "force_stopped"}
+        and type(value["attempt_id"]) is int
+        and value["attempt_id"] == prepared["attempt_id"]
+        and value["prepared_sha256"] == digest(prepared)
+        and exact_result
         and value["stop_observation"] == "cgroup_empty_supervisor_reaped"
         and type(value["sandbox_mount_expected"]) is bool
         and (value["sandbox_mount_binding"] is None or _binding(value["sandbox_mount_binding"]))
         and isinstance(value["workspace_entries"], dict)
         and len(value["workspace_entries"]) <= 32
-        and prepared["dispatch"]["language"] in {"python", "javascript"}
+        and (not files or value["workspace_entries"].get("input") == prepared["input_directory"])
+        and prepared["dispatch"]["language"] in WORKSPACE_LANGUAGE_FILES
         and all(
             name
             in {
@@ -272,11 +293,7 @@ def valid_stopped(
                 "temp",
                 "output",
             }
-            | (
-                {".dlr-harness.mjs", "adapter.mjs"}
-                if prepared["dispatch"]["language"] == "javascript"
-                else {".dlr-harness.py", "adapter.py"}
-            )
+            | WORKSPACE_LANGUAGE_FILES[prepared["dispatch"]["language"]]
             and _binding(binding)
             for name, binding in value["workspace_entries"].items()
         )
@@ -506,14 +523,31 @@ def require_startable(staged: Any) -> None:
 def persist_stopped(
     owner: Any, snapshot: Any, result_record: dict[str, Any], result_name: str
 ) -> None:
-    from dlr.worker import cgroup_intent_v4, execution_supervision_v4, workspace_live_v4
+    from dlr.worker import execution_supervision_v4
 
     if (
         type(owner) is not execution_supervision_v4.SupervisedExecution
         or type(snapshot) is not execution_supervision_v4.ResultSnapshot
-        or owner._pid != os.getpid()
         or owner._snapshot is not snapshot
         or snapshot.owner is not owner
+    ):
+        raise ValueError("stopped result owner unavailable")
+    _persist_physical_stop(owner, result_record, result_name)
+
+
+def persist_force_stopped(owner: Any) -> None:
+    """Record a verified local stop before any result candidate can exist."""
+    _persist_physical_stop(owner, None, None)
+
+
+def _persist_physical_stop(
+    owner: Any, result_record: dict[str, Any] | None, result_name: str | None
+) -> None:
+    from dlr.worker import cgroup_intent_v4, execution_supervision_v4, workspace_live_v4
+
+    if (
+        type(owner) is not execution_supervision_v4.SupervisedExecution
+        or owner._pid != os.getpid()
         or owner._unresolved
         or not owner._physical_done.is_set()
         or owner._observation is None
@@ -524,6 +558,9 @@ def persist_stopped(
         or owner._stop.is_set()
     ):
         raise ValueError("stopped owner unavailable")
+    force_operation = owner._force_stop_operation
+    if result_record is None and (force_operation is None or not owner._force_stopping.is_set()):
+        raise ValueError("force stop authority unavailable")
     staged, cg, ws = owner._staged, owner._staged.cgroup, owner._staged.workspace
     current = prepared_record(staged)
     with ws._lock, cg._mutex:
@@ -591,24 +628,53 @@ def persist_stopped(
                 not valid_prepared(prepared, _active_files=staged.prepared.managed_files)
                 or prepared is None
                 or prepared != current
-                or journal_v4._read(directory, result_name) != result_record
+                or (
+                    result_name is not None
+                    and journal_v4._read(directory, result_name) != result_record
+                )
             ):
                 raise ValueError("recovery provenance unavailable")
             stopped = {
                 "version": current["version"],
-                "phase": "stopped",
+                "phase": "force_stopped" if result_record is None else "stopped",
                 "attempt_id": prepared["attempt_id"],
                 "prepared_sha256": digest(prepared),
-                "intent_id": result_record["intent_id"],
-                "body_mac": result_record["body_mac"],
-                "result_record": {result_name: digest(result_record)},
                 "stop_observation": owner._observation.code,
                 "workspace_entries": entries,
                 "sandbox_mount_expected": ws._sandbox_mount_expected,
                 "sandbox_mount_binding": mount_binding,
             }
             if staged.prepared.managed_files:
-                stopped["stop_reason"] = owner._observation.stop_reason
+                stopped["stop_reason"] = (
+                    WORKER_FORCE_STOP_CODE if force_operation else owner._observation.stop_reason
+                )
+            if result_record is None:
+                stopped.update(force_stop_operation_id=str(force_operation), result_record={})
+            else:
+                assert result_name is not None
+                stopped.update(
+                    intent_id=result_record["intent_id"],
+                    body_mac=result_record["body_mac"],
+                    result_record={result_name: digest(result_record)},
+                )
             if not valid_stopped(stopped, prepared, _active_files=staged.prepared.managed_files):
                 raise ValueError("recovery stop checkpoint invalid")
+            previous = journal_v4._read(directory, last)
+            if result_record is not None and previous is not None and previous != stopped:
+                physical = {
+                    key: value
+                    for key, value in stopped.items()
+                    if key not in {"phase", "intent_id", "body_mac", "result_record"}
+                }
+                if previous != {
+                    **physical,
+                    "phase": "force_stopped",
+                    "force_stop_operation_id": str(force_operation),
+                    "result_record": {},
+                }:
+                    raise ValueError("force stop checkpoint changed")
+                successor = f"recovery-{prepared['attempt_id']}.result-stopped.json"
+                persist(directory, successor, stopped)
+                os.replace(successor, last, src_dir_fd=directory, dst_dir_fd=directory)
+                os.fsync(directory)
             persist(directory, last, stopped)

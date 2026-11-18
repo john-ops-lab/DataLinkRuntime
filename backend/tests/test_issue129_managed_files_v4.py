@@ -115,6 +115,24 @@ def test_worker_publishes_only_verified_readonly_input_set(file_staging):
     assert manifest[0]["artifact_id"] == 1 and manifest[0]["sha256"] == records[0]["sha256"]
 
 
+def test_wheel_receipt_accepts_only_the_one_internal_material_name():
+    from dlr.common import builtin_wheel_v4 as wheels
+    from dlr.worker import managed_files_v4 as module
+
+    wheel = {
+        "mount_name": wheels.MOUNT_NAME,
+        "size_bytes": 40,
+        "sha256": "1" * 64,
+        "device": 6,
+        "inode": 9,
+    }
+    assert module.receipt([wheel]) == [wheel]
+    with pytest.raises(ValueError, match="builtin wheel receipt unavailable"):
+        module.receipt([wheel, {**wheel, "mount_name": "input-01.txt"}])
+    with pytest.raises(ValueError, match="input receipt unavailable"):
+        module.receipt([{**wheel, "mount_name": "other.whl"}])
+
+
 def test_worker_can_publish_a_verified_empty_file(file_staging):
     module, task, directory, response, _content, root = file_staging
     task.input_files[0].size_bytes = 0
@@ -422,6 +440,75 @@ def test_pg_file_admission_requires_both_current_proofs_and_exact_frozen_lease(
             ),
         ):
             module.admit(session, **{**kwargs, **changed})
+
+
+def test_pg_builtin_download_grant_holds_current_attempt_and_frozen_package(
+    file_grant, session_factory
+):
+    from dlr.common import builtin_wheel_v4 as wheels
+    from dlr.control.models import AdapterVersion, BuiltinPackage, Execution, Worker
+    from dlr.control.services import managed_input_download_v4 as downloads
+
+    kwargs, facts, _candidate = file_grant
+    with session_factory.begin() as session:
+        worker = session.get(Worker, facts["worker_id"])
+        worker.isolation_capabilities = {**worker.isolation_capabilities, wheels.CAPABILITY: True}
+        package = BuiltinPackage(
+            kind="pypi",
+            name="fixture",
+            version="1.0",
+            environment="py3-none-any",
+            filename="fixture-1.0-py3-none-any.whl",
+            repository_path="fixture-1.0-py3-none-any.whl",
+            size_bytes=84,
+            sha256="b" * 64,
+            storage_key=str(uuid4()),
+            package_metadata={"dependencies": [], "requires_python": None},
+        )
+        session.add(package)
+        session.flush()
+        file_id = package.id
+        execution = session.get(Execution, facts["execution_id"])
+        session.get(AdapterVersion, execution.version_id).requirements = "fixture==1.0"
+        execution.builtin_package_snapshot = {
+            "kind": "pypi",
+            "files": [
+                {
+                    "id": file_id,
+                    "filename": package.filename,
+                    "repository_path": package.repository_path,
+                    "size_bytes": package.size_bytes,
+                    "sha256": package.sha256,
+                    "metadata": package.package_metadata,
+                }
+            ],
+        }
+    with session_factory() as session:
+        grant, remaining = downloads.admit(
+            session, **{**kwargs, "artifact_id": file_id, "builtin_package": True}
+        )
+        assert 0 < remaining <= contract.FILE_TIMEOUT_SECONDS
+        assert grant.package_kind == "pypi" and grant.file.artifact_id == file_id
+    with session_factory() as session:
+        downloads.recheck(session, grant)
+        with pytest.raises(downloads.InputDownloadUnavailable):
+            downloads.admit(
+                session, **{**kwargs, "artifact_id": file_id + 1, "builtin_package": True}
+            )
+        original = session.get(Execution, facts["execution_id"]).builtin_package_snapshot
+    with session_factory.begin() as session:
+        session.get(Execution, facts["execution_id"]).builtin_package_snapshot = {
+            **original,
+            "files": [{**original["files"][0], "metadata": {}}],
+        }
+    with session_factory() as session, pytest.raises(downloads.InputDownloadUnavailable):
+        downloads.admit(session, **{**kwargs, "artifact_id": file_id, "builtin_package": True})
+    with session_factory.begin() as session:
+        session.get(Execution, facts["execution_id"]).builtin_package_snapshot = original
+    with session_factory.begin() as session:
+        session.get(BuiltinPackage, file_id).status = "deleting"
+    with session_factory() as session, pytest.raises(downloads.InputDownloadUnavailable):
+        downloads.recheck(session, grant)
 
 
 def test_pg_fresh_proofs_do_not_restart_original_claim_preparation_cutoff(
@@ -1159,6 +1246,7 @@ def test_control_fd_is_really_closed_before_empty_headers_or_last_bytes(
 
     monkeypatch.setattr(db, "SessionLocal", Session)
     grant = SimpleNamespace(
+        package_kind=None,
         stream_id=uuid4(),
         storage_key=key,
         file=contract.InputFile(1, 0, "input-00.txt", len(data), hashlib.sha256(data).hexdigest()),

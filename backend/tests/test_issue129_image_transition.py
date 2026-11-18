@@ -30,6 +30,8 @@ from dlr.control.models import (
 )
 from dlr.control.services import control_cluster_identity as identity
 from dlr.control.services import control_image_transition_v4 as transition
+from dlr.control.services import control_proof_rotation_v4 as rotation
+from dlr.control.services import worker_legacy_window
 from dlr.control.services.control_declaration_v4 import DeploymentDeclaration, read_private_json
 from dlr.control.services.worker_lease_proof_v4 import public_key_bytes
 from dlr.control.services.worker_remote_deployment_v4 import RemoteDeploymentUnavailable
@@ -51,6 +53,7 @@ def offline(upgrade_database, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "worker_v4_database_role", role)
     monkeypatch.setattr(settings, "worker_v4_database_admin_roles", [])
     monkeypatch.setattr(settings, "worker_v4_control_slots", 2)
+    monkeypatch.setattr(identity, "SCHEMA_REVISION", transition.J_SCHEMA)
     key = b"s" * 32
     source = DeploymentDeclaration(
         identity.ControlDeclaration(
@@ -99,9 +102,9 @@ def offline(upgrade_database, tmp_path, monkeypatch):  # noqa: F811
         "operation_id": str(uuid4()),
         "previous_id": None,
         "source_schema": transition.LEGACY_SCHEMA,
-        "target_schema": SCHEMA_REVISION,
+        "target_schema": transition.J_SCHEMA,
         "source_sha": transition.I_SOURCE_SHA,
-        "target_sha": "b" * 40,
+        "target_sha": transition.J_SOURCE_SHA,
         "evidence_sha256": "e" * 64,
         "control_slots": 2,
     }
@@ -149,6 +152,166 @@ def test_only_the_three_verified_i_release_sources_can_start_j(offline, source_s
     candidate = transition.read_intent(str(f.path), f.source, f.target)
     assert transition._kind(candidate) == 4
     assert maintain(f.factory, "apply", candidate)["status"] == "committed_current"
+
+
+@pytest.mark.parametrize("with_history", [False, True])
+def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
+    offline, tmp_path, with_history
+):
+    f = offline
+    previous = None
+    if with_history:
+        _, previous = _predecessor(f, tmp_path, longest=True)
+        assert maintain(f.factory, "apply", previous)["status"] == "committed_current"
+    else:
+        command.upgrade(f.config, transition.J_SCHEMA)
+        with f.engine.begin() as conn:
+            conn.execute(
+                text("""
+                UPDATE control_cluster_authority SET schema_revision=:schema,image_digest=:image
+                """),
+                {"schema": transition.J_SCHEMA, "image": f.target.authority.image_digest},
+            )
+    target = replace(
+        f.target, authority=replace(f.target.authority, image_digest="sha256:" + "f" * 64)
+    )
+    path = tmp_path / "cutover.json"
+    path.write_text(
+        json.dumps(
+            dict(
+                f.body,
+                operation_id=str(uuid4()),
+                previous_id=str(previous.operation_id) if previous else None,
+                source_schema=transition.J_SCHEMA,
+                target_schema=SCHEMA_REVISION,
+                source_sha=transition.J_SOURCE_SHA,
+                target_sha="7" * 40,
+            )
+        )
+    )
+    path.chmod(0o600)
+    intent = transition.read_intent(str(path), f.target, target, predecessor=previous)
+    assert transition._kind(intent) == 5
+    with f.factory() as session:
+        assert transition.check(session, intent, settings) == "source_checked"
+    assert maintain(f.factory, "apply", intent)["status"] == "committed_current"
+    assert maintain(f.factory, "apply", intent)["status"] == "committed_current"
+    with f.factory() as session:
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_REVISION
+        assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == (
+            6 if previous else 1
+        )
+    if previous is not None:
+        with f.factory() as session:
+            assert transition.observe(session, previous)["status"] == "committed_superseded"
+
+
+def test_control_proof_rotation_preserves_initial_epoch_and_fences_stale_declarations(
+    offline, tmp_path, monkeypatch
+):
+    f = offline
+    command.upgrade(f.config, SCHEMA_REVISION)
+    with f.engine.begin() as conn:
+        conn.execute(
+            text("UPDATE control_cluster_authority SET schema_revision=:schema"),
+            {"schema": SCHEMA_REVISION},
+        )
+    monkeypatch.setattr(identity, "SCHEMA_REVISION", SCHEMA_REVISION)
+    key = b"x" * 32
+    target = replace(
+        f.source,
+        authority=replace(f.source.authority, worker_proof_public_key=public_key_bytes(key)),
+        authority_epoch=uuid4(),
+        worker_proof_signing_key=key,
+    )
+    path = tmp_path / "rotation.json"
+    path.write_text(
+        json.dumps(
+            {"operation_id": str(uuid4()), "image_transition_id": None, "evidence_sha256": "e" * 64}
+        )
+    )
+    path.chmod(0o600)
+    intent = rotation.read_intent(str(path), f.source, target)
+    with f.factory() as owner:
+        rotation.apply(owner, intent, settings)
+        owner.commit()
+    with f.factory() as reader:
+        assert rotation.observe(reader, intent)["target_epoch"] == str(target.authority_epoch)
+    with f.factory() as reader:
+        assert identity._authority(reader, target.authority)["authority_epoch"] == (
+            target.authority_epoch
+        )
+        assert reader.scalar(text("SELECT authority_epoch FROM control_cluster_authority")) == (
+            f.source.authority_epoch
+        )
+    with f.factory() as reader, pytest.raises(identity.ControlIdentityUnavailable):
+        identity._authority(reader, f.source.authority)
+    with f.factory() as owner:
+        rotation.apply(owner, intent, settings)
+        owner.commit()
+        assert owner.scalar(text("SELECT count(*) FROM control_proof_rotations")) == 1
+
+
+def test_legacy_window_uses_one_deadline_and_preserves_workers(offline, monkeypatch):
+    f = offline
+    command.upgrade(f.config, SCHEMA_REVISION)
+    monkeypatch.setattr(settings, "worker_v4_control_slots", 1)
+    with f.factory.begin() as session:
+        worker = Worker(
+            name="legacy-fixed",
+            status="offline",
+            protocol_version=3,
+            capabilities=["python"],
+        )
+        session.add(worker)
+        session.flush()
+        worker_id, identity_id = worker.id, worker.identity_id
+    with f.factory() as fresh:
+        now = worker_legacy_window.current_time(fresh)
+        with pytest.raises(worker_legacy_window.LegacyWindowUnavailable):
+            worker_legacy_window.open_once(fresh, now + timedelta(days=1))
+    monkeypatch.setattr(settings, "worker_v4_deployment_mode", "A")
+    with f.factory() as fresh:
+        with pytest.raises(worker_legacy_window.LegacyWindowUnavailable):
+            worker_legacy_window.gate(fresh)
+        with pytest.raises(worker_legacy_window.LegacyWindowUnavailable):
+            worker_legacy_window.open_once(fresh, now + timedelta(days=8))
+    deadline = now + timedelta(days=1)
+    with f.factory.begin() as owner:
+        worker_legacy_window.open_once(owner, deadline)
+        owner.execute(text(f'GRANT SELECT, UPDATE (id) ON worker_legacy_window TO "{f.role}"'))
+    with f.factory() as runtime:
+        runtime.execute(text(f'SET LOCAL ROLE "{f.role}"'))
+        assert worker_legacy_window.gate(runtime) == deadline
+        with pytest.raises(DBAPIError):
+            runtime.execute(text("UPDATE worker_legacy_window SET id=1 WHERE id=1"))
+    with f.factory() as reopened:
+        assert worker_legacy_window.gate(reopened) == deadline
+        row = reopened.get(Worker, worker_id)
+        assert worker_legacy_window.target_allowed(reopened, row)
+        row.name = "write-crossed-deadline"
+        with monkeypatch.context() as crossing:
+            crossing.setattr(worker_legacy_window, "current_time", lambda _: deadline)
+            with pytest.raises(worker_legacy_window.LegacyWindowUnavailable):
+                reopened.commit()
+        reopened.rollback()
+    for incompatible_mode in ("B", "C"):
+        with monkeypatch.context() as incompatible:
+            incompatible.setattr(settings, "worker_v4_deployment_mode", incompatible_mode)
+            with f.factory() as reader, pytest.raises(worker_legacy_window.LegacyWindowUnavailable):
+                worker_legacy_window.gate(reader)
+    with f.factory.begin() as owner:
+        worker_legacy_window.close(owner)
+    with f.factory() as closed:
+        assert worker_legacy_window.has_history(closed)
+        assert closed.get(Worker, worker_id).identity_id == identity_id
+        assert closed.get(Worker, worker_id).name == "legacy-fixed"
+        with pytest.raises(worker_legacy_window.LegacyWindowUnavailable):
+            worker_legacy_window.open_once(closed, deadline)
+        with pytest.raises(worker_legacy_window.LegacyWindowUnavailable):
+            worker_legacy_window.gate(closed)
+        with pytest.raises(DBAPIError):
+            closed.execute(text("UPDATE worker_legacy_window SET closed_at=NULL WHERE id=1"))
 
 
 def test_cli_reads_four_original_private_predecessor_sets(offline, tmp_path, monkeypatch, capsys):
@@ -558,7 +721,7 @@ def test_commit_unknown_readback_and_idempotence_do_not_revoke_new_instance(offl
     result = maintain(sessionmaker(f.engine, class_=LostReply), "apply", f.intent)
     assert result["status"] == ("committed_current" if committed else "not_found")
     with f.engine.connect() as catalogue:
-        expected_schema = SCHEMA_REVISION if committed else transition.LEGACY_SCHEMA
+        expected_schema = transition.J_SCHEMA if committed else transition.LEGACY_SCHEMA
         assert catalogue.scalar(text("SELECT version_num FROM alembic_version")) == expected_schema
         assert (
             catalogue.scalar(text("SELECT schema_revision FROM control_cluster_authority"))
@@ -975,7 +1138,7 @@ def test_live_control_lease_blocks_then_expired_instance_is_permanently_revoked(
             text("UPDATE control_process_instances SET lease_until=clock_timestamp()-interval '1s'")
         )
     assert maintain(f.factory, "apply", f.intent)["status"] == "committed_current"
-    monkeypatch.setattr(identity, "SCHEMA_REVISION", SCHEMA_REVISION)
+    monkeypatch.setattr(identity, "SCHEMA_REVISION", transition.J_SCHEMA)
     with f.factory.begin() as session, pytest.raises(identity.ControlIdentityUnavailable):
         identity.renew_control(
             session, f.target.authority, instance_id=instance, instance_token=token
@@ -1160,13 +1323,13 @@ def test_original_verified_f_aliases_need_no_historical_intent_rewrite(offline, 
 
 def test_j_ddl_failure_rolls_back_catalogue_authority_and_receipt(offline, monkeypatch):
     f = offline
-    migrate = transition._migrate_http_receipts
+    migrate = transition._migrate
 
-    def interrupted(session):
-        migrate(session)
+    def interrupted(session, revision):
+        migrate(session, revision)
         raise OSError("fixture failure after transactional DDL")
 
-    monkeypatch.setattr(transition, "_migrate_http_receipts", interrupted)
+    monkeypatch.setattr(transition, "_migrate", interrupted)
     before = _snapshot(f)
     assert maintain(f.factory, "apply", f.intent)["status"] == "not_found"
     assert _snapshot(f) == before
