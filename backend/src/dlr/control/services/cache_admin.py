@@ -77,7 +77,7 @@ def _governance_ready(worker: Worker) -> bool:
         or (
             worker.protocol_version == 4
             and worker.identity_lifecycle == "reserved"
-                and worker.v4_storage_profile == "managed_cache"
+            and worker.v4_storage_profile == "managed_cache"
             and worker.instance_id is not None
             and worker.capacity_state == "ready"
         )

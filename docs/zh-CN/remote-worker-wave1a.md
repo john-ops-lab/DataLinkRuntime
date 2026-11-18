@@ -103,6 +103,9 @@ REVOKE DELETE ON worker_lease_candidates_v4, attempt_lease_candidates_v4,
 REVOKE ALL ON control_image_transitions FROM dlr_wave1a_runtime;
 -- 0090 及以后：常规保留作业只能记录和读取历史 Worker 存储归属。
 REVOKE UPDATE, DELETE ON worker_adapter_storage_owners_v4 FROM dlr_wave1a_runtime;
+REVOKE INSERT, UPDATE, DELETE ON control_proof_rotations, worker_legacy_window
+  FROM dlr_wave1a_runtime;
+GRANT UPDATE (id) ON worker_legacy_window TO dlr_wave1a_runtime;
 ```
 
 运行角色不能是数据库、schema、表或受保护函数的所有者，不能继承管理员权限、创建 schema 或改变触发器。迁移账号仅供部署操作使用；`DLR_WORKER_V4_DATABASE_ADMIN_ROLES` 明确列出可信管理员角色，初始化完毕后退出管理员数据库连接。签发和运行围栏会拒绝其他可连接的旧登录角色、旧会话及 prepared transaction；不能通过缩小查询或放宽权限绕过。

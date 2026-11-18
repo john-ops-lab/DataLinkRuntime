@@ -225,7 +225,8 @@ for (const role of ["user", "admin"] as const) {
   test(`W1 fixed Worker maintenance as ${role}`, async ({ page }) => {
     const clock = { mode: "normal" as const, healthCalls: 0, workerCalls: 0 };
     const unknownRequests = await installRoutes(page, "zh-CN", clock);
-    const { maintenance: _, ...worker } = makeObservedWorker();
+    const worker = makeObservedWorker();
+    delete worker.maintenance;
     let version = 4;
     let scheduling: "active" | "disabled" = "active";
     let lastAction: WorkerMaintenanceAction = "activate";

@@ -258,7 +258,9 @@ def upgrade() -> None:
         BEGIN
             IF OLD.worker_identity_id IS NOT NULL AND (
                 OLD.cleanup_settled_at IS NULL
-                OR OLD.status NOT IN ('succeeded','failed','timed_out','worker_lost','cancelled')
+                OR OLD.status NOT IN (
+                    'succeeded','failed','timed_out','worker_lost','cancelled','resource_exceeded'
+                )
                 OR NOT EXISTS (
                     SELECT FROM worker_cleanup_intents_v4 c
                     WHERE c.attempt_id=OLD.id AND c.completion_id IS NOT NULL
