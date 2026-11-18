@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import func, select, update
 
 from dlr.common.config import settings
+from dlr.common.worker_languages_v4 import mode_capabilities
 from dlr.control.models import (
     Adapter,
     AdapterExecutionAdmission,
@@ -172,6 +173,21 @@ def test_unsupported_manual_and_schedule_take_no_responsibility(
     save_version(
         api_client, adapter["id"], requirements="requests" if unsupported == "requirements" else ""
     )
+    expected_code = "worker_task_capability_unavailable"
+    expected_params = {
+        "reason": "credentials_mode" if unsupported == "credentials" else unsupported
+    }
+    if unsupported == "language":
+        with session_factory.begin() as session:
+            worker_id = session.get(Adapter, adapter["id"]).runtime_worker_id
+            worker = session.get(Worker, worker_id)
+            worker.protocol_version = 4
+            worker.identity_lifecycle = "reserved"
+            worker.identity_enrolled_at = datetime.now(UTC)
+            mode = "python_javascript" if task_language == "javascript" else "python"
+            worker.capabilities = mode_capabilities(mode)
+        expected_code = "runtime_worker_invalid"
+        expected_params = {"language": "go"}
     if unsupported == "input_source":
         with session_factory.begin() as session:
             session.execute(
@@ -214,10 +230,8 @@ def test_unsupported_manual_and_schedule_take_no_responsibility(
         headers={"Idempotency-Key": "unsupported"},
     )
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "worker_task_capability_unavailable"
-    assert response.json()["detail"]["params"]["reason"] == (
-        "credentials_mode" if unsupported == "credentials" else unsupported
-    )
+    assert response.json()["detail"]["code"] == expected_code
+    assert response.json()["detail"]["params"] == expected_params
     assert (
         api_client.patch(
             f"/api/adapters/{adapter['id']}", json={"run_mode": "schedule"}
@@ -229,7 +243,7 @@ def test_unsupported_manual_and_schedule_take_no_responsibility(
         json={"enabled": True, "cron": "0 * * * *", "timezone": "UTC"},
     )
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "worker_task_capability_unavailable"
+    assert response.json()["detail"]["code"] == expected_code
     with session_factory() as session:
         schedule = session.scalar(
             select(AdapterSchedule).where(AdapterSchedule.adapter_id == adapter["id"])
@@ -342,8 +356,6 @@ def _javascript_adapter(client, session_factory, monkeypatch):
 def test_compiled_toolchains_gate_frozen_dispatch_and_credentials(
     api_client, session_factory, monkeypatch, language, with_credential
 ):
-    from dlr.common.worker_languages_v4 import mode_capabilities
-
     adapter = create_adapter(api_client, language=language)
     save_version(api_client, adapter["id"])
     if with_credential:
