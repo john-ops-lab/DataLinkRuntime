@@ -23,6 +23,7 @@ services:
       - uvicorn
       - dlr.control.app:create_app
       - --factory
+      - --no-proxy-headers
       - --host
       - 0.0.0.0
       - --port

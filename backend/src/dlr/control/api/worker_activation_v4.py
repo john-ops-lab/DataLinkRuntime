@@ -10,7 +10,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -40,6 +40,10 @@ class ActivationRequest(BaseModel):
 
     request_id: UUID
     expected_version: StrictInt = Field(ge=1, lt=2**63 - 1)
+
+
+class ForceStopRequest(ActivationRequest):
+    reason: StrictStr = Field(min_length=1, max_length=256)
 
 
 class _Conflict(Exception):
@@ -243,6 +247,121 @@ def drain(
         with suppress(Exception):
             session.rollback()
         logger.warning("worker drain unavailable: type=%s", type(error).__name__)
+        raise HTTPException(
+            status_code=503, detail={"code": "worker_maintenance_unknown"}, headers=_HEADERS
+        ) from None
+
+
+@router.post("/api/workers/{worker_id}/v4/force-stop")
+def force_stop(
+    request: Request,
+    worker_id: int,
+    payload: ForceStopRequest,
+    session: DbSession,
+    principal: Admin,
+) -> dict[str, object]:
+    """Record stop intent on a draining node while retaining its obligations."""
+    try:
+        reason = payload.reason.strip()
+        if not 0 < worker_id < 2**63 or payload.request_id.int == 0 or not reason.isprintable():
+            raise _Conflict
+        actor_kind, actor_id = _actor(principal)
+        process = _process(request)
+        fence = process.worker_fence(session)
+        worker = session.get(Worker, worker_id, with_for_update=True, populate_existing=True)
+        if (
+            worker is None
+            or worker.identity_lifecycle != "reserved"
+            or worker.protocol_version != 4
+            or worker.identity_enrolled_at is None
+        ):
+            raise _Conflict
+        existing = session.get(WorkerMaintenanceOperation, payload.request_id)
+        if existing is None:
+            if (
+                worker.scheduling_state != "draining"
+                or worker.maintenance_version != payload.expected_version
+                or session.scalar(
+                    select(WorkerMaintenanceOperation.action).where(
+                        WorkerMaintenanceOperation.worker_id == worker.id,
+                        WorkerMaintenanceOperation.result_version == worker.maintenance_version,
+                    )
+                )
+                != "drain"
+            ):
+                raise _Conflict
+            # Supported standalone Workers own one serial delivery. Claim and
+            # result writers serialize on this same Worker row.
+            active = list(
+                session.scalars(
+                    select(ExecutionAttempt)
+                    .where(
+                        ExecutionAttempt.worker_id == worker.id,
+                        ExecutionAttempt.status.in_(ACTIVE_ATTEMPT_STATUSES),
+                    )
+                    .limit(2)
+                )
+            )
+            if len(active) != 1:
+                raise _Conflict
+            attempt = active[0]
+            if (
+                attempt.worker_identity_id != worker.identity_id
+                or attempt.worker_instance_id != worker.instance_id
+                or attempt.worker_instance_generation != worker.instance_generation
+                or worker.instance_id is None
+                or worker.instance_generation is None
+            ):
+                raise _Conflict
+            worker.scheduling_state = "disabled"
+            worker.capacity_state = "reconciling"
+            worker.maintenance_version += 1
+            session.add(
+                WorkerMaintenanceOperation(
+                    request_id=payload.request_id,
+                    worker_id=worker_id,
+                    expected_version=payload.expected_version,
+                    result_version=worker.maintenance_version,
+                    action="force_stop",
+                    actor_kind=actor_kind,
+                    actor_id=actor_id,
+                    reason=reason,
+                    recovery_binding=worker_availability.attempt_reference(attempt),
+                )
+            )
+        elif (
+            existing.worker_id != worker_id
+            or existing.action != "force_stop"
+            or existing.expected_version != payload.expected_version
+            or existing.actor_kind != actor_kind
+            or existing.actor_id != actor_id
+            or existing.reason != reason
+            or worker.maintenance_version != existing.result_version
+            or worker.scheduling_state != "disabled"
+        ):
+            raise _Conflict
+        session.flush()
+        result = {
+            "worker_id": worker_id,
+            "scheduling_state": worker.scheduling_state,
+            "maintenance_version": worker.maintenance_version,
+            "unsettled_attempts": _unsettled_attempts(session, worker),
+        }
+        fence.check()
+        process.check_authority()
+        session.commit()
+        process.check_authority()
+        return result
+    except _Conflict:
+        with suppress(Exception):
+            session.rollback()
+        raise HTTPException(
+            status_code=409, detail={"code": "worker_maintenance_conflict"}, headers=_HEADERS
+        ) from None
+    except Exception as error:
+        with suppress(Exception):
+            session.rollback()
+        logger.warning("worker force-stop unavailable: type=%s", type(error).__name__)
         raise HTTPException(
             status_code=503, detail={"code": "worker_maintenance_unknown"}, headers=_HEADERS
         ) from None

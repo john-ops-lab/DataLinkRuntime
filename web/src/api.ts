@@ -570,7 +570,11 @@ export const api = {
 
   maintainWorker: (workerId: number, action: WorkerMaintenanceAction,
     payload: { request_id: string; expected_version: number }, signal?: AbortSignal): Promise<unknown> =>
-    request(`/api/workers/${workerId}/v4/${action}`, { method: "POST", body: JSON.stringify(payload), signal }),
+    request(`/api/workers/${workerId}/v4/${action === "force_stop" ? "force-stop" : action}`, {
+      method: "POST",
+      body: JSON.stringify(action === "force_stop" ? { ...payload, reason: "administrator_request" } : payload),
+      signal,
+    }),
 
   getWorkerCache: (
     workerId: number,

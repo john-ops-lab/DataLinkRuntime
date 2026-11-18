@@ -14,9 +14,11 @@ import socket
 import stat
 import urllib.error
 import urllib.request
+import zipfile
 from contextlib import suppress
 from typing import Any
 
+from dlr.common import builtin_wheel_v4 as wheels
 from dlr.common import managed_files_v4 as contract
 from dlr.common.worker_protocol_v4 import validate_control_url
 from dlr.worker.claim_http_v4 import _clock
@@ -71,7 +73,7 @@ def receipt(value: Any) -> list[dict[str, Any]]:
             type(item) is not dict
             or set(item) != {"mount_name", "size_bytes", "sha256", "device", "inode"}
             or type(item["mount_name"]) is not str
-            or MOUNT_NAME_PATTERN.fullmatch(item["mount_name"]) is None
+            or not _staged_name(item["mount_name"])
             or not item["mount_name"].startswith(f"input-{ordinal:02d}.")
             or type(item["size_bytes"]) is not int
             or not 0 <= item["size_bytes"] <= contract.MAX_FILE_BYTES
@@ -83,10 +85,18 @@ def receipt(value: Any) -> list[dict[str, Any]]:
             )
         ):
             raise ValueError("input receipt unavailable")
+        if item["mount_name"] == wheels.MOUNT_NAME and (len(value) != 1 or item["size_bytes"] <= 0):
+            raise ValueError("builtin wheel receipt unavailable")
         total += item["size_bytes"]
     if total > contract.MAX_TOTAL_BYTES:
         raise ValueError("input receipt unavailable")
     return value
+
+
+def _staged_name(name: str) -> bool:
+    # Only the builtin transfer has this fixed name. The ordinary upload and
+    # managed-file descriptor allowlists remain unchanged.
+    return bool(name == wheels.MOUNT_NAME or MOUNT_NAME_PATTERN.fullmatch(name))
 
 
 def discard_after_reap(directory: int, execution_id: int) -> None:
@@ -115,7 +125,7 @@ def discard_after_reap(directory: int, execution_id: int) -> None:
             for entry in entries:
                 item = entry.stat(follow_symlinks=False)
                 if (
-                    MOUNT_NAME_PATTERN.fullmatch(entry.name) is None
+                    not _staged_name(entry.name)
                     or not stat.S_ISREG(item.st_mode)
                     or item.st_uid != os.geteuid()
                     or item.st_nlink != 1
@@ -172,7 +182,13 @@ def discard_after_reap(directory: int, execution_id: int) -> None:
 
 
 def _fetch(
-    channel: socket.socket, task: Any, descriptor: contract.InputFile, target: int, cutoff: float
+    channel: socket.socket,
+    task: Any,
+    descriptor: contract.InputFile,
+    target: int,
+    cutoff: float,
+    *,
+    builtin_package: bool = False,
 ) -> None:
     _send(channel, {"state": "input_authorization", "ordinal": descriptor.ordinal})
     auth = _receive(channel)
@@ -202,9 +218,10 @@ def _fetch(
     ):
         raise FileIOUnknown("input authorization unavailable")
     deadline = min(deadline, _clock() + contract.FILE_TIMEOUT_SECONDS)
+    material = "builtin-packages" if builtin_package else "input-artifacts"
     request = urllib.request.Request(
         f"{auth['base_url'].rstrip('/')}/api/workers/{auth['worker_id']}/v4/"
-        f"executions/{task.execution_id}/input-artifacts/{descriptor.artifact_id}/content",
+        f"executions/{task.execution_id}/{material}/{descriptor.artifact_id}/content",
         method="GET",
         headers={
             "Authorization": f"Bearer {auth['credential']}",
@@ -289,16 +306,22 @@ def _fetch(
 
 
 def stage(
-    channel: socket.socket, task: Any, directory: int, *, budget: int, deadline: float
+    channel: socket.socket,
+    task: Any,
+    directory: int,
+    *,
+    budget: int,
+    deadline: float,
+    wheel: contract.InputFile | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     """Publish only the whole verified set; failures leave the original empty input."""
     metadata = [item.model_dump(mode="json") for item in task.input_files]
-    files = contract.descriptors(metadata)
+    files = contract.descriptors(metadata) if wheel is None else (wheel,)
     total = sum(item.size_bytes for item in files)
     # Original staging plus the sandbox's independent copy can coexist.
     manifest = [
         {"artifact_id": item.artifact_id, **{k: v for k, v in original.items() if k != "id"}}
-        for item, original in zip(files, metadata, strict=True)
+        for item, original in zip(files if wheel is None else (), metadata, strict=True)
     ]
     manifest_bytes = json.dumps(
         {"execution_id": task.execution_id, "files": manifest},
@@ -306,7 +329,8 @@ def stage(
         allow_nan=False,
         separators=(",", ":"),
     ).encode("utf-8")
-    if len(manifest_bytes) > 16_384 or 2 * (total + len(manifest_bytes)) > budget:
+    expanded = wheels.MAX_EXPANDED_BYTES if wheel is not None else 0
+    if len(manifest_bytes) > 16_384 or 2 * (total + len(manifest_bytes)) + expanded > budget:
         raise FilePreparationFailed("input preparation failed")
     os.mkdir("input.part", mode=0o700, dir_fd=directory)
     part = os.open(
@@ -323,13 +347,23 @@ def stage(
             _remaining(deadline)
             fd = os.open(
                 item.mount_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
                 0o600,
                 dir_fd=part,
             )
             created.append(item.mount_name)
             try:
-                _fetch(channel, task, item, fd, deadline)
+                _fetch(channel, task, item, fd, deadline, builtin_package=wheel is not None)
+                if wheel is not None:
+                    try:
+                        with (
+                            os.fdopen(fd, "rb", closefd=False) as stream,
+                            zipfile.ZipFile(stream) as archive,
+                        ):
+                            wheels.members(archive)
+                        _remaining(deadline)
+                    except (OSError, ValueError, zipfile.BadZipFile):
+                        raise FilePreparationFailed("builtin wheel unavailable") from None
                 os.fsync(fd)
                 os.fchmod(fd, 0o444)
                 info = os.fstat(fd)

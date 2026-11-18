@@ -39,6 +39,16 @@ function canConfirmRecoveredDrain(snapshot: WorkerMaintenanceSnapshot): boolean 
     && snapshot.unsettled_attempts === 0 && !snapshot.has_unreconciled_attempts;
 }
 
+function canStartAction(snapshot: WorkerMaintenanceSnapshot, action: WorkerMaintenanceAction): boolean {
+  switch (action) {
+    case "drain": return snapshot.scheduling_state === "active";
+    case "activate": return canActivate(snapshot);
+    case "force_stop":
+      return snapshot.enrolled && snapshot.scheduling_state === "draining"
+        && snapshot.current_maintenance_action === "drain" && snapshot.force_stop_available === true;
+  }
+}
+
 function sameReceipt(receipt: WorkerMaintenanceReceipt, intent: WorkerMaintenanceIntent): boolean {
   return receipt.operation.action === intent.action && receipt.operation.same_actor
     && receipt.operation.expected_version === intent.expected_version
@@ -64,9 +74,14 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
   const busyRef = useRef(false);
   const generation = useRef(0);
   const controller = useRef<AbortController | null>(null);
+  const confirmationTrigger = useRef<HTMLElement | null>(null);
   const refreshRef = useRef(onRefresh);
   const descriptionId = useId();
-  const restoreFocus = useOverlayFocus(confirmation !== null, '[data-testid="system-status-refresh"], [data-testid="worker-maintenance-recheck"]');
+  const restoreFocus = useOverlayFocus(
+    confirmation !== null,
+    '[data-testid="system-status-refresh"], [data-testid="worker-maintenance-recheck"]',
+    confirmationTrigger,
+  );
 
   useEffect(() => { refreshRef.current = onRefresh; }, [onRefresh]);
   // A separate health refresh failure does not undo an observed committed
@@ -123,7 +138,7 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
       // Keep the tuple until disabled is observed in a committed snapshot.
       setPending(intent);
       setNotice("draining");
-    } else if (observed.current.scheduling_state === (intent.action === "drain" ? "disabled" : "active")) {
+    } else if (observed.current.scheduling_state === (intent.action === "activate" ? "active" : "disabled")) {
       clearWorkerMaintenanceIntent(intent);
       setPending(null);
       setNotice("committed");
@@ -175,8 +190,15 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
     return onRead(worker.id);
   };
 
-  const prepare = async (action: WorkerMaintenanceAction, reuse?: WorkerMaintenanceIntent, retry = false) => {
+  const confirmedDrain = pending?.action === "drain" && receipt?.applies_to_current_version
+    && receipt.current.scheduling_state === "draining" && sameReceipt(receipt, pending)
+    ? pending : undefined;
+
+  const prepare = async (
+    trigger: HTMLElement, action: WorkerMaintenanceAction, reuse?: WorkerMaintenanceIntent, retry = false,
+  ) => {
     if (busyRef.current || scope === null || storageBlocked) return;
+    confirmationTrigger.current = trigger;
     busyRef.current = true;
     setBusy(true);
     const current = generation.current;
@@ -186,7 +208,7 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
       if ((identity !== null && fresh.worker_identity_id !== identity)
         || (reuse && fresh.worker_identity_id !== reuse.worker_identity_id)
         || (!retry && (reuse ? !canConfirmDrain(fresh, reuse)
-          : action === "drain" ? fresh.scheduling_state !== "active" && !canConfirmRecoveredDrain(fresh) : !canActivate(fresh)))) {
+          : !canStartAction(fresh, action) && !(action === "drain" && canConfirmRecoveredDrain(fresh))))) {
         setNotice("changed");
         await refresh();
         return;
@@ -221,13 +243,13 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
           || fresh.instance_id !== observed.instance_id || fresh.instance_generation !== observed.instance_generation
           || (continuingDrain ? !canConfirmDrain(fresh, intent)
             : recoveredConfirmation ? !canConfirmRecoveredDrain(fresh)
-            : intent.action === "drain" ? fresh.scheduling_state !== "active" : !canActivate(fresh))))) {
+            : !canStartAction(fresh, intent.action))))) {
         setConfirmation(null);
         setNotice("changed");
         await refresh();
         return;
       }
-      try { persistWorkerMaintenanceIntent(intent); }
+      try { persistWorkerMaintenanceIntent(intent, !retry && intent.action === "force_stop" ? confirmedDrain : undefined); }
       catch {
         setStorageBlocked(true);
         setNotice("storage");
@@ -277,27 +299,37 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
   } : null;
   const continuation = pending?.action === "drain" ? pending : resume;
   const otherPending = pending !== null && (pending.action !== "drain" || pending.request_id !== currentDrain?.request_id);
+  const forceStopConfirmation = confirmation?.intent.action === "force_stop";
+  const confirmTitle = forceStopConfirmation ? "forceStopTitle"
+    : confirmation?.intent.action === "activate" ? "activateTitle" : "drainTitle";
   return (
     <div className="worker-maintenance-actions" data-testid="worker-maintenance-actions" aria-busy={busy}>
       <div className="worker-maintenance-buttons" aria-describedby={descriptionId}>
         {snapshot?.scheduling_state === "active" && (
-          <Button disabled={blocked || pending !== null} onClick={() => void prepare("drain")}>{t("worker.maintenance.drain")}</Button>
+          <Button disabled={blocked || pending !== null} onClick={(event) => void prepare(event.currentTarget, "drain")}>{t("worker.maintenance.drain")}</Button>
         )}
         {snapshot?.scheduling_state === "disabled" && (
-          <Button type="primary" disabled={blocked || pending !== null || !canActivate(snapshot)} onClick={() => void prepare("activate")}>{t("worker.maintenance.activate")}</Button>
+          <Button type="primary" disabled={blocked || pending !== null || !canActivate(snapshot)} onClick={(event) => void prepare(event.currentTarget, "activate")}>{t("worker.maintenance.activate")}</Button>
         )}
         {snapshot?.scheduling_state === "draining" && snapshot.current_maintenance_action !== "reconcile" && (
           <Button disabled={blocked || otherPending || continuation === null || !canConfirmDrain(snapshot, continuation)}
-            onClick={() => continuation && void prepare("drain", continuation)}>{t("worker.maintenance.confirmDrain")}</Button>
+            onClick={(event) => continuation && void prepare(event.currentTarget, "drain", continuation)}>{t("worker.maintenance.confirmDrain")}</Button>
+        )}
+        {snapshot && canStartAction(snapshot, "force_stop") && (
+          <Button danger disabled={blocked || (pending !== null && !confirmedDrain)}
+            onClick={(event) => void prepare(event.currentTarget, "force_stop")}>{t("worker.maintenance.forceStop")}</Button>
         )}
         {snapshot?.scheduling_state === "draining" && snapshot.current_maintenance_action === "reconcile" && (
           <Button disabled={blocked || pending !== null || !canConfirmRecoveredDrain(snapshot)}
-            onClick={() => void prepare("drain")}>{t("worker.maintenance.confirmRecoveredDrain")}</Button>
+            onClick={(event) => void prepare(event.currentTarget, "drain")}>{t("worker.maintenance.confirmRecoveredDrain")}</Button>
         )}
       </div>
       <p id={descriptionId} className="worker-maintenance-hint">{t("worker.maintenance.actionBoundary")}</p>
       {snapshot?.scheduling_state === "disabled" && !canActivate(snapshot) && (
         <p className="worker-maintenance-hint">{t("worker.maintenance.activationRequirements")}</p>
+      )}
+      {snapshot?.current_maintenance_action === "force_stop" && snapshot.unsettled_attempts > 0 && (
+        <p className="worker-maintenance-hint">{t("worker.maintenance.forceStopPending")}</p>
       )}
       {snapshot?.scheduling_state === "draining" && snapshot.current_maintenance_action !== "reconcile"
         && (currentDrain?.same_actor !== true || snapshot.unsettled_attempts !== 0) && (
@@ -317,17 +349,18 @@ export default function WorkerMaintenanceActions({ worker, onRefresh, onRead }: 
         <div className="worker-maintenance-pending">
           <p>{t("worker.maintenance.pendingRequest")} <code>{pending.request_id}</code> · {pending.expected_version}</p>
           <Button data-testid="worker-maintenance-recheck" disabled={busy || notice === "mismatch"} onClick={() => void recheck()}>{t("worker.maintenance.lookup")}</Button>
-          <Button disabled={blocked || notice === "mismatch"} onClick={() => void prepare(pending.action, pending, true)}>{t("worker.maintenance.retrySame")}</Button>
+          <Button disabled={blocked || notice === "mismatch"} onClick={(event) => void prepare(event.currentTarget, pending.action, pending, true)}>{t("worker.maintenance.retrySame")}</Button>
         </div>
       )}
-      <Modal open={confirmation !== null} title={t(confirmation?.retry ? "worker.maintenance.retryTitle" : confirmation?.intent.action === "activate" ? "worker.maintenance.activateTitle" : "worker.maintenance.drainTitle")}
+      <Modal open={confirmation !== null} title={t(`worker.maintenance.${confirmation?.retry ? "retryTitle" : confirmTitle}`)}
         onOk={() => void submit()} onCancel={() => { if (!busyRef.current) setConfirmation(null); }}
         afterClose={() => restoreFocus(false)} confirmLoading={busy}
         maskClosable={false} keyboard={!busy} cancelButtonProps={{ disabled: busy, autoFocus: true }}
         okText={t("worker.maintenance.confirmAction")} cancelText={t("worker.maintenance.cancelAction")}
-        okButtonProps={{ "aria-describedby": descriptionId }}>
+        okButtonProps={{ "aria-describedby": descriptionId, danger: forceStopConfirmation }}>
         <p>{t("worker.maintenance.confirmTarget", { name: worker.name, version: confirmation?.intent.expected_version })}</p>
-        <p>{t(confirmation?.retry ? "worker.maintenance.retryDescription" : "worker.maintenance.confirmDescription")}</p>
+        <p>{t(confirmation?.retry ? "worker.maintenance.retryDescription"
+          : forceStopConfirmation ? "worker.maintenance.forceStopDescription" : "worker.maintenance.confirmDescription")}</p>
         {confirmation && <p>{t("worker.maintenance.pendingRequest")} <code>{confirmation.intent.request_id}</code></p>}
       </Modal>
     </div>

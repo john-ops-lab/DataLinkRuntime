@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import pytest
+from alembic import command
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -30,13 +31,20 @@ from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from conftest import api_client_for_database
 from dlr.common.attempt_lease_proof_wire_v4 import verify_attempt_proof_signature
 from dlr.common.config import settings
 from dlr.common.lease_proof_wire_v4 import verify_worker_proof_signature
 from dlr.control import db
 from dlr.control.app import create_app
 from dlr.control.control_identity_init_v4 import initialize
-from dlr.control.models import Execution, ExecutionAttempt, ExecutionOutbox, Worker
+from dlr.control.models import (
+    EventSubscription,
+    Execution,
+    ExecutionAttempt,
+    ExecutionOutbox,
+    Worker,
+)
 from dlr.control.schemas.reliable_runtime import AttemptActionBody
 from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
 from dlr.control.services import worker_credentials
@@ -62,6 +70,7 @@ from dlr.worker import (
 )
 from test_adapters import create_adapter, save_version
 from test_issue127_c0 import _register_worker
+from test_issue219_upgrade import migration_config, upgrade_database  # noqa: F401
 
 
 @contextmanager
@@ -442,10 +451,11 @@ def _exercise_remote_fixed_worker(client, session_factory, shared, base_url, tru
 
 
 def _assert_result_transaction_fences(
-    factory, process, worker_id, credential, lease, attempt, *, staged_only=False
+    factory, process, worker_id, credential, lease, attempt, *, staged_only=False, force_stop=False
 ):
     """DB protocol only: decoding a valid intent cannot replace either fence."""
     from dlr.common.result_receipt_proof_v4 import verify_result_receipt
+    from dlr.common.worker_protocol_v4 import WORKER_FORCE_STOP_CODE
     from dlr.control.schemas.reliable_runtime import AttemptResultBody
     from dlr.control.services import attempt_result_finalize_v4 as finalizer
     from dlr.control.services import attempt_result_intent_v4 as intents
@@ -455,8 +465,9 @@ def _assert_result_transaction_fences(
         attempt_id=attempt._claims.attempt_id,
         fencing_token=attempt._claims.fencing_token,
         claim_token=attempt._claim_token,
-        status="succeeded",
-        output={"protocol_only": True},
+        status="cancelled" if force_stop else "succeeded",
+        error_code=WORKER_FORCE_STOP_CODE if force_stop else None,
+        output=None if force_stop else {"protocol_only": True},
     )
     fence = finalizer.ResultControlFence(
         process._deployment, process._instance, process._token, process.check_authority
@@ -515,7 +526,7 @@ def _assert_result_transaction_fences(
             max_body_bytes=100000,
         )
     with factory() as session:
-        assert session.get(ExecutionAttempt, action.attempt_id).status == "succeeded"
+        assert session.get(ExecutionAttempt, action.attempt_id).status == action.status
         assert session.get(ExecutionAttempt, action.attempt_id).cleanup_settled_at is None
     receipt_nonce = uuid4()
     with pytest.raises(finalizer.ResultReceiptUnavailable):
@@ -547,7 +558,9 @@ def _assert_result_transaction_fences(
     )
 
 
-def _assert_cleanup_protocol(client, factory, worker_id, lease, claimed, public_key):
+def _assert_cleanup_protocol(
+    client, factory, worker_id, lease, claimed, public_key, *, terminal_status="succeeded"
+):
     """Protocol-only settlement: this synthetic receipt proves no physical cleanup."""
     from dlr.common.cleanup_receipt_proof_v4 import verify_cleanup_receipt_proof
     from dlr.control.models import AdapterExecutionSlot
@@ -620,12 +633,114 @@ def _assert_cleanup_protocol(client, factory, worker_id, lease, claimed, public_
             assert (
                 session.get(AdapterExecutionSlot, (payload.adapter_id, 0)).active_attempt_id is None
             )
-            assert session.get(Execution, payload.execution_id).status == "succeeded"
+            assert session.get(Execution, payload.execution_id).status == terminal_status
             settled = attempt.cleanup_settled_at
         if _ == 0:
             first_settlement = settled
         else:
             assert settled == first_settlement
+
+
+def _assert_live_history_retention(
+    client, factory, worker_id, lease, claimed, previous_proof, *, cap, monkeypatch
+):
+    from dlr.control.models import Adapter, WorkerCleanupIntentV4, WorkerCleanupRequest
+    from dlr.control.models.reliable_execution import WorkerAdapterStorageOwnerV4
+    from dlr.control.services.retention import cleanup_execution_retention
+
+    task = claimed.payload
+    assert task is not None
+    now = datetime.now(UTC)
+    if cap:
+        monkeypatch.setattr(settings, "execution_retention_task_max_per_adapter", 1)
+        with factory.begin() as session:
+            original = session.get(Execution, task.execution_id)
+            session.add(
+                Execution(
+                    adapter_id=original.adapter_id,
+                    version_id=original.version_id,
+                    trigger="manual",
+                    status="succeeded",
+                    input=None,
+                    created_at=now,
+                    admission_released_at=now,
+                )
+            )
+    else:
+        now += timedelta(days=settings.execution_retention_task_days + 1)
+    route = f"https://testserver/api/workers/{worker_id}/v4/history-retirement"
+    headers = {
+        "Authorization": f"Bearer {lease._credential}",
+        "X-DLR-Worker-Instance": str(lease._instance_id),
+        "X-DLR-Worker-Generation": str(lease._claims.generation),
+        "X-DLR-Worker-Lease-Proof": lease._proof,
+    }
+    with factory() as session:
+        assert session.get(Adapter, task.adapter_id).archived_at is None
+        original = session.get(ExecutionAttempt, task.attempt_id)
+        assert original.cleanup_settled_at is not None and original.journal_retired_at is None
+        assert cleanup_execution_retention(session, now=now).deleted == 0
+    assert client.post(route + "/observe", json={}).status_code == 401
+    old = {**headers, "X-DLR-Worker-Lease-Proof": previous_proof}
+    assert client.post(route + "/observe", headers=old, json={}).status_code == 503
+    ready = client.post(route + "/observe", headers=headers, json={})
+    assert ready.status_code == 200, ready.text
+    with factory() as session:
+        cleanup = session.get(WorkerCleanupIntentV4, task.attempt_id)
+        exact = {
+            "attempt_id": task.attempt_id,
+            "execution_id": task.execution_id,
+            "fencing_token": task.fencing_token,
+            "completion_id": str(cleanup.completion_id),
+        }
+    assert ready.json() == {"items": [exact]}
+    response = client.post(
+        route + "/confirm",
+        headers=headers,
+        json={"items": [{**exact, "fencing_token": task.fencing_token + 1}]},
+    )
+    assert response.status_code == 503
+    for _ in range(2):
+        confirmed = client.post(route + "/confirm", headers=headers, json=ready.json())
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json() == ready.json()
+    assert client.post(route + "/observe", headers=headers, json={}).json() == {"items": []}
+    with factory() as session:
+        row = session.get(ExecutionAttempt, task.attempt_id)
+        assert row.journal_retired_at >= row.cleanup_settled_at
+        report = cleanup_execution_retention(session, now=now)
+        assert report.deleted == 1 and report.failures == 0
+    with factory() as session:
+        assert session.get(Execution, task.execution_id) is None
+        assert session.get(ExecutionAttempt, task.attempt_id) is None
+        assert session.get(WorkerCleanupIntentV4, task.attempt_id) is None
+        assert session.get(Adapter, task.adapter_id).archived_at is None
+        scope = session.get(WorkerAdapterStorageOwnerV4, (task.adapter_id, worker_id))
+        assert scope.worker_identity_id == lease._identity_id
+    if cap:
+        # Removing the active assignment after retention must not lose the
+        # previous Worker's local storage scope.
+        ready = client.post(
+            f"/api/workers/{worker_id}/v4/ready",
+            headers=headers,
+            json={
+                "isolation_capabilities": {key: True for key in REQUIRED_ISOLATION_CAPABILITIES},
+                "adapter_ephemeral_cleanup_v1": True,
+            },
+        )
+        assert ready.status_code == 200, ready.text
+        unbound = client.patch(f"/api/adapters/{task.adapter_id}", json={"runtime_worker_id": None})
+        assert unbound.status_code == 200, unbound.text
+        deleted = client.delete(f"/api/adapters/{task.adapter_id}?stop=true")
+        assert deleted.status_code == 202, deleted.text
+        with factory() as session:
+            assert session.get(Adapter, task.adapter_id).archived_at is not None
+            ticket = session.scalar(
+                select(WorkerCleanupRequest).where(
+                    WorkerCleanupRequest.adapter_id == task.adapter_id
+                )
+            )
+            assert ticket.worker_id == worker_id and ticket.v4_identity_id == lease._identity_id
 
 
 def test_identity_reservation_is_disabled_by_default(api_client):
@@ -906,6 +1021,25 @@ def _assert_two_fixed_worker_scopes(client, factory, process, lease, trust_file,
     return current["maintenance_version"] + 2
 
 
+@pytest.fixture
+def restricted_control_database(request, controlled_recovery, monkeypatch):
+    if controlled_recovery != "legacy_adoption":
+        yield (
+            request.getfixturevalue("api_client"),
+            request.getfixturevalue("test_engine"),
+            request.getfixturevalue("session_factory"),
+        )
+        return
+
+    # Opening the immutable legacy window permanently changes the database's
+    # shared-token eligibility. Give this upgrade case its own database.
+    engine = request.getfixturevalue("upgrade_database")
+    command.upgrade(migration_config(engine), "head")
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with api_client_for_database(engine, factory, monkeypatch) as client:
+        yield client, engine, factory
+
+
 @pytest.mark.parametrize(
     "controlled_recovery,language",
     [
@@ -915,16 +1049,45 @@ def _assert_two_fixed_worker_scopes(client, factory, process, lease, trust_file,
         (("worker_lost", "dead_letter"), "python"),
         (("worker_lost", "cancelled"), "python"),
         (("cancelled", "cancelled"), "python"),
+        ("force_stop", "python"),
+        ("force_stop_no_result", "python"),
+        ("force_stop_retention_ttl", "python"),
+        ("force_stop_retention_cap", "python"),
+        ("cache_governance", "python"),
+        ("legacy_adoption", "python"),
     ],
 )
 def test_enrollment_requires_isolated_database_role_and_exchanges_once(
-    api_client, test_engine, session_factory, tmp_path, monkeypatch, controlled_recovery, language
+    restricted_control_database, tmp_path, monkeypatch, controlled_recovery, language
 ):
     """Exercise the actual API against a restricted PostgreSQL login."""
     if controlled_recovery and os.environ.get("DLR_TEST_CLAIM_PROCESS") == "1":
         pytest.skip(
             "controlled recovery uses the restricted-role API fixture, not Claim process mode"
         )
+    api_client, test_engine, session_factory = restricted_control_database
+    old_worker = blocked_worker = adapter = accepted = None
+    if controlled_recovery == "legacy_adoption":
+        old_worker = _register_worker(api_client, "retained-legacy-worker")
+        blocked_worker = _register_worker(api_client, "pending-legacy-worker")
+        adapter = create_adapter(api_client, "legacy-fixed-binding")
+        assert (
+            api_client.patch(
+                f"/api/adapters/{adapter['id']}", json={"runtime_worker_id": old_worker["id"]}
+            ).status_code
+            == 200
+        )
+        pending = create_adapter(api_client, "legacy-pending-execution")
+        path = f"/api/adapters/{pending['id']}"
+        assert (
+            api_client.patch(path, json={"runtime_worker_id": blocked_worker["id"]}).status_code
+            == 200
+        )
+        save_version(api_client, pending["id"])
+        accepted = api_client.post(path + "/executions", json={})
+        assert accepted.status_code == 202
+        monkeypatch.setattr(settings, "worker_v4_deployment_mode", "A")
+        monkeypatch.setattr(settings, "worker_v4_control_slots", 1)
     monkeypatch.setattr(settings, "worker_identity_reservation_enabled", True)
     monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
     runtime_role = "dlr_w1_" + uuid4().hex[:12]
@@ -961,11 +1124,18 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
     deployment = read_declaration(settings)
     with session_factory() as session:
         initialize(session, deployment)
+        if controlled_recovery == "legacy_adoption":
+            from dlr.control.services import worker_legacy_window
+
+            deadline = worker_legacy_window.current_time(session) + timedelta(minutes=10)
+            worker_legacy_window.open_once(session, deadline)
         session.commit()
 
     app = create_app()
     app.dependency_overrides.update(api_client.app.dependency_overrides)
-    client = TestClient(app, headers={"Authorization": "Bearer test-admin-token"})
+    client = TestClient(
+        app, base_url="https://testserver", headers={"Authorization": "Bearer test-admin-token"}
+    )
     reserved = client.post(
         "/api/workers/v4/identities", json={"name": "remote-one", "request_id": str(uuid4())}
     )
@@ -1073,6 +1243,54 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
         while process._state != "registered" and time.monotonic() < deadline:
             time.sleep(0.02)
         process.check_authority()
+
+        if controlled_recovery == "legacy_adoption":
+            assert old_worker is not None and blocked_worker is not None and adapter is not None
+            assert accepted is not None
+            # The complete cutover still fences the old database login.
+            with test_engine.begin() as connection:
+                connection.execute(
+                    text(f'REVOKE CONNECT ON DATABASE "{database}" FROM "{old_role}"')
+                )
+            test_engine.dispose()
+            headers = {"Authorization": "Bearer test-worker-token"}
+            for worker in (old_worker, blocked_worker):
+                path = f"/api/workers/{worker['id']}"
+                assert client.post(path + "/heartbeat", headers=headers).status_code == 204
+                assert client.post(path + "/offline", headers=headers).status_code == 204
+                with runtime_sessions() as session:
+                    identity_id = session.get(Worker, worker["id"]).identity_id
+                request = {
+                    "request_id": str(uuid4()),
+                    "worker_identity_id": str(identity_id),
+                    "legacy_stop_evidence_sha256": "a" * 64,
+                }
+                adopt = path + "/v4/identity/adopt"
+                result = client.post(adopt, json=request)
+                if worker["id"] == blocked_worker["id"]:
+                    assert result.status_code == 409
+                    continue
+                assert result.status_code == 200, result.text
+                assert result.json()["worker_id"] == worker["id"]
+                assert client.post(adopt, json=request).json() == result.json()
+                assert (
+                    client.post(
+                        adopt, json={**request, "legacy_stop_evidence_sha256": "b" * 64}
+                    ).status_code
+                    == 409
+                )
+                assert client.post(path + "/heartbeat", headers=headers).status_code == 401
+                assert client.post(path + "/credentials/enrollment", json={}).status_code == 201
+            assert (
+                client.get(f"/api/adapters/{adapter['id']}").json()["runtime_worker_id"]
+                == (old_worker["id"])
+            )
+            with runtime_sessions() as session:
+                retained = session.get(Execution, accepted.json()["id"])
+                assert retained.status == "queued"
+                assert retained.target_worker_id == blocked_worker["id"]
+                assert session.get(Worker, blocked_worker["id"]).protocol_version == 3
+            return
 
         # A role capable of opening old connections blocks issuance even when
         # no such connection is active.
@@ -1304,6 +1522,171 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
         assert result.status_code == 200, result.text
         with runtime_sessions() as session:
             assert session.get(Worker, worker_id).capabilities == ["python"]
+        if controlled_recovery == "cache_governance":
+            from test_issue161_cache_admin import _summary
+
+            cache_report = {"isolation_capabilities": flags, "cache_governance_v1": True}
+            assert (
+                client.post(endpoint, headers=current_headers, json=cache_report).status_code == 200
+            )
+            assert (
+                client.post(
+                    endpoint,
+                    headers=current_headers,
+                    json={
+                        "isolation_capabilities": flags,
+                        "adapter_ephemeral_cleanup_v1": True,
+                    },
+                ).status_code
+                == 503
+            )
+            adapter = create_adapter(client, "v4-cache-proof-scope")
+            adapter_url = f"/api/adapters/{adapter['id']}"
+            assert (
+                client.patch(adapter_url, json={"runtime_worker_id": worker_id}).status_code == 200
+            )
+            version = save_version(client, adapter["id"])
+            key = {"adapter_id": adapter["id"], "version_id": version["id"]}
+            identity = {**key, "language": "python", "source_sha256": "a" * 64}
+            view = {
+                "sample_id": str(uuid4()),
+                "sequence": 1,
+                "sampled_at": datetime.now(UTC).isoformat(),
+                "state": "complete",
+                "complete": True,
+                "summary": _summary(),
+                "items": [
+                    {
+                        "cache_key": f"{key['adapter_id']}-{key['version_id']}",
+                        **key,
+                        "identity": identity,
+                        "digest": "b" * 64,
+                        "bytes": 123,
+                        "pinned": False,
+                        "rebuildability": "confirmed",
+                    }
+                ],
+            }
+            path = f"/api/workers/{worker_id}/v4/cache"
+            assert (
+                client.post(path + "/snapshot", headers=heartbeat_headers, json=view).status_code
+                == 503
+            )
+            sample = client.post(path + "/snapshot", headers=current_headers, json=view)
+            assert sample.status_code == 200, sample.text
+            assert sample.json()["result"]["sample_id"] == view["sample_id"]
+            created = client.post(
+                f"/api/workers/{worker_id}/cache/operations",
+                json={"kind": "clean", "keys": [key], "idempotency_key": str(uuid4())},
+            )
+            assert created.status_code == 202, created.text
+            response = client.post(path + "/claim", headers=current_headers, json={})
+            assert response.status_code == 200, response.text
+            command = response.json()["result"]
+            assert command["operation_id"] == created.json()["operation_id"]
+            assert (
+                client.post(path + "/claim", headers=current_headers, json={}).json()
+                == response.json()
+            )
+            guard_id = str(uuid4())
+            request = {
+                "command_id": command["operation_id"],
+                "request": {
+                    **key,
+                    "operation_id": guard_id,
+                    "observed_identity": {
+                        "store_id": "fixture",
+                        "language": "python",
+                        "source_sha256": "a" * 64,
+                        "digest": "b" * 64,
+                    },
+                },
+            }
+            wrong = {**request, "command_id": str(uuid4())}
+            assert (
+                client.post(path + "/acquire", headers=current_headers, json=wrong).status_code
+                == 503
+            )
+            granted = client.post(path + "/acquire", headers=current_headers, json=request)
+            assert granted.status_code == 200, granted.text
+            generation = granted.json()["result"]["generation"]
+            posted = {
+                "operation_id": command["operation_id"],
+                "result": {
+                    "claim_epoch": command["claim_epoch"],
+                    "request_hash": command["request_hash"],
+                    "status": "completed",
+                    "result": {
+                        "child_operations": [
+                            {
+                                **key,
+                                "generation": generation,
+                                "guard_operation_id": guard_id,
+                                "phase": "completed",
+                            }
+                        ]
+                    },
+                },
+            }
+            assert (
+                client.post(path + "/result", headers=current_headers, json=posted).status_code
+                == 503
+            )
+            release = {
+                "operation_id": guard_id,
+                "result": {"generation": generation, "outcome": "completed"},
+            }
+            assert (
+                client.post(path + "/release", headers=heartbeat_headers, json=release).status_code
+                == 503
+            )
+            completed = client.post(path + "/release", headers=current_headers, json=release)
+            assert completed.status_code == 200, completed.text
+            assert completed.json()["result"]["phase"] == "completed"
+            result = client.post(path + "/result", headers=current_headers, json=posted)
+            assert result.status_code == 200, result.text
+            deleted = client.delete(adapter_url)
+            assert deleted.status_code == 204, deleted.text
+            cleanup_path = f"/api/workers/{worker_id}/v4/adapter-cleanup"
+            claimed = client.post(cleanup_path + "/claim", headers=current_headers, json={})
+            assert claimed.status_code == 200, claimed.text
+            ticket = claimed.json()["claim"]
+            cleanup_binding = {name: ticket[name] for name in ("cleanup_id", "claim_attempt")}
+            cleanup_guard = {
+                "request": {
+                    **request["request"],
+                    "operation_id": str(uuid4()),
+                    "cleanup_context": cleanup_binding,
+                },
+            }
+            acquired = client.post(path + "/acquire", headers=current_headers, json=cleanup_guard)
+            assert acquired.status_code == 200, acquired.text
+            guard = acquired.json()["result"]
+            assert guard["cleanup_id"] == ticket["cleanup_id"]
+            assert (
+                client.post(
+                    cleanup_path + "/complete", headers=current_headers, json=ticket
+                ).status_code
+                == 503
+            )
+            assert (
+                client.post(
+                    path + "/release",
+                    headers=current_headers,
+                    json={
+                        "operation_id": guard["operation_id"],
+                        "result": {"generation": guard["generation"], "outcome": "completed"},
+                    },
+                ).status_code
+                == 200
+            )
+            assert (
+                client.post(
+                    cleanup_path + "/complete", headers=current_headers, json=ticket
+                ).status_code
+                == 200
+            )
+            return
         if language == "javascript":
             # Change a valid report to another valid set after its commit.
             # Independent observation must compare the entire same set.
@@ -1497,6 +1880,15 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 select(ExecutionOutbox).where(ExecutionOutbox.execution_id == execution_id)
             )
             message = dict(row.payload_json)
+            if controlled_recovery in ("force_stop_retention_ttl", "force_stop_retention_cap"):
+                from dlr.control.services.outbox import lease_due_outbox, mark_outbox_published
+
+                # This PG fixture consumes the durable envelope directly.
+                # A pending Relay responsibility must continue to block retention.
+                outbox_id = row.id
+                leased = lease_due_outbox(session, "history-retirement-fixture")
+                assert [item.id for item in leased] == [outbox_id]
+                assert mark_outbox_published(session, outbox_id, "history-retirement-fixture")
         dispatch = deserialize_dispatch_message(message)
         worker_authority = V4AttemptAuthority(runtime_secret, instance, renewed.generation)
 
@@ -1846,7 +2238,22 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             "X-DLR-Worker-Attempt-Proof": signed_attempt,
         }
         action_json = action.model_dump(mode="json")
-        start_endpoint = f"/api/workers/{worker_id}/v4/attempts/{claimed.attempt_id}/start"
+        attempt_endpoint = f"/api/workers/{worker_id}/v4/attempts/{claimed.attempt_id}"
+        start_endpoint = f"{attempt_endpoint}/start"
+        progress_endpoint = f"{attempt_endpoint}/progress"
+        progress_body = {**action_json, "stdout_chunk": "proof-bound progress\n"}
+        direct_progress = (
+            not controlled_recovery
+            and language == "python"
+            and os.environ.get("DLR_TEST_CLAIM_PROCESS") != "1"
+        )
+        if direct_progress:
+            assert (
+                client.post(
+                    progress_endpoint, headers=attempt_headers, json=progress_body
+                ).status_code
+                == 503
+            )
         assert (
             client.post(
                 start_endpoint,
@@ -1857,6 +2264,10 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
         )
         if os.environ.get("DLR_TEST_CLAIM_PROCESS") != "1":
             attempt_lease.start()
+        if direct_progress:
+            published = client.post(progress_endpoint, headers=attempt_headers, json=progress_body)
+            assert published.status_code == 200, published.text
+            assert published.json()["reason"] == "progressed"
         attempt_lease.renew()
         assert attempt_lease.is_usable()
         successor = verify_attempt_proof_signature(
@@ -1867,6 +2278,16 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             client.post(start_endpoint, headers=attempt_headers, json=action_json).status_code
             == 503
         )
+        if direct_progress:
+            assert (
+                client.post(
+                    progress_endpoint, headers=attempt_headers, json=progress_body
+                ).status_code
+                == 503
+            )
+            with runtime_sessions() as session:
+                live_execution = session.get(Execution, execution_id)
+                assert live_execution.stdout == progress_body["stdout_chunk"]
         with runtime_sessions() as session:
             fence = process.worker_fence(session)
             authority = process.worker_proof_authority(session)
@@ -1890,6 +2311,151 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 )
                 == 1
             )
+        if controlled_recovery in (
+            "force_stop",
+            "force_stop_no_result",
+            "force_stop_retention_ttl",
+            "force_stop_retention_cap",
+        ):
+            base = f"/api/workers/{worker_id}/v4"
+            drained = client.post(
+                f"{base}/drain",
+                json={"request_id": str(uuid4()), "expected_version": maintenance_version},
+            )
+            assert drained.status_code == 200, drained.text
+            force = {
+                "request_id": str(uuid4()),
+                "expected_version": drained.json()["maintenance_version"],
+                "reason": "administrator_request",
+            }
+            stopped = client.post(f"{base}/force-stop", json=force)
+            assert stopped.status_code == 200, stopped.text
+            assert stopped.json()["scheduling_state"] == "disabled"
+            assert stopped.json()["unsettled_attempts"] == 1
+            assert client.post(f"{base}/force-stop", json=force).json() == stopped.json()
+            receipt = client.get(f"{base}/maintenance-operations/{force['request_id']}")
+            assert receipt.json()["operation"]["action"] == "force_stop"
+            proof_before_stop = attempt_lease._proof
+            with pytest.raises(attempt_session_v4.AttemptForceStopRequested) as stop_request:
+                attempt_lease.renew()
+            assert str(stop_request.value.operation_id) == force["request_id"]
+            assert attempt_lease._proof == proof_before_stop
+            assert not attempt_lease.send_with_authority(lambda: pytest.fail("renewed work"))
+            if controlled_recovery == "force_stop_no_result":
+                from recovery_protocol_fixtures import assert_controlled_recovery
+
+                with monkeypatch.context() as cleanup_scope:
+                    cleanup_scope.setattr(db, "SessionLocal", runtime_sessions)
+                    lease = assert_controlled_recovery(
+                        client,
+                        runtime_sessions,
+                        session_factory,
+                        worker_id,
+                        lease,
+                        claimed,
+                        trust_file,
+                        public_key_bytes(signing_key),
+                        terminal=("worker_lost", "cancelled"),
+                        force_stop_operation_id=force["request_id"],
+                    )
+                assert client.get(f"{base}/status").json()["unsettled_attempts"] == 0
+                return
+            _assert_result_transaction_fences(
+                runtime_sessions,
+                process,
+                worker_id,
+                runtime_secret,
+                lease,
+                attempt_lease,
+                force_stop=True,
+            )
+            deletion = client.delete(f"/api/adapters/{claimed.payload.adapter_id}?stop=true")
+            assert deletion.status_code == 409, deletion.text
+            assert deletion.json()["detail"]["code"] == "worker_cleanup_pending"
+            with monkeypatch.context() as cleanup_scope:
+                cleanup_scope.setattr(db, "SessionLocal", runtime_sessions)
+                _assert_cleanup_protocol(
+                    client,
+                    runtime_sessions,
+                    worker_id,
+                    lease,
+                    claimed,
+                    public_key_bytes(signing_key),
+                    terminal_status="cancelled",
+                )
+            assert client.get(f"{base}/status").json()["unsettled_attempts"] == 0
+            if controlled_recovery in ("force_stop_retention_ttl", "force_stop_retention_cap"):
+                _assert_live_history_retention(
+                    client,
+                    runtime_sessions,
+                    worker_id,
+                    lease,
+                    claimed,
+                    original_proof,
+                    cap=controlled_recovery == "force_stop_retention_cap",
+                    monkeypatch=monkeypatch,
+                )
+                return
+            with session_factory.begin() as owner:
+                subscription = EventSubscription(
+                    adapter_id=claimed.payload.adapter_id,
+                    source_type="kafka",
+                    name="drained-before-adapter-delete",
+                    source_epoch="adapter-delete-history",
+                    desired_state="disabled",
+                    deleted_at=datetime.now(UTC),
+                )
+                owner.add(subscription)
+                owner.flush()
+                subscription_id = subscription.id
+            test_engine.dispose()
+            cleanup_headers = {**current_headers, "X-DLR-Worker-Lease-Proof": lease._proof}
+            ready = client.post(
+                endpoint,
+                headers=cleanup_headers,
+                json={"isolation_capabilities": flags, "adapter_ephemeral_cleanup_v1": True},
+            )
+            assert ready.status_code == 200, ready.text
+            deleted = client.delete(f"/api/adapters/{claimed.payload.adapter_id}?stop=true")
+            assert deleted.status_code == 202, deleted.text
+            assert deleted.json()["detail"]["code"] == "adapter_delete_cleanup_pending"
+            from dlr.control.services.adapter import finalize_one_v4_adapter_deletion
+
+            with runtime_sessions() as readback:
+                assert readback.get(Execution, execution_id) is not None
+                assert readback.get(EventSubscription, subscription_id) is not None
+                assert not finalize_one_v4_adapter_deletion(readback)
+            cleanup_path = f"{base}/adapter-cleanup"
+            assert (
+                client.post(
+                    "http://testserver" + cleanup_path + "/claim", headers=cleanup_headers, json={}
+                ).status_code
+                == 401
+            )
+            cleanup_url = "https://testserver" + cleanup_path
+            receipt = client.post(cleanup_url + "/claim", headers=cleanup_headers, json={})
+            assert receipt.status_code == 200, receipt.text
+            ticket = receipt.json()["claim"]
+            assert ticket["adapter_id"] == claimed.payload.adapter_id
+            assert (
+                client.post(cleanup_url + "/claim", headers=cleanup_headers, json={}).json()
+                == receipt.json()
+            )
+            rejected = client.post(
+                cleanup_url + "/complete",
+                headers=cleanup_headers,
+                json={**ticket, "claim_attempt": ticket["claim_attempt"] + 1},
+            )
+            assert rejected.status_code == 503
+            for _ in range(2):
+                saved = client.post(cleanup_url + "/complete", headers=cleanup_headers, json=ticket)
+                assert saved.status_code == 200 and saved.json() == {"completed": ticket}
+            with runtime_sessions() as readback:
+                assert finalize_one_v4_adapter_deletion(readback) == claimed.payload.adapter_id
+            with runtime_sessions() as readback:
+                assert readback.get(Execution, execution_id) is None
+                assert readback.get(EventSubscription, subscription_id) is None
+            return
         result_pending = _assert_result_transaction_fences(
             runtime_sessions,
             process,

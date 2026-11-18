@@ -619,7 +619,7 @@ export interface Worker {
 
 export type WorkerSchedulingState = "active" | "draining" | "disabled";
 export type WorkerCapacityState = "unknown" | "reconciling" | "ready" | "quarantined";
-export type WorkerMaintenanceAction = "drain" | "activate";
+export type WorkerMaintenanceAction = "drain" | "activate" | "force_stop";
 
 export interface WorkerDrainOperation {
   request_id: string;
@@ -632,8 +632,8 @@ export interface WorkerDrainOperation {
 export interface WorkerRecoveryDisposition {
   operation_id: string;
   disposition_id: string;
-  kind: "platform_terminal";
-  reason: "result_uncommitted_outcome_unknown";
+  kind: "platform_terminal" | "force_stopped_no_result";
+  reason: "result_uncommitted_outcome_unknown" | "force_stop_no_result_outcome_unknown";
   execution_id: number;
   attempt_id: number;
   attempt_status: "worker_lost" | "cancelled";
@@ -662,7 +662,8 @@ export interface WorkerMaintenanceSnapshot {
   unsettled_attempts: number;
   has_unreconciled_attempts: boolean;
   current_drain_operation: WorkerDrainOperation | null;
-  current_maintenance_action: "drain" | "activate" | "reconcile" | null;
+  current_maintenance_action: WorkerMaintenanceAction | "reconcile" | null;
+  force_stop_available?: boolean;
   last_recovery_disposition: WorkerRecoveryDisposition | null;
 }
 

@@ -63,7 +63,13 @@ from dlr.control.schemas.reliable_runtime import (
     ResourceProfile,
     V3TaskPayload,
 )
-from dlr.control.services import admission, cache_governance, outbox
+from dlr.control.services import (
+    admission,
+    cache_governance,
+    outbox,
+    worker_availability,
+    worker_legacy_window,
+)
 from dlr.control.services import execution as execution_service
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.dispatch import deserialize_dispatch_message
@@ -937,6 +943,15 @@ def progress_attempt(
         return _decision(
             "ACK_NOOP", "cancel_requested", attempt_id=attempt.id, cancel_requested=True
         )
+    record_progress_locked(execution, attempt, payload)
+    session.commit()
+    return _decision("ACK_NOOP", "progressed", attempt_id=attempt.id)
+
+
+def record_progress_locked(
+    execution: Execution, attempt: ExecutionAttempt, payload: AttemptProgressBody
+) -> None:
+    """Append live output under either protocol's existing ownership locks."""
     # Attempt rows intentionally retain only bounded summaries. Live output is
     # owned by the existing Execution progress contract, not an unbounded JSON
     # array on the Attempt table.
@@ -952,8 +967,6 @@ def progress_attempt(
             "stdout_bytes": len(payload.stdout_chunk.encode()),
             "stderr_bytes": len(payload.stderr_chunk.encode()),
         }
-    session.commit()
-    return _decision("ACK_NOOP", "progressed", attempt_id=attempt.id)
 
 
 def _release_slot_locked(slot: AdapterExecutionSlot, attempt: ExecutionAttempt) -> bool:
@@ -1432,14 +1445,14 @@ def _recover_reserved_attempt(
 ) -> bool:
     _set_reconciliation_lock_timeout(session)
     identity = session.execute(
-        select(ExecutionAttempt.worker_id, ExecutionAttempt.execution_id).where(
-            ExecutionAttempt.id == attempt_id
-        )
+        select(ExecutionAttempt.worker_id, Worker.scheduling_state)
+        .join(Worker, Worker.id == ExecutionAttempt.worker_id)
+        .where(ExecutionAttempt.id == attempt_id)
     ).one_or_none()
     if identity is None:
         session.rollback()
         return False
-    worker_id, _execution_id = identity
+    worker_id, scheduling_hint = identity
     try:
         execution, _adapter, attempt, slot = _lock_attempt_context(
             session, int(worker_id), attempt_id
@@ -1449,8 +1462,35 @@ def _recover_reserved_attempt(
         if _http_error_code(error) in RECONCILIATION_MISSING_CODES:
             return False
         raise
+    if attempt.status not in ACTIVE_ATTEMPT_STATUSES:
+        session.rollback()
+        return False
     locked_now = _utc(now or database_now(session))
-    if attempt.status not in ACTIVE_ATTEMPT_STATUSES or _utc(attempt.lease_expires_at) > locked_now:
+    expired = _utc(attempt.lease_expires_at) <= locked_now
+    if expired and attempt.worker_identity_id is None and worker_legacy_window.enabled_mode():
+        legacy = session.get(Worker, worker_id)
+        if legacy is None or not worker_legacy_window.target_allowed(session, legacy):
+            session.rollback()
+            return False
+    if attempt.worker_identity_id is not None and (expired or scheduling_hint == "disabled"):
+        worker = session.get(Worker, worker_id, with_for_update=True, populate_existing=True)
+        if worker is None or worker.identity_id != attempt.worker_identity_id:
+            session.rollback()
+            return False
+        if worker_availability.force_stop_operation_locked(session, worker, attempt=attempt):
+            if (
+                execution.status != "running"
+                or execution.attempt_count != attempt.attempt_no
+                or slot.active_attempt_id != attempt.id
+                or slot.fencing_token != attempt.fencing_token
+            ):
+                session.rollback()
+                return False
+            execution.cancel_requested = True
+            if not expired:
+                session.commit()
+                return False
+    if not expired:
         session.rollback()
         return False
     _validate_recovery_snapshots(execution, attempt_id=attempt.id)
@@ -1576,6 +1616,15 @@ def retry_dispatcher_once(
         ):
             session.rollback()
             continue
+        if settings.worker_remote_v4_enabled:
+            target = session.get(Worker, execution.target_worker_id_snapshot)
+            if (
+                target is not None
+                and target.protocol_version == 3
+                and not worker_legacy_window.target_allowed(session, target)
+            ):
+                session.rollback()
+                continue
         execution.status = "queued"
         execution.dispatch_generation += 1
         execution.queued_at = locked_now

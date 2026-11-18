@@ -12,8 +12,10 @@ import hashlib
 import hmac
 import re
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
@@ -174,7 +176,7 @@ def provision_authority(
 
 def _authority(
     session: Session, declaration: ControlDeclaration, *, exclusive: bool = False
-) -> RowMapping:
+) -> Mapping[str, Any]:
     _validated(declaration)
     _current_schema(session)
     authority = (
@@ -193,7 +195,26 @@ def _authority(
         or not hmac.compare_digest(authority["image_digest"], declaration.image_digest)
     ):
         raise _invalid()
-    stored_key = authority["worker_proof_public_key"]
+    current = {str(name): value for name, value in authority.items()}
+    if int(SCHEMA_REVISION.split("_", 1)[0]) >= 90:
+        # The singleton lock already excludes an owner append. This separate
+        # read sees a rotation that committed while acquiring that lock.
+        rotation = (
+            session.execute(
+                text("""
+            SELECT target_epoch, target_key FROM control_proof_rotations
+            ORDER BY generation DESC LIMIT 1
+            """)
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if rotation is not None:
+            current.update(
+                authority_epoch=rotation["target_epoch"],
+                worker_proof_public_key=rotation["target_key"],
+            )
+    stored_key = current["worker_proof_public_key"]
     declared_key = declaration.worker_proof_public_key
     if (stored_key is None) != (declared_key is None) or (
         stored_key is not None
@@ -212,11 +233,14 @@ def _authority(
         worker_token=declaration.worker_token,
     ):
         raise _invalid()
-    return authority
+    return current
 
 
 def _matches(
-    authority: RowMapping, instance_id: UUID, expires: datetime, declaration: ControlDeclaration
+    authority: Mapping[str, Any],
+    instance_id: UUID,
+    expires: datetime,
+    declaration: ControlDeclaration,
 ) -> DeclaredCompatibility:
     return DeclaredCompatibility(
         instance_id=instance_id,
@@ -259,7 +283,10 @@ def _token_digest(token: str) -> bytes:
 
 
 def _existing_is_same(
-    row: RowMapping, declaration: ControlDeclaration, authority: RowMapping, token_digest: bytes
+    row: RowMapping,
+    declaration: ControlDeclaration,
+    authority: Mapping[str, Any],
+    token_digest: bytes,
 ) -> bool:
     return bool(
         row["cluster_id"] == declaration.cluster_id

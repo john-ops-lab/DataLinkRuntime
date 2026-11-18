@@ -10,13 +10,18 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 from uuid import UUID, uuid4
 
-from dlr.common.worker_languages_v4 import mode_capabilities
+from dlr.common.worker_languages_v4 import (
+    COMPILED_LANGUAGES,
+    mode_capabilities,
+    valid_language_mode,
+)
 from dlr.common.worker_protocol_v4 import INSTANCE_HEARTBEAT_SECONDS, validate_control_url
 from dlr.worker import (
     broker_config_v4,
@@ -26,6 +31,11 @@ from dlr.worker import (
     runtime_credential_v4,
     startup_v4_gate,
 )
+from dlr.worker.cache import CacheError
+from dlr.worker.client import ControlUnavailableError
+
+if TYPE_CHECKING:
+    from dlr.worker.cache_maintenance_v4 import CacheMaintenance
 
 logger = logging.getLogger("dlr.worker.v4")
 
@@ -52,6 +62,8 @@ class WorkerConfig:
     language_mode: str = "python"
     business_credentials_mode: str = "disabled"
     input_mode: str = "disabled"
+    builtin_wheel_mode: str = "disabled"
+    cache_root: Path | None = None
 
 
 def run(config: WorkerConfig, stop: threading.Event) -> str:
@@ -61,12 +73,18 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
         or type(config) is not WorkerConfig
         or not isinstance(stop, threading.Event)
         or type(config.worker_id) is not int
-        or type(config.language_mode) is not str
-        or config.language_mode not in {"python", "python_javascript"}
+        or not valid_language_mode(config.language_mode)
         or type(config.business_credentials_mode) is not str
         or config.business_credentials_mode not in {"disabled", "bindings"}
         or type(config.input_mode) is not str
         or config.input_mode not in {"disabled", "managed_files"}
+        or type(config.builtin_wheel_mode) is not str
+        or config.builtin_wheel_mode not in {"disabled", "pure_python"}
+        or (config.builtin_wheel_mode == "pure_python" and config.input_mode != "managed_files")
+        or (
+            config.cache_root is not None
+            and (not isinstance(config.cache_root, Path) or not config.cache_root.is_absolute())
+        )
         or not 0 < config.worker_id < 2**63
         or type(config.worker_identity_id) is not UUID
         or config.worker_identity_id.int == 0
@@ -193,6 +211,7 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     worker_id=config.worker_id,
                     identity_id=config.worker_identity_id,
                     boot_id=sandbox_config.namespace_identity.boot_id,
+                    allow_files=config.input_mode == "managed_files",
                 )
                 if not recovery_checkpoint_v4.fresh_process(
                     state.prepared["process"], recovery_checkpoint_v4.process_identity()
@@ -298,6 +317,11 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     recovery_root=recovery_root,
                     runtime_root=config.runtime_root,
                     managed_files=config.input_mode == "managed_files",
+                    **(
+                        {"builtin_wheel": True}
+                        if config.builtin_wheel_mode == "pure_python"
+                        else {}
+                    ),
                 )
                 capabilities, details = result.get("capabilities"), result.get("details")
                 if not isinstance(capabilities, dict) or not isinstance(details, dict):
@@ -317,10 +341,28 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     and capabilities.get("managed_files_v1") is not True
                 ):
                     return "preflight_unavailable"
-                if config.language_mode == "python_javascript":
+                if (
+                    config.builtin_wheel_mode == "pure_python"
+                    and capabilities.get("builtin_wheel_v1") is not True
+                ):
+                    return "preflight_unavailable"
+                languages = mode_capabilities(config.language_mode)
+                if "javascript" in languages:
                     from dlr.worker import node_runtime_v4
 
                     if not node_runtime_v4.run_preflight(
+                        sandbox_config,
+                        recovery_root=recovery_root,
+                        runtime_root=config.runtime_root,
+                    ):
+                        return "preflight_unavailable"
+                for language in languages:
+                    if language not in COMPILED_LANGUAGES:
+                        continue
+                    from dlr.worker import compiled_runtime_v4
+
+                    if not compiled_runtime_v4.run_preflight(
+                        language,
                         sandbox_config,
                         recovery_root=recovery_root,
                         runtime_root=config.runtime_root,
@@ -358,6 +400,7 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                 )
             consumer = None
             consumer_thread = None
+            cache = None
             try:
                 phase = "registration"
                 verify_roots()
@@ -377,16 +420,35 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     return "stopped"
                 verify_roots()
                 if sandbox_config is not None:
+                    from dlr.worker.cache_maintenance_v4 import CacheMaintenance
                     from dlr.worker.consumer_v4 import FixedWorkerConsumer
 
                     assert flags is not None and budget is not None and receive_limits is not None
                     assert config.broker_config_file is not None
+                    if config.cache_root is not None:
+                        phase = "cache_owner"
+                        protected = (
+                            config.runtime_root,
+                            config.journal_anchor,
+                            config.credential_directory,
+                        )
+                        if any(
+                            path == config.cache_root
+                            or path in config.cache_root.parents
+                            or config.cache_root in path.parents
+                            for path in protected
+                        ):
+                            raise ValueError("cache volume unavailable")
+                        cache = CacheMaintenance(config.cache_root, lease, stop)
                     phase = "readiness"
                     lease.report_ready(
                         flags,
                         capabilities=mode_capabilities(config.language_mode),
                         business_credentials=config.business_credentials_mode == "bindings",
                         managed_files=config.input_mode == "managed_files",
+                        builtin_wheel=config.builtin_wheel_mode == "pure_python",
+                        adapter_cleanup=cache is None,
+                        cache_governance=cache is not None,
                     )
                     consumer = FixedWorkerConsumer(
                         broker_file=config.broker_config_file,
@@ -404,6 +466,7 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                         capabilities=mode_capabilities(config.language_mode),
                         business_credentials=config.business_credentials_mode == "bindings",
                         managed_files=config.input_mode == "managed_files",
+                        builtin_wheel=config.builtin_wheel_mode == "pure_python",
                     )
                     consumer_thread = threading.Thread(
                         target=consumer.run, name="dlr-v4-broker", daemon=True
@@ -411,6 +474,7 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     consumer_thread.start()
                     phase = "consumer"
                 next_heartbeat = time.monotonic() + config.heartbeat_seconds
+                next_cleanup = next_heartbeat
                 while not stop.wait(max(0.0, next_heartbeat - time.monotonic())):
                     started = time.monotonic()
                     phase = "heartbeat_roots"
@@ -424,6 +488,19 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     lease.replace_runtime_credential(current)
                     phase = "heartbeat_exchange"
                     lease.heartbeat(stop=stop)
+                    if consumer is not None and started >= next_cleanup and not stop.is_set():
+                        next_cleanup = started + 15.0
+                        if cache is not None:
+                            phase = "cache_maintenance"
+                            with _maintenance_observation(phase):
+                                cache.poll()
+                        if consumer.idle.is_set():
+                            phase = "adapter_cleanup"
+                            with _maintenance_observation(phase):
+                                _settle_adapter_cleanup(config, root_lock, lease, stop, cache)
+                            phase = "history_retirement"
+                            with _maintenance_observation(phase):
+                                _retire_local_history(config, root_lock, lease, stop)
                     phase = "heartbeat_roots"
                     verify_roots()
                     next_heartbeat = started + config.heartbeat_seconds
@@ -442,6 +519,8 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     stop.set()
                     consumer_thread.join(timeout=6.0)
                 lease.close()
+                if cache is not None:
+                    cache.close()
     except broker_config_v4.BrokerConfigurationError:
         return "broker_configuration_invalid"
     except Exception as error:  # noqa: BLE001 - no exception text, paths or secrets in logs
@@ -450,6 +529,79 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
     finally:
         if recovery_lease is not None:
             recovery_lease.close()
+
+
+@contextmanager
+def _maintenance_observation(phase: str) -> Iterator[None]:
+    try:
+        yield
+    except (lease_session_v4.WorkerLeaseError, CacheError, ControlUnavailableError):
+        # Keep the unresolved responsibility charged while the other
+        # independent maintenance paths retain their own authority checks.
+        logger.warning("fixed Worker maintenance observation unavailable: phase=%s", phase)
+
+
+def _local_storage_empty(config: WorkerConfig, lock: cgroup_namespace.RootLockHandle) -> bool:
+    return (
+        startup_v4_gate.inspect_local_startup(
+            runtime_root=config.runtime_root,
+            cleanup_journal_root=config.cleanup_journal_root,
+            attempt_journal_root=config.attempt_journal_root,
+            root_lock=lock,
+        ).status
+        == "local_empty"
+    )
+
+
+def _retire_local_history(
+    config: WorkerConfig,
+    lock: cgroup_namespace.RootLockHandle,
+    lease: lease_session_v4.WorkerLeaseSession,
+    stop: threading.Event,
+) -> None:
+    # Capture already committed receipts first. An unrelated later Claim
+    # cannot create new journal records for any of these terminal Attempts.
+    route = "history-retirement/"
+    result = lease._body(lease._data_exchange(route + "observe", {}, stop), {"items"})
+    items = result["items"]
+    if not isinstance(items, list) or len(items) > 8:
+        raise lease_session_v4.WorkerLeaseError("history retirement unavailable")
+    if items and _local_storage_empty(config, lock):
+        observed = lease._body(lease._data_exchange(route + "confirm", result, stop), {"items"})
+        if observed != result:
+            raise lease_session_v4.WorkerLeaseError("history retirement observation unavailable")
+
+
+def _settle_adapter_cleanup(
+    config: WorkerConfig,
+    lock: cgroup_namespace.RootLockHandle,
+    lease: lease_session_v4.WorkerLeaseSession,
+    stop: threading.Event,
+    cache: CacheMaintenance | None = None,
+) -> None:
+    # A normal run may be holding files or Attempt records. Only settle from
+    # a bounded, independently verified quiet state of the original roots.
+    if not _local_storage_empty(config, lock):
+        return
+    # Control has already fenced the deleted Adapter. A different Adapter may
+    # prepare concurrently, so never hold the root mutex over network IO.
+    offered = lease._body(lease._data_exchange("adapter-cleanup/claim", {}, stop), {"claim"})
+    claim = offered["claim"]
+    if claim is None:
+        return
+    if (
+        not isinstance(claim, dict)
+        or set(claim) != {"cleanup_id", "adapter_id", "claim_attempt"}
+        or any(type(value) is not int or not 0 < value < 2**63 for value in claim.values())
+    ):
+        raise lease_session_v4.WorkerLeaseError("adapter cleanup observation unavailable")
+    if cache is not None and not cache.cleanup_adapter(claim):
+        return
+    response = lease._body(
+        lease._data_exchange("adapter-cleanup/complete", claim, stop), {"completed"}
+    )
+    if response["completed"] != claim:
+        raise lease_session_v4.WorkerLeaseError("adapter cleanup observation unavailable")
 
 
 class _InvalidArguments(Exception):
@@ -481,6 +633,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--language-mode", default=os.environ.get("DLR_WORKER_LANGUAGE_MODE", "python")
     )
     parser.add_argument("--input-mode", default=os.environ.get("DLR_WORKER_INPUT_MODE", "disabled"))
+    parser.add_argument(
+        "--builtin-wheel-mode",
+        default=os.environ.get("DLR_WORKER_BUILTIN_WHEEL_MODE", "disabled"),
+    )
+    parser.add_argument(
+        "--cache-root", type=Path, default=os.environ.get("DLR_WORKER_CACHE_ROOT") or None
+    )
     parser.add_argument("--claim-child-address-space-bytes", type=int, default=256 * 1024 * 1024)
     parser.add_argument("--claim-wire-budget-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--result-wire-budget-bytes", type=int, default=16 * 1024 * 1024)

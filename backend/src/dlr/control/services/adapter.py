@@ -1,5 +1,6 @@
 """Adapter and immutable Revision domain service (M5.4.1)."""
 
+import logging
 import secrets as stdlib_secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -7,7 +8,7 @@ from datetime import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import JSON, delete, func, null, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from dlr.control.models import (
@@ -19,12 +20,15 @@ from dlr.control.models import (
     AdapterVersion,
     AdapterWebhook,
     Execution,
+    ExecutionAttempt,
     ExecutionIdempotencyRecord,
     ExecutionOutbox,
     Worker,
     WorkerCleanupRequest,
+    WorkerIdentityReservation,
 )
 from dlr.control.models.platform import AdapterCredentialBinding
+from dlr.control.models.reliable_execution import WorkerAdapterStorageOwnerV4
 from dlr.control.schemas.adapter import (
     AdapterCreate,
     AdapterResponse,
@@ -38,6 +42,8 @@ from dlr.control.services.execution_cancellation import (
     request_cancellation,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class AdapterDeleteResult:
@@ -46,6 +52,7 @@ class AdapterDeleteResult:
     waiting_for_worker: bool = False
     active_execution_id: int | None = None
     cleanup_request_id: int | None = None
+    waiting_for_cleanup: bool = False
 
 
 def domain_error(
@@ -382,7 +389,9 @@ def _disable_trigger_for_delete(session: Session, adapter: Adapter) -> None:
         webhook.enabled = False
 
 
-def _require_cleanup_workers(session: Session, adapter: Adapter) -> list[int]:
+def _require_cleanup_workers(
+    session: Session, adapter: Adapter, *, confirmed_v4: bool = False
+) -> list[Worker]:
     """Require live Workers for every private environment known to the Adapter.
 
     The runtime Worker can change after a completed Execution. Collecting the
@@ -395,6 +404,13 @@ def _require_cleanup_workers(session: Session, adapter: Adapter) -> list[int]:
     if adapter.runtime_worker_id is not None:
         worker_ids.add(adapter.runtime_worker_id)
     worker_ids.update(
+        session.scalars(
+            select(WorkerAdapterStorageOwnerV4.worker_id).where(
+                WorkerAdapterStorageOwnerV4.adapter_id == adapter.id
+            )
+        )
+    )
+    worker_ids.update(
         worker_id
         for worker_id in session.scalars(
             select(Execution.worker_id).where(
@@ -404,8 +420,12 @@ def _require_cleanup_workers(session: Session, adapter: Adapter) -> list[int]:
         ).all()
         if worker_id is not None
     )
+    workers = []
     for worker_id in sorted(worker_ids):
-        worker = session.get(Worker, worker_id)
+        worker = session.get(Worker, worker_id, with_for_update=True, populate_existing=True)
+        if worker is not None and confirmed_v4 and worker.protocol_version == 4:
+            workers.append(worker)
+            continue
         if worker is None or not worker_availability.is_effectively_online(
             worker, now=worker_availability.current_time(session)
         ):
@@ -415,7 +435,25 @@ def _require_cleanup_workers(session: Session, adapter: Adapter) -> list[int]:
                 "A Worker owning the Adapter's private environment is offline; "
                 "permanent deletion is safely blocked",
             )
-    return sorted(worker_ids)
+        if worker.protocol_version == 4:
+            reservation = session.scalar(
+                select(WorkerIdentityReservation).where(
+                    WorkerIdentityReservation.worker_id == worker_id
+                )
+            )
+            if (
+                worker.identity_lifecycle != "reserved"
+                or reservation is None
+                or reservation.legacy_stop_evidence_sha256 is not None
+                or not worker_availability.v4_adapter_cleanup_ready(worker)
+            ):
+                raise domain_error(
+                    409,
+                    "worker_cleanup_storage_unverified",
+                    "Worker storage ownership cannot be verified for Adapter cleanup",
+                )
+        workers.append(worker)
+    return workers
 
 
 def _require_running_execution_workers_online(
@@ -462,6 +500,24 @@ def _settle_terminal_rabbitmq_responsibilities(session: Session, adapter_id: int
         ).all()
     )
     for execution in terminal_rows:
+        if (
+            session.scalar(
+                select(ExecutionAttempt.id)
+                .where(
+                    ExecutionAttempt.execution_id == execution.id,
+                    ExecutionAttempt.worker_identity_id.is_not(None),
+                    ExecutionAttempt.cleanup_settled_at.is_(None),
+                )
+                .limit(1)
+            )
+            is not None
+        ):
+            raise domain_error(
+                409,
+                "worker_cleanup_pending",
+                "The original Worker Attempt still has cleanup responsibility",
+                {"execution_id": execution.id},
+            )
         if execution.admission_released_at is None:
             admission.release_admission_once(session, execution)
         outbox.settle_pending_outbox(
@@ -533,6 +589,8 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
         if deleted is not None:
             result, deletion_job_id = deleted
             session.commit()
+            if result.waiting_for_cleanup:
+                return result
             managed_input_gc.record_audit_event(
                 "adapter_delete", "success", adapter_id=adapter_id, deletion_job_id=deletion_job_id
             )
@@ -577,24 +635,45 @@ def _stop_adapter_delete_wait(session: Session, adapter_id: int) -> AdapterDelet
 
 
 def _delete_adapter_attempt(
-    session: Session, adapter_id: int, *, stop: bool
+    session: Session, adapter_id: int, *, stop: bool, finalize_v4: bool = False
 ) -> tuple[AdapterDeleteResult, int | None] | None:
     """One savepoint owns all history, quota and permanent-delete mutations."""
     from dlr.control.services import managed_input_gc
-    from dlr.control.services.subscription_delivery import purge_deleted_adapter_history
+    from dlr.control.services.subscription_delivery import (
+        lock_drained_adapter_subscriptions,
+        purge_deleted_adapter_history,
+    )
 
     adapter = session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
-    if adapter is None or adapter.archived_at is not None:  # pragma: no cover
+    if adapter is None or (adapter.archived_at is not None) != finalize_v4:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
+    v4_attempts = select(ExecutionAttempt.id).where(
+        ExecutionAttempt.execution_id.in_(
+            select(Execution.id).where(Execution.adapter_id == adapter_id)
+        ),
+        ExecutionAttempt.worker_identity_id.is_not(None),
+    )
+    has_v4_storage = (
+        session.scalar(v4_attempts.limit(1)) is not None
+        or session.scalar(
+            select(WorkerAdapterStorageOwnerV4.worker_id)
+            .where(WorkerAdapterStorageOwnerV4.adapter_id == adapter_id)
+            .limit(1)
+        )
+        is not None
+    )
     # The temporary archive satisfies the DB batch guard. On any failure the
     # surrounding savepoint restores both database and ORM state; never write
     # a replacement flag into an already-failed SQL transaction.
-    archived_at = adapter.archived_at
-    adapter.archived_at = worker_availability.current_time(session)
-    session.flush()
-    purge_deleted_adapter_history(session, adapter.id)
-    adapter.archived_at = archived_at
-    session.flush()
+    if not has_v4_storage or finalize_v4:
+        archived_at = adapter.archived_at
+        adapter.archived_at = worker_availability.current_time(session)
+        session.flush()
+        purge_deleted_adapter_history(session, adapter.id)
+        adapter.archived_at = archived_at
+        session.flush()
+    else:
+        lock_drained_adapter_subscriptions(session, adapter.id)
     # Acquire the RabbitMQ Admission scope before locking any Execution.  The
     # scope is harmless for a legacy-only Adapter and makes stop/delete follow
     # the same Adapter -> AdapterAdmission -> Global -> Execution/Outbox order
@@ -620,8 +699,45 @@ def _delete_adapter_attempt(
         for execution in nonterminal:
             _cancel_queued_execution_for_delete(session, execution)
 
-    cleanup_worker_ids = _require_cleanup_workers(session, adapter)
     _settle_terminal_rabbitmq_responsibilities(session, adapter.id)
+    cleanup_workers = _require_cleanup_workers(session, adapter, confirmed_v4=finalize_v4)
+    fixed_workers = [worker for worker in cleanup_workers if worker.protocol_version == 4]
+    if has_v4_storage and not finalize_v4:
+        # Freeze the Adapter first. Control settlement precedes retirement of
+        # the original local journal, which may still need its proof rows.
+        adapter.archived_at = worker_availability.current_time(session)
+        tickets = [
+            WorkerCleanupRequest(
+                worker_id=worker.id, adapter_id=adapter.id, v4_identity_id=worker.identity_id
+            )
+            for worker in fixed_workers
+        ]
+        if not tickets:
+            raise domain_error(409, "worker_cleanup_storage_unverified", "Worker ownership changed")
+        session.add_all(tickets)
+        session.flush()
+        return AdapterDeleteResult(waiting_for_cleanup=True, cleanup_request_id=tickets[0].id), None
+    if finalize_v4:
+        requests = list(
+            session.scalars(
+                select(WorkerCleanupRequest)
+                .where(
+                    WorkerCleanupRequest.adapter_id == adapter_id,
+                    WorkerCleanupRequest.v4_identity_id.is_not(None),
+                )
+                .with_for_update()
+            )
+        )
+        required = {(worker.id, worker.identity_id) for worker in fixed_workers}
+        if (
+            not required
+            or required != {(row.worker_id, row.v4_identity_id) for row in requests}
+            or any(row.status != "completed" or row.completed_at is None for row in requests)
+        ):
+            raise domain_error(409, "worker_cleanup_pending", "Adapter cleanup is still pending")
+        # Delete child Attempts while the DB trigger can still inspect their
+        # parent, exact v4 completion and original Worker cleanup receipt.
+        session.execute(delete(ExecutionAttempt).where(ExecutionAttempt.id.in_(v4_attempts)))
 
     # Move charged Blob responsibility to rows that do not reference the
     # Adapter before removing any managed-input metadata.  The detached jobs
@@ -653,8 +769,14 @@ def _delete_adapter_attempt(
     session.execute(delete(AdapterVersion).where(AdapterVersion.adapter_id == adapter.id))
     session.delete(adapter)
     cleanup_request_id = None
-    for cleanup_worker_id in cleanup_worker_ids:
-        cleanup = WorkerCleanupRequest(worker_id=cleanup_worker_id, adapter_id=adapter.id)
+    for worker in cleanup_workers:
+        if finalize_v4 and worker.protocol_version == 4:
+            continue
+        cleanup = WorkerCleanupRequest(
+            worker_id=worker.id,
+            adapter_id=adapter.id,
+            v4_identity_id=worker.identity_id if worker.protocol_version == 4 else None,
+        )
         session.add(cleanup)
         session.flush()
         if cleanup_request_id is None:
@@ -663,6 +785,51 @@ def _delete_adapter_attempt(
         AdapterDeleteResult(cleanup_request_id=cleanup_request_id),
         deletion_job_ids[0] if deletion_job_ids else None,
     )
+
+
+def finalize_one_v4_adapter_deletion(session: Session, *, after_adapter_id: int = 0) -> int | None:
+    """Visit one ready Adapter so a blocked owner cannot stall later cleanup."""
+    pending = select(WorkerCleanupRequest.id).where(
+        WorkerCleanupRequest.adapter_id == Adapter.id,
+        WorkerCleanupRequest.v4_identity_id.is_not(None),
+    )
+    ready = pending.where(WorkerCleanupRequest.status != "completed")
+    adapter = session.scalar(
+        select(Adapter)
+        .where(
+            Adapter.id > after_adapter_id,
+            Adapter.archived_at.is_not(None),
+            pending.exists(),
+            ~ready.exists(),
+        )
+        .order_by(Adapter.id)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    if adapter is None:
+        session.rollback()
+        return None
+    from dlr.control.services import managed_input_gc
+
+    adapter_id = adapter.id
+    try:
+        managed_input_gc.ensure_no_active_upload(session, adapter_id)
+        result = _delete_adapter_attempt(session, adapter_id, stop=False, finalize_v4=True)
+        if result is None:
+            session.rollback()
+            return adapter_id
+        session.commit()
+    except (HTTPException, SQLAlchemyError) as error:
+        session.rollback()
+        logger.warning(
+            "Adapter %s finalization remains pending (%s)", adapter_id, type(error).__name__
+        )
+        return adapter_id
+    _, deletion_job_id = result
+    managed_input_gc.record_audit_event(
+        "adapter_delete", "success", adapter_id=adapter_id, deletion_job_id=deletion_job_id
+    )
+    return adapter_id
 
 
 def list_versions(session: Session, adapter_id: int) -> list[AdapterVersion]:

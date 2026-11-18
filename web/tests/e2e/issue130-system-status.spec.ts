@@ -1,5 +1,8 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
+import { makeMaintenanceSnapshot, makeObservedWorker } from "../../src/worker-maintenance.fixtures";
+import type { WorkerDrainOperation, WorkerMaintenanceAction, WorkerMaintenanceReceipt } from "../../src/types";
+
 type Locale = "zh-CN" | "en";
 type RuntimeMode = "normal" | "warning" | "error";
 
@@ -217,3 +220,123 @@ test("Issue #130 System Status refreshes normal, warning, and error facts", asyn
   expect(runtime.workerCalls).toBe(initialWorkerCalls + 2);
   expect(unknownRequests).toEqual([]);
 });
+
+for (const role of ["user", "admin"] as const) {
+  test(`W1 fixed Worker maintenance as ${role}`, async ({ page }) => {
+    const clock = { mode: "normal" as const, healthCalls: 0, workerCalls: 0 };
+    const unknownRequests = await installRoutes(page, "zh-CN", clock);
+    const worker = makeObservedWorker();
+    delete worker.maintenance;
+    let version = 4;
+    let scheduling: "active" | "disabled" = "active";
+    let lastAction: WorkerMaintenanceAction = "activate";
+    let currentDrain: WorkerDrainOperation | null = null;
+    const receipts = new Map<string, WorkerMaintenanceReceipt>();
+    const writes: Array<{ action: WorkerMaintenanceAction; version: number }> = [];
+    const ordinaryRequests: string[] = [];
+    const snapshot = () => makeMaintenanceSnapshot({
+      maintenance_version: version,
+      scheduling_state: scheduling,
+      current_maintenance_action: lastAction,
+      current_drain_operation: currentDrain,
+    });
+    await page.route("**/entry-mode.js", (route) => route.fulfill({
+      contentType: "application/javascript",
+      body: "window.__DLR_ENTRY_MODE__ = 'account';",
+    }));
+    await page.route("**/api/auth/account/me", (route) => fulfillJson(route, {
+      principal: {
+        id: role === "admin" ? 1 : 2, username: role, role, enabled: true,
+        must_change_password: false, created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    }));
+    await page.route("**/api/auth/account/csrf", (route) => fulfillJson(route, { status: "ok" }));
+    await page.route("**/api/workers", (route) => fulfillJson(route, [worker]));
+    await page.route(/\/api\/event-subscriptions(?:\/capabilities|\?|$)/, (route) => fulfillJson(route,
+      new URL(route.request().url()).pathname.endsWith("/capabilities")
+        ? { enabled: false, available_sources: [] }
+        : { items: [], next_before_id: null },
+    ));
+    await page.route("**/api/workers/7/v4/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (role === "user") {
+        ordinaryRequests.push(`${route.request().method()} ${path}`);
+        return fulfillJson(route, { detail: { code: "account_admin_required" } }, 403);
+      }
+      if (path.endsWith("/status")) return fulfillJson(route, snapshot());
+      const tail = path.split("/").at(-1) ?? "";
+      if (path.includes("/maintenance-operations/")) {
+        const receipt = receipts.get(tail);
+        return fulfillJson(route, receipt ?? {}, receipt ? 200 : 404);
+      }
+      expect(route.request().method()).toBe("POST");
+      expect(tail === "drain" || tail === "activate").toBe(true);
+      const action = tail as WorkerMaintenanceAction;
+      const body = route.request().postDataJSON() as { request_id: string; expected_version: number };
+      writes.push({ action, version: body.expected_version });
+      expect(body.expected_version).toBe(version);
+      expect(body.request_id).toMatch(/^[0-9a-f-]{36}$/);
+      version += 1;
+      lastAction = action;
+      scheduling = action === "drain" ? "disabled" : "active";
+      currentDrain = action === "drain" ? {
+        request_id: body.request_id, action, expected_version: body.expected_version,
+        result_version: version, same_actor: true,
+      } : null;
+      receipts.set(body.request_id, {
+        operation: {
+          request_id: body.request_id, worker_id: worker.id, action, same_actor: true,
+          expected_version: body.expected_version, result_version: version,
+          created_at: new Date().toISOString(),
+        },
+        current: {
+          worker_identity_id: snapshot().worker_identity_id, maintenance_version: version,
+          scheduling_state: scheduling, observed_at: new Date().toISOString(),
+        },
+        applies_to_current_version: true,
+      });
+      return fulfillJson(route, {});
+    });
+    await page.goto("/settings/system-status");
+    if (role === "user") {
+      await expect(page.getByRole("heading", { name: "适配器", exact: true })).toBeVisible();
+      await expect(page.getByTestId("worker-maintenance-actions")).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "申请排空" })).toHaveCount(0);
+      expect(ordinaryRequests).toEqual([]);
+    } else {
+      await expect(page.getByText(worker.name, { exact: true })).toBeVisible();
+      const drain = page.getByRole("button", { name: "申请排空" });
+      const activate = page.getByRole("button", { name: "激活节点" });
+      const dialog = page.getByRole("dialog");
+      const openByKeyboard = async (button: typeof drain) => {
+        await expect(button).toBeEnabled();
+        await button.focus();
+        await page.keyboard.press("Enter");
+        await expect(dialog).toBeVisible();
+      };
+      const confirmByKeyboard = async () => {
+        await dialog.getByRole("button", { name: "确认提交" }).focus();
+        await page.keyboard.press("Enter");
+        await expect(dialog).toBeHidden();
+      };
+      await openByKeyboard(drain);
+      await page.keyboard.press("Escape");
+      await expect(dialog).toBeHidden();
+      await expect(drain).toBeFocused();
+      await openByKeyboard(drain);
+      version += 1;
+      await confirmByKeyboard();
+      await expect(page.getByText(/本次未发送/)).toBeVisible();
+      expect(writes).toEqual([]);
+      await openByKeyboard(drain);
+      await confirmByKeyboard();
+      await expect(activate).toBeEnabled();
+      await openByKeyboard(activate);
+      await confirmByKeyboard();
+      await expect(drain).toBeEnabled();
+      expect(writes).toEqual([{ action: "drain", version: 5 }, { action: "activate", version: 6 }]);
+    }
+    expect(unknownRequests).toEqual([]);
+  });
+}

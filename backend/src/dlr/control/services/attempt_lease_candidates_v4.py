@@ -55,6 +55,14 @@ class AttemptLeaseCandidateError(Exception):
     """A redacted unknown or rejected candidate."""
 
 
+class AttemptForceStopRequested(AttemptLeaseCandidateError):
+    """A current Attempt requested renewal after an authoritative stop intent."""
+
+    def __init__(self, operation_id: UUID) -> None:
+        super().__init__("Attempt stop requested")
+        self.operation_id = operation_id
+
+
 @dataclass(frozen=True)
 class AttemptCandidateRef:
     worker_id: int
@@ -486,12 +494,6 @@ def stage_attempt_renewal(
     )
     try:
         execution = session.get(Execution, current.execution_id)
-        if (
-            execution is None
-            or execution.cancel_requested
-            or worker_stop_requested_locked(session, worker_id)
-        ):
-            raise AttemptLeaseCandidateError("Attempt lease unavailable")
         old = _binding(row, authority)
         expires = _credential_expiry(session, worker_id, credential)
         now = worker_availability.current_time(session)
@@ -501,6 +503,19 @@ def stage_attempt_renewal(
         _check_instance_at(instance, authority, instance_proof, now)
         if row.revision >= 2**63 - 1 or not verify_attempt_lease_proof(
             token=attempt_proof, key=authority.key, binding=old, database_now=now
+        ):
+            raise AttemptLeaseCandidateError("Attempt lease unavailable")
+        worker = session.get(Worker, worker_id)
+        if worker is not None:
+            operation_id = worker_availability.force_stop_operation_locked(
+                session, worker, attempt=current
+            )
+            if operation_id is not None:
+                raise AttemptForceStopRequested(operation_id)
+        if (
+            execution is None
+            or execution.cancel_requested
+            or worker_stop_requested_locked(session, worker_id)
         ):
             raise AttemptLeaseCandidateError("Attempt lease unavailable")
         nominal = min(

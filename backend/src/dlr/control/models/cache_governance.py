@@ -20,6 +20,20 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from dlr.control.db import Base
 
+V4_CACHE_OWNER_CHECK = """
+    (v4_identity_id IS NULL AND v4_instance_id IS NULL AND v4_generation IS NULL) OR
+    (v4_identity_id IS NOT NULL AND v4_instance_id IS NOT NULL
+        AND v4_generation IS NOT NULL AND v4_generation > 0)
+"""
+
+
+class WorkerCacheOwner:
+    """Owner of a v4 management exchange on one Worker instance."""
+
+    v4_identity_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
+    v4_instance_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
+    v4_generation: Mapped[int | None] = mapped_column(BigInteger)
+
 
 class WorkerCacheGuard(Base):
     """Stable serialization point for one Worker's immutable Revision cache."""
@@ -58,11 +72,12 @@ class WorkerCacheGuard(Base):
     )
 
 
-class WorkerCacheOperation(Base):
+class WorkerCacheOperation(WorkerCacheOwner, Base):
     """Durable receipt for one exact guard generation."""
 
     __tablename__ = "worker_cache_operations"
     __table_args__ = (
+        CheckConstraint(V4_CACHE_OWNER_CHECK, name="ck_cache_operation_v4_owner"),
         CheckConstraint("worker_id > 0", name="ck_worker_cache_operations_worker_positive"),
         CheckConstraint("version_id > 0", name="ck_worker_cache_operations_version_positive"),
         CheckConstraint("adapter_id > 0", name="ck_worker_cache_operations_adapter_positive"),
@@ -117,11 +132,12 @@ class WorkerCacheOperation(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class WorkerCacheManagementOperation(Base):
+class WorkerCacheManagementOperation(WorkerCacheOwner, Base):
     """Administrator command with an identity independent of guard generations."""
 
     __tablename__ = "worker_cache_management_operations"
     __table_args__ = (
+        CheckConstraint(V4_CACHE_OWNER_CHECK, name="ck_cache_command_v4_owner"),
         CheckConstraint(
             "kind IN ('preview', 'clean', 'protect', 'retry')",
             name="ck_worker_cache_management_kind",
@@ -174,11 +190,12 @@ class WorkerCacheManagementOperation(Base):
     )
 
 
-class WorkerCacheSnapshot(Base):
+class WorkerCacheSnapshot(WorkerCacheOwner, Base):
     """Latest bounded observation from one Worker; never a deletion lease."""
 
     __tablename__ = "worker_cache_snapshots"
     __table_args__ = (
+        CheckConstraint(V4_CACHE_OWNER_CHECK, name="ck_cache_snapshot_v4_owner"),
         CheckConstraint("sequence > 0", name="ck_worker_cache_snapshots_sequence"),
         CheckConstraint(
             "state IN ('complete', 'incomplete', 'owner_unconfirmed')",

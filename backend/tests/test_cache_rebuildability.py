@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ import pytest
 from dlr.worker import cache_rebuild, venv
 from dlr.worker.builtin_packages import BuiltinMaterials
 from dlr.worker.cache import CacheError, CacheScanBudget
-from dlr.worker.cache_deletion import DeletionEligibility
+from dlr.worker.cache_deletion import DeletionEligibility, _DeleteBudget
 from dlr.worker.cache_policy import CachePolicy, managed_source_scope
 from test_issue161_cache_policy import _manager
 
@@ -464,7 +465,7 @@ def test_instance_retirement_never_erases_newer_or_conflicting_protection(
     manager.scan(mode="manual")
     retire = manager.deletion._retire_deleted_instance
 
-    def change_protection(record: dict[str, Any]) -> None:
+    def change_protection(record: Mapping[str, Any], budget: _DeleteBudget) -> None:
         if protection == "pin":
             store.set_pin(
                 "11-13", identity=identity, digest=digest, pinned=True, actor="admin", reason="keep"
@@ -485,7 +486,7 @@ def test_instance_retirement_never_erases_newer_or_conflicting_protection(
             facts = store.lifecycle("11-13")
             facts["digest"] = "0" * 64
             (store.lifecycle_root / "11-13.json").write_text(json.dumps(facts))
-        retire(record)
+        retire(record, budget)
 
     monkeypatch.setattr(manager.deletion, "_retire_deleted_instance", change_protection)
     result = manager.deletion.begin(DeletionEligibility(11, 13, identity, digest, time.time()))

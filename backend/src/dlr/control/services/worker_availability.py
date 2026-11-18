@@ -8,12 +8,14 @@ currently usable Worker.
 
 from datetime import UTC, datetime
 from typing import Literal
+from uuid import UUID
 
 from sqlalchemy import Select, SQLColumnExpression, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
-from dlr.control.models import ExecutionAttempt, Worker
+from dlr.common.worker_protocol_v4 import ADAPTER_CLEANUP_CAPABILITY
+from dlr.control.models import ExecutionAttempt, Worker, WorkerMaintenanceOperation
 
 # A decision can sample the DB clock just before another transaction's
 # heartbeat becomes visible. This small tolerance bounds that read race; it
@@ -33,6 +35,46 @@ def current_time(session: Session) -> datetime:
     if not isinstance(now, datetime):
         raise RuntimeError("database did not return a current timestamp")
     return now
+
+
+def force_stop_operation_locked(
+    session: Session, worker: Worker, *, attempt: ExecutionAttempt | None = None
+) -> UUID | None:
+    """Read the current maintenance intent under the caller's Worker lock."""
+    if worker.scheduling_state != "disabled":
+        return None
+    query = select(WorkerMaintenanceOperation.request_id).where(
+        WorkerMaintenanceOperation.worker_id == worker.id,
+        WorkerMaintenanceOperation.result_version == worker.maintenance_version,
+        WorkerMaintenanceOperation.action == "force_stop",
+    )
+    if attempt is not None:
+        query = query.where(
+            WorkerMaintenanceOperation.recovery_binding == attempt_reference(attempt)
+        )
+    return session.scalar(query)
+
+
+def attempt_reference(attempt: ExecutionAttempt) -> dict[str, object]:
+    """Stable ownership fields shared by maintenance and historical receipts."""
+    return {
+        "attempt_id": attempt.id,
+        "fencing_token": attempt.fencing_token,
+        "worker_identity_id": str(attempt.worker_identity_id),
+        "original_instance_id": str(attempt.worker_instance_id),
+        "original_instance_generation": attempt.worker_instance_generation,
+    }
+
+
+def v4_adapter_cleanup_ready(worker: Worker) -> bool:
+    flags = worker.isolation_capabilities
+    return worker.capacity_state == "ready" and (
+        (worker.v4_storage_profile == "ephemeral" and flags.get(ADAPTER_CLEANUP_CAPABILITY) is True)
+        or (
+            worker.v4_storage_profile == "managed_cache"
+            and flags.get("cache_governance_v1") is True
+        )
+    )
 
 
 def has_unreconciled_v4_attempt(session: Session, worker: Worker, *, now: datetime) -> bool:

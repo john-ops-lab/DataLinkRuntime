@@ -77,18 +77,48 @@ class StoppedSettlement(BaseModel):
         return self
 
 
+class ForceStoppedSettlement(BaseModel):
+    """An original supervised force-stop with no committed result intent."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    stopped_sha256: Sha
+    force_stop_operation_id: UUID
+    attempt_status: Literal["worker_lost", "cancelled"]
+    execution_status: Literal["dead_letter", "cancelled"]
+    acknowledgement: Literal["force_stop_no_result_outcome_unknown"]
+
+    @model_validator(mode="after")
+    def allowed_terminal(self) -> ForceStoppedSettlement:
+        if self.force_stop_operation_id.int == 0 or (
+            self.attempt_status == "cancelled" and self.execution_status != "cancelled"
+        ):
+            raise ValueError("force-stop terminal combination invalid")
+        return self
+
+
+RecoveryMode = Literal[
+    "committed_result", "settle_stopped_uncommitted", "settle_force_stopped_no_result"
+]
+Settlement = StoppedSettlement | ForceStoppedSettlement
+_SETTLEMENT_MODE: dict[RecoveryMode, type[Settlement]] = {
+    "settle_stopped_uncommitted": StoppedSettlement,
+    "settle_force_stopped_no_result": ForceStoppedSettlement,
+}
+
+
 class RecoveryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     request_id: UUID
     expected_version: StrictInt = Field(ge=1, lt=2**63 - 1)
     binding: RecoveryBinding
-    mode: Literal["committed_result", "settle_stopped_uncommitted"] = "committed_result"
-    settlement: StoppedSettlement | None = None
+    mode: RecoveryMode = "committed_result"
+    settlement: Settlement | None = None
 
     @model_validator(mode="after")
     def explicit_mode(self) -> RecoveryRequest:
-        if (self.mode == "settle_stopped_uncommitted") != (self.settlement is not None):
+        if type(self.settlement) is not _SETTLEMENT_MODE.get(self.mode, type(None)):
             raise ValueError("recovery mode invalid")
         return self
 
@@ -98,26 +128,31 @@ class RecoveryLookup(BaseModel):
 
     operation_id: UUID
     binding: RecoveryBinding
-    result_intent_id: UUID
-    body_mac: Sha
-    mode: Literal["committed_result", "settle_stopped_uncommitted"] = "committed_result"
+    result_intent_id: UUID | None = None
+    body_mac: Sha | None = None
+    mode: RecoveryMode = "committed_result"
     disposition_id: UUID | None = None
-    settlement: StoppedSettlement | None = None
+    settlement: Settlement | None = None
 
     @model_validator(mode="after")
     def explicit_mode(self) -> RecoveryLookup:
-        if (self.mode == "settle_stopped_uncommitted") != (self.disposition_id is not None):
+        if (self.mode != "committed_result") != (self.disposition_id is not None):
             raise ValueError("recovery mode invalid")
         if self.disposition_id is not None and self.disposition_id.int == 0:
             raise ValueError("recovery disposition invalid")
-        if (self.mode == "settle_stopped_uncommitted") != (self.settlement is not None):
+        expects_result = self.mode != "settle_force_stopped_no_result"
+        if (
+            type(self.settlement) is not _SETTLEMENT_MODE.get(self.mode, type(None))
+            or expects_result != (self.result_intent_id is not None)
+            or expects_result != (self.body_mac is not None)
+        ):
             raise ValueError("recovery settlement invalid")
         return self
 
     @field_validator("operation_id", "result_intent_id")
     @classmethod
-    def nonzero_uuid(cls, value: UUID) -> UUID:
-        if value.int == 0:
+    def nonzero_uuid(cls, value: UUID | None) -> UUID | None:
+        if value is not None and value.int == 0:
             raise ValueError("recovery reference invalid")
         return value
 
@@ -135,11 +170,13 @@ def operation_response(row: WorkerMaintenanceOperation) -> dict[str, object]:
         "host_evidence": "operator_attestation",
     }
     if row.recovery_disposition is not None:
+        forced = row.recovery_disposition["kind"] == "force_stopped_no_result"
+        settlement_type = ForceStoppedSettlement if forced else StoppedSettlement
         response.update(
-            mode="settle_stopped_uncommitted",
+            mode="settle_force_stopped_no_result" if forced else "settle_stopped_uncommitted",
             disposition_id=str(row.recovery_disposition_id),
-            settlement=StoppedSettlement.model_validate(
-                {key: row.recovery_disposition[key] for key in StoppedSettlement.model_fields}
+            settlement=settlement_type.model_validate(
+                {key: row.recovery_disposition[key] for key in settlement_type.model_fields}
             ).model_dump(mode="json"),
         )
     return response
@@ -165,20 +202,17 @@ def _lock_business(
     return execution, attempts, slot
 
 
-def _result_row(session: Session, attempt_id: int) -> AttemptResultIntentV4:
-    row = session.scalar(
+def _result_row(session: Session, attempt_id: int) -> AttemptResultIntentV4 | None:
+    return session.scalar(
         select(AttemptResultIntentV4)
         .where(AttemptResultIntentV4.attempt_id == attempt_id)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    if row is None:
-        raise RecoveryUnavailable
-    return row
 
 
 def _uncommitted_result(
-    row: AttemptResultIntentV4,
+    row: AttemptResultIntentV4 | None,
     binding: RecoveryBinding,
     worker_id: int,
     intent_id: UUID,
@@ -186,7 +220,8 @@ def _uncommitted_result(
 ) -> None:
     ref = binding.attempt
     if (
-        row.worker_id != worker_id
+        row is None
+        or row.worker_id != worker_id
         or row.worker_identity_id != ref.worker_identity_id
         or row.instance_id != ref.original_instance_id
         or row.instance_generation != ref.original_instance_generation
@@ -202,6 +237,28 @@ def _uncommitted_result(
                 row.final_execution_status,
             )
         )
+    ):
+        raise RecoveryUnavailable
+
+
+def _force_without_result(
+    session: Session,
+    *,
+    worker_id: int,
+    expected_version: int,
+    binding: RecoveryBinding,
+    settlement: ForceStoppedSettlement,
+) -> None:
+    original = session.get(
+        WorkerMaintenanceOperation, settlement.force_stop_operation_id, populate_existing=True
+    )
+    if (
+        original is None
+        or original.action != "force_stop"
+        or original.worker_id != worker_id
+        or original.result_version != expected_version
+        or original.recovery_binding != binding.attempt.model_dump(mode="json")
+        or _result_row(session, binding.attempt.attempt_id) is not None
     ):
         raise RecoveryUnavailable
 
@@ -343,19 +400,30 @@ def request_recovery(
         )
         if attempt.cleanup_settled_at is not None:
             raise RecoveryUnavailable
-        _uncommitted_result(
-            _result_row(session, ref.attempt_id),
-            payload.binding,
-            worker_id,
-            settlement.result_intent_id,
-            settlement.body_mac,
-        )
+        if isinstance(settlement, ForceStoppedSettlement):
+            _force_without_result(
+                session,
+                worker_id=worker_id,
+                expected_version=payload.expected_version,
+                binding=payload.binding,
+                settlement=settlement,
+            )
+            kind = "force_stopped_no_result"
+        else:
+            _uncommitted_result(
+                _result_row(session, ref.attempt_id),
+                payload.binding,
+                worker_id,
+                settlement.result_intent_id,
+                settlement.body_mac,
+            )
+            kind = "platform_terminal"
         operation.recovery_disposition_id = uuid4()
         operation.recovery_disposition_xid = _xid(session)
         operation.recovery_disposition = {
             **settlement.model_dump(mode="json"),
-            "kind": "platform_terminal",
-            "reason": "result_uncommitted_outcome_unknown",
+            "kind": kind,
+            "reason": settlement.acknowledgement,
             "dispatch_generation": execution.dispatch_generation,
             "attempt_no": attempt.attempt_no,
         }
@@ -413,7 +481,11 @@ def require_committed_result(
         instance_id=instance_id,
         generation=generation,
     )
-    if lookup.mode != "committed_result" or operation.recovery_disposition is not None:
+    if (
+        lookup.mode != "committed_result"
+        or operation.recovery_disposition is not None
+        or lookup.body_mac is None
+    ):
         raise RecoveryUnavailable
     ref = lookup.binding.attempt
     row = session.scalar(
@@ -453,7 +525,7 @@ def require_disposition(
     worker_id: int,
     instance_id: UUID,
     generation: int,
-) -> tuple[WorkerMaintenanceOperation, AttemptResultIntentV4]:
+) -> tuple[WorkerMaintenanceOperation, AttemptResultIntentV4 | None]:
     """Only a later transaction may authorize the immutable terminal disposition."""
     operation = require_operation(
         session,
@@ -465,7 +537,7 @@ def require_disposition(
     )
     snapshot = operation.recovery_disposition
     if (
-        lookup.mode != "settle_stopped_uncommitted"
+        lookup.mode not in _SETTLEMENT_MODE
         or snapshot is None
         or operation.recovery_disposition_id != lookup.disposition_id
         or operation.recovery_disposition_xid is None
@@ -480,13 +552,9 @@ def require_disposition(
     )
     if not _committed_xid_matches(_xid(session), operation.recovery_disposition_xid, tuple_xid):
         raise RecoveryUnavailable
-    settlement = StoppedSettlement.model_validate(
-        {key: snapshot[key] for key in StoppedSettlement.model_fields}
-    )
-    if (
-        settlement != lookup.settlement
-        or settlement.result_intent_id != lookup.result_intent_id
-        or settlement.body_mac != lookup.body_mac
+    settlement = lookup.settlement
+    if settlement is None or any(
+        snapshot.get(key) != value for key, value in settlement.model_dump(mode="json").items()
     ):
         raise RecoveryUnavailable
     execution = session.get(Execution, lookup.binding.execution_id, populate_existing=True)
@@ -514,7 +582,25 @@ def require_disposition(
     )
     if attempt.attempt_no != snapshot["attempt_no"]:
         raise RecoveryUnavailable
+    if isinstance(settlement, ForceStoppedSettlement):
+        if snapshot["kind"] != "force_stopped_no_result":
+            raise RecoveryUnavailable
+        _force_without_result(
+            session,
+            worker_id=worker_id,
+            expected_version=operation.expected_version,
+            binding=lookup.binding,
+            settlement=settlement,
+        )
+        return operation, None
     result = _result_row(session, attempt.id)
+    if (
+        result is None
+        or snapshot["kind"] != "platform_terminal"
+        or settlement.result_intent_id != lookup.result_intent_id
+        or settlement.body_mac != lookup.body_mac
+    ):
+        raise RecoveryUnavailable
     _uncommitted_result(
         result,
         lookup.binding,
@@ -532,8 +618,8 @@ def require_recovery_fact(
     worker_id: int,
     instance_id: UUID,
     generation: int,
-) -> tuple[WorkerMaintenanceOperation | None, AttemptResultIntentV4]:
-    if lookup.mode == "settle_stopped_uncommitted":
+) -> tuple[WorkerMaintenanceOperation | None, AttemptResultIntentV4 | None]:
+    if lookup.mode != "committed_result":
         return require_disposition(
             session,
             lookup,

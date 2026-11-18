@@ -11,11 +11,16 @@ import socket
 import struct
 import sys
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from dlr.common.worker_protocol_v4 import WORKER_FORCE_STOP_CODE
 from dlr.worker import attempt_supervisor_v4, claim_http_v4, claim_preparation_v4
+from dlr.worker.attempt_session_v4 import (
+    PROGRESS_STDOUT_BYTES,
+    AttemptForceStopRequested,
+    AttemptLeaseSession,
+)
 from dlr.worker.client import V4Renewal, _v4_lease_clock
 
 
@@ -50,13 +55,21 @@ class _OutputCollector:
     """Drain the three supervisor pipes with a fixed, already-reserved ceiling."""
 
     def __init__(
-        self, streams: attempt_supervisor_v4.SandboxStreams, limit: int, stop: threading.Event
+        self,
+        streams: attempt_supervisor_v4.SandboxStreams,
+        limit: int,
+        stop: threading.Event,
+        *,
+        collect_progress: bool,
     ) -> None:
         self._streams, self._limit, self._stop = streams, limit, stop
         self._stdout = bytearray()
         self._diagnostic = bytearray()
         self._usage = bytearray()
         self._truncated = False
+        self._collect_progress = collect_progress
+        self._progress = bytearray()
+        self._progress_lock = threading.Lock()
         self._failed = False
         self._finished = threading.Event()
         self._thread = threading.Thread(target=self._run, name="dlr-v4-output", daemon=True)
@@ -89,6 +102,10 @@ class _OutputCollector:
                         if len(self._stdout) > self._limit:
                             del self._stdout[: len(self._stdout) - self._limit]
                             self._truncated = True
+                        if self._collect_progress:
+                            with self._progress_lock:
+                                remaining = PROGRESS_STDOUT_BYTES - len(self._progress)
+                                self._progress.extend(chunk[:remaining])
                     else:
                         target = self._diagnostic if key.data == "diagnostic" else self._usage
                         if len(target) + len(chunk) > 8192:
@@ -101,6 +118,12 @@ class _OutputCollector:
             if selector is not None:
                 selector.close()
             self._finished.set()
+
+    def take_progress(self) -> str:
+        with self._progress_lock:
+            chunk = self._progress.decode("utf-8", errors="ignore")
+            self._progress.clear()
+        return chunk.replace("\x00", "")
 
     def finish(self, timeout: float) -> tuple[bytes, bool, bytes, bytes] | None:
         if not self._finished.wait(timeout) or self._failed:
@@ -130,6 +153,9 @@ class SupervisedExecution:
         self._done = threading.Event()
         self._physical_done = threading.Event()
         self._watchdog_failed = threading.Event()
+        self._force_stopping = threading.Event()
+        self._force_stop_operation: UUID | None = None
+        self._renewal_lock = threading.Lock()
         self._lock = threading.Lock()
         self._observation: attempt_supervisor_v4.SupervisorObservation | None = None
         self._snapshot: ResultSnapshot | None = None
@@ -158,29 +184,64 @@ class SupervisedExecution:
                     return
                 if self._stop.is_set():
                     raise ValueError("Attempt stopped")
-                attempt.renew()
-                if self._physical_done.is_set():
-                    continue
-                new_deadline = min(attempt.local_deadline(), self._execution_deadline)
-                renewal = V4Renewal("renewed", new_deadline)
-
-                def commit_gate(send: Callable[[], None], deadline: float = new_deadline) -> bool:
-                    return attempt.send_with_authority(send, deadline=deadline)
-
-                if not self._supervisor.renew(
-                    renewal,
-                    send_with_authority=commit_gate,
-                ):
-                    observation = self._supervisor.collect(timeout=2.0)
-                    if observation.code != "cgroup_empty_supervisor_reaped":
-                        raise ValueError("supervisor unavailable")
-                    with self._lock:
-                        self._observation = observation
-                        self._physical_done.set()
+                with self._renewal_lock:
+                    if self._force_stopping.is_set() or self._done.is_set():
+                        return
+                    renewed = self._renew_supervisor(attempt)
+                    if (
+                        renewed is not None
+                        and renewed - _v4_lease_clock() > 2.5
+                        and attempt.progress(self._collector.take_progress())
+                    ):
+                        raise ValueError("Attempt cancelled")
+        except AttemptForceStopRequested as error:
+            self._request_force_stop(error.operation_id)
         except BaseException:
             self._watchdog_failed.set()
             self._stop.set()
             self._supervisor.request_stop()
+
+    def _renew_supervisor(self, attempt: AttemptLeaseSession) -> float | None:
+        attempt.renew()
+        if self._physical_done.is_set():
+            return None
+        deadline = min(attempt.local_deadline(), self._execution_deadline)
+        if self._supervisor.renew(
+            V4Renewal("renewed", deadline),
+            send_with_authority=lambda send: attempt.send_with_authority(send, deadline=deadline),
+        ):
+            return deadline
+        observation = self._supervisor.collect(timeout=2.0)
+        if observation.code != "cgroup_empty_supervisor_reaped":
+            raise ValueError("supervisor unavailable")
+        with self._lock:
+            self._observation = observation
+            self._physical_done.set()
+        return None
+
+    def release_go_runtime(self) -> bool:
+        """Obtain fresh Control authority after the build has fully stopped."""
+        attempt = self._staged.prepared.attempt
+        with self._renewal_lock:
+            if self._force_stopping.is_set() or self._stop.is_set():
+                return False
+            try:
+                deadline = self._renew_supervisor(attempt)
+            except AttemptForceStopRequested as error:
+                self._request_force_stop(error.operation_id)
+                return False
+            if deadline is None:
+                return False
+            return self._supervisor.release_sandbox(
+                send_with_authority=lambda send: attempt.send_with_authority(
+                    send, deadline=deadline
+                )
+            )
+
+    def _request_force_stop(self, operation_id: UUID) -> None:
+        self._force_stop_operation = operation_id
+        self._force_stopping.set()
+        self._supervisor.request_stop()
 
     def observe(self, timeout: float = 1.0) -> ExecutionObservation:
         """Observe a reaped task and drained output, retaining all responsibility."""
@@ -200,6 +261,16 @@ class SupervisedExecution:
             self._stop.set()
             return ExecutionObservation("unknown", "execution_output_unverified")
         stdout, truncated, diagnostic, usage = output
+        if self._force_stopping.is_set():
+            return ExecutionObservation(
+                "observed",
+                observation.code,
+                stop_reason=WORKER_FORCE_STOP_CODE,
+                stdout=stdout,
+                stdout_truncated=truncated,
+                diagnostic=diagnostic,
+                usage=usage,
+            )
         return ExecutionObservation(
             "observed",
             observation.code,
@@ -418,7 +489,12 @@ def start_execution(
         if observation.code != "supervisor_started" or supervisor is None or streams is None:
             return None
         collector = _OutputCollector(
-            streams, staged.prepared.reservation.limits.stream_max_bytes, stop
+            streams,
+            staged.prepared.reservation.limits.stream_max_bytes,
+            stop,
+            collect_progress=(
+                not staged.prepared.business_credentials and not staged.preparation_failed
+            ),
         )
         owner = SupervisedExecution(
             staged, supervisor, streams, collector, stop, execution_deadline
@@ -444,6 +520,26 @@ def start_execution(
             observed = owner.observe(timeout=2.0)
             if observed.state != "observed" or observed.stop_reason != "execution_cutoff":
                 raise ValueError("execution gate unavailable")
+        elif staged.prepared.dispatch.get("language") == "go":
+            # The Watchdog continues renewing the same Attempt while building.
+            # The separate runtime helper receives a fresh one-shot gate under
+            # the current proof and the original execution deadline.
+            while not stop.is_set():
+                phase = supervisor.prepare_go_runtime()
+                if phase == "pending":
+                    stop.wait(0.1)
+                    continue
+                if phase == "ready" and owner.release_go_runtime():
+                    return owner
+                observed = owner.observe(timeout=2.0)
+                if observed.state == "observed" and observed.stop_reason in {
+                    "toolchain_build_failed",
+                    "execution_cutoff",
+                    WORKER_FORCE_STOP_CODE,
+                }:
+                    return owner
+                break
+            raise ValueError("compiled runtime gate unavailable")
         return owner
     except BaseException as error:
         stop.set()

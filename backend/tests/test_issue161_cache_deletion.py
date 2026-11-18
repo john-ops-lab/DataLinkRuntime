@@ -1089,6 +1089,25 @@ def test_successful_unlink_spends_budget_before_directory_fsync(
     assert budget.removed_bytes == len(b"spent")
 
 
+def test_delete_round_checks_current_authority_between_files(tmp_path: Path) -> None:
+    files = [tmp_path / name for name in ("first", "second")]
+    for path in files:
+        path.write_bytes(b"charged")
+    checked = 0
+
+    def check() -> None:
+        nonlocal checked
+        checked += 1
+        if checked == 2:
+            raise ControlUnavailableError("proof expired")
+
+    budget = deletion_module._DeleteBudget(10, 100, time.monotonic() + 5, mutation_authority=check)
+    with pytest.raises(ControlUnavailableError, match="proof expired"):
+        deletion_module._delete_contents(tmp_path, budget)
+    assert budget.removed_nodes == 1
+    assert sum(path.exists() for path in files) == 1
+
+
 def test_rebuild_proof_expiry_after_guard_prevents_recorded_rename(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

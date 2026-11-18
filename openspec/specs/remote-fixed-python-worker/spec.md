@@ -4,7 +4,76 @@
 
 定义 W1-A 至 W1-F 的专用身份、受限恢复/结清、运维、双固定节点与停机换镜像，以及 W1-G 无第三方依赖 JavaScript、历史 F→G 和 W1-H 有界业务凭据/G→H，以及W1-I受限文件输入/H→I 及W1-J有界HTTP运行凭据/I→J的单 Control 远程运行合同。默认 Python 和一个 Worker，显式双语言及两槽时支持相应能力与两个各自单并发的固定 Worker。原规格路径保持。该能力不替代既有默认 v3 部署，不声明 Pool、HA、任意升级链或异常历史自动恢复。
 
+0090 扩展固定执行的模式 A 迁移窗口、语言能力、固定触发、进度与维护意图。以下各历史阶段的限制按其来源版本解释。
+
 ## Requirements
+
+### Requirement: 模式 A 的共享认证迁移窗口绑定原身份和数据库截止
+单槽固定模式 A 的离线 owner SHALL 仅在已有合法未迁 v3 身份时打开一次窗口，截止时间 MUST 在权威数据库当前时间之后且不超过七天。fresh 默认关闭；关闭或到期后不能重开。其他专用部署模式不得取得该窗口。
+
+#### Scenario: 管理员原地采用旧 Worker
+- **WHEN** 管理员提交与原 Worker 匹配的采用请求，提供可信停机证据摘要，且控制面核实原身份和未结责任
+- **THEN** 仅在满足停用与结清条件时沿原 ID/UUID 登记身份并返回含请求 ID、原 Worker ID/UUID 和名称的采用回执，保留 Adapter 绑定。确认回执后，管理员另行调用现有 enrollment 签发接口取得一次性凭据；已迁身份拒绝旧共享 Token。有 queued 等未结责任时拒绝采用，保留原数据；摘要用于关联操作者的现场记录。
+
+### Requirement: 固定 Worker 仅报告经预检的语言组合
+Worker SHALL 默认报告 Python，显式配置可选择 Python/JavaScript、再加 TypeScript/Java、或再加 Go 的封闭组合。当前实例 MUST 在原隔离和资源配置下通过所选工具链预检后报告能力；接账和 Claim 均须检查目标 Worker 的实际能力及输入条件。
+
+#### Scenario: Go 编译并执行同一 Attempt
+- **WHEN** 有效固定目标通过五语言预检，收到符合支持条件的 Go 任务
+- **THEN** 构建和运行使用各自 helper、同一 Attempt 及原执行截止；构建子进程回收后才可在当前授权下运行已核验的只读制品，共享 workspace 保持 noexec；业务结束后仍按原清理及 ACK 顺序结账。
+
+### Requirement: 固定触发与进度沿用不可变任务归属
+固定目标 SHALL 继续支持原 manual/schedule；固定 webhook 接受对应 webhook Adapter 的 JSON，固定订阅接受对应 task Adapter 的 JSON。MUST 沿用原接账、快照及固定 Worker 的 Claim 门禁。运行中进度须绑定当前凭据、实例证明、Attempt 证明和 fence。
+
+#### Scenario: 上报运行进度
+- **WHEN** 原 Attempt 正在运行且授权有效
+- **THEN** 在相同归属下更新进度；已取消请求不追加输出。带业务凭据的任务只允许状态进度，拒绝通过进度接口发送 stdout/stderr 文本。
+
+### Requirement: standalone 的停机升级与强停保留责任
+J 到 0090 的发布对 SHALL 沿既有独占停写、原库、原持久卷与 owner 权威转换流程升级，保留稳定身份、可信配置与升级回执。管理员强停 MUST 核对请求标识、维护版本、当前 drain 意图及活动 Attempt 归属，保留仍待结清的责任。
+
+#### Scenario: 已排空中的节点收到强停意图
+- **WHEN** 管理员对 draining 节点提交有效强停请求且活动 Attempt 的身份归属一致
+- **THEN** 记录操作，将调度置 disabled、容量置 reconciling，返回未结 Attempt 数；该操作回执不得作为物理清理、释放 Slot/Lease 或 Broker ACK 的依据。
+
+### Requirement: 固定 Python Worker 须显式启用受限 builtin wheel
+Worker SHALL 默认关闭 builtin wheel。仅在已启用 managed-files、显式选择 pure_python 且原生预检通过时报告该能力。无业务凭据的固定 Python none/JSON 任务可使用一个精确 name==version 的 py3-none-any wheel，无传递依赖。Control MUST 冻结文件版本、大小和摘要，将下载绑定当前实例、Attempt/fence 和原截止。
+
+#### Scenario: 发布并结清一份冻结材料
+- **WHEN** 任务符合受限合同，当前证明和冻结材料一致
+- **THEN** Worker 核对完整文件摘要，经受控输入名在 noexec 工作区内有界解包；保持同一 Attempt、本地清理与自身 ACK 的原有顺序。
+
+### Requirement: 固定 Worker 缓存维护限于受控根和有限操作
+Worker SHALL 在显式配置的独立 0700 私有缓存根上核对集群、稳定身份、store ID 与根对象，保留活动引用及历史保护。managed_cache 节点仅接受绑定当前实例和有效授权的 preview 或 clean，每轮最多八个键。快照自报不得独立授权删除。
+
+#### Scenario: 维护授权过期或根归属不符
+- **WHEN** 命令或 guard 失效，或者已记录的根归属不能核实
+- **THEN** 拒绝相应处置，保留未结责任；确认清理需匹配原操作与本地物理回执。
+
+### Requirement: 原生固定 Worker 的 Adapter 清理须先归档
+具有原生 ephemeral profile 的固定 Worker SHALL 只领取自己已归档 Adapter 的精确清理责任，按当前签名证明核对 Worker、Adapter、cleanup ID 和领取次数。归档和领取时须保留清理证据。
+
+#### Scenario: 已归档 Adapter 尚无匹配完成回执
+- **WHEN** 已创建或领取清理请求，Worker 尚未完成独立物理核对并提交匹配回执
+- **THEN** 保留未结责任，不因归档或领取成功提前宣布清理完成。
+
+#### Scenario: managed_cache 节点处置已归档 Adapter
+- **WHEN** 原生节点持有该 Adapter 的有效 cleanup ID、Adapter ID 和 claim 次数，并核对本节点专用缓存根的身份
+- **THEN** MUST 在当前实例授权下以该票据取得对象级 guard；仅处置与观察身份匹配的目录，完成物理核对后再提交归属回执。票据、目录或 guard 已变时保留未结责任。
+
+### Requirement: 恢复已暂存的结果必须重新取得签名观察
+恢复读取 SHALL 仅识别与原 prepared/stopped、Attempt/fence、结果意图及本地暂存记录精确匹配的后继；正式发布前的中断只能按该唯一合法分支核对。读取旧记录成功不得授权状态变更。
+
+#### Scenario: 新实例验证发布前暂存的历史后继
+- **WHEN** 新实例在原锚点发现已暂存的结果 journal，而对应 stopped 后继尚未发布
+- **THEN** 先只读核对原对象与结果记录，再取得当前代际签名观察并验证其绑定、nonce 和有效期限，才可进行恢复变更。旧证明、歧义后继及绑定不一致均拒绝，保留历史。
+
+### Requirement: 在用 Adapter 的执行历史须在本地 journal 退役确认后才能进入常规保留清理
+Worker SHALL 先用有效实例证明读取同一实例/代际已提交的终态清理回执，随后核对原物理根已静默，只确认相同 Execution、Attempt、fence 和 completion ID。Control MUST 持锁核对该绑定，提交后在独立事务重验当前权威并读回。运行历史的天数与每 Adapter 条数策略须保护全部尚未确认退役的 v4 Attempt，并继续核对其他已有保留条件。
+
+#### Scenario: 在线 Adapter 超过历史保留上限
+- **WHEN** 终态执行超过适用 TTL 或每 Adapter 行数上限
+- **THEN** 仅在该执行全部 v4 Attempt 都已确认 journal 退役、原有订阅/幂等/Outbox 等保护全部解除时，才可通过常规保留策略删除。原代际不匹配、回执不明或仍有本地对象时保留，等待受控清理；独立读回失败不能作为退役确认。
 
 ### Requirement: J管理员HTTP凭据管理不扩大其他授权
 J SHALL 仅为已enrolled专用v4 reserved身份提供管理员HTTP runtime元数据、rotate、节点级revoke及非秘密操作查询。rotate MUST 核对identity/latest-issued-record（包括expired/revoked）/维护CAS及disabled/无未结Attempt，严格0–600秒、最多新旧两份且不延旧截止；revoke可以在active/unknown时撤销节点全部HTTP行但不动B/AMQP/H或原Slot/Lease/journal/预算/ACK。维护版本、instance/generation、原proof期限和I文件version3恢复资格保持。

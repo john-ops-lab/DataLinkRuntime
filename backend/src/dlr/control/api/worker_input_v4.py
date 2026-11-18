@@ -31,6 +31,21 @@ def _error() -> HTTPException:
 async def download(
     request: Request, worker_id: int, execution_id: int, artifact_id: int
 ) -> StreamingResponse:
+    return await _download(request, worker_id, execution_id, artifact_id, builtin_package=False)
+
+
+@router.get(
+    "/api/workers/{worker_id}/v4/executions/{execution_id}/builtin-packages/{file_id}/content"
+)
+async def download_builtin(
+    request: Request, worker_id: int, execution_id: int, file_id: int
+) -> StreamingResponse:
+    return await _download(request, worker_id, execution_id, file_id, builtin_package=True)
+
+
+async def _download(
+    request: Request, worker_id: int, execution_id: int, artifact_id: int, *, builtin_package: bool
+) -> StreamingResponse:
     if request.url.scheme != "https":
         raise _error()
     credential, instance, generation, instance_proof = _proved_identity(request, worker_id)
@@ -83,6 +98,7 @@ async def download(
             "claim_token": claim_token,
             "execution_id": execution_id,
             "artifact_id": artifact_id,
+            "builtin_package": builtin_package,
         }
         coordinator = _coordinator(request)
         entry = await run_in_threadpool(

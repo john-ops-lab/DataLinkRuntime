@@ -37,10 +37,11 @@ class _SandboxLaunch:
     cgroup_root: str
     cgroup_path: str
     preparation_only: bool = False
+    go: bool = False
 
     @classmethod
     def parse(cls, args: list[str], *, sock_fd: int, cgroup_fd: int) -> _SandboxLaunch:
-        if len(args) != 15 or args[0] not in {"sandbox", "preparation"}:
+        if len(args) != 15 or args[0] not in {"sandbox", "preparation", "go"}:
             raise ValueError("invalid sandbox launch")
         value = cls(
             launch_fd=int(args[1]),
@@ -58,6 +59,7 @@ class _SandboxLaunch:
             cgroup_root=args[13],
             cgroup_path=args[14],
             preparation_only=args[0] == "preparation",
+            go=args[0] == "go",
         )
         fds = (
             sock_fd,
@@ -209,6 +211,7 @@ def _report_terminal(
     *,
     execution_cutoff: bool = False,
     preparation_failed: bool = False,
+    toolchain_build_failed: bool = False,
 ) -> bool:
     """Keep IPC open until the parent acknowledges the terminal observation.
 
@@ -220,6 +223,8 @@ def _report_terminal(
     response: dict[str, object] = {"event": "stopped", "cgroup_drained": drained}
     if drained and preparation_failed and exit_code is None and not execution_cutoff:
         response["stop_reason"] = "preparation_failed"
+    elif drained and toolchain_build_failed and exit_code is None and not execution_cutoff:
+        response["stop_reason"] = "toolchain_build_failed"
     elif exit_code is not None:
         response["exit_code"] = exit_code
     elif drained and execution_cutoff:
@@ -335,10 +340,15 @@ def _close_except(keep: tuple[int, ...]) -> None:
     os.closerange(start, max(1 << 20, start))
 
 
-def _sandbox_guardian(
-    control: socket.socket, supervisor_fd: int, directory: int, launch: _SandboxLaunch
-) -> None:
-    """Own a gated sandbox helper while remaining trusted namespace init."""
+def _sandbox_step(
+    control: socket.socket,
+    supervisor_fd: int,
+    directory: int,
+    launch: _SandboxLaunch,
+    *,
+    go_phase: str | None = None,
+) -> int:
+    """Own one gated helper through reaping while staying namespace init."""
     gate_read, gate_write = os.pipe()
     try:
         pid = os.fork()
@@ -347,13 +357,22 @@ def _sandbox_guardian(
                 if os.getppid() != 1:
                     os._exit(127)
                 os.close(gate_write)
-                os.dup2(launch.stdout_fd, 1, inheritable=True)
-                os.dup2(launch.stdout_fd, 2, inheritable=True)
+                diagnostic = launch.diagnostic_fd
+                usage = launch.usage_fd
+                if go_phase == "build":
+                    # Build IO never shares the business output descriptors.
+                    with open(os.devnull, "wb", buffering=0) as discard:
+                        os.dup2(discard.fileno(), 1, inheritable=True)
+                        os.dup2(discard.fileno(), 2, inheritable=True)
+                        diagnostic, usage = os.dup(discard.fileno()), os.dup(discard.fileno())
+                else:
+                    os.dup2(launch.stdout_fd, 1, inheritable=True)
+                    os.dup2(launch.stdout_fd, 2, inheritable=True)
                 retained = (
                     directory,
                     launch.launch_fd,
-                    launch.diagnostic_fd,
-                    launch.usage_fd,
+                    diagnostic,
+                    usage,
                     gate_read,
                 )
                 _close_except(retained)
@@ -394,9 +413,10 @@ def _sandbox_guardian(
                         "--ready-fd",
                         str(gate_read),
                         "--diagnostic-fd",
-                        str(launch.diagnostic_fd),
+                        str(diagnostic),
                         "--usage-fd",
-                        str(launch.usage_fd),
+                        str(usage),
+                        *(["--go-phase", go_phase] if go_phase is not None else []),
                     ],
                     {},
                 )
@@ -430,9 +450,9 @@ def _sandbox_guardian(
                 raise ValueError("sandbox exit unavailable")
             result = os.waitstatus_to_exitcode(status)
             code = result if result >= 0 else 128 - result
-            data = f"EXIT:{code}".encode("ascii")
-            if not 0 <= code <= 255 or control.send(data) != len(data):
+            if not 0 <= code <= 255:
                 raise ValueError("sandbox exit unavailable")
+            return code
         finally:
             os.close(helper_fd)
     finally:
@@ -440,6 +460,39 @@ def _sandbox_guardian(
             os.close(gate_read)
         if gate_write >= 0:
             os.close(gate_write)
+
+
+def _sandbox_guardian(
+    control: socket.socket, supervisor_fd: int, directory: int, launch: _SandboxLaunch
+) -> None:
+    if launch.go:
+        code = _sandbox_step(control, supervisor_fd, directory, launch, go_phase="build")
+        if code in {0, 1}:
+            # waitpid(-1) must prove the guardian has no other children,
+            # including any orphan adopted during build shutdown.
+            try:
+                os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                pass
+            else:
+                raise ValueError("Go build process tree remains")
+            if code == 1:
+                if control.send(b"BUILD_FAILED") != 12:
+                    raise ValueError("Go build receipt unavailable")
+                return
+            if control.send(b"BUILT") != 5:
+                raise ValueError("Go build receipt unavailable")
+            fd, flags = _guardian_wait(control, supervisor_fd, None, -1)
+            if fd != control.fileno() or flags != select.POLLIN or control.recv(16) != b"RUN":
+                raise ValueError("Go runtime gate unavailable")
+            code = _sandbox_step(control, supervisor_fd, directory, launch, go_phase="run")
+        else:
+            raise ValueError("Go build stop unverified")
+    else:
+        code = _sandbox_step(control, supervisor_fd, directory, launch)
+    data = f"EXIT:{code}".encode("ascii")
+    if control.send(data) != len(data):
+        raise ValueError("sandbox exit unavailable")
 
 
 def _guardian_main(
@@ -616,6 +669,8 @@ def _run(
         _arm(timer_fd, max(0.000000001, deadline - _STOP_MARGIN))
         active = False
         probe_gated = False
+        build_ready = False
+        run_requested = False
         execution_deadline: float | None = None
         pending_renewal: tuple[_KernelKillTimer, float] | None = None
 
@@ -654,12 +709,29 @@ def _run(
                 if not flags & select.POLLIN:
                     return
                 data = probe.recv(32)
-                if not data.startswith(b"EXIT:") or not data[5:].isdigit():
+                if launch.go and not build_ready and not run_requested and data == b"BUILD_FAILED":
+                    if stop_reasons is not None:
+                        stop_reasons.append("toolchain_build_failed")
                     return
-                code = int(data[5:])
-                if 0 <= code <= 255 and exit_codes is not None:
-                    exit_codes.append(code)
-                return
+                if (
+                    launch.go
+                    and data == b"BUILT"
+                    and not build_ready
+                    and not run_requested
+                    and (
+                        _members(directory)
+                        == {str(os.getpid()).encode("ascii"), str(children[-1]).encode("ascii")}
+                    )
+                ):
+                    build_ready = True
+                    if not any(fd == sock.fileno() for fd, _ in events):
+                        continue
+                else:
+                    if data.startswith(b"EXIT:") and data[5:].isdigit():
+                        code = int(data[5:])
+                        if 0 <= code <= 255 and exit_codes is not None:
+                            exit_codes.append(code)
+                    return
             message = _receive(sock)
             if message == {"op": "stop"}:
                 return
@@ -733,6 +805,28 @@ def _run(
                 previous = now
                 probe_gated = True
                 poller.register(probe, select.POLLIN | select.POLLHUP | select.POLLERR)
+                _send(sock, {"event": "sandbox_gated"})
+                continue
+            if launch is not None and launch.go and message == {"op": "go_prepare_run"}:
+                if not active or probe is None or probe_gated or run_requested:
+                    raise ValueError("Go runtime gate unavailable")
+                if not build_ready:
+                    _send(sock, {"event": "build_pending"})
+                    continue
+                now = _clock()
+                if (
+                    now < previous
+                    or now >= deadline
+                    or probe.send(b"RUN", socket.MSG_DONTWAIT) != 3
+                ):
+                    return
+                previous = now
+                run_requested = True
+                if not _probe_wait_signal(
+                    sock, probe, parent_fd, timer_fd, b"GATED", note_execution_timer
+                ):
+                    return
+                probe_gated = True
                 _send(sock, {"event": "sandbox_gated"})
                 continue
             if launch is not None and message == {"op": "sandbox_release"}:
@@ -896,6 +990,7 @@ def main() -> int:
             exit_codes[0] if len(exit_codes) == 1 else None,
             execution_cutoff=stop_reasons == ["execution_cutoff"],
             preparation_failed=stop_reasons == ["preparation_failed"],
+            toolchain_build_failed=stop_reasons == ["toolchain_build_failed"],
         )
     sock.close()
     return 0 if drained else 1

@@ -1,13 +1,15 @@
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, type RefObject } from "react";
 
 /** Capture before the overlay's passive autofocus; restore after its exit motion. */
-export function useOverlayFocus(open: boolean, fallbackSelector: string) {
+export function useOverlayFocus(
+  open: boolean, fallbackSelector: string, explicitTrigger?: RefObject<HTMLElement | null>,
+) {
   const trigger = useRef<HTMLElement | null>(null);
   const pendingFrame = useRef<number | null>(null);
   useLayoutEffect(() => {
     if (pendingFrame.current !== null) cancelAnimationFrame(pendingFrame.current);
     if (open && document.activeElement instanceof HTMLElement) {
-      trigger.current = document.activeElement;
+      trigger.current = explicitTrigger?.current ?? document.activeElement;
     }
     if (!open && trigger.current !== null) {
       restoreFocus(false);

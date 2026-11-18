@@ -168,8 +168,16 @@ def resolve_queue_target_worker(
             "runtime_worker_invalid",
             "The configured runtime Worker does not exist",
         )
+    from dlr.control.services import worker_legacy_window
+
+    compatible_legacy = worker.protocol_version == 3 and (
+        not settings.worker_remote_v4_enabled
+        or worker_legacy_window.target_allowed(session, worker)
+    )
     if adapter.language not in worker.capabilities or (
-        settings.worker_remote_v4_enabled and not valid_capabilities(worker.capabilities)
+        settings.worker_remote_v4_enabled
+        and not compatible_legacy
+        and not valid_capabilities(worker.capabilities)
     ):
         raise domain_error(
             409,
@@ -177,7 +185,6 @@ def resolve_queue_target_worker(
             "The configured runtime Worker does not support the Adapter language",
             {"language": adapter.language},
         )
-    compatible_legacy = worker.protocol_version == 3 and not settings.worker_remote_v4_enabled
     compatible_remote = (
         worker.protocol_version == 4
         and settings.worker_remote_v4_enabled
@@ -419,6 +426,17 @@ def accept_execution(
         from dlr.control.services.subscription_guards import require_subscription_unlocked
 
         require_subscription_unlocked(session, adapter.id)
+    frozen_subscription_bindings = None
+    if trigger == "subscription":
+        assert subscription_activation_id is not None and credential_bindings_override is not None
+        frozen_subscription_bindings = _subscription_credential_snapshot(
+            session,
+            adapter,
+            subscription_activation_id,
+            credential_bindings_override,
+            version_id=version_id,
+            worker_id=worker_id_override,
+        )
     from dlr.control.services.worker_stage_capability_v4 import require_new_execution
 
     require_new_execution(
@@ -431,6 +449,7 @@ def accept_execution(
         target_worker_id=worker_id_override,
         artifact_ids=artifact_ids,
         input_snapshot=input_snapshot,
+        frozen_subscription_bindings=frozen_subscription_bindings,
     )
     worker = resolve_queue_target_worker(session, adapter, worker_id_override)
     if not rabbitmq.ingress_configuration_ready(session, worker_id=worker.id):
@@ -442,15 +461,8 @@ def accept_execution(
         )
     resource_profile: dict[str, object]
     if trigger == "subscription":
-        assert subscription_activation_id is not None and credential_bindings_override is not None
-        credential_bindings_snapshot = _subscription_credential_snapshot(
-            session,
-            adapter,
-            subscription_activation_id,
-            credential_bindings_override,
-            version_id=version_id,
-            worker_id=worker_id_override,
-        )
+        assert subscription_activation_id is not None and frozen_subscription_bindings is not None
+        credential_bindings_snapshot = frozen_subscription_bindings
         from dlr.control.models.subscription import SubscriptionActivation
         from dlr.control.services.subscription_activation_policy import ensure_policy
 

@@ -17,6 +17,10 @@ class WorkerIdentityReservation(Base):
             "(actor_kind = 'account' AND actor_id IS NOT NULL AND actor_id > 0)",
             name="ck_worker_identity_reservation_actor",
         ),
+        CheckConstraint(
+            "legacy_stop_evidence_sha256 ~ '^[a-f0-9]{64}$'",
+            name="ck_worker_identity_reservation_legacy_evidence",
+        ),
     )
 
     request_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
@@ -26,6 +30,7 @@ class WorkerIdentityReservation(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     actor_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     actor_id: Mapped[int | None] = mapped_column(BigInteger)
+    legacy_stop_evidence_sha256: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

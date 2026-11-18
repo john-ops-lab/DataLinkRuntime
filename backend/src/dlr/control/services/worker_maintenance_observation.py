@@ -194,6 +194,9 @@ def read_status(
             "has_unreconciled_attempts": has_unreconciled,
             "current_drain_operation": drain,
             "current_maintenance_action": action,
+            "force_stop_available": (
+                action == "drain" and worker.scheduling_state == "draining" and active_count > 0
+            ),
         }
 
 
@@ -221,7 +224,7 @@ def read_operation(
         .where(
             op.request_id == request_id,
             op.worker_id == worker_id,
-            op.action.in_(("drain", "activate")),
+            op.action.in_(("drain", "activate", "force_stop")),
             Worker.identity_lifecycle == "reserved",
             Worker.protocol_version == 4,
         )

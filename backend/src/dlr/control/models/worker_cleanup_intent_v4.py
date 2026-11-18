@@ -37,7 +37,7 @@ class WorkerCleanupIntentV4(Base):
                 "execution_attempts.fencing_token",
             ],
             name="fk_worker_cleanup_intent_attempt_binding",
-            ondelete="RESTRICT",
+            ondelete="CASCADE",
         ),
         ForeignKeyConstraint(
             ["worker_id", "instance_id", "instance_generation"],

@@ -8,6 +8,7 @@ table contents between tests.
 
 import os
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -173,10 +174,10 @@ def session_factory(test_engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=test_engine, expire_on_commit=False)
 
 
-@pytest.fixture()
-def api_client(
-    test_engine: Engine,
-    session_factory: sessionmaker[Session],
+@contextmanager
+def api_client_for_database(
+    engine: Engine,
+    factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[TestClient]:
     """API client wired to the test database via dependency override.
@@ -185,10 +186,10 @@ def api_client(
     working with M2 authentication in place; worker endpoints are called
     with an explicit Worker token header in their own tests.
     """
-    _truncate(test_engine)
+    _truncate(engine)
 
     def override_get_session() -> Iterator[Session]:
-        session = session_factory()
+        session = factory()
         try:
             yield session
         finally:
@@ -198,11 +199,23 @@ def api_client(
     # the request handler), and the stream's 404 pre-check opens its own
     # short-lived session; neither can go through the dependency override,
     # so point both session factories at the test database.
-    monkeypatch.setattr(events_service, "SessionLocal", session_factory)
-    monkeypatch.setattr(db, "SessionLocal", session_factory)
+    monkeypatch.setattr(events_service, "SessionLocal", factory)
+    monkeypatch.setattr(db, "SessionLocal", factory)
 
     app = create_app()
     app.dependency_overrides[db.get_session] = override_get_session
-    yield TestClient(app, headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
-    app.dependency_overrides.clear()
-    _truncate(test_engine)
+    try:
+        yield TestClient(app, headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
+    finally:
+        app.dependency_overrides.clear()
+        _truncate(engine)
+
+
+@pytest.fixture()
+def api_client(
+    test_engine: Engine,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[TestClient]:
+    with api_client_for_database(test_engine, session_factory, monkeypatch) as client:
+        yield client

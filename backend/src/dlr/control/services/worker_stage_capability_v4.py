@@ -6,15 +6,22 @@ from typing import Any
 from sqlalchemy import Text, cast, exists, func, select
 from sqlalchemy.orm import Session
 
+from dlr.common import builtin_wheel_v4 as wheels
 from dlr.common import managed_files_v4 as files
-from dlr.common.business_credentials_v4 import BusinessCredentialError
+from dlr.common.builtin_packages import KINDS
+from dlr.common.business_credentials_v4 import BusinessCredentialError, bindings
 from dlr.common.config import settings
 from dlr.common.managed_input import controlled_input_mount_name
-from dlr.common.worker_languages_v4 import valid_capabilities
+from dlr.common.worker_languages_v4 import (
+    COMPILED_LANGUAGES,
+    SUPPORTED_LANGUAGES,
+    valid_capabilities,
+)
 from dlr.control.models import (
     Adapter,
     AdapterInputArtifactBinding,
     AdapterVersion,
+    BuiltinPackage,
     Execution,
     ExecutionInputArtifactLease,
     ManagedInputArtifact,
@@ -22,12 +29,16 @@ from dlr.control.models import (
 )
 from dlr.control.models.platform import PackageSource
 from dlr.control.services import business_credentials_v4 as business_credentials
+from dlr.control.services import worker_legacy_window
 from dlr.control.services.adapter import domain_error
 
 
-def require_trigger(trigger: str) -> None:
-    if settings.worker_remote_v4_enabled and trigger not in {"manual", "schedule"}:
-        _reject("trigger")
+def _matches_trigger(kind: str, trigger: str, source: str) -> bool:
+    if trigger == "webhook":
+        return kind == "webhook" and source == "json"
+    if trigger == "subscription":
+        return kind == "task" and source == "json"
+    return kind == "task" and trigger in {"manual", "schedule"}
 
 
 def require_input_source(source_type: str) -> None:
@@ -39,10 +50,144 @@ def _reject(reason: str) -> None:
     raise domain_error(
         409,
         "worker_task_capability_unavailable",
-        "Remote Worker stage supports dependency-free Python/JavaScript tasks "
-        "with qualified none/JSON or bounded managed file input",
+        "Remote Worker task requires a qualified toolchain and supported input",
         {"reason": reason},
     )
+
+
+def _bounded_requirements(session: Session, adapter_id: int, version_id: int | None) -> str | None:
+    return session.scalar(
+        select(AdapterVersion.requirements).where(
+            AdapterVersion.id == version_id,
+            AdapterVersion.adapter_id == adapter_id,
+            func.octet_length(AdapterVersion.requirements) <= 160,
+        )
+    )
+
+
+def _builtin_default(session: Session, language: str) -> bool:
+    kind = KINDS[language]
+    return (
+        session.scalar(
+            select(
+                exists().where(
+                    PackageSource.kind == kind,
+                    PackageSource.is_default.is_(True),
+                    PackageSource.index_url == f"dlr-builtin://{kind}",
+                )
+            )
+        )
+        is True
+    )
+
+
+def _supports_wheel(worker: Worker | None) -> bool:
+    return bool(
+        worker is not None
+        and worker.protocol_version == 4
+        and worker.isolation_capabilities.get(wheels.CAPABILITY) is True
+        and worker.isolation_capabilities.get(files.CAPABILITY) is True
+    )
+
+
+def freeze_worker_wheel(
+    session: Session, adapter: Adapter, version_id: int | None, worker_id: int | None
+) -> dict[str, Any] | None:
+    """Resolve a single wheel while the library serializes admission and deletion."""
+    from dlr.control.services import builtin_package
+
+    requirements = _bounded_requirements(session, adapter.id, version_id)
+    if requirements == "":
+        return None
+    requested = wheels.requirement(requirements)
+    if (
+        adapter.language != "python"
+        or requested is None
+        or worker_id is None
+        or not _supports_wheel(session.get(Worker, worker_id))
+        or not _builtin_default(session, "python")
+    ):
+        _reject("builtin_packages")
+    assert requested is not None
+    name, version = requested
+    builtin_package.lock_library(session)
+    rows = list(
+        session.scalars(
+            select(BuiltinPackage)
+            .where(
+                BuiltinPackage.kind == "pypi",
+                BuiltinPackage.name == name,
+                BuiltinPackage.version == version,
+                BuiltinPackage.environment == "py3-none-any",
+                BuiltinPackage.status == "uploaded",
+                BuiltinPackage.size_bytes <= files.MAX_FILE_BYTES,
+                BuiltinPackage.package_metadata == {"dependencies": [], "requires_python": None},
+            )
+            .limit(2)
+        )
+    )
+    if len(rows) != 1:
+        _reject("builtin_packages")
+    row = rows[0]
+    result = {
+        "kind": "pypi",
+        "files": [
+            {
+                "id": row.id,
+                "filename": row.filename,
+                "repository_path": row.repository_path,
+                "size_bytes": row.size_bytes,
+                "sha256": row.sha256,
+                "metadata": row.package_metadata,
+            }
+        ],
+    }
+    try:
+        wheels.descriptor(result, requirements)
+    except ValueError:
+        _reject("builtin_packages")
+    return result
+
+
+def _frozen_materials_allowed(
+    session: Session,
+    *,
+    adapter_id: int,
+    version_id: int,
+    execution_id: int,
+    worker_id: int | None,
+    language: str,
+    input_source: str,
+) -> bool:
+    requirements = _bounded_requirements(session, adapter_id, version_id)
+    selected = session.execute(
+        select(
+            func.octet_length(cast(Execution.builtin_package_snapshot, Text)),
+            func.jsonb_typeof(Execution.builtin_package_snapshot),
+        ).where(Execution.id == execution_id)
+    ).one_or_none()
+    if selected is None:
+        return False
+    size, kind = selected
+    if requirements == "":
+        return kind in {None, "null"}
+    if (
+        language != "python"
+        or input_source not in {"none", "json"}
+        or size is None
+        or size > 4096
+        or worker_id is None
+        or not _supports_wheel(session.get(Worker, worker_id))
+    ):
+        return False
+    snapshot = session.scalar(
+        select(Execution.builtin_package_snapshot).where(Execution.id == execution_id)
+    )
+    try:
+        wheels.descriptor(snapshot, requirements)
+        return True
+    except ValueError:
+        return False
 
 
 def _configuration_reason(
@@ -54,26 +199,19 @@ def _configuration_reason(
     input_source_type: str,
     dependency_check: bool,
 ) -> str | None:
-    if adapter.adapter_type != "task" or trigger not in {"manual", "schedule"}:
+    if not _matches_trigger(adapter.adapter_type, trigger, input_source_type):
         return "trigger"
-    if adapter.language not in {"python", "javascript"}:
+    if adapter.language not in SUPPORTED_LANGUAGES:
         return "language"
     if dependency_check:
         return "dependency_check"
     if input_source_type not in {"none", "json", "managed_files"}:
         return "input_source"
-    # Do not load business code or dependency text into the Control parent.
-    if (
-        session.scalar(
-            select(
-                exists().where(
-                    AdapterVersion.id == version_id,
-                    AdapterVersion.adapter_id == adapter.id,
-                    AdapterVersion.requirements == "",
-                )
-            )
-        )
-        is not True
+    requirements = _bounded_requirements(session, adapter.id, version_id)
+    if requirements != "" and not (
+        adapter.language == "python"
+        and input_source_type in {"none", "json"}
+        and wheels.requirement(requirements) is not None
     ):
         return "requirements"
     return None
@@ -225,9 +363,15 @@ def require_new_execution(
     target_worker_id: int | None = None,
     artifact_ids: tuple[int, ...] | None = None,
     input_snapshot: dict[str, Any] | None = None,
+    frozen_subscription_bindings: list[dict[str, object]] | None = None,
 ) -> None:
     if not settings.worker_remote_v4_enabled:
         return
+    if worker_legacy_window.enabled_mode():
+        worker_id = adapter.runtime_worker_id if target_worker_id is None else target_worker_id
+        worker = session.get(Worker, worker_id) if worker_id is not None else None
+        if worker is not None and worker_legacy_window.target_allowed(session, worker):
+            return
     reason = _configuration_reason(
         session,
         adapter,
@@ -246,7 +390,16 @@ def require_new_execution(
         )
     if reason is None:
         try:
-            refs = business_credentials.adapter_bindings(session, adapter.id)
+            refs = (
+                business_credentials.adapter_bindings(session, adapter.id)
+                if frozen_subscription_bindings is None
+                else bindings(frozen_subscription_bindings)
+            )
+            if refs and (
+                adapter.language in COMPILED_LANGUAGES
+                or _bounded_requirements(session, adapter.id, version_id) != ""
+            ):
+                raise BusinessCredentialError("credentials_mode")
             if refs and not settings.master_key:
                 from dlr.control.services.secrets import _require_secret_store
 
@@ -258,21 +411,15 @@ def require_new_execution(
             )
         except BusinessCredentialError as error:
             reason = error.reason
-    if reason is None and session.scalar(
-        select(
-            exists().where(
-                PackageSource.kind == ("npm" if adapter.language == "javascript" else "pypi"),
-                PackageSource.is_default.is_(True),
-                PackageSource.index_url
-                == (
-                    "dlr-builtin://npm"
-                    if adapter.language == "javascript"
-                    else "dlr-builtin://pypi"
-                ),
-            )
-        )
-    ):
-        reason = "builtin_packages"
+    if reason is None:
+        requirements = _bounded_requirements(session, adapter.id, version_id)
+        target = adapter.runtime_worker_id if target_worker_id is None else target_worker_id
+        if requirements != "":
+            if not _builtin_default(session, adapter.language):
+                _reject("requirements")
+            freeze_worker_wheel(session, adapter, version_id, target)
+        elif _builtin_default(session, adapter.language):
+            reason = "builtin_packages"
     if reason is not None:
         _reject(reason)
 
@@ -301,15 +448,19 @@ def execution_block_reason(
         )
         if reason is not None:
             return reason
-    unsupported = session.execute(
-        select(
-            func.coalesce(func.jsonb_typeof(Execution.builtin_package_snapshot), "null") != "null",
-            Execution.credential_bindings_snapshot != [],
-        ).where(Execution.id == execution.id)
-    ).one()
-    if unsupported[0]:
+    if not _frozen_materials_allowed(
+        session,
+        adapter_id=adapter.id,
+        version_id=execution.version_id,
+        execution_id=execution.id,
+        worker_id=execution.target_worker_id_snapshot,
+        language=adapter.language,
+        input_source=execution.input_source_type,
+    ):
         return "builtin_packages"
-    if unsupported[1]:
+    if execution.credential_bindings_snapshot:
+        if adapter.language in COMPILED_LANGUAGES or execution.builtin_package_snapshot is not None:
+            return "credentials_mode"
         try:
             business_credentials.check(
                 session,
@@ -333,12 +484,12 @@ def dispatch_blocked(session: Session, execution_id: int) -> bool:
             Execution.trigger,
             Execution.input_source_type,
             Execution.dependency_check,
-            AdapterVersion.requirements == "",
             Execution.credential_bindings_snapshot == [],
-            func.coalesce(func.jsonb_typeof(Execution.builtin_package_snapshot), "null") == "null",
             Worker.capabilities,
+            Worker.protocol_version,
             Execution.target_worker_id_snapshot,
             Execution.adapter_id,
+            Execution.version_id,
         )
         .select_from(Execution)
         .join(Adapter, Adapter.id == Execution.adapter_id)
@@ -357,13 +508,16 @@ def dispatch_blocked(session: Session, execution_id: int) -> bool:
         trigger,
         source,
         dependency,
-        empty,
         no_credentials,
-        no_builtin,
         languages,
+        worker_protocol,
         target,
         adapter_id,
+        version_id,
     ) = row
+    if worker_protocol == 3:
+        worker = session.get(Worker, target)
+        return worker is None or not worker_legacy_window.target_allowed(session, worker)
     if source == "managed_files":
         size = session.scalar(
             select(func.octet_length(cast(Execution.input_snapshot, Text))).where(
@@ -387,6 +541,11 @@ def dispatch_blocked(session: Session, execution_id: int) -> bool:
         ):
             return True
     if not no_credentials:
+        if (
+            language in COMPILED_LANGUAGES
+            or _bounded_requirements(session, adapter_id, version_id) != ""
+        ):
+            return True
         try:
             business_credentials.check(
                 session, business_credentials.execution_bindings(session, execution_id), target
@@ -394,13 +553,19 @@ def dispatch_blocked(session: Session, execution_id: int) -> bool:
         except BusinessCredentialError:
             return True
     return not (
-        language in {"python", "javascript"}
-        and kind == "task"
-        and trigger in {"manual", "schedule"}
+        language in SUPPORTED_LANGUAGES
+        and _matches_trigger(kind, trigger, source)
         and source in {"none", "json", "managed_files"}
         and dependency is False
-        and empty is True
-        and no_builtin is True
+        and _frozen_materials_allowed(
+            session,
+            adapter_id=adapter_id,
+            version_id=version_id,
+            execution_id=execution_id,
+            worker_id=target,
+            language=language,
+            input_source=source,
+        )
         and valid_capabilities(languages)
         and language in languages
     )

@@ -28,9 +28,12 @@ from dlr.common.result_intent_proof_wire_v4 import (
     parse_untrusted_result_intent_proof,
     verify_result_intent_proof_signature,
 )
+from dlr.common.worker_protocol_v4 import WORKER_FORCE_STOP_CODE
 from dlr.control.models import (
     AttemptLeaseCandidateV4,
     AttemptResultIntentV4,
+    ExecutionAttempt,
+    Worker,
     WorkerLeaseCandidateV4,
 )
 from dlr.control.schemas.reliable_runtime import AttemptResultBody
@@ -150,6 +153,10 @@ def _snapshot(
     session: Session, context: ResultIntentContext
 ) -> tuple[AttemptLeaseCandidateV4, WorkerLeaseCandidateV4, datetime | None, datetime]:
     try:
+        stop_result = (
+            context.action.status == "cancelled"
+            and context.action.error_code == WORKER_FORCE_STOP_CODE
+        )
         lease = validate_current_attempt_proof(
             session,
             worker_id=context.worker_id,
@@ -161,7 +168,19 @@ def _snapshot(
             attempt_proof=context.attempt_proof,
             action=context.action,
             authority=context.authority,
+            _allow_stopped_for_signal=stop_result,
         )
+        if stop_result:
+            worker = session.get(Worker, context.worker_id)
+            attempt = session.get(ExecutionAttempt, context.attempt_id)
+            if (
+                worker is None
+                or attempt is None
+                or attempt.status != "running"
+                or worker_availability.force_stop_operation_locked(session, worker, attempt=attempt)
+                is None
+            ):
+                raise ResultIntentError("result intent unavailable")
         instance = session.get(WorkerLeaseCandidateV4, context.worker_id)
         if instance is None:
             raise ResultIntentError("result intent unavailable")

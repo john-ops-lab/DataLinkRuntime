@@ -438,6 +438,7 @@ class ExecutionAttempt(Base):
     # Set only after Control observes the committed v4 cleanup receipt. The
     # Worker's reported cleanup summary alone cannot release responsibility.
     cleanup_settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    journal_retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -467,6 +468,26 @@ class RuntimeReconciliationCursor(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class WorkerAdapterStorageOwnerV4(Base):
+    """Keep an Adapter's fixed Worker cleanup scope after its last Attempt ages out."""
+
+    __tablename__ = "worker_adapter_storage_owners_v4"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["worker_id", "worker_identity_id"],
+            ["workers.id", "workers.identity_id"],
+            name="fk_worker_adapter_storage_owner_v4_identity",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    adapter_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("adapters.id", ondelete="CASCADE"), primary_key=True
+    )
+    worker_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    worker_identity_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
 
 
 class AdapterExecutionSlot(Base):

@@ -247,6 +247,13 @@ def main() -> int:
     config = json.loads((workspace / "runtime_config.json").read_text(encoding="utf-8"))
     input_files = _load_input_files(workspace)
 
+    if sys.argv[2:] == ["builtin-wheel"]:
+        from dlr.common.builtin_wheel_v4 import MOUNT_NAME, SITE_DIRECTORY, unpack
+
+        site = workspace / "temp" / SITE_DIRECTORY
+        unpack(workspace / "input" / MOUNT_NAME, site)
+        sys.path.insert(0, str(site))
+
     module = _load_adapter(workspace / "adapter.py")
     context = Context(
         config=config,

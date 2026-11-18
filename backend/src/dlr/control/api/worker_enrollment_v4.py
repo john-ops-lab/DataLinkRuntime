@@ -197,7 +197,8 @@ def exchange_enrollment(
         headers = request.headers.getlist("authorization")
         authorization = headers[0] if len(headers) == 1 else ""
         if (
-            not worker_id.isascii()
+            request.url.scheme != "https"
+            or not worker_id.isascii()
             or not worker_id.isdecimal()
             or worker_id.startswith("0")
             or len(worker_id) > 19

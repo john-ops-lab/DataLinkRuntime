@@ -16,16 +16,76 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import delete, exists, select
+from sqlalchemy import delete, exists, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
 from dlr.common.config import settings
-from dlr.control.models import Execution, ExecutionIdempotencyRecord, ExecutionOutbox
+from dlr.control.models import (
+    Adapter,
+    AdapterExecutionSlot,
+    Execution,
+    ExecutionArtifactHold,
+    ExecutionAttempt,
+    ExecutionIdempotencyRecord,
+    ExecutionInfrastructureIncident,
+    ExecutionInputArtifactLease,
+    ExecutionOutbox,
+    WorkerCleanupIntentV4,
+)
+from dlr.control.services.attempt import TERMINAL_ATTEMPT_STATUSES
 from dlr.control.services.execution import TERMINAL_STATUSES
 from dlr.control.services.idempotency import cleanup_expired_records
 
 logger = logging.getLogger("dlr.control.retention")
+
+
+def _v4_attempt_protected() -> Any:
+    cleanup_confirmed = exists(
+        select(1).where(
+            WorkerCleanupIntentV4.attempt_id == ExecutionAttempt.id,
+            WorkerCleanupIntentV4.completion_id.is_not(None),
+            WorkerCleanupIntentV4.completion_xid == WorkerCleanupIntentV4.writer_xid,
+        )
+    )
+    archived = exists(
+        select(1).where(Adapter.id == Execution.adapter_id, Adapter.archived_at.is_not(None))
+    ).correlate(Execution)
+    input_retained = exists(
+        select(1).where(ExecutionInputArtifactLease.execution_id == Execution.id)
+    ).correlate(Execution)
+    replay_retained = exists(
+        select(1).where(
+            ExecutionArtifactHold.execution_id == Execution.id,
+            ExecutionArtifactHold.purged_at.is_(None),
+        )
+    ).correlate(Execution)
+    incident_open = exists(
+        select(1).where(
+            ExecutionInfrastructureIncident.execution_id == Execution.id,
+            ExecutionInfrastructureIncident.status == "open",
+        )
+    ).correlate(Execution)
+    slot_held = exists(
+        select(1).where(AdapterExecutionSlot.active_attempt_id == ExecutionAttempt.id)
+    )
+    return exists(
+        select(1).where(
+            ExecutionAttempt.execution_id == Execution.id,
+            ExecutionAttempt.worker_identity_id.is_not(None),
+            or_(
+                archived,
+                input_retained,
+                replay_retained,
+                incident_open,
+                slot_held,
+                ExecutionAttempt.cleanup_settled_at.is_(None),
+                ExecutionAttempt.journal_retired_at.is_(None),
+                ExecutionAttempt.status.not_in(TERMINAL_ATTEMPT_STATUSES),
+                ~cleanup_confirmed,
+            ),
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -79,6 +139,7 @@ def _terminal_query(policy: RetentionPolicy, adapter_id: int) -> Select[tuple[in
         Execution.status.in_(TERMINAL_STATUSES),
         Execution.admission_released_at.is_not(None),
         ~execution_protected(),
+        ~_v4_attempt_protected(),
         ~exists(
             select(1).where(
                 ExecutionIdempotencyRecord.execution_id == Execution.id,
@@ -111,6 +172,13 @@ def _delete_batch(session: Session, ids: list[int]) -> int:
         return 0
     from dlr.control.services.subscription_delivery import execution_protected
 
+    # Serialize the recheck with Adapter archival before retiring any history.
+    session.execute(
+        select(Adapter.id)
+        .where(Adapter.id.in_(select(Execution.adapter_id).where(Execution.id.in_(ids))))
+        .order_by(Adapter.id)
+        .with_for_update()
+    ).all()
     result = cast(
         Any,
         session.execute(
@@ -119,6 +187,7 @@ def _delete_batch(session: Session, ids: list[int]) -> int:
                 Execution.status.in_(TERMINAL_STATUSES),
                 Execution.admission_released_at.is_not(None),
                 ~execution_protected(),
+                ~_v4_attempt_protected(),
                 ~exists(
                     select(1).where(
                         ExecutionIdempotencyRecord.execution_id == Execution.id,
@@ -251,14 +320,22 @@ def cleanup_execution_retention(
     return report
 
 
-def _retention_tick() -> None:
+def _retention_tick(after_adapter_id: int = 0) -> int:
     """Run one blocking cleanup cycle in a short-lived database session."""
 
     from dlr.control.db import SessionLocal
 
     session = SessionLocal()
     try:
+        adapter_cursor = 0
+        if settings.worker_remote_v4_enabled:
+            from dlr.control.services.adapter import finalize_one_v4_adapter_deletion
+
+            adapter_cursor = (
+                finalize_one_v4_adapter_deletion(session, after_adapter_id=after_adapter_id) or 0
+            )
         cleanup_execution_retention(session)
+        return adapter_cursor
     finally:
         session.close()
 
@@ -271,9 +348,10 @@ async def retention_loop() -> None:
         settings.execution_retention_interval_seconds,
         settings.execution_retention_batch_size,
     )
+    adapter_cursor = 0
     while True:
         try:
-            await asyncio.to_thread(_retention_tick)
+            adapter_cursor = await asyncio.to_thread(_retention_tick, adapter_cursor)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - keep the service loop alive

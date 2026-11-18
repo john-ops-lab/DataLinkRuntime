@@ -544,11 +544,6 @@ def _claim_fixed(
         return _pause(session, "worker_not_ready")
     if worker_availability.has_unreconciled_v4_attempt(session, worker, now=now):
         return _pause(session, "worker_recovery_unverified")
-    if (
-        execution.builtin_package_snapshot is not None
-        and worker.isolation_capabilities.get("builtin_packages_v1") is not True
-    ):
-        return _pause(session, "builtin_worker_upgrade_required")
     if guard.phase != "idle":
         return _pause(session, "cache_reclamation_in_progress")
     if execution.status in {"succeeded", "dead_letter", "cancelled", "expired"}:

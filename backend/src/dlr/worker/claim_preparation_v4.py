@@ -159,11 +159,23 @@ class StagedClaim:
 class ClaimPreparer:
     """One in-flight Claim; uncertain local responsibility blocks further intake."""
 
-    def __init__(self, *, business_credentials: bool = False, managed_files: bool = False) -> None:
-        if type(business_credentials) is not bool or type(managed_files) is not bool:
+    def __init__(
+        self,
+        *,
+        business_credentials: bool = False,
+        managed_files: bool = False,
+        builtin_wheel: bool = False,
+    ) -> None:
+        if (
+            type(business_credentials) is not bool
+            or type(managed_files) is not bool
+            or type(builtin_wheel) is not bool
+            or (builtin_wheel and not managed_files)
+        ):
             raise ValueError("Worker capability unavailable")
         self._business_credentials = business_credentials
         self._managed_files = managed_files
+        self._builtin_wheel = builtin_wheel
         self._pid = os.getpid()
         self._lock = threading.Lock()
         self._poisoned = False
@@ -704,6 +716,7 @@ class ClaimPreparer:
                     "timeout": min(timeout_seconds, io_deadline - started),
                     "business_credentials": self._business_credentials,
                     "managed_files": self._managed_files,
+                    **({"builtin_wheel": True} if self._builtin_wheel else {}),
                 }
                 transport_start = claim_http_v4._clock()
                 io_deadline = min(io_deadline, transport_start + timeout_seconds)

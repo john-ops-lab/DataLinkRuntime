@@ -386,8 +386,10 @@ def receive_event(
         raise domain_error(409, "subscription_activation_missing", "Activation is unavailable")
     config = session.get(SubscriptionConfigVersion, activation.config_version_id)
     assert config is not None
+    from dlr.control.services import worker_legacy_window
     from dlr.control.services.subscription_activation_policy import ensure_policy
 
+    worker_legacy_window.require_dispatch_target(session, activation.worker_id)
     adapter = session.get(Adapter, sub.adapter_id)
     assert adapter is not None
     ensure_policy(session, activation, adapter)
@@ -1259,10 +1261,9 @@ def cleanup_history(session: Session, subscription_id: int) -> dict[str, int]:
     return {"payloads_expired": expired, "metadata_deleted": deleted}
 
 
-def purge_deleted_adapter_history(session: Session, adapter_id: int) -> None:
-    """Called only by guarded permanent Adapter deletion; never an online TTL shortcut."""
-    from dlr.control.services.subscription_batch_retention import purge_batches
-
+def lock_drained_adapter_subscriptions(
+    session: Session, adapter_id: int
+) -> list[EventSubscription]:
     subs = session.scalars(
         select(EventSubscription)
         .where(EventSubscription.adapter_id == adapter_id)
@@ -1278,6 +1279,14 @@ def purge_deleted_adapter_history(session: Session, adapter_id: int) -> None:
             raise domain_error(
                 409, "subscription_draining", "Delete the drained subscription first"
             )
+    return list(subs)
+
+
+def purge_deleted_adapter_history(session: Session, adapter_id: int) -> None:
+    """Called only by guarded permanent Adapter deletion; never an online TTL shortcut."""
+    from dlr.control.services.subscription_batch_retention import purge_batches
+
+    for sub in lock_drained_adapter_subscriptions(session, adapter_id):
         while purge_batches(session, sub.id)["batches"]:
             pass
         receipt_ids = select(EventReceipt.id).where(EventReceipt.subscription_id == sub.id)

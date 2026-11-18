@@ -2,6 +2,7 @@
 
 from os.path import isabs
 from pathlib import Path
+from typing import Literal
 from urllib.parse import unquote, urlsplit
 
 from pydantic import Field, PrivateAttr, field_validator, model_validator
@@ -39,6 +40,9 @@ class Settings(BaseSettings):
     )
     worker_remote_v4_enabled: bool = Field(
         default=False, validation_alias="DLR_WORKER_REMOTE_V4_ENABLED"
+    )
+    worker_v4_deployment_mode: Literal["A", "B", "C"] = Field(
+        default="B", validation_alias="DLR_WORKER_V4_DEPLOYMENT_MODE"
     )
     worker_v4_database_role: str | None = Field(
         default=None, validation_alias="DLR_WORKER_V4_DATABASE_ROLE"

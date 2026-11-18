@@ -10,7 +10,8 @@ from __future__ import annotations
 import hashlib
 import math
 import os
-from typing import Any
+import stat
+from typing import Any, BinaryIO
 
 from dlr.common import managed_files_v4 as contract
 from dlr.control.services.claim_child_v4 import _clock, _read_frame, _send_frame
@@ -24,6 +25,7 @@ def serve(channel: Any, request: dict[str, Any], envelope: Any, *, idle_until: f
     from dlr.common import config
     from dlr.control import db
     from dlr.control.schemas.reliable_runtime import AttemptActionBody
+    from dlr.control.services import builtin_package
     from dlr.control.services import managed_input_download_v4 as downloads
     from dlr.control.services.artifact_store import LocalFileArtifactStore
     from dlr.control.services.attempt_result_finalize_v4 import (
@@ -48,18 +50,28 @@ def serve(channel: Any, request: dict[str, Any], envelope: Any, *, idle_until: f
     control = ResultControlFence(
         declaration, _uuid(request["control_instance"]), request["control_token"], local_check
     )
-    stream = None
+    stream: BinaryIO | None = None
+    storage_guard: BinaryIO | None = None
+    close_uncertain = False
     ready = False
     command_pending = True
 
     def close_stream() -> None:
-        nonlocal stream
-        closing, stream = stream, None
-        if closing is not None:
-            try:
-                closing.close()
-            except BaseException:
-                raise _CloseUnknown("input close unverified") from None
+        nonlocal stream, storage_guard, close_uncertain
+        if close_uncertain:
+            raise _CloseUnknown("input close unverified")
+        try:
+            if stream is not None:
+                stream.close()
+                stream = None
+            if storage_guard is not None:
+                storage_guard.close()
+                storage_guard = None
+        except BaseException:
+            # Never unlock a library object following an uncertain stream
+            # close. The retained child's reaper owns that boundary.
+            close_uncertain = True
+            raise _CloseUnknown("input close unverified") from None
 
     try:
         action = AttemptActionBody.model_validate(
@@ -73,6 +85,9 @@ def serve(channel: Any, request: dict[str, Any], envelope: Any, *, idle_until: f
             type(request.get(key)) is not int or not 0 < request[key] < 2**63
             for key in ("worker_id", "execution_id", "artifact_id", "generation")
         ):
+            raise ValueError("input unavailable")
+        package_download = request.get("builtin_package", False)
+        if type(package_download) is not bool:
             raise ValueError("input unavailable")
         with db.SessionLocal() as session:
             gate, authority = _control_authority(session, control)
@@ -88,6 +103,7 @@ def serve(channel: Any, request: dict[str, Any], envelope: Any, *, idle_until: f
                 attempt_proof=request["attempt_proof"],
                 action=action,
                 authority=authority,
+                builtin_package=package_download,
             )
             gate.check()
             session.rollback()
@@ -103,10 +119,23 @@ def serve(channel: Any, request: dict[str, Any], envelope: Any, *, idle_until: f
             local_check()
 
         recheck()
-        store = LocalFileArtifactStore(config.settings.artifact_store_root)
-        stream = store.open(grant.storage_key)
+        if grant.package_kind is not None:
+            storage_guard = builtin_package.file_lock(grant.storage_key, shared=True)
+            recheck()
+            fd = os.open(
+                builtin_package.storage_path(grant.storage_key),
+                os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+            )
+            stream = os.fdopen(fd, "rb")
+        else:
+            store = LocalFileArtifactStore(config.settings.artifact_store_root)
+            stream = store.open(grant.storage_key)
         before = os.fstat(stream.fileno())
-        if before.st_size != grant.file.size_bytes:
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size != grant.file.size_bytes
+        ):
             raise ValueError("input unavailable")
         digest = hashlib.sha256()
         total = 0

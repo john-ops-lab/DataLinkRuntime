@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import func, select, update
 
 from dlr.common.config import settings
+from dlr.common.worker_languages_v4 import mode_capabilities
 from dlr.control.models import (
     Adapter,
     AdapterExecutionAdmission,
@@ -23,7 +24,7 @@ from dlr.control.models.platform import PackageSource
 from dlr.control.services.worker_stage_capability_v4 import dispatch_blocked, execution_block_reason
 from test_adapters import create_adapter, save_version
 from test_credentials import create_credential, set_bindings
-from test_webhook_trigger import put_webhook
+from test_webhook_trigger import WEBHOOK_TOKEN, post_hook, put_webhook, setup_webhook
 
 
 def _file_adapter(client, factory, monkeypatch, *, count=1, size=8, capable=True):
@@ -167,11 +168,26 @@ def test_unsupported_manual_and_schedule_take_no_responsibility(
     api_client, session_factory, monkeypatch, unsupported, task_language
 ):
     adapter = create_adapter(
-        api_client, language="java" if unsupported == "language" else task_language
+        api_client, language="go" if unsupported == "language" else task_language
     )
     save_version(
         api_client, adapter["id"], requirements="requests" if unsupported == "requirements" else ""
     )
+    expected_code = "worker_task_capability_unavailable"
+    expected_params = {
+        "reason": "credentials_mode" if unsupported == "credentials" else unsupported
+    }
+    if unsupported == "language":
+        with session_factory.begin() as session:
+            worker_id = session.get(Adapter, adapter["id"]).runtime_worker_id
+            worker = session.get(Worker, worker_id)
+            worker.protocol_version = 4
+            worker.identity_lifecycle = "reserved"
+            worker.identity_enrolled_at = datetime.now(UTC)
+            mode = "python_javascript" if task_language == "javascript" else "python"
+            worker.capabilities = mode_capabilities(mode)
+        expected_code = "runtime_worker_invalid"
+        expected_params = {"language": "go"}
     if unsupported == "input_source":
         with session_factory.begin() as session:
             session.execute(
@@ -214,10 +230,8 @@ def test_unsupported_manual_and_schedule_take_no_responsibility(
         headers={"Idempotency-Key": "unsupported"},
     )
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "worker_task_capability_unavailable"
-    assert response.json()["detail"]["params"]["reason"] == (
-        "credentials_mode" if unsupported == "credentials" else unsupported
-    )
+    assert response.json()["detail"]["code"] == expected_code
+    assert response.json()["detail"]["params"] == expected_params
     assert (
         api_client.patch(
             f"/api/adapters/{adapter['id']}", json={"run_mode": "schedule"}
@@ -229,7 +243,7 @@ def test_unsupported_manual_and_schedule_take_no_responsibility(
         json={"enabled": True, "cron": "0 * * * *", "timezone": "UTC"},
     )
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "worker_task_capability_unavailable"
+    assert response.json()["detail"]["code"] == expected_code
     with session_factory() as session:
         schedule = session.scalar(
             select(AdapterSchedule).where(AdapterSchedule.adapter_id == adapter["id"])
@@ -285,14 +299,38 @@ def test_supported_manual_keeps_frozen_capability_and_idempotency(
         assert session.scalar(select(func.count()).select_from(ExecutionAttempt)) == 0
 
 
-def test_remote_stage_does_not_enable_webhook(api_client, session_factory, monkeypatch):
-    adapter = create_adapter(api_client, adapter_type="webhook")
-    save_version(api_client, adapter["id"])
+@pytest.mark.parametrize("requirements", ["", "requests"])
+def test_fixed_webhook_accepts_only_supported_revision(
+    api_client, session_factory, monkeypatch, requirements
+):
+    adapter, _, worker, credential, _ = setup_webhook(api_client, "fixed-webhook", enabled=False)
+    save_version(api_client, adapter["id"], requirements=requirements)
+    with session_factory.begin() as session:
+        row = session.get(Worker, worker["id"])
+        row.protocol_version = 4
+        row.identity_lifecycle = "reserved"
+        row.identity_enrolled_at = row.last_heartbeat = datetime.now(UTC)
+        row.instance_id = uuid4()
+        row.instance_generation = 1
+        row.instance_lease_until = row.last_heartbeat + timedelta(seconds=30)
     monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
-    response = put_webhook(api_client, adapter["id"], credential_id=None)
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "worker_task_capability_unavailable"
-    _assert_no_responsibility(session_factory)
+    response = put_webhook(api_client, adapter["id"], credential["id"])
+    if requirements:
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["params"]["reason"] == "requirements"
+        _assert_no_responsibility(session_factory)
+        return
+    assert response.status_code == 200, response.text
+    accepted = post_hook(api_client, response.json()["public_id"], WEBHOOK_TOKEN, {"value": 42})
+    assert accepted.status_code == 202, accepted.text
+    with session_factory() as session:
+        execution = session.get(Execution, accepted.json()["execution_id"])
+        assert execution.target_worker_id_snapshot == worker["id"]
+        assert execution.trigger == "webhook"
+        assert not dispatch_blocked(session, execution.id)
+        assert (
+            execution_block_reason(session, session.get(Adapter, adapter["id"]), execution) is None
+        )
 
 
 def _javascript_adapter(client, session_factory, monkeypatch):
@@ -311,6 +349,48 @@ def _javascript_adapter(client, session_factory, monkeypatch):
         )
     monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
     return adapter
+
+
+@pytest.mark.parametrize("language", ["java", "typescript", "go"])
+@pytest.mark.parametrize("with_credential", [False, True])
+def test_compiled_toolchains_gate_frozen_dispatch_and_credentials(
+    api_client, session_factory, monkeypatch, language, with_credential
+):
+    adapter = create_adapter(api_client, language=language)
+    save_version(api_client, adapter["id"])
+    if with_credential:
+        credential = create_credential(api_client)
+        assert (
+            set_bindings(
+                api_client,
+                adapter["id"],
+                [{"env_key": "PASSWORD", "credential_id": credential["id"], "field": "password"}],
+            ).status_code
+            == 200
+        )
+    with session_factory.begin() as session:
+        session.execute(
+            update(Worker).values(
+                protocol_version=4,
+                identity_lifecycle="reserved",
+                identity_enrolled_at=datetime.now(UTC),
+                capabilities=mode_capabilities(
+                    "python_javascript_typescript_java_go"
+                    if language == "go"
+                    else "python_javascript_typescript_java"
+                ),
+            )
+        )
+    monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
+    result = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    if with_credential:
+        assert result.status_code == 409, result.text
+        assert result.json()["detail"]["params"]["reason"] == "credentials_mode"
+        _assert_no_responsibility(session_factory)
+        return
+    assert result.status_code == 202, result.text
+    with session_factory() as session:
+        assert not dispatch_blocked(session, result.json()["id"])
 
 
 @pytest.mark.parametrize("kind", ["pypi", "npm"])

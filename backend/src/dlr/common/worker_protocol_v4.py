@@ -14,6 +14,8 @@ INSTANCE_HEARTBEAT_SECONDS = 5
 # not prove that assumption, especially across coordinated jumps.
 V4_LEASE_CLOCK_MARGIN_NS = 2_000_000_000
 WORKER_CREDENTIAL_PREFIX = "dlrw4_"
+WORKER_FORCE_STOP_CODE = "worker_force_stop"
+ADAPTER_CLEANUP_CAPABILITY = "adapter_ephemeral_cleanup_v1"
 
 
 def is_worker_credential(value: object) -> bool:

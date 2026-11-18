@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 
@@ -72,9 +73,15 @@ def _worker_locked(session: Session, worker_id: int) -> Worker:
 
 def _governance_ready(worker: Worker) -> bool:
     return (
-        int(worker.protocol_version or 0) == 3
-        and worker.isolation_capabilities.get("cache_governance_v1") is True
-    )
+        worker.protocol_version == 3
+        or (
+            worker.protocol_version == 4
+            and worker.identity_lifecycle == "reserved"
+            and worker.v4_storage_profile == "managed_cache"
+            and worker.instance_id is not None
+            and worker.capacity_state == "ready"
+        )
+    ) and worker.isolation_capabilities.get("cache_governance_v1") is True
 
 
 def _snapshot_item_map(
@@ -247,6 +254,14 @@ def create_operation(
             )
         session.rollback()
         return existing
+    if worker.protocol_version == 4 and (
+        request.kind not in {"preview", "clean"} or request.keys is None or len(request.keys) > 8
+    ):
+        raise domain_error(
+            409,
+            "cache_operation_unsupported",
+            "This Worker supports bounded preview and clean commands for up to eight keys",
+        )
     if request.policy is not None and not worker.isolation_capabilities.get(
         "cache_policy_control_v1", False
     ):
@@ -309,16 +324,24 @@ def create_operation(
     return operation
 
 
-def claim_command(session: Session, worker_id: int) -> CacheCommandClaim | None:
+def claim_command(
+    session: Session,
+    worker_id: int,
+    *,
+    _before_commit: Callable[[WorkerCacheManagementOperation], None] | None = None,
+) -> CacheCommandClaim | None:
     worker = _worker_locked(session, worker_id)
-    if not _governance_ready(worker):
+    v4 = _before_commit is not None
+    if not _governance_ready(worker) or v4 != (worker.protocol_version == 4):
         session.rollback()
         return None
     operation = session.scalar(
         select(WorkerCacheManagementOperation)
         .where(
             WorkerCacheManagementOperation.worker_id == worker_id,
-            WorkerCacheManagementOperation.status == "pending",
+            WorkerCacheManagementOperation.status.in_(
+                ("pending", "running") if v4 else ("pending",)
+            ),
             or_(
                 WorkerCacheManagementOperation.target_kind.is_(None),
                 WorkerCacheManagementOperation.target_kind != "cleanup",
@@ -333,6 +356,16 @@ def claim_command(session: Session, worker_id: int) -> CacheCommandClaim | None:
     if operation is None:
         session.rollback()
         return None
+    if (
+        v4
+        and operation.status == "running"
+        and (
+            operation.v4_identity_id != worker.identity_id
+            or operation.v4_instance_id != worker.instance_id
+            or operation.v4_generation != worker.instance_generation
+        )
+    ):
+        raise domain_error(409, "cache_operation_stale_claim", "Cache operation claim is stale")
     payload = dict(operation.request_payload)
     if operation.target_kind == "management" and operation.target_operation_id is not None:
         target = session.get(WorkerCacheManagementOperation, operation.target_operation_id)
@@ -388,11 +421,16 @@ def claim_command(session: Session, worker_id: int) -> CacheCommandClaim | None:
         # only the current dispatch failure, never an inferred application result.
         operation.result = {"summary": "Worker does not support cache policy updates"}
         operation.finished_at = func.now()
+        if _before_commit is not None:
+            _before_commit(operation)
         session.commit()
         return None
-    operation.status = "running"
-    operation.claim_epoch += 1
-    operation.claimed_at = func.now()
+    if operation.status == "pending":
+        operation.status = "running"
+        operation.claim_epoch += 1
+        operation.claimed_at = func.now()
+    if _before_commit is not None:
+        _before_commit(operation)
     session.commit()
     actor_kind = str(operation.actor.get("kind", "administrator"))
     actor_id = operation.actor.get("user_id")
@@ -438,6 +476,8 @@ def apply_command_result(
     worker_id: int,
     operation_id: uuid.UUID,
     report: CacheCommandResult,
+    *,
+    _before_commit: Callable[[WorkerCacheManagementOperation], None] | None = None,
 ) -> WorkerCacheManagementOperation:
     _worker_locked(session, worker_id)
     operation = session.scalar(
@@ -483,6 +523,16 @@ def apply_command_result(
                 or guard.generation != raw["generation"]
                 or guard.adapter_id != raw["adapter_id"]
                 or guard.version_id != raw["version_id"]
+                or (
+                    _before_commit is not None
+                    and (
+                        guard.v4_identity_id != operation.v4_identity_id
+                        or guard.v4_instance_id != operation.v4_instance_id
+                        or guard.v4_generation != operation.v4_generation
+                        or guard.phase != raw["phase"]
+                        or (report.status == "completed" and guard.phase == "acquired")
+                    )
+                )
             ):
                 raise domain_error(
                     409, "cache_child_operation_conflict", "Child operation conflicts"
@@ -505,6 +555,8 @@ def apply_command_result(
             raise domain_error(
                 409, "cache_operation_result_conflict", "Cache operation result conflicts"
             )
+        if _before_commit is not None:
+            _before_commit(operation)
         session.rollback()
         return operation
     if operation.status != "running":
@@ -514,14 +566,24 @@ def apply_command_result(
     operation.child_operations = child_map
     operation.error_code = report.error_code
     operation.finished_at = func.now() if report.status in {"completed", "failed"} else None
+    if _before_commit is not None:
+        _before_commit(operation)
     session.commit()
     session.refresh(operation)
     return operation
 
 
-def upload_snapshot(session: Session, worker_id: int, upload: CacheSnapshotUpload) -> None:
+def upload_snapshot(
+    session: Session,
+    worker_id: int,
+    upload: CacheSnapshotUpload,
+    *,
+    _before_commit: Callable[[WorkerCacheSnapshot], None] | None = None,
+) -> None:
     worker = _worker_locked(session, worker_id)
-    if not _governance_ready(worker):
+    if not _governance_ready(worker) or (_before_commit is not None) != (
+        worker.protocol_version == 4
+    ):
         raise domain_error(
             409, "cache_worker_unsupported", "Worker does not support cache governance"
         )
@@ -574,6 +636,8 @@ def upload_snapshot(session: Session, worker_id: int, upload: CacheSnapshotUploa
             )
             if not same:
                 raise domain_error(409, "cache_snapshot_conflict", "Snapshot ID was reused")
+            if _before_commit is not None:
+                _before_commit(current)
             session.rollback()
             return
         if upload.sequence <= current.sequence:
@@ -627,6 +691,8 @@ def upload_snapshot(session: Session, worker_id: int, upload: CacheSnapshotUploa
                 **item.model_dump(mode="json"),
             )
         )
+    if _before_commit is not None:
+        _before_commit(current)
     session.commit()
 
 

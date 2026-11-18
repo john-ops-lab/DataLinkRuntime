@@ -12,12 +12,14 @@ import pika
 
 from dlr.common.dispatch_protocol import deserialize_dispatch_message
 from dlr.common.worker_languages_v4 import valid_capabilities
+from dlr.common.worker_protocol_v4 import WORKER_FORCE_STOP_CODE
 from dlr.worker import (
     broker_config_v4,
     cgroup_namespace,
     claim_preparation_v4,
     cleanup_execution_v4,
     execution_supervision_v4,
+    recovery_checkpoint_v4,
     result_exchange_v4,
     sandbox,
 )
@@ -72,6 +74,7 @@ class FixedWorkerConsumer:
         capabilities: list[str] | None = None,
         business_credentials: bool = False,
         managed_files: bool = False,
+        builtin_wheel: bool = False,
     ) -> None:
         self._broker_file, self._lease = broker_file, lease
         self._root_lock, self._runtime_root = root_lock, runtime_root
@@ -89,8 +92,11 @@ class FixedWorkerConsumer:
             raise ValueError("Worker capabilities unavailable")
         self._languages = tuple(languages)
         self.failed = threading.Event()
+        self.idle = threading.Event()
         self._preparer = claim_preparation_v4.ClaimPreparer(
-            business_credentials=business_credentials, managed_files=managed_files
+            business_credentials=business_credentials,
+            managed_files=managed_files,
+            builtin_wheel=builtin_wheel,
         )
 
     def _execute(self, body: bytes) -> _Outcome:
@@ -168,6 +174,11 @@ class FixedWorkerConsumer:
                     continue
                 if observed.state != "observed":
                     return _unknown(stage)
+                if observed.stop_reason == WORKER_FORCE_STOP_CODE:
+                    stage = "stopped_checkpoint"
+                    if not owner.stop_watchdog():
+                        return _unknown(stage)
+                    recovery_checkpoint_v4.persist_force_stopped(owner)
                 stage = "result"
                 snapshot = owner.build_result()
                 if snapshot is None or not result_exchange_v4.submit_result(
@@ -199,6 +210,7 @@ class FixedWorkerConsumer:
             outcomes: queue.SimpleQueue[_Outcome] = queue.SimpleQueue()
             delivery_tag: int | None = None
             try:
+                self.idle.clear()
                 config = broker_config_v4.BrokerConfigV4.from_private_file(
                     self._broker_file,
                     worker_id=self._lease._worker_id,
@@ -216,6 +228,7 @@ class FixedWorkerConsumer:
                     result_queue: queue.SimpleQueue[_Outcome] = outcomes,
                 ) -> None:
                     nonlocal active, delivery_tag
+                    self.idle.clear()
                     tag = getattr(method, "delivery_tag", None)
                     if active is not None or type(tag) is not int or tag <= 0:
                         self.failed.set()
@@ -237,6 +250,8 @@ class FixedWorkerConsumer:
                     try:
                         outcome = outcomes.get_nowait()
                     except queue.Empty:
+                        if active is None:
+                            self.idle.set()
                         continue
                     if active is None or delivery_tag is None:
                         raise ValueError("delivery state unavailable")
@@ -248,6 +263,9 @@ class FixedWorkerConsumer:
                     delivery_tag = None
                     if outcome == "ack":
                         channel.basic_ack(delivery_tag=tag)
+                        # The synchronous response on this channel follows
+                        # processing the preceding ACK at the Broker.
+                        channel.basic_qos(prefetch_count=1)
                         backoff = 1.0
                     elif outcome == "reject":
                         channel.basic_nack(delivery_tag=tag, requeue=False)
@@ -264,6 +282,7 @@ class FixedWorkerConsumer:
                     self.failed.set()
                     self._stop.set()
             finally:
+                self.idle.clear()
                 if connection is not None:
                     try:
                         connection.close()

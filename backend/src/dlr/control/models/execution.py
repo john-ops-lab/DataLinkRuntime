@@ -76,6 +76,11 @@ class Worker(Base):
             name="ck_workers_capacity_state",
         ),
         CheckConstraint("instance_generation >= 0", name="ck_workers_instance_generation"),
+        CheckConstraint(
+            "v4_storage_profile IS NULL OR "
+            "(v4_storage_profile IN ('ephemeral', 'managed_cache') AND protocol_version = 4)",
+            name="ck_workers_v4_storage_profile",
+        ),
         CheckConstraint("maintenance_version >= 1", name="ck_workers_maintenance_version"),
         CheckConstraint(
             "(instance_id IS NULL AND instance_lease_until IS NULL) OR "
@@ -123,6 +128,7 @@ class Worker(Base):
     capacity_state: Mapped[str] = mapped_column(
         String(16), nullable=False, default="unknown", server_default=text("'unknown'")
     )
+    v4_storage_profile: Mapped[str | None] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     last_heartbeat: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

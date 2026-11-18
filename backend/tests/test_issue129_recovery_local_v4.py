@@ -267,7 +267,7 @@ def original(tmp_path, monkeypatch, request):
         yield lock, runtime, attempts, prepared, stopped, attempt_record, fd, runtime_fd
 
 
-def scan(original):
+def scan(original, *, allow_files=False):
     lock, runtime, attempts, prepared, *_ = original
     from uuid import UUID
 
@@ -278,6 +278,7 @@ def scan(original):
         worker_id=prepared["worker_id"],
         identity_id=UUID(prepared["worker_identity_id"]),
         boot_id=prepared["boot_id"],
+        allow_files=allow_files,
     )
 
 
@@ -291,6 +292,59 @@ def test_read_only_scan_retains_both_charges_and_rejects_missing_without_intent(
         scan(original)
     assert set(original[2].iterdir()) == before
     assert (leaf / "input.json").exists()
+
+
+@pytest.mark.parametrize("conflict", [None, "result_only", "physical", "result_binding"])
+def test_scan_distinguishes_atomic_force_stop_successor(original, conflict):
+    _, _, attempts, prepared, stopped, _, fd, _ = original
+    _, canonical = checkpoint.names(prepared["attempt_id"])
+    os.unlink(canonical, dir_fd=fd)
+    for name in stopped["result_record"]:
+        os.unlink(name, dir_fd=fd)
+    force = {
+        **{key: value for key, value in stopped.items() if key not in {"intent_id", "body_mac"}},
+        "phase": "force_stopped",
+        "force_stop_operation_id": str(uuid4()),
+        "result_record": {},
+    }
+    nonce = uuid4()
+    result_name = f"result-{prepared['attempt_id']}-{nonce.hex}.intent.json"
+    result = {
+        "version": 1,
+        **{
+            key: prepared[key]
+            for key in (
+                "worker_identity_id",
+                "instance_id",
+                "instance_generation",
+                "attempt_id",
+                "fencing_token",
+            )
+        },
+        "intent_id": stopped["intent_id"],
+        "body_mac": stopped["body_mac"],
+        "observation_nonce": str(nonce),
+        "result_proof": "recorded-test-proof",
+    }
+    if conflict == "result_binding":
+        result["instance_id"] = str(uuid4())
+    if conflict == "physical":
+        force["sandbox_mount_expected"] = not stopped["sandbox_mount_expected"]
+    successor = {**stopped, "result_record": {result_name: checkpoint.digest(result)}}
+    successor_name = f"recovery-{prepared['attempt_id']}.result-stopped.json"
+    for name, record in ((canonical, force), (result_name, result)):
+        checkpoint.persist(fd, name, record)
+    if conflict != "result_only":
+        checkpoint.persist(fd, successor_name, successor)
+    before = tuple(sorted(attempts.iterdir()))
+    if conflict in (None, "result_only"):
+        observed = scan(original)
+        assert observed.stopped == successor
+        assert observed.predecessor_sha256 == checkpoint.digest(force)
+    else:
+        with pytest.raises(ValueError, match="successor"):
+            scan(original)
+    assert tuple(sorted(attempts.iterdir())) == before
 
 
 @pytest.mark.parametrize("damage", ["replace", "extra", "nonempty", "symlink", "foreign_attempt"])
@@ -400,6 +454,33 @@ def test_file_live_path_removes_whole_tree_and_retires_v3_without_enabling_recov
     local.retire(directory, runtime_fd, terminal, allow_missing=False, _active_files=True)
     assert local._entries(directory) == {".dlr-instance.lock"}
     assert local._entries(runtime_fd) == {".dlr-instance.lock", "workspaces"}
+
+
+@pytest.mark.parametrize("original", [("python", False)], indirect=True)
+def test_historical_file_recovery_requires_binding_and_resumes_after_unlink(original, monkeypatch):
+    _, runtime, _, prepared, stopped, _, directory, runtime_fd = original
+    with pytest.raises(ValueError, match="prepared invalid"):
+        scan(original)
+    assert scan(original, allow_files=True).prepared == prepared
+    inputs = runtime / "workspaces/attempt-8/dlr-exec-5/input"
+    first = prepared["input_files"][0]["mount_name"]
+    unlink = os.unlink
+
+    def interrupted(name, **kwargs):
+        unlink(name, **kwargs)
+        if name == first:
+            raise OSError("interrupted first input unlink")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(os, "unlink", interrupted)
+        with pytest.raises(OSError, match="interrupted"):
+            local.clean_workspace(
+                directory, runtime_fd, runtime, prepared, stopped, _active_files=True
+            )
+    assert not (inputs / first).exists()
+    assert scan(original, allow_files=True).stopped == stopped
+    local.clean_workspace(directory, runtime_fd, runtime, prepared, stopped, _active_files=True)
+    assert not (runtime / "workspaces/attempt-8").exists()
 
 
 @pytest.mark.parametrize(
