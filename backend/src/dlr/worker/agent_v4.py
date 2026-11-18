@@ -497,6 +497,8 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                             if consumer.idle.is_set():
                                 phase = "adapter_cleanup"
                                 _settle_adapter_cleanup(config, root_lock, lease, stop, cache)
+                                phase = "history_retirement"
+                                _retire_local_history(config, root_lock, lease, stop)
                         except (
                             lease_session_v4.WorkerLeaseError,
                             CacheError,
@@ -535,6 +537,37 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
             recovery_lease.close()
 
 
+def _local_storage_empty(config: WorkerConfig, lock: cgroup_namespace.RootLockHandle) -> bool:
+    return (
+        startup_v4_gate.inspect_local_startup(
+            runtime_root=config.runtime_root,
+            cleanup_journal_root=config.cleanup_journal_root,
+            attempt_journal_root=config.attempt_journal_root,
+            root_lock=lock,
+        ).status
+        == "local_empty"
+    )
+
+
+def _retire_local_history(
+    config: WorkerConfig,
+    lock: cgroup_namespace.RootLockHandle,
+    lease: lease_session_v4.WorkerLeaseSession,
+    stop: threading.Event,
+) -> None:
+    # Capture already committed receipts first. An unrelated later Claim
+    # cannot create new journal records for any of these terminal Attempts.
+    route = "history-retirement/"
+    result = lease._body(lease._data_exchange(route + "observe", {}, stop), {"items"})
+    items = result["items"]
+    if not isinstance(items, list) or len(items) > 8:
+        raise lease_session_v4.WorkerLeaseError("history retirement unavailable")
+    if items and _local_storage_empty(config, lock):
+        observed = lease._body(lease._data_exchange(route + "confirm", result, stop), {"items"})
+        if observed != result:
+            raise lease_session_v4.WorkerLeaseError("history retirement observation unavailable")
+
+
 def _settle_adapter_cleanup(
     config: WorkerConfig,
     lock: cgroup_namespace.RootLockHandle,
@@ -544,15 +577,7 @@ def _settle_adapter_cleanup(
 ) -> None:
     # A normal run may be holding files or Attempt records. Only settle from
     # a bounded, independently verified quiet state of the original roots.
-    if (
-        startup_v4_gate.inspect_local_startup(
-            runtime_root=config.runtime_root,
-            cleanup_journal_root=config.cleanup_journal_root,
-            attempt_journal_root=config.attempt_journal_root,
-            root_lock=lock,
-        ).status
-        != "local_empty"
-    ):
+    if not _local_storage_empty(config, lock):
         return
     # Control has already fenced the deleted Adapter. A different Adapter may
     # prepare concurrently, so never hold the root mutex over network IO.

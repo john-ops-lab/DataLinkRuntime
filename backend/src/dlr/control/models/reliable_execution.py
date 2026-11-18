@@ -438,6 +438,7 @@ class ExecutionAttempt(Base):
     # Set only after Control observes the committed v4 cleanup receipt. The
     # Worker's reported cleanup summary alone cannot release responsibility.
     cleanup_settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    journal_retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

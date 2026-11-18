@@ -50,12 +50,23 @@ Worker SHALL 在显式配置的独立 0700 私有缓存根上核对集群、稳�
 - **WHEN** 命令或 guard 失效，或者已记录的根归属不能核实
 - **THEN** 拒绝相应处置，保留未结责任；确认清理需匹配原操作与本地物理回执。
 
-### Requirement: 原生 ephemeral Worker 的 Adapter 清理须先归档
+### Requirement: 原生固定 Worker 的 Adapter 清理须先归档
 具有原生 ephemeral profile 的固定 Worker SHALL 只领取自己已归档 Adapter 的精确清理责任，按当前签名证明核对 Worker、Adapter、cleanup ID 和领取次数。归档和领取时须保留清理证据。
 
 #### Scenario: 已归档 Adapter 尚无匹配完成回执
 - **WHEN** 已创建或领取清理请求，Worker 尚未完成独立物理核对并提交匹配回执
 - **THEN** 保留未结责任，不因归档或领取成功提前宣布清理完成。
+
+#### Scenario: managed_cache 节点处置已归档 Adapter
+- **WHEN** 原生节点持有该 Adapter 的有效 cleanup ID、Adapter ID 和 claim 次数，并核对本节点专用缓存根的身份
+- **THEN** MUST 在当前实例授权下以该票据取得对象级 guard；仅处置与观察身份匹配的目录，完成物理核对后再提交归属回执。票据、目录或 guard 已变时保留未结责任。
+
+### Requirement: 恢复已暂存的结果必须重新取得签名观察
+恢复读取 SHALL 仅识别与原 prepared/stopped、Attempt/fence、结果意图及本地暂存记录精确匹配的后继；正式发布前的中断只能按该唯一合法分支核对。读取旧记录成功不得授权状态变更。
+
+#### Scenario: 新实例验证发布前暂存的历史后继
+- **WHEN** 新实例在原锚点发现已暂存的结果 journal，而对应 stopped 后继尚未发布
+- **THEN** 先只读核对原对象与结果记录，再取得当前代际签名观察并验证其绑定、nonce 和有效期限，才可进行恢复变更。旧证明、歧义后继及绑定不一致均拒绝，保留历史。
 
 ### Requirement: J管理员HTTP凭据管理不扩大其他授权
 J SHALL 仅为已enrolled专用v4 reserved身份提供管理员HTTP runtime元数据、rotate、节点级revoke及非秘密操作查询。rotate MUST 核对identity/latest-issued-record（包括expired/revoked）/维护CAS及disabled/无未结Attempt，严格0–600秒、最多新旧两份且不延旧截止；revoke可以在active/unknown时撤销节点全部HTTP行但不动B/AMQP/H或原Slot/Lease/journal/预算/ACK。维护版本、instance/generation、原proof期限和I文件version3恢复资格保持。

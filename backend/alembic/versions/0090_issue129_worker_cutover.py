@@ -204,6 +204,44 @@ def upgrade() -> None:
         """)
     _attempt_receipt_fks("CASCADE")
     op.execute("""
+        ALTER TABLE execution_attempts ADD COLUMN journal_retired_at TIMESTAMPTZ
+    """)
+    op.execute("""
+        CREATE FUNCTION dlr_v4_confirm_journal_retirement() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+            IF NEW.journal_retired_at IS NULL AND TG_OP='INSERT' THEN
+                RETURN NEW;
+            END IF;
+            IF TG_OP='UPDATE' THEN
+                IF NEW.journal_retired_at IS NOT DISTINCT FROM OLD.journal_retired_at THEN
+                    RETURN NEW;
+                END IF;
+                IF OLD.journal_retired_at IS NULL AND NEW.cleanup_settled_at IS NOT NULL
+                    AND NEW.journal_retired_at >= NEW.cleanup_settled_at
+                    AND EXISTS (
+                        SELECT FROM worker_cleanup_intents_v4 c JOIN workers w ON w.id=c.worker_id
+                        WHERE c.attempt_id=OLD.id AND c.worker_identity_id=w.identity_id
+                          AND c.instance_id=w.instance_id
+                          AND c.instance_generation=w.instance_generation
+                          AND w.instance_lease_until > clock_timestamp()
+                          AND c.completion_id IS NOT NULL AND c.completion_xid=c.writer_xid
+                    ) THEN
+                    RETURN NEW;
+                END IF;
+            END IF;
+            RAISE EXCEPTION 'v4 journal retirement unavailable' USING ERRCODE='23514';
+        END $$
+    """)
+    op.execute("""
+        CREATE TRIGGER dlr_v4_confirm_journal_retirement
+        BEFORE INSERT OR UPDATE OF journal_retired_at ON execution_attempts
+        FOR EACH ROW EXECUTE FUNCTION dlr_v4_confirm_journal_retirement()
+    """)
+    op.execute("""
+        ALTER TABLE execution_attempts ENABLE ALWAYS TRIGGER dlr_v4_confirm_journal_retirement
+    """)
+    op.execute("""
         CREATE FUNCTION dlr_v4_require_retired_adapter_attempt() RETURNS trigger
         LANGUAGE plpgsql AS $$
         BEGIN
@@ -211,15 +249,18 @@ def upgrade() -> None:
                 OLD.cleanup_settled_at IS NULL
                 OR OLD.status NOT IN ('succeeded','failed','timed_out','worker_lost','cancelled')
                 OR NOT EXISTS (
-                    SELECT 1 FROM executions e
-                    JOIN adapters a ON a.id=e.adapter_id AND a.archived_at IS NOT NULL
-                    JOIN worker_cleanup_requests r ON r.adapter_id=a.id
-                      AND r.worker_id=OLD.worker_id
-                      AND r.v4_identity_id=OLD.worker_identity_id
-                      AND r.status='completed' AND r.completed_at IS NOT NULL
-                    JOIN worker_cleanup_intents_v4 c ON c.attempt_id=OLD.id
-                      AND c.completion_id IS NOT NULL AND c.completion_xid=c.writer_xid
-                    WHERE e.id=OLD.execution_id
+                    SELECT FROM worker_cleanup_intents_v4 c
+                    WHERE c.attempt_id=OLD.id AND c.completion_id IS NOT NULL
+                      AND c.completion_xid=c.writer_xid
+                      AND (OLD.journal_retired_at >= OLD.cleanup_settled_at OR EXISTS (
+                        SELECT FROM executions e
+                        JOIN adapters a ON a.id=e.adapter_id AND a.archived_at IS NOT NULL
+                        JOIN worker_cleanup_requests r ON r.adapter_id=a.id
+                          AND r.worker_id=OLD.worker_id
+                          AND r.v4_identity_id=OLD.worker_identity_id
+                          AND r.status='completed' AND r.completed_at IS NOT NULL
+                        WHERE e.id=OLD.execution_id
+                      ))
                 )
             ) THEN
                 RAISE EXCEPTION 'v4 Attempt has retained local responsibility'
@@ -342,7 +383,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute(
         "LOCK TABLE worker_legacy_window, control_proof_rotations, worker_maintenance_operations, "
-        "worker_cleanup_requests IN ACCESS EXCLUSIVE MODE"
+        "worker_cleanup_requests, execution_attempts IN ACCESS EXCLUSIVE MODE"
     )
     op.execute("""
         DO $$ BEGIN
@@ -359,6 +400,9 @@ def downgrade() -> None:
             IF EXISTS (SELECT 1 FROM worker_cleanup_requests WHERE v4_identity_id IS NOT NULL) THEN
                 RAISE EXCEPTION 'v4 Adapter cleanup responsibility prevents downgrade';
             END IF;
+            IF EXISTS (SELECT 1 FROM execution_attempts WHERE journal_retired_at IS NOT NULL) THEN
+                RAISE EXCEPTION 'v4 journal retirement history prevents downgrade';
+            END IF;
         END $$
     """)
     _maintenance_checks(_LEGACY_ACTION, _LEGACY_DISPOSITION)
@@ -368,6 +412,9 @@ def downgrade() -> None:
     """)
     op.execute("DROP TRIGGER dlr_v4_require_retired_adapter_attempt ON execution_attempts")
     op.execute("DROP FUNCTION dlr_v4_require_retired_adapter_attempt()")
+    op.execute("DROP TRIGGER dlr_v4_confirm_journal_retirement ON execution_attempts")
+    op.execute("DROP FUNCTION dlr_v4_confirm_journal_retirement()")
+    op.execute("ALTER TABLE execution_attempts DROP COLUMN journal_retired_at")
     _attempt_receipt_fks("RESTRICT")
     for table, constraint in _CACHE_OWNERS:
         op.execute(f"LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE")

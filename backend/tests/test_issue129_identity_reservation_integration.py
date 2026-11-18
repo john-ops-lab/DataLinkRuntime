@@ -638,6 +638,81 @@ def _assert_cleanup_protocol(
             assert settled == first_settlement
 
 
+def _assert_live_history_retention(
+    client, factory, worker_id, lease, claimed, previous_proof, *, cap, monkeypatch
+):
+    from dlr.control.models import Adapter, WorkerCleanupIntentV4
+    from dlr.control.services.retention import cleanup_execution_retention
+
+    task = claimed.payload
+    assert task is not None
+    now = datetime.now(UTC)
+    if cap:
+        monkeypatch.setattr(settings, "execution_retention_task_max_per_adapter", 1)
+        with factory.begin() as session:
+            original = session.get(Execution, task.execution_id)
+            session.add(
+                Execution(
+                    adapter_id=original.adapter_id,
+                    version_id=original.version_id,
+                    trigger="manual",
+                    status="succeeded",
+                    input=None,
+                    created_at=now,
+                    admission_released_at=now,
+                )
+            )
+    else:
+        now += timedelta(days=settings.execution_retention_task_days + 1)
+    route = f"https://testserver/api/workers/{worker_id}/v4/history-retirement"
+    headers = {
+        "Authorization": f"Bearer {lease._credential}",
+        "X-DLR-Worker-Instance": str(lease._instance_id),
+        "X-DLR-Worker-Generation": str(lease._claims.generation),
+        "X-DLR-Worker-Lease-Proof": lease._proof,
+    }
+    with factory() as session:
+        assert session.get(Adapter, task.adapter_id).archived_at is None
+        original = session.get(ExecutionAttempt, task.attempt_id)
+        assert original.cleanup_settled_at is not None and original.journal_retired_at is None
+        assert cleanup_execution_retention(session, now=now).deleted == 0
+    assert client.post(route + "/observe", json={}).status_code == 401
+    old = {**headers, "X-DLR-Worker-Lease-Proof": previous_proof}
+    assert client.post(route + "/observe", headers=old, json={}).status_code == 503
+    ready = client.post(route + "/observe", headers=headers, json={})
+    assert ready.status_code == 200, ready.text
+    with factory() as session:
+        cleanup = session.get(WorkerCleanupIntentV4, task.attempt_id)
+        exact = {
+            "attempt_id": task.attempt_id,
+            "execution_id": task.execution_id,
+            "fencing_token": task.fencing_token,
+            "completion_id": str(cleanup.completion_id),
+        }
+    assert ready.json() == {"items": [exact]}
+    response = client.post(
+        route + "/confirm",
+        headers=headers,
+        json={"items": [{**exact, "fencing_token": task.fencing_token + 1}]},
+    )
+    assert response.status_code == 503
+    for _ in range(2):
+        confirmed = client.post(route + "/confirm", headers=headers, json=ready.json())
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json() == ready.json()
+    assert client.post(route + "/observe", headers=headers, json={}).json() == {"items": []}
+    with factory() as session:
+        row = session.get(ExecutionAttempt, task.attempt_id)
+        assert row.journal_retired_at >= row.cleanup_settled_at
+        report = cleanup_execution_retention(session, now=now)
+        assert report.deleted == 1 and report.failures == 0
+    with factory() as session:
+        assert session.get(Execution, task.execution_id) is None
+        assert session.get(ExecutionAttempt, task.attempt_id) is None
+        assert session.get(WorkerCleanupIntentV4, task.attempt_id) is None
+        assert session.get(Adapter, task.adapter_id).archived_at is None
+
+
 def test_identity_reservation_is_disabled_by_default(api_client):
     assert api_client.post("/api/workers/v4/identities", json={}).status_code == 404
 
@@ -927,6 +1002,8 @@ def _assert_two_fixed_worker_scopes(client, factory, process, lease, trust_file,
         (("cancelled", "cancelled"), "python"),
         ("force_stop", "python"),
         ("force_stop_no_result", "python"),
+        ("force_stop_retention_ttl", "python"),
+        ("force_stop_retention_cap", "python"),
         ("cache_governance", "python"),
         ("legacy_adoption", "python"),
     ],
@@ -1753,6 +1830,15 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 select(ExecutionOutbox).where(ExecutionOutbox.execution_id == execution_id)
             )
             message = dict(row.payload_json)
+            if controlled_recovery in ("force_stop_retention_ttl", "force_stop_retention_cap"):
+                from dlr.control.services.outbox import lease_due_outbox, mark_outbox_published
+
+                # This PG fixture consumes the durable envelope directly.
+                # A pending Relay responsibility must continue to block retention.
+                outbox_id = row.id
+                leased = lease_due_outbox(session, "history-retirement-fixture")
+                assert [item.id for item in leased] == [outbox_id]
+                assert mark_outbox_published(session, outbox_id, "history-retirement-fixture")
         dispatch = deserialize_dispatch_message(message)
         worker_authority = V4AttemptAuthority(runtime_secret, instance, renewed.generation)
 
@@ -2175,7 +2261,12 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                 )
                 == 1
             )
-        if controlled_recovery in ("force_stop", "force_stop_no_result"):
+        if controlled_recovery in (
+            "force_stop",
+            "force_stop_no_result",
+            "force_stop_retention_ttl",
+            "force_stop_retention_cap",
+        ):
             base = f"/api/workers/{worker_id}/v4"
             drained = client.post(
                 f"{base}/drain",
@@ -2243,6 +2334,18 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
                     terminal_status="cancelled",
                 )
             assert client.get(f"{base}/status").json()["unsettled_attempts"] == 0
+            if controlled_recovery in ("force_stop_retention_ttl", "force_stop_retention_cap"):
+                _assert_live_history_retention(
+                    client,
+                    runtime_sessions,
+                    worker_id,
+                    lease,
+                    claimed,
+                    original_proof,
+                    cap=controlled_recovery == "force_stop_retention_cap",
+                    monkeypatch=monkeypatch,
+                )
+                return
             with session_factory.begin() as owner:
                 subscription = EventSubscription(
                     adapter_id=claimed.payload.adapter_id,
