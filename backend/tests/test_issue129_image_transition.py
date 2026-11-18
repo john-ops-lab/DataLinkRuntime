@@ -23,7 +23,6 @@ from dlr.control.models import (
     AdapterVersion,
     Execution,
     Worker,
-    WorkerIdentityReservation,
     WorkerInstanceHistory,
     WorkerLeaseCandidateV4,
 )
@@ -611,8 +610,14 @@ def _history(f):
             )
             .returning(workers.c.id, workers.c.identity_id, workers.c.name)
         ).one()
-        session.add(
-            WorkerIdentityReservation(
+        reservations = Table(
+            "worker_identity_reservations",
+            legacy,
+            autoload_with=session.connection(),
+            resolve_fks=False,
+        )
+        session.execute(
+            insert(reservations).values(
                 request_id=uuid4(), worker_id=worker.id, name=worker.name, actor_kind="superadmin"
             )
         )
