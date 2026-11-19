@@ -20,6 +20,7 @@ from dlr.control.models import (
     EventSubscription,
     Execution,
     ExecutionAttempt,
+    ExecutionInfrastructureIncident,
     ExecutionOutbox,
     GlobalExecutionAdmission,
     SubscriptionActivation,
@@ -402,6 +403,15 @@ def test_unknown_confirm_and_reused_owner_cannot_revive_old_generation(placement
         incident = infrastructure_dlq.reconcile_message(
             session, serialize_dispatch_message(current)
         )
+        actions = incident_disposition.inspect_incident_disposition(
+            session.get(Execution, execution_id),
+            session.get(ExecutionInfrastructureIncident, incident.incident_id),
+            active_attempts=False,
+            current_outbox=_intent(session, execution_id, 2),
+            can_edit=True,
+        )
+        assert not actions.recover_available and actions.terminate_available
+        assert actions.recover_reason == "incident_execution_unsupported"
         disposed = incident_disposition.dispose_incident(
             session,
             execution_id,
@@ -429,11 +439,21 @@ def test_relay_does_not_finish_held_publish_after_worker_lease_floor(placement, 
         assert boundary < session.get(WorkerResourceReservation, reservation_id).held_until
     with factory() as session:
         (lease,) = outbox.lease_due_outbox(session, "confirm-after-worker-proof")
+    with factory.begin() as session:
+        # Model a newer candidate becoming visible after Relay sampled time.
+        sampled_before = worker_availability.current_time(session)
+        newer = session.get(WorkerLeaseCandidateV4, worker_id)
+        newer.candidate_id = uuid4()
+        newer.revision += 1
+        newer.proof_before = worker_availability.current_time(session)
+        newer.writer_xid = session.scalar(select(func.pg_catalog.txid_current()))
+        assert sampled_before < newer.proof_before < newer.guard_until
+    with factory() as session:
         assert not outbox.mark_outbox_published(
             session,
             lease.id,
             "confirm-after-worker-proof",
-            now=boundary,
+            now=sampled_before,
             lease_attempt=lease.lease_attempt,
         )
         assert _intent(session, execution_id).status == "pending"

@@ -188,6 +188,8 @@ def inspect_incident_disposition(
         return IncidentActionCapabilities(
             False, "incident_execution_active", False, "incident_execution_active"
         )
+    if execution.requires_worker_reservation:
+        return IncidentActionCapabilities(False, "incident_execution_unsupported", True, None)
     return IncidentActionCapabilities(True, None, True, None)
 
 

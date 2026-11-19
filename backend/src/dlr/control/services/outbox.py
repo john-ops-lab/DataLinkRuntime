@@ -396,6 +396,9 @@ def _current_reservation(now: datetime) -> Any:
     """MVCC read only. The Relay locks Outbox rows and never locks Worker."""
     reservation = WorkerResourceReservation
     candidate = WorkerLeaseCandidateV4
+    # A fresh statement may see a successor committed after the caller read
+    # its clock. Time the observation in the same statement as the candidate.
+    observed_at = func.greatest(now, func.pg_catalog.clock_timestamp())
     timely_lease = (
         select(candidate.worker_id)
         .where(
@@ -405,9 +408,9 @@ def _current_reservation(now: datetime) -> Any:
             candidate.instance_generation == Worker.instance_generation,
             candidate.retired.is_(False),
             candidate.nominal_until == Worker.instance_lease_until,
-            candidate.nominal_until > now,
-            candidate.guard_until > now,
-            candidate.proof_before > now,
+            candidate.nominal_until > observed_at,
+            candidate.guard_until > observed_at,
+            candidate.proof_before > observed_at,
         )
         .correlate(Worker)
         .exists()
@@ -427,7 +430,7 @@ def _current_reservation(now: datetime) -> Any:
                 reservation.status.in_(("claimed", "reclaiming")),
                 and_(
                     reservation.status == "held",
-                    reservation.held_until > now,
+                    reservation.held_until > observed_at,
                     Worker.identity_id == reservation.worker_identity_id,
                     Worker.instance_id == reservation.instance_id,
                     Worker.instance_generation == reservation.instance_generation,
@@ -636,7 +639,10 @@ def _lease_current(
         and row.lease_expires_at > now
         and session.scalar(
             select(ExecutionOutbox.id).where(
-                ExecutionOutbox.id == row.id, _current_reservation(now)
+                ExecutionOutbox.id == row.id,
+                ExecutionOutbox.lease_expires_at
+                > func.greatest(now, func.pg_catalog.clock_timestamp()),
+                _current_reservation(now),
             )
         )
     )
