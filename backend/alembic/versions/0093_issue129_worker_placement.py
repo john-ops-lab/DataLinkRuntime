@@ -182,6 +182,9 @@ def upgrade() -> None:
         WHERE e.target_worker_id_snapshot = w.id AND w.protocol_version = 3
           AND w.identity_lifecycle = 'legacy'
     """)
+    # The backfill can enqueue the deferred subscription batch trigger.
+    # Flush its checks before further DDL on executions in this transaction.
+    op.execute("SET CONSTRAINTS ALL IMMEDIATE")
     op.create_check_constraint(
         "ck_executions_placement_cycle",
         "executions",

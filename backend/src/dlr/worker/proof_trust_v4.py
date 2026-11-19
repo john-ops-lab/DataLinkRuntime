@@ -34,8 +34,8 @@ def _unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def load(path: Path) -> ProofTrust:
-    """Load exact identity and public key from a private, stable local file."""
+def _read_private_object(path: Path) -> dict[str, object]:
+    """Read a closed Worker configuration object without opening substituted files."""
     fd = -1
     try:
         if (
@@ -78,7 +78,20 @@ def load(path: Path) -> ProofTrust:
         ):
             raise ValueError
         value = json.loads(bytes(data), object_pairs_hook=_unique_pairs)
-        if type(value) is not dict or set(value) != {
+        if type(value) is not dict:
+            raise ValueError
+        return value
+    finally:
+        if fd >= 0:
+            with suppress(OSError):
+                os.close(fd)
+
+
+def load(path: Path) -> ProofTrust:
+    """Load exact identity and public key from a private, stable local file."""
+    try:
+        value = _read_private_object(path)
+        if set(value) != {
             "schema_version",
             "cluster_id",
             "authority_epoch",
@@ -108,7 +121,3 @@ def load(path: Path) -> ProofTrust:
         return ProofTrust(cluster, epoch, bytes.fromhex(key))
     except Exception:
         raise ProofTrustUnavailable("worker proof trust unavailable") from None
-    finally:
-        if fd >= 0:
-            with suppress(OSError):
-                os.close(fd)

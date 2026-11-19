@@ -15,16 +15,12 @@ from dlr.common.worker_capacity_report import (
     SignedCapacityObservation,
     sign_observation,
 )
-from dlr.worker import sandbox
+from dlr.worker import proof_trust_v4, sandbox
 
 
 def read_signing_key(path: Path) -> bytes:
-    from dlr.control.services.control_declaration_v4 import read_private_json
-
-    if path.resolve(strict=True) != path:
-        raise ValueError("Worker verifier key unavailable")
-    data = read_private_json(str(path))
-    if type(data) is not dict or set(data) != {"schema_version", "host_capacity_signing_key"}:
+    data = proof_trust_v4._read_private_object(path)
+    if set(data) != {"schema_version", "host_capacity_signing_key"}:
         raise ValueError("Worker verifier key unavailable")
     key = data["host_capacity_signing_key"]
     if (

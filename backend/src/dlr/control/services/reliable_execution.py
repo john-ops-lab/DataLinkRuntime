@@ -606,6 +606,9 @@ def accept_execution(
         )
         execution.placement_origin = "v4"
         worker_placement_wait.start_cycle(execution, now=now, timeout_seconds=timeout)
+    elif worker is not None and worker.protocol_version == 3:
+        # The guarded legacy window can still accept work after schema upgrade.
+        execution.placement_origin = "legacy_v3"
     if lookup.record is not None:  # pragma: no cover - handled above
         raise AssertionError("duplicate idempotency record")
     if idempotency_key is not None:

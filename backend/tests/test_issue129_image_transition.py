@@ -342,6 +342,54 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
         assert tuple(rights) == (True, False)
 
 
+def test_placement_migration_backfills_a_settled_v3_execution(upgrade_database):  # noqa: F811
+    config = migration_config(upgrade_database)
+    command.upgrade(config, transition.W2_CAPACITY_SCHEMA)
+    with Session(upgrade_database) as session, session.begin():
+        legacy_worker = Worker(
+            name="legacy-settled-0092",
+            status="offline",
+            scheduling_state="disabled",
+            capabilities=["python"],
+        )
+        session.add(legacy_worker)
+        session.flush()
+        adapter_id = insert_legacy_adapter(
+            session, "legacy-settled", runtime_worker_id=legacy_worker.id
+        )
+        version = AdapterVersion(adapter_id=adapter_id, seq=1, code="pass", requirements="")
+        session.add(version)
+        session.flush()
+        executions = Table(
+            "executions", MetaData(), autoload_with=session.connection(), resolve_fks=False
+        )
+        legacy_execution_id = session.scalar(
+            insert(executions)
+            .values(
+                adapter_id=adapter_id,
+                version_id=version.id,
+                target_worker_id=legacy_worker.id,
+                target_worker_id_snapshot=legacy_worker.id,
+                worker_id=legacy_worker.id,
+                trigger="manual",
+                status="succeeded",
+                input={},
+                admission_released_at=text("now()"),
+                locale="zh-CN",
+                input_source_type="json",
+                input_config_revision=1,
+                input_snapshot={"source_type": "json", "revision": 1},
+            )
+            .returning(executions.c.id)
+        )
+    command.upgrade(config, SCHEMA_REVISION)
+    with Session(upgrade_database) as session:
+        assert session.execute(
+            text("SELECT placement_origin, placement_deadline_at FROM executions WHERE id=:id"),
+            {"id": legacy_execution_id},
+        ).one() == ("legacy_v3", None)
+
+
 def test_control_proof_rotation_preserves_initial_epoch_and_fences_stale_declarations(
     offline, tmp_path, monkeypatch
 ):

@@ -1,5 +1,8 @@
 """Isolated W2 assignment, custody and v4 Claim with real PostgreSQL sessions."""
 
+import os
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Barrier, Event
@@ -70,7 +73,14 @@ from dlr.control.services.worker_lease_candidates_v4 import (
     stage_renewal_candidate,
 )
 from dlr.control.services.worker_lease_proof_v4 import public_key_bytes
-from test_issue129_pool_routing import pool_setup  # noqa: F401
+from dlr.control.services.worker_remote_deployment_v4 import (
+    RemoteDeploymentUnavailable,
+    require_dedicated_deployment,
+)
+from test_issue129_pool_routing import (
+    pool_setup,  # noqa: F401
+    register,
+)
 from test_issue219_delivery import delivery_id, receive, world  # noqa: F401
 from test_issue222_business_batch import batch_world  # noqa: F401
 from test_issue222_business_batch import receive as receive_batch
@@ -274,6 +284,7 @@ def test_cutover_pauses_new_claim_and_fences_old_published_dispatch(placement):
     assert proposal is None
     with factory.begin() as session:
         accepted = _ordinary(session, route, "pool-after-cutover", staged=False)
+        accepted_id = accepted.id
         assert accepted.requires_worker_reservation
         assert accepted.placement_origin == "v4" and accepted.placement_hold_count == 0
         assert accepted.placement_deadline_at == accepted.queued_at + timedelta(seconds=900)
@@ -282,6 +293,13 @@ def test_cutover_pauses_new_claim_and_fences_old_published_dispatch(placement):
         assert converted.attempt_count == 0
         assert _intent(session, execution_id).status == "superseded"
         assert _intent(session, execution_id, 2).status == "awaiting_target"
+    with factory() as session:
+        require_dedicated_deployment(session)
+    with factory() as session:
+        session.delete(_intent(session, accepted_id))
+        session.flush()
+        with pytest.raises(RemoteDeploymentUnavailable, match="incompatible"):
+            require_dedicated_deployment(session, readonly=True)
 
 
 def _enable_test_scheduler(session):
@@ -291,6 +309,28 @@ def _enable_test_scheduler(session):
     gate.mode = "reserved"
     gate.paused_at = gate.enabled_at = now
     session.flush()
+
+
+def test_v3_accepted_after_upgrade_has_no_retroactive_placement_expiry(
+    placement, api_client, monkeypatch
+):
+    factory, _, _, _, _ = placement
+    monkeypatch.setattr(settings, "worker_remote_v4_enabled", False)
+    worker_id = register(api_client, "legacy-after-upgrade")
+    with factory.begin() as session:
+        old = _ordinary(session, None, "legacy-retained", fixed_worker=worker_id, staged=False)
+        assert old.placement_origin == "legacy_v3"
+        execution_id = old.id
+    monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
+    with factory.begin() as session:
+        assert worker_placement_cutover.pause(session) == "paused"
+    with factory.begin() as session:
+        assert worker_placement_cutover.convert_waiting(session, execution_id)
+        converted = session.get(Execution, execution_id)
+        assert converted.placement_origin == "legacy_v3"
+        assert converted.placement_deadline_at is None
+        assert converted.placement_wait_timeout_seconds is None
+        assert not worker_placement_wait.expire_queued(session, execution_id)
 
 
 def test_placement_limit_retry_expiration_and_cancel_keep_one_responsibility(placement, api_client):
@@ -515,6 +555,29 @@ def test_post_claim_capacity_failure_keeps_charge_and_needs_fresh_preflight(plac
     )["placement_ledger"]
     assert ledger["capacity"]["allocatable"] is None
     assert ledger["claimed"]["slots"] == 0 and ledger["reclaiming"]["slots"] == 1
+
+
+def test_capacity_key_can_load_on_a_standalone_worker_without_control_configuration(tmp_path):
+    key_file = tmp_path.resolve() / "capacity-key.json"
+    key_file.write_text('{"schema_version":1,"host_capacity_signing_key":"' + "ab" * 32 + '"}')
+    key_file.chmod(0o600)
+    # A standalone Worker has its own Broker file, with no Control settings.
+    environment = {name: value for name, value in os.environ.items() if not name.startswith("DLR_")}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import sys; "
+            "from dlr.worker.capacity_attestation_v4 import read_signing_key; "
+            "assert read_signing_key(Path(sys.argv[1])) == bytes.fromhex('ab' * 32)",
+            str(key_file),
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_two_controls_contend_for_last_capacity_and_cancel_with_maintenance(placement):
