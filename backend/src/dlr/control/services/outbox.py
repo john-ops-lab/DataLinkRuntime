@@ -21,12 +21,21 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 import pika
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
-from dlr.control.models import Adapter, Execution, ExecutionOutbox, WorkerCacheGuard
-from dlr.control.schemas.worker_pool import FixedRoute
+from dlr.control.models import (
+    Adapter,
+    Execution,
+    ExecutionOutbox,
+    Worker,
+    WorkerCacheGuard,
+    WorkerLeaseCandidateV4,
+    WorkerResourceReservation,
+)
+from dlr.control.models.reliable_execution import OPEN_OUTBOX_STATES
+from dlr.control.schemas.worker_pool import FixedRoute, PoolRoute
 from dlr.control.services import rabbitmq, worker_legacy_window, worker_pool
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.dispatch import (
@@ -243,6 +252,7 @@ class LeasedOutbox:
     message_id: uuid.UUID
     routing_key: str
     payload_json: dict[str, object]
+    lease_attempt: int = 0
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -264,14 +274,21 @@ def dispatch_payload_for_execution(
     if execution.dispatch_backend != "rabbitmq" or execution.dispatch_generation < 1:
         raise ValueError("only RabbitMQ generations can create an Outbox row")
     snapshot = worker_pool.stored_snapshot(execution.route_snapshot)
-    target_worker_id = execution.target_worker_id_snapshot
-    if snapshot is not None:
+    target_worker_id = (
+        execution.target_worker_id
+        if execution.requires_worker_reservation
+        else execution.target_worker_id_snapshot
+    )
+    if snapshot is not None and not execution.requires_worker_reservation:
         worker_pool.require_fixed_route(snapshot.route)
     if target_worker_id is None or (
         snapshot is not None
         and (
-            not isinstance(snapshot.route, FixedRoute)
-            or snapshot.route.worker_id != target_worker_id
+            (
+                isinstance(snapshot.route, FixedRoute)
+                and snapshot.route.worker_id != target_worker_id
+            )
+            or (isinstance(snapshot.route, PoolRoute) and not execution.requires_worker_reservation)
         )
     ):
         raise domain_error(409, "execution_route_unavailable", "Frozen Worker is unavailable")
@@ -320,6 +337,17 @@ def create_dispatch_outbox(
     )
     if existing is not None:
         return existing
+    if execution.requires_worker_reservation:
+        row = ExecutionOutbox(
+            execution_id=execution.id,
+            dispatch_generation=execution.dispatch_generation,
+            status="awaiting_target",
+            payload_bytes=settings.rabbitmq_dispatch_message_max_bytes,
+            available_at=_as_utc(available_at if available_at is not None else _now(session)),
+        )
+        session.add(row)
+        session.flush()
+        return row
     payload, body, routing_key, message_id = dispatch_payload_for_execution(
         session, execution, message_id=message_id
     )
@@ -336,6 +364,85 @@ def create_dispatch_outbox(
     session.add(row)
     session.flush()
     return row
+
+
+def bind_reservation(
+    session: Session,
+    execution: Execution,
+    row: ExecutionOutbox,
+    reservation: WorkerResourceReservation,
+) -> None:
+    """Convert a prepaid intent to immutable wire bytes under the full lock prefix."""
+    payload, body, routing_key, _ = dispatch_payload_for_execution(
+        session, execution, message_id=row.message_id
+    )
+    if row.status != "awaiting_target" or len(body) > row.payload_bytes:
+        raise ValueError("Outbox reservation exceeds the original prepaid dispatch envelope")
+    row.payload_json = payload
+    row.payload_bytes = len(body)
+    row.routing_key = routing_key
+    row.reservation_id = reservation.id
+    row.status = "pending"
+
+
+def supersede(row: ExecutionOutbox, reason: str) -> None:
+    row.status = "superseded"
+    row.lease_owner = None
+    row.lease_expires_at = None
+    row.last_error_code = reason
+
+
+def _current_reservation(now: datetime) -> Any:
+    """MVCC read only. The Relay locks Outbox rows and never locks Worker."""
+    reservation = WorkerResourceReservation
+    candidate = WorkerLeaseCandidateV4
+    # A fresh statement may see a successor committed after the caller read
+    # its clock. Time the observation in the same statement as the candidate.
+    observed_at = func.greatest(now, func.pg_catalog.clock_timestamp())
+    timely_lease = (
+        select(candidate.worker_id)
+        .where(
+            candidate.worker_id == Worker.id,
+            candidate.worker_identity_id == Worker.identity_id,
+            candidate.instance_id == Worker.instance_id,
+            candidate.instance_generation == Worker.instance_generation,
+            candidate.retired.is_(False),
+            candidate.nominal_until == Worker.instance_lease_until,
+            candidate.nominal_until > observed_at,
+            candidate.guard_until > observed_at,
+            candidate.proof_before > observed_at,
+        )
+        .correlate(Worker)
+        .exists()
+    )
+    return (
+        select(reservation.id)
+        .join(Execution, Execution.id == reservation.execution_id)
+        .join(Worker, Worker.id == reservation.worker_id)
+        .where(
+            reservation.id == ExecutionOutbox.reservation_id,
+            reservation.execution_id == ExecutionOutbox.execution_id,
+            reservation.dispatch_generation == ExecutionOutbox.dispatch_generation,
+            Execution.dispatch_generation == reservation.dispatch_generation,
+            Execution.requires_worker_reservation,
+            Execution.target_worker_id == reservation.worker_id,
+            or_(
+                reservation.status.in_(("claimed", "reclaiming")),
+                and_(
+                    reservation.status == "held",
+                    reservation.held_until > observed_at,
+                    Worker.identity_id == reservation.worker_identity_id,
+                    Worker.instance_id == reservation.instance_id,
+                    Worker.instance_generation == reservation.instance_generation,
+                    Worker.status == "online",
+                    Worker.scheduling_state == "active",
+                    Worker.capacity_state == "ready",
+                    timely_lease,
+                ),
+            ),
+        )
+        .exists()
+    )
 
 
 def _pending_filter(now: datetime) -> Any:
@@ -363,7 +470,7 @@ def lease_due_outbox(
         select(Execution.id)
         .join(
             WorkerCacheGuard,
-            (WorkerCacheGuard.worker_id == Execution.target_worker_id_snapshot)
+            (WorkerCacheGuard.worker_id == Execution.target_worker_id)
             & (WorkerCacheGuard.version_id == Execution.version_id),
         )
         .where(
@@ -377,12 +484,21 @@ def lease_due_outbox(
             select(ExecutionOutbox)
             .where(
                 *_pending_filter(effective_now),
-                ~select(Execution.id)
-                .where(
-                    Execution.id == ExecutionOutbox.execution_id,
-                    Execution.route_pool_id.is_not(None),
-                )
-                .exists(),
+                or_(
+                    _current_reservation(effective_now),
+                    and_(
+                        ExecutionOutbox.reservation_id.is_(None),
+                        ~select(Execution.id)
+                        .where(
+                            Execution.id == ExecutionOutbox.execution_id,
+                            or_(
+                                Execution.route_pool_id.is_not(None),
+                                Execution.requires_worker_reservation,
+                            ),
+                        )
+                        .exists(),
+                    ),
+                ),
                 (ExecutionOutbox.last_error_code.is_distinct_from("cache_reclamation_in_progress"))
                 | ~guarded_deferred_execution,
             )
@@ -394,7 +510,9 @@ def lease_due_outbox(
     lease_until = effective_now + timedelta(seconds=settings.rabbitmq_outbox_lease_seconds)
     leased: list[LeasedOutbox] = []
     for row in rows:
-        if settings.worker_remote_v4_enabled:
+        if row.routing_key is None or row.payload_json is None:
+            continue
+        if settings.worker_remote_v4_enabled and row.reservation_id is None:
             from dlr.control.services.worker_stage_capability_v4 import dispatch_blocked
 
             if dispatch_blocked(session, row.execution_id):
@@ -415,6 +533,7 @@ def lease_due_outbox(
                 message_id=row.message_id,
                 routing_key=row.routing_key,
                 payload_json=dict(row.payload_json),
+                lease_attempt=row.publish_attempts,
             )
         )
     session.commit()
@@ -441,10 +560,10 @@ def release_outbox_lease(
     error_code: str,
     now: datetime | None = None,
     backoff_seconds: float | None = None,
+    lease_attempt: int | None = None,
 ) -> bool:
     """Release only a still-owned pending row and schedule bounded retry."""
 
-    effective_now = _as_utc(now if now is not None else _now(session))
     row = session.scalar(
         select(ExecutionOutbox)
         .where(
@@ -453,8 +572,10 @@ def release_outbox_lease(
             ExecutionOutbox.lease_owner == owner,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    if row is None:
+    effective_now = _as_utc(now if now is not None else _now(session))
+    if row is None or not _lease_current(session, row, effective_now, lease_attempt):
         session.rollback()
         return False
     delay = (
@@ -473,7 +594,12 @@ def release_outbox_lease(
 
 
 def mark_outbox_published(
-    session: Session, outbox_id: uuid.UUID, owner: str, *, now: datetime | None = None
+    session: Session,
+    outbox_id: uuid.UUID,
+    owner: str,
+    *,
+    now: datetime | None = None,
+    lease_attempt: int | None = None,
 ) -> bool:
     """Mark published only if this Relay still owns the lease."""
 
@@ -485,17 +611,41 @@ def mark_outbox_published(
             ExecutionOutbox.lease_owner == owner,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    if row is None:
+    effective_now = _as_utc(now if now is not None else _now(session))
+    if row is None or not _lease_current(session, row, effective_now, lease_attempt):
         session.rollback()
         return False
     row.status = "published"
-    row.published_at = _as_utc(now if now is not None else _now(session))
+    row.published_at = effective_now
     row.lease_owner = None
     row.lease_expires_at = None
     row.last_error_code = None
     session.commit()
     return True
+
+
+def _lease_current(
+    session: Session, row: ExecutionOutbox, now: datetime, lease_attempt: int | None
+) -> bool:
+    if lease_attempt is not None and row.publish_attempts != lease_attempt:
+        return False
+    if row.reservation_id is None:
+        return True
+    return bool(
+        lease_attempt is not None
+        and row.lease_expires_at is not None
+        and row.lease_expires_at > now
+        and session.scalar(
+            select(ExecutionOutbox.id).where(
+                ExecutionOutbox.id == row.id,
+                ExecutionOutbox.lease_expires_at
+                > func.greatest(now, func.pg_catalog.clock_timestamp()),
+                _current_reservation(now),
+            )
+        )
+    )
 
 
 def settle_pending_outbox(
@@ -521,7 +671,7 @@ def settle_pending_outbox(
                 select(ExecutionOutbox)
                 .where(
                     ExecutionOutbox.execution_id == execution_id,
-                    ExecutionOutbox.status == "pending",
+                    ExecutionOutbox.status.in_(OPEN_OUTBOX_STATES),
                 )
                 .order_by(ExecutionOutbox.dispatch_generation.asc(), ExecutionOutbox.id.asc())
                 .with_for_update()
@@ -532,10 +682,13 @@ def settle_pending_outbox(
         rows = [
             row
             for row in locked_rows
-            if row.execution_id == execution_id and row.status == "pending"
+            if row.execution_id == execution_id and row.status in OPEN_OUTBOX_STATES
         ]
     effective_now = _as_utc(now if now is not None else _now(session))
     for row in rows:
+        if row.status == "awaiting_target" or row.reservation_id is not None:
+            supersede(row, disposition)
+            continue
         row.status = "published"
         row.published_at = effective_now
         row.lease_owner = None
@@ -569,7 +722,7 @@ def backlog(session: Session) -> OutboxBacklog:
             func.count(ExecutionOutbox.id),
             func.coalesce(func.sum(ExecutionOutbox.payload_bytes), 0),
             func.min(ExecutionOutbox.created_at),
-        ).where(ExecutionOutbox.status == "pending")
+        ).where(ExecutionOutbox.status.in_(OPEN_OUTBOX_STATES))
     ).one()
     return OutboxBacklog(int(count or 0), int(payload_bytes or 0), oldest)
 
@@ -908,6 +1061,7 @@ def _relay_once(
                 row.id,
                 owner,
                 error_code="dispatch_payload_invalid",
+                lease_attempt=row.lease_attempt,
             )
         else:
             valid_rows.append((row, message))
@@ -936,6 +1090,7 @@ def _relay_once(
                 row.id,
                 owner,
                 error_code="publish_timeout_or_connection",
+                lease_attempt=row.lease_attempt,
             )
         return OutboxRelayResult(len(rows), published, failed)
     try:
@@ -962,6 +1117,7 @@ def _relay_once(
                     row.id,
                     owner,
                     error_code=error_code,
+                    lease_attempt=row.lease_attempt,
                 )
             return OutboxRelayResult(len(rows), published, failed)
         except Exception:
@@ -974,6 +1130,7 @@ def _relay_once(
                     row.id,
                     owner,
                     error_code="topology_unavailable",
+                    lease_attempt=row.lease_attempt,
                 )
             return OutboxRelayResult(len(rows), published, failed)
         # A Relay batch only probes the target subset it happened to lease.
@@ -1014,7 +1171,9 @@ def _relay_once(
                 if publisher is not None:
                     publisher.close()
                 failed += 1
-                release_outbox_lease(session, row.id, owner, error_code=exc.code)
+                release_outbox_lease(
+                    session, row.id, owner, error_code=exc.code, lease_attempt=row.lease_attempt
+                )
                 if publisher is not None or exc.code in {
                     "publisher_confirm_timeout",
                     "publisher_confirm_timeout_unavailable",
@@ -1026,6 +1185,7 @@ def _relay_once(
                             session,
                             remaining.id,
                             owner,
+                            lease_attempt=remaining.lease_attempt,
                             error_code=(
                                 "publish_timeout_or_connection"
                                 if publisher is not None
@@ -1038,16 +1198,26 @@ def _relay_once(
                     publisher.close()
                 failed += 1
                 logger.error("outbox publish failed: id=%s code=publish_failed", row.id)
-                release_outbox_lease(session, row.id, owner, error_code="publish_failed")
+                release_outbox_lease(
+                    session,
+                    row.id,
+                    owner,
+                    error_code="publish_failed",
+                    lease_attempt=row.lease_attempt,
+                )
                 if publisher is not None:
                     for remaining, _ in valid_rows[index + 1 :]:
                         failed += 1
                         release_outbox_lease(
-                            session, remaining.id, owner, error_code="publish_failed"
+                            session,
+                            remaining.id,
+                            owner,
+                            error_code="publish_failed",
+                            lease_attempt=remaining.lease_attempt,
                         )
                     break
             else:
-                if mark_outbox_published(session, row.id, owner):
+                if mark_outbox_published(session, row.id, owner, lease_attempt=row.lease_attempt):
                     published += 1
     finally:
         if publisher is not None and failed:

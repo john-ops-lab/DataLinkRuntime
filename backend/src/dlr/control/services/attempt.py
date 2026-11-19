@@ -419,6 +419,7 @@ def claim_dispatch(
             Execution.dispatch_backend,
             Execution.version_id,
             Execution.target_worker_id_snapshot,
+            Execution.requires_worker_reservation,
         ).where(Execution.id == message.execution_id)
     ).one_or_none()
     if identity is None:
@@ -429,7 +430,12 @@ def claim_dispatch(
             execution_id=message.execution_id,
             dispatch_generation=message.dispatch_generation,
         )
-    adapter_id, dispatch_backend, version_id, target_worker_id_snapshot = identity
+    adapter_id, dispatch_backend, version_id, target_worker_id_snapshot, requires_reservation = (
+        identity
+    )
+    if requires_reservation:
+        session.rollback()
+        return _decision("PAUSE_CONSUMER", "worker_protocol_incompatible", retry_after_seconds=30)
     if dispatch_backend == "rabbitmq":
         admission_scope = admission.lock_admission_scope(session, int(adapter_id))
         adapter = session.get(Adapter, int(adapter_id)) if admission_scope is not None else None
@@ -1562,6 +1568,7 @@ def retry_dispatcher_once(
                 Execution.dispatch_backend == "rabbitmq",
                 Execution.status == "retry_wait",
                 Execution.next_attempt_at <= effective_now,
+                ~Execution.requires_worker_reservation,
                 Execution.route_pool_id.is_(None),
                 Execution.target_worker_id_snapshot.is_not(None),
             )

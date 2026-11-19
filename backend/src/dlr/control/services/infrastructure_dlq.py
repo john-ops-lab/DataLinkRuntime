@@ -250,6 +250,7 @@ def reconcile_message(
         incident.resolved_at = now
     elif (
         message is not None
+        and not execution.requires_worker_reservation
         and message.dispatch_generation == execution.dispatch_generation
         and message.adapter_id == execution.adapter_id
         and adapter is not None

@@ -28,3 +28,9 @@
 2. 使用 owner 离线从 `0090_issue129_worker_cutover` 升至 `0091_issue129_pool_routing`。支持 W1 发布提交 `347be42970a765fc08557528991134d60c79dcae` 及已接受镜像来源 `bbfedfa93f37f9c008084085e8bbb7998fba8897`。J 部署先沿原有 J→0090 路径升级。保留闭合的前序链。
 3. 使用 owner 连接，依次运行 `python -m dlr.control.control_identity_init_v4` 的 `check`、`apply` 和独立 `observe` 子命令。三次传入相同私有 `--source`、`--target`、`--intent`，并按 previous、root、origin、ancestor、initial、earliest 提供前序 source/intent 对。新增一对为 `--earliest-source` 和 `--earliest-intent`。应答不明时观察原意图；独立读回 `committed_current` 后再以运行角色恢复服务。
 4. 历史 Execution、Activation 使用各自已记录的固定 Worker 回填，缺乏固定目标的历史 Execution 保留未分类。本次升级开放停止态草稿。生产 Pool 接收待后续统一完成容量对账、派发前预留、有界等待及故障恢复后切换。
+
+### 容量账本升级
+
+`0091_issue129_pool_routing` 的受支持来源为发布提交 `f536419b59282891cf537e2d8fef65b7e8b92d1c`。排空后沿用上述 owner 流程升级至 `0092_issue129_worker_capacity`。完整前序链多带一对 `--first-source` 和 `--first-intent`。独立读回 `committed_current` 后，运行角色可恢复固定 Worker 服务。
+
+此版本在隔离环境验证容量与预留账本。容量取自扣除系统和 Agent 余量的已核实实例限额，两个时间戳均须在 15 秒内。等待选址的执行预付一个最大派发消息，选址后按实际消息字节结算，预留有效期为 30 秒。生产 Pool 接收与固定 Worker 的预留切换统一留待停领、排空、容量对账及恢复流程验收。

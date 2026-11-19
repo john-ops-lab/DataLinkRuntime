@@ -482,7 +482,10 @@ def receive_event(
 
 
 def _delivery_context(
-    session: Session, delivery_id: int
+    session: Session,
+    delivery_id: int,
+    *,
+    execution_batch_id: int | None = None,
 ) -> tuple[Adapter, EventSubscription, SourceCheckpoint, EventReceipt, EventDelivery]:
     info = session.execute(
         select(EventReceipt.subscription_id, EventReceipt.id)
@@ -505,6 +508,10 @@ def _delivery_context(
     )
     if receipt_info.batch_id is not None:
         session.get(SyncBatch, receipt_info.batch_id, with_for_update=True, populate_existing=True)
+    if execution_batch_id is not None:
+        from dlr.control.models.subscription_business_batch import SubscriptionExecutionBatch
+
+        session.get(SubscriptionExecutionBatch, execution_batch_id, with_for_update=True)
     receipt = session.get(EventReceipt, info[1], with_for_update=True, populate_existing=True)
     delivery = session.get(EventDelivery, delivery_id, with_for_update=True, populate_existing=True)
     assert receipt is not None and delivery is not None and checkpoint is not None
@@ -519,7 +526,9 @@ def delivery_route_source(delivery: EventDelivery) -> RouteSource:
     return "original" if delivery.ordinal > 1 else "activation"
 
 
-def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
+def dispatch_delivery(
+    session: Session, delivery_id: int, *, use_worker_reservations: bool = False
+) -> Execution | None:
     """T2 commits Admission, immutable Execution, Outbox, delivery and quota together."""
     from dlr.control.services.reliable_execution import accept_execution
 
@@ -569,9 +578,13 @@ def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
         SubscriptionActivation, delivery.activation_override_id or receipt.activation_id
     )
     assert activation is not None
-    worker_id = worker_pool.require_activation_worker(activation)
+    worker_id = worker_pool.delivery_target(
+        activation, use_worker_reservations=use_worker_reservations
+    )
     if business_batch.activation_mode(session, activation) == "business_batch":
-        return business_batch.materialize_batch(session, delivery_id)
+        return business_batch.materialize_batch(
+            session, delivery_id, use_worker_reservations=use_worker_reservations
+        )
     refs = session.scalars(
         select(ActivationCredentialReference).where(
             ActivationCredentialReference.activation_id == activation.id
@@ -591,6 +604,7 @@ def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
                 version_id=delivery.revision_override_id or activation.revision_id,
                 worker_id_override=worker_id,
                 subscription_activation_id=activation.id,
+                use_worker_reservations=use_worker_reservations,
                 route_source=delivery_route_source(delivery),
                 credential_bindings_override=[
                     {

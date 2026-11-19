@@ -94,6 +94,7 @@ from dlr.control.models.subscription_business_batch import (
 from dlr.control.models.system import SystemSetting
 from dlr.control.models.user_template import UserTemplate
 from dlr.control.models.webhook import AdapterWebhook
+from dlr.control.models.worker_capacity import WorkerCapacities, WorkerResourceReservation
 from dlr.control.models.worker_cleanup import WorkerCleanupRequest
 from dlr.control.models.worker_cleanup_intent_v4 import WorkerCleanupIntentV4
 from dlr.control.models.worker_credential_audit import WorkerCredentialAudit
@@ -179,6 +180,8 @@ __all__ = [
     "WorkerLeaseCandidateV4",
     "WorkerMaintenanceOperation",
     "WorkerCapabilityObservation",
+    "WorkerCapacities",
+    "WorkerResourceReservation",
     "WorkerEnvironmentClass",
     "WorkerPool",
     "WorkerPoolAudit",

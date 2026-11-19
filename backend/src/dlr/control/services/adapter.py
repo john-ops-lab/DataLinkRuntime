@@ -28,7 +28,7 @@ from dlr.control.models import (
     WorkerIdentityReservation,
 )
 from dlr.control.models.platform import AdapterCredentialBinding
-from dlr.control.models.reliable_execution import WorkerAdapterStorageOwnerV4
+from dlr.control.models.reliable_execution import OPEN_OUTBOX_STATES, WorkerAdapterStorageOwnerV4
 from dlr.control.schemas.adapter import (
     AdapterCreate,
     AdapterResponse,
@@ -594,7 +594,7 @@ def _settle_terminal_rabbitmq_responsibilities(session: Session, adapter_id: int
         .where(
             Execution.adapter_id == adapter_id,
             Execution.dispatch_backend == "rabbitmq",
-            ExecutionOutbox.status == "pending",
+            ExecutionOutbox.status.in_(OPEN_OUTBOX_STATES),
         )
         .order_by(ExecutionOutbox.execution_id.asc())
         .limit(1)

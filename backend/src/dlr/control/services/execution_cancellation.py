@@ -6,15 +6,19 @@ cancellation with Claim and Attempt transitions.
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from dlr.control.models import (
+    Adapter,
     AdapterExecutionSlot,
+    EventDelivery,
+    EventReceipt,
     Execution,
     ExecutionAttempt,
     ExecutionInfrastructureIncident,
     ExecutionOutbox,
+    WorkerResourceReservation,
 )
 
 ACTIVE_EXECUTION_STATUSES = ("running",)
@@ -31,6 +35,7 @@ class ExecutionLockTail:
     slot: AdapterExecutionSlot
     incidents: tuple[ExecutionInfrastructureIncident, ...]
     outbox_rows: tuple[ExecutionOutbox, ...]
+    reservation: WorkerResourceReservation | None = None
 
 
 def lock_nonterminal_executions(session: Session, adapter_id: int) -> list[Execution]:
@@ -104,7 +109,7 @@ def lock_incidents_and_outbox(
 
 
 def lock_execution_tail(session: Session, execution: Execution) -> ExecutionLockTail:
-    """Lock Attempt→Slot→Incident→Outbox after the caller holds Execution."""
+    """Lock the lifecycle suffix after the caller holds Execution."""
 
     attempts = lock_execution_attempts(session, execution.id)
     slot = session.scalar(
@@ -120,8 +125,39 @@ def lock_execution_tail(session: Session, execution: Execution) -> ExecutionLock
         slot = AdapterExecutionSlot(adapter_id=execution.adapter_id, slot_no=0)
         session.add(slot)
         session.flush()
+    from dlr.control.services.worker_reservation import lock_target
+
+    _, _, _, reservation = lock_target(session, execution)
     incidents, outbox_rows = lock_incidents_and_outbox(session, execution.id)
-    return ExecutionLockTail(attempts, slot, incidents, outbox_rows)
+    return ExecutionLockTail(attempts, slot, incidents, outbox_rows, reservation)
+
+
+def lock_reserved_subscription_scope(session: Session, execution_id: int) -> None:
+    """Lock the T2 custody prefix after Adapter and before admission counters."""
+    from dlr.control.services.subscription_delivery import _delivery_context, _quotas
+
+    delivery_ids = list(
+        session.scalars(
+            select(EventDelivery.id)
+            .join(EventReceipt, EventReceipt.id == EventDelivery.receipt_id)
+            .where(
+                or_(
+                    EventDelivery.execution_id == execution_id,
+                    EventDelivery.batch_execution_id == execution_id,
+                )
+            )
+            .order_by(EventReceipt.id, EventDelivery.id)
+        )
+    )
+    if not delivery_ids:
+        # Ordinary Execution has no T2 custody prefix.
+        return
+    _, subscription, _, _, _ = _delivery_context(
+        session, delivery_ids[0], execution_batch_id=execution_id
+    )
+    for delivery_id in delivery_ids[1:]:
+        _delivery_context(session, delivery_id)
+    _quotas(session, subscription.id)
 
 
 def lock_execution_in_admission_order(
@@ -143,6 +179,7 @@ def lock_execution_in_admission_order(
             Execution.target_worker_id_snapshot,
             Execution.target_worker_id,
             Execution.worker_id,
+            Execution.requires_worker_reservation,
         ).where(Execution.id == execution_id)
     ).one_or_none()
     if identity is None:
@@ -154,13 +191,21 @@ def lock_execution_in_admission_order(
         target_worker_id_snapshot,
         target_worker_id,
         actual_worker_id,
+        requires_worker_reservation,
     ) = identity
     if dispatch_backend == "rabbitmq":
         from dlr.control.services import admission
 
+        if requires_worker_reservation:
+            if (
+                session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
+                is None
+            ):
+                return None
+            lock_reserved_subscription_scope(session, execution_id)
         if admission.lock_admission_scope(session, int(adapter_id)) is None:
             return None
-    if guard_reactivation:
+    if guard_reactivation and not requires_worker_reservation:
         worker_id = target_worker_id_snapshot or target_worker_id or actual_worker_id
         if worker_id is None:
             from dlr.control.services.adapter import domain_error

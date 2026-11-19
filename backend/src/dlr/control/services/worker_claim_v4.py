@@ -1,8 +1,4 @@
-"""Isolated fixed-route v4 Claim. Not wired to a production router or consumer.
-
-Wave 1 uses the local Worker resource budget; server-side reservation belongs
-to the later Pool wave. The caller owns the successful Claim transaction.
-"""
+"""v4 Claim for W1 fixed dispatch and staged reservation-bound dispatch."""
 
 from __future__ import annotations
 
@@ -49,7 +45,12 @@ from dlr.control.schemas.worker import isolation_capabilities_ready
 from dlr.control.services import business_credentials_v4 as business_credentials
 from dlr.control.services import package_source as package_source_service
 from dlr.control.services import secrets as secrets_service
-from dlr.control.services import worker_availability, worker_credentials
+from dlr.control.services import (
+    worker_availability,
+    worker_capacity,
+    worker_credentials,
+    worker_reservation,
+)
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.attempt import (
     ACTIVE_ATTEMPT_STATUSES,
@@ -71,6 +72,7 @@ from dlr.control.services.dispatch import (
 from dlr.control.services.execution_cancellation import (
     lock_execution_attempts,
     lock_incidents_and_outbox,
+    lock_reserved_subscription_scope,
 )
 from dlr.control.services.worker_lease_candidates_v4 import (
     LeaseCandidateError,
@@ -382,7 +384,7 @@ def _claim_fixed(
     _proof_context: ClaimProofContext,
     _proposal: ClaimProposal | None = None,
 ) -> V4ClaimDecision:
-    """Prepare a fixed dispatch Claim; the caller must fence and commit it."""
+    """Prepare a dispatch Claim; the caller must fence and commit it."""
     if type(_wire_budget) is not ClaimWireBudget:
         raise ValueError("invalid claim wire budget")
     if type(_proof_context) is not ClaimProofContext:
@@ -390,14 +392,18 @@ def _claim_fixed(
     if _proposal is not None and type(_proposal) is not ClaimProposal:
         raise ValueError("invalid claim proposal")
     identity = session.execute(
-        select(Execution.adapter_id, Execution.version_id).where(
-            Execution.id == message.execution_id
-        )
+        select(
+            Execution.adapter_id, Execution.version_id, Execution.requires_worker_reservation
+        ).where(Execution.id == message.execution_id)
     ).one_or_none()
     if identity is None:
         return _pause(session, "execution_unavailable")
-    adapter_id, version_id = identity
+    adapter_id, version_id, requires_reservation = identity
     adapter = session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
+    if adapter is None:
+        return _pause(session, "admission_state_invalid")
+    if requires_reservation:
+        lock_reserved_subscription_scope(session, message.execution_id)
     adapter_counter = session.get(
         AdapterExecutionAdmission, adapter_id, with_for_update=True, populate_existing=True
     )
@@ -442,6 +448,7 @@ def _claim_fixed(
     )
     if slot is None:
         return _pause(session, "attempt_slot_invalid")
+    pool = worker_reservation.lock_pool(session, execution)
     try:
         worker = worker_credentials.authenticate_runtime_credential(
             session, worker_id, authority.credential
@@ -470,7 +477,14 @@ def _claim_fixed(
     history = session.get(WorkerInstanceHistory, (worker_id, authority.instance_id))
     if history is None or history.generation != authority.instance_generation:
         return _pause(session, "worker_instance_history_invalid")
-    # Lock the same suffix as cancellation; no Incident or Outbox facts are changed.
+    capacity = reservation = None
+    if (
+        requires_reservation
+        and message.dispatch_generation == execution.dispatch_generation
+        and execution.target_worker_id == worker_id
+    ):
+        capacity = worker_capacity.lock_capacity(session, worker_id)
+        reservation = worker_reservation.lock_generation(session, execution)
     _, outbox_rows = lock_incidents_and_outbox(session, execution.id)
     now = worker_availability.current_time(session)
     if worker.instance_lease_until is None or worker.instance_lease_until <= now:
@@ -521,8 +535,13 @@ def _claim_fixed(
         or adapter.language != message.language
         or execution.resource_class != message.resource_class
         or message.target_worker_id != worker_id
-        or execution.target_worker_id != worker_id
-        or execution.target_worker_id_snapshot != worker_id
+        or (
+            not requires_reservation
+            and (
+                execution.target_worker_id != worker_id
+                or execution.target_worker_id_snapshot != worker_id
+            )
+        )
     ):
         return _pause(session, "dispatch_identity_invalid")
     if message.dispatch_generation < execution.dispatch_generation:
@@ -530,6 +549,19 @@ def _claim_fixed(
         return V4ClaimDecision(decision="ACK_NOOP", reason="stale_generation")
     if message.dispatch_generation > execution.dispatch_generation:
         return _pause(session, "future_generation")
+    if requires_reservation:
+        if (
+            execution.target_worker_id != worker_id
+            or reservation is None
+            or row.reservation_id != reservation.id
+        ):
+            return _pause(session, "worker_reservation_unavailable")
+        if execution.status in {"succeeded", "dead_letter", "cancelled", "expired"}:
+            session.rollback()
+            return V4ClaimDecision(decision="ACK_NOOP", reason="terminal")
+        if reservation.attempt_id is not None:
+            session.rollback()
+            return V4ClaimDecision(decision="ACK_NOOP", reason="execution_not_queued")
     if row.status == "superseded":
         return _pause(session, "dispatch_generation_not_active")
     if not valid_capabilities(worker.capabilities) or adapter.language not in worker.capabilities:
@@ -546,6 +578,19 @@ def _claim_fixed(
         return _pause(session, "worker_recovery_unverified")
     if guard.phase != "idle":
         return _pause(session, "cache_reclamation_in_progress")
+    if requires_reservation and (
+        not worker_reservation.claim_fits(session, worker, capacity)
+        or not worker_reservation.held_valid(
+            session,
+            execution,
+            worker,
+            capacity,
+            reservation,
+            pool,
+            now=worker_availability.current_time(session),
+        )
+    ):
+        return _pause(session, "worker_reservation_unavailable")
     if execution.status in {"succeeded", "dead_letter", "cancelled", "expired"}:
         session.rollback()
         return V4ClaimDecision(decision="ACK_NOOP", reason="terminal")
@@ -728,6 +773,20 @@ def _claim_fixed(
         )
     except LeaseCandidateError:
         raise domain_error(409, "worker_lease_unavailable", "Worker lease is unavailable") from None
+    if reservation is not None:
+        if not worker_reservation.held_valid(
+            session,
+            execution,
+            worker,
+            capacity,
+            reservation,
+            pool,
+            now=worker_availability.current_time(session),
+        ):
+            return _pause(session, "worker_reservation_unavailable")
+        reservation.status = "claimed"
+        reservation.attempt_id = attempt.id
+        reservation.fencing_token = fence
     return decision
 
 

@@ -291,6 +291,15 @@ def check(
         raise contract.BusinessCredentialError("credentials_mode")
     if not frozen().permits(worker, refs):
         raise contract.BusinessCredentialError("credentials_policy")
+    check_storage(session, refs, lock=lock)
+
+
+def check_storage(
+    session: Session, refs: tuple[contract.Binding, ...], *, lock: bool = False
+) -> None:
+    """Validate references and budgets before a Worker has been assigned."""
+    if not refs:
+        return
     ids = sorted({ref.credential_id for ref in refs})
     query = (
         select(

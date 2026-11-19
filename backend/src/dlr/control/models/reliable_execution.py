@@ -245,8 +245,11 @@ class ExecutionCredentialBindingSnapshot(Base):
     field: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+OPEN_OUTBOX_STATES = ("awaiting_target", "pending")
+
+
 class ExecutionOutbox(Base):
-    """One immutable dispatch generation pending or confirmed at the Broker."""
+    """One intent per generation with immutable wire bytes once assigned."""
 
     __tablename__ = "execution_outbox"
     __table_args__ = (
@@ -257,8 +260,24 @@ class ExecutionOutbox(Base):
         ),
         UniqueConstraint("message_id", name="uq_execution_outbox_message_id"),
         CheckConstraint(
-            "status IN ('pending', 'published')",
+            "status IN ('awaiting_target', 'pending', 'published', 'superseded')",
             name="ck_execution_outbox_status",
+        ),
+        CheckConstraint(
+            "(routing_key IS NULL) = (payload_json IS NULL) AND "
+            "(status <> 'awaiting_target' OR (routing_key IS NULL AND reservation_id IS NULL)) "
+            "AND (status NOT IN ('pending', 'published') OR routing_key IS NOT NULL) AND "
+            "(reservation_id IS NULL OR routing_key IS NOT NULL)",
+            name="ck_execution_outbox_wire_shape",
+        ),
+        ForeignKeyConstraint(
+            ["reservation_id", "execution_id", "dispatch_generation"],
+            [
+                "worker_resource_reservations.id",
+                "worker_resource_reservations.execution_id",
+                "worker_resource_reservations.dispatch_generation",
+            ],
+            name="fk_execution_outbox_reservation",
         ),
         CheckConstraint("dispatch_generation >= 1", name="ck_execution_outbox_generation"),
         CheckConstraint("payload_bytes >= 0", name="ck_execution_outbox_payload_bytes"),
@@ -282,8 +301,9 @@ class ExecutionOutbox(Base):
     message_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), nullable=False, default=uuid.uuid4
     )
-    routing_key: Mapped[str] = mapped_column(String(256), nullable=False)
-    payload_json: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    reservation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    routing_key: Mapped[str | None] = mapped_column(String(256))
+    payload_json: Mapped[dict[str, object] | None] = mapped_column(JSONB(none_as_null=True))
     payload_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="pending", server_default=text("'pending'")
@@ -311,6 +331,7 @@ class ExecutionAttempt(Base):
 
     __tablename__ = "execution_attempts"
     __table_args__ = (
+        UniqueConstraint("id", "execution_id", name="uq_execution_attempts_id_execution"),
         UniqueConstraint(
             "id",
             "worker_id",

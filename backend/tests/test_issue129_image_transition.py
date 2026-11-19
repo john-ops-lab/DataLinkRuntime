@@ -225,9 +225,9 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
         operation_id=str(uuid4()),
         previous_id=str(intent.operation_id),
         source_schema=transition.W1_SCHEMA,
-        target_schema=SCHEMA_REVISION,
+        target_schema=transition.W2_ROUTING_SCHEMA,
         source_sha=transition.W1_SOURCE_SHA,
-        target_sha="8" * 40,
+        target_sha=transition.W2_ROUTING_SOURCE_SHA,
     )
     path.write_text(json.dumps(upgrade | {"source_sha": "7" * 40}))
     with pytest.raises(transition.TransitionUnavailable, match="intent_unavailable"):
@@ -240,7 +240,9 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
     assert maintain(f.factory, "apply", routing)["status"] == "committed_current"
     with f.factory() as session:
         assert transition.observe(session, intent)["status"] == "committed_superseded"
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_REVISION
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == (
+            transition.W2_ROUTING_SCHEMA
+        )
         assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == (
             7 if previous else 2
         )
@@ -255,6 +257,47 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
             {"role": f.role},
         ).one()
         assert tuple(rights) == (True, False, False, True, True)
+
+    capacity_image = replace(
+        new_image, authority=replace(new_image.authority, image_digest="sha256:" + "c" * 64)
+    )
+    upgrade = dict(
+        upgrade,
+        operation_id=str(uuid4()),
+        previous_id=str(routing.operation_id),
+        source_schema=transition.W2_ROUTING_SCHEMA,
+        target_schema=SCHEMA_REVISION,
+        source_sha=transition.W2_ROUTING_SOURCE_SHA,
+        target_sha="9" * 40,
+    )
+    path.write_text(json.dumps(upgrade))
+    capacity = transition.read_intent(str(path), new_image, capacity_image, predecessor=routing)
+    assert transition._kind(capacity) == 7
+    with f.factory() as session:
+        assert transition.check(session, capacity, settings) == "source_checked"
+    assert maintain(f.factory, "apply", capacity)["status"] == "committed_current"
+    with f.factory() as session:
+        assert transition.observe(session, routing)["status"] == "committed_superseded"
+    with f.factory() as session:
+        assert transition.observe(session, capacity)["status"] == "committed_current"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_REVISION
+        assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == (
+            8 if previous else 3
+        )
+        rights = session.execute(
+            text("""
+                SELECT has_table_privilege(:role,'worker_capacities','SELECT'),
+                       has_table_privilege(:role,'worker_capacities','INSERT'),
+                       has_table_privilege(:role,'worker_capacities','UPDATE'),
+                       has_table_privilege(:role,'worker_capacities','DELETE'),
+                       has_table_privilege(:role,'worker_resource_reservations','SELECT'),
+                       has_table_privilege(:role,'worker_resource_reservations','INSERT'),
+                       has_table_privilege(:role,'worker_resource_reservations','UPDATE'),
+                       has_table_privilege(:role,'worker_resource_reservations','TRUNCATE')
+            """),
+            {"role": f.role},
+        ).one()
+        assert tuple(rights) == (True, True, True, False, True, True, True, False)
 
 
 def test_control_proof_rotation_preserves_initial_epoch_and_fences_stale_declarations(

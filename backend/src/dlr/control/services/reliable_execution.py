@@ -351,8 +351,13 @@ def accept_execution(
     subscription_activation_id: int | None = None,
     subscription_delivery_kind: str | None = None,
     route_source: RouteSource | None = None,
+    use_worker_reservations: bool = False,
 ) -> Execution:
-    """Atomically accept one gated RabbitMQ Execution or its idempotent hit."""
+    """Atomically accept one gated RabbitMQ Execution or its idempotent hit.
+
+    The reservation path is an internal staging seam until the W1 cutover.
+    Production HTTP and background callers retain the default.
+    """
 
     from dlr.control.services import rabbitmq
 
@@ -405,17 +410,21 @@ def accept_execution(
 
     activation = None
     source: RouteSource
+    if use_worker_reservations and not settings.worker_remote_v4_enabled:
+        raise domain_error(409, "worker_reservation_unavailable", "Worker v4 is required")
     if trigger == "subscription":
         activation = session.get(SubscriptionActivation, subscription_activation_id)
         if activation is None:
             raise domain_error(
                 409, "subscription_activation_invalid", "Frozen activation unavailable"
             )
-        if worker_id_override != worker_pool.require_activation_worker(activation):
+        if worker_id_override != worker_pool.delivery_target(
+            activation, use_worker_reservations=use_worker_reservations
+        ):
             raise domain_error(409, "subscription_activation_invalid", "Frozen Worker unavailable")
         source = route_source or "activation"
     else:
-        if not dependency_check or worker_id_override is None:
+        if not use_worker_reservations and (not dependency_check or worker_id_override is None):
             worker_pool.require_fixed_route(worker_pool.adapter_route(adapter))
         from dlr.control.services.subscription_guards import require_subscription_unlocked
 
@@ -456,6 +465,7 @@ def accept_execution(
             version_id=version_id,
             worker_id=worker_id_override,
         )
+    from dlr.control.schemas.worker_pool import FixedRoute
     from dlr.control.services.worker_stage_capability_v4 import require_new_execution
 
     require_new_execution(
@@ -469,17 +479,29 @@ def accept_execution(
         artifact_ids=artifact_ids,
         input_snapshot=input_snapshot,
         frozen_subscription_bindings=frozen_subscription_bindings,
+        awaiting_worker=use_worker_reservations,
     )
-    worker = resolve_queue_target_worker(session, adapter, worker_id_override)
+    worker = (
+        None
+        if use_worker_reservations
+        else resolve_queue_target_worker(session, adapter, worker_id_override)
+    )
     if activation is not None:
         route_snapshot = worker_pool.activation_snapshot(
             session, activation, adapter.language, source
         )
     else:
-        route = worker_pool.fixed_route(worker.id)
-        assert route is not None
+        route = (
+            worker_pool.fixed_route(worker.id)
+            if worker is not None
+            else worker_pool.adapter_route(adapter)
+        )
+        if route is None:
+            raise domain_error(409, "execution_route_unavailable", "Runtime route is unavailable")
         route_snapshot = worker_pool.snapshot_route(session, route, adapter.language, source)
-    if not rabbitmq.ingress_configuration_ready(session, worker_id=worker.id):
+    if worker is not None and not rabbitmq.ingress_configuration_ready(
+        session, worker_id=worker.id
+    ):
         raise domain_error(
             503,
             "rabbitmq_not_ready",
@@ -527,7 +549,9 @@ def accept_execution(
         input_source_type=input_source_type,
         input_config_revision=input_config_revision,
         input_snapshot=input_snapshot,
-        target_worker_id=worker.id,
+        target_worker_id=(
+            route_snapshot.route.worker_id if isinstance(route_snapshot.route, FixedRoute) else None
+        ),
         route_snapshot=route_snapshot.model_dump(mode="json"),
         scheduled_for=scheduled_for,
         artifact_ids=artifact_ids,
@@ -543,6 +567,7 @@ def accept_execution(
         version_id_override=version_id,
         dependency_check=dependency_check,
         subscription_delivery_kind=subscription_delivery_kind,
+        requires_worker_reservation=use_worker_reservations,
     )
     # Keep the DB clock as the accepted-at source for all generated facts.
     execution.queued_at = now
@@ -559,9 +584,7 @@ def accept_execution(
         )
         execution.idempotency_record_id = record.id
     outbox.create_dispatch_outbox(session, execution, available_at=now)
-    # The row is flushed before this check, so the protection line is charged
-    # with its exact serialized payload bytes rather than the configured
-    # maximum.  The transaction rolls back the provisional facts if the
-    # complete row would exceed the line.
+    # The protection line charges exact bytes for W1, and the full envelope
+    # for unassigned work. Rejecting either charge rolls back the acceptance.
     outbox.require_outbox_capacity(session, additional_count=0, additional_bytes=0)
     return execution

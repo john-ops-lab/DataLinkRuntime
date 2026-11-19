@@ -273,31 +273,28 @@ def _persist_runtime_capabilities(
         session.commit()
 
 
-def _persisted_ingress_ready(session: Session, *, worker_id: int | None) -> bool:
+def _persisted_ingress_workers(session: Session) -> frozenset[int] | None:
     """Use only a matching, recent live-verification generation after restart."""
 
     state = session.get(RabbitMQRuntimeCapability, 1)
     if state is None or state.broker_version != RABBITMQ_BASELINE_VERSION:
-        return False
+        return None
     try:
         worker_ids = list(state.worker_ids)
         if state.configuration_fingerprint != configuration_fingerprint(worker_ids):
-            return False
+            return None
         stored_flags = frozenset(state.feature_flags)
         stored_workers = frozenset(worker_ids)
     except (TypeError, ValueError):
-        return False
+        return None
     if not REQUIRED_FEATURE_FLAGS.issubset(stored_flags):
-        return False
-    current_workers = frozenset(session.scalars(select(Worker.id)).all())
-    if current_workers != stored_workers:
-        return False
-    if worker_id is not None and worker_id not in stored_workers:
-        return False
+        return None
+    if not _runtime_worker_set_is_current(session, stored_workers):
+        return None
     from dlr.control.services.input_config import database_now
 
     age = (database_now(session) - state.verified_at).total_seconds()
-    return age <= settings.rabbitmq_capability_cache_seconds
+    return stored_workers if age <= settings.rabbitmq_capability_cache_seconds else None
 
 
 def _runtime_worker_set_is_current(session: Session, worker_ids: frozenset[int]) -> bool:
@@ -306,12 +303,10 @@ def _runtime_worker_set_is_current(session: Session, worker_ids: frozenset[int])
     return frozenset(session.scalars(select(Worker.id)).all()) == worker_ids
 
 
-def ingress_configuration_ready(
-    session: Session | None = None,
-    *,
-    worker_id: int | None = None,
-) -> bool:
-    """Return whether live or restart-persisted capability permits ingress.
+def _verified_ingress_workers(
+    session: Session | None,
+) -> tuple[bool, frozenset[int] | None]:
+    """Read a topology generation once for an ingress or placement decision.
 
     ``topology_unavailable`` is an outage and may use the last matching
     generation.  A known configuration/topology error never falls back to
@@ -320,9 +315,9 @@ def ingress_configuration_ready(
     """
 
     if not settings.rabbitmq_url:
-        return False
+        return False, None
     if _runtime_status["last_error_code"] in RABBITMQ_CONFIGURATION_ERROR_CODES:
-        return False
+        return False, None
     runtime_fingerprint = _runtime_status["configuration_fingerprint"]
     runtime_workers = cast(
         frozenset[int] | None,
@@ -336,15 +331,34 @@ def ingress_configuration_ready(
             and session is not None
             and not _runtime_worker_set_is_current(session, runtime_workers)
         ):
-            return False
-        # A targetless readiness check (used by health) must never treat a
-        # target-scoped in-memory probe as proof of the complete fixed-Worker
-        # topology.  A DB-backed check can compare the full current set; a
-        # check without a session has no such evidence and must fail closed.
-        if worker_id is None and runtime_workers is not None and session is None:
-            return False
-        return runtime_workers is None or worker_id is None or worker_id in runtime_workers
-    return session is not None and _persisted_ingress_ready(session, worker_id=worker_id)
+            return False, None
+        return True, runtime_workers
+    persisted = _persisted_ingress_workers(session) if session is not None else None
+    return persisted is not None, persisted
+
+
+def ingress_configuration_ready(
+    session: Session | None = None,
+    *,
+    worker_id: int | None = None,
+) -> bool:
+    """Return whether live or restart-persisted capability permits ingress."""
+    ready, workers = _verified_ingress_workers(session)
+    if not ready or workers is None:
+        return ready
+    if worker_id is not None:
+        return worker_id in workers
+    # A targetless health probe without a DB session cannot validate the
+    # full current set from a target-scoped in-memory observation.
+    return session is not None
+
+
+def ingress_ready_targets(session: Session, candidates: list[int]) -> frozenset[int]:
+    """Filter a bounded candidate page using one verified broker generation."""
+    ready, workers = _verified_ingress_workers(session)
+    if not ready:
+        return frozenset()
+    return frozenset(candidates) if workers is None else workers.intersection(candidates)
 
 
 def _broker_health_payload() -> dict[str, object]:

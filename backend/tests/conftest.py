@@ -133,6 +133,7 @@ def _truncate(engine: Engine) -> None:
                 "execution_input_artifact_leases, "
                 "execution_credential_binding_snapshots, "
                 "execution_outbox, execution_attempts, adapter_execution_slots, "
+                "worker_capacities, worker_resource_reservations, "
                 "runtime_reconciliation_cursors, "
                 "schedule_dispatch_outcomes, execution_infrastructure_incidents, "
                 "execution_incident_dispositions, "

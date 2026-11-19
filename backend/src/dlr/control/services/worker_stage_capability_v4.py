@@ -91,7 +91,12 @@ def _supports_wheel(worker: Worker | None) -> bool:
 
 
 def freeze_worker_wheel(
-    session: Session, adapter: Adapter, version_id: int | None, worker_id: int | None
+    session: Session,
+    adapter: Adapter,
+    version_id: int | None,
+    worker_id: int | None,
+    *,
+    awaiting_worker: bool = False,
 ) -> dict[str, Any] | None:
     """Resolve a single wheel while the library serializes admission and deletion."""
     from dlr.control.services import builtin_package
@@ -103,8 +108,10 @@ def freeze_worker_wheel(
     if (
         adapter.language != "python"
         or requested is None
-        or worker_id is None
-        or not _supports_wheel(session.get(Worker, worker_id))
+        or (
+            not awaiting_worker
+            and (worker_id is None or not _supports_wheel(session.get(Worker, worker_id)))
+        )
         or not _builtin_default(session, "python")
     ):
         _reject("builtin_packages")
@@ -225,12 +232,13 @@ def _file_reason(
     artifact_ids: tuple[int, ...] | None = None,
     snapshot: dict[str, Any] | None = None,
     execution_id: int | None = None,
+    awaiting_worker: bool = False,
 ) -> str | None:
     """Bound metadata before a new responsibility or a frozen Claim is allowed."""
     from dlr.control.services.worker import READABLE_ARTIFACT_STATUSES
 
     worker = session.get(Worker, target) if target is not None else None
-    if (
+    if not awaiting_worker and (
         worker is None
         or worker.protocol_version != 4
         or worker.identity_lifecycle != "reserved"
@@ -364,11 +372,12 @@ def require_new_execution(
     artifact_ids: tuple[int, ...] | None = None,
     input_snapshot: dict[str, Any] | None = None,
     frozen_subscription_bindings: list[dict[str, object]] | None = None,
+    awaiting_worker: bool = False,
 ) -> None:
     if not settings.worker_remote_v4_enabled:
         return
-    if worker_legacy_window.enabled_mode():
-        worker_id = adapter.runtime_worker_id if target_worker_id is None else target_worker_id
+    worker_id = adapter.runtime_worker_id if target_worker_id is None else target_worker_id
+    if not awaiting_worker and worker_legacy_window.enabled_mode():
         worker = session.get(Worker, worker_id) if worker_id is not None else None
         if worker is not None and worker_legacy_window.target_allowed(session, worker):
             return
@@ -384,9 +393,10 @@ def require_new_execution(
         reason = _file_reason(
             session,
             adapter.id,
-            adapter.runtime_worker_id if target_worker_id is None else target_worker_id,
+            worker_id,
             artifact_ids=artifact_ids,
             snapshot=input_snapshot,
+            awaiting_worker=awaiting_worker,
         )
     if reason is None:
         try:
@@ -404,20 +414,19 @@ def require_new_execution(
                 from dlr.control.services.secrets import _require_secret_store
 
                 _require_secret_store()
-            business_credentials.check(
-                session,
-                refs,
-                adapter.runtime_worker_id if target_worker_id is None else target_worker_id,
-            )
+            if awaiting_worker:
+                business_credentials.check_storage(session, refs)
+            else:
+                business_credentials.check(session, refs, worker_id)
         except BusinessCredentialError as error:
             reason = error.reason
     if reason is None:
         requirements = _bounded_requirements(session, adapter.id, version_id)
-        target = adapter.runtime_worker_id if target_worker_id is None else target_worker_id
         if requirements != "":
             if not _builtin_default(session, adapter.language):
                 _reject("requirements")
-            freeze_worker_wheel(session, adapter, version_id, target)
+            if not awaiting_worker:
+                freeze_worker_wheel(session, adapter, version_id, worker_id)
         elif _builtin_default(session, adapter.language):
             reason = "builtin_packages"
     if reason is not None:
@@ -425,7 +434,12 @@ def require_new_execution(
 
 
 def execution_block_reason(
-    session: Session, adapter: Adapter, execution: Execution, *, lock_credentials: bool = False
+    session: Session,
+    adapter: Adapter,
+    execution: Execution,
+    *,
+    lock_credentials: bool = False,
+    candidate_worker_id: int | None = None,
 ) -> str | None:
     """Inspect immutable responsibility; never replace it with current defaults."""
     reason = _configuration_reason(
@@ -438,11 +452,16 @@ def execution_block_reason(
     )
     if reason is not None:
         return reason
+    target = (
+        candidate_worker_id or execution.target_worker_id
+        if execution.requires_worker_reservation
+        else execution.target_worker_id_snapshot
+    )
     if execution.input_source_type == "managed_files":
         reason = _file_reason(
             session,
             adapter.id,
-            execution.target_worker_id_snapshot,
+            target,
             snapshot=execution.input_snapshot,
             execution_id=execution.id,
         )
@@ -453,7 +472,7 @@ def execution_block_reason(
         adapter_id=adapter.id,
         version_id=execution.version_id,
         execution_id=execution.id,
-        worker_id=execution.target_worker_id_snapshot,
+        worker_id=target,
         language=adapter.language,
         input_source=execution.input_source_type,
     ):
@@ -465,7 +484,7 @@ def execution_block_reason(
             business_credentials.check(
                 session,
                 business_credentials.execution_bindings(session, execution.id),
-                execution.target_worker_id_snapshot,
+                target,
                 lock=lock_credentials,
             )
         except BusinessCredentialError as error:

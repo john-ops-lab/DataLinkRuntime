@@ -509,6 +509,9 @@ def finalize_cleanup_intent(
             )
             if slot is None:
                 raise ValueError
+            from dlr.control.services import worker_reservation
+
+            worker_reservation.lock_pool(session, locked_execution)
             row = _authorized_intent(
                 session,
                 frozen,
@@ -538,6 +541,7 @@ def finalize_cleanup_intent(
                 slot.lease_expires_at = None
             if attempt.cleanup_settled_at is None:
                 attempt.cleanup_settled_at = worker_availability.current_time(session)
+            worker_reservation.release_cleaned_attempt(session, execution, attempt)
             row.completion_id = uuid4()
             row.completion_xid = row.writer_xid = xid
             session.flush()

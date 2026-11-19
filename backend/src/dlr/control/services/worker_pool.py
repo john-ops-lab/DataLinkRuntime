@@ -136,6 +136,18 @@ def require_activation_worker(activation: SubscriptionActivation) -> int:
     return worker_id
 
 
+def delivery_target(
+    activation: SubscriptionActivation, *, use_worker_reservations: bool
+) -> int | None:
+    if (
+        use_worker_reservations
+        and activation.worker_id is None
+        and isinstance(activation_route(activation), PoolRoute)
+    ):
+        return None
+    return require_activation_worker(activation)
+
+
 def activation_snapshot(
     session: Session, activation: SubscriptionActivation, language: str, source: RouteSource
 ) -> RouteSnapshot:
