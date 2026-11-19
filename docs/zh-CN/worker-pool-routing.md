@@ -39,6 +39,8 @@
 
 从 `0092_issue129_worker_capacity` 的 `36ee472851e2141ce908dcd9a9588c5f6a86f9eb` 升级到 `0093_issue129_worker_placement`，沿用上述离线 owner check、apply 与独立 observe，最长历史链追加 `--oldest-source`、`--oldest-intent`。读到 `committed_current` 后恢复运行角色。初始模式为 `fixed`，可继续使用受保护的旧路径；切换预留由部署 owner 单独执行。
 
+0093 同时更新业务批次的数据库校验。v4 运行角色及其可达角色须保持无数据库 `CREATE`、`TEMPORARY` 权限。受限角色提交 T2 或成员结果时，数据库逐次校验冻结成员、计费和结果归属，校验失败会回滚当前事务。原本允许临时表的部署可继续使用事务内校验缓存。
+
 以下子命令均通过 `python -m dlr.control.control_identity_init_v4`，使用 owner 连接及当前权威声明。
 
 1. 读取 `placement-status`。首次批准前先停用已保留身份的 Worker，独立核对稳定身份、当前实例、cgroup v2 限额、部署工具链、环境类及签名公钥。宿主签名密钥置于任务不可访问的路径，通过 `DLR_WORKER_CAPACITY_SIGNING_KEY_FILE` 指定。执行 `placement-approve-capacity WORKER_ID ENVIRONMENT_NAME PUBLIC_KEY_HEX`，公钥为 32 字节 Ed25519 公钥的十六进制表示。成员、材料和凭据授权仍由管理员维护。激活已完成对账的实例，核对新鲜签名样本。

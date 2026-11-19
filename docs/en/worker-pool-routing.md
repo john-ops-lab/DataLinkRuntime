@@ -39,6 +39,8 @@ This version validates capacity and reservations in isolation. Allocatable capac
 
 Upgrade from `0092_issue129_worker_capacity` at `36ee472851e2141ce908dcd9a9588c5f6a86f9eb` to `0093_issue129_worker_placement` using the offline owner check/apply/independent observe sequence above. The longest history appends `--oldest-source` and `--oldest-intent`. Resume after `committed_current`. The database starts in `fixed`; operators may continue the guarded legacy path. Enabling reservations is a separate deployment operation.
 
+The 0093 upgrade also updates database validation for business batches. The v4 runtime role and every role it can reach must lack the database `CREATE` and `TEMPORARY` privileges. When the restricted role commits a T2 batch or its member results, the database checks frozen membership, charges and result ownership on each validation. A failed check rolls back that transaction. Deployments that already permit temporary tables can continue using the transaction-local validation cache.
+
 Run each subcommand with `python -m dlr.control.control_identity_init_v4` under the deployment owner and current authority declaration.
 
 1. Read `placement-status`. Before initial approval, disable the reserved Worker. Independently verify its stable identity, instance, cgroup v2 envelope, deployed toolchain, environment class and signer public key. Protect the host signing key outside task-accessible directories and configure `DLR_WORKER_CAPACITY_SIGNING_KEY_FILE`. Run `placement-approve-capacity WORKER_ID ENVIRONMENT_NAME PUBLIC_KEY_HEX` with the 32-byte Ed25519 public key in hex. Member, material and credential grants remain administrator-controlled. Activate the reconciled instance and verify fresh signed capacity.

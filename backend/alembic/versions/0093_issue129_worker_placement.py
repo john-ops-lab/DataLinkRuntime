@@ -72,6 +72,54 @@ _FORCE_DISPOSITION = """
 """
 
 
+_BATCH_CACHE_LOOKUP = """ IF to_regclass('pg_temp.dlr_batch_validation_cache') IS NULL THEN
+  CREATE TEMP TABLE dlr_batch_validation_cache(execution_id bigint PRIMARY KEY) ON COMMIT DELETE
+  ROWS;
+ END IF;
+ IF EXISTS (SELECT 1 FROM pg_temp.dlr_batch_validation_cache WHERE execution_id=target) THEN
+  RETURN; END IF;"""
+_BATCH_CACHE_STORE = (
+    " INSERT INTO pg_temp.dlr_batch_validation_cache VALUES(target) ON CONFLICT DO NOTHING;"
+)
+
+
+def _guard_batch_cache(block: str) -> str:
+    statements = "\n".join(" " + line for line in block.splitlines())
+    return (
+        " IF pg_catalog.has_database_privilege(pg_catalog.current_database(), 'TEMPORARY') THEN\n"
+        f"{statements}\n END IF;"
+    )
+
+
+def _set_optional_batch_cache(*, enabled: bool) -> None:
+    # Replace only the cache operations in the frozen 0053 function. The
+    # batch validation and all of its deferred trigger bindings stay intact.
+    blocks = (_BATCH_CACHE_LOOKUP, _BATCH_CACHE_STORE)
+    guarded = tuple(_guard_batch_cache(block) for block in blocks)
+    previous, replacement = (blocks, guarded) if enabled else (guarded, blocks)
+    op.execute(f"""
+        DO $migration$
+        DECLARE
+            definition text := pg_catalog.pg_get_functiondef(
+                'dlr_batch_validate(bigint)'::pg_catalog.regprocedure
+            );
+            previous text[] := ARRAY[$cache${previous[0]}$cache$, $cache${previous[1]}$cache$];
+            replacement text[] := ARRAY[
+                $cache${replacement[0]}$cache$, $cache${replacement[1]}$cache$
+            ];
+        BEGIN
+            FOR i IN 1..2 LOOP
+                IF length(definition) - length(replace(definition, previous[i], ''))
+                        <> length(previous[i]) THEN
+                    RAISE EXCEPTION 'Unexpected definition of dlr_batch_validate';
+                END IF;
+                definition := replace(definition, previous[i], replacement[i]);
+            END LOOP;
+            EXECUTE definition;
+        END $migration$;
+    """)
+
+
 def _set_recovery_check(*, allow_pool_retry: bool) -> None:
     table = "worker_maintenance_operations"
     name = "ck_worker_recovery_disposition_complete"
@@ -85,6 +133,7 @@ def _set_recovery_check(*, allow_pool_retry: bool) -> None:
 
 
 def upgrade() -> None:
+    _set_optional_batch_cache(enabled=True)
     _set_recovery_check(allow_pool_retry=True)
     op.create_table(
         "worker_placement_cutover",
@@ -258,3 +307,4 @@ def downgrade() -> None:
     op.drop_column("worker_capacities", "placement_changed_at")
     op.drop_column("worker_capacities", "quarantine_until")
     op.drop_column("worker_capacities", "task_cpu_cores")
+    _set_optional_batch_cache(enabled=False)
