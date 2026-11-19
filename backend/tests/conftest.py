@@ -151,7 +151,10 @@ def _truncate(engine: Engine) -> None:
         conn.execute(text("INSERT INTO system_settings (id, locale) VALUES (1, 'zh-CN')"))
         conn.execute(text("INSERT INTO worker_placement_cutover (id, mode) VALUES (1, 'fixed')"))
         conn.execute(
-            text("INSERT INTO runtime_reconciliation_cursors (name) VALUES ('worker_placement')")
+            text(
+                "INSERT INTO runtime_reconciliation_cursors (name) "
+                "VALUES ('worker_placement'), ('worker_placement_expiration')"
+            )
         )
         conn.execute(
             text(

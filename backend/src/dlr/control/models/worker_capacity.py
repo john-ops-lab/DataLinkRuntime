@@ -7,6 +7,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -134,6 +135,7 @@ class WorkerCapacities(WorkerResourceColumns, Base):
     last_assignment_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     placement_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     quarantine_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    task_cpu_cores: Mapped[float | None] = mapped_column(Float)
 
 
 class WorkerResourceReservation(WorkerResourceColumns, Base):

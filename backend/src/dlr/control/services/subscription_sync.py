@@ -596,7 +596,7 @@ def begin_sync_batch(
         )
     ):
         raise domain_error(409, "subscription_sync_draining", "Prior batch responsibility remains")
-    worker_pool.active_delivery_target(session, activation)
+    worker_pool.active_delivery_target(session, activation, accepting=True)
     rows = delivery._quotas(session, sub.id)
     for quota, limits in zip(
         rows, (delivery._limits(session, activation), delivery._global_limits(session)), strict=True
@@ -707,7 +707,7 @@ def _insert_receipt(
     from dlr.control.services.subscription_activation_policy import ensure_policy
 
     worker_legacy_window.require_dispatch_target(
-        session, worker_pool.active_delivery_target(session, activation)
+        session, worker_pool.active_delivery_target(session, activation, accepting=True)
     )
     adapter = session.get(Adapter, sub.adapter_id)
     assert adapter is not None

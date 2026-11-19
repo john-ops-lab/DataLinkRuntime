@@ -20,11 +20,12 @@ export function EventReceivingButton({ adapter, sub, capabilities, dirty, busy, 
   const { t } = useTranslation("subscription");
   const [action, setAction] = useState<"enable" | "disable" | null>(null);
   const receiving = sub?.desired_state === "enabled";
+  const pool = adapter.route?.mode === "pool";
   const reason = busy ? t("ux.loading") : receiving ? null : statusPending ? t("ux.loading") : !sub ? t("ux.configureFirst")
     : dirty ? t("ux.saveFirst")
     : adapter.latest_version_id === null ? t("ux.codeFirst")
-    : adapter.route?.mode === "pool" ? t("pool.stoppedDraft", { ns: "runtime" })
-    : adapter.runtime_worker_id == null ? t("ux.workerFirst")
+    : pool && adapter.pool_placement_enabled !== true ? t("pool.stoppedDraft", { ns: "runtime" })
+    : !pool && adapter.runtime_worker_id == null ? t("ux.workerFirst")
     : adapter.runtime_locked ? t("ux.settleFirst")
     : !capabilities.enabled || !sub.available || !capabilities.available_sources.includes(sub.source_type) ? t("unavailable")
     : !subscriptionDrained(sub) ? t("ux.settleFirst") : null;

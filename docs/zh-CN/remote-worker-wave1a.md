@@ -106,6 +106,11 @@ REVOKE UPDATE, DELETE ON worker_adapter_storage_owners_v4 FROM dlr_wave1a_runtim
 REVOKE INSERT, UPDATE, DELETE ON control_proof_rotations, worker_legacy_window
   FROM dlr_wave1a_runtime;
 GRANT UPDATE (id) ON worker_legacy_window TO dlr_wave1a_runtime;
+-- 0093 及以后：部署 owner 独占切换状态与宿主验签授权。
+REVOKE ALL ON worker_placement_cutover, worker_capacity_verifiers,
+  execution_placement_actions FROM dlr_wave1a_runtime;
+GRANT SELECT ON worker_placement_cutover, worker_capacity_verifiers TO dlr_wave1a_runtime;
+GRANT SELECT, INSERT ON execution_placement_actions TO dlr_wave1a_runtime;
 ```
 
 运行角色不能是数据库、schema、表或受保护函数的所有者，不能继承管理员权限、创建 schema 或改变触发器。迁移账号仅供部署操作使用；`DLR_WORKER_V4_DATABASE_ADMIN_ROLES` 明确列出可信管理员角色，初始化完毕后退出管理员数据库连接。签发和运行围栏会拒绝其他可连接的旧登录角色、旧会话及 prepared transaction；不能通过缩小查询或放宽权限绕过。

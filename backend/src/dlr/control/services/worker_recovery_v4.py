@@ -335,7 +335,6 @@ def _disposition_attempt(
     )
     if (
         not execution.requires_worker_reservation
-        or execution.route_pool_id is None
         or attempt is None
         or attempt.status != "worker_lost"
         or attempt.recovery_not_before is None
@@ -348,6 +347,13 @@ def _disposition_attempt(
         or reservation.fencing_token != ref.fencing_token
         or reservation.status != ("released" if completed else "reclaiming")
         or (attempt.cleanup_settled_at is not None) != completed
+        or (
+            execution.route_pool_id is None
+            and (
+                reservation.worker_id != execution.target_worker_id_snapshot
+                or (not completed and slot.active_attempt_id != attempt.id)
+            )
+        )
         or (
             reservation.dispatch_generation >= execution.dispatch_generation
             and (

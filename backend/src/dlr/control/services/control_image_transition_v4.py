@@ -476,7 +476,7 @@ def _authority_matches(row: Any, deployment: DeploymentDeclaration, schema: str)
     )
 
 
-def _clean(session: Session) -> None:
+def _clean(session: Session, *, allow_completed_v3: bool = False) -> None:
     require_dedicated_deployment(session, readonly=True)
     clean = session.scalar(
         text("""
@@ -499,7 +499,12 @@ def _clean(session: Session) -> None:
           AND NOT EXISTS (SELECT 1 FROM global_execution_admission
                           WHERE outstanding_count <> 0 OR outstanding_bytes <> 0)
           AND NOT EXISTS (SELECT 1 FROM execution_attempts
-                          WHERE status IN ('claimed','running') OR cleanup_settled_at IS NULL
+                          WHERE status IN ('claimed','running')
+                            OR (cleanup_settled_at IS NULL AND NOT (
+                                :allow_completed_v3 AND worker_identity_id IS NULL
+                                AND cleanup_summary->>'workspace_cleanup_status'
+                                    IS NOT DISTINCT FROM 'completed'
+                            ))
                             OR recovery_not_before >= clock_timestamp()
                             OR lease_expires_at >= clock_timestamp())
           AND NOT EXISTS (SELECT 1 FROM adapter_execution_slots WHERE active_attempt_id IS NOT NULL)
@@ -513,7 +518,8 @@ def _clean(session: Session) -> None:
           AND NOT EXISTS (SELECT 1 FROM attempt_result_intents_v4
                           WHERE finalization_id IS NULL OR proof_before >= clock_timestamp())
           AND NOT EXISTS (SELECT 1 FROM worker_cleanup_requests WHERE status <> 'completed')
-    """)
+    """),
+        {"allow_completed_v3": allow_completed_v3},
     )
     if clean is not True:
         raise TransitionUnavailable("image_transition_unsettled")
@@ -763,7 +769,7 @@ def check(session: Session, intent: ImageTransition, config: Settings) -> str:
         raise TransitionUnavailable("image_transition_schema_unavailable")
     if not _authority_matches(row, intent.source, intent.source_schema):
         raise TransitionUnavailable("image_transition_authority_unavailable")
-    _clean(session)
+    _clean(session, allow_completed_v3=intent.target_schema == SCHEMA_REVISION)
     return "source_checked"
 
 
@@ -814,7 +820,7 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
     session.execute(
         text("SELECT instance_id FROM control_process_instances ORDER BY instance_id FOR UPDATE")
     ).all()
-    _clean(session)
+    _clean(session, allow_completed_v3=intent.target_schema == SCHEMA_REVISION)
     _owner_fence(session, config)
     if revision != intent.source_schema:
         raise TransitionUnavailable("image_transition_schema_unavailable")

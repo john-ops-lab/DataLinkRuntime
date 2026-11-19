@@ -11,6 +11,7 @@ from sqlalchemy import JSON, delete, func, null, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from dlr.common.config import settings
 from dlr.control.models import (
     Adapter,
     AdapterExecutionSlot,
@@ -131,12 +132,17 @@ def adapter_response(session: Session, adapter: Adapter) -> AdapterResponse:
 
 def adapter_responses(session: Session, adapters: list[Adapter]) -> list[AdapterResponse]:
     from dlr.control.services.adapter_batch_config import configurations
+    from dlr.control.services.worker_placement_cutover import mode
 
     states = adapter_runtime.runtime_states(session, adapters)
     configs = configurations(session, adapters)
+    pool_enabled = (
+        bool(adapters) and settings.worker_remote_v4_enabled and mode(session) == "reserved"
+    )
     responses = []
     for adapter in adapters:
         response = _adapter_response(adapter, states[adapter.id])
+        response.pool_placement_enabled = pool_enabled
         response.batch_token = configs[adapter.id].token
         responses.append(response)
     return responses

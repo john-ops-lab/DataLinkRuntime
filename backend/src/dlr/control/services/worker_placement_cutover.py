@@ -197,6 +197,7 @@ def activate(session: Session) -> str:
                 OR c.received_at < clock_timestamp() - INTERVAL '15 seconds'
                 OR c.storage_ready IS DISTINCT FROM TRUE
                 OR c.quarantine_until IS NOT NULL
+                OR c.task_cpu_cores IS NULL
                 OR l.retired IS DISTINCT FROM FALSE
                 OR l.instance_id IS DISTINCT FROM w.instance_id
                 OR l.instance_generation IS DISTINCT FROM w.instance_generation

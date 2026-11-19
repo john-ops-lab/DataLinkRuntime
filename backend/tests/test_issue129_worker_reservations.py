@@ -116,6 +116,16 @@ def _capacity(session, worker_id, environment, *, slots=1, nofile=None, age=0, s
             slots=slots,
         ),
         headroom=headroom,
+        task_ceiling=worker_capacity.Resources(
+            cpu_millis=10,
+            memory_bytes=settings.sandbox_memory_bytes,
+            pids=settings.sandbox_pids,
+            tmp_bytes=settings.sandbox_tmp_bytes,
+            slots=1,
+        )
+        if signing_key is not None
+        else None,
+        task_cpu_cores=settings.sandbox_cpu_cores if signing_key is not None else None,
         nofile=settings.sandbox_nofile if nofile is None else nofile,
         storage_ready=True,
         environment=environment,
@@ -331,6 +341,9 @@ def test_v3_accepted_after_upgrade_has_no_retroactive_placement_expiry(
         assert converted.placement_deadline_at is None
         assert converted.placement_wait_timeout_seconds is None
         assert not worker_placement_wait.expire_queued(session, execution_id)
+        from dlr.control.services.worker_legacy_window import has_unsettled_worker_work
+
+        assert not has_unsettled_worker_work(session, worker_id)
 
 
 def test_placement_limit_retry_expiration_and_cancel_keep_one_responsibility(placement, api_client):
@@ -438,6 +451,74 @@ def test_scheduler_rotates_and_uses_persisted_capacity_change_after_lost_notific
     with factory() as session:
         blocked = session.get(Execution, blocked_id)
         assert blocked.target_worker_id == restricted_worker and blocked.attempt_count == 0
+
+
+def test_waiting_deadline_is_checked_even_behind_an_unlimited_adapter_head(placement):
+    factory, _, route, _, _ = placement
+    with factory.begin() as session:
+        _enable_test_scheduler(session)
+        head = _ordinary(session, route, "blocked-queue", staged=False)
+        head.placement_origin = "legacy_v3"
+        head.placement_deadline_at = head.placement_wait_timeout_seconds = None
+        tail = accept_execution(
+            session,
+            session.get(Adapter, head.adapter_id),
+            trigger="manual",
+            runtime_input={},
+            input_source_type="json",
+            input_config_revision=1,
+            input_snapshot={"source_type": "json", "revision": 1},
+        )
+        tail.placement_deadline_at = worker_availability.current_time(session)
+        head_id, tail_id = head.id, tail.id
+    with factory() as session:
+        assert worker_placement_scheduler.reconcile_once(session) == 1
+    with factory() as session:
+        assert session.get(Execution, head_id).status == "queued"
+        tail = session.get(Execution, tail_id)
+        assert tail.status == "expired" and tail.attempt_count == 0
+        assert tail.admission_released_at is not None
+        assert _intent(session, tail_id).status == "superseded"
+
+
+def test_dead_letter_replay_accepts_the_current_pool_before_assignment(placement, api_client):
+    factory, _, route, _, _ = placement
+    worker = _worker(placement)
+    with factory.begin() as session:
+        _enable_test_scheduler(session)
+        old = _ordinary(session, route, "pool-dead-letter", staged=False)
+        execution_id, adapter_id = old.id, old.adapter_id
+        worker_reservation.reserve_execution(session, execution_id)
+        message = outbox.deserialize_outbox_payload(_intent(session, execution_id).payload_json)
+    _, proposal = _prepare(factory, worker, message)
+    assert proposal is not None
+    claimed = _finish(factory, worker, message, proposal)
+    assert claimed.decision == "EXECUTE"
+    with factory.begin() as session:
+        execution, _, owned, slot = attempt._lock_attempt_context(
+            session, worker[0], claimed.attempt_id
+        )
+        attempt._apply_terminal_locked(
+            session,
+            execution,
+            owned,
+            slot,
+            status="failed",
+            error_code="adapter_failed",
+            error_class="business_error",
+            error="fixture business error",
+            now=worker_availability.current_time(session),
+        )
+        assert execution.status == "dead_letter"
+    assert api_client.get(f"/api/adapters/{adapter_id}").json()["pool_placement_enabled"] is True
+    response = api_client.post(f"/api/executions/{execution_id}/replay")
+    assert response.status_code == 200, response.text
+    assert response.json()["route_snapshot"]["route"] == route
+    with factory() as session:
+        replayed = session.get(Execution, response.json()["execution_id"])
+        assert replayed.replay_of_execution_id == execution_id
+        assert replayed.target_worker_id is None and replayed.attempt_count == 0
+        assert _intent(session, replayed.id).status == "awaiting_target"
 
 
 def test_pool_recovery_waits_grace_then_keeps_the_old_physical_charge(placement, monkeypatch):

@@ -741,6 +741,7 @@ def current_replay_context(session: Session, sub: EventSubscription) -> tuple[di
     from dlr.control.services.event_envelope import canonical
     from dlr.control.services.reliable_execution import resolve_queue_target_worker
     from dlr.control.services.subscription_activation_policy import snapshot_policy
+    from dlr.control.services.worker_placement_cutover import mode
 
     adapter = session.get(Adapter, sub.adapter_id)
     assert adapter is not None
@@ -781,6 +782,7 @@ def current_replay_context(session: Session, sub: EventSubscription) -> tuple[di
         context["route_snapshot"] = snapshot.model_dump(mode="json")
     token = hashlib.sha256(canonical({"subscription_id": sub.id, **context})).hexdigest()
     context["route_snapshot"] = snapshot.model_dump(mode="json")
+    context["pool_placement_enabled"] = mode(session) == "reserved"
     return context, token
 
 

@@ -317,11 +317,11 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   const responseTimeoutValid = responseTimeout !== null && Number.isInteger(responseTimeout) && responseTimeout >= 1 && responseTimeout <= 300;
   const canConfigure = !props.readOnly && !archived && !runtimeLocked && !saving && !changingState;
   const startBlockedReason =
-    poolRoute !== null
+    poolRoute !== null && props.adapter.pool_placement_enabled !== true
       ? t("pool.stoppedDraft")
       : props.adapter.latest_version_id === null
       ? t("webhook.reasons.noVersion")
-      : workerId === null
+      : poolRoute === null && workerId === null
         ? t("webhook.reasons.noWorker")
         : credentialId === null
           ? t("webhook.reasons.noCredential")

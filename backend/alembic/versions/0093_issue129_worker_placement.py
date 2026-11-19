@@ -119,7 +119,10 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("octet_length(public_key)=32", name="ck_worker_capacity_verifier_key"),
     )
-    op.execute("INSERT INTO runtime_reconciliation_cursors (name) VALUES ('worker_placement')")
+    op.execute("""
+        INSERT INTO runtime_reconciliation_cursors (name)
+        VALUES ('worker_placement'), ('worker_placement_expiration')
+    """)
     op.create_table(
         "execution_placement_actions",
         sa.Column(
@@ -144,6 +147,7 @@ def upgrade() -> None:
         "worker_capacities", sa.Column("placement_changed_at", sa.DateTime(timezone=True))
     )
     op.add_column("worker_capacities", sa.Column("quarantine_until", sa.DateTime(timezone=True)))
+    op.add_column("worker_capacities", sa.Column("task_cpu_cores", sa.Float()))
     op.execute("""
         CREATE OR REPLACE FUNCTION dlr_keep_worker_reservation_requirement() RETURNS trigger
         LANGUAGE plpgsql AS $$
@@ -222,7 +226,10 @@ def downgrade() -> None:
     """)
     _set_recovery_check(allow_pool_retry=False)
     op.drop_index("ix_executions_placement_due", table_name="executions")
-    op.execute("DELETE FROM runtime_reconciliation_cursors WHERE name='worker_placement'")
+    op.execute("""
+        DELETE FROM runtime_reconciliation_cursors
+        WHERE name IN ('worker_placement', 'worker_placement_expiration')
+    """)
     op.drop_constraint("ck_executions_placement_cycle", "executions", type_="check")
     op.execute("""
         CREATE OR REPLACE FUNCTION dlr_keep_worker_reservation_requirement() RETURNS trigger
@@ -250,3 +257,4 @@ def downgrade() -> None:
     op.drop_table("worker_capacity_verifiers")
     op.drop_column("worker_capacities", "placement_changed_at")
     op.drop_column("worker_capacities", "quarantine_until")
+    op.drop_column("worker_capacities", "task_cpu_cores")

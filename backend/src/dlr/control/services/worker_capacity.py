@@ -92,6 +92,8 @@ def record_attested_capacity(
     if (
         approved is None
         or approved.worker_identity_id != worker.identity_id
+        or report.observation.task_ceiling is None
+        or report.observation.task_cpu_cores is None
         or not verify_observation(report, approved.public_key)
     ):
         raise ValueError("Worker capacity observation is unauthorized")
@@ -145,6 +147,11 @@ def record_verified_capacity(
         name: max(0, getattr(envelope.total, name) - getattr(envelope.headroom, name))
         for name in RESOURCE_DIMENSIONS
     }
+    if envelope.task_ceiling is not None:
+        allocatable = {
+            name: min(value, getattr(envelope.task_ceiling, name))
+            for name, value in allocatable.items()
+        }
     environment = envelope.environment.model_dump(mode="json")
     changed = (
         current is None
@@ -155,6 +162,7 @@ def record_verified_capacity(
         or current.verified_environment != environment
         or current.storage_ready != envelope.storage_ready
         or current.nofile != envelope.nofile
+        or current.task_cpu_cores != envelope.task_cpu_cores
         or any(getattr(current, name) != value for name, value in allocatable.items())
     )
     if current is None:
@@ -169,6 +177,7 @@ def record_verified_capacity(
     current.envelope_fingerprint = envelope.envelope_fingerprint
     current.verified_environment = environment
     current.nofile = envelope.nofile
+    current.task_cpu_cores = envelope.task_cpu_cores
     current.storage_ready = envelope.storage_ready
     for name, value in allocatable.items():
         setattr(current, name, value)
@@ -221,6 +230,7 @@ def eligible_environment(
         or not capacity.storage_ready
         or capacity.quarantine_until is not None
         or profile.nofile > capacity.nofile
+        or (capacity.task_cpu_cores is not None and profile.cpu_cores > capacity.task_cpu_cores)
         or not worker_lease_candidates_v4.has_current_committed_lease(session, worker, now=now)
         or worker_availability.has_unreconciled_v4_attempt(session, worker, now=now)
     ):

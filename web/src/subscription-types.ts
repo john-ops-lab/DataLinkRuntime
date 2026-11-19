@@ -360,6 +360,6 @@ export interface SubscriptionDraftState {
 
 export interface SubscriptionReplayContext {
   original: SubscriptionActivation;
-  current: Omit<SubscriptionActivation, "id">;
+  current: Omit<SubscriptionActivation, "id"> & { pool_placement_enabled?: boolean };
   preview_token: string;
 }

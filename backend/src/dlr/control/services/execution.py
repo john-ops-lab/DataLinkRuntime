@@ -587,6 +587,10 @@ def cancel_execution(
     execution = lock_execution_in_admission_order(session, execution_id)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
+    if principal is not None:
+        from dlr.control.services.adapter_access import require_adapter_access
+
+        require_adapter_access(session, execution.adapter_id, principal, "edit")
     audit = (
         principal is not None
         and execution.requires_worker_reservation

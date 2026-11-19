@@ -142,6 +142,21 @@ def has_unsettled_worker_work(session: Session, worker_id: int) -> bool:
             WHERE (e.target_worker_id=:worker OR e.target_worker_id_snapshot=:worker
                     OR e.worker_id=:worker)
               AND e.status IN ('queued','running','retry_wait')
+              AND NOT (
+                  e.placement_origin IS NOT DISTINCT FROM 'legacy_v3'
+                    AND e.requires_worker_reservation AND e.target_worker_id IS NULL
+                    AND e.target_worker_id_snapshot IS NOT DISTINCT FROM :worker
+                    AND e.status IN ('queued','retry_wait')
+                    AND EXISTS (
+                        SELECT 1 FROM worker_placement_cutover WHERE id=1 AND mode='paused'
+                    )
+                    AND EXISTS (
+                        SELECT 1 FROM execution_outbox o WHERE o.execution_id=e.id
+                            AND o.dispatch_generation < e.dispatch_generation
+                            AND o.status='superseded'
+                            AND o.last_error_code='placement_cutover_generation'
+                    )
+              )
         ) OR EXISTS (
             SELECT 1 FROM execution_attempts a
             WHERE a.worker_id=:worker

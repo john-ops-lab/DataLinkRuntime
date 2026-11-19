@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import ColumnElement, and_, case, func, literal_column, select
+from sqlalchemy import BigInteger, ColumnElement, and_, case, func, literal_column, select
 from sqlalchemy.orm import Session
 
 from dlr.control.models import (
@@ -33,6 +33,9 @@ _WAIT_REASONS = (
 def _available(now: ColumnElement[datetime]) -> ColumnElement[bool]:
     capacity, lease = WorkerCapacities, WorkerLeaseCandidateV4
     freshness: timedelta = CAPACITY_FRESHNESS
+    snapshot_xmax = literal_column(
+        "pg_snapshot_xmax(pg_current_snapshot())::text::bigint", type_=BigInteger()
+    )
     return and_(
         Worker.scheduling_state == "active",
         Worker.capacity_state == "ready",
@@ -52,7 +55,10 @@ def _available(now: ColumnElement[datetime]) -> ColumnElement[bool]:
         now < func.least(lease.nominal_until, lease.guard_until, lease.proof_before),
         # Observation uses a read-only transaction; a visible current tuple
         # must also carry the expected persisted writer transaction.
-        literal_column("worker_lease_candidates_v4.xmin::text::bigint") == lease.writer_xid,
+        literal_column("worker_lease_candidates_v4.xmin::text::bigint")
+        == lease.writer_xid % (2**32),
+        lease.writer_xid < snapshot_xmax,
+        snapshot_xmax - lease.writer_xid < 2**31,
     )
 
 

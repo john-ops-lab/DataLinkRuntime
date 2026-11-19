@@ -155,6 +155,7 @@ class AdapterResponse(BaseModel):
     latest_version_id: int | None
     runtime_worker_id: int | None
     route: Route | None = None
+    pool_placement_enabled: bool = False
     route_version: int = 1
     # Optional immutable Gallery origin. Request schemas intentionally omit
     # these fields so ordinary create/update/clone cannot forge or edit them.

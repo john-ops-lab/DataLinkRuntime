@@ -1564,10 +1564,29 @@ def _recover_placement_attempt(
         session.rollback()
         return False
     _validate_recovery_snapshots(execution, attempt_id=attempt.id)
-    now = fence_lost_attempt(session, execution, attempt, slot)
-    if now is None:
+    worker = session.get(Worker, attempt.worker_id, with_for_update=True, populate_existing=True)
+    if worker is None or worker.identity_id != attempt.worker_identity_id:
         session.rollback()
         return False
+    forced = worker_availability.force_stop_operation_locked(session, worker, attempt=attempt)
+    if forced and (
+        execution.status != "running"
+        or execution.attempt_count != attempt.attempt_no
+        or slot.active_attempt_id != attempt.id
+        or slot.fencing_token != attempt.fencing_token
+    ):
+        session.rollback()
+        return False
+    now = fence_lost_attempt(session, execution, attempt, slot)
+    if now is None:
+        if forced:
+            execution.cancel_requested = True
+            session.commit()
+        else:
+            session.rollback()
+        return False
+    if forced:
+        execution.cancel_requested = True
     _apply_terminal_locked(
         session,
         execution,
@@ -1947,18 +1966,20 @@ def replay_execution(session: Session, execution_id: int) -> ReplayResponse:
     adapter = session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
+    route = None if dependency_check else worker_pool.adapter_route(adapter)
     if not dependency_check:
-        worker_pool.require_accepting_route(session, worker_pool.adapter_route(adapter))
+        worker_pool.require_accepting_route(session, route)
     admission.lock_admission_scope(session, adapter_id)
     replay_worker_id = target_snapshot if dependency_check else adapter.runtime_worker_id
-    if replay_worker_id is None:
+    if replay_worker_id is None and not isinstance(route, PoolRoute):
         raise domain_error(409, "worker_unavailable", "No Worker is assigned")
-    cache_governance.ensure_reference_allowed(
-        session,
-        worker_id=int(replay_worker_id),
-        adapter_id=adapter_id,
-        version_id=int(version_id),
-    )
+    if replay_worker_id is not None:
+        cache_governance.ensure_reference_allowed(
+            session,
+            worker_id=int(replay_worker_id),
+            adapter_id=adapter_id,
+            version_id=int(version_id),
+        )
     old = session.get(Execution, execution_id, with_for_update=True)
     if old is None:
         raise domain_error(404, "execution_not_found", "Execution not found")

@@ -61,6 +61,7 @@ export interface Adapter {
   latest_version_id: number | null;
   runtime_worker_id?: number | null;
   route?: import("./worker-pool-types").RuntimeRoute | null;
+  pool_placement_enabled?: boolean;
   route_version?: number;
   runtime_locked?: boolean;
   archived_at?: string | null;

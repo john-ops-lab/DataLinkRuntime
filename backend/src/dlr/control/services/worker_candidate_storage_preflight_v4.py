@@ -131,6 +131,29 @@ def inspect_candidate_storage(
             or connection["unsafe_role"] is not False
         ):
             return _BLOCKED
+        placement_privileges_safe = session.scalar(
+            text("""
+                SELECT NOT EXISTS (
+                    SELECT 1 FROM (VALUES ('worker_placement_cutover'),
+                                          ('worker_capacity_verifiers')) AS owned(name)
+                    WHERE NOT pg_catalog.has_table_privilege(current_user, name, 'SELECT')
+                       OR pg_catalog.has_table_privilege(
+                              current_user, name, 'INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER'
+                          )
+                       OR pg_catalog.has_any_column_privilege(
+                              current_user, name, 'INSERT,UPDATE'
+                          )
+                ) AND pg_catalog.has_table_privilege(
+                    current_user, 'execution_placement_actions', 'INSERT'
+                ) AND NOT pg_catalog.has_table_privilege(
+                    current_user, 'execution_placement_actions', 'UPDATE,DELETE,TRUNCATE,TRIGGER'
+                ) AND NOT pg_catalog.has_any_column_privilege(
+                    current_user, 'execution_placement_actions', 'UPDATE'
+                )
+            """)
+        )
+        if placement_privileges_safe is not True:
+            return _BLOCKED
         # Block conflicting table/trigger DDL through this transaction without
         # blocking ordinary writers. Other DDL and role/grant changes still
         # require a separate maintenance fence.

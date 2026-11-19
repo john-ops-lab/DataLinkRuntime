@@ -45,6 +45,8 @@
 2. 执行 `placement-pause`，排空活动工作，保留 journal，允许结果与清理结算。分批执行 `placement-reconcile` 直至旧等待责任完成对账。转换会失效旧派发代，queued 获得预付等待意图，retry_wait 保留退避。旧 v3 责任不追溯增加截止时间。物理处置不明时保留阻塞。
 3. 执行 `placement-enable`，独立运行 `placement-status` 确认 `reserved`。受阻时核对责任和容量，再续办同一流程。重启或故障不自动降级；新 Claim 必须持有有效预留。
 
-容量准入比较新鲜可用容量与 held、claimed、reclaiming 合计。Pool 成员按 Worker ID 每页最多检查 100 个，调度器在可运行 Adapter/Pool 头部轮转。在 `GET /api/executions/{execution_id}` 区分配置路由、实际 Attempt 节点与派发代，通过 `GET /api/workers/{worker_id}/v4/status` 查看节点账本，通过 `GET /api/workers/placement-metrics` 查看集群汇总。达到选址上限后，管理员可向 `POST /api/executions/{execution_id}/placement-retry` 提交 `expected_generation`；取消沿用有编辑权限的 `POST /api/executions/{execution_id}/cancel`，保留两类操作的审计记录。原地恢复只接受可独立核对的原责任物理证明；retry_wait 的处置绑定旧预留代。
+容量准入先从已验证的宿主限额扣除 Agent 和领取接收余量，再按 Worker 的单任务上限封顶。held、claimed、reclaiming 均占用该容量。调度器在可运行的 Adapter/Pool 队首间轮转，并独立扫描已到期的执行。准备失败令 Worker 隔离至少 30 秒。达到复核时间并确认原清理已完成后，沿原身份和卷执行受控重启，取得新预检和签名容量样本。清理仍不明时保留原占用。
+
+使用 `GET /api/executions/{execution_id}` 区分配置路由、实际 Attempt 节点与派发代，通过 `GET /api/workers/{worker_id}/v4/status` 查看节点账本，通过 `GET /api/workers/placement-metrics` 查看集群汇总。达到选址上限后，管理员可向 `POST /api/executions/{execution_id}/placement-retry` 提交 `expected_generation`。取消沿用有编辑权限的 `POST /api/executions/{execution_id}/cancel`，保留两类操作的审计记录。原地恢复只接受可独立核对的原责任物理证明，retry_wait 的处置绑定旧预留代。
 
 D13 演练需要两台独立 Linux Worker 宿主、兼容环境与授权、真实 Control、PostgreSQL、RabbitMQ 及独立幂等目标。先在 Claim 前注入故障，核对故障至兼容节点 Claim ≤60 秒；再在 Claim 后注入故障，核对包含原租约及宽限的故障至新有效 Claim ≤180 秒。满载时扩入兼容节点，核对确认 ready 至 Claim ≤10 秒，并用最多十个可运行 Adapter 验证公平性。保留首败、Attempt 次数、目标逐键效果、旧实例拒绝和物理账本结算。缺少真实宿主样本时，6.6 保留未验。

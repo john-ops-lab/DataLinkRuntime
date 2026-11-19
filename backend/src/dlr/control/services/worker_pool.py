@@ -162,10 +162,13 @@ def delivery_target(
     return require_activation_worker(activation)
 
 
-def active_delivery_target(session: Session, activation: SubscriptionActivation) -> int | None:
-    from dlr.control.services.worker_placement_cutover import mode
+def active_delivery_target(
+    session: Session, activation: SubscriptionActivation, *, accepting: bool = False
+) -> int | None:
+    from dlr.control.services.worker_placement_cutover import accepting_mode, mode
 
-    return delivery_target(activation, use_worker_reservations=mode(session) == "reserved")
+    placement = accepting_mode(session) if accepting else mode(session)
+    return delivery_target(activation, use_worker_reservations=placement == "reserved")
 
 
 def activation_snapshot(

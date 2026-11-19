@@ -97,6 +97,7 @@ def retry_placement(
     """Start an explicitly authorized cycle on the same business responsibility."""
     from dlr.control.services import outbox, worker_placement_cutover
     from dlr.control.services.adapter import domain_error
+    from dlr.control.services.adapter_access import require_adapter_access
     from dlr.control.services.execution_cancellation import (
         lock_execution_in_admission_order,
         lock_execution_tail,
@@ -106,6 +107,7 @@ def retry_placement(
     execution = lock_execution_in_admission_order(session, execution_id)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
+    require_adapter_access(session, execution.adapter_id, principal, "edit")
     previous = session.get(ExecutionPlacementAction, (execution.id, expected_generation, "retry"))
     if previous is not None and (previous.actor_kind, previous.actor_id) == (
         principal.kind,

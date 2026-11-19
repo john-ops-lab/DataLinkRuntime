@@ -7,7 +7,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from dlr.common.cpu_accounting import CPU_PERIOD_US, attempt_cpu_units, cpu_units
+from dlr.common.cpu_accounting import (
+    CPU_PERIOD_US,
+    attempt_cpu_millis,
+    attempt_cpu_units,
+    cpu_units,
+)
 from dlr.common.jcs import canonicalize
 from dlr.common.worker_capacity_report import (
     CapacityObservation,
@@ -68,6 +73,13 @@ def signed_sample(
         slots=0,
     )
     roots = (runtime_root, journal_root) + ((cache_root,) if cache_root is not None else ())
+    task_ceiling = Resources(
+        cpu_millis=attempt_cpu_millis(config.cpu_cores),
+        memory_bytes=config.memory_bytes,
+        pids=config.pids,
+        tmp_bytes=config.tmp_bytes,
+        slots=1,
+    )
     storage_ready = all(
         shutil.disk_usage(root).free >= headroom.tmp_bytes + config.tmp_bytes for root in roots
     )
@@ -78,6 +90,7 @@ def signed_sample(
                 "headroom": {k: str(v) for k, v in headroom.model_dump().items()},
                 "source": envelope.source,
                 "nofile": str(config.nofile),
+                "task": {name: str(value) for name, value in task_ceiling.model_dump().items()},
             }
         )
     ).hexdigest()
@@ -90,6 +103,8 @@ def signed_sample(
             envelope_fingerprint=fingerprint,
             total=total,
             headroom=headroom,
+            task_ceiling=task_ceiling,
+            task_cpu_cores=config.cpu_cores,
             nofile=config.nofile,
             storage_ready=storage_ready,
         ),
