@@ -25,6 +25,8 @@ import { subscribeCredentialCatalog } from "../credential-catalog";
 import type { RefreshReason, RuntimeMutation, RuntimeTriggerSnapshot } from "../hooks/useRuntimeAuthority";
 import type { Adapter, AdapterWebhook, Credential, Worker, WebhookResponseMode } from "../types";
 import { userErrorMessage } from "../user-message";
+import { fixedRoute, useRuntimeRouteDraft } from "../runtime-route";
+import PoolRoutePicker, { RouteLabel } from "./PoolRoutePicker";
 
 const PATH_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 
@@ -158,12 +160,13 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   const webhookBaselineRef = useRef<AdapterWebhook | null>(null);
   const [publicId, setPublicId] = useState("");
   const [credentialId, setCredentialId] = useState<number | null>(null);
-  const [workerId, setWorkerId] = useState<number | null>(props.adapter.runtime_worker_id ?? null);
+  const runtimeRoute = useRuntimeRouteDraft(props.adapter);
+  const poolRoute = runtimeRoute.value?.mode === "pool" ? runtimeRoute.value : null;
+  const workerId = runtimeRoute.value?.mode === "fixed" ? runtimeRoute.value.worker_id : null;
   // M5.5.11: 表单内超时值（秒）；null = 跟随 Adapter 保存值。
   const [timeoutOverride, setTimeoutOverride] = useState<number | null>(null);
   const [timeoutCustomMode, setTimeoutCustomMode] = useState(false);
   const [adapterBaseline, setAdapterBaseline] = useState(() => ({
-    workerId: props.adapter.runtime_worker_id ?? null,
     timeoutSeconds: props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS,
   }));
   const webhookEditEpoch = useRef(0);
@@ -250,26 +253,20 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   ]);
 
   useEffect(() => {
-    const workerDirty = workerId !== adapterBaseline.workerId;
     const effectiveTimeout = timeoutOverride ?? adapterBaseline.timeoutSeconds;
     const timeoutDirty = effectiveTimeout !== adapterBaseline.timeoutSeconds || timeoutCustomMode;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- clean fields follow the accepted Adapter baseline while dirty fields retain their edit baseline
     setAdapterBaseline((current) => ({
-      workerId: workerDirty ? current.workerId : (props.adapter.runtime_worker_id ?? null),
       timeoutSeconds: timeoutDirty
         ? current.timeoutSeconds
         : (props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS),
     }));
-    if (!workerDirty) setWorkerId(props.adapter.runtime_worker_id ?? null);
     if (!timeoutDirty && timeoutOverride !== null) setTimeoutOverride(null);
   }, [
     adapterBaseline.timeoutSeconds,
-    adapterBaseline.workerId,
-    props.adapter.runtime_worker_id,
     props.adapter.timeout_seconds,
     timeoutCustomMode,
     timeoutOverride,
-    workerId,
   ]);
 
   // 凭据增删改后仅刷新 token 凭据选项（UX-003）；不会重载 Webhook 配置，
@@ -315,12 +312,14 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
       webhookBaseline.response_timeout_seconds !== responseTimeout ||
       webhookBaseline.public_id !== publicId ||
       webhookBaseline.credential_id !== credentialId ||
-      adapterBaseline.workerId !== workerId ||
+      runtimeRoute.dirty ||
       timeoutDirty);
   const responseTimeoutValid = responseTimeout !== null && Number.isInteger(responseTimeout) && responseTimeout >= 1 && responseTimeout <= 300;
   const canConfigure = !props.readOnly && !archived && !runtimeLocked && !saving && !changingState;
   const startBlockedReason =
-    props.adapter.latest_version_id === null
+    poolRoute !== null
+      ? t("pool.stoppedDraft")
+      : props.adapter.latest_version_id === null
       ? t("webhook.reasons.noVersion")
       : workerId === null
         ? t("webhook.reasons.noWorker")
@@ -426,19 +425,16 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
     setNotice(null);
     props.onError(null);
     try {
-      const adapter = await api.updateAdapter(
-        adapterId,
-        workerId === null
-          ? { timeout_seconds: timeoutSeconds }
-          : { runtime_worker_id: workerId, timeout_seconds: timeoutSeconds },
-      );
+      const adapter = await api.updateAdapter(adapterId, {
+        ...runtimeRoute.patch(),
+        timeout_seconds: timeoutSeconds,
+      });
       if (!mutation.acceptAdapter(adapter)) return;
+      runtimeRoute.accept(adapter, adapterEditEpoch.current === submittedAdapterEpoch);
       setAdapterBaseline({
-        workerId: adapter.runtime_worker_id ?? null,
         timeoutSeconds: adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS,
       });
       if (adapterEditEpoch.current === submittedAdapterEpoch) {
-        setWorkerId(adapter.runtime_worker_id ?? null);
         setTimeoutOverride(null);
         setTimeoutCustomMode(false);
       }
@@ -653,7 +649,9 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
         </label>
         <label className="settings-field">
            <span className="settings-field-label">{t("webhook.settings.worker")}</span>
-          {canConfigure ? (
+          {poolRoute !== null ? (
+            canConfigure ? null : <LockedValue testId="webhook-worker-locked"><RouteLabel route={poolRoute} /></LockedValue>
+          ) : canConfigure ? (
             <Select
               data-testid="webhook-runtime-worker"
               value={workerId ?? undefined}
@@ -670,12 +668,18 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
                 }),
                 value: worker.id,
               }))}
-              onChange={(value) => { adapterEditEpoch.current += 1; setWorkerId(value); setNotice(null); }}
+              onChange={(value) => { adapterEditEpoch.current += 1; runtimeRoute.select(fixedRoute(value)); setNotice(null); }}
             />
           ) : (
             <LockedValue testId="webhook-worker-locked">{workerName}</LockedValue>
           )}
         </label>
+        {canConfigure && <PoolRoutePicker route={poolRoute} disabled={!canConfigure}
+          onChange={(route) => {
+            adapterEditEpoch.current += 1;
+            runtimeRoute.select(route);
+            setNotice(null);
+          }} />}
         <div className="settings-field">
           <span id="webhook-response-mode-label" className="settings-field-label">{t("webhook.settings.responseMode")}</span>
           {canConfigure ? (

@@ -18,7 +18,9 @@ from sqlalchemy.orm import Session
 from dlr.common.config import settings
 from dlr.common.worker_languages_v4 import valid_capabilities
 from dlr.control.models import Adapter, AdapterCredentialBinding, AdapterVersion, Execution, Worker
-from dlr.control.services import admission, idempotency, outbox
+from dlr.control.models.subscription import SubscriptionActivation
+from dlr.control.schemas.worker_pool import RouteSource
+from dlr.control.services import admission, idempotency, outbox, worker_pool
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.execution import (
     _create_pending_execution_locked,
@@ -152,6 +154,8 @@ def resolve_queue_target_worker(
 ) -> Worker:
     """Validate a fixed target without requiring it to be effectively online."""
 
+    if worker_id_override is None:
+        worker_pool.require_fixed_route(worker_pool.adapter_route(adapter))
     target_worker_id = (
         worker_id_override if worker_id_override is not None else adapter.runtime_worker_id
     )
@@ -346,6 +350,7 @@ def accept_execution(
     credential_bindings_override: Sequence[dict[str, object]] | None = None,
     subscription_activation_id: int | None = None,
     subscription_delivery_kind: str | None = None,
+    route_source: RouteSource | None = None,
 ) -> Execution:
     """Atomically accept one gated RabbitMQ Execution or its idempotent hit."""
 
@@ -363,7 +368,6 @@ def accept_execution(
         subscription_activation_id is None
         or credential_bindings_override is None
         or version_id is None
-        or worker_id_override is None
         or dependency_check
         or input_source_type != "json"
         or input_config_revision != 1
@@ -377,30 +381,7 @@ def accept_execution(
             "subscription_activation_invalid",
             "Subscription acceptance requires its frozen activation",
         )
-    if not rabbitmq.ingress_configuration_ready(session):
-        raise domain_error(
-            503,
-            "rabbitmq_not_ready",
-            "Reliable RabbitMQ runtime is not verified",
-            {"retry_after": 1},
-        )
-    if trigger == "schedule" and schedule_policy_snapshot is None:
-        raise domain_error(
-            409,
-            "schedule_snapshot_unavailable",
-            "Schedule policy snapshot is unavailable",
-        )
-    retry_policy: dict[str, object]
-    if trigger != "subscription":
-        try:
-            retry_policy = default_retry_policy()
-        except ValueError:
-            raise domain_error(
-                503,
-                "runtime_configuration_invalid",
-                "Reliable runtime Retry Policy configuration is invalid",
-            ) from None
-    locked_adapter = session.get(Adapter, adapter.id, with_for_update=True)
+    locked_adapter = session.get(Adapter, adapter.id, with_for_update=True, populate_existing=True)
     if locked_adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     adapter = locked_adapter
@@ -422,10 +403,48 @@ def accept_execution(
             )
         return existing
 
-    if trigger != "subscription":
+    activation = None
+    source: RouteSource
+    if trigger == "subscription":
+        activation = session.get(SubscriptionActivation, subscription_activation_id)
+        if activation is None:
+            raise domain_error(
+                409, "subscription_activation_invalid", "Frozen activation unavailable"
+            )
+        if worker_id_override != worker_pool.require_activation_worker(activation):
+            raise domain_error(409, "subscription_activation_invalid", "Frozen Worker unavailable")
+        source = route_source or "activation"
+    else:
+        if not dependency_check or worker_id_override is None:
+            worker_pool.require_fixed_route(worker_pool.adapter_route(adapter))
         from dlr.control.services.subscription_guards import require_subscription_unlocked
 
         require_subscription_unlocked(session, adapter.id)
+        source = route_source or ("dependency-check" if dependency_check else "adapter")
+    if not rabbitmq.ingress_configuration_ready(session):
+        raise domain_error(
+            503,
+            "rabbitmq_not_ready",
+            "Reliable RabbitMQ runtime is not verified",
+            {"retry_after": 1},
+        )
+    if trigger == "schedule" and schedule_policy_snapshot is None:
+        raise domain_error(
+            409,
+            "schedule_snapshot_unavailable",
+            "Schedule policy snapshot is unavailable",
+        )
+
+    retry_policy: dict[str, object]
+    if activation is None:
+        try:
+            retry_policy = default_retry_policy()
+        except ValueError:
+            raise domain_error(
+                503,
+                "runtime_configuration_invalid",
+                "Reliable runtime Retry Policy configuration is invalid",
+            ) from None
     frozen_subscription_bindings = None
     if trigger == "subscription":
         assert subscription_activation_id is not None and credential_bindings_override is not None
@@ -452,6 +471,14 @@ def accept_execution(
         frozen_subscription_bindings=frozen_subscription_bindings,
     )
     worker = resolve_queue_target_worker(session, adapter, worker_id_override)
+    if activation is not None:
+        route_snapshot = worker_pool.activation_snapshot(
+            session, activation, adapter.language, source
+        )
+    else:
+        route = worker_pool.fixed_route(worker.id)
+        assert route is not None
+        route_snapshot = worker_pool.snapshot_route(session, route, adapter.language, source)
     if not rabbitmq.ingress_configuration_ready(session, worker_id=worker.id):
         raise domain_error(
             503,
@@ -463,10 +490,8 @@ def accept_execution(
     if trigger == "subscription":
         assert subscription_activation_id is not None and frozen_subscription_bindings is not None
         credential_bindings_snapshot = frozen_subscription_bindings
-        from dlr.control.models.subscription import SubscriptionActivation
         from dlr.control.services.subscription_activation_policy import ensure_policy
 
-        activation = session.get(SubscriptionActivation, subscription_activation_id)
         assert activation is not None  # validated by the frozen references above
         policy = ensure_policy(session, activation, adapter)
         retry_policy = policy["retry_policy"]
@@ -503,6 +528,7 @@ def accept_execution(
         input_config_revision=input_config_revision,
         input_snapshot=input_snapshot,
         target_worker_id=worker.id,
+        route_snapshot=route_snapshot.model_dump(mode="json"),
         scheduled_for=scheduled_for,
         artifact_ids=artifact_ids,
         dispatch_backend="rabbitmq",

@@ -3,6 +3,7 @@
 import { createSubscriptionApi } from "./subscription-api";
 import { createAdapterBatchApi } from "./adapter-batch-api";
 import { clearWorkerMaintenanceIntent } from "./worker-maintenance-intent";
+import type { PoolMember, PoolRule, RuntimeRoutePatch, WorkerEnvironment, WorkerPool, WorkerPoolDetail } from "./worker-pool-types";
 
 import type {
   BuiltinPackage,
@@ -372,16 +373,31 @@ export const api = {
 
   updateAdapter: (
     adapterId: number,
-    payload: {
+    payload: RuntimeRoutePatch & {
       name?: string;
       description?: string;
-      runtime_worker_id?: number | null;
       run_mode?: TaskRunMode;
       /** M5.5.11: single-run execution timeout in seconds (1..86400). */
       timeout_seconds?: number;
     },
   ): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+
+  listWorkerPools: (): Promise<WorkerPool[]> => request("/api/worker-pools"),
+  getWorkerPool: (id: number): Promise<WorkerPoolDetail> => request(`/api/worker-pools/${id}`),
+  createWorkerPool: (name: string, rule: PoolRule): Promise<WorkerPoolDetail> =>
+    request("/api/worker-pools", { method: "POST", body: JSON.stringify({ name, rule }) }),
+  updateWorkerPool: (id: number, data: { expected_version: number; name?: string; enabled?: boolean; rule?: PoolRule }): Promise<WorkerPoolDetail> =>
+    request(`/api/worker-pools/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  updateWorkerPoolMember: (id: number, workerId: number, data: Omit<PoolMember, "worker_id"> & { expected_version: number }): Promise<WorkerPoolDetail> =>
+    request(`/api/worker-pools/${id}/members/${workerId}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteWorkerPoolRevision: (id: number, revision: number, version: number): Promise<WorkerPoolDetail> =>
+    request(`/api/worker-pools/${id}/revisions/${revision}?expected_version=${version}`, { method: "DELETE" }),
+  previewWorkerPoolMembers: (id: number, revision: number, language: AdapterLanguage): Promise<{ worker_id: number; reason: string | null }[]> =>
+    request(`/api/worker-pools/${id}/revisions/${revision}/member-preview?language=${language}`),
+  listWorkerEnvironments: (): Promise<WorkerEnvironment[]> => request("/api/worker-environments"),
+  createWorkerEnvironment: (data: WorkerEnvironment): Promise<WorkerEnvironment> =>
+    request("/api/worker-environments", { method: "POST", body: JSON.stringify(data) }),
 
   deleteAdapter: (adapterId: number, stop = false): Promise<{ detail?: { code?: string } } | void> =>
     request(`/api/adapters/${adapterId}${stop ? "?stop=true" : ""}`, { method: "DELETE" }),

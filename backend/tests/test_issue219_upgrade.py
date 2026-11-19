@@ -8,7 +8,7 @@ from collections.abc import Iterator
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, MetaData, Table, create_engine, insert, text
 from sqlalchemy.orm import Session
 
 from dlr.control.models import Adapter, AdapterInputConfig, AdapterVersion, EventSubscription
@@ -40,15 +40,24 @@ def migration_config(engine: Engine) -> Config:
     return config
 
 
+def insert_legacy_adapter(session: Session, name: str, **fields) -> int:
+    table = Table("adapters", MetaData(), autoload_with=session.connection(), resolve_fks=False)
+    adapter_id = session.scalar(
+        insert(table)
+        .values(name=name, language="python", adapter_type="task", **fields)
+        .returning(table.c.id)
+    )
+    assert adapter_id is not None
+    return adapter_id
+
+
 def test_upgrade_preserves_saved_code_and_task_input(upgrade_database: Engine) -> None:
     config = migration_config(upgrade_database)
     command.upgrade(config, "0046_issue166_retire_ai_history")
     with Session(upgrade_database) as session, session.begin():
-        adapter = Adapter(name="Existing task", language="python", adapter_type="task")
-        session.add(adapter)
-        session.flush()
+        adapter_id = insert_legacy_adapter(session, "Existing task")
         version = AdapterVersion(
-            adapter_id=adapter.id,
+            adapter_id=adapter_id,
             seq=1,
             code="def handle(context, input):\n    return input\n",
             requirements="",
@@ -56,16 +65,19 @@ def test_upgrade_preserves_saved_code_and_task_input(upgrade_database: Engine) -
         )
         session.add(version)
         session.flush()
-        adapter.latest_version_id = version.id
+        session.execute(
+            text("UPDATE adapters SET latest_version_id=:version WHERE id=:adapter"),
+            {"version": version.id, "adapter": adapter_id},
+        )
         session.add(
             AdapterInputConfig(
-                adapter_id=adapter.id,
+                adapter_id=adapter_id,
                 source_type="json",
                 json_value={"business_id": "existing", "nested": [None, False, 42]},
                 revision=7,
             )
         )
-        adapter_id, version_id = adapter.id, version.id
+        version_id = version.id
 
     command.upgrade(config, "head")
 
@@ -110,11 +122,9 @@ def test_queue_source_upgrade_preserves_legacy_subscription_and_guards_downgrade
     config = migration_config(upgrade_database)
     command.upgrade(config, "0048_issue219_kubernetes")
     with Session(upgrade_database) as session, session.begin():
-        adapter = Adapter(name="Retained source", language="python", adapter_type="task")
-        session.add(adapter)
-        session.flush()
+        adapter_id = insert_legacy_adapter(session, "Retained source")
         source = EventSubscription(
-            adapter_id=adapter.id,
+            adapter_id=adapter_id,
             source_type="kafka",
             source_epoch="retained-epoch",
             desired_state="disabled",

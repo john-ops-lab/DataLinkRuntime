@@ -34,7 +34,9 @@ from dlr.control.models import (
     SubscriptionQuota,
     SyncBatch,
 )
+from dlr.control.schemas.worker_pool import PoolRoute, RouteSnapshot, RouteSource
 from dlr.control.services import subscription_accounting as accounting
+from dlr.control.services import worker_pool
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.event_envelope import validate_envelope
 from dlr.control.services.input_config import database_now
@@ -70,7 +72,7 @@ def lock_subscription(session: Session, subscription_id: int) -> tuple[Adapter, 
     )
     if adapter_id is None:
         raise domain_error(404, "subscription_not_found", "Subscription not found")
-    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    adapter = session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
     subscription = session.get(
         EventSubscription, subscription_id, with_for_update=True, populate_existing=True
     )
@@ -389,7 +391,9 @@ def receive_event(
     from dlr.control.services import worker_legacy_window
     from dlr.control.services.subscription_activation_policy import ensure_policy
 
-    worker_legacy_window.require_dispatch_target(session, activation.worker_id)
+    worker_legacy_window.require_dispatch_target(
+        session, worker_pool.require_activation_worker(activation)
+    )
     adapter = session.get(Adapter, sub.adapter_id)
     assert adapter is not None
     ensure_policy(session, activation, adapter)
@@ -507,6 +511,14 @@ def _delivery_context(
     return adapter, sub, checkpoint, receipt, delivery
 
 
+def delivery_route_source(delivery: EventDelivery) -> RouteSource:
+    if delivery.activation_override_id is not None:
+        return "current-config"
+    if delivery.revision_override_id is not None:
+        return "repair"
+    return "original" if delivery.ordinal > 1 else "activation"
+
+
 def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
     """T2 commits Admission, immutable Execution, Outbox, delivery and quota together."""
     from dlr.control.services.reliable_execution import accept_execution
@@ -557,6 +569,7 @@ def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
         SubscriptionActivation, delivery.activation_override_id or receipt.activation_id
     )
     assert activation is not None
+    worker_id = worker_pool.require_activation_worker(activation)
     if business_batch.activation_mode(session, activation) == "business_batch":
         return business_batch.materialize_batch(session, delivery_id)
     refs = session.scalars(
@@ -576,8 +589,9 @@ def dispatch_delivery(session: Session, delivery_id: int) -> Execution | None:
                 input_config_revision=1,
                 input_snapshot={"source_type": "json", "revision": None},
                 version_id=delivery.revision_override_id or activation.revision_id,
-                worker_id_override=activation.worker_id,
+                worker_id_override=worker_id,
                 subscription_activation_id=activation.id,
+                route_source=delivery_route_source(delivery),
                 credential_bindings_override=[
                     {
                         "binding_id": ref.binding_id,
@@ -713,7 +727,13 @@ def current_replay_context(session: Session, sub: EventSubscription) -> tuple[di
     assert adapter is not None
     if adapter.latest_version_id is None:
         raise domain_error(409, "subscription_activation_missing", "Current target unavailable")
-    worker = resolve_queue_target_worker(session, adapter)
+    route = worker_pool.adapter_route(adapter)
+    worker_id = None
+    if not isinstance(route, PoolRoute):
+        worker_id = resolve_queue_target_worker(session, adapter).id
+        route = worker_pool.fixed_route(worker_id)
+    assert route is not None
+    snapshot = worker_pool.snapshot_route(session, route, adapter.language, "current-config")
     config = session.scalar(
         select(SubscriptionConfigVersion).where(
             SubscriptionConfigVersion.subscription_id == sub.id,
@@ -725,7 +745,7 @@ def current_replay_context(session: Session, sub: EventSubscription) -> tuple[di
         "config_version": config.version,
         "source_epoch": config.source_epoch,
         "revision_id": adapter.latest_version_id,
-        "worker_id": worker.id,
+        "worker_id": worker_id,
         "source_credential_id": config.source_credential_id,
         "execution_policy_snapshot": snapshot_policy(adapter),
         "credential_refs": [
@@ -737,8 +757,11 @@ def current_replay_context(session: Session, sub: EventSubscription) -> tuple[di
             )
         ],
     }
-    # This is an optimistic concurrency fingerprint, not an authorization token.
+    # Keep the existing fingerprint for previously issued fixed-route previews.
+    if isinstance(route, PoolRoute):
+        context["route_snapshot"] = snapshot.model_dump(mode="json")
     token = hashlib.sha256(canonical({"subscription_id": sub.id, **context})).hexdigest()
+    context["route_snapshot"] = snapshot.model_dump(mode="json")
     return context, token
 
 
@@ -816,6 +839,9 @@ def replay_event(
             raise domain_error(
                 409, "subscription_config_conflict", "Current replay configuration changed"
             )
+        worker_pool.require_fixed_route(
+            RouteSnapshot.model_validate(context["route_snapshot"]).route
+        )
         current_config = session.scalar(
             select(SubscriptionConfigVersion).where(
                 SubscriptionConfigVersion.subscription_id == sub.id,
@@ -828,6 +854,7 @@ def replay_event(
             config_version_id=current_config.id,
             revision_id=context["revision_id"],
             worker_id=context["worker_id"],
+            route_snapshot=context["route_snapshot"],
             execution_policy_snapshot=context["execution_policy_snapshot"],
         )
         session.add(activation)
@@ -847,6 +874,7 @@ def replay_event(
                     field=binding.field,
                 )
             )
+    worker_pool.require_activation_worker(activation)
     from dlr.control.services import subscription_business_batch as business_batch
 
     original_mode = business_batch.mode_for_delivery(session, receipt, previous)

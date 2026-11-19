@@ -1,4 +1,5 @@
 {
+  "reviewWorkerRoute": "请在启动前核对运行路由，并在当前部署中选择 Worker 或 Pool。",
   "importAdapter": "导入适配器",
   "exportAdapter": "导出适配器",
   "saveTemplate": "保存为模板",

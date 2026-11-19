@@ -134,6 +134,8 @@ def test_t1_prepays_complete_frame_and_t2_atomic_membership(batch_world, session
         assert group.member_count == 3 and group.manifest_hash == digest(group.manifest)
         assert group.input_bytes == len(encode(execution.input)) <= 256 * 1024
         assert execution.subscription_delivery_kind == "batch"
+        assert execution.route_snapshot["source"] == "activation"
+        assert execution.route_snapshot["route"]["worker_id"] == execution.target_worker_id_snapshot
         assert session.scalar(select(func.count()).select_from(Execution)) == 1
         assert session.scalar(select(func.count()).select_from(ExecutionOutbox)) == 1
         assert (
@@ -387,6 +389,8 @@ def test_one_member_replay_remains_batch_and_original_group_stays_protected(
         replay = delivery.replay_event(session, ids[0], "replay-one", None, "correct one member")
         rerun = delivery.dispatch_delivery(session, replay.id)
         assert rerun.id != original_id
+        assert rerun.route_snapshot["source"] == "original"
+        assert rerun.route_snapshot["route"] == execution.route_snapshot["route"]
         assert session.get(SubscriptionExecutionBatch, rerun.id).member_count == 1
         assert session.get(SubscriptionExecutionBatch, original_id).member_count == 3
         assert (

@@ -1,4 +1,5 @@
 {
+  "reviewWorkerRoute": "Review the runtime route before starting. Choose a Worker or Pool in this deployment.",
   "importAdapter": "Import adapter",
   "exportAdapter": "Export adapter",
   "saveTemplate": "Save as template",

@@ -417,6 +417,7 @@ def _fence(session: Session, subscription: EventSubscription) -> None:
 def _activate(session: Session, subscription: EventSubscription) -> SubscriptionActivation:
     from dlr.control.services.reliable_execution import resolve_queue_target_worker
     from dlr.control.services.subscription_activation_policy import snapshot_policy
+    from dlr.control.services.worker_pool import fixed_route, snapshot_route
     from dlr.control.services.worker_stage_capability_v4 import require_new_execution
 
     adapter = session.get(Adapter, subscription.adapter_id)
@@ -430,6 +431,8 @@ def _activate(session: Session, subscription: EventSubscription) -> Subscription
 
         require_revision_schema(session, adapter.latest_version_id)
     worker = resolve_queue_target_worker(session, adapter)
+    route = fixed_route(worker.id)
+    assert route is not None
     require_new_execution(
         session,
         adapter,
@@ -440,9 +443,12 @@ def _activate(session: Session, subscription: EventSubscription) -> Subscription
     )
     activation = SubscriptionActivation(
         subscription_id=subscription.id,
-        config_version_id=current_config(session, subscription).id,
+        config_version_id=config.id,
         revision_id=adapter.latest_version_id,
         worker_id=worker.id,
+        route_snapshot=snapshot_route(session, route, adapter.language, "adapter").model_dump(
+            mode="json"
+        ),
         execution_policy_snapshot=snapshot_policy(adapter),
     )
     session.add(activation)

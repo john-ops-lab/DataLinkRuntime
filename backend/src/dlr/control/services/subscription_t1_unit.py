@@ -438,6 +438,11 @@ class T1Unit:
                 raise domain_error(422, "event_payload_invalid", "Invalid HTTP original body")
             validate_envelope(item.envelope)
         assert self._config is not None and self._activation is not None
+        from dlr.control.services import worker_legacy_window, worker_pool
+
+        worker_legacy_window.require_dispatch_target(
+            self.session, worker_pool.require_activation_worker(self._activation)
+        )
         envelope = item.envelope
         if (
             envelope["event"]["id"] != item.identity
@@ -672,11 +677,6 @@ class T1Unit:
                     item.envelope is not None
                     and value.content_hash is not None
                     and self._activation is not None
-                )
-                from dlr.control.services import worker_legacy_window
-
-                worker_legacy_window.require_dispatch_target(
-                    self.session, self._activation.worker_id
                 )
                 receipt = EventReceipt(
                     subscription_id=self.subscription.id,

@@ -81,6 +81,7 @@ class PortablePackage(StrictModel):
     input: PortableInput = Field(default_factory=PortableInput)
     provenance: str = Field(default="", max_length=100000)
     license: str = Field(default="", max_length=100000)
+    runtime_route_requires_rebind: Literal[True] | None = None
 
     _name = field_validator("name", mode="before")(_validate_name)
 

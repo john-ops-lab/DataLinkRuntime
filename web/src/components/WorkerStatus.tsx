@@ -14,6 +14,7 @@ import type { Adapter, Worker } from "../types";
 import WorkerCachePanel from "./WorkerCachePanel";
 import WorkerMaintenanceObservation from "./WorkerMaintenanceObservation";
 import WorkerMaintenanceActions from "./WorkerMaintenanceActions";
+import WorkerPoolsPanel from "./WorkerPoolsPanel";
 
 function formatTime(value: string, locale: "zh-CN" | "en"): string {
   const date = new Date(value);
@@ -46,6 +47,7 @@ export default function WorkerStatus({ workers, loading, error, canManageCache =
 
   return (
     <div className="worker-status-details" data-testid="worker-status-details">
+      {canManageCache && <WorkerPoolsPanel workers={workers} readWorker={onReadMaintenance} />}
       {loading && (
         <div className="system-status-loading" role="status" aria-label={t("worker.loading")}>
           <Spin size="small" />

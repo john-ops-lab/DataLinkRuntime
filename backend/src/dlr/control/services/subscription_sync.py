@@ -699,10 +699,12 @@ def _insert_receipt(
     page_index: int | None = None,
 ) -> EventReceipt:
     from dlr.control.models import Adapter
-    from dlr.control.services import worker_legacy_window
+    from dlr.control.services import worker_legacy_window, worker_pool
     from dlr.control.services.subscription_activation_policy import ensure_policy
 
-    worker_legacy_window.require_dispatch_target(session, activation.worker_id)
+    worker_legacy_window.require_dispatch_target(
+        session, worker_pool.require_activation_worker(activation)
+    )
     adapter = session.get(Adapter, sub.adapter_id)
     assert adapter is not None
     ensure_policy(session, activation, adapter)

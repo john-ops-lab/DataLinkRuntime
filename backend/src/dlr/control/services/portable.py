@@ -64,6 +64,12 @@ def export_adapter(
         provenance=str(adapter.configuration_notes.get("provenance", "")),
         adapter_type=adapter.adapter_type,  # type: ignore[arg-type]
         timeout_seconds=adapter.timeout_seconds,
+        runtime_route_requires_rebind=(
+            True
+            if adapter.pool_route is not None
+            or adapter.configuration_notes.get("runtime_route_requires_rebind")
+            else None
+        ),
         variants=[
             PortableVariant(
                 language=adapter.language,  # type: ignore[arg-type]
@@ -143,7 +149,11 @@ def import_adapter(
         raise domain_error(422, "portable_object_type", "Expected an adapter package")
     encode_package(package)
     variant = package.variants[0]
-    if package.adapter_type == "task" and request.runtime_worker_id is None:
+    if (
+        package.adapter_type == "task"
+        and request.runtime_worker_id is None
+        and not package.runtime_route_requires_rebind
+    ):
         raise domain_error(
             409, "runtime_worker_required", "Select a target Worker before importing"
         )
@@ -169,6 +179,8 @@ def import_adapter(
             "license": package.license,
         },
     )
+    if package.runtime_route_requires_rebind and request.runtime_worker_id is None:
+        adapter.configuration_notes["runtime_route_requires_rebind"] = True
     store: LocalFileArtifactStore | None = None
     created_keys: list[str] = []
 

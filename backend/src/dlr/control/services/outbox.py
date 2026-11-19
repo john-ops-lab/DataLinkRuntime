@@ -262,16 +262,25 @@ def dispatch_payload_for_execution(
 
     if execution.dispatch_backend != "rabbitmq" or execution.dispatch_generation < 1:
         raise ValueError("only RabbitMQ generations can create an Outbox row")
+    from dlr.control.services.worker_pool import (
+        execution_route,
+        require_fixed_route,
+        stored_snapshot,
+    )
+
+    require_fixed_route(execution_route(execution))
     adapter = session.get(Adapter, execution.adapter_id)
     target_worker_id = execution.target_worker_id_snapshot or execution.target_worker_id
     if adapter is None or target_worker_id is None:
         raise ValueError("RabbitMQ Execution has no valid dispatch target")
+    snapshot = stored_snapshot(execution.route_snapshot)
     message = build_dispatch_message(
         execution_id=execution.id,
         dispatch_generation=execution.dispatch_generation,
         adapter_id=execution.adapter_id,
         language=cast(
-            Literal["python", "javascript", "java", "typescript", "go"], adapter.language
+            Literal["python", "javascript", "java", "typescript", "go"],
+            snapshot.required_language if snapshot is not None else adapter.language,
         ),
         resource_class=execution.resource_class or "default",
         target_worker_id=target_worker_id,
@@ -307,6 +316,9 @@ def create_dispatch_outbox(
     )
     if existing is not None:
         return existing
+    from dlr.control.services.worker_pool import execution_route, require_fixed_route
+
+    require_fixed_route(execution_route(execution))
     worker_legacy_window.require_dispatch_target(session, execution.target_worker_id_snapshot)
     payload, body, routing_key, message_id = dispatch_payload_for_execution(
         session, execution, message_id=message_id
@@ -364,6 +376,12 @@ def lease_due_outbox(
             select(ExecutionOutbox)
             .where(
                 *_pending_filter(effective_now),
+                ~select(Execution.id)
+                .where(
+                    Execution.id == ExecutionOutbox.execution_id,
+                    Execution.route_pool_id.is_not(None),
+                )
+                .exists(),
                 (ExecutionOutbox.last_error_code.is_distinct_from("cache_reclamation_in_progress"))
                 | ~guarded_deferred_execution,
             )

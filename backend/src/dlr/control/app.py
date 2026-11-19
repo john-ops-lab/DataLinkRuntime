@@ -53,6 +53,7 @@ from dlr.control.api import (
     worker_history_retirement_v4,
     worker_input_v4,
     worker_instance_v4,
+    worker_pools,
     worker_recovery_v4,
     worker_result_v4,
     workers,
@@ -501,6 +502,7 @@ def create_app() -> FastAPI:
         app.include_router(worker_recovery_v4.router)
     app.include_router(workers.router)
     app.include_router(workers.admin_router)
+    app.include_router(worker_pools.router)
     app.include_router(cache_admin.router)
     app.include_router(events.router)
     # Last registered user middleware is outermost: reject only known-full

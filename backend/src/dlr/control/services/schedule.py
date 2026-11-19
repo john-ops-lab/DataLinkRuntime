@@ -56,6 +56,7 @@ from dlr.control.schemas.schedule import ScheduleUpsert
 from dlr.control.services import (
     adapter_runtime,
     worker_availability,
+    worker_pool,
 )
 from dlr.control.services import (
     input_config as input_config_service,
@@ -527,6 +528,7 @@ def upsert_schedule(
     if data.enabled:
         from dlr.control.services.subscription_guards import require_no_subscription
 
+        worker_pool.require_fixed_route(worker_pool.adapter_route(adapter))
         require_no_subscription(session, adapter.id)
 
     if data.enabled and adapter.latest_version_id is None:

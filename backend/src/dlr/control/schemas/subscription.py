@@ -6,6 +6,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
+from dlr.control.schemas.worker_pool import RouteSnapshot
+
 type SourcePhase = Literal["list", "watch", "sync.started", "sync.completed", "sync.failed"]
 
 
@@ -479,7 +481,8 @@ class ActivationResponse(BaseModel):
     config_version: int
     source_epoch: str
     revision_id: int
-    worker_id: int
+    worker_id: int | None
+    route_snapshot: RouteSnapshot | None = None
     source_credential_id: int | None
     credential_refs: list[ActivationReference]
 

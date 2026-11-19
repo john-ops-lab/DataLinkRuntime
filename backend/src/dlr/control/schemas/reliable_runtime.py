@@ -20,6 +20,7 @@ from pydantic import (
 
 from dlr.common.managed_input import controlled_input_mount_name
 from dlr.control.schemas.worker import TaskInputFile
+from dlr.control.schemas.worker_pool import RoutePreview, RouteSnapshot
 
 Decision = Literal["EXECUTE", "ACK_NOOP", "DEFER", "REJECT_DLQ", "PAUSE_CONSUMER"]
 AttemptStatus = Literal[
@@ -483,11 +484,14 @@ class ReliableExecutionDetail(BaseModel):
     incidents: list[InfrastructureIncidentSummary]
     replay_available: bool
     replay_reason: str | None = None
+    route_snapshot: RouteSnapshot | None = None
+    replay_route: RoutePreview | None = None
 
 
 class ReplayResponse(BaseModel):
     execution_id: int
     replay_of_execution_id: int
+    route_snapshot: RouteSnapshot | None = None
 
 
 class HoldPurgeBody(BaseModel):

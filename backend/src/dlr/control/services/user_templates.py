@@ -308,6 +308,8 @@ def instantiate(
             "review_environment": True,
         },
     )
+    if package.runtime_route_requires_rebind:
+        adapter.configuration_notes["runtime_route_requires_rebind"] = True
     session.add(adapter)
     try:
         session.flush()

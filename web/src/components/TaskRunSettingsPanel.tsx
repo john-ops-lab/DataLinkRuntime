@@ -13,6 +13,7 @@ import { ApiError, api } from "../api";
 import type { RefreshReason, RuntimeMutation, RuntimeTriggerSnapshot } from "../hooks/useRuntimeAuthority";
 import { uploadManagedInputArtifact } from "../managed-input-client";
 import { isTerminal } from "../status";
+import { fixedRoute, useRuntimeRouteDraft } from "../runtime-route";
 import type {
   Adapter,
   AdapterInputConfig,
@@ -35,6 +36,7 @@ import "./input-ux-followup.css";
 
 import ManagedInputExamples from "./ManagedInputExamples";
 import EventTriggerSettings from "./EventTriggerSettings";
+import PoolRoutePicker from "./PoolRoutePicker";
 import type { EventSubscription, SubscriptionCapabilities, SubscriptionDraftState } from "../subscription-types";
 
 /** Preserve the server value; choose readable units without rounding expiry. */
@@ -323,7 +325,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     acceptWebhook: () => false,
     finish: () => undefined,
   }));
-  const [workerOverride, setWorkerOverride] = useState<number | null | undefined>(undefined);
+  const runtimeRoute = useRuntimeRouteDraft(props.adapter);
   const subscriptionBound = props.eventSubscription != null;
   const eventSelected = subscriptionBound || props.eventSelected === true;
   const [subscriptionDraft, setSubscriptionDraft] = useState<SubscriptionDraftState>({ dirty: false, busy: false });
@@ -332,7 +334,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   const [timeoutOverride, setTimeoutOverride] = useState<number | null>(null);
   const [timeoutCustomMode, setTimeoutCustomMode] = useState(false);
   const [runtimeBaseline, setRuntimeBaseline] = useState(() => ({
-    workerId: props.adapter.runtime_worker_id ?? null,
     runMode: props.adapter.run_mode,
     timeoutSeconds: props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS,
   }));
@@ -436,33 +437,25 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     props.onAdapterChange?.(refreshed);
   });
   useEffect(() => {
-    const workerClean = workerOverride === undefined || workerOverride === runtimeBaseline.workerId;
     const runModeClean = runModeOverride === undefined || runModeOverride === runtimeBaseline.runMode;
     const timeoutClean = !timeoutCustomMode
       && (timeoutOverride === null || timeoutOverride === runtimeBaseline.timeoutSeconds);
     setRuntimeBaseline({
-      workerId: workerClean
-        ? (props.adapter.runtime_worker_id ?? null)
-        : runtimeBaseline.workerId,
       runMode: runModeClean ? props.adapter.run_mode : runtimeBaseline.runMode,
       timeoutSeconds: timeoutClean
         ? (props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS)
         : runtimeBaseline.timeoutSeconds,
     });
-    if (workerClean && workerOverride !== undefined) setWorkerOverride(undefined);
     if (runModeClean && runModeOverride !== undefined) setRunModeOverride(undefined);
     if (timeoutClean && timeoutOverride !== null) setTimeoutOverride(null);
   }, [
     props.adapter.run_mode,
-    props.adapter.runtime_worker_id,
     props.adapter.timeout_seconds,
     runModeOverride,
     runtimeBaseline.runMode,
     runtimeBaseline.timeoutSeconds,
-    runtimeBaseline.workerId,
     timeoutCustomMode,
     timeoutOverride,
-    workerOverride,
   ]);
   const runMode = runModeOverride ?? runtimeBaseline.runMode;
 
@@ -601,8 +594,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     };
   }, [adapterId, onError, props.runtimeSchedule, runMode]);
 
-  const workerId =
-    workerOverride === undefined ? runtimeBaseline.workerId : workerOverride;
+  const poolRoute = runtimeRoute.value?.mode === "pool" ? runtimeRoute.value : null;
+  const workerId = runtimeRoute.value?.mode === "fixed" ? runtimeRoute.value.worker_id : null;
 
   // M5.5.11: 表单显示值 = 表单覆盖 ?? Adapter 权威值 ?? 默认 300 秒。
   const effectiveTimeoutSeconds =
@@ -896,7 +889,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     if (readOnly || savingRuntime || props.adapter.runtime_locked || props.runtimeSynchronizing === true) {
       return;
     }
-    if (workerId === null) {
+    if (runtimeRoute.value === null) {
       onError(t("task.settings.chooseWorker"));
       return;
     }
@@ -912,18 +905,17 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     onError(null);
     try {
       const refreshed = await api.updateAdapter(adapterId, {
-        runtime_worker_id: workerId,
+        ...runtimeRoute.patch(),
         run_mode: runMode,
         timeout_seconds: timeoutSeconds,
       });
       if (!mutation.acceptAdapter(refreshed)) return;
+      runtimeRoute.accept(refreshed, runtimeEditEpoch.current === submittedRuntimeEpoch);
       setRuntimeBaseline({
-        workerId: refreshed.runtime_worker_id ?? null,
         runMode: refreshed.run_mode,
         timeoutSeconds: refreshed.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS,
       });
       if (runtimeEditEpoch.current === submittedRuntimeEpoch) {
-        setWorkerOverride(undefined);
         setRunModeOverride(undefined);
         setTimeoutOverride(null);
         setTimeoutCustomMode(false);
@@ -1097,7 +1089,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     runMode === "schedule" && schedule === null && !loadingSchedule && !scheduleLoadFailed;
   const runtimeConfigDirty =
     runMode !== runtimeBaseline.runMode ||
-    workerId !== runtimeBaseline.workerId ||
+    runtimeRoute.dirty ||
     effectiveTimeoutSeconds !== runtimeBaseline.timeoutSeconds ||
     scheduleTouched ||
     schedulePolicyTouched;
@@ -1176,6 +1168,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     if (scheduleLoadFailed) return t("task.reasons.scheduleLoadFailed");
     if (inputBlockedReason !== null) return inputBlockedReason;
     if (props.adapter.latest_version_id === null) return t("task.reasons.saveVersionFirst");
+    if (props.adapter.route?.mode === "pool") return t("pool.stoppedDraft");
     if (props.adapter.runtime_worker_id == null) return t("task.reasons.saveWorkerFirst");
     if (props.dirty) return t("task.reasons.saveChangesFirst");
     if (runtimeConfigDirty) return t("task.reasons.runtimeDirty");
@@ -1203,6 +1196,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     if (props.adapter.archived_at) return t("task.reasons.deleted");
     if (inputBlockedReason !== null) return inputBlockedReason;
     if (props.adapter.latest_version_id === null) return t("task.reasons.noVersion");
+    if (props.adapter.route?.mode === "pool") return t("pool.stoppedDraft");
     if (props.adapter.runtime_worker_id == null) return t("task.reasons.noWorker");
     if (activeExecution) return t("task.reasons.activeRun");
     if (subscriptionRuntimeLocked) return t("task.reasons.subscriptionLocked");
@@ -1362,7 +1356,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   const runtimeFields = <>
-          <label className="settings-field">
+          {poolRoute === null && <label className="settings-field">
             <span className="settings-field-label">{t("task.settings.worker")}</span>
             <Select
               data-testid="task-runtime-worker"
@@ -1372,7 +1366,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               disabled={readOnly || runtimeLocked || savingRuntime || props.workersLoading}
               onChange={(value: number) => {
                 runtimeEditEpoch.current += 1;
-                setWorkerOverride(value);
+                runtimeRoute.select(fixedRoute(value));
               }}
               options={compatibleWorkers.map((worker) => ({
                 value: worker.id,
@@ -1385,7 +1379,12 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 }),
               }))}
             />
-          </label>
+          </label>}
+          <PoolRoutePicker route={poolRoute} readOnly={readOnly}
+            disabled={runtimeLocked || savingRuntime} onChange={(route) => {
+              runtimeEditEpoch.current += 1;
+              runtimeRoute.select(route);
+            }} />
           {props.workersError !== null && <Alert type="error" showIcon message={props.workersError} />}
           <div className="settings-field">
             <span className="settings-field-label">{t("task.settings.timeout")}</span>
@@ -1638,7 +1637,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         className="task-run-config-save"
         data-testid="save-task-runtime"
         loading={savingRuntime}
-        disabled={readOnly || runtimeLocked || workerId === null}
+        disabled={readOnly || runtimeLocked || runtimeRoute.value === null}
         onClick={() => void saveRunConfig()}
       >
         {t("task.settings.save")}

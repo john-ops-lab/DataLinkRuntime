@@ -449,6 +449,15 @@
     "unavailable": "{{label}} unavailable: {{reason}}"
   },
   "errors": {
+    "pool_routing_not_enabled": "Save the Pool as a stopped draft. Production execution currently requires a fixed Worker.",
+    "adapter_route_version_conflict": "The runtime route changed. Refresh the Adapter before saving.",
+    "worker_pool_version_conflict": "The Pool configuration changed. Reload it before saving.",
+    "worker_pool_conflict": "The requested Pool change conflicts with existing configuration.",
+    "pool_revision_in_use": "This rule revision is still referenced.",
+    "pool_route_revision_mismatch": "The route does not match the selected Pool revision. Choose the rule again.",
+    "worker_environment_conflict": "This environment class name is already in use.",
+    "pool_worker_identity_mismatch": "The Worker identity changed. Refresh Worker status before saving.",
+    "pool_worker_not_v4": "Pool membership requires a registered v4 Worker.",
     "unknown": "Request failed",
     "auth_not_configured": "Authentication is not configured on the server",
     "unauthorized": "Authentication failed. Check the Token or Credential",

@@ -1,3 +1,5 @@
+import type { RouteSnapshot } from "./worker-pool-types";
+
 export interface KafkaSourceConfig {
   source_type: "kafka";
   cluster_id: string;
@@ -292,7 +294,8 @@ export interface CheckpointPage {
 export interface SubscriptionActivation {
   id: number;
   revision_id: number;
-  worker_id: number;
+  worker_id: number | null;
+  route_snapshot?: RouteSnapshot | null;
   config_version: number;
   source_epoch: string;
   source_credential_id: number | null;

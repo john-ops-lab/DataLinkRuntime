@@ -49,6 +49,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dlr.control.db import Base
+from dlr.control.models.worker_pool import RouteSnapshotColumns, pool_reference
 
 
 class Worker(Base):
@@ -198,11 +199,16 @@ class WorkerCredential(Base):
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class Execution(Base):
+class Execution(RouteSnapshotColumns, Base):
     """One Adapter run, permanently bound to a version snapshot."""
 
     __tablename__ = "executions"
     __table_args__ = (
+        pool_reference("fk_executions_pool_revision"),
+        CheckConstraint(
+            "route_pool_id IS NULL OR target_worker_id_snapshot IS NULL",
+            name="ck_executions_pool_snapshot_target",
+        ),
         CheckConstraint(
             "status IN ('queued', 'running', 'retry_wait', 'succeeded', "
             "'dead_letter', 'cancelled', 'expired')",

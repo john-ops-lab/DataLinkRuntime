@@ -63,12 +63,14 @@ from dlr.control.schemas.reliable_runtime import (
     ResourceProfile,
     V3TaskPayload,
 )
+from dlr.control.schemas.worker_pool import PoolRoute, RoutePreview
 from dlr.control.services import (
     admission,
     cache_governance,
     outbox,
     worker_availability,
     worker_legacy_window,
+    worker_pool,
 )
 from dlr.control.services import execution as execution_service
 from dlr.control.services.adapter import domain_error
@@ -1561,6 +1563,7 @@ def retry_dispatcher_once(
                 Execution.dispatch_backend == "rabbitmq",
                 Execution.status == "retry_wait",
                 Execution.next_attempt_at <= effective_now,
+                Execution.route_pool_id.is_(None),
             )
             .order_by(Execution.next_attempt_at, Execution.id)
             .limit(max(1, min(int(limit), 1_000)))
@@ -1680,6 +1683,23 @@ def execution_detail(
     from dlr.control.services.incident_disposition import inspect_incident_disposition
 
     replay_available, replay_reason = _replay_availability(session, execution)
+    replay_route = None
+    if replay_available:
+        adapter = session.get(Adapter, execution.adapter_id)
+        if execution.dependency_check:
+            replay_route = RoutePreview(
+                route=worker_pool.fixed_route(execution.target_worker_id_snapshot),
+                source="dependency-check",
+            )
+        elif adapter is not None:
+            replay_route = RoutePreview(
+                route=worker_pool.adapter_route(adapter), source="current-config"
+            )
+        if replay_route is not None:
+            if isinstance(replay_route.route, PoolRoute):
+                replay_available, replay_reason = False, "pool_routing_not_enabled"
+            elif replay_route.route is None:
+                replay_available, replay_reason = False, "worker_unavailable"
     return ReliableExecutionDetail(
         execution_id=execution.id,
         dispatch_backend=cast(Any, execution.dispatch_backend),
@@ -1744,6 +1764,8 @@ def execution_detail(
         ],
         replay_available=replay_available,
         replay_reason=replay_reason,
+        route_snapshot=worker_pool.stored_snapshot(execution.route_snapshot),
+        replay_route=replay_route,
     )
 
 
@@ -1795,11 +1817,12 @@ def replay_execution(session: Session, execution_id: int) -> ReplayResponse:
         raise domain_error(404, "execution_not_found", "Execution not found")
     adapter_id, version_id, dependency_check, target_snapshot = identity
     adapter_id = int(adapter_id)
-    if admission.lock_admission_scope(session, adapter_id) is None:
-        raise domain_error(404, "adapter_not_found", "Adapter not found")
-    adapter = session.get(Adapter, adapter_id)
+    adapter = session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
+    if not dependency_check:
+        worker_pool.require_fixed_route(worker_pool.adapter_route(adapter))
+    admission.lock_admission_scope(session, adapter_id)
     replay_worker_id = target_snapshot if dependency_check else adapter.runtime_worker_id
     if replay_worker_id is None:
         raise domain_error(409, "worker_unavailable", "No Worker is assigned")
@@ -1864,11 +1887,16 @@ def replay_execution(session: Session, execution_id: int) -> ReplayResponse:
         version_id=old.version_id,
         dependency_check=old.dependency_check,
         worker_id_override=(old.target_worker_id_snapshot if old.dependency_check else None),
+        route_source="dependency-check" if old.dependency_check else "current-config",
     )
     new_execution.replay_of_execution_id = old.id
     session.commit()
     session.refresh(new_execution)
-    return ReplayResponse(execution_id=new_execution.id, replay_of_execution_id=old.id)
+    return ReplayResponse(
+        execution_id=new_execution.id,
+        replay_of_execution_id=old.id,
+        route_snapshot=worker_pool.stored_snapshot(new_execution.route_snapshot),
+    )
 
 
 def held_backlog(session: Session, *, now: datetime | None = None) -> tuple[int, int]:

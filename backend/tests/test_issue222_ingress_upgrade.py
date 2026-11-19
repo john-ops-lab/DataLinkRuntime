@@ -9,13 +9,12 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from dlr.control.models import (
-    Adapter,
     AdapterVersion,
     EventSubscription,
     Execution,
     SubscriptionConfigVersion,
 )
-from test_issue219_upgrade import migration_config
+from test_issue219_upgrade import insert_legacy_adapter, migration_config
 from test_issue219_upgrade import upgrade_database as database_fixture
 
 upgrade_database = database_fixture
@@ -35,14 +34,12 @@ def test_upgrade_preserves_pending_failed_and_kubernetes_control(upgrade_databas
                 "VALUES ('upgrade-worker','online','[\"python\"]') RETURNING id"
             )
         )
-        adapter = Adapter(name="old-subscription", language="python", adapter_type="task")
-        session.add(adapter)
-        session.flush()
-        revision = AdapterVersion(adapter_id=adapter.id, seq=1, code="pass", requirements="")
+        adapter_id = insert_legacy_adapter(session, "old-subscription")
+        revision = AdapterVersion(adapter_id=adapter_id, seq=1, code="pass", requirements="")
         session.add(revision)
         session.flush()
         sub = EventSubscription(
-            adapter_id=adapter.id,
+            adapter_id=adapter_id,
             source_type="kubernetes",
             source_epoch="retained-epoch",
             desired_state="disabled",
@@ -148,6 +145,20 @@ def test_upgrade_preserves_pending_failed_and_kubernetes_control(upgrade_databas
             assert row.pop("batch_member_code") is None
         for row in after["subscription_activations"]:
             assert row.pop("execution_policy_snapshot") is None
+            assert row.pop("route_pool_id") is None
+            assert row.pop("route_pool_revision") is None
+            assert row.pop("route_snapshot") == {
+                "route": {
+                    "schema_version": 1,
+                    "mode": "fixed",
+                    "worker_id": worker_id,
+                    "failover": "none",
+                },
+                "required_language": "python",
+                "source": "legacy",
+                "environment": "unknown",
+                "wait_policy": "w1-fixed",
+            }
         assert after == before
         from dlr.control.services.subscription_delivery import audit_global_quota, audit_quota
 
@@ -205,20 +216,18 @@ def test_migration_adds_old_execution_and_control_reserve_deltas_without_reset(
     config = migration_config(upgrade_database)
     command.upgrade(config, "0050_issue223_adapter_batches")
     with Session(upgrade_database) as session, session.begin():
-        adapter = Adapter(name="retained-copy", language="python", adapter_type="task")
+        adapter_id = insert_legacy_adapter(session, "retained-copy")
         worker_id = session.scalar(
             text(
                 "INSERT INTO workers (name,status,capabilities) "
                 "VALUES ('old-worker','online','[\"python\"]') RETURNING id"
             )
         )
-        session.add(adapter)
-        session.flush()
-        version = AdapterVersion(adapter_id=adapter.id, seq=1, code="pass", requirements="")
+        version = AdapterVersion(adapter_id=adapter_id, seq=1, code="pass", requirements="")
         session.add(version)
         session.flush()
         sub = EventSubscription(
-            adapter_id=adapter.id, source_type="kubernetes", source_epoch="old-epoch"
+            adapter_id=adapter_id, source_type="kubernetes", source_epoch="old-epoch"
         )
         session.add(sub)
         session.flush()
@@ -246,7 +255,7 @@ def test_migration_adds_old_execution_and_control_reserve_deltas_without_reset(
                 "RETURNING id"
             ),
             {
-                "adapter": adapter.id,
+                "adapter": adapter_id,
                 "version": version.id,
                 "input": json.dumps({"legacy": [None, False, 42]}),
                 "snapshot": json.dumps({"source_type": "json", "revision": 1}),

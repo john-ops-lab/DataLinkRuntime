@@ -10,8 +10,11 @@ from sqlalchemy.exc import DatabaseError, IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.common.schema_version import SCHEMA_REVISION
-from dlr.control.models import Adapter
-from test_issue219_upgrade import migration_config, upgrade_database  # noqa: F401
+from test_issue219_upgrade import (  # noqa: F401
+    insert_legacy_adapter,
+    migration_config,
+    upgrade_database,
+)
 
 PREVIOUS = "0054_issue222_receipt_ttl_guard"
 CURRENT = "0055_issue129_worker_identity"
@@ -124,12 +127,7 @@ def test_upgrade_backfills_distinct_identity_and_preserves_worker_binding(
             )
         )
     with Session(upgrade_database) as session, session.begin():
-        adapter = Adapter(
-            name="existing", language="python", adapter_type="task", runtime_worker_id=first
-        )
-        session.add(adapter)
-        session.flush()
-        adapter_id = adapter.id
+        adapter_id = insert_legacy_adapter(session, "existing", runtime_worker_id=first)
 
     command.upgrade(config, CURRENT)
     with upgrade_database.begin() as connection:

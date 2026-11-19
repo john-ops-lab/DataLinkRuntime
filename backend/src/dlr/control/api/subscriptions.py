@@ -59,7 +59,7 @@ from dlr.control.security import (
     require_business_principal,
     require_principal,
 )
-from dlr.control.services import adapter_access
+from dlr.control.services import adapter_access, worker_pool
 from dlr.control.services import subscription_management as management
 from dlr.control.services import subscription_sync as sync
 from dlr.control.services.adapter import domain_error
@@ -403,6 +403,7 @@ def _serialize_activation(
         source_epoch=config.source_epoch,
         revision_id=activation.revision_id,
         worker_id=activation.worker_id,
+        route_snapshot=worker_pool.stored_snapshot(activation.route_snapshot),
         source_credential_id=config.source_credential_id,
         credential_refs=[
             ActivationReference(
@@ -976,10 +977,23 @@ def replay_event(
         expected_preview_token=payload.expected_preview_token,
         expected_config_version=payload.expected_config_version,
     )
+    receipt = _event(session, subscription_id, receipt_id)
+    activation = session.get(
+        SubscriptionActivation, delivery.activation_override_id or receipt.activation_id
+    )
+    assert activation is not None
+    snapshot = worker_pool.stored_snapshot(activation.route_snapshot)
     commit(session)
     return {
         "delivery_id": delivery.id,
         "execution_id": delivery.execution_id or delivery.batch_execution_id,
+        "route_snapshot": (
+            snapshot.model_copy(
+                update={"source": subscription_delivery.delivery_route_source(delivery)}
+            )
+            if snapshot is not None
+            else None
+        ),
     }
 
 

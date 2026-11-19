@@ -28,6 +28,7 @@ from dlr.control.services.worker_remote_deployment_v4 import require_dedicated_d
 SOURCE_SCHEMA = "0087_issue129_disposition"
 LEGACY_SCHEMA = "0088_issue129_image_transition"
 J_SCHEMA = "0089_issue129_credential_ops"
+W1_SCHEMA = "0090_issue129_worker_cutover"
 SOURCE_SHA = "a37c9d3e19985acddb1f3e33ff6d3c7337147270"
 F_SOURCE_SHA = "0417b82c4ab6f76aefdf3eafe38327f46cb18358"
 # Verified F build inputs from its original delivery. Product provenance and
@@ -71,7 +72,10 @@ _J_RELEASE_SHAS = frozenset(
         "4a057c7d9eae84b563bb952837e12e90095c7c44",
     }
 )
-_MAX_TRANSITIONS = 6
+W1_SOURCE_SHA = "347be42970a765fc08557528991134d60c79dcae"
+_W1_RELEASE_SHAS = frozenset({W1_SOURCE_SHA, "bbfedfa93f37f9c008084085e8bbb7998fba8897"})
+_MAX_TRANSITIONS = 7
+_WRITABLE_TRANSITIONS = {4, 5, 6}
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _FIELDS = {
@@ -134,7 +138,7 @@ def read_intent(
                 previous is not None
                 and (previous.int == 0 or str(previous) != value["previous_id"])
             )
-            or value["target_schema"] not in (LEGACY_SCHEMA, J_SCHEMA, SCHEMA_REVISION)
+            or value["target_schema"] not in (LEGACY_SCHEMA, J_SCHEMA, W1_SCHEMA, SCHEMA_REVISION)
             or (value["source_schema"], value["source_sha"])
             not in {
                 (SOURCE_SCHEMA, SOURCE_SHA),
@@ -143,6 +147,7 @@ def read_intent(
                     for sha in _F_RELEASE_SHAS | _G_RELEASE_SHAS | _H_RELEASE_SHAS | _I_RELEASE_SHAS
                 ),
                 *((J_SCHEMA, sha) for sha in _J_RELEASE_SHAS),
+                *((W1_SCHEMA, sha) for sha in _W1_RELEASE_SHAS),
             }
             or type(value["target_sha"]) is not str
             or _SHA.fullmatch(value["target_sha"]) is None
@@ -246,7 +251,7 @@ def _kind(intent: ImageTransition) -> int:
     elif (
         intent.source_schema == J_SCHEMA
         and intent.source_sha in _J_RELEASE_SHAS
-        and intent.target_schema == SCHEMA_REVISION
+        and intent.target_schema == W1_SCHEMA
         and intent.target_sha
         not in _F_RELEASE_SHAS
         | _G_RELEASE_SHAS
@@ -256,6 +261,20 @@ def _kind(intent: ImageTransition) -> int:
         | {SOURCE_SHA}
     ):
         return 5
+    elif (
+        intent.source_schema == W1_SCHEMA
+        and intent.source_sha in _W1_RELEASE_SHAS
+        and intent.target_schema == SCHEMA_REVISION
+        and intent.target_sha
+        not in _F_RELEASE_SHAS
+        | _G_RELEASE_SHAS
+        | _H_RELEASE_SHAS
+        | _I_RELEASE_SHAS
+        | _J_RELEASE_SHAS
+        | _W1_RELEASE_SHAS
+        | {SOURCE_SHA}
+    ):
+        return 6
     raise TransitionUnavailable("image_transition_pair_unavailable")
 
 
@@ -294,6 +313,7 @@ def _intent_prefix(intent: ImageTransition) -> list[ImageTransition]:
                     3: _H_RELEASE_SHAS,
                     4: _I_RELEASE_SHAS,
                     5: _J_RELEASE_SHAS,
+                    6: _W1_RELEASE_SHAS,
                 }.get(kind, frozenset())
                 or item.previous_id != previous.operation_id
                 or previous.target_schema != item.source_schema
@@ -455,6 +475,7 @@ def _revision(session: Session) -> str:
         SOURCE_SCHEMA,
         LEGACY_SCHEMA,
         J_SCHEMA,
+        W1_SCHEMA,
         SCHEMA_REVISION,
     ):
         raise TransitionUnavailable("image_transition_schema_unavailable")
@@ -514,7 +535,7 @@ def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
     while True:
         row = ordered[-1]
         index = _kind(prefix[0]) + len(ordered) - 1
-        expected_schema = {4: J_SCHEMA, 5: SCHEMA_REVISION}.get(index, LEGACY_SCHEMA)
+        expected_schema = {4: J_SCHEMA, 5: W1_SCHEMA, 6: SCHEMA_REVISION}.get(index, LEGACY_SCHEMA)
         if (
             row["target_schema"] != expected_schema
             or row["writer_xid"] <= 0
@@ -551,7 +572,7 @@ def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
 
 
 def _new_source(session: Session, intent: ImageTransition, *, lock: bool = False) -> None:
-    if _kind(intent) not in {4, 5}:
+    if _kind(intent) not in _WRITABLE_TRANSITIONS:
         raise TransitionUnavailable("image_transition_pair_unavailable")
     _intent_prefix(intent)
     latest = _validate_chain(_chain(session, lock=lock), intent)
@@ -646,7 +667,7 @@ def check(session: Session, intent: ImageTransition, config: Settings) -> str:
     )
     if row is None or row["schema_revision"] != revision:
         raise TransitionUnavailable("image_transition_schema_unavailable")
-    if revision in (LEGACY_SCHEMA, J_SCHEMA, SCHEMA_REVISION):
+    if revision in (LEGACY_SCHEMA, J_SCHEMA, W1_SCHEMA, SCHEMA_REVISION):
         _owner_authorized(session, config)
         receipt = (
             session.execute(
@@ -683,7 +704,7 @@ def check(session: Session, intent: ImageTransition, config: Settings) -> str:
 
 def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
     """Stage one top-level transaction. Caller commits, closes, then observes."""
-    if _kind(intent) not in {4, 5}:
+    if _kind(intent) not in _WRITABLE_TRANSITIONS:
         raise TransitionUnavailable("image_transition_pair_unavailable")
     if session.in_transaction() or config.worker_v4_control_slots != intent.control_slots:
         raise TransitionUnavailable("image_transition_transaction_unavailable")
@@ -733,17 +754,33 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
     if revision != intent.source_schema:
         raise TransitionUnavailable("image_transition_schema_unavailable")
     _migrate(session, intent.target_schema)
-    if intent.target_schema == SCHEMA_REVISION:
+    if intent.target_schema in (W1_SCHEMA, SCHEMA_REVISION):
         runtime_role = config.worker_v4_database_role
         if runtime_role is None:
             raise TransitionUnavailable("image_transition_owner_unavailable")
         quoted_role = session.get_bind().dialect.identifier_preparer.quote(runtime_role)
+    if intent.target_schema == W1_SCHEMA:
         session.execute(text(f"GRANT SELECT ON control_proof_rotations TO {quoted_role}"))
         # Row locks require UPDATE privilege on at least one column. The
         # owner-only trigger prevents even a no-op update by this role.
         session.execute(text(f"GRANT SELECT, UPDATE (id) ON worker_legacy_window TO {quoted_role}"))
         session.execute(
             text(f"GRANT SELECT, INSERT ON worker_adapter_storage_owners_v4 TO {quoted_role}")
+        )
+    if intent.target_schema == SCHEMA_REVISION:
+        grants = (
+            ("SELECT, INSERT", "worker_environment_classes, worker_pool_audit"),
+            ("SELECT, INSERT, UPDATE", "worker_pools, worker_pool_members"),
+            ("SELECT, INSERT, DELETE", "worker_pool_revisions"),
+        )
+        for rights, tables in grants:
+            session.execute(text(f"REVOKE ALL ON {tables} FROM {quoted_role}"))
+            session.execute(text(f"GRANT {rights} ON {tables} TO {quoted_role}"))
+        session.execute(
+            text(
+                "GRANT USAGE ON SEQUENCE worker_pools_id_seq, "
+                f"worker_pool_audit_id_seq TO {quoted_role}"
+            )
         )
     changed = session.execute(
         text("""

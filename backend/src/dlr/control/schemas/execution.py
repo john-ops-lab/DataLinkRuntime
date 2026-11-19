@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from dlr.control.schemas.worker_pool import RouteSnapshot
+
 
 class ExecutionCreate(BaseModel):
     """Request body for POST /api/adapters/{adapter_id}/executions.
@@ -44,6 +46,7 @@ class ExecutionResponse(BaseModel):
     resource_profile_snapshot: dict[str, Any] = Field(default_factory=dict)
     resource_class: str | None = None
     target_worker_id_snapshot: int | None = None
+    route_snapshot: RouteSnapshot | None = None
     logical_input_bytes: int = 0
     idempotency_record_id: int | None = None
     last_error_code: str | None = None

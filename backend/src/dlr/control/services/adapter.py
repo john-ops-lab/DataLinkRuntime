@@ -115,7 +115,10 @@ def _adapter_response(
     adapter: Adapter,
     runtime_state: adapter_runtime.AdapterRuntimeState,
 ) -> AdapterResponse:
+    from dlr.control.services.worker_pool import adapter_route
+
     response = AdapterResponse.model_validate(adapter)
+    response.route = adapter_route(adapter)
     active = runtime_state.active_execution
     response.runtime_locked = runtime_state.locked
     response.running_execution_id = active.id if active is not None else None
@@ -263,6 +266,9 @@ def _validate_runtime_worker_assignment(
 
 def resolve_runtime_worker(session: Session, adapter: Adapter, *, now: datetime) -> Worker:
     """Resolve the deterministic effective-online compatible runtime Worker."""
+    from dlr.control.services.worker_pool import adapter_route, require_fixed_route
+
+    require_fixed_route(adapter_route(adapter))
     if adapter.runtime_worker_id is not None:
         return _validate_runtime_worker(
             session,
@@ -275,6 +281,7 @@ def resolve_runtime_worker(session: Session, adapter: Adapter, *, now: datetime)
     compatible = [worker for worker in online if adapter.language in worker.capabilities]
     if len(compatible) == 1:
         adapter.runtime_worker_id = compatible[0].id
+        adapter.route_version += 1
         return compatible[0]
     if len(compatible) > 1:
         raise domain_error(
@@ -293,7 +300,10 @@ def resolve_runtime_worker(session: Session, adapter: Adapter, *, now: datetime)
 
 
 def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Adapter:
-    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    from dlr.control.schemas.worker_pool import FixedRoute, PoolRoute
+    from dlr.control.services.worker_pool import adapter_route, fixed_route, validate_pool_route
+
+    adapter = session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     _require_not_archived(adapter)
@@ -301,19 +311,50 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
         data.description is not None and data.description != adapter.description
     )
 
-    runtime_worker_changed = (
-        "runtime_worker_id" in data.model_fields_set
-        and data.runtime_worker_id != adapter.runtime_worker_id
-    )
-    if runtime_worker_changed:
+    current_route = adapter_route(adapter)
+    if (
+        data.expected_route_version is not None
+        and data.expected_route_version != adapter.route_version
+    ):
+        raise domain_error(
+            409,
+            "adapter_route_version_conflict",
+            "Adapter route has changed",
+            {"current_version": adapter.route_version},
+        )
+    next_route = current_route
+    if "route" in data.model_fields_set:
+        next_route = data.route
+    elif "runtime_worker_id" in data.model_fields_set and (
+        data.runtime_worker_id is not None or not isinstance(current_route, PoolRoute)
+    ):
+        # Old clients echo null for a Pool. Only a legacy Worker ID or an
+        # explicit new-style route selection may replace a Pool binding.
+        if data.runtime_worker_id is not None and not 0 < data.runtime_worker_id <= 2**63 - 1:
+            raise domain_error(404, "worker_not_found", "Worker not found")
+        next_route = fixed_route(data.runtime_worker_id)
+
+    if next_route != current_route:
         adapter_runtime.require_runtime_unlocked(session, adapter)
-        if data.runtime_worker_id is not None:
-            _validate_runtime_worker_assignment(
-                session,
-                data.runtime_worker_id,
-                adapter.language,
-            )
-        adapter.runtime_worker_id = data.runtime_worker_id
+        if isinstance(next_route, FixedRoute):
+            _validate_runtime_worker_assignment(session, next_route.worker_id, adapter.language)
+        elif isinstance(next_route, PoolRoute):
+            next_route = validate_pool_route(session, next_route)
+        adapter.runtime_worker_id = (
+            next_route.worker_id if isinstance(next_route, FixedRoute) else None
+        )
+        adapter.pool_route = (
+            next_route.model_dump(mode="json") if isinstance(next_route, PoolRoute) else None
+        )
+        adapter.route_version += 1
+        if next_route is not None and adapter.configuration_notes.get(
+            "runtime_route_requires_rebind"
+        ):
+            adapter.configuration_notes = {
+                k: v
+                for k, v in adapter.configuration_notes.items()
+                if k != "runtime_route_requires_rebind"
+            }
 
     run_mode_changed = "run_mode" in data.model_fields_set and data.run_mode != adapter.run_mode
     if run_mode_changed:
@@ -859,12 +900,17 @@ def save_version(
     dismiss_import_review: bool = True,
 ) -> AdapterVersion:
     """Create one immutable Revision and atomically advance latest_version_id."""
-    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    adapter = session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     _require_not_archived(adapter)
     adapter_runtime.require_runtime_unlocked(session, adapter)
-    if adapter.latest_version_id is None and adapter.adapter_type == "task":
+    if (
+        adapter.latest_version_id is None
+        and adapter.adapter_type == "task"
+        and adapter.pool_route is None
+        and not adapter.configuration_notes.get("runtime_route_requires_rebind")
+    ):
         if adapter.runtime_worker_id is None:
             resolve_runtime_worker(
                 session,
@@ -938,6 +984,12 @@ def clone_adapter(
         adapter_type=source.adapter_type,
         run_mode=source.run_mode,
         runtime_worker_id=source.runtime_worker_id,
+        configuration_notes=(
+            {"runtime_route_requires_rebind": True}
+            if source.pool_route is not None
+            or source.configuration_notes.get("runtime_route_requires_rebind")
+            else {}
+        ),
         owner_user_id=owner_user_id,
         # M5.5.11: the clone copies the source's single-run execution timeout.
         timeout_seconds=source.timeout_seconds,

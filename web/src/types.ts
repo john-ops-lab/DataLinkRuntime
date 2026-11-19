@@ -57,9 +57,11 @@ export interface Adapter {
   access_level?: AdapterAccessLevel | null;
   /** Safe owner display metadata; null means system-owned. */
   owner_username?: string | null;
-  configuration_notes?: { input_required?: string; review_environment?: boolean };
+  configuration_notes?: { input_required?: string; review_environment?: boolean; runtime_route_requires_rebind?: boolean };
   latest_version_id: number | null;
   runtime_worker_id?: number | null;
+  route?: import("./worker-pool-types").RuntimeRoute | null;
+  route_version?: number;
   runtime_locked?: boolean;
   archived_at?: string | null;
   /** Legacy provenance; new copies are ordinary independent adapters. */
@@ -180,6 +182,7 @@ export interface Execution {
   version_id: number;
   worker_id: number | null;
   target_worker_id: number | null;
+  route_snapshot?: import("./worker-pool-types").RouteSnapshot | null;
   trigger: string;
   /** M5.2: the planned point for trigger=schedule; null for other triggers. */
   scheduled_for: string | null;
@@ -380,11 +383,14 @@ export interface ReliableExecutionDetail {
   incidents: ReliableExecutionIncident[];
   replay_available: boolean;
   replay_reason: string | null;
+  route_snapshot?: import("./worker-pool-types").RouteSnapshot | null;
+  replay_route?: import("./worker-pool-types").RoutePreview | null;
 }
 
 export interface ReplayResponse {
   execution_id: number;
   replay_of_execution_id: number;
+  route_snapshot?: import("./worker-pool-types").RouteSnapshot | null;
 }
 
 // --- M5.2: Schedule Trigger --------------------------------------------------
@@ -1212,6 +1218,7 @@ export interface PortableVariant {
   runtime_config: Record<string, unknown>;
 }
 export interface PortablePackage {
+  runtime_route_requires_rebind?: true | null;
   format_version: 1;
   object_type: "adapter" | "template";
   name: string;

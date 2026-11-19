@@ -285,6 +285,7 @@ export default function PortablePackageDialog({
   const workerRequired =
     mode === "importAdapter" &&
     value?.adapter_type === "task" &&
+    !value.runtime_route_requires_rebind &&
     workerId === null;
   return (
     <Drawer
@@ -599,6 +600,7 @@ export default function PortablePackageDialog({
                     )}
                   </details>
                 )}
+                {value.runtime_route_requires_rebind && <Alert type="info" showIcon message={t("reviewWorkerRoute")} />}
                 {mode === "importAdapter" && (
                   <>
                     <Alert type="info" showIcon message={t("targetWarning")} />
