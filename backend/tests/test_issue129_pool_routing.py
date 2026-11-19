@@ -329,10 +329,8 @@ def test_route_write_rolls_back_when_an_unreferenced_pool_revision_is_deleted(
         assert after[key] == adapter[key]
 
 
-@pytest.mark.parametrize("checkpoint_exists", [False, True])
-def test_kubernetes_pool_draft_reserves_no_sync_batch_or_checkpoint(
-    kube, session_factory, pool_setup, checkpoint_exists
-):
+@pytest.fixture
+def pool_kube(kube, session_factory, pool_setup):
     _, route, _ = pool_setup
     with session_factory.begin() as session:
         initial = session.get(SubscriptionActivation, kube.activation_id)
@@ -350,12 +348,19 @@ def test_kubernetes_pool_draft_reserves_no_sync_batch_or_checkpoint(
         session.flush()
         subscription = session.get(EventSubscription, initial.subscription_id)
         subscription.activation_id = activation.id
-        context = replace(kube, activation_id=activation.id)
-        if checkpoint_exists:
+        return replace(kube, activation_id=activation.id)
+
+
+@pytest.mark.parametrize("checkpoint_exists", [False, True])
+def test_kubernetes_pool_draft_reserves_no_sync_batch_or_checkpoint(
+    pool_kube, session_factory, checkpoint_exists
+):
+    if checkpoint_exists:
+        with session_factory.begin() as session:
             session.add(
                 SourceCheckpoint(
-                    subscription_id=subscription.id,
-                    source_epoch=subscription.source_epoch,
+                    subscription_id=pool_kube.subscription_id,
+                    source_epoch=pool_kube.source_epoch,
                     shard=sync.KUBERNETES_SHARD,
                     position={},
                     confirmed_position={},
@@ -365,7 +370,7 @@ def test_kubernetes_pool_draft_reserves_no_sync_batch_or_checkpoint(
             )
     with session_factory.begin() as session:
         with pytest.raises(HTTPException) as rejected:
-            sync.begin_sync_batch(session, context, context.identity_snapshot)
+            sync.begin_sync_batch(session, pool_kube, pool_kube.identity_snapshot)
         assert rejected.value.detail["code"] == "pool_routing_not_enabled"
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(SyncBatch)) == 0
@@ -374,6 +379,60 @@ def test_kubernetes_pool_draft_reserves_no_sync_batch_or_checkpoint(
         )
         quota = session.get(SubscriptionQuota, "global")
         assert quota is None or (quota.reserved_control_count == quota.reserved_control_bytes == 0)
+
+
+def test_kubernetes_pool_preserves_existing_batch_and_checkpoint(pool_kube, session_factory):
+    context = pool_kube
+    with session_factory.begin() as session:
+        cp = SourceCheckpoint(
+            subscription_id=context.subscription_id,
+            source_epoch=context.source_epoch,
+            shard=sync.KUBERNETES_SHARD,
+            position={"resource_version": "old-rv"},
+            confirmed_position={},
+            next_sequence=1,
+            assignment_generation=1,
+        )
+        batch = SyncBatch(
+            subscription_id=context.subscription_id,
+            activation_id=context.activation_id,
+            source_epoch=context.source_epoch,
+            owner_id=context.owner_id,
+            owner_generation=context.generation,
+            scope_fingerprint=context.identity_snapshot["scope_fingerprint"],
+            state="reading",
+            resource_version="old-rv",
+            page_count=1,
+        )
+        session.add_all([cp, batch])
+        session.flush()
+        cp_id, batch_id = cp.id, batch.id
+    with session_factory.begin() as session:
+        ref = sync.begin_sync_batch(session, context, context.identity_snapshot)
+        assert ref.batch_id == batch_id
+        prior_page = sync.finish_list_page(
+            session, context, ref, 0, "old-rv", [], expected_item_count=0, last_page=False
+        )
+        assert not prior_page.changed
+        assert sync.advance_bookmark(session, context, "old-rv", 0)
+        for new_responsibility in (
+            lambda: sync.advance_bookmark(session, context, "new-rv", 0),
+            lambda: sync.finish_list_page(
+                session, context, ref, 1, "old-rv", [], expected_item_count=0, last_page=True
+            ),
+            lambda: sync.mark_sync_backpressure(session, context),
+            lambda: sync.note_sync_gap(session, context, "list_interrupted"),
+            lambda: sync.maintain_batch(session, batch_id),
+        ):
+            with pytest.raises(HTTPException) as rejected:
+                new_responsibility()
+            assert rejected.value.detail["code"] == "pool_routing_not_enabled"
+    with session_factory() as session:
+        cp = session.get(SourceCheckpoint, cp_id)
+        batch = session.get(SyncBatch, batch_id)
+        assert cp.position == {"resource_version": "old-rv"} and cp.blocked_unaccepted is None
+        assert batch.page_count == 1 and batch.state == "reading" and batch.failure_code is None
+        assert not batch.read_complete and batch.reserved_control_count == 0
 
 
 def test_old_manual_idempotency_and_replay_keep_distinct_fixed_workers(
