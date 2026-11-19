@@ -1163,13 +1163,16 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     return null;
   })();
 
+  const savedPool = props.adapter.route?.mode === "pool";
+  const poolEnabled = savedPool && props.adapter.pool_placement_enabled === true;
+  const hasRuntimeRoute = poolEnabled || props.adapter.runtime_worker_id != null;
   const scheduleEnableBlockedReason = (() => {
     if (loadingSchedule) return t("task.reasons.loadingSchedule");
     if (scheduleLoadFailed) return t("task.reasons.scheduleLoadFailed");
     if (inputBlockedReason !== null) return inputBlockedReason;
     if (props.adapter.latest_version_id === null) return t("task.reasons.saveVersionFirst");
-    if (props.adapter.route?.mode === "pool") return t("pool.stoppedDraft");
-    if (props.adapter.runtime_worker_id == null) return t("task.reasons.saveWorkerFirst");
+    if (savedPool && !poolEnabled) return t("pool.stoppedDraft");
+    if (!hasRuntimeRoute) return t("task.reasons.saveWorkerFirst");
     if (props.dirty) return t("task.reasons.saveChangesFirst");
     if (runtimeConfigDirty) return t("task.reasons.runtimeDirty");
     if (scheduleConfigMissing) return t("task.reasons.saveRuntimeFirst");
@@ -1185,7 +1188,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     inputBlockedReason === null &&
     !props.adapter.archived_at &&
     props.adapter.latest_version_id !== null &&
-    props.adapter.runtime_worker_id != null &&
+    hasRuntimeRoute &&
     !activeExecution &&
     !subscriptionRuntimeLocked &&
     props.runtimeSynchronizing !== true &&
@@ -1196,8 +1199,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     if (props.adapter.archived_at) return t("task.reasons.deleted");
     if (inputBlockedReason !== null) return inputBlockedReason;
     if (props.adapter.latest_version_id === null) return t("task.reasons.noVersion");
-    if (props.adapter.route?.mode === "pool") return t("pool.stoppedDraft");
-    if (props.adapter.runtime_worker_id == null) return t("task.reasons.noWorker");
+    if (savedPool && !poolEnabled) return t("pool.stoppedDraft");
+    if (!hasRuntimeRoute) return t("task.reasons.noWorker");
     if (activeExecution) return t("task.reasons.activeRun");
     if (subscriptionRuntimeLocked) return t("task.reasons.subscriptionLocked");
     if (props.runtimeSynchronizing === true) return t("task.reasons.processing");
@@ -1380,7 +1383,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               }))}
             />
           </label>}
-          <PoolRoutePicker route={poolRoute} readOnly={readOnly}
+          <PoolRoutePicker route={poolRoute} readOnly={readOnly} placementEnabled={props.adapter.pool_placement_enabled}
             disabled={runtimeLocked || savingRuntime} onChange={(route) => {
               runtimeEditEpoch.current += 1;
               runtimeRoute.select(route);

@@ -133,7 +133,8 @@ def _truncate(engine: Engine) -> None:
                 "execution_input_artifact_leases, "
                 "execution_credential_binding_snapshots, "
                 "execution_outbox, execution_attempts, adapter_execution_slots, "
-                "worker_capacities, worker_resource_reservations, "
+                "worker_capacities, worker_resource_reservations, worker_placement_cutover, "
+                "worker_capacity_verifiers, "
                 "runtime_reconciliation_cursors, "
                 "schedule_dispatch_outcomes, execution_infrastructure_incidents, "
                 "execution_incident_dispositions, "
@@ -148,6 +149,13 @@ def _truncate(engine: Engine) -> None:
             )
         )
         conn.execute(text("INSERT INTO system_settings (id, locale) VALUES (1, 'zh-CN')"))
+        conn.execute(text("INSERT INTO worker_placement_cutover (id, mode) VALUES (1, 'fixed')"))
+        conn.execute(
+            text(
+                "INSERT INTO runtime_reconciliation_cursors (name) "
+                "VALUES ('worker_placement'), ('worker_placement_expiration')"
+            )
+        )
         conn.execute(
             text(
                 "INSERT INTO runtime_reconciliation_cursors (name, after_id, upper_id) "

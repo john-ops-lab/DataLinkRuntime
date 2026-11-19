@@ -439,6 +439,7 @@ def read_operation(
             not in {
                 ("worker_lost", "dead_letter"),
                 ("worker_lost", "cancelled"),
+                ("worker_lost", "retry_wait"),
                 ("cancelled", "cancelled"),
             }
         ):

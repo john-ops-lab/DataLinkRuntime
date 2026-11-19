@@ -135,6 +135,9 @@ def materialize_batch(
         return session.get(Execution, assigned)
     if head.state != "pending" or head_receipt.source_phase is not None:
         return None
+    from dlr.control.services.worker_placement_cutover import accepting_mode
+
+    use_worker_reservations = accepting_mode(session) == "reserved" or use_worker_reservations
     activation = session.get(
         SubscriptionActivation, head.activation_override_id or head_receipt.activation_id
     )

@@ -1,52 +1,43 @@
 """Transaction-scoped capacity for independently verified v4 Worker instances."""
 
 from datetime import datetime, timedelta
-from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError
+from pydantic import ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from dlr.common.cpu_accounting import CPU_ACCOUNTING_VERSION, CPU_MIN_MILLIS, attempt_cpu_millis
-from dlr.control.models import ExecutionAttempt, Worker, WorkerCapacities, WorkerResourceReservation
+from dlr.common.worker_capacity_report import (
+    CapacityObservation,
+    Resources,
+    SignedCapacityObservation,
+    verify_observation,
+)
+from dlr.control.models import (
+    ExecutionAttempt,
+    Worker,
+    WorkerCapacities,
+    WorkerCapacityVerifier,
+    WorkerEnvironmentClass,
+    WorkerResourceReservation,
+)
 from dlr.control.models.worker_capacity import OCCUPIED_RESERVATION_STATES, RESOURCE_DIMENSIONS
 from dlr.control.schemas.reliable_runtime import ResourceProfile
 from dlr.control.schemas.worker import isolation_capabilities_ready
-from dlr.control.schemas.worker_pool import EnvironmentRule, Fingerprint
+from dlr.control.schemas.worker_pool import EnvironmentRule
 from dlr.control.services import worker_availability, worker_lease_candidates_v4
 
 CAPACITY_FRESHNESS = timedelta(seconds=15)
 HELD_TTL = timedelta(seconds=30)
 
 
-class Resources(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    cpu_millis: StrictInt = Field(ge=0, lt=2**63)
-    memory_bytes: StrictInt = Field(ge=0, lt=2**63)
-    pids: StrictInt = Field(ge=0, lt=2**63)
-    tmp_bytes: StrictInt = Field(ge=0, lt=2**63)
-    slots: StrictInt = Field(ge=0, lt=2**63)
-
-
-class VerifiedHostEnvelope(BaseModel):
+class VerifiedHostEnvelope(CapacityObservation):
     """Internal facts from a trusted verifier, with CPU rounded conservatively.
 
     The verifier floors host CPU and ceilings Agent/system headroom in millicores.
     Regular Worker registration and heartbeat never submit this object.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    worker_identity_id: UUID
-    instance_id: UUID
-    instance_generation: StrictInt = Field(gt=0, lt=2**63)
-    sampled_at: datetime
-    envelope_fingerprint: Fingerprint
-    total: Resources
-    headroom: Resources
-    nofile: StrictInt = Field(gt=0, lt=2**63)
-    storage_ready: StrictBool
     environment: EnvironmentRule
 
 
@@ -57,6 +48,78 @@ def _fresh(observed_at: datetime, now: datetime) -> bool:
 def lock_capacity(session: Session, worker_id: int) -> WorkerCapacities | None:
     """Use only after locking Worker, which serializes the initial insert too."""
     return session.get(WorkerCapacities, worker_id, with_for_update=True, populate_existing=True)
+
+
+def approve_host_verifier(
+    session: Session, worker_id: int, environment_name: str, public_key: bytes
+) -> None:
+    """Owner entry point for a disabled, reserved identity's deployed verifier."""
+    worker = session.get(Worker, worker_id, with_for_update=True, populate_existing=True)
+    if (
+        worker is None
+        or worker.identity_lifecycle != "reserved"
+        or len(public_key) != 32
+        or public_key == bytes(32)
+        or session.get(WorkerEnvironmentClass, environment_name) is None
+    ):
+        raise ValueError("Worker capacity authority is unavailable")
+    prior = session.get(WorkerCapacityVerifier, worker_id)
+    if prior is not None:
+        if (
+            prior.worker_identity_id != worker.identity_id
+            or prior.public_key != public_key
+            or prior.environment_name != environment_name
+        ):
+            raise ValueError("Worker capacity authority conflicts")
+        return
+    if worker.scheduling_state != "disabled":
+        raise ValueError("Worker must be disabled before approving its capacity verifier")
+    session.add(
+        WorkerCapacityVerifier(
+            worker_id=worker_id,
+            worker_identity_id=worker.identity_id,
+            public_key=public_key,
+            environment_name=environment_name,
+        )
+    )
+
+
+def record_attested_capacity(
+    session: Session, worker: Worker, report: SignedCapacityObservation
+) -> WorkerCapacities:
+    """Validate independently enrolled host authority under the Worker lock."""
+    approved = session.get(WorkerCapacityVerifier, worker.id, populate_existing=True)
+    if (
+        approved is None
+        or approved.worker_identity_id != worker.identity_id
+        or report.observation.task_ceiling is None
+        or report.observation.task_cpu_cores is None
+        or not verify_observation(report, approved.public_key)
+    ):
+        raise ValueError("Worker capacity observation is unauthorized")
+    entry = session.get(WorkerEnvironmentClass, approved.environment_name)
+    if entry is None:
+        raise ValueError("Worker environment is unavailable")
+    environment = EnvironmentRule.model_validate(entry, from_attributes=True)
+    envelope = VerifiedHostEnvelope.model_validate(
+        report.observation.model_dump() | {"environment": environment}
+    )
+    capacity = record_verified_capacity(session, worker.id, envelope)
+    quarantine = capacity.quarantine_until
+    if (
+        quarantine is not None
+        and capacity.sampled_at >= quarantine
+        and capacity.storage_ready
+        and worker.isolation_preflight_at is not None
+        and worker.isolation_preflight_at >= quarantine
+        and not worker_availability.has_unreconciled_v4_attempt(
+            session, worker, now=capacity.received_at
+        )
+    ):
+        capacity.quarantine_until = None
+        worker.capacity_state = "ready"
+        signal_capacity_change(capacity, now=capacity.received_at)
+    return capacity
 
 
 def record_verified_capacity(
@@ -84,6 +147,24 @@ def record_verified_capacity(
         name: max(0, getattr(envelope.total, name) - getattr(envelope.headroom, name))
         for name in RESOURCE_DIMENSIONS
     }
+    if envelope.task_ceiling is not None:
+        allocatable = {
+            name: min(value, getattr(envelope.task_ceiling, name))
+            for name, value in allocatable.items()
+        }
+    environment = envelope.environment.model_dump(mode="json")
+    changed = (
+        current is None
+        or current.placement_changed_at is None
+        or not _fresh(current.sampled_at, now)
+        or not _fresh(current.received_at, now)
+        or current.instance_id != envelope.instance_id
+        or current.verified_environment != environment
+        or current.storage_ready != envelope.storage_ready
+        or current.nofile != envelope.nofile
+        or current.task_cpu_cores != envelope.task_cpu_cores
+        or any(getattr(current, name) != value for name, value in allocatable.items())
+    )
     if current is None:
         current = WorkerCapacities(worker_id=worker_id, capacity_version=0)
         session.add(current)
@@ -94,13 +175,24 @@ def record_verified_capacity(
     current.sampled_at = envelope.sampled_at
     current.received_at = now
     current.envelope_fingerprint = envelope.envelope_fingerprint
-    current.verified_environment = envelope.environment.model_dump(mode="json")
+    current.verified_environment = environment
     current.nofile = envelope.nofile
+    current.task_cpu_cores = envelope.task_cpu_cores
     current.storage_ready = envelope.storage_ready
     for name, value in allocatable.items():
         setattr(current, name, value)
+    if changed:
+        signal_capacity_change(current, now=now)
     session.flush()
     return current
+
+
+def signal_capacity_change(capacity: WorkerCapacities, *, now: datetime) -> None:
+    """Persist a wakeup fact while retaining the Worker capacity lock."""
+    from dlr.control.services.worker_placement_scheduler import notify_capacity
+
+    capacity.placement_changed_at = now
+    notify_capacity()
 
 
 def charge(profile: ResourceProfile) -> Resources:
@@ -136,7 +228,9 @@ def eligible_environment(
         or not _fresh(capacity.sampled_at, now)
         or not _fresh(capacity.received_at, now)
         or not capacity.storage_ready
+        or capacity.quarantine_until is not None
         or profile.nofile > capacity.nofile
+        or (capacity.task_cpu_cores is not None and profile.cpu_cores > capacity.task_cpu_cores)
         or not worker_lease_candidates_v4.has_current_committed_lease(session, worker, now=now)
         or worker_availability.has_unreconciled_v4_attempt(session, worker, now=now)
     ):

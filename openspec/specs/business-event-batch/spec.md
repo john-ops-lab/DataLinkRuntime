@@ -20,6 +20,17 @@ T2 MUST 在同一事务创建一份 Execution/Admission/Outbox、不可变 manif
 - **WHEN** 事务遗漏成员、写错 Receipt、同时登记普通关联或提交前退出
 - **THEN** 数据库拒绝不完整提交，原责任、绑定和预算保留，不留下部分批次
 
+### Requirement: Wave 2 受限运行角色可提交和结算业务批次
+在 0093 上，Control SHALL 使用通过 v4 权限核验的运行角色完成 T2 组装与结果提交。PostgreSQL MUST 在该角色无数据库 `CREATE`、`TEMPORARY` 时继续执行原批次完整性约束，并在校验失败时回滚本次事务。既有批次边界为最多 100 个成员、整批完整输入最多 256 KiB、组装等待最多 50 ms。
+
+#### Scenario: 无临时表权限的合法 T2 与结果
+- **WHEN** 同一批次的事件已由 T1 持久接受，受限运行角色提交 T2，随后收到归属和成员均匹配的结果
+- **THEN** 独立事务可分别读回唯一的批次 Execution、冻结成员与计费，以及对应 Attempt 的逐成员终态；重试沿原身份读取已提交事实
+
+#### Scenario: 延迟校验发现错误
+- **WHEN** T2 提交时末成员与冻结 manifest 不符，或结果提交时 Attempt 归属不符
+- **THEN** 数据库拒绝该事务，保留先前提交的 Receipt、Delivery、计费及结果事实；具备临时表权限的既有部署执行相同完整性规则
+
 ### Requirement: 严格验证结果后才提交共享业务终态
 结果 MUST 精确覆盖原 manifest，整体不超过 min(64 KiB,512+N×512 bytes)，仅允许全部成功或成功前缀/首个失败或未知/后继未执行。系统 MUST 在原权威 Attempt 终态事务内检查身份、结构、索引及 Worker/Control 截断；任何不可信结果不得保留其成功前缀。全部成员成功才允许 Execution succeeded；非成功为明确业务失败，安全成员事实同事务持久化。
 

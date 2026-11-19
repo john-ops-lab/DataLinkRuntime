@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from dlr.common.lease_proof_wire_v4 import UntrustedLeaseProof, verify_worker_proof_signature
+from dlr.common.worker_capacity_report import SignedCapacityObservation
 from dlr.common.worker_protocol_v4 import (
     ADAPTER_CLEANUP_CAPABILITY,
     INSTANCE_LEASE_SECONDS,
@@ -701,6 +702,43 @@ class WorkerLeaseSession:
                     raise
                 raise WorkerLeaseError("proof session unavailable") from None
 
+    def report_capacity(
+        self, make_sample: Callable[[UUID, UUID, int], SignedCapacityObservation]
+    ) -> None:
+        from dlr.worker.claim_http_v4 import request_proof
+
+        if not self._same_process():
+            raise WorkerLeaseError("proof session unavailable")
+        with self._lock:
+            deadline = self._active_deadline()
+            started = self._require_before(deadline)
+            claims, proof = self._claims, self._proof
+            if claims is None or proof is None:
+                raise WorkerLeaseError("proof session unavailable")
+            sample = make_sample(self._identity_id, self._instance_id, claims.generation)
+            cutoff = min(deadline, started + self._timeout)
+            remaining = cutoff - self._require_before(cutoff)
+            result = request_proof(
+                url=f"{self._base_url}/api/workers/{self._worker_id}/v4/capacity",
+                credential=self._credential,
+                instance=str(self._instance_id),
+                generation=claims.generation,
+                body=sample.model_dump_json(),
+                instance_proof=proof,
+                attempt_proof=None,
+                timeout_seconds=remaining,
+                response_limit_bytes=_RESPONSE_LIMIT,
+                _test_only_plaintext_loopback=self._test_only_plaintext_loopback,
+                _absolute_deadline=cutoff,
+                _cancellation_events=(self._lost,),
+            )
+            self._require_before(deadline)
+            if result.state != "response" or result.status != 200:
+                raise WorkerLeaseError("capacity observation unavailable")
+            body = self._body(result.body, {"capacity_version"})
+            if type(body["capacity_version"]) is not int or body["capacity_version"] <= 0:
+                raise WorkerLeaseError("capacity observation unavailable")
+
     def report_ready(
         self,
         flags: dict[str, bool],
@@ -773,10 +811,10 @@ class WorkerLeaseSession:
                 if result.state != "response" or result.status != 200:
                     raise ValueError("preflight observation unavailable")
                 response = self._body(result.body, {"capacity_state", "instance_generation"})
-                if response != {
-                    "capacity_state": "ready",
-                    "instance_generation": claims.generation,
-                }:
+                if (
+                    response["capacity_state"] not in ("ready", "quarantined")
+                    or response["instance_generation"] != claims.generation
+                ):
                     raise ValueError("preflight observation unavailable")
                 self._require_before(deadline)
             except BaseException as error:

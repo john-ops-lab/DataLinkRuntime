@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定义 Worker 实例容量、派发前预留和 Claim 的事务边界。Wave 2 第二批在隔离环境验证这些事务；生产 Pool 接收及既有 fixed Claim 的切换须待停领、排空和容量对账完成。
+定义 Worker 实例容量、派发前预留和 Claim 的事务边界。Wave 2 第二批在隔离环境验证这些事务；生产以持久切换状态决定是否启用预留，停领、排空和容量对账后可显式启用。
 
 ## Requirements
 
@@ -74,7 +74,7 @@ held 绑定同一 Execution、派发 generation、Worker 身份、instance_id �
 
 分配事务 MUST 沿用 Adapter、订阅路径的 Subscription、Lease/Checkpoint、Receipt/Batch、订阅及全局 quota，再依次锁 AdapterAdmission、GlobalAdmission、Execution、Attempts、Adapter Slot 0、Pool、Worker/Capacity、Reservations、Incidents 和 Outbox。同类多行按稳定 ID 排序，Worker/Capacity 按 worker_id 排序。候选 MUST 在持容量锁时复核路由、管理员授权、实例资格、环境、硬能力及剩余资源。
 
-5.2 的单次 Pool 成员选址按 Worker ID 升序检查最多 100 个已启用成员。每个等待的 Execution 持久记录扫描游标；本页未命中且还有后页时，下次从本页最后一个 ID 之后继续。扫描到末页后回绕，成功选址时重置游标。每页合格成员按最大维度占用率、最近一次分配时间、Worker ID 依次升序排名。第 6 组另行实现跨 Adapter/Pool 的公平调度。
+5.2 的单次 Pool 成员选址按 Worker ID 升序检查最多 100 个已启用成员。每个等待的 Execution 持久记录扫描游标；本页未命中且还有后页时，下次从本页最后一个 ID 之后继续。扫描到末页后回绕，成功选址时重置游标。每页合格成员按最大维度占用率、最近一次分配时间、Worker ID 依次升序排名。跨 Adapter/Pool 的公平调度另按有界轮转合同执行。
 
 #### Scenario: 维护与分配竞争
 - **WHEN** 控制端选址或取消任务时，另一个事务更新维护状态或容量
@@ -87,3 +87,65 @@ held 绑定同一 Execution、派发 generation、Worker 身份、instance_id �
 #### Scenario: 从最长历史链升级
 - **WHEN** 部署已保有七个连续的前驱回执，owner 准备安装容量账本
 - **THEN** CLI 接受完整七对历史参数，并逐跳核对声明、意图与回执；缺少最早一对、跳级或源 SHA 错误时拒绝升级
+
+### Requirement: Claim 前等待不消耗执行重试
+新v4责任 SHALL 在每个领取周期冻结等待期限，默认900秒、允许30–86400秒；容量扫描不创建Attempt。周期最多10次实际held选址，达到后暂停自动派发并显示placement_limit_reached；到期仅在无活动Attempt时expired。reroute不得重置期限；实际失败后的合法Retry才开始新周期。
+
+#### Scenario: 满载后增加兼容 Worker
+- **WHEN** Pool满载期间原任务持续等待，随后在期限内扩容
+- **THEN** 原attempt_count仍为0，ready后按验收负载10秒内开始Claim；执行后仅有真实Attempt记录
+
+#### Scenario: Claim 接收预算不足
+- **WHEN** v4 Worker的本地接收预算不足，或Control确定实际Claim响应不能在协商预算内处理
+- **THEN** 不提交Attempt或消费执行重试；已held责任按原generation、TTL、placement次数和领取期限收敛，旧v3责任不追溯自动截止
+
+#### Scenario: 等待到期或人工取消
+- **WHEN** 无活动Attempt的任务到达冻结截止或被合法取消
+- **THEN** 原子进入expired/cancelled并幂等释放未领取预留和Admission；事件失败屏障及恢复数据按原规则保留，不伪造业务成功
+
+#### Scenario: 旧责任与未派发事件
+- **WHEN** 迁移旧v3排队Execution，或Receipt尚未形成Execution
+- **THEN** 不追溯增加自动过期；旧任务保留legacy无新deadline标记，事件沿原pending合同；仍限制每次held期限及自动选址次数
+
+### Requirement: Claim 后准备失败保留真实尝试和有限预算
+本地资源检查失败 SHALL 保存failed Attempt及resource_capacity_unavailable，按原冻结Retry Policy计入max_attempts；不得删除Attempt或回退attempt_count。节点 MUST quarantine至少30秒并完成新鲜容量对账才可重选；退避和最大次数保持原策略，不引入无限准备重试。
+
+#### Scenario: 心跳后本机容量漂移
+- **WHEN** DB已准许Claim，但实际本地资源无法预留
+- **THEN** 记录一次真实准备失败、正常退避和节点回避，清理/资源账可对账，业务代码不启动
+
+#### Scenario: 准备失败耗尽
+- **WHEN** 多次真实准备失败耗尽原max_attempts
+- **THEN** 按原失败/死信及文件Hold合同终结，原失败记录仍可见，不因“不算业务执行”继续无限尝试
+
+### Requirement: 故障转移遵守所有权和恢复宽限
+已Claim的Pool任务 SHALL 仅在旧Attempt失效并被fencing后按Retry Policy恢复；新v4执行不得早于旧lease到期加冻结recovery grace。旧实例不得在宽限中恢复业务权限；fixed不得隐式转移。相同Execution MUST 始终至多一个有效活动Attempt。
+
+#### Scenario: Worker 网络隔离后恢复
+- **WHEN** 新节点已合法领取后旧节点恢复上报
+- **THEN** 拒绝旧result/progress及资源修改，保留新Attempt和旧worker_lost事实；目标端副作用按稳定业务键对账
+
+### Requirement: 逻辑终态不等于物理容量已释放
+资源释放 MUST 幂等且绑定自己的reservation/Attempt。清理或进程状态不明时 SHALL 保持reclaiming并禁止该节点新分配；只有实际停止/清理证明及容量对账，或有审计的节点隔离处置，才可归还容量。租约失效或Control重启不能单独证明物理回收。
+
+#### Scenario: 业务成功但清理挂起
+- **WHEN** 业务终态已持久化而本机资源仍被清理工作占用
+- **THEN** 业务成功保持，资源继续计入reclaiming并显示阻塞；不能用重复结果提前释放
+
+#### Scenario: 取消和 Reconciler 并发
+- **WHEN** cancel、result及资源扫描同时收敛同一Attempt
+- **THEN** 只结账一次，不能释放后来generation/Attempt的容量或修改已确定业务结果
+
+### Requirement: 调度公平且不会无限热重投
+调度 SHALL 在可运行Adapter/Pool间有界轮转，处理最多100候选/50毫秒且数据库等待另有限时；无容量项采用1至30秒退避并可被容量恢复唤醒。通知丢失 MUST 可由持久状态恢复；blocked头部不得永久占满其他可运行任务的机会。
+
+#### Scenario: 受限 Pool 堵塞但其他 Pool 可运行
+- **WHEN** 某Pool没有兼容节点，其他Pool有容量且≤10个可运行Adapter
+- **THEN** 后者在冻结公平验收条件内分别获得Claim机会，前者保留明确原因和期限，不靠MQ热重投消耗所有资源
+
+### Requirement: 预留模式切换保持原有责任可恢复
+Control MUST 在默认关闭的预留模式与启用模式之间持久记录切换进度。切换须停止新 Claim、排空已领取责任、核对物理容量及旧消息，再统一启用各入口的预留要求；失败后保持可查询且可继续的切换状态。
+
+#### Scenario: 升级时旧消息已发布尚未领取
+- **WHEN** 对账发现原派发代仍可能投递
+- **THEN** 原目标取得同代合法预留，或在重派前先失效旧代并保留已计费的等待意图；迟到消息不能产生第二份有效 Attempt

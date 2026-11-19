@@ -439,9 +439,13 @@ class T1Unit:
             validate_envelope(item.envelope)
         assert self._config is not None and self._activation is not None
         from dlr.control.services import worker_legacy_window, worker_pool
+        from dlr.control.services.worker_placement_cutover import accepting_mode
 
         worker_legacy_window.require_dispatch_target(
-            self.session, worker_pool.require_activation_worker(self._activation)
+            self.session,
+            worker_pool.delivery_target(
+                self._activation, use_worker_reservations=accepting_mode(self.session) == "reserved"
+            ),
         )
         envelope = item.envelope
         if (

@@ -18,6 +18,7 @@ from dlr.control.models import (
     ExecutionAttempt,
     ExecutionInfrastructureIncident,
     ExecutionOutbox,
+    WorkerCapacities,
     WorkerResourceReservation,
 )
 
@@ -36,6 +37,7 @@ class ExecutionLockTail:
     incidents: tuple[ExecutionInfrastructureIncident, ...]
     outbox_rows: tuple[ExecutionOutbox, ...]
     reservation: WorkerResourceReservation | None = None
+    capacity: WorkerCapacities | None = None
 
 
 def lock_nonterminal_executions(session: Session, adapter_id: int) -> list[Execution]:
@@ -127,9 +129,9 @@ def lock_execution_tail(session: Session, execution: Execution) -> ExecutionLock
         session.flush()
     from dlr.control.services.worker_reservation import lock_target
 
-    _, _, _, reservation = lock_target(session, execution)
+    _, _, capacity, reservation = lock_target(session, execution)
     incidents, outbox_rows = lock_incidents_and_outbox(session, execution.id)
-    return ExecutionLockTail(attempts, slot, incidents, outbox_rows, reservation)
+    return ExecutionLockTail(attempts, slot, incidents, outbox_rows, reservation, capacity)
 
 
 def lock_reserved_subscription_scope(session: Session, execution_id: int) -> None:

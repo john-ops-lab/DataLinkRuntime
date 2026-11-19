@@ -132,7 +132,11 @@ def observe(
                     if disposition is not None and disposition.recovery_disposition is not None
                     else None
                 ),
-                execution_status=execution.status if disposition is not None else None,
+                execution_status=(
+                    disposition.recovery_disposition["execution_status"]
+                    if disposition is not None and disposition.recovery_disposition is not None
+                    else None
+                ),
                 version=3 if no_result else 2,
             )
             token = sign_observation(claims, authority.key)

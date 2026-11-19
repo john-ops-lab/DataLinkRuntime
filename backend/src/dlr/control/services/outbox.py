@@ -464,6 +464,12 @@ def lease_due_outbox(
 
     if not owner or len(owner) > 128:
         raise ValueError("outbox lease owner is invalid")
+    from dlr.control.services.worker_placement_cutover import mode
+
+    placement_mode = mode(session, hold=True)
+    if placement_mode == "paused":
+        session.rollback()
+        return []
     effective_now = _as_utc(now if now is not None else _now(session))
     limit = max(1, min(limit, 100))
     guarded_deferred_execution = (
@@ -479,26 +485,28 @@ def lease_due_outbox(
         )
         .exists()
     )
+    dispatchable = _current_reservation(effective_now)
+    if placement_mode == "fixed":
+        dispatchable = or_(
+            dispatchable,
+            and_(
+                ExecutionOutbox.reservation_id.is_(None),
+                ~select(Execution.id)
+                .where(
+                    Execution.id == ExecutionOutbox.execution_id,
+                    or_(
+                        Execution.route_pool_id.is_not(None), Execution.requires_worker_reservation
+                    ),
+                )
+                .exists(),
+            ),
+        )
     rows = list(
         session.scalars(
             select(ExecutionOutbox)
             .where(
                 *_pending_filter(effective_now),
-                or_(
-                    _current_reservation(effective_now),
-                    and_(
-                        ExecutionOutbox.reservation_id.is_(None),
-                        ~select(Execution.id)
-                        .where(
-                            Execution.id == ExecutionOutbox.execution_id,
-                            or_(
-                                Execution.route_pool_id.is_not(None),
-                                Execution.requires_worker_reservation,
-                            ),
-                        )
-                        .exists(),
-                    ),
-                ),
+                dispatchable,
                 (ExecutionOutbox.last_error_code.is_distinct_from("cache_reclamation_in_progress"))
                 | ~guarded_deferred_execution,
             )

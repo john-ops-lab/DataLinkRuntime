@@ -390,9 +390,11 @@ def receive_event(
     assert config is not None
     from dlr.control.services import worker_legacy_window
     from dlr.control.services.subscription_activation_policy import ensure_policy
+    from dlr.control.services.worker_placement_cutover import accepting_mode
 
+    reserved = accepting_mode(session) == "reserved"
     worker_legacy_window.require_dispatch_target(
-        session, worker_pool.require_activation_worker(activation)
+        session, worker_pool.delivery_target(activation, use_worker_reservations=reserved)
     )
     adapter = session.get(Adapter, sub.adapter_id)
     assert adapter is not None
@@ -578,6 +580,9 @@ def dispatch_delivery(
         SubscriptionActivation, delivery.activation_override_id or receipt.activation_id
     )
     assert activation is not None
+    from dlr.control.services.worker_placement_cutover import accepting_mode
+
+    use_worker_reservations = accepting_mode(session) == "reserved" or use_worker_reservations
     worker_id = worker_pool.delivery_target(
         activation, use_worker_reservations=use_worker_reservations
     )
@@ -736,6 +741,7 @@ def current_replay_context(session: Session, sub: EventSubscription) -> tuple[di
     from dlr.control.services.event_envelope import canonical
     from dlr.control.services.reliable_execution import resolve_queue_target_worker
     from dlr.control.services.subscription_activation_policy import snapshot_policy
+    from dlr.control.services.worker_placement_cutover import mode
 
     adapter = session.get(Adapter, sub.adapter_id)
     assert adapter is not None
@@ -776,6 +782,7 @@ def current_replay_context(session: Session, sub: EventSubscription) -> tuple[di
         context["route_snapshot"] = snapshot.model_dump(mode="json")
     token = hashlib.sha256(canonical({"subscription_id": sub.id, **context})).hexdigest()
     context["route_snapshot"] = snapshot.model_dump(mode="json")
+    context["pool_placement_enabled"] = mode(session) == "reserved"
     return context, token
 
 
@@ -853,8 +860,8 @@ def replay_event(
             raise domain_error(
                 409, "subscription_config_conflict", "Current replay configuration changed"
             )
-        worker_pool.require_fixed_route(
-            RouteSnapshot.model_validate(context["route_snapshot"]).route
+        worker_pool.require_accepting_route(
+            session, RouteSnapshot.model_validate(context["route_snapshot"]).route
         )
         current_config = session.scalar(
             select(SubscriptionConfigVersion).where(
@@ -888,7 +895,11 @@ def replay_event(
                     field=binding.field,
                 )
             )
-    worker_pool.require_activation_worker(activation)
+    from dlr.control.services.worker_placement_cutover import accepting_mode
+
+    worker_pool.delivery_target(
+        activation, use_worker_reservations=accepting_mode(session) == "reserved"
+    )
     from dlr.control.services import subscription_business_batch as business_batch
 
     original_mode = business_batch.mode_for_delivery(session, receipt, previous)

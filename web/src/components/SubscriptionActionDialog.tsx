@@ -262,7 +262,8 @@ export default function SubscriptionActionDialog({
     replayMode === "repair" && original
       ? { ...original, revision_id: sub.repair_revision_id }
       : context?.current;
-  const currentPool = replayMode === "current" && context?.current.route_snapshot?.route.mode === "pool";
+  const currentPool = replayMode === "current" && context?.current.route_snapshot?.route.mode === "pool"
+    && context.current.pool_placement_enabled !== true;
   function previewRoute(value: Pick<SubscriptionActivation, "route_snapshot" | "worker_id">) {
     return value.route_snapshot?.route ?? (value.worker_id === null ? null : fixedRoute(value.worker_id));
   }

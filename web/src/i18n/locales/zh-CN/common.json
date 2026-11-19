@@ -312,6 +312,15 @@
     "dispatchReady": "消息执行可用",
     "dispatchUnavailable": "消息执行不可用",
     "cacheManagement": "缓存管理",
+    "placement": {
+      "allocatable": "已核验的可分配容量",
+      "held": "领取前预留",
+      "claimed": "已领取占用",
+      "reclaiming": "待物理清理",
+      "quarantine": "最早复核隔离时间",
+      "capacityUnknown": "暂无符合条件的样本",
+      "resources": "{{cpu}} 毫核 · 内存 {{memory}} MiB · PID {{pids}} · 临时空间 {{tmp}} MiB · 槽位 {{slots}}"
+    },
     "maintenance": {
       "summary": "{{ready}}/{{total}} 个节点状态观测正常",
       "remotePython": "远程固定 Worker（受限）",

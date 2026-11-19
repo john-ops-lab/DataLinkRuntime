@@ -137,11 +137,27 @@ def has_unsettled_worker_work(session: Session, worker_id: int) -> bool:
     return (
         session.scalar(
             text("""
+        WITH transferred AS (
+            SELECT e.id FROM executions e
+            WHERE e.target_worker_id_snapshot=:worker
+              AND e.placement_origin='legacy_v3' AND e.requires_worker_reservation
+              AND e.target_worker_id IS NULL AND e.status IN ('queued','retry_wait')
+              AND EXISTS (
+                  SELECT 1 FROM worker_placement_cutover
+                  WHERE id=1 AND mode IN ('paused','reserved')
+              )
+              AND EXISTS (
+                  SELECT 1 FROM execution_outbox o WHERE o.execution_id=e.id
+                  AND o.dispatch_generation < e.dispatch_generation
+                  AND o.status='superseded' AND o.last_error_code='placement_cutover_generation'
+              )
+        )
         SELECT EXISTS (
             SELECT 1 FROM executions e
             WHERE (e.target_worker_id=:worker OR e.target_worker_id_snapshot=:worker
                     OR e.worker_id=:worker)
               AND e.status IN ('queued','running','retry_wait')
+              AND NOT EXISTS (SELECT 1 FROM transferred t WHERE t.id=e.id)
         ) OR EXISTS (
             SELECT 1 FROM execution_attempts a
             WHERE a.worker_id=:worker
@@ -166,6 +182,18 @@ def has_unsettled_worker_work(session: Session, worker_id: int) -> bool:
             JOIN subscription_activations a ON a.id=r.activation_id
             WHERE a.worker_id=:worker
               AND r.state NOT IN ('succeeded','skipped','superseded','abandoned')
+              AND NOT (r.state='processing' AND EXISTS (
+                  SELECT 1 FROM event_deliveries d
+                  JOIN transferred t ON t.id=COALESCE(d.execution_id, d.batch_execution_id)
+                  WHERE d.receipt_id=r.id AND d.state='processing'
+              ) AND NOT EXISTS (
+                  SELECT 1 FROM event_deliveries d
+                  WHERE d.receipt_id=r.id AND d.state IN ('pending','processing')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM transferred t
+                      WHERE t.id=COALESCE(d.execution_id,d.batch_execution_id)
+                  )
+              ))
         ) OR EXISTS (
             SELECT 1 FROM event_subscriptions s
             JOIN subscription_activations a ON a.id=s.activation_id

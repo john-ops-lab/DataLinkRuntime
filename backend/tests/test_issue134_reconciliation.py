@@ -102,10 +102,18 @@ def test_reconciliation_migration_fresh_and_upgrade_preserve_state() -> None:
                     connection.scalar(text("SELECT version_num FROM alembic_version"))
                     == HEAD_REVISION
                 )
-                cursor = connection.execute(
-                    text("SELECT name, after_id, upper_id FROM runtime_reconciliation_cursors")
-                ).one()
-                assert tuple(cursor) == ("expired_attempts", 0, 0)
+                cursors = connection.execute(
+                    text(
+                        "SELECT name, after_id, upper_id FROM runtime_reconciliation_cursors "
+                        "WHERE name IN ('expired_attempts', 'worker_placement', "
+                        "'worker_placement_expiration')"
+                    )
+                )
+                assert {tuple(cursor) for cursor in cursors} == {
+                    ("expired_attempts", 0, 0),
+                    ("worker_placement", 0, 0),
+                    ("worker_placement_expiration", 0, 0),
+                }
                 if worker_id is not None:
                     assert (
                         connection.scalar(

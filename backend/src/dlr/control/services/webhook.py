@@ -60,7 +60,7 @@ from dlr.control.services.adapter import (
 from dlr.control.services.execution import (
     compact_json_bytes,
 )
-from dlr.control.services.reliable_execution import accept_execution, resolve_queue_target_worker
+from dlr.control.services.reliable_execution import accept_execution, configured_dispatch_route
 from dlr.control.services.secrets import decrypt_fields
 
 logger = logging.getLogger("dlr.control.webhook")
@@ -252,8 +252,9 @@ def upsert_webhook(
                 {"expected_type": WEBHOOK_CREDENTIAL_TYPE, "actual_type": credential.type},
             )
 
-    if data.enabled:
-        worker_pool.require_fixed_route(worker_pool.adapter_route(adapter))
+    reserved = data.enabled and worker_pool.require_accepting_route(
+        session, worker_pool.adapter_route(adapter)
+    )
     if data.enabled and not webhook.enabled:
         if adapter.latest_version_id is None:
             raise domain_error(
@@ -263,32 +264,34 @@ def upsert_webhook(
             raise domain_error(
                 409, "webhook_token_required", "Choose a Token Credential before receiving"
             )
-        if adapter.runtime_worker_id is None:
+        if not reserved and adapter.runtime_worker_id is None:
             raise domain_error(
                 409, "runtime_worker_required", "Choose a runtime Worker before receiving"
             )
-        worker = session.get(Worker, adapter.runtime_worker_id)
-        if worker is None or not worker_availability.is_effectively_online(
-            worker, now=worker_availability.current_time(session)
-        ):
-            raise domain_error(409, "worker_offline", "The runtime Worker is offline")
-        if adapter.language not in worker.capabilities:
-            raise domain_error(
-                409,
-                "worker_capability_missing",
-                f"The runtime Worker does not support {adapter.language}",
-                {"language": adapter.language},
-            )
+        if not reserved:
+            worker = session.get(Worker, adapter.runtime_worker_id)
+            if worker is None or not worker_availability.is_effectively_online(
+                worker, now=worker_availability.current_time(session)
+            ):
+                raise domain_error(409, "worker_offline", "The runtime Worker is offline")
+            if adapter.language not in worker.capabilities:
+                raise domain_error(
+                    409,
+                    "worker_capability_missing",
+                    f"The runtime Worker does not support {adapter.language}",
+                    {"language": adapter.language},
+                )
         if settings.worker_remote_v4_enabled:
             from dlr.control.services.worker_stage_capability_v4 import require_new_execution
 
-            resolve_queue_target_worker(session, adapter)
+            configured_dispatch_route(session, adapter, use_worker_reservations=reserved)
             require_new_execution(
                 session,
                 adapter,
                 version_id=adapter.latest_version_id,
                 trigger="webhook",
                 input_source_type="json",
+                awaiting_worker=reserved,
             )
         if adapter_runtime.active_execution(session, adapter.id) is not None:
             raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")
@@ -466,7 +469,8 @@ def receive_webhook(
         session.commit()
         session.refresh(existing)
         return existing
-    resolve_queue_target_worker(session, adapter)
+    reserved = worker_pool.require_accepting_route(session, worker_pool.adapter_route(adapter))
+    configured_dispatch_route(session, adapter, use_worker_reservations=reserved)
     execution = accept_execution(
         session,
         adapter,

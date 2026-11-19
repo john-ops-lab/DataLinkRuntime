@@ -599,6 +599,13 @@ def _claim_fixed(
     if execution.status == "running":
         session.rollback()
         return V4ClaimDecision(decision="ACK_NOOP", reason="execution_not_queued")
+    from dlr.control.services.worker_placement_cutover import mode
+
+    placement_mode = mode(session, hold=True)
+    if placement_mode == "paused":
+        return _pause(session, "placement_cutover_paused")
+    if placement_mode == "reserved" and not requires_reservation:
+        return _pause(session, "worker_reservation_unavailable")
     from dlr.control.services.worker_stage_capability_v4 import execution_block_reason
 
     blocked = execution_block_reason(session, adapter, execution, lock_credentials=True)
@@ -610,8 +617,19 @@ def _claim_fixed(
     # A lost instance's process and local resources cannot be presumed gone
     # from expiry or a new lease. Until physical reconciliation exists, do not
     # execute even when a retry generation is already queued.
-    if any(a.status == "worker_lost" and a.worker_identity_id is not None for a in attempts):
-        return _pause(session, "worker_recovery_unverified")
+    for prior in attempts:
+        if prior.status != "worker_lost" or prior.worker_identity_id is None:
+            continue
+        if not requires_reservation:
+            return _pause(session, "worker_recovery_unverified")
+        if prior.recovery_not_before is None and prior.cleanup_settled_at is not None:
+            continue
+        if prior.recovery_not_before is None or now < prior.recovery_not_before:
+            return _pause(session, "worker_recovery_unverified")
+        if prior.cleanup_settled_at is None and (
+            execution.route_pool_id is None or prior.worker_id == worker.id
+        ):
+            return _pause(session, "worker_recovery_unverified")
     if execution.status != "queued" or (
         execution.next_attempt_at is not None and execution.next_attempt_at > now
     ):

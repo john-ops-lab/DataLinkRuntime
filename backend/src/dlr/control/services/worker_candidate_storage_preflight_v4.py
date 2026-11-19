@@ -131,6 +131,40 @@ def inspect_candidate_storage(
             or connection["unsafe_role"] is not False
         ):
             return _BLOCKED
+        placement_privileges_safe = session.scalar(
+            text("""
+                WITH reachable_roles AS (
+                    SELECT r.oid FROM pg_catalog.pg_roles r
+                    WHERE r.rolname=current_user
+                       OR pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER')
+                ), owned(name) AS (
+                    VALUES ('worker_placement_cutover'), ('worker_capacity_verifiers')
+                )
+                SELECT NOT EXISTS (
+                    SELECT 1 FROM owned
+                    WHERE NOT pg_catalog.has_table_privilege(current_user, name, 'SELECT')
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM owned CROSS JOIN reachable_roles
+                    WHERE pg_catalog.has_table_privilege(
+                              oid, name, 'INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER'
+                          )
+                       OR pg_catalog.has_any_column_privilege(oid, name, 'INSERT,UPDATE')
+                ) AND pg_catalog.has_table_privilege(
+                    current_user, 'execution_placement_actions', 'SELECT'
+                ) AND pg_catalog.has_table_privilege(
+                    current_user, 'execution_placement_actions', 'INSERT'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM reachable_roles
+                    WHERE pg_catalog.has_table_privilege(
+                        oid, 'execution_placement_actions', 'UPDATE,DELETE,TRUNCATE,TRIGGER'
+                    ) OR pg_catalog.has_any_column_privilege(
+                        oid, 'execution_placement_actions', 'UPDATE'
+                    )
+                )
+            """)
+        )
+        if placement_privileges_safe is not True:
+            return _BLOCKED
         # Block conflicting table/trigger DDL through this transaction without
         # blocking ordinary writers. Other DDL and role/grant changes still
         # require a separate maintenance fence.

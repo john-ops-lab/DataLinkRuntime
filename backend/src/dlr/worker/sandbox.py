@@ -445,6 +445,17 @@ class ResourceEnvelope:
         }
 
 
+def agent_resource_headroom(config: SandboxConfig) -> ResourceEnvelope:
+    """Use the same Agent reserves in the local and Control ledgers."""
+    return ResourceEnvelope(
+        cpu_cores=max(0.25, config.cpu_cores * 0.25),
+        memory_bytes=max(64 * 1024 * 1024, config.memory_bytes // 8),
+        pids=max(32, config.pids // 8),
+        tmp_bytes=max(16 * 1024 * 1024, config.tmp_bytes // 8),
+        source="agent_headroom",
+    )
+
+
 def _read_positive_integer(path: Path, *, allow_max: bool = False) -> int | None:
     value = _read(path)
     if allow_max and value == "max":
@@ -591,10 +602,11 @@ class ResourceBudget:
 
         if slots < 1:
             raise SandboxError("sandbox_resource_envelope_invalid")
-        reserve_cpu = max(0.25, config.cpu_cores * 0.25)
-        reserve_memory = max(64 * 1024 * 1024, config.memory_bytes // 8)
-        reserve_pids = max(32, config.pids // 8)
-        reserve_tmp = max(16 * 1024 * 1024, config.tmp_bytes // 8)
+        reserve = agent_resource_headroom(config)
+        reserve_cpu = reserve.cpu_cores
+        reserve_memory = reserve.memory_bytes
+        reserve_pids = reserve.pids
+        reserve_tmp = reserve.tmp_bytes
         capacity = {
             "cpu": envelope.cpu_cores,
             "memory": envelope.memory_bytes,
@@ -832,6 +844,22 @@ class ResourceBudget:
         if os.getpid() == self._owner_pid:
             with self._lock:
                 self._accounting_lost = True
+
+    def supports_live_charges(self, config: SandboxConfig) -> bool:
+        """Recheck the verified hard envelope before giving business code a gate."""
+        if os.getpid() != self._owner_pid:
+            raise SandboxError("sandbox_reservation_invalid")
+        envelope = read_verified_resource_envelope(config)
+        with self._lock:
+            if self._accounting_lost:
+                raise SandboxError("sandbox_reservation_accounting_unknown")
+            return (
+                cpu_units(envelope.cpu_cores, round_up=False)
+                >= self._used["cpu"] + self._cpu_reserve_units
+                and envelope.memory_bytes >= self._used["memory"] + self._reserve["memory"]
+                and envelope.pids >= self._used["pids"] + self._reserve["pids"]
+                and envelope.tmp_bytes >= self._used["tmp"] + self._reserve["tmp"]
+            )
 
     def snapshot(self) -> dict[str, Any]:
         if os.getpid() != self._owner_pid:

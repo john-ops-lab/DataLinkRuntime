@@ -910,10 +910,10 @@ def start_sandbox_supervisor(
                 live._config.payload_gid,
                 str(live._config.cgroup_path),
                 str(live._config.cgroup_path / live._name),
-                staged.preparation_failed,
-                not staged.preparation_failed and staged.prepared.dispatch.get("language") == "go",
+                staged.preparation_only,
+                not staged.preparation_only and staged.prepared.dispatch.get("language") == "go",
             )
-            workspace._sandbox_mount_expected = not staged.preparation_failed
+            workspace._sandbox_mount_expected = not staged.preparation_only
             started = True
             observation, supervisor = start_supervisor(
                 live, initial, _sandbox_launch=launch, execution_deadline=execution_deadline

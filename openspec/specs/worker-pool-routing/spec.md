@@ -32,11 +32,11 @@
 - **WHEN** 用户 Clone、使用模板或导入含有不可移植 Worker 或 Pool 引用的资产
 - **THEN** 保持停止并提示显式重新绑定；同名 Pool 不自动匹配，取消保留原草稿
 
-### Requirement: 首批仅允许停止态 Pool 规划
-服务端 SHALL 允许授权用户管理 Pool 并保存停止态绑定。生产首次接受 Pool 业务前 MUST 在新责任事务中核对实际路由并拒绝交接；现有请求按原授权与幂等合同优先读回。普通执行、触发、Retry、Replay、单条 T2 与批次均适用。
+### Requirement: Pool 接收受持久切换状态约束
+服务端 SHALL 允许授权用户管理 Pool 并保存停止态绑定。新责任事务 MUST 核对实际路由与持久模式：fixed 拒绝 Pool 新责任，paused 暂停新接受，reserved 才允许交接并要求预留；现有请求按原授权与幂等合同优先读回。普通执行、触发、Retry、Replay、单条 T2 与批次均适用。
 
 #### Scenario: 停止态 Pool 草稿与运行请求
-- **WHEN** 已保存 Pool 草稿的 Adapter 收到首次启用或执行请求
+- **WHEN** 系统仍在 fixed 模式，已保存 Pool 草稿的 Adapter 收到首次启用或执行请求
 - **THEN** 返回明确拒绝原因，保留草稿，未新增 Activation、Execution、Admission 或 Outbox，原 Delivery、等待责任及重试预算保持
 
 #### Scenario: 旧请求在当前配置变更后重送

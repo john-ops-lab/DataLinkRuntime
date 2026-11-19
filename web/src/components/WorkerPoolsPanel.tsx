@@ -141,7 +141,7 @@ export default function WorkerPoolsPanel({ workers, readWorker }: {
     <Drawer title={t("pool.manage")} open={open} width="min(680px, 100%)"
       maskClosable={!busy} keyboard={!busy} onClose={() => { if (!busy) setOpen(false); }}>
       <Space direction="vertical" size="large" style={{ width: "100%" }}>
-        <Alert type="info" showIcon message={t("pool.stoppedDraft")} />
+        <Alert type="info" showIcon message={t("pool.membershipPolicy")} />
         {error && <Alert type="error" showIcon message={error} />}
         <Space wrap>
           <Select aria-label={t("pool.title")} value={pool?.id} style={{ minWidth: 240 }} disabled={busy}

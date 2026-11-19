@@ -6,7 +6,8 @@ from typing import Annotated, Any, BinaryIO
 
 from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
 from dlr.control import db
@@ -44,7 +45,9 @@ from dlr.control.schemas.worker import (
     WorkerResponse,
 )
 from dlr.control.security import (
+    Principal,
     reject_enrolled_legacy_worker,
+    require_admin_principal,
     require_business_principal,
     require_worker_token,
 )
@@ -459,3 +462,18 @@ def list_workers(session: DbSession) -> list[WorkerResponse]:
         )
         for worker in worker_service.list_workers(session)
     ]
+
+
+@admin_router.get("/api/workers/placement-metrics")
+def placement_metrics(
+    session: DbSession, principal: Annotated[Principal, Depends(require_admin_principal)]
+) -> dict[str, object]:
+    from dlr.control.services.worker_placement_observation import cluster_metrics
+
+    session.execute(text("SET LOCAL statement_timeout = '250ms'"))
+    try:
+        return cluster_metrics(session)
+    except OperationalError:
+        raise domain_error(
+            503, "placement_metrics_unavailable", "Worker metrics are unavailable"
+        ) from None

@@ -256,6 +256,12 @@ class Settings(BaseSettings):
         le=86_400,
         validation_alias="DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS",
     )
+    worker_placement_wait_timeout_seconds: int = Field(
+        default=900,
+        ge=30,
+        le=86_400,
+        validation_alias="DLR_WORKER_PLACEMENT_WAIT_TIMEOUT_SECONDS",
+    )
     execution_recovery_grace_seconds: int = Field(
         default=60,
         ge=10,

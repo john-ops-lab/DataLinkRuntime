@@ -271,11 +271,14 @@ class SupervisedExecution:
                 diagnostic=diagnostic,
                 usage=usage,
             )
+        stop_reason = observation.stop_reason
+        if stop_reason == "preparation_failed" and self._staged.capacity_failed:
+            stop_reason = "resource_capacity_unavailable"
         return ExecutionObservation(
             "observed",
             observation.code,
             observation.exit_code,
-            observation.stop_reason,
+            stop_reason,
             stdout,
             truncated,
             diagnostic,
@@ -470,11 +473,14 @@ def start_execution(
     streams = None
     try:
         attempt = staged.prepared.attempt
+        if staged.check_capacity and not staged.preparation_failed:
+            live = staged.cgroup
+            staged.capacity_failed = not live._budget.supports_live_charges(live._config)
         now = _v4_lease_clock()
         execution_deadline = math.nextafter(
             now + staged.prepared.reservation.limits.execution_timeout_seconds, -math.inf
         )
-        if staged.preparation_failed:
+        if staged.preparation_only:
             # Nonbusiness mode has no execution gate or new business time.
             # Its short physical observation stays inside existing authority.
             execution_deadline = min(attempt.local_deadline(), now + 5.0)
@@ -493,7 +499,7 @@ def start_execution(
             staged.prepared.reservation.limits.stream_max_bytes,
             stop,
             collect_progress=(
-                not staged.prepared.business_credentials and not staged.preparation_failed
+                not staged.prepared.business_credentials and not staged.preparation_only
             ),
         )
         owner = SupervisedExecution(
@@ -503,11 +509,16 @@ def start_execution(
         owner._watchdog.start()
         if stop.is_set():
             raise ValueError("execution gate unavailable")
-        if staged.preparation_failed:
-            if not staged.prepared.managed_files or not supervisor.finish_preparation_failure():
+        if staged.preparation_only:
+            if not (staged.capacity_failed or staged.prepared.managed_files):
+                raise ValueError("preparation stop unavailable")
+            if not supervisor.finish_preparation_failure():
                 raise ValueError("preparation stop unavailable")
             observed = owner.observe(timeout=2.0)
-            if observed.state != "observed" or observed.stop_reason != "preparation_failed":
+            expected = (
+                "resource_capacity_unavailable" if staged.capacity_failed else "preparation_failed"
+            )
+            if observed.state != "observed" or observed.stop_reason != expected:
                 raise ValueError("preparation stop unavailable")
             return owner
         if not supervisor.prepare_sandbox() or not supervisor.release_sandbox(

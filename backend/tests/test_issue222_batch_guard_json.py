@@ -22,7 +22,7 @@ from dlr.control.models import (
 from dlr.control.services import subscription_business_batch as batch
 from test_issue219_upgrade import migration_config
 from test_issue222_business_batch import batch_world as core_batch_world
-from test_issue222_business_batch import facts, produce, receive
+from test_issue222_business_batch import facts, finish, produce, receive
 from test_issue222_business_batch import world as foundation_world
 
 world = foundation_world
@@ -50,12 +50,12 @@ def migration(
     if down:
         assert revision == "0052_issue222_business_batches"
     else:
-        assert revision in {"0053_issue222_batch_guard_json", "head"}
+        assert revision == "0053_issue222_batch_guard_json"
     apply_guard_revision(factory.kw["bind"], "0053_issue222_batch_guard_json", down=down)
 
 
 @contextmanager
-def restore_migration_head(factory: Any, monkeypatch: pytest.MonkeyPatch):
+def restore_migration_head(factory: Any):
     with factory() as session:
         original = session.scalar(
             text("SELECT pg_get_functiondef('dlr_batch_validate(bigint)'::regprocedure)")
@@ -63,7 +63,8 @@ def restore_migration_head(factory: Any, monkeypatch: pytest.MonkeyPatch):
     try:
         yield
     finally:
-        migration(factory, monkeypatch, "head")
+        with factory.kw["bind"].begin() as connection:
+            connection.execute(text(original))
         with factory() as session:
             assert (
                 session.scalar(
@@ -122,10 +123,58 @@ def test_fresh_guard_keeps_hundred_large_members_and_all_trigger_bindings(
         facts(session, batch_world)
 
 
+def test_protected_role_materializes_and_settles_large_batch_without_temp(
+    batch_world: Any, session_factory: Any
+) -> None:
+    # Keep the role, its grants and the test bulk state in one rollback-only
+    # transaction. Fire the actual deferred checks at each commit boundary.
+    with session_factory() as session:
+        bind = session.get_bind()
+        database = bind.dialect.identifier_preparer.quote(bind.url.database)
+        session.execute(text("DROP TABLE IF EXISTS pg_temp.dlr_batch_validation_cache"))
+        session.execute(text("CREATE ROLE dlr_batch_without_temp NOLOGIN"))
+        session.execute(text(f"REVOKE TEMPORARY ON DATABASE {database} FROM PUBLIC"))
+        session.execute(text("GRANT USAGE ON SCHEMA public TO dlr_batch_without_temp"))
+        session.execute(
+            text(
+                "GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public "
+                "TO dlr_batch_without_temp"
+            )
+        )
+        session.execute(
+            text("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO dlr_batch_without_temp")
+        )
+        session.execute(text("SET LOCAL ROLE dlr_batch_without_temp"))
+        assert (
+            session.scalar(text("SELECT has_database_privilege(current_database(), 'TEMP')"))
+            is False
+        )
+        ids, execution = produce(session, batch_world, 100, b"x" * 1024)
+        session.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+        session.execute(text("SET CONSTRAINTS ALL DEFERRED"))
+        assert len(ids) == 100
+        assert finish(session, execution).result_counts["succeeded"] == 100
+        session.flush()
+        session.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+        session.execute(text("SET CONSTRAINTS ALL DEFERRED"))
+        assert (
+            session.scalar(text("SELECT to_regclass('pg_temp.dlr_batch_validation_cache')")) is None
+        )
+        with (
+            pytest.raises(IntegrityError, match="batch member set differs from frozen manifest"),
+            session.begin_nested(),
+        ):
+            session.execute(
+                text("DELETE FROM subscription_execution_batch_members WHERE member_index=99")
+            )
+            session.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+        assert facts(session, batch_world).history_count == 100
+
+
 def test_0052_upgrade_preserves_large_accepted_batch_and_validates_guard(
     batch_world: Any, session_factory: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with restore_migration_head(session_factory, monkeypatch):
+    with restore_migration_head(session_factory):
         migration(session_factory, monkeypatch, "0052_issue222_business_batches", down=True)
         with session_factory.begin() as session:
             _, execution = produce(session, batch_world, 100, b"x" * 1024)
@@ -160,7 +209,7 @@ def test_guard_migration_restores_head_after_failure(
 ) -> None:
     with (
         pytest.raises(RuntimeError, match="injected failure"),
-        restore_migration_head(session_factory, monkeypatch),
+        restore_migration_head(session_factory),
     ):
         migration(session_factory, monkeypatch, "0052_issue222_business_batches", down=True)
         raise RuntimeError("injected failure")

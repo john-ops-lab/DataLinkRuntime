@@ -1,6 +1,6 @@
 # Worker Pool 路由
 
-可为停止态 Adapter 准备 Pool 路由。生产继续使用固定 Worker。新请求解析为 Pool 时，服务端在建立执行或派发责任前拒绝；执行入口返回 HTTP 409 和 `pool_routing_not_enabled`。已受理的幂等请求按原入口的权限和幂等合同读回原责任。
+可为停止态 Adapter 准备 Pool 路由。显式执行 0093 切换前，生产继续使用固定 Worker。在该模式下，新请求解析为 Pool 时，服务端在建立执行或派发责任前拒绝；执行入口返回 HTTP 409 和 `pool_routing_not_enabled`。已受理的幂等请求按原入口的权限和幂等合同读回原责任。
 
 ## 配置路由
 
@@ -34,3 +34,21 @@
 `0091_issue129_pool_routing` 的受支持来源为发布提交 `f536419b59282891cf537e2d8fef65b7e8b92d1c`。排空后沿用上述 owner 流程升级至 `0092_issue129_worker_capacity`。完整前序链多带一对 `--first-source` 和 `--first-intent`。独立读回 `committed_current` 后，运行角色可恢复固定 Worker 服务。
 
 此版本在隔离环境验证容量与预留账本。容量取自扣除系统和 Agent 余量的已核实实例限额，两个时间戳均须在 15 秒内。等待选址的执行预付一个最大派发消息，选址后按实际消息字节结算，预留有效期为 30 秒。生产 Pool 接收与固定 Worker 的预留切换统一留待停领、排空、容量对账及恢复流程验收。
+
+### 0093 升级后启用预留派发
+
+从 `0092_issue129_worker_capacity` 的 `36ee472851e2141ce908dcd9a9588c5f6a86f9eb` 升级到 `0093_issue129_worker_placement`，沿用上述离线 owner check、apply 与独立 observe，最长历史链追加 `--oldest-source`、`--oldest-intent`。读到 `committed_current` 后恢复运行角色。初始模式为 `fixed`，可继续使用受保护的旧路径；切换预留由部署 owner 单独执行。
+
+0093 同时更新业务批次的数据库校验。v4 运行角色及其可达角色须保持无数据库 `CREATE`、`TEMPORARY` 权限。受限角色提交 T2 或成员结果时，数据库逐次校验冻结成员、计费和结果归属，校验失败会回滚当前事务。原本允许临时表的部署可继续使用事务内校验缓存。
+
+以下子命令均通过 `python -m dlr.control.control_identity_init_v4`，使用 owner 连接及当前权威声明。
+
+1. 读取 `placement-status`。首次批准前先停用已保留身份的 Worker，独立核对稳定身份、当前实例、cgroup v2 限额、部署工具链、环境类及签名公钥。宿主签名密钥置于任务不可访问的路径，通过 `DLR_WORKER_CAPACITY_SIGNING_KEY_FILE` 指定。执行 `placement-approve-capacity WORKER_ID ENVIRONMENT_NAME PUBLIC_KEY_HEX`，公钥为 32 字节 Ed25519 公钥的十六进制表示。成员、材料和凭据授权仍由管理员维护。激活已完成对账的实例，核对新鲜签名样本。
+2. 执行 `placement-pause`，排空活动工作，保留 journal，允许结果与清理结算。分批执行 `placement-reconcile` 直至旧等待责任完成对账。转换会失效旧派发代，queued 获得预付等待意图，retry_wait 保留退避。旧 v3 责任不追溯增加截止时间。物理处置不明时保留阻塞。
+3. 执行 `placement-enable`，独立运行 `placement-status` 确认 `reserved`。受阻时核对责任和容量，再续办同一流程。重启或故障不自动降级；新 Claim 必须持有有效预留。
+
+容量准入先从已验证的宿主限额扣除 Agent 和领取接收余量，再按 Worker 的单任务上限封顶。held、claimed、reclaiming 均占用该容量。调度器在可运行的 Adapter/Pool 队首间轮转，并独立扫描已到期的执行。准备失败令 Worker 隔离至少 30 秒。达到复核时间并确认原清理已完成后，沿原身份和卷执行受控重启，取得新预检和签名容量样本。清理仍不明时保留原占用。
+
+使用 `GET /api/executions/{execution_id}` 区分配置路由、实际 Attempt 节点与派发代，通过 `GET /api/workers/{worker_id}/v4/status` 查看节点账本，通过 `GET /api/workers/placement-metrics` 查看集群汇总。达到选址上限后，管理员可向 `POST /api/executions/{execution_id}/placement-retry` 提交 `expected_generation`。取消沿用有编辑权限的 `POST /api/executions/{execution_id}/cancel`，保留两类操作的审计记录。原地恢复只接受可独立核对的原责任物理证明，retry_wait 的处置绑定旧预留代。
+
+D13 演练需要两台独立 Linux Worker 宿主、兼容环境与授权、真实 Control、PostgreSQL、RabbitMQ 及独立幂等目标。先在 Claim 前注入故障，核对故障至兼容节点 Claim ≤60 秒；再在 Claim 后注入故障，核对包含原租约及宽限的故障至新有效 Claim ≤180 秒。满载时扩入兼容节点，核对确认 ready 至 Claim ≤10 秒，并用最多十个可运行 Adapter 验证公平性。保留首败、Attempt 次数、目标逐键效果、旧实例拒绝和物理账本结算。缺少真实宿主样本时，6.6 保留未验。

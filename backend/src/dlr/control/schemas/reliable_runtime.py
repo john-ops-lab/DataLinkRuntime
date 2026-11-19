@@ -474,6 +474,22 @@ class AttemptSummary(BaseModel):
     cleanup_summary: dict[str, Any] | None
 
 
+class PlacementRetryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_generation: StrictInt = Field(gt=0, lt=2**63)
+
+
+class PlacementSnapshot(BaseModel):
+    generation: int
+    reason: str | None
+    age_seconds: int | None
+    deadline_at: datetime | None
+    held_count: int
+    reclaiming_attempts: int
+    retry_available: bool
+
+
 class ReliableExecutionDetail(BaseModel):
     """Lightweight reliable detail exposed to authenticated business users."""
 
@@ -486,6 +502,7 @@ class ReliableExecutionDetail(BaseModel):
     replay_reason: str | None = None
     route_snapshot: RouteSnapshot | None = None
     replay_route: RoutePreview | None = None
+    placement: PlacementSnapshot | None = None
 
 
 class ReplayResponse(BaseModel):
