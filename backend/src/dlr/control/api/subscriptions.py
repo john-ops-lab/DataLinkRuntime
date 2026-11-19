@@ -977,23 +977,10 @@ def replay_event(
         expected_preview_token=payload.expected_preview_token,
         expected_config_version=payload.expected_config_version,
     )
-    receipt = _event(session, subscription_id, receipt_id)
-    activation = session.get(
-        SubscriptionActivation, delivery.activation_override_id or receipt.activation_id
-    )
-    assert activation is not None
-    snapshot = worker_pool.stored_snapshot(activation.route_snapshot)
     commit(session)
     return {
         "delivery_id": delivery.id,
         "execution_id": delivery.execution_id or delivery.batch_execution_id,
-        "route_snapshot": (
-            snapshot.model_copy(
-                update={"source": subscription_delivery.delivery_route_source(delivery)}
-            )
-            if snapshot is not None
-            else None
-        ),
     }
 
 
