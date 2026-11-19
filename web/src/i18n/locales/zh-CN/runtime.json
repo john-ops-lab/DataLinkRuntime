@@ -16,6 +16,8 @@
     "configuredRoute": "配置路由",
     "frozenRoute": "冻结路由",
     "actualWorker": "实际运行节点",
+    "dispatchTarget": "当前派发目标",
+    "workerId": "Worker #{{id}}",
     "new": "新建 Pool",
     "name": "Pool 名称",
     "environment": "环境类",

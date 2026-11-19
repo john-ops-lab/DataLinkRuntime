@@ -28,6 +28,7 @@ from dlr.control.models import (
     SyncBatch,
 )
 from dlr.control.services import subscription_accounting as accounting
+from dlr.control.services import worker_pool
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.event_envelope import canonical, event_id, validate_envelope
 from dlr.control.services.input_config import database_now
@@ -497,6 +498,7 @@ def _context(
         .with_for_update()
     )
     if cp is None:
+        worker_pool.require_activation_worker(activation)
         cp = SourceCheckpoint(
             subscription_id=sub.id,
             source_epoch=sub.source_epoch,
@@ -593,6 +595,7 @@ def begin_sync_batch(
         )
     ):
         raise domain_error(409, "subscription_sync_draining", "Prior batch responsibility remains")
+    worker_pool.require_activation_worker(activation)
     rows = delivery._quotas(session, sub.id)
     for quota, limits in zip(
         rows, (delivery._limits(session, activation), delivery._global_limits(session)), strict=True
@@ -699,7 +702,7 @@ def _insert_receipt(
     page_index: int | None = None,
 ) -> EventReceipt:
     from dlr.control.models import Adapter
-    from dlr.control.services import worker_legacy_window, worker_pool
+    from dlr.control.services import worker_legacy_window
     from dlr.control.services.subscription_activation_policy import ensure_policy
 
     worker_legacy_window.require_dispatch_target(
@@ -780,6 +783,7 @@ def receive_list_item(
                 409, "subscription_sync_page_invalid", "Item belongs to another page"
             )
         return SyncAcceptResult(duplicate.id, True, cp.next_sequence - 1)
+    worker_pool.require_activation_worker(activation)
     if (
         batch.read_complete
         or batch.failure_code
@@ -900,6 +904,7 @@ def receive_watch_event(
     duplicate = _existing(session, sub, envelope, content_hash)
     if duplicate:
         return SyncAcceptResult(duplicate.id, True, cp.next_sequence - 1)
+    worker_pool.require_activation_worker(activation)
     current_batch = _latest_batch(session, sub.id)
     if current_batch is not None and not current_batch.read_complete and not _closed(current_batch):
         raise domain_error(
@@ -1289,6 +1294,7 @@ def materialize_ready_control(session: Session, ticket: ControlTicket) -> SyncSt
     assert cp is not None and batch.activation_id is not None
     activation = session.get(SubscriptionActivation, batch.activation_id)
     assert activation is not None
+    worker_pool.require_activation_worker(activation)
     config = session.get(SubscriptionConfigVersion, activation.config_version_id)
     assert config is not None and config.source_identity is not None
     kind = batch.ready_kind

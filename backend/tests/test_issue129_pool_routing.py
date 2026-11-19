@@ -1,5 +1,6 @@
 """Wave 2 routing drafts, admission boundaries and held historical facts."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -20,22 +21,27 @@ from dlr.control.models import (
     EventSubscription,
     Execution,
     ExecutionOutbox,
+    SourceCheckpoint,
     SubscriptionActivation,
+    SubscriptionQuota,
+    SyncBatch,
     Worker,
     WorkerPool,
     WorkerPoolMember,
     WorkerPoolRevision,
 )
-from dlr.control.security import Principal, require_principal
+from dlr.control.security import SUPERADMIN_PRINCIPAL, Principal, require_principal
 from dlr.control.services import attempt, outbox, worker_pool
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services import subscription_management as management
+from dlr.control.services import subscription_sync as sync
 from dlr.control.services.control_image_transition_v4 import W1_SCHEMA
 from runtime_api_support import WORKER_HEADERS, claim_execution, ready_registration, report_attempt
 from test_adapters import STARTER_CODE, create_adapter, save_version
 from test_issue219_delivery import delivery_id, receive
 from test_issue219_delivery import world as world
 from test_issue219_management import action, config
+from test_issue219_sync import kube as kube
 from test_issue219_upgrade import insert_legacy_adapter, migration_config
 from test_issue219_upgrade import upgrade_database as upgrade_database
 from test_webhook_trigger import put_webhook, setup_webhook
@@ -277,6 +283,99 @@ def test_member_authorization_and_old_revision_remain_independent_of_new_rule(
     ] == ("pool_membership_unavailable")
 
 
+def test_route_write_rolls_back_when_an_unreferenced_pool_revision_is_deleted(
+    api_client, session_factory, pool_setup, monkeypatch
+):
+    pool, route, _ = pool_setup
+    changed = api_client.patch(
+        f"/api/worker-pools/{pool['id']}",
+        json={
+            "expected_version": pool["version"],
+            "rule": {
+                "environment_class": route["environment_class"],
+                "placement_scope": route["placement_scope"],
+                "selector": {"zone": "b"},
+            },
+        },
+    ).json()
+    adapter = create_adapter(api_client)
+    validate = worker_pool.validate_pool_route
+
+    def delete_after_read(session, selection):
+        result = validate(session, selection)
+        with session_factory() as deleting:
+            worker_pool.delete_revision(
+                deleting, pool["id"], 1, changed["version"], SUPERADMIN_PRINCIPAL
+            )
+        return result
+
+    monkeypatch.setattr(worker_pool, "validate_pool_route", delete_after_read)
+    path = f"/api/adapters/{adapter['id']}"
+    assert_rejected(
+        api_client.patch(
+            path,
+            json={
+                "route": route,
+                "expected_route_version": adapter["route_version"],
+                "name": "mixed edit",
+                "run_mode": "schedule",
+                "timeout_seconds": 20,
+            },
+        ),
+        "pool_route_revision_unavailable",
+    )
+    after = api_client.get(path).json()
+    for key in ("route", "route_version", "name", "run_mode", "timeout_seconds"):
+        assert after[key] == adapter[key]
+
+
+@pytest.mark.parametrize("checkpoint_exists", [False, True])
+def test_kubernetes_pool_draft_reserves_no_sync_batch_or_checkpoint(
+    kube, session_factory, pool_setup, checkpoint_exists
+):
+    _, route, _ = pool_setup
+    with session_factory.begin() as session:
+        initial = session.get(SubscriptionActivation, kube.activation_id)
+        revision = session.get(WorkerPoolRevision, (route["pool_id"], route["pool_revision"]))
+        frozen = worker_pool.snapshot_route(
+            session, worker_pool.pool_route(revision), "python", "adapter"
+        )
+        activation = SubscriptionActivation(
+            subscription_id=initial.subscription_id,
+            config_version_id=initial.config_version_id,
+            revision_id=initial.revision_id,
+            route_snapshot=frozen.model_dump(mode="json"),
+        )
+        session.add(activation)
+        session.flush()
+        subscription = session.get(EventSubscription, initial.subscription_id)
+        subscription.activation_id = activation.id
+        context = replace(kube, activation_id=activation.id)
+        if checkpoint_exists:
+            session.add(
+                SourceCheckpoint(
+                    subscription_id=subscription.id,
+                    source_epoch=subscription.source_epoch,
+                    shard=sync.KUBERNETES_SHARD,
+                    position={},
+                    confirmed_position={},
+                    next_sequence=1,
+                    assignment_generation=1,
+                )
+            )
+    with session_factory.begin() as session:
+        with pytest.raises(HTTPException) as rejected:
+            sync.begin_sync_batch(session, context, context.identity_snapshot)
+        assert rejected.value.detail["code"] == "pool_routing_not_enabled"
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(SyncBatch)) == 0
+        assert session.scalar(select(func.count()).select_from(SourceCheckpoint)) == int(
+            checkpoint_exists
+        )
+        quota = session.get(SubscriptionQuota, "global")
+        assert quota is None or (quota.reserved_control_count == quota.reserved_control_bytes == 0)
+
+
 def test_old_manual_idempotency_and_replay_keep_distinct_fixed_workers(
     api_client, session_factory, pool_setup
 ):
@@ -507,7 +606,7 @@ def test_downgrade_refuses_new_fixed_route_facts_with_no_pool(upgrade_database, 
     cfg = migration_config(upgrade_database)
     command.upgrade(cfg, "head")
     with Session(upgrade_database) as session, session.begin():
-        worker = Worker(name="fixed-only", capabilities=["python"])
+        worker = Worker(name="fixed-only", status="offline", capabilities=["python"])
         session.add(worker)
         session.flush()
         adapter = Adapter(

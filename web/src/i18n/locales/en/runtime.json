@@ -16,6 +16,8 @@
     "configuredRoute": "Configured route",
     "frozenRoute": "Frozen route",
     "actualWorker": "Actual Worker",
+    "dispatchTarget": "Dispatch target",
+    "workerId": "Worker #{{id}}",
     "new": "New Pool",
     "name": "Pool name",
     "environment": "Environment class",

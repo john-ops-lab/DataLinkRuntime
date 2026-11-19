@@ -813,6 +813,13 @@ export default function ExecutionHistoryPanel(props: {
                   label: t("pool.frozenRoute"),
                   children: <RouteLabel route={visibleDetail.route_snapshot.route} />,
                 }] : []),
+                {
+                  key: "dispatch-target",
+                  label: t("pool.dispatchTarget"),
+                  children: visibleDetail.target_worker_id == null
+                    ? "—"
+                    : t("pool.workerId", { id: visibleDetail.target_worker_id }),
+                },
                 { key: "trigger", label: t("labels.triggerMode", { ns: "common" }), children: visibleDetail.dependency_check ? t("builtin.checkTitle", { ns: "settings" }) : triggerLabel(visibleDetail.trigger, (key, options) => t(key, options)) },
                 ...(visibleDetail.trigger === "schedule"
                   ? [

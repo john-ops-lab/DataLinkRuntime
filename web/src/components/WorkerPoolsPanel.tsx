@@ -227,7 +227,7 @@ export default function WorkerPoolsPanel({ workers, readWorker }: {
           <div>
             <Typography.Title level={5}>{t("pool.preview")}</Typography.Title>
             <Space wrap>
-              <Select aria-label={t("pool.language")} value={previewLanguage}
+              <Select aria-label={t("pool.language")} value={previewLanguage} disabled={busy}
                 onChange={(language) => { setPreviewLanguage(language); setPreview(undefined); }}
                 options={languages.map((language) => ({ value: language }))} />
               <Button disabled={busy} onClick={() => void run(async () => {

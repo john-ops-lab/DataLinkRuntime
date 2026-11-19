@@ -156,20 +156,19 @@ def test_simplification_migration_removes_retired_fields_without_losing_content(
                     content=original,
                 )
             )
-            adapter = Adapter(
-                name="Migration adapter",
+            from test_issue219_upgrade import insert_legacy_adapter
+
+            adapter_id = insert_legacy_adapter(
+                session,
+                "Migration adapter",
                 description="Adapter purpose",
-                language="python",
-                adapter_type="task",
                 configuration_notes={
                     "instructions": "Adapter instructions",
                     "required_parameters": ["url"],
                     "license": "Fixture license",
                 },
             )
-            session.add(adapter)
             session.commit()
-            adapter_id = adapter.id
         _upgrade(database, "head")
         with Session(engine) as session:
             row = session.get(UserTemplate, "user-migration")

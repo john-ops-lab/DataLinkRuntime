@@ -366,6 +366,17 @@ def test_adapter_clone_copies_disabled_subscription_without_runtime_responsibili
             )
             is None
         )
+    clone_config = response.json()
+    assert clone_config["runtime_worker_id"] is None and clone_config["route"] is None
+    source = api_client.get(f"/api/adapters/{item['id']}").json()
+    bound = api_client.patch(
+        f"/api/adapters/{clone_id}",
+        json={
+            "runtime_worker_id": source["runtime_worker_id"],
+            "expected_route_version": clone_config["route_version"],
+        },
+    )
+    assert bound.status_code == 200, bound.text
     executed = api_client.post(f"/api/adapters/{clone_id}/executions", json={})
     assert executed.status_code == 202, executed.text
 

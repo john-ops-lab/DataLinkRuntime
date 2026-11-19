@@ -334,12 +334,46 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
             raise domain_error(404, "worker_not_found", "Worker not found")
         next_route = fixed_route(data.runtime_worker_id)
 
-    if next_route != current_route:
+    route_changed = next_route != current_route
+    if route_changed:
         adapter_runtime.require_runtime_unlocked(session, adapter)
         if isinstance(next_route, FixedRoute):
             _validate_runtime_worker_assignment(session, next_route.worker_id, adapter.language)
         elif isinstance(next_route, PoolRoute):
             next_route = validate_pool_route(session, next_route)
+
+    run_mode_changed = "run_mode" in data.model_fields_set and data.run_mode != adapter.run_mode
+    if run_mode_changed:
+        from dlr.control.services.subscription_guards import require_no_subscription
+
+        require_no_subscription(session, adapter.id)
+        if adapter.adapter_type != "task":
+            raise domain_error(
+                409,
+                "adapter_type_mismatch",
+                "Only task Adapters have a run mode",
+            )
+        adapter_runtime.require_runtime_unlocked(session, adapter)
+
+    # M5.5.11: the single-run execution timeout is runtime configuration:
+    # every active/pending Execution and an enabled Schedule must be gone
+    # before it can change (same lock contract as the runtime Worker).
+    timeout_changed = (
+        "timeout_seconds" in data.model_fields_set
+        and data.timeout_seconds != adapter.timeout_seconds
+    )
+    if timeout_changed:
+        adapter_runtime.require_runtime_unlocked(session, adapter)
+    if (
+        data.name is not None
+        and data.name != adapter.name
+        and _active_name_conflict(session, data.name, exclude_id=adapter.id)
+    ):
+        raise domain_error(
+            409, "adapter_name_conflict", "Adapter name already exists", {"name": data.name}
+        )
+
+    if route_changed:
         adapter.runtime_worker_id = (
             next_route.worker_id if isinstance(next_route, FixedRoute) else None
         )
@@ -355,42 +389,11 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
                 for k, v in adapter.configuration_notes.items()
                 if k != "runtime_route_requires_rebind"
             }
-
-    run_mode_changed = "run_mode" in data.model_fields_set and data.run_mode != adapter.run_mode
-    if run_mode_changed:
-        from dlr.control.services.subscription_guards import require_no_subscription
-
-        require_no_subscription(session, adapter.id)
-        if adapter.adapter_type != "task":
-            raise domain_error(
-                409,
-                "adapter_type_mismatch",
-                "Only task Adapters have a run mode",
-            )
-        adapter_runtime.require_runtime_unlocked(session, adapter)
-        if data.run_mode is not None:
-            adapter.run_mode = data.run_mode
-
-    # M5.5.11: the single-run execution timeout is runtime configuration:
-    # every active/pending Execution and an enabled Schedule must be gone
-    # before it can change (same lock contract as the runtime Worker).
-    timeout_changed = (
-        "timeout_seconds" in data.model_fields_set
-        and data.timeout_seconds != adapter.timeout_seconds
-    )
-    if timeout_changed:
-        adapter_runtime.require_runtime_unlocked(session, adapter)
-        if data.timeout_seconds is not None:
-            adapter.timeout_seconds = data.timeout_seconds
-
-    if data.name is not None and data.name != adapter.name:
-        if _active_name_conflict(session, data.name, exclude_id=adapter.id):
-            raise domain_error(
-                409,
-                "adapter_name_conflict",
-                "Adapter name already exists",
-                {"name": data.name},
-            )
+    if run_mode_changed and data.run_mode is not None:
+        adapter.run_mode = data.run_mode
+    if timeout_changed and data.timeout_seconds is not None:
+        adapter.timeout_seconds = data.timeout_seconds
+    if data.name is not None:
         adapter.name = data.name
     if data.description is not None:
         adapter.description = data.description
@@ -399,8 +402,15 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
 
     try:
         session.commit()
-    except IntegrityError:
+    except IntegrityError as error:
         session.rollback()
+        constraint = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+        if constraint == "fk_adapters_pool_revision":
+            raise domain_error(
+                409, "pool_route_revision_unavailable", "Pool revision no longer exists"
+            ) from None
+        if constraint != "uq_adapters_active_name":
+            raise
         raise domain_error(
             409,
             "adapter_name_conflict",

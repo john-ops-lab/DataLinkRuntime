@@ -455,6 +455,7 @@
     "worker_pool_conflict": "Pool 变更与已有配置冲突。",
     "pool_revision_in_use": "此规则版本仍被引用。",
     "pool_route_revision_mismatch": "路由与所选 Pool 规则版本不符，请重新选择。",
+    "pool_route_revision_unavailable": "所选 Pool 规则版本已删除，请重新选择。",
     "worker_environment_conflict": "环境类名称已被使用。",
     "pool_worker_identity_mismatch": "Worker 身份已变更，请刷新节点状态再保存。",
     "pool_worker_not_v4": "Pool 成员必须是已登记的 v4 Worker。",

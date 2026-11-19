@@ -455,6 +455,7 @@
     "worker_pool_conflict": "The requested Pool change conflicts with existing configuration.",
     "pool_revision_in_use": "This rule revision is still referenced.",
     "pool_route_revision_mismatch": "The route does not match the selected Pool revision. Choose the rule again.",
+    "pool_route_revision_unavailable": "The selected Pool revision was deleted. Choose a new revision.",
     "worker_environment_conflict": "This environment class name is already in use.",
     "pool_worker_identity_mismatch": "The Worker identity changed. Refresh Worker status before saving.",
     "pool_worker_not_v4": "Pool membership requires a registered v4 Worker.",
