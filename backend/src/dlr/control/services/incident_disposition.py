@@ -382,6 +382,8 @@ def _valid_dispatch_identity(
     incident: ExecutionInfrastructureIncident,
     row: ExecutionOutbox,
 ) -> bool:
+    if row.payload_json is None:
+        return False
     try:
         message = deserialize_dispatch_message(row.payload_json)
         body = serialize_dispatch_message(message)
@@ -456,6 +458,8 @@ def _plan_published_dispatch(
     *,
     now: datetime,
 ) -> DispatchReplacementPlan:
+    if row.payload_json is None:
+        raise ValueError("Published dispatch body unavailable")
     message = deserialize_dispatch_message(row.payload_json)
     next_generation = execution.dispatch_generation + 1
     next_message = message.model_copy(
@@ -637,7 +641,9 @@ def _dispose_incident_transaction(
         )
         return _commit_result(session, receipt, incident, execution)
 
-    if execution.dispatch_backend != "rabbitmq":
+    if execution.dispatch_backend != "rabbitmq" or (
+        execution.requires_worker_reservation and action == "recover"
+    ):
         return _reject(
             session,
             execution=execution,

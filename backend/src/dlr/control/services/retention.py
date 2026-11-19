@@ -32,7 +32,10 @@ from dlr.control.models import (
     ExecutionInputArtifactLease,
     ExecutionOutbox,
     WorkerCleanupIntentV4,
+    WorkerResourceReservation,
 )
+from dlr.control.models.reliable_execution import OPEN_OUTBOX_STATES
+from dlr.control.models.worker_capacity import OCCUPIED_RESERVATION_STATES
 from dlr.control.services.attempt import TERMINAL_ATTEMPT_STATUSES
 from dlr.control.services.execution import TERMINAL_STATUSES
 from dlr.control.services.idempotency import cleanup_expired_records
@@ -148,9 +151,17 @@ def _terminal_query(policy: RetentionPolicy, adapter_id: int) -> Select[tuple[in
         ~exists(
             select(1).where(
                 ExecutionOutbox.execution_id == Execution.id,
-                ExecutionOutbox.status == "pending",
+                ExecutionOutbox.status.in_(OPEN_OUTBOX_STATES),
             )
         ),
+        ~_reservation_protected(),
+    )
+
+
+def _reservation_protected() -> Any:
+    return exists().where(
+        WorkerResourceReservation.execution_id == Execution.id,
+        WorkerResourceReservation.status.in_(OCCUPIED_RESERVATION_STATES),
     )
 
 
@@ -196,9 +207,10 @@ def _delete_batch(session: Session, ids: list[int]) -> int:
                 ~exists(
                     select(1).where(
                         ExecutionOutbox.execution_id == Execution.id,
-                        ExecutionOutbox.status == "pending",
+                        ExecutionOutbox.status.in_(OPEN_OUTBOX_STATES),
                     )
                 ),
+                ~_reservation_protected(),
             )
         ),
     )

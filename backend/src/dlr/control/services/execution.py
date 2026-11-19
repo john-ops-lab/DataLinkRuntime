@@ -143,7 +143,7 @@ def _create_pending_execution_locked(
     input_source_type: str,
     input_config_revision: int,
     input_snapshot: dict[str, Any],
-    target_worker_id: int,
+    target_worker_id: int | None,
     route_snapshot: dict[str, object],
     scheduled_for: Any = None,
     artifact_ids: Sequence[int] = (),
@@ -159,6 +159,7 @@ def _create_pending_execution_locked(
     version_id_override: int | None = None,
     dependency_check: bool = False,
     subscription_delivery_kind: str | None = None,
+    requires_worker_reservation: bool = False,
 ) -> Execution:
     """Create a fully initialized queued Execution under the Adapter lock.
 
@@ -175,23 +176,32 @@ def _create_pending_execution_locked(
         raise RuntimeError("cannot create an Execution without a saved Adapter version")
     from dlr.control.services import cache_governance
 
-    cache_governance.ensure_reference_allowed(
-        session,
-        worker_id=target_worker_id,
-        adapter_id=adapter.id,
-        version_id=version_id,
-    )
+    if target_worker_id is not None:
+        cache_governance.ensure_reference_allowed(
+            session,
+            worker_id=target_worker_id,
+            adapter_id=adapter.id,
+            version_id=version_id,
+        )
     created_at = database_now(session)
     if dispatch_backend != "rabbitmq":
         raise ValueError("unsupported execution backend")
     from dlr.control.services.builtin_package import snapshot as builtin_snapshot
 
     worker = session.get(Worker, target_worker_id) if target_worker_id is not None else None
-    remote = settings.worker_remote_v4_enabled and (worker is None or worker.protocol_version == 4)
+    remote = requires_worker_reservation or (
+        settings.worker_remote_v4_enabled and (worker is None or worker.protocol_version == 4)
+    )
     if remote:
         from dlr.control.services.worker_stage_capability_v4 import freeze_worker_wheel
 
-        dependency_snapshot = freeze_worker_wheel(session, adapter, version_id, target_worker_id)
+        dependency_snapshot = freeze_worker_wheel(
+            session,
+            adapter,
+            version_id,
+            target_worker_id,
+            awaiting_worker=requires_worker_reservation,
+        )
     else:
         dependency_snapshot = builtin_snapshot(session, adapter.language, force=dependency_check)
     if dependency_snapshot is not None and not remote:
@@ -238,6 +248,7 @@ def _create_pending_execution_locked(
         status="queued",
         dispatch_backend=dispatch_backend,
         dispatch_generation=dispatch_generation,
+        requires_worker_reservation=requires_worker_reservation,
         queued_at=created_at,
         attempt_count=0,
         max_attempts_snapshot=max_attempts_snapshot,
@@ -260,7 +271,7 @@ def _create_pending_execution_locked(
         workspace_cleanup_status="pending",
         # Freeze the bounded Claim handshake budget in the immutable snapshot.
         claim_deadline_at=created_at + timedelta(seconds=claim_seconds),
-        target_worker_id=target_worker_id,
+        target_worker_id=None if requires_worker_reservation else target_worker_id,
         scheduled_for=scheduled_for,
         locale=get_system_locale(session),
         created_at=created_at,
@@ -543,8 +554,12 @@ def cancel_execution_locked(
         release_execution_leases(session, execution.id)
         if execution.dispatch_backend == "rabbitmq":
             from dlr.control.services import admission, outbox
+            from dlr.control.services.input_config import database_now
+            from dlr.control.services.worker_reservation import release_held
 
             admission.release_admission_once(session, execution)
+            if tail.reservation is not None:
+                release_held(tail.reservation, now=database_now(session))
             outbox.settle_cancelled_outbox(session, execution.id, locked_rows=tail.outbox_rows)
         from dlr.control.services.incident_disposition import (
             converge_terminal_dispositions_locked,

@@ -121,7 +121,9 @@ def recompute_blocker(session: Session, subscription_id: int, checkpoint: Source
     )
 
 
-def materialize_batch(session: Session, head_delivery_id: int) -> Execution | None:
+def materialize_batch(
+    session: Session, head_delivery_id: int, *, use_worker_reservations: bool = False
+) -> Execution | None:
     from dlr.control.services import subscription_delivery as delivery_service
     from dlr.control.services.reliable_execution import accept_execution
 
@@ -137,7 +139,9 @@ def materialize_batch(session: Session, head_delivery_id: int) -> Execution | No
         SubscriptionActivation, head.activation_override_id or head_receipt.activation_id
     )
     assert activation is not None
-    worker_id = worker_pool.require_activation_worker(activation)
+    worker_id = worker_pool.delivery_target(
+        activation, use_worker_reservations=use_worker_reservations
+    )
     if activation_mode(session, activation) != BATCH_MODE:
         return None
     revision_id = head.revision_override_id or activation.revision_id
@@ -342,6 +346,7 @@ def materialize_batch(session: Session, head_delivery_id: int) -> Execution | No
                 version_id=revision_id,
                 worker_id_override=worker_id,
                 subscription_activation_id=activation.id,
+                use_worker_reservations=use_worker_reservations,
                 subscription_delivery_kind="batch",
                 route_source=delivery_service.delivery_route_source(head),
                 credential_bindings_override=[

@@ -9,7 +9,7 @@ an old process, authorizes a takeover, or completes the v4 deployment gate.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import BigInteger, func, literal_column, select
@@ -182,6 +182,16 @@ def _already_committed(session: Session, row: WorkerLeaseCandidateV4) -> None:
     # xmin is only 32-bit; a wrapped or unknown full-xid epoch fails closed.
     if not _committed_xid_matches(current_xid, row.writer_xid, tuple_xid):
         raise LeaseCandidateError("lease candidate unavailable")
+
+
+def has_current_committed_lease(session: Session, worker: Worker, *, now: datetime) -> bool:
+    """Check the fenced instance while the caller holds its Worker row lock."""
+    try:
+        _, row = _worker_and_candidate(session, worker.id)
+        _already_committed(session, row)
+    except LeaseCandidateError:
+        return False
+    return not row.retired and now < row.nominal_until <= row.guard_until
 
 
 def create_initial_candidate(

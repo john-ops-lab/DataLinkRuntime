@@ -59,7 +59,7 @@ def _maintenance_main(args: list[str]) -> int:
             raise ValueError
         flags = dict(zip(args[1::2], args[2::2], strict=True))
         required = {"--source", "--target", "--intent"}
-        levels = ("previous", "root", "origin", "ancestor", "initial", "earliest")
+        levels = ("previous", "root", "origin", "ancestor", "initial", "earliest", "first")
         accepted = [
             required | {f"--{name}-{part}" for name in levels[:n] for part in ("source", "intent")}
             for n in range(len(levels) + 1)

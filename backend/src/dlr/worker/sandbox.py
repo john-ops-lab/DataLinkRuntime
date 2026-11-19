@@ -45,7 +45,7 @@ from typing import Any
 # The sandbox helper is also executed as a standalone script with a minimal
 # environment; its entry point does not use the parent-process budget.
 if __name__ != "__main__":
-    from dlr.common.cpu_accounting import CPU_PERIOD_US, attempt_cpu_units, cpu_units
+    from dlr.common.cpu_accounting import CPU_PERIOD_US, attempt_cpu_units, cpu_quota_us, cpu_units
 
 logger = logging.getLogger("dlr.worker.sandbox")
 
@@ -1179,8 +1179,7 @@ def _mkdir_child(parent: Path, name: str) -> Path:
 
 
 def _cpu_max(cpu_cores: float) -> str:
-    quota = max(1_000, int(round(cpu_cores * 100_000)))
-    return f"{quota} 100000"
+    return f"{cpu_quota_us(cpu_cores)} {CPU_PERIOD_US}"
 
 
 def _configure_child(child: Path, limits: ResourceLimits) -> dict[str, str]:
