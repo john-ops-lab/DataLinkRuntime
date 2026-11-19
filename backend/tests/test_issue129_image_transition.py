@@ -19,9 +19,7 @@ from dlr.common.config import settings
 from dlr.common.schema_version import SCHEMA_REVISION
 from dlr.control.control_identity_init_v4 import maintain
 from dlr.control.models import (
-    Adapter,
     AdapterVersion,
-    Execution,
     Worker,
     WorkerInstanceHistory,
     WorkerLeaseCandidateV4,
@@ -33,7 +31,11 @@ from dlr.control.services import worker_legacy_window
 from dlr.control.services.control_declaration_v4 import DeploymentDeclaration, read_private_json
 from dlr.control.services.worker_lease_proof_v4 import public_key_bytes
 from dlr.control.services.worker_remote_deployment_v4 import RemoteDeploymentUnavailable
-from test_issue219_upgrade import migration_config, upgrade_database  # noqa: F401
+from test_issue219_upgrade import (  # noqa: F401
+    insert_legacy_adapter,
+    migration_config,
+    upgrade_database,
+)
 
 
 @pytest.fixture
@@ -181,9 +183,9 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
                 operation_id=str(uuid4()),
                 previous_id=str(previous.operation_id) if previous else None,
                 source_schema=transition.J_SCHEMA,
-                target_schema=SCHEMA_REVISION,
+                target_schema=transition.W1_SCHEMA,
                 source_sha=transition.J_SOURCE_SHA,
-                target_sha="7" * 40,
+                target_sha=transition.W1_SOURCE_SHA,
             )
         )
     )
@@ -195,7 +197,9 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
     assert maintain(f.factory, "apply", intent)["status"] == "committed_current"
     assert maintain(f.factory, "apply", intent)["status"] == "committed_current"
     with f.factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_REVISION
+        assert (
+            session.scalar(text("SELECT version_num FROM alembic_version")) == transition.W1_SCHEMA
+        )
         assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == (
             6 if previous else 1
         )
@@ -212,6 +216,45 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
     if previous is not None:
         with f.factory() as session:
             assert transition.observe(session, previous)["status"] == "committed_superseded"
+
+    new_image = replace(
+        target, authority=replace(target.authority, image_digest="sha256:" + "8" * 64)
+    )
+    upgrade = dict(
+        f.body,
+        operation_id=str(uuid4()),
+        previous_id=str(intent.operation_id),
+        source_schema=transition.W1_SCHEMA,
+        target_schema=SCHEMA_REVISION,
+        source_sha=transition.W1_SOURCE_SHA,
+        target_sha="8" * 40,
+    )
+    path.write_text(json.dumps(upgrade | {"source_sha": "7" * 40}))
+    with pytest.raises(transition.TransitionUnavailable, match="intent_unavailable"):
+        transition.read_intent(str(path), target, new_image, predecessor=intent)
+    path.write_text(json.dumps(upgrade))
+    routing = transition.read_intent(str(path), target, new_image, predecessor=intent)
+    assert transition._kind(routing) == 6
+    with f.factory() as session:
+        assert transition.check(session, routing, settings) == "source_checked"
+    assert maintain(f.factory, "apply", routing)["status"] == "committed_current"
+    with f.factory() as session:
+        assert transition.observe(session, intent)["status"] == "committed_superseded"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_REVISION
+        assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == (
+            7 if previous else 2
+        )
+        rights = session.execute(
+            text("""
+                SELECT has_table_privilege(:role,'worker_pool_audit','INSERT'),
+                       has_table_privilege(:role,'worker_pool_audit','DELETE'),
+                       has_table_privilege(:role,'worker_pool_revisions','UPDATE'),
+                       has_table_privilege(:role,'worker_pool_revisions','DELETE'),
+                       has_sequence_privilege(:role,'worker_pools_id_seq','USAGE')
+            """),
+            {"role": f.role},
+        ).one()
+        assert tuple(rights) == (True, False, False, True, True)
 
 
 def test_control_proof_rotation_preserves_initial_epoch_and_fences_stale_declarations(
@@ -643,38 +686,39 @@ def _history(f):
                 writer_xid=session.scalar(text("SELECT txid_current()")),
             )
         )
-        adapter = Adapter(
-            name="kept",
-            language="python",
-            adapter_type="task",
-            run_mode="manual",
-            runtime_worker_id=worker.id,
-        )
-        session.add(adapter)
-        session.flush()
-        version = AdapterVersion(adapter_id=adapter.id, seq=1, code="pass", requirements="")
+        adapter_id = insert_legacy_adapter(session, "kept", runtime_worker_id=worker.id)
+        version = AdapterVersion(adapter_id=adapter_id, seq=1, code="pass", requirements="")
         session.add(version)
         session.flush()
-        execution = Execution(
-            adapter_id=adapter.id,
-            version_id=version.id,
-            target_worker_id=worker.id,
-            worker_id=worker.id,
-            trigger="manual",
-            status="succeeded",
-            input={},
-            admission_released_at=past,
+        executions = Table(
+            "executions", legacy, autoload_with=session.connection(), resolve_fks=False
         )
-        session.add(execution)
-        session.flush()
+        execution_id = session.scalar(
+            insert(executions)
+            .values(
+                adapter_id=adapter_id,
+                version_id=version.id,
+                target_worker_id=worker.id,
+                worker_id=worker.id,
+                trigger="manual",
+                status="succeeded",
+                input={},
+                admission_released_at=past,
+                locale="zh-CN",
+                input_source_type="json",
+                input_config_revision=1,
+                input_snapshot={"source_type": "json", "revision": 1},
+            )
+            .returning(executions.c.id)
+        )
         attempts = Table(
             "execution_attempts", legacy, autoload_with=session.connection(), resolve_fks=False
         )
         attempt_id = session.scalar(
             insert(attempts)
             .values(
-                execution_id=execution.id,
-                adapter_id=adapter.id,
+                execution_id=execution_id,
+                adapter_id=adapter_id,
                 attempt_no=1,
                 worker_id=worker.id,
                 worker_identity_id=worker.identity_id,
@@ -690,7 +734,7 @@ def _history(f):
             )
             .returning(attempts.c.id)
         )
-        return worker.id, execution.id, attempt_id, adapter.id
+        return worker.id, execution_id, attempt_id, adapter_id
 
 
 def _business_snapshot(f):

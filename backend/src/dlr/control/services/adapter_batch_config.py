@@ -93,7 +93,7 @@ def configurations(session: Session, adapters: list[Adapter]) -> dict[int, Batch
             if adapter.adapter_type == "webhook"
             else adapter.run_mode
         )
-        facts = {
+        facts: dict[str, Any] = {
             "schema": 1,
             "id": adapter.id,
             "type": adapter.adapter_type,
@@ -131,6 +131,9 @@ def configurations(session: Session, adapters: list[Adapter]) -> dict[int, Batch
                 subscription.source_epoch,
             ],
         }
+        if adapter.pool_route is not None or adapter.route_version != 1:
+            facts["route"] = adapter.pool_route
+            facts["route_version"] = adapter.route_version
         token = hashlib.sha256(
             json.dumps(facts, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode()
         ).hexdigest()

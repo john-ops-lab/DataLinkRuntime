@@ -149,6 +149,18 @@ def save_template(
         raise domain_error(
             422, "portable_object_type", "Preserve the source adapter language and type"
         )
+    if (
+        source.runtime_worker_id is not None
+        or source.pool_route is not None
+        or source.configuration_notes.get("runtime_route_requires_rebind")
+    ):
+        payload = payload.model_copy(
+            update={
+                "package": payload.package.model_copy(
+                    update={"runtime_route_requires_rebind": True}
+                ),
+            }
+        )
     row = user_templates.write_template(session, payload, principal, source="saved")
     return user_templates.detail(session, row.slug, principal)
 

@@ -179,7 +179,7 @@ JSON input snapshot，创建 `trigger=webhook` Execution 与 Outbox，并保存�
 
 ## 6. Clone 与删除
 
-Clone 在一个事务内复制当前代码、依赖、运行参数、Credential 引用、触发配置和运行节点。新 Adapter 从自己的第一条 Revision 开始，无 Execution，Schedule/Webhook 均 disabled。
+Clone 在一个事务内复制当前代码、依赖、运行参数、Credential 引用及触发配置。源 Adapter 保留其绑定；副本的 fixed 与 Pool 引用均清空，须显式重绑。新 Adapter 从自己的第一条 Revision 开始，无 Execution，Schedule/Webhook 均 disabled。
 
 运行中的 Webhook A 可以 Clone 出同 path 的 stopped B；只有 A 停止后 B 才能开启，从而保持外部 URL 不变。
 

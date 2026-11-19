@@ -18,6 +18,8 @@ import {
   subscriptionDrained,
 } from "../subscription-types";
 import { userErrorMessage } from "../user-message";
+import { fixedRoute } from "../runtime-route";
+import { RouteLabel } from "./PoolRoutePicker";
 
 export type SubscriptionActionKind =
   | "enable"
@@ -260,6 +262,10 @@ export default function SubscriptionActionDialog({
     replayMode === "repair" && original
       ? { ...original, revision_id: sub.repair_revision_id }
       : context?.current;
+  const currentPool = replayMode === "current" && context?.current.route_snapshot?.route.mode === "pool";
+  function previewRoute(value: Pick<SubscriptionActivation, "route_snapshot" | "worker_id">) {
+    return value.route_snapshot?.route ?? (value.worker_id === null ? null : fixedRoute(value.worker_id));
+  }
   const referenceText = (
     value: Pick<
       SubscriptionActivation,
@@ -280,9 +286,9 @@ export default function SubscriptionActionDialog({
         },
         {
           key: "worker",
-          label: t("worker"),
-          original: `#${original.worker_id}`,
-          selected: compared ? `#${compared.worker_id}` : "—",
+          label: t("pool.configuredRoute", { ns: "runtime" }),
+          original: <RouteLabel route={previewRoute(original)} />,
+          selected: compared ? <RouteLabel route={previewRoute(compared)} /> : "—",
         },
         {
           key: "config",
@@ -318,7 +324,7 @@ export default function SubscriptionActionDialog({
       cancelButtonProps={{ disabled: busy }}
       okButtonProps={{
         danger: ["skip", "skipUnaccepted", "reset", "delete"].includes(action),
-        disabled: !submitted && controlForbidden,
+        disabled: !submitted && (controlForbidden || currentPool),
       }}
       okText={t(action === "reset" && sub.source_type === "http" ? "http.reset" : action)}
       cancelText={submitted ? t("newRequest") : t("cancel")}
@@ -335,6 +341,7 @@ export default function SubscriptionActionDialog({
       {controlForbidden ? (
         <Alert type="warning" message={t("batch.closedReplayNote")} />
       ) : null}
+      {currentPool && <Alert type="warning" showIcon message={t("pool.stoppedDraft", { ns: "runtime" })} />}
       {action === "skip" &&
       ["list", "sync.started"].includes(event?.source_phase ?? "") ? (
         <Alert type="warning" message={t("batch.memberSkipNote")} />
@@ -409,7 +416,7 @@ export default function SubscriptionActionDialog({
                 {
                   dataIndex: "original",
                   title: t("original"),
-                  render: (value: string) => (
+                  render: (value: React.ReactNode) => (
                     <code className="subscription-compare-value">{value}</code>
                   ),
                 },
@@ -418,7 +425,7 @@ export default function SubscriptionActionDialog({
                   title: t(
                     replayMode === "repair" ? "repairRevision" : "current",
                   ),
-                  render: (value: string) => (
+                  render: (value: React.ReactNode) => (
                     <code className="subscription-compare-value">{value}</code>
                   ),
                 },

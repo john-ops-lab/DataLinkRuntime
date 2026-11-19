@@ -26,7 +26,8 @@ from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
 from dlr.control.models import Adapter, Execution, ExecutionOutbox, WorkerCacheGuard
-from dlr.control.services import rabbitmq, worker_legacy_window
+from dlr.control.schemas.worker_pool import FixedRoute
+from dlr.control.services import rabbitmq, worker_legacy_window, worker_pool
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.dispatch import (
     DISPATCH_EXCHANGE,
@@ -262,16 +263,28 @@ def dispatch_payload_for_execution(
 
     if execution.dispatch_backend != "rabbitmq" or execution.dispatch_generation < 1:
         raise ValueError("only RabbitMQ generations can create an Outbox row")
+    snapshot = worker_pool.stored_snapshot(execution.route_snapshot)
+    target_worker_id = execution.target_worker_id_snapshot
+    if snapshot is not None:
+        worker_pool.require_fixed_route(snapshot.route)
+    if target_worker_id is None or (
+        snapshot is not None
+        and (
+            not isinstance(snapshot.route, FixedRoute)
+            or snapshot.route.worker_id != target_worker_id
+        )
+    ):
+        raise domain_error(409, "execution_route_unavailable", "Frozen Worker is unavailable")
     adapter = session.get(Adapter, execution.adapter_id)
-    target_worker_id = execution.target_worker_id_snapshot or execution.target_worker_id
-    if adapter is None or target_worker_id is None:
+    if adapter is None:
         raise ValueError("RabbitMQ Execution has no valid dispatch target")
     message = build_dispatch_message(
         execution_id=execution.id,
         dispatch_generation=execution.dispatch_generation,
         adapter_id=execution.adapter_id,
         language=cast(
-            Literal["python", "javascript", "java", "typescript", "go"], adapter.language
+            Literal["python", "javascript", "java", "typescript", "go"],
+            snapshot.required_language if snapshot is not None else adapter.language,
         ),
         resource_class=execution.resource_class or "default",
         target_worker_id=target_worker_id,
@@ -307,10 +320,10 @@ def create_dispatch_outbox(
     )
     if existing is not None:
         return existing
-    worker_legacy_window.require_dispatch_target(session, execution.target_worker_id_snapshot)
     payload, body, routing_key, message_id = dispatch_payload_for_execution(
         session, execution, message_id=message_id
     )
+    worker_legacy_window.require_dispatch_target(session, execution.target_worker_id_snapshot)
     row = ExecutionOutbox(
         execution_id=execution.id,
         dispatch_generation=execution.dispatch_generation,
@@ -364,6 +377,12 @@ def lease_due_outbox(
             select(ExecutionOutbox)
             .where(
                 *_pending_filter(effective_now),
+                ~select(Execution.id)
+                .where(
+                    Execution.id == ExecutionOutbox.execution_id,
+                    Execution.route_pool_id.is_not(None),
+                )
+                .exists(),
                 (ExecutionOutbox.last_error_code.is_distinct_from("cache_reclamation_in_progress"))
                 | ~guarded_deferred_execution,
             )

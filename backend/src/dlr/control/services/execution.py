@@ -144,6 +144,7 @@ def _create_pending_execution_locked(
     input_config_revision: int,
     input_snapshot: dict[str, Any],
     target_worker_id: int,
+    route_snapshot: dict[str, object],
     scheduled_for: Any = None,
     artifact_ids: Sequence[int] = (),
     dispatch_backend: str = "rabbitmq",
@@ -246,6 +247,7 @@ def _create_pending_execution_locked(
         schedule_policy_snapshot=schedule_policy_snapshot,
         resource_class=resource_class,
         target_worker_id_snapshot=target_worker_id,
+        route_snapshot=route_snapshot,
         logical_input_bytes=logical_input_bytes,
         input=runtime_input,
         input_source_type=input_source_type,
@@ -316,7 +318,9 @@ def _create_execution_locked(
         return existing
 
     from dlr.control.services.subscription_guards import require_subscription_unlocked
+    from dlr.control.services.worker_pool import adapter_route, require_fixed_route
 
+    require_fixed_route(adapter_route(adapter))
     require_subscription_unlocked(session, adapter.id)
 
     # A Schedule run-now must take the same Schedule lock as the Scheduler,

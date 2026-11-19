@@ -195,8 +195,8 @@ describe("subscription disposition contract", () => {
     );
     await screen.findByText("#10");
     expect(screen.getByText("#7")).toBeTruthy();
-    expect(screen.getByText("#1")).toBeTruthy();
-    expect(screen.getByText("#2")).toBeTruthy();
+    expect(screen.getByText("Fixed Worker #1")).toBeTruthy();
+    expect(screen.getByText("Fixed Worker #2")).toBeTruthy();
     expect(screen.getByText(/TARGET_TOKEN/)).toBeTruthy();
     fireEvent.mouseDown(screen.getByLabelText("Code version"));
     fireEvent.click(

@@ -605,7 +605,9 @@ def test_clone_copies_task_runtime_and_schedule_configuration_disabled(
     assert cloned.status_code == 201, cloned.text
     body = cloned.json()
     assert body["run_mode"] == "schedule"
-    assert body["runtime_worker_id"] == mode.json()["runtime_worker_id"]
+    assert mode.json()["runtime_worker_id"] is not None
+    assert body["runtime_worker_id"] is None and body["route"] is None
+    assert body["configuration_notes"]["runtime_route_requires_rebind"] is True
     assert body["running_execution_id"] is None
     versions = api_client.get(f"/api/adapters/{body['id']}/versions").json()
     assert [version["seq"] for version in versions] == [1]

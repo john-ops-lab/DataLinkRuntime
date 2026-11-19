@@ -55,11 +55,11 @@ def maintain(
 def _maintenance_main(args: list[str]) -> int:
     try:
         # Only filenames are arguments. Invalid input is never echoed by a parser.
-        if len(args) not in {7, 11, 15, 19, 23, 27} or args[0] not in {"check", "apply", "observe"}:
+        if not args or args[0] not in {"check", "apply", "observe"}:
             raise ValueError
         flags = dict(zip(args[1::2], args[2::2], strict=True))
         required = {"--source", "--target", "--intent"}
-        levels = ("previous", "root", "origin", "ancestor", "initial")
+        levels = ("previous", "root", "origin", "ancestor", "initial", "earliest")
         accepted = [
             required | {f"--{name}-{part}" for name in levels[:n] for part in ("source", "intent")}
             for n in range(len(levels) + 1)

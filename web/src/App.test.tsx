@@ -3215,6 +3215,11 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
   const detail = makeExecution({
     id: 6,
     worker_id: 3,
+    target_worker_id: 12,
+    route_snapshot: {
+      route: { schema_version: 1, mode: "fixed", worker_id: 9, failover: "none" },
+      source: "adapter", required_language: "python", environment: "unknown", wait_policy: "w1-fixed",
+    },
     status: "succeeded",
     input: { k: 1 },
     output: { ok: true },
@@ -3268,6 +3273,10 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
     throw new Error("Execution detail drawer not found");
   }
   expect(within(drawer).getByText("worker-main")).toBeTruthy();
+  expect(within(drawer).getByText("实际运行节点")).toBeTruthy();
+  expect(within(drawer).getByText("当前派发目标")).toBeTruthy();
+  expect(within(drawer).getByText("Worker #12")).toBeTruthy();
+  expect(within(drawer).getByText("固定 Worker #9")).toBeTruthy();
   expect(within(drawer).getByText("运行 ID：6")).toBeTruthy();
   expect(within(drawer).queryByText(/版本/)).toBeNull();
   expect(within(drawer).queryByText("v7")).toBeNull();

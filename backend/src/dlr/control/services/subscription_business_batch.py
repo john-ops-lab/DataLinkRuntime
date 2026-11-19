@@ -29,6 +29,7 @@ from dlr.control.models import (
     SubscriptionExecutionBatchMember,
 )
 from dlr.control.services import subscription_accounting as accounting
+from dlr.control.services import worker_pool
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.input_config import database_now
 from dlr.control.services.subscription_batch_protocol import (
@@ -136,6 +137,7 @@ def materialize_batch(session: Session, head_delivery_id: int) -> Execution | No
         SubscriptionActivation, head.activation_override_id or head_receipt.activation_id
     )
     assert activation is not None
+    worker_id = worker_pool.require_activation_worker(activation)
     if activation_mode(session, activation) != BATCH_MODE:
         return None
     revision_id = head.revision_override_id or activation.revision_id
@@ -338,9 +340,10 @@ def materialize_batch(session: Session, head_delivery_id: int) -> Execution | No
                 input_config_revision=1,
                 input_snapshot={"source_type": "json", "revision": None},
                 version_id=revision_id,
-                worker_id_override=activation.worker_id,
+                worker_id_override=worker_id,
                 subscription_activation_id=activation.id,
                 subscription_delivery_kind="batch",
+                route_source=delivery_service.delivery_route_source(head),
                 credential_bindings_override=[
                     {
                         "binding_id": row.binding_id,

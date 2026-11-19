@@ -5,6 +5,7 @@ import { Alert, Button, Descriptions, Drawer, Empty, Popconfirm, Space, Spin, Ta
 import { DownOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { useTranslation } from "react-i18next";
+import { RouteLabel } from "./PoolRoutePicker";
 
 import "./operations-ux.css";
 
@@ -798,7 +799,7 @@ export default function ExecutionHistoryPanel(props: {
               items={[
                 {
                   key: "worker",
-                  label: t("labels.runtimeWorker", { ns: "common" }),
+                  label: t("pool.actualWorker"),
                   children: activeSummary?.worker_name ? (
                     activeSummary.worker_name
                   ) : visibleDetail.worker_id === null ? (
@@ -806,6 +807,18 @@ export default function ExecutionHistoryPanel(props: {
                   ) : (
                     `${t("labels.runtimeWorker", { ns: "common" })} #${visibleDetail.worker_id}`
                   ),
+                },
+                ...(visibleDetail.route_snapshot ? [{
+                  key: "route",
+                  label: t("pool.frozenRoute"),
+                  children: <RouteLabel route={visibleDetail.route_snapshot.route} />,
+                }] : []),
+                {
+                  key: "dispatch-target",
+                  label: t("pool.dispatchTarget"),
+                  children: visibleDetail.target_worker_id == null
+                    ? "—"
+                    : t("pool.workerId", { id: visibleDetail.target_worker_id }),
                 },
                 { key: "trigger", label: t("labels.triggerMode", { ns: "common" }), children: visibleDetail.dependency_check ? t("builtin.checkTitle", { ns: "settings" }) : triggerLabel(visibleDetail.trigger, (key, options) => t(key, options)) },
                 ...(visibleDetail.trigger === "schedule"
@@ -1059,6 +1072,11 @@ export default function ExecutionHistoryPanel(props: {
                 )}
               </div>
               {visibleDetail.status === "dead_letter" && (
+                reliableDetail?.replay_route && <div>
+                  {t(`pool.source.${reliableDetail.replay_route.source}`)} · <RouteLabel route={reliableDetail.replay_route.route} />
+                </div>
+              )}
+              {visibleDetail.status === "dead_letter" && (
                 reliableDetail?.replay_available === true
                   ? (
                     <>
@@ -1086,6 +1104,7 @@ export default function ExecutionHistoryPanel(props: {
                           showIcon
                           data-testid="execution-replay-success"
                           message={t("history.replayCreated", { id: replayResult.execution_id })}
+                          description={replayResult.route_snapshot && <RouteLabel route={replayResult.route_snapshot.route} />}
                           action={(
                             <Button size="small" onClick={() => void openExecution(replayResult.execution_id)}>
                               {t("history.openReplay")}
@@ -1097,7 +1116,9 @@ export default function ExecutionHistoryPanel(props: {
                   )
                   : (reliableDetail?.replay_reason === "dead_letter_input_expired" || visibleDetail.replay_unavailable_reason === "dead_letter_input_expired")
                     ? <Alert type="warning" showIcon data-testid="execution-replay-expired" message={t("history.replayExpired")} />
-                    : <Button disabled data-testid="execution-replay-unavailable">{t("history.replayUnavailable")}</Button>
+                    : reliableDetail?.replay_reason === "pool_routing_not_enabled"
+                      ? <Alert type="warning" showIcon message={t("pool.stoppedDraft")} />
+                      : <Button disabled data-testid="execution-replay-unavailable">{t("history.replayUnavailable")}</Button>
               )}
             </Space>
             {/* M5.5.10：内部 Execution ID 只作为次级技术信息展示（易理解名称“运行 ID”）。 */}

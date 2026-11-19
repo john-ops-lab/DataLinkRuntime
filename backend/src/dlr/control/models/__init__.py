@@ -102,6 +102,13 @@ from dlr.control.models.worker_instance_history import WorkerInstanceHistory
 from dlr.control.models.worker_lease_candidate_v4 import WorkerLeaseCandidateV4
 from dlr.control.models.worker_maintenance import WorkerMaintenanceOperation
 from dlr.control.models.worker_observation import WorkerCapabilityObservation
+from dlr.control.models.worker_pool import (
+    WorkerEnvironmentClass,
+    WorkerPool,
+    WorkerPoolAudit,
+    WorkerPoolMember,
+    WorkerPoolRevision,
+)
 
 __all__ = [
     "AttemptLeaseCandidateV4",
@@ -172,6 +179,11 @@ __all__ = [
     "WorkerLeaseCandidateV4",
     "WorkerMaintenanceOperation",
     "WorkerCapabilityObservation",
+    "WorkerEnvironmentClass",
+    "WorkerPool",
+    "WorkerPoolAudit",
+    "WorkerPoolMember",
+    "WorkerPoolRevision",
     "WorkerCacheGuard",
     "WorkerCacheOperation",
     "WorkerCacheManagementOperation",

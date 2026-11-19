@@ -248,7 +248,7 @@ def test_permanent_delete_removes_adapter_facts_without_deleting_credentials(
         assert session.scalar(select(Execution).where(Execution.id == execution["id"])) is None
 
 
-def test_clone_gets_own_revision_one_type_worker_and_bindings_without_executions(
+def test_clone_gets_own_revision_one_type_and_bindings_and_requires_worker_rebinding(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -305,10 +305,9 @@ def test_clone_gets_own_revision_one_type_worker_and_bindings_without_executions
     clone = response.json()
     assert clone["adapter_type"] == "webhook"
     assert clone["language"] == source["language"]
-    assert (
-        clone["runtime_worker_id"]
-        == api_client.get(f"/api/adapters/{source['id']}").json()["runtime_worker_id"]
-    )
+    assert clone["runtime_worker_id"] is None and clone["route"] is None
+    assert clone["configuration_notes"]["runtime_route_requires_rebind"] is True
+    assert api_client.get(f"/api/adapters/{source['id']}").json()["runtime_worker_id"] is not None
     clone_version = api_client.get(
         f"/api/adapters/{clone['id']}/versions/{clone['latest_version_id']}"
     ).json()

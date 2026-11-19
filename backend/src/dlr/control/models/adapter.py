@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Computed,
     DateTime,
     ForeignKey,
     Identity,
@@ -20,6 +21,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dlr.control.db import Base
+from dlr.control.models.worker_pool import pool_reference
 
 
 class Adapter(Base):
@@ -27,6 +29,13 @@ class Adapter(Base):
 
     __tablename__ = "adapters"
     __table_args__ = (
+        pool_reference("fk_adapters_pool_revision"),
+        CheckConstraint(
+            "route_version > 0 AND (pool_route IS NULL OR "
+            "(runtime_worker_id IS NULL AND pool_route->>'mode' = 'pool' "
+            "AND route_pool_id IS NOT NULL AND route_pool_revision IS NOT NULL) IS TRUE)",
+            name="ck_adapters_pool_route",
+        ),
         CheckConstraint(
             "language IN ('python', 'javascript', 'java', 'typescript', 'go')",
             name="ck_adapters_language",
@@ -106,6 +115,15 @@ class Adapter(Base):
         BigInteger,
         ForeignKey("workers.id", ondelete="SET NULL", name="fk_adapters_runtime_worker_id"),
         nullable=True,
+    )
+    # Fixed uses the legacy Worker column as its sole source of truth.
+    pool_route: Mapped[dict[str, object] | None] = mapped_column(JSONB(none_as_null=True))
+    route_version: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("1"))
+    route_pool_id: Mapped[int | None] = mapped_column(
+        BigInteger, Computed("(pool_route->>'pool_id')::bigint", persisted=True)
+    )
+    route_pool_revision: Mapped[int | None] = mapped_column(
+        BigInteger, Computed("(pool_route->>'pool_revision')::bigint", persisted=True)
     )
     # Read-only provenance for an Adapter instantiated from one immutable
     # Gallery Recipe. Ordinary create/clone rows keep both values NULL; there

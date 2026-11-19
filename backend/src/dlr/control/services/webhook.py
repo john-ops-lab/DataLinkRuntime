@@ -51,7 +51,7 @@ from dlr.control.schemas.webhook import (
     WebhookUpsert,
 )
 from dlr.control.security import _bearer_token
-from dlr.control.services import adapter_runtime, worker_availability
+from dlr.control.services import adapter_runtime, worker_availability, worker_pool
 from dlr.control.services import idempotency as idempotency_service
 from dlr.control.services.adapter import (
     _require_not_archived,
@@ -252,6 +252,8 @@ def upsert_webhook(
                 {"expected_type": WEBHOOK_CREDENTIAL_TYPE, "actual_type": credential.type},
             )
 
+    if data.enabled:
+        worker_pool.require_fixed_route(worker_pool.adapter_route(adapter))
     if data.enabled and not webhook.enabled:
         if adapter.latest_version_id is None:
             raise domain_error(
@@ -383,7 +385,7 @@ def receive_webhook(
     if webhook is None:
         # Never leak Credential metadata for unknown ids.
         raise domain_error(404, "webhook_not_found", "Webhook not found")
-    adapter = session.get(Adapter, webhook.adapter_id, with_for_update=True)
+    adapter = session.get(Adapter, webhook.adapter_id, with_for_update=True, populate_existing=True)
     if adapter is None:
         # Adapter deletion cascades the webhook; a racing delete lost nothing.
         raise domain_error(404, "webhook_not_found", "Webhook not found")
@@ -405,7 +407,9 @@ def receive_webhook(
         raise domain_error(409, "adapter_deleted", "Adapter is deleted")
     if adapter.adapter_type != "webhook":
         raise domain_error(409, "adapter_type_mismatch", "Only webhook Adapters support Webhook")
-    if adapter.latest_version_id is None or adapter.runtime_worker_id is None:
+    if adapter.latest_version_id is None or (
+        adapter.runtime_worker_id is None and adapter.pool_route is None
+    ):
         raise domain_error(409, "adapter_not_ready", "Save the Adapter and choose a runtime Worker")
     # --- body contract: raw size, then JSON, then normalized size ------------
     # The raw byte cap is the ingress memory protection; the compact JSON

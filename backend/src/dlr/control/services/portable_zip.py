@@ -86,6 +86,8 @@ def _check_directory(content: bytes) -> None:
 
 def encode_package(package: PortablePackage) -> bytes:
     data = package.model_dump(mode="json")
+    if package.runtime_route_requires_rebind is None:
+        del data["runtime_route_requires_rebind"]
     entries: dict[str, bytes] = {}
     for variant in data["variants"]:
         path = "code/" + CODE_NAMES[variant["language"]]

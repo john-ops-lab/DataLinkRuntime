@@ -590,6 +590,8 @@ def test_repair_dispatches_only_selected_fix_and_preserves_later_activation(worl
         repaired_execution = service.dispatch_delivery(session, repair.id)
         session.commit()
         assert repaired_execution.version_id == fixed.id
+        assert repaired_execution.route_snapshot["source"] == "repair"
+        assert repaired_execution.route_snapshot["route"] == execution.route_snapshot["route"]
         assert session.get(EventReceipt, later.id).activation_id == first.activation_id
         repaired_execution.status = "succeeded"
         session.commit()
@@ -628,6 +630,7 @@ def test_current_config_replay_is_independent_and_gc_charges_all_history(world, 
         session.commit()
         assert execution.version_id == newer.id
         assert replay.activation_override_id != receipt.activation_id
+        assert execution.route_snapshot["source"] == "current-config"
         assert session.get(SubscriptionQuota, "global").history_count == 2
         execution.status = "succeeded"
         session.commit()

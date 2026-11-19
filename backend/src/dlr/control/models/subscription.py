@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dlr.control.db import Base
+from dlr.control.models.worker_pool import RouteSnapshotColumns, pool_reference
 
 
 def identity() -> Any:
@@ -115,9 +116,14 @@ class HttpIngressRoute(Base):
     created_at: Mapped[datetime] = clock()
 
 
-class SubscriptionActivation(Base):
+class SubscriptionActivation(RouteSnapshotColumns, Base):
     __tablename__ = "subscription_activations"
     __table_args__ = (
+        pool_reference("fk_subscription_activations_pool_revision"),
+        CheckConstraint(
+            "(route_pool_id IS NULL) = (worker_id IS NOT NULL)",
+            name="ck_subscription_activations_route_target",
+        ),
         Index(
             "ix_subscription_activation_policy_legacy",
             "id",
@@ -128,7 +134,7 @@ class SubscriptionActivation(Base):
     subscription_id: Mapped[int] = reference("event_subscriptions")
     config_version_id: Mapped[int] = reference("subscription_config_versions")
     revision_id: Mapped[int] = reference("adapter_versions")
-    worker_id: Mapped[int] = reference("workers")
+    worker_id: Mapped[int | None] = reference("workers", nullable=True)
     execution_policy_snapshot: Mapped[dict[str, Any] | None] = mapped_column(
         JSONB(none_as_null=True)
     )

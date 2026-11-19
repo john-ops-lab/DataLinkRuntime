@@ -675,6 +675,65 @@ async function runAdminScenario(page: Page, locale: Locale, width: number, diagn
   });
 }
 
+for (const locale of LOCALES) {
+  test(`W2 stopped Pool routing in ${locale}`, async ({ page }) => {
+    await installRoutes(page, "admin", locale);
+    const pool = {
+      id: 3, name: "Routing fixture", enabled: true, version: 7,
+      revision: {
+        revision: 2, selector: { zone: "a" }, environment_class: "fixture-python",
+        placement_scope: "fixture-readers", created_at: "2026-01-01T00:00:00Z",
+      },
+    };
+    const stopped = { ...adapterFor(1, "admin"), route_version: 3 };
+    let saved: Record<string, unknown> = stopped;
+    const patches: Record<string, unknown>[] = [];
+    await page.route("**/api/worker-pools", (route) => fulfillJson(route, [pool]));
+    await page.route("**/api/adapters/1", async (route) => {
+      if (route.request().method() === "PATCH") {
+        const payload = route.request().postDataJSON();
+        patches.push(payload);
+        saved = { ...stopped, runtime_worker_id: null, route_version: 4, route: payload.route };
+      }
+      await fulfillJson(route, saved);
+    });
+    await page.addInitScript((language) => {
+      window.sessionStorage.setItem("dlr-admin-token", "FIXTURE");
+      window.localStorage.setItem("dlr-system-locale", language);
+    }, locale);
+    await page.goto("/");
+    await page.getByTestId("adapter-item").first().click();
+    await page.getByRole("tab", { name: locale === "en" ? "Runtime settings" : "运行设置" }).click();
+    const choose = page.getByRole("button", { name: locale === "en" ? "Choose a Worker Pool" : "选择 Worker Pool" });
+    const fixed = page.getByTestId("task-runtime-worker");
+    await expect(fixed).toBeVisible();
+    await choose.click();
+    let dialog = page.getByRole("dialog");
+    await dialog.getByRole("combobox", { name: "Worker Pool" }).click();
+    await page.locator(".ant-select-item-option-content").filter({ hasText: "Routing fixture" }).click();
+    await dialog.getByRole("button", { name: locale === "en" ? "Cancel" : "取消" }).click();
+    await expect(fixed).toBeVisible();
+    expect(patches).toEqual([]);
+
+    await choose.click();
+    dialog = page.getByRole("dialog");
+    await dialog.getByRole("combobox", { name: "Worker Pool" }).click();
+    await page.locator(".ant-select-item-option-content").filter({ hasText: "Routing fixture" }).click();
+    await dialog.getByRole("button", { name: locale === "en" ? "Use Pool in draft" : "用于运行草稿" }).click();
+    await expect(page.getByTestId("configured-pool-route")).toContainText("Pool #3");
+    await choose.click();
+    await page.getByRole("dialog").getByRole("button", { name: locale === "en" ? "Cancel" : "取消" }).click();
+    await expect(page.getByTestId("configured-pool-route")).toContainText("Pool #3");
+    await page.getByTestId("save-task-runtime").click();
+    await expect.poll(() => patches.length).toBe(1);
+    expect(patches[0]).toMatchObject({
+      expected_route_version: 3,
+      route: { mode: "pool", pool_id: 3, pool_revision: 2, placement_scope: "fixture-readers" },
+    });
+    await expect(page.getByTestId("header-task-run-once")).toBeDisabled();
+  });
+}
+
 async function runErrorScenario(page: Page, locale: Locale, width: number, diagnostics: ReturnType<typeof diagnosticsFor>, unknownRequests: string[], assistRequests: unknown[]) {
   await loginAndOpenAdapter(page, locale, "error");
   await page.getByTestId("open-ai-assistant").click();

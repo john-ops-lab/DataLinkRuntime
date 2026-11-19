@@ -59,7 +59,7 @@ from dlr.control.security import (
     require_business_principal,
     require_principal,
 )
-from dlr.control.services import adapter_access
+from dlr.control.services import adapter_access, worker_pool
 from dlr.control.services import subscription_management as management
 from dlr.control.services import subscription_sync as sync
 from dlr.control.services.adapter import domain_error
@@ -403,6 +403,7 @@ def _serialize_activation(
         source_epoch=config.source_epoch,
         revision_id=activation.revision_id,
         worker_id=activation.worker_id,
+        route_snapshot=worker_pool.stored_snapshot(activation.route_snapshot),
         source_credential_id=config.source_credential_id,
         credential_refs=[
             ActivationReference(

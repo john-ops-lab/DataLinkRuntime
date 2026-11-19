@@ -301,11 +301,13 @@ for (const role of ["user", "admin"] as const) {
     await page.goto("/settings/system-status");
     if (role === "user") {
       await expect(page.getByRole("heading", { name: "适配器", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "管理 Worker Pool" })).toHaveCount(0);
       await expect(page.getByTestId("worker-maintenance-actions")).toHaveCount(0);
       await expect(page.getByRole("button", { name: "申请排空" })).toHaveCount(0);
       expect(ordinaryRequests).toEqual([]);
     } else {
       await expect(page.getByText(worker.name, { exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "管理 Worker Pool" })).toBeVisible();
       const drain = page.getByRole("button", { name: "申请排空" });
       const activate = page.getByRole("button", { name: "激活节点" });
       const dialog = page.getByRole("dialog");

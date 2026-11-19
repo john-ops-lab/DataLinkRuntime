@@ -3,7 +3,9 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from dlr.control.schemas.worker_pool import DbId, FixedRoute, Route
 
 MAX_ADAPTER_NAME_LENGTH = 128
 
@@ -64,6 +66,8 @@ class AdapterUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     runtime_worker_id: int | None = None
+    route: Route | None = None
+    expected_route_version: DbId | None = None
     run_mode: Literal["manual", "schedule"] | None = None
     timeout_seconds: int | None = Field(
         default=None,
@@ -92,6 +96,18 @@ class AdapterUpdate(BaseModel):
         if value is None:
             raise ValueError("timeout_seconds must be between 1 and 86400 seconds (max 24 hours)")
         return value
+
+    @model_validator(mode="after")
+    def validate_route_fields(self) -> "AdapterUpdate":
+        if "route" not in self.model_fields_set:
+            return self
+        if self.expected_route_version is None:
+            raise ValueError("An explicit route update requires expected_route_version")
+        if "runtime_worker_id" in self.model_fields_set:
+            route_worker = self.route.worker_id if isinstance(self.route, FixedRoute) else None
+            if self.runtime_worker_id != route_worker:
+                raise ValueError("route conflicts with runtime_worker_id")
+        return self
 
 
 class VersionCreate(BaseModel):
@@ -138,6 +154,8 @@ class AdapterResponse(BaseModel):
     owner_username: str | None = None
     latest_version_id: int | None
     runtime_worker_id: int | None
+    route: Route | None = None
+    route_version: int = 1
     # Optional immutable Gallery origin. Request schemas intentionally omit
     # these fields so ordinary create/update/clone cannot forge or edit them.
     template_scenario_slug: str | None

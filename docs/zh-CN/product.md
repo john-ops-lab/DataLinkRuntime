@@ -130,14 +130,14 @@ Schedule/Webhook 已启用，或存在 active Attempt
 
 ```text
 复制 Adapter
-→ 修改并保存新 Adapter
+→ 选择运行路由，修改并保存新 Adapter
 → 可选验证
 → 停止旧 Adapter
 → 运行新 Adapter
 → 验证后删除旧 Adapter
 ```
 
-Clone 复制语言、代码、依赖、运行参数、Credential 引用、触发配置和运行节点；不复制 Execution 历史，新 Adapter 始终保持停止。
+Clone 复制语言、代码、依赖、运行参数、Credential 引用及触发配置。新 Adapter 保持停止、无 Execution 历史；原绑定为 fixed 或 Pool 时，副本均从未绑定状态开始，须显式选择路由。
 
 Webhook Clone 可以与源 Adapter 使用相同 path，但同一时刻只有一个可以开启接收，因此外部 URL 可在人工停旧、启新的步骤中保持不变。
 

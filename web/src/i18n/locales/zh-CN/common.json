@@ -449,6 +449,16 @@
     "unavailable": "{{label}}不可用：{{reason}}"
   },
   "errors": {
+    "pool_routing_not_enabled": "可以保存停止态 Pool 草稿。目前生产执行需要固定 Worker。",
+    "adapter_route_version_conflict": "运行路由已变更，请刷新 Adapter 再保存。",
+    "worker_pool_version_conflict": "Pool 配置已变更，请重新载入再保存。",
+    "worker_pool_conflict": "Pool 变更与已有配置冲突。",
+    "pool_revision_in_use": "此规则版本仍被引用。",
+    "pool_route_revision_mismatch": "路由与所选 Pool 规则版本不符，请重新选择。",
+    "pool_route_revision_unavailable": "所选 Pool 规则版本已删除，请重新选择。",
+    "worker_environment_conflict": "环境类名称已被使用。",
+    "pool_worker_identity_mismatch": "Worker 身份已变更，请刷新节点状态再保存。",
+    "pool_worker_not_v4": "Pool 成员必须是已登记的 v4 Worker。",
     "unknown": "请求失败",
     "auth_not_configured": "服务端尚未配置认证 Token",
     "unauthorized": "认证失败，请检查 Token 或凭据",

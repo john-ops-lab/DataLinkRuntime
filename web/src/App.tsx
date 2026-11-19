@@ -1454,8 +1454,9 @@ export function AdapterConsole({
     try {
       setError(null);
       let saveTarget = selected;
-      if (runtimeWorkerId !== undefined && selected.runtime_worker_id == null) {
-        saveTarget = await api.updateAdapter(selected.id, { runtime_worker_id: runtimeWorkerId });
+      if (runtimeWorkerId !== undefined && selected.runtime_worker_id == null && selected.route?.mode !== "pool") {
+        saveTarget = await api.updateAdapter(selected.id, { runtime_worker_id: runtimeWorkerId,
+          expected_route_version: selected.route_version });
         if (!mutation.acceptAdapter(saveTarget)) return;
       }
       const saved = await api.saveVersion(saveTarget.id, {
@@ -1541,7 +1542,8 @@ export function AdapterConsole({
       setError(t("validation.codeRequired"));
       return;
     }
-    if (selected.runtime_worker_id != null) {
+    if (selected.runtime_worker_id != null || selected.route?.mode === "pool"
+      || selected.configuration_notes?.runtime_route_requires_rebind) {
       void persistVersion();
       return;
     }
@@ -1943,6 +1945,8 @@ export function AdapterConsole({
               )}
             </div>
 
+            {selected?.configuration_notes?.runtime_route_requires_rebind &&
+              <Alert type="info" showIcon message={t("reviewWorkerRoute", { ns: "portable" })} />}
             {selected?.configuration_notes?.review_environment
               && ["managed_files", "json"].includes(String(selected.configuration_notes.input_required))
               && <Alert type="info" showIcon data-testid="import-configuration-notice"
