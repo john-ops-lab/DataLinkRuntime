@@ -11,6 +11,10 @@
 
 容量写入只接受可信验证器针对当前实例生成的宿主 envelope。宿主 CPU 向下、Agent/系统余量向上取整为毫核；按各维度扣减并以零为下限。普通注册、心跳及人工构造的测试样本均不能作为生产容量来源。启用前须接入真实宿主验证器并完成旧责任对账。Pool 选址与 Claim 按冻结输入核对材料：managed files 需要 `managed_files_v1`，内置 wheel 需要 `builtin_wheel_v1`；验证环境声明与管理员授予的成员材料范围均须具备相应能力。
 
+#### Scenario: 租约的两个截止时间顺序不同
+- **WHEN** 容量写入、选址或 Claim 核对当前实例的已提交租约
+- **THEN** 租约须未退役且数据库当前时间严格早于 `nominal_until` 和 `guard_until`；任一截止时间先到即失去资格
+
 #### Scenario: 新实例沿用旧心跳容量
 - **WHEN** 新instance尚未完成本地残留对账，却读到旧instance容量
 - **THEN** 容量保持unknown/reconciling，不能接新Claim；不得直接将旧预留归零
@@ -42,6 +46,8 @@ CPU 预留 MUST 不低于 Worker 对该 limit 实际设置的 cgroup 配额，�
 ### Requirement: 派发预留有界并在 Claim 原子确认
 每Execution/generation SHALL 至多一份有效held预留，TTL为30秒且不能由Relay重试无限续期。Claim MUST 同事务复核路由、实例、维护状态、环境、Slot及容量，再将held转claimed、创建Attempt并增加计数。正常业务投递 SHALL 沿用v4的durable Claim、journal、Sandbox、结果确认、物理清理及责任结算后ACK顺序；重复/失效投递仍须由服务端权威确认才可ACK_NOOP。
 
+held 绑定同一 Execution、派发 generation、Worker 身份、instance_id 与 instance_generation。Claim 后的占用及清理结算须进一步绑定同一 Attempt 及其 fencing_token；其他实例或 Attempt 的凭据不能结算这份预留。
+
 #### Scenario: Confirm 不明后 held 过期
 - **WHEN** 发布可能成功但确认丢失，held随后到期
 - **THEN** 数据库先撤销旧预留/generation再重新选址，旧消息不能执行；迟到Confirm不能复活旧Outbox或抹掉责任
@@ -65,6 +71,8 @@ CPU 预留 MUST 不低于 Worker 对该 limit 实际设置的 cgroup 配额，�
 ### Requirement: 共享容量分配遵守既有锁序
 
 分配事务 MUST 沿用 Adapter、订阅路径的 Subscription、Lease/Checkpoint、Receipt/Batch、订阅及全局 quota，再依次锁 AdapterAdmission、GlobalAdmission、Execution、Attempts、Adapter Slot 0、Pool、Worker/Capacity、Reservations、Incidents 和 Outbox。同类多行按稳定 ID 排序，Worker/Capacity 按 worker_id 排序。候选 MUST 在持容量锁时复核路由、管理员授权、实例资格、环境、硬能力及剩余资源。
+
+5.2 的单次 Pool 成员选址按 Worker ID 升序检查最多 100 个已启用成员。每个等待的 Execution 持久记录扫描游标；本页未命中且还有后页时，下次从本页最后一个 ID 之后继续。扫描到末页后回绕，成功选址时重置游标。每页合格成员按最大维度占用率、最近一次分配时间、Worker ID 依次升序排名。第 6 组另行实现跨 Adapter/Pool 的公平调度。
 
 #### Scenario: 维护与分配竞争
 - **WHEN** 控制端选址或取消任务时，另一个事务更新维护状态或容量

@@ -32,6 +32,9 @@ def _worker_binding(prefix: str) -> tuple:
 
 
 def upgrade() -> None:
+    op.create_unique_constraint(
+        "uq_execution_attempts_id_execution", "execution_attempts", ["id", "execution_id"]
+    )
     op.create_table(
         "worker_capacities",
         sa.Column("worker_id", sa.BigInteger(), primary_key=True, autoincrement=False),
@@ -86,6 +89,13 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("attempt_id", name="uq_worker_reservations_attempt"),
         sa.ForeignKeyConstraint(
+            ["attempt_id", "execution_id"],
+            ["execution_attempts.id", "execution_attempts.execution_id"],
+            name="fk_worker_reservations_attempt_execution",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        sa.ForeignKeyConstraint(
             [
                 "attempt_id",
                 "worker_id",
@@ -132,6 +142,7 @@ def upgrade() -> None:
             "requires_worker_reservation", sa.Boolean(), server_default=sa.false(), nullable=False
         ),
     )
+    op.add_column("executions", sa.Column("placement_after_worker_id", sa.BigInteger()))
     op.execute("""
         CREATE FUNCTION dlr_keep_worker_reservation_requirement() RETURNS trigger
         LANGUAGE plpgsql AS $$
@@ -199,5 +210,7 @@ def downgrade() -> None:
     op.drop_constraint("fk_execution_outbox_reservation", "execution_outbox", type_="foreignkey")
     op.drop_column("execution_outbox", "reservation_id")
     op.drop_column("executions", "requires_worker_reservation")
+    op.drop_column("executions", "placement_after_worker_id")
     op.drop_table("worker_resource_reservations")
     op.drop_table("worker_capacities")
+    op.drop_constraint("uq_execution_attempts_id_execution", "execution_attempts", type_="unique")

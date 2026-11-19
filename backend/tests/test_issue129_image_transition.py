@@ -286,14 +286,18 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
         )
         rights = session.execute(
             text("""
-                SELECT has_table_privilege(:role,'worker_capacities','SELECT,INSERT,UPDATE'),
+                SELECT has_table_privilege(:role,'worker_capacities','SELECT'),
+                       has_table_privilege(:role,'worker_capacities','INSERT'),
+                       has_table_privilege(:role,'worker_capacities','UPDATE'),
                        has_table_privilege(:role,'worker_capacities','DELETE'),
+                       has_table_privilege(:role,'worker_resource_reservations','SELECT'),
+                       has_table_privilege(:role,'worker_resource_reservations','INSERT'),
                        has_table_privilege(:role,'worker_resource_reservations','UPDATE'),
                        has_table_privilege(:role,'worker_resource_reservations','TRUNCATE')
             """),
             {"role": f.role},
         ).one()
-        assert tuple(rights) == (True, False, True, False)
+        assert tuple(rights) == (True, True, True, False, True, True, True, False)
 
 
 def test_control_proof_rotation_preserves_initial_epoch_and_fences_stale_declarations(

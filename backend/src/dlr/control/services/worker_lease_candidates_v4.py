@@ -191,7 +191,7 @@ def has_current_committed_lease(session: Session, worker: Worker, *, now: dateti
         _already_committed(session, row)
     except LeaseCandidateError:
         return False
-    return not row.retired and now < row.nominal_until <= row.guard_until
+    return not row.retired and now < min(row.nominal_until, row.guard_until)
 
 
 def create_initial_candidate(

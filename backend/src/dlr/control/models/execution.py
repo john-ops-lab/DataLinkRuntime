@@ -371,6 +371,8 @@ class Execution(RouteSnapshotColumns, Base):
     requires_worker_reservation: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # A bounded placement pass resumes after this Pool member on the next visit.
+    placement_after_worker_id: Mapped[int | None] = mapped_column(BigInteger)
     queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempt_count: Mapped[int] = mapped_column(

@@ -331,6 +331,7 @@ class ExecutionAttempt(Base):
 
     __tablename__ = "execution_attempts"
     __table_args__ = (
+        UniqueConstraint("id", "execution_id", name="uq_execution_attempts_id_execution"),
         UniqueConstraint(
             "id",
             "worker_id",

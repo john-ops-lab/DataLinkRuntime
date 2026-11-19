@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from dlr.common.config import settings
 from dlr.common.cpu_accounting import CPU_ACCOUNTING_VERSION
@@ -15,6 +16,7 @@ from dlr.control.models import (
     AdapterExecutionSlot,
     AdapterVersion,
     EventDelivery,
+    EventReceipt,
     EventSubscription,
     Execution,
     ExecutionAttempt,
@@ -24,6 +26,7 @@ from dlr.control.models import (
     SubscriptionExecutionBatch,
     SubscriptionQuota,
     Worker,
+    WorkerLeaseCandidateV4,
     WorkerPoolMember,
     WorkerResourceReservation,
 )
@@ -48,7 +51,9 @@ from dlr.control.services.reliable_execution import accept_execution
 from dlr.control.services.worker_lease_candidates_v4 import (
     ProofAuthority,
     create_initial_candidate,
+    has_current_committed_lease,
     issue_committed_candidate_proof,
+    stage_renewal_candidate,
 )
 from test_issue129_pool_routing import pool_setup  # noqa: F401
 from test_issue219_delivery import delivery_id, receive, world  # noqa: F401
@@ -326,6 +331,21 @@ def test_assignment_rejects_self_report_scope_mismatch_staleness_and_nofile(plac
         assert worker_reservation.reserve_execution(session, execution_id) is not None
 
 
+def test_bounded_candidate_page_reaches_eligible_later_member(placement, monkeypatch):
+    factory, _, route, _, _ = placement
+    first, _, _ = _worker(placement, observe=False)
+    later, _, _ = _worker(placement)
+    monkeypatch.setattr(worker_reservation, "MAX_CANDIDATES", 1)
+    with factory.begin() as session:
+        execution_id = _ordinary(session, route, "next-candidate-page").id
+        assert worker_reservation.reserve_execution(session, execution_id) is None
+    with factory.begin() as session:
+        assert session.get(Execution, execution_id).placement_after_worker_id == first
+        placed = worker_reservation.reserve_execution(session, execution_id)
+        assert session.get(WorkerResourceReservation, placed).worker_id == later
+        assert session.get(Execution, execution_id).placement_after_worker_id is None
+
+
 def test_unknown_confirm_and_reused_owner_cannot_revive_old_generation(placement):
     factory, _, route, _, _ = placement
     former = _worker(placement)
@@ -371,17 +391,66 @@ def test_unknown_confirm_and_reused_owner_cannot_revive_old_generation(placement
 
 def test_claim_rechecks_capacity_and_attaches_attempt_only_on_commit(placement):
     factory, _, route, environment, _ = placement
-    worker = _worker(placement)
+    worker_id, attempt_authority, proof = _worker(placement)
     with factory.begin() as session:
+        ref = stage_renewal_candidate(
+            session,
+            worker_id=worker_id,
+            credential=attempt_authority.credential,
+            instance_id=attempt_authority.instance_id,
+            generation=attempt_authority.instance_generation,
+            authority=proof.authority,
+            token=proof.instance_proof,
+        )
+    signed = issue_committed_candidate_proof(
+        factory, expected=ref, credential=attempt_authority.credential, authority=proof.authority
+    )
+    worker = (
+        worker_id,
+        attempt_authority,
+        worker_claim_v4.ClaimProofContext(proof.authority, signed.token),
+    )
+    with factory.begin() as session:
+        node = session.get(Worker, worker_id, with_for_update=True)
+        lease = session.get(WorkerLeaseCandidateV4, worker_id)
+        assert lease.guard_until < lease.nominal_until
+        assert not has_current_committed_lease(session, node, now=lease.guard_until)
+        assert _capacity(session, worker_id, environment).capacity_version == 2
         execution_id = _ordinary(session, route, "claim").id
+        other_execution_id = _ordinary(session, route, "another-execution").id
         held = worker_reservation.reserve_execution(session, execution_id)
         message = outbox.deserialize_outbox_payload(_intent(session, execution_id).payload_json)
+    # A valid instance/fence binding must also refer to the same Execution.
+    with pytest.raises(IntegrityError) as wrong_binding, factory.begin() as session:
+        reservation = session.get(WorkerResourceReservation, held)
+        now = worker_availability.current_time(session)
+        wrong = ExecutionAttempt(
+            execution_id=other_execution_id,
+            adapter_id=session.get(Execution, other_execution_id).adapter_id,
+            attempt_no=1,
+            status="claimed",
+            fencing_token=1,
+            worker_id=reservation.worker_id,
+            worker_identity_id=reservation.worker_identity_id,
+            worker_instance_id=reservation.instance_id,
+            worker_instance_generation=reservation.instance_generation,
+            claimed_at=now,
+            lease_expires_at=now + timedelta(seconds=20),
+        )
+        session.add(wrong)
+        session.flush()
+        reservation.status = "claimed"
+        reservation.attempt_id = wrong.id
+        reservation.fencing_token = wrong.fencing_token
+    assert (
+        wrong_binding.value.orig.diag.constraint_name == "fk_worker_reservations_attempt_execution"
+    )
     decision, proposal = _prepare(factory, worker, message)
     assert decision.decision == "EXECUTE" and proposal is not None
     with factory.begin() as session:
         assert session.get(WorkerResourceReservation, held).status == "held"
         assert session.scalar(select(func.count()).select_from(ExecutionAttempt)) == 0
-        assert _capacity(session, worker[0], environment, slots=0).capacity_version == 2
+        assert _capacity(session, worker[0], environment, slots=0).capacity_version == 3
     decision = _finish(factory, worker, message, proposal)
     assert decision.decision == "PAUSE_CONSUMER"
     assert decision.reason == "worker_reservation_unavailable"
@@ -407,6 +476,36 @@ def test_claim_rechecks_capacity_and_attaches_attempt_only_on_commit(placement):
             worker_reservation.release_cleaned_attempt(session, execution, attempt)
     repeat, proposal = _prepare(factory, worker, message)
     assert repeat.decision == "ACK_NOOP" and proposal is None
+
+
+def _t2_custody(session, ids, subscription_id):
+    members = session.execute(
+        select(
+            EventDelivery.id,
+            EventDelivery.state,
+            EventDelivery.execution_id,
+            EventDelivery.batch_execution_id,
+            EventReceipt.state,
+            EventReceipt.payload_bytes,
+            EventDelivery.retained_execution_bytes,
+            EventDelivery.retained_batch_bytes,
+        )
+        .join(EventReceipt, EventReceipt.id == EventDelivery.receipt_id)
+        .where(EventDelivery.id.in_(ids))
+        .order_by(EventDelivery.id)
+    ).all()
+    quotas = session.execute(
+        select(
+            SubscriptionQuota.scope,
+            SubscriptionQuota.pending_count,
+            SubscriptionQuota.pending_bytes,
+            SubscriptionQuota.history_count,
+            SubscriptionQuota.history_bytes,
+        )
+        .where(SubscriptionQuota.scope.in_(("global", f"sub:{subscription_id}")))
+        .order_by(SubscriptionQuota.scope)
+    ).all()
+    return members, quotas
 
 
 @pytest.mark.parametrize("batch", [False, True])
@@ -443,6 +542,9 @@ def test_t2_prepaid_handoff_rolls_back_completely_when_outbox_full(
         session.flush()
         for delivery_id_value in ids:
             session.get(EventDelivery, delivery_id_value).activation_override_id = staged.id
+    with session_factory() as session:
+        before = _t2_custody(session, ids, fixture["sub"])
+        assert len(before[0]) == len(ids) and len(before[1]) == 2
     with monkeypatch.context() as bounded:
         bounded.setattr(settings, "outbox_max_pending_bytes", 1)
         with session_factory.begin() as session:
@@ -451,6 +553,7 @@ def test_t2_prepaid_handoff_rolls_back_completely_when_outbox_full(
                 is None
             )
         with session_factory() as session:
+            assert _t2_custody(session, ids, fixture["sub"]) == before
             delivery = session.get(EventDelivery, head)
             assert delivery.state == "pending"
             assert delivery.execution_id is None and delivery.batch_execution_id is None

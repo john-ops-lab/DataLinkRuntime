@@ -81,6 +81,13 @@ class WorkerResourceReservation(WorkerResourceColumns, Base):
         ),
         UniqueConstraint("attempt_id", name="uq_worker_reservations_attempt"),
         ForeignKeyConstraint(
+            ["attempt_id", "execution_id"],
+            ["execution_attempts.id", "execution_attempts.execution_id"],
+            name="fk_worker_reservations_attempt_execution",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
             ["worker_id", "worker_identity_id"],
             ["workers.id", "workers.identity_id"],
             name="fk_worker_reservations_identity",

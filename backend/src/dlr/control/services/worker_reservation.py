@@ -84,18 +84,28 @@ def lock_target(
     return pool, worker, capacity, lock_generation(session, execution)
 
 
-def _candidate_ids(session: Session, snapshot: RouteSnapshot) -> list[int]:
+def _candidate_page(
+    session: Session, snapshot: RouteSnapshot, after_worker_id: int | None
+) -> tuple[list[int], int | None]:
     route = snapshot.route
     if isinstance(route, FixedRoute):
-        return [route.worker_id]
-    return list(
+        return [route.worker_id], None
+    ids = list(
         session.scalars(
             select(WorkerPoolMember.worker_id)
-            .where(WorkerPoolMember.pool_id == route.pool_id, WorkerPoolMember.enabled)
+            .where(
+                WorkerPoolMember.pool_id == route.pool_id,
+                WorkerPoolMember.enabled,
+                WorkerPoolMember.worker_id > (after_worker_id or 0),
+            )
             .order_by(WorkerPoolMember.worker_id)
-            .limit(MAX_CANDIDATES)
+            .limit(MAX_CANDIDATES + 1)
         )
     )
+    if len(ids) <= MAX_CANDIDATES:
+        return ids, None
+    page = ids[:MAX_CANDIDATES]
+    return page, page[-1]
 
 
 def _allows(
@@ -170,24 +180,39 @@ def _current_outbox(
 def reserve_execution(session: Session, execution_id: int) -> UUID | None:
     """Place an awaiting Execution. The caller commits or rolls back the whole decision."""
     session.execute(text("SET LOCAL lock_timeout = '3s'"))
-    hint = session.execute(
-        select(Execution.adapter_id, Execution.version_id, Execution.route_snapshot).where(
+    adapter_id = session.scalar(
+        select(Execution.adapter_id).where(
             Execution.id == execution_id, Execution.requires_worker_reservation
         )
-    ).one_or_none()
-    if hint is None:
+    )
+    if adapter_id is None:
         return None
-    adapter = session.get(Adapter, hint.adapter_id, with_for_update=True, populate_existing=True)
+    adapter = session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
     if adapter is None:
         return None
     lock_reserved_subscription_scope(session, execution_id)
     if admission.lock_admission_scope(session, adapter.id) is None:
         return None
+    hint = session.execute(
+        select(
+            Execution.version_id, Execution.route_snapshot, Execution.placement_after_worker_id
+        ).where(
+            Execution.id == execution_id,
+            Execution.status == "queued",
+            ~Execution.cancel_requested,
+            Execution.target_worker_id.is_(None),
+        )
+    ).one_or_none()
+    if hint is None:
+        return None
     snapshot = worker_pool.stored_snapshot(hint.route_snapshot)
     if snapshot is None or snapshot.required_language != adapter.language:
         return None
     candidates = []
-    for worker_id in _candidate_ids(session, snapshot):
+    page, resume_at = _candidate_page(session, snapshot, hint.placement_after_worker_id)
+    for worker_id in page:
+        if session.get(WorkerCapacities, worker_id) is None:
+            continue
         # Existing cache writers acquire this guard before Execution/Worker.
         try:
             cache_governance.ensure_reference_allowed(
@@ -214,6 +239,7 @@ def reserve_execution(session: Session, execution_id: int) -> UUID | None:
     slot = _lock_slot(session, execution)
     if slot is None or slot.active_attempt_id is not None:
         return None
+    execution.placement_after_worker_id = resume_at
     pool = lock_pool(session, execution)
     profile = _profile(execution)
     charge = worker_capacity.charge(profile)
@@ -281,6 +307,7 @@ def reserve_execution(session: Session, execution_id: int) -> UUID | None:
         if row is None or row.status != "awaiting_target":
             raise ValueError("Worker reservation lacks its prepaid dispatch intent")
         execution.target_worker_id = worker.id
+        execution.placement_after_worker_id = None
         capacity.last_assignment_at = now
         outbox.bind_reservation(session, execution, row, reservation)
         session.flush()
