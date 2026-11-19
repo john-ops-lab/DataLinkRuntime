@@ -1210,6 +1210,21 @@ def test_enrollment_requires_isolated_database_role_and_exchanges_once(
             conn.execute(
                 text(f'REVOKE INSERT, UPDATE, DELETE ON alembic_version FROM "{runtime_role}"')
             )
+            conn.execute(
+                text(
+                    "REVOKE ALL ON worker_placement_cutover, worker_capacity_verifiers, "
+                    f'execution_placement_actions FROM "{runtime_role}"'
+                )
+            )
+            conn.execute(
+                text(
+                    "GRANT SELECT ON worker_placement_cutover, worker_capacity_verifiers "
+                    f'TO "{runtime_role}"'
+                )
+            )
+            conn.execute(
+                text(f'GRANT SELECT, INSERT ON execution_placement_actions TO "{runtime_role}"')
+            )
             conn.execute(text(f'GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO "{runtime_role}"'))
         roles_created = True
         test_engine.dispose()  # The admin pool must not retain old database sessions.

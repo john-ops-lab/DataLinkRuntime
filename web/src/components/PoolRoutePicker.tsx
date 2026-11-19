@@ -16,10 +16,11 @@ interface Props {
   route: PoolRoute | null;
   disabled: boolean;
   readOnly?: boolean;
+  placementEnabled?: boolean;
   onChange: (route: PoolRoute | null) => void;
 }
 
-export default function PoolRoutePicker({ route, disabled, readOnly, onChange }: Props) {
+export default function PoolRoutePicker({ route, disabled, readOnly, placementEnabled, onChange }: Props) {
   const { t } = useTranslation(["runtime", "common"]);
   const [open, setOpen] = useState(false);
   const [pools, setPools] = useState<WorkerPool[]>([]);
@@ -61,7 +62,7 @@ export default function PoolRoutePicker({ route, disabled, readOnly, onChange }:
   return (
     <Space direction="vertical" size="small">
       {route && <Typography.Text data-testid="configured-pool-route"><RouteLabel route={route} /></Typography.Text>}
-      {route && <Typography.Text type="secondary">{t("pool.stoppedDraft")}</Typography.Text>}
+      {route && !placementEnabled && <Typography.Text type="secondary">{t("pool.stoppedDraft")}</Typography.Text>}
       {!readOnly && <Space wrap>
         <Button disabled={disabled || loading} size="small" onClick={() => void show()}>{t("pool.choose")}</Button>
         {route && <Button disabled={disabled} size="small" onClick={() => onChange(null)}>{t("pool.useFixed")}</Button>}

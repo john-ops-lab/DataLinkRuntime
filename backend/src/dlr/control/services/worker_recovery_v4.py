@@ -310,6 +310,7 @@ def _disposition_attempt(
     settlement: Settlement,
     *,
     completed: bool,
+    previously_authorized: bool = False,
 ) -> tuple[ExecutionAttempt, int]:
     if settlement.execution_status != "retry_wait":
         return (
@@ -358,7 +359,10 @@ def _disposition_attempt(
             reservation.dispatch_generation >= execution.dispatch_generation
             and (
                 reservation.dispatch_generation != execution.dispatch_generation
-                or execution.status != "retry_wait"
+                or (
+                    execution.status != "retry_wait"
+                    and not (previously_authorized and execution.status == "cancelled")
+                )
             )
         )
         or (
@@ -655,6 +659,7 @@ def require_disposition(
         lookup.binding,
         settlement,
         completed=exact.cleanup_settled_at is not None,
+        previously_authorized=True,
     )
     if (
         attempt.attempt_no != snapshot["attempt_no"]

@@ -140,13 +140,10 @@ def _expire_pass(session: Session, deadline: float) -> tuple[int, int]:
     return selected, changed
 
 
-def reconcile_once(session: Session) -> int:
-    """Start at most 100 decisions within one 50 ms scheduling budget."""
-    started = time.monotonic()
-    end = started + _TICK_SECONDS
-    expired, changed = _expire_pass(session, started + _TICK_SECONDS / 2)
+def _placement_pass(session: Session, deadline: float, limit: int) -> int:
+    changed = 0
     adapters: set[int] = set()
-    while expired + len(adapters) < _MAX_DECISIONS and time.monotonic() < end:
+    while len(adapters) < limit and time.monotonic() < deadline:
         try:
             next_head = _next(session)
             if next_head is None:
@@ -177,11 +174,24 @@ def reconcile_once(session: Session) -> int:
     return changed
 
 
-def _tick() -> None:
+def reconcile_once(session: Session, *, expire_first: bool = True) -> int:
+    """Fit both passes in one budget and alternate their first opportunity."""
+    started = time.monotonic()
+    middle = started + _TICK_SECONDS / 2
+    end = started + _TICK_SECONDS
+    if expire_first:
+        selected, expired = _expire_pass(session, middle)
+        return expired + _placement_pass(session, end, _MAX_DECISIONS - selected)
+    placed = _placement_pass(session, middle, _MAX_DECISIONS - 25)
+    _, expired = _expire_pass(session, end)
+    return placed + expired
+
+
+def _tick(expire_first: bool) -> None:
     from dlr.control.db import SessionLocal
 
     with SessionLocal() as session:
-        reconcile_once(session)
+        reconcile_once(session, expire_first=expire_first)
 
 
 def _await_capacity() -> None:
@@ -190,9 +200,11 @@ def _await_capacity() -> None:
 
 
 async def run() -> None:
+    expire_first = False
     while True:
+        expire_first = not expire_first
         try:
-            await asyncio.to_thread(_tick)
+            await asyncio.to_thread(_tick, expire_first)
         except asyncio.CancelledError:
             raise
         except Exception:

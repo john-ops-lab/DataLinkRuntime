@@ -674,7 +674,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
             <LockedValue testId="webhook-worker-locked">{workerName}</LockedValue>
           )}
         </label>
-        {canConfigure && <PoolRoutePicker route={poolRoute} disabled={!canConfigure}
+        {canConfigure && <PoolRoutePicker route={poolRoute} disabled={!canConfigure} placementEnabled={props.adapter.pool_placement_enabled}
           onChange={(route) => {
             adapterEditEpoch.current += 1;
             runtimeRoute.select(route);

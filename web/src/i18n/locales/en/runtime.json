@@ -12,6 +12,7 @@
     "disabled": "Disabled",
     "choice": "{{name}} · Revision {{revision}} · {{state}}",
     "stoppedDraft": "Pool routing can be saved while stopped. Execution and receiving currently require a fixed Worker.",
+    "membershipPolicy": "Environment requirements and administrator grants determine eligible Pool members.",
     "ruleSummary": "Environment {{environment}} · Placement scope {{scope}}",
     "configuredRoute": "Configured route",
     "frozenRoute": "Frozen route",

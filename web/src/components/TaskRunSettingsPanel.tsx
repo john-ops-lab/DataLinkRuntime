@@ -1383,7 +1383,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               }))}
             />
           </label>}
-          <PoolRoutePicker route={poolRoute} readOnly={readOnly}
+          <PoolRoutePicker route={poolRoute} readOnly={readOnly} placementEnabled={props.adapter.pool_placement_enabled}
             disabled={runtimeLocked || savingRuntime} onChange={(route) => {
               runtimeEditEpoch.current += 1;
               runtimeRoute.select(route);

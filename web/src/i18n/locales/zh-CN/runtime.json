@@ -12,6 +12,7 @@
     "disabled": "已停用",
     "choice": "{{name}} · 规则版本 {{revision}} · {{state}}",
     "stoppedDraft": "停止时可保存 Pool 路由。目前执行与接收需要固定 Worker。",
+    "membershipPolicy": "Pool 成员是否可选取决于环境要求和管理员授权。",
     "ruleSummary": "环境 {{environment}} · 选址范围 {{scope}}",
     "configuredRoute": "配置路由",
     "frozenRoute": "冻结路由",
