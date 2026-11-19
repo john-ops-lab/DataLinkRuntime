@@ -146,7 +146,7 @@ Upgrading while running uses Clone:
 
 ```text
 Copy Adapter
-→ modify and save the new Adapter
+→ select the run route, then modify and save the new Adapter
 → optional verification
 → stop the old Adapter
 → run the new Adapter
@@ -154,8 +154,8 @@ Copy Adapter
 ```
 
 Clone copies language, code, dependencies, run parameters, Credential references,
-trigger configuration and the run node; it does not copy Execution history, and the
-new Adapter always starts stopped.
+and trigger configuration. The new Adapter starts stopped with no Execution history.
+Whether the source uses a fixed Worker or a Pool, explicitly bind the copy before use.
 
 A Webhook Clone may use the same path as its source Adapter, but only one of them can
 receive at a time, so the external URL can stay unchanged while an operator stops the

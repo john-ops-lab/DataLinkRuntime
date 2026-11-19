@@ -180,7 +180,12 @@ def downgrade() -> None:
             IF EXISTS (SELECT 1 FROM worker_pools)
                OR EXISTS (SELECT 1 FROM worker_environment_classes)
                OR EXISTS (SELECT 1 FROM control_cluster_authority
-                          WHERE schema_revision='0091_issue129_pool_routing') THEN
+                          WHERE schema_revision='0091_issue129_pool_routing')
+               OR EXISTS (SELECT 1 FROM adapters WHERE route_version <> 1)
+               OR EXISTS (SELECT 1 FROM executions WHERE route_snapshot IS NOT NULL
+                            AND route_snapshot->>'source' IS DISTINCT FROM 'legacy')
+               OR EXISTS (SELECT 1 FROM subscription_activations WHERE route_snapshot IS NOT NULL
+                            AND route_snapshot->>'source' IS DISTINCT FROM 'legacy') THEN
                 RAISE EXCEPTION 'Pool routing downgrade would lose durable state';
             END IF;
         END $$

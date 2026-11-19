@@ -1557,20 +1557,20 @@ def retry_dispatcher_once(
                 Execution.adapter_id,
                 Execution.version_id,
                 Execution.target_worker_id_snapshot,
-                Execution.target_worker_id,
             )
             .where(
                 Execution.dispatch_backend == "rabbitmq",
                 Execution.status == "retry_wait",
                 Execution.next_attempt_at <= effective_now,
                 Execution.route_pool_id.is_(None),
+                Execution.target_worker_id_snapshot.is_not(None),
             )
             .order_by(Execution.next_attempt_at, Execution.id)
             .limit(max(1, min(int(limit), 1_000)))
         )
     )
     dispatched = 0
-    for execution_id, adapter_id, version_id, target_snapshot, target_worker in candidates:
+    for execution_id, adapter_id, version_id, target_snapshot in candidates:
         adapter = session.scalar(
             select(Adapter).where(Adapter.id == adapter_id).with_for_update(skip_locked=True)
         )
@@ -1580,7 +1580,7 @@ def retry_dispatcher_once(
         try:
             cache_governance.ensure_reference_allowed(
                 session,
-                worker_id=int(target_snapshot or target_worker),
+                worker_id=int(target_snapshot),
                 adapter_id=int(adapter_id),
                 version_id=int(version_id),
             )

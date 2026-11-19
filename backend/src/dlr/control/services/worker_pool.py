@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from dlr.control.models import (
     Adapter,
-    Execution,
     SubscriptionActivation,
     Worker,
     WorkerEnvironmentClass,
@@ -147,13 +146,6 @@ def activation_snapshot(
     if route is None:
         raise domain_error(409, "activation_route_unavailable", "Activation route is unavailable")
     return snapshot_route(session, route, language, source)
-
-
-def execution_route(execution: Execution) -> FixedRoute | PoolRoute | None:
-    snapshot = stored_snapshot(execution.route_snapshot)
-    return (
-        snapshot.route if snapshot is not None else fixed_route(execution.target_worker_id_snapshot)
-    )
 
 
 def _pool_view(pool: WorkerPool, revision: WorkerPoolRevision) -> PoolView:

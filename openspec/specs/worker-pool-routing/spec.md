@@ -20,6 +20,14 @@
 ### Requirement: 冻结快照和资产来源
 系统 SHALL 区分配置路由、派发目标和 Attempt 实际节点。Activation 及非订阅 Execution 冻结路由、环境、材料、资源、等待策略和凭据引用；T2、批次与自动 Retry 使用原快照。Pool 快照 MUST 保持原规则 revision，成员及瞬时容量不写入冻结集合。普通 Execution Replay 使用当前 Adapter 绑定创建新执行，依赖检查 Replay 保留原固定节点，响应显示绑定来源。
 
+#### Scenario: 同部署 Clone 已配置路由
+- **WHEN** 源 Adapter 已绑定固定 Worker 或 Pool
+- **THEN** 副本保持停止，运行路由未绑定，用户须显式重绑；源绑定与其他既有复制规则保持
+
+#### Scenario: 历史固定目标缺失
+- **WHEN** 历史责任需要 Retry 或生成新 Outbox，却无法从冻结事实确定原 Worker
+- **THEN** 保留原责任并阻止重新派发，当前 Adapter 或可变派发目标不能补作历史依据
+
 #### Scenario: 停止态跨部署重新绑定
 - **WHEN** 用户 Clone、使用模板或导入含有不可移植 Worker 或 Pool 引用的资产
 - **THEN** 保持停止并提示显式重新绑定；同名 Pool 不自动匹配，取消保留原草稿

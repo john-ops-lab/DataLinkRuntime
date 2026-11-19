@@ -67,6 +67,7 @@ def export_adapter(
         runtime_route_requires_rebind=(
             True
             if adapter.pool_route is not None
+            or (options.as_template and adapter.runtime_worker_id is not None)
             or adapter.configuration_notes.get("runtime_route_requires_rebind")
             else None
         ),

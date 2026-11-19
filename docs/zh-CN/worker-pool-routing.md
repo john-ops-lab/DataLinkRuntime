@@ -6,7 +6,7 @@
 
 管理员通过 `/api/worker-environments` 登记不可变环境，在 `/api/worker-pools` 创建规则，显式授权 Worker 身份加入。规则绑定环境类、管理员标签的等值合取和 placement scope。修改规则生成新 revision；成员的 placement、材料及凭据授权独立维护。成员预览缺少独立环境证据时显示环境未知，此时无法确认容量资格。
 
-显式更新 Adapter route 携带当前 `expected_route_version`；Pool 管理写入使用 `expected_version`，版本冲突后重新读取。fixed 保持原 Worker ID，无自动转移。Pool 草稿绑定精确的 Pool 和 revision，兼容字段 `runtime_worker_id` 返回 null；显式 route 与旧 Worker ID 冲突返回 422。Clone、模板和导入保持停止，不可移植的引用须显式重绑，同名 Pool 不授予权限。
+显式更新 Adapter route 携带当前 `expected_route_version`；Pool 管理写入使用 `expected_version`，版本冲突后重新读取。fixed 保持原 Worker ID，无自动转移。Pool 草稿绑定精确的 Pool 和 revision，兼容字段 `runtime_worker_id` 返回 null；显式 route 与旧 Worker ID 冲突返回 422。同部署 Clone 固定或 Pool 路由的 Adapter，副本也从停止且未绑定状态开始，须显式选择新路由。模板和导入保持停止，不可移植的引用须显式重绑，同名 Pool 不授予权限。
 
 ## 核对路由来源
 
@@ -14,7 +14,7 @@
 | --- | --- |
 | 手工、定时、Webhook、首次订阅激活 | `adapter`，接受或激活时的绑定。 |
 | 单条 T2、初始业务批次 | `activation`，使用原激活，之后修改 Adapter 不影响此责任。 |
-| 自动 Retry | 沿用原 Execution 及冻结路由，保留原来源。 |
+| 自动 Retry | 沿用原 Execution 及冻结路由。缺少可证的历史 Worker 时保留原责任；Retry 与新 Outbox 均不得使用可变目标。 |
 | 原配置事件 Replay、repair | `original` 或 `repair`，保留原路由；repair 仅替换允许修复的 Revision。 |
 | 显式 current-config 事件 Replay、普通 Execution Replay | `current-config`，取当前绑定。事件入口仍要求停用并清空其他未完责任。 |
 | 依赖检查及其 Replay | `dependency-check`，Replay 须有原固定 Worker。 |

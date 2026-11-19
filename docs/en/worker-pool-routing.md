@@ -6,7 +6,7 @@ Use a Pool to prepare a stopped Adapter's route. Production runs on fixed Worker
 
 An administrator registers an immutable environment at `/api/worker-environments`, creates a rule at `/api/worker-pools`, and explicitly grants membership to a Worker identity. The rule binds an environment class, an equality selector on administrator-issued labels, and a placement scope. Changing the rule creates a revision. Member grants have separate placement, material and credential scopes. A member preview without independently verified environment evidence reports an unknown environment. It cannot establish available capacity.
 
-An explicit Adapter route update uses the current `expected_route_version`. Pool administration uses `expected_version`. Refresh after a version conflict. A fixed route retains its Worker ID and has no fallback. A Pool draft binds the exact Pool and revision and returns null for `runtime_worker_id`. A conflicting legacy ID and explicit route is rejected with 422. On clone, template use or import, explicitly rebind nonportable references before enabling. A matching Pool name grants no authority.
+An explicit Adapter route update uses the current `expected_route_version`. Pool administration uses `expected_version`. Refresh after a version conflict. A fixed route retains its Worker ID and has no fallback. A Pool draft binds the exact Pool and revision and returns null for `runtime_worker_id`. A conflicting legacy ID and explicit route is rejected with 422. Cloning either a fixed or Pool Adapter produces a stopped, unbound copy, even in the same deployment. Explicitly bind the copy. On template use or import, explicitly rebind nonportable references before enabling. A matching Pool name grants no authority.
 
 ## Read the binding source
 
@@ -14,7 +14,7 @@ An explicit Adapter route update uses the current `expected_route_version`. Pool
 | --- | --- |
 | Manual, schedule, webhook, initial subscription activation | `adapter` — binding at acceptance or activation. |
 | Single T2 or initial business batch | `activation` — the original activation, including when the Adapter has changed. |
-| Automatic retry | Reuses the original Execution and its frozen route; no new binding source. |
+| Automatic retry | Reuses the original Execution and frozen route. If the historical Worker cannot be established, retain the outstanding responsibility. Retry and new Outbox creation cannot substitute a mutable target. |
 | Event replay, original or repair | `original` or `repair` — retain original routing. Repair changes only the permitted Revision. |
 | Explicit current-config event replay; ordinary Execution replay | `current-config` — current binding. Event replay retains its stopped/no-outstanding-work guards. |
 | Dependency check and its replay | `dependency-check` — replay requires the original fixed Worker. |

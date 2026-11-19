@@ -181,7 +181,7 @@
   "clone": {
     "title": "Clone Adapter",
     "ok": "Clone",
-    "description": "The current code, dependencies, runtime configuration (including the per-execution timeout), Credential references and Runtime Worker will be copied.",
+    "description": "Clone the current code, dependencies, run parameters and Credential references. Assign the clone a runtime route before starting it.",
     "historyNote": "Execution history is not copied; the new Adapter remains stopped and will not run automatically.",
     "inputNote": "Input configuration is copied, but input files are not. Upload and save them again in the new adapter.",
     "name": "New Adapter name"

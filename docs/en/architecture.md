@@ -207,7 +207,8 @@ it never deletes active Executions or rows still needed for recovery.
 ## 6. Clone and Deletion
 
 Clone copies current code, dependencies, run parameters, Credential references,
-trigger configuration and the run node inside one transaction. The new Adapter starts
+and trigger configuration inside one transaction. The source keeps its route. The copy
+starts unbound for both fixed and Pool routes and requires explicit rebinding. It starts
 from its own first Revision, has no Executions, and its Schedule / Webhook are both
 disabled.
 

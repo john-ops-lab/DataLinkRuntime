@@ -6,10 +6,11 @@ import pytest
 from alembic import command
 from fastapi import HTTPException
 from sqlalchemy import MetaData, Table, func, insert, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
+from dlr.common.schema_version import SCHEMA_REVISION
 from dlr.control.models import (
     Adapter,
     AdapterExecutionAdmission,
@@ -483,3 +484,63 @@ def test_upgrade_backfills_only_original_target_and_preserves_missing_legacy_tar
         assert session.get(Execution, unknown_id).route_snapshot is None
         missing = attempt.execution_detail(session, unknown_id)
         assert not missing.replay_available and missing.replay_reason == "worker_unavailable"
+        unclassified = session.get(Execution, unknown_id)
+        unclassified.status = "retry_wait"
+        unclassified.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+        generation = unclassified.dispatch_generation
+        deadline = unclassified.next_attempt_at
+        with pytest.raises(HTTPException) as rejected:
+            outbox.create_dispatch_outbox(session, unclassified)
+        assert rejected.value.detail["code"] == "execution_route_unavailable"
+        assert attempt.retry_dispatcher_once(session) == 0
+        session.refresh(unclassified)
+        assert (
+            unclassified.status == "retry_wait" and unclassified.dispatch_generation == generation
+        )
+        assert unclassified.next_attempt_at == deadline
+        assert session.scalar(select(func.count()).select_from(ExecutionOutbox)) == 0
+
+
+@pytest.mark.parametrize("fact", ["route_version", "execution_snapshot"])
+def test_downgrade_refuses_new_fixed_route_facts_with_no_pool(upgrade_database, fact):
+    cfg = migration_config(upgrade_database)
+    command.upgrade(cfg, "head")
+    with Session(upgrade_database) as session, session.begin():
+        worker = Worker(name="fixed-only", capabilities=["python"])
+        session.add(worker)
+        session.flush()
+        adapter = Adapter(
+            name="fixed-only", language="python", adapter_type="task", runtime_worker_id=worker.id
+        )
+        session.add(adapter)
+        session.flush()
+        if fact == "route_version":
+            adapter.route_version = 2
+        else:
+            revision = AdapterVersion(adapter_id=adapter.id, seq=1, code="pass", requirements="")
+            session.add(revision)
+            session.flush()
+            route = worker_pool.fixed_route(worker.id)
+            snapshot = worker_pool.snapshot_route(session, route, "python", "current-config")
+            session.add(
+                Execution(
+                    adapter_id=adapter.id,
+                    version_id=revision.id,
+                    trigger="manual",
+                    status="dead_letter",
+                    target_worker_id_snapshot=worker.id,
+                    route_snapshot=snapshot.model_dump(mode="json"),
+                    input={},
+                )
+            )
+    with pytest.raises(DBAPIError, match="Pool routing downgrade would lose durable state"):
+        command.downgrade(cfg, W1_SCHEMA)
+    with Session(upgrade_database) as session:
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_REVISION
+        assert session.scalar(select(func.count()).select_from(WorkerPool)) == 0
+        assert session.scalar(select(Adapter.route_version)) == (
+            2 if fact == "route_version" else 1
+        )
+        if fact == "execution_snapshot":
+            assert session.scalar(select(Execution.route_snapshot))["source"] == "current-config"

@@ -983,10 +983,10 @@ def clone_adapter(
         language=source.language,
         adapter_type=source.adapter_type,
         run_mode=source.run_mode,
-        runtime_worker_id=source.runtime_worker_id,
         configuration_notes=(
             {"runtime_route_requires_rebind": True}
-            if source.pool_route is not None
+            if source.runtime_worker_id is not None
+            or source.pool_route is not None
             or source.configuration_notes.get("runtime_route_requires_rebind")
             else {}
         ),

@@ -647,7 +647,9 @@ clone = request(
 assert (
     clone["adapter_type"] == "task"
     and clone["run_mode"] == "schedule"
-    and clone["runtime_worker_id"] == runtime_worker_id
+    and clone["runtime_worker_id"] is None
+    and clone["route"] is None
+    and clone["configuration_notes"]["runtime_route_requires_rebind"]
 )
 clone_versions = request("GET", f"/adapters/{clone['id']}/versions")
 assert len(clone_versions) == 1 and clone_versions[0]["seq"] == 1
@@ -864,8 +866,8 @@ assert len(call_history) == 2 and all(
     item["trigger"] == "webhook" for item in call_history
 )
 
-# Re-enable A, clone it to stopped B with the same URL/Token/Worker/current
-# Revision, then prove only the running owner can receive until Stop A.
+# Re-enable A, clone it to stopped B with the same URL, Token and Revision.
+# Bind B explicitly and prove the running owner receives until Stop A.
 request(
     "PUT",
     f"/adapters/{webhook_id}/webhook",
@@ -885,7 +887,9 @@ clone_webhook = request("GET", f"/adapters/{webhook_clone['id']}/webhook")
 assert clone_webhook["public_id"] == webhook_path
 assert clone_webhook["credential_id"] == webhook_credential["id"]
 assert clone_webhook["enabled"] is False
-assert webhook_clone["runtime_worker_id"] == runtime_worker_id
+assert webhook_clone["runtime_worker_id"] is None and webhook_clone["route"] is None
+assert webhook_clone["configuration_notes"]["runtime_route_requires_rebind"]
+choose_worker(webhook_clone["id"], runtime_worker_id)
 assert request("GET", f"/adapters/{webhook_clone['id']}/executions")["items"] == []
 clone_v2 = save(
     webhook_clone["id"],

@@ -149,8 +149,10 @@ def save_template(
         raise domain_error(
             422, "portable_object_type", "Preserve the source adapter language and type"
         )
-    if source.pool_route is not None or source.configuration_notes.get(
-        "runtime_route_requires_rebind"
+    if (
+        source.runtime_worker_id is not None
+        or source.pool_route is not None
+        or source.configuration_notes.get("runtime_route_requires_rebind")
     ):
         payload = payload.model_copy(
             update={
