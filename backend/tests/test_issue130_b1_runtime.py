@@ -655,6 +655,9 @@ def test_persisted_capability_survives_cold_outage_without_batch_local_or_drift_
     execution_id = accepted.json()["id"]
     with session_factory() as session:
         assert rabbitmq.ingress_configuration_ready(session, worker_id=worker_two["id"])
+        assert rabbitmq.ingress_ready_targets(session, [worker_one["id"], 9_000_000]) == {
+            worker_one["id"]
+        }
         assert rabbitmq.runtime_health(session)["ingress"]["ready"] is True
 
     # Restore the complete process-local generation before the batch-local
@@ -709,6 +712,7 @@ def test_persisted_capability_survives_cold_outage_without_batch_local_or_drift_
     assert _execution_count(session_factory) == before
     with session_factory() as session:
         assert session.get(Execution, execution_id) is not None
+        assert not rabbitmq.ingress_ready_targets(session, [worker_one["id"], worker_three["id"]])
 
 
 def test_live_drift_invalidates_persisted_capability_before_cold_restart(

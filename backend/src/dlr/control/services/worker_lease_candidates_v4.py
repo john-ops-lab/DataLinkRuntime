@@ -191,7 +191,12 @@ def has_current_committed_lease(session: Session, worker: Worker, *, now: dateti
         _already_committed(session, row)
     except LeaseCandidateError:
         return False
-    return not row.retired and now < min(row.nominal_until, row.guard_until)
+    # This read is the independent observation, so it must still be timely.
+    # A committed tuple alone cannot prove a renewal made it past the old fence.
+    observed_at = max(now, worker_availability.current_time(session))
+    return not row.retired and observed_at < min(
+        row.nominal_until, row.guard_until, row.proof_before
+    )
 
 
 def create_initial_candidate(

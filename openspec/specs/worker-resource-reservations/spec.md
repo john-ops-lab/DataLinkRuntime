@@ -11,9 +11,9 @@
 
 容量写入只接受可信验证器针对当前实例生成的宿主 envelope。宿主 CPU 向下、Agent/系统余量向上取整为毫核；按各维度扣减并以零为下限。普通注册、心跳及人工构造的测试样本均不能作为生产容量来源。启用前须接入真实宿主验证器并完成旧责任对账。Pool 选址与 Claim 按冻结输入核对材料：managed files 需要 `managed_files_v1`，内置 wheel 需要 `builtin_wheel_v1`；验证环境声明与管理员授予的成员材料范围均须具备相应能力。
 
-#### Scenario: 租约的两个截止时间顺序不同
-- **WHEN** 容量写入、选址或 Claim 核对当前实例的已提交租约
-- **THEN** 租约须未退役且数据库当前时间严格早于 `nominal_until` 和 `guard_until`；任一截止时间先到即失去资格
+#### Scenario: 第二次续租迟提交
+- **WHEN** 已提交的续租候选尚在 nominal 和 guard 期限内，但 proof_before 已到，且没有独立持久的签发回执
+- **THEN** 容量与 held Relay 仅接受未退役且数据库当前时间严格早于 min(nominal_until, guard_until, proof_before) 的候选；迟提交不能恢复资格
 
 #### Scenario: 新实例沿用旧心跳容量
 - **WHEN** 新instance尚未完成本地残留对账，却读到旧instance容量
@@ -59,6 +59,8 @@ held 绑定同一 Execution、派发 generation、Worker 身份、instance_id �
 ### Requirement: 等待意图与发布结算
 
 普通执行、单条 T2 和业务批次的接受事务 SHALL 为每个等待派发的 Execution 预付一个最大 dispatch envelope。选定目标时 MUST 在同一事务创建 held 并将原 Outbox 预付转为实际序列化字节。等待意图和待发布行都计入数量、字节与年龄门禁。
+
+旧代消息进入 DLQ 时可持久接收 Incident。等待选址的责任不触发旧式缓存 reactivation；终止当前有预留的责任时必须锁定对应 Reservation 后核对。已 Claim 的物理清理责任继续按原合同结算。
 
 #### Scenario: Relay 与重新选址交错
 - **WHEN** 原代的发布结果未知且预留已失效，迟到的 Relay 收到 Confirm

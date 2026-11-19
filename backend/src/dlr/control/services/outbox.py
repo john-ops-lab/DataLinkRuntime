@@ -31,6 +31,7 @@ from dlr.control.models import (
     ExecutionOutbox,
     Worker,
     WorkerCacheGuard,
+    WorkerLeaseCandidateV4,
     WorkerResourceReservation,
 )
 from dlr.control.models.reliable_execution import OPEN_OUTBOX_STATES
@@ -394,6 +395,23 @@ def supersede(row: ExecutionOutbox, reason: str) -> None:
 def _current_reservation(now: datetime) -> Any:
     """MVCC read only. The Relay locks Outbox rows and never locks Worker."""
     reservation = WorkerResourceReservation
+    candidate = WorkerLeaseCandidateV4
+    timely_lease = (
+        select(candidate.worker_id)
+        .where(
+            candidate.worker_id == Worker.id,
+            candidate.worker_identity_id == Worker.identity_id,
+            candidate.instance_id == Worker.instance_id,
+            candidate.instance_generation == Worker.instance_generation,
+            candidate.retired.is_(False),
+            candidate.nominal_until == Worker.instance_lease_until,
+            candidate.nominal_until > now,
+            candidate.guard_until > now,
+            candidate.proof_before > now,
+        )
+        .correlate(Worker)
+        .exists()
+    )
     return (
         select(reservation.id)
         .join(Execution, Execution.id == reservation.execution_id)
@@ -413,9 +431,10 @@ def _current_reservation(now: datetime) -> Any:
                     Worker.identity_id == reservation.worker_identity_id,
                     Worker.instance_id == reservation.instance_id,
                     Worker.instance_generation == reservation.instance_generation,
-                    Worker.instance_lease_until > now,
+                    Worker.status == "online",
                     Worker.scheduling_state == "active",
                     Worker.capacity_state == "ready",
+                    timely_lease,
                 ),
             ),
         )

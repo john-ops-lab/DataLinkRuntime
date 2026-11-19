@@ -22,6 +22,7 @@ from dlr.control.services.worker_lease_candidates_v4 import (
     ProofAuthority,
     _issue_in_session,
     create_initial_candidate,
+    has_current_committed_lease,
     issue_committed_candidate_proof,
     observe_expired_candidate,
     stage_renewal_candidate,
@@ -405,6 +406,12 @@ def test_candidate_committing_after_previous_guard_cannot_be_proven(
     with session_factory.begin() as session:
         with pytest.raises(LeaseCandidateError):
             _validate(session, worker_id, credential, instance, proof.token, authority)
+        if second_renewal:
+            node = session.get(Worker, worker_id, with_for_update=True)
+            candidate = session.get(WorkerLeaseCandidateV4, worker_id)
+            sampled_at = session.scalar(select(func.clock_timestamp()))
+            assert candidate.proof_before <= sampled_at < candidate.guard_until
+            assert not has_current_committed_lease(session, node, now=sampled_at)
         # Neither an unproven first nor second renewal permits takeover while
         # its nominal deadline remains in the future.
         assert not observe_expired_candidate(session, worker_id=worker_id)

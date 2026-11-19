@@ -205,7 +205,7 @@ def lock_execution_in_admission_order(
             lock_reserved_subscription_scope(session, execution_id)
         if admission.lock_admission_scope(session, int(adapter_id)) is None:
             return None
-    if guard_reactivation:
+    if guard_reactivation and not requires_worker_reservation:
         worker_id = target_worker_id_snapshot or target_worker_id or actual_worker_id
         if worker_id is None:
             from dlr.control.services.adapter import domain_error

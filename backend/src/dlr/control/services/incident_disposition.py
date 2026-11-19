@@ -20,7 +20,9 @@ from dlr.control.models import (
     ExecutionIncidentDisposition,
     ExecutionInfrastructureIncident,
     ExecutionOutbox,
+    WorkerResourceReservation,
 )
+from dlr.control.models.worker_capacity import OCCUPIED_RESERVATION_STATES
 from dlr.control.schemas.reliable_runtime import (
     IncidentDispositionBody,
     IncidentDispositionPage,
@@ -381,9 +383,21 @@ def _valid_dispatch_identity(
     execution: Execution,
     incident: ExecutionInfrastructureIncident,
     row: ExecutionOutbox,
+    reservation: WorkerResourceReservation | None,
 ) -> bool:
     if row.payload_json is None:
         return False
+    target = execution.target_worker_id_snapshot
+    if execution.requires_worker_reservation:
+        if (
+            reservation is None
+            or reservation.id != row.reservation_id
+            or reservation.execution_id != execution.id
+            or reservation.dispatch_generation != execution.dispatch_generation
+            or reservation.status not in OCCUPIED_RESERVATION_STATES
+        ):
+            return False
+        target = reservation.worker_id
     try:
         message = deserialize_dispatch_message(row.payload_json)
         body = serialize_dispatch_message(message)
@@ -394,8 +408,8 @@ def _valid_dispatch_identity(
         and message.dispatch_generation == execution.dispatch_generation
         and message.adapter_id == execution.adapter_id
         and message.language == adapter.language
-        and message.target_worker_id == execution.target_worker_id_snapshot
-        and execution.target_worker_id == execution.target_worker_id_snapshot
+        and message.target_worker_id == target
+        and execution.target_worker_id == target
         and message.resource_class == execution.resource_class
         and message.message_id == row.message_id
         and len(body) == row.payload_bytes
@@ -664,7 +678,9 @@ def _dispose_incident_transaction(
             principal=principal,
             code="incident_dispatch_identity_unverifiable",
         )
-    if not _valid_dispatch_identity(access.adapter, execution, incident, current_row):
+    if not _valid_dispatch_identity(
+        access.adapter, execution, incident, current_row, tail.reservation
+    ):
         return _reject(
             session,
             execution=execution,

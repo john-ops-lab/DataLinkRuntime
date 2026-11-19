@@ -248,8 +248,15 @@ def reserve_execution(session: Session, execution_id: int) -> UUID | None:
         worker = session.get(Worker, worker_id, with_for_update=True, populate_existing=True)
         if worker is not None:
             locked_workers.append((worker, worker_capacity.lock_capacity(session, worker.id)))
+    if not locked_workers:
+        return None
+    broker_targets = rabbitmq.ingress_ready_targets(
+        session, [worker.id for worker, _ in locked_workers]
+    )
     ranked = []
     for worker, capacity in locked_workers:
+        if worker.id not in broker_targets:
+            continue
         now = worker_availability.current_time(session)
         environment = worker_capacity.eligible_environment(
             session, worker, capacity, profile, now=now
@@ -258,7 +265,6 @@ def reserve_execution(session: Session, execution_id: int) -> UUID | None:
             environment is None
             or capacity is None
             or not _allows(session, execution, snapshot, pool, worker, environment)
-            or not rabbitmq.ingress_configuration_ready(session, worker_id=worker.id)
             or execution_block_reason(session, adapter, execution, candidate_worker_id=worker.id)
             is not None
         ):

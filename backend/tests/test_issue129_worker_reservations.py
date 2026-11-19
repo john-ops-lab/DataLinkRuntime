@@ -34,6 +34,8 @@ from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
 from dlr.control.schemas.worker_pool import EnvironmentRule, PoolRoute
 from dlr.control.security import Principal
 from dlr.control.services import (
+    incident_disposition,
+    infrastructure_dlq,
     outbox,
     rabbitmq,
     subscription_delivery,
@@ -46,6 +48,7 @@ from dlr.control.services import (
     worker_reservation,
 )
 from dlr.control.services.attempt import V4AttemptAuthority
+from dlr.control.services.dispatch import serialize_dispatch_message
 from dlr.control.services.execution import cancel_execution
 from dlr.control.services.reliable_execution import accept_execution
 from dlr.control.services.worker_lease_candidates_v4 import (
@@ -66,6 +69,7 @@ def placement(session_factory, pool_setup, monkeypatch):  # noqa: F811
     pool, route, environment = pool_setup
     monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
     monkeypatch.setattr(rabbitmq, "ingress_configuration_ready", lambda *_, **__: True)
+    monkeypatch.setattr(rabbitmq, "ingress_ready_targets", lambda _session, ids: frozenset(ids))
     monkeypatch.setattr(settings, "sandbox_cpu_cores", 0.000001)
     authority = ProofAuthority(uuid4(), uuid4(), b"t" * 32)
     return session_factory, pool, route, EnvironmentRule.model_validate(environment), authority
@@ -374,6 +378,12 @@ def test_unknown_confirm_and_reused_owner_cannot_revive_old_generation(placement
         execution = session.get(Execution, execution_id)
         assert execution.attempt_count == 0 and execution.target_worker_id is None
         assert _intent(session, execution_id, 2).status == "awaiting_target"
+    with factory() as session:
+        stale = infrastructure_dlq.reconcile_message(
+            session, serialize_dispatch_message(original_message)
+        )
+        assert stale.action == "manual_review" and stale.incident_id > 0
+        assert _intent(session, execution_id, 2).status == "awaiting_target"
     with factory.begin() as session:
         new_id = worker_reservation.reserve_execution(session, execution_id)
         assert session.get(WorkerResourceReservation, new_id).worker_id == replacement[0]
@@ -387,6 +397,47 @@ def test_unknown_confirm_and_reused_owner_cannot_revive_old_generation(placement
     decision, proposal = _prepare(factory, former, original_message)
     assert decision.decision == "ACK_NOOP" and decision.reason == "stale_generation"
     assert proposal is None
+    with factory() as session:
+        current = outbox.deserialize_outbox_payload(_intent(session, execution_id, 2).payload_json)
+        incident = infrastructure_dlq.reconcile_message(
+            session, serialize_dispatch_message(current)
+        )
+        disposed = incident_disposition.dispose_incident(
+            session,
+            execution_id,
+            incident.incident_id,
+            "terminate",
+            2,
+            uuid4(),
+            "operator_cancel",
+            Principal(kind="superadmin"),
+        )
+        assert disposed.status_code == 200
+    with factory() as session:
+        assert session.get(Execution, execution_id).status == "cancelled"
+        assert session.get(WorkerResourceReservation, new_id).status == "released"
+
+
+def test_relay_does_not_finish_held_publish_after_worker_lease_floor(placement, monkeypatch):
+    factory, _, route, _, _ = placement
+    worker_id, _, _ = _worker(placement)
+    monkeypatch.setattr(settings, "rabbitmq_outbox_lease_seconds", 60)
+    with factory.begin() as session:
+        execution_id = _ordinary(session, route, "confirm-after-worker-proof").id
+        reservation_id = worker_reservation.reserve_execution(session, execution_id)
+        boundary = session.get(WorkerLeaseCandidateV4, worker_id).proof_before
+        assert boundary < session.get(WorkerResourceReservation, reservation_id).held_until
+    with factory() as session:
+        (lease,) = outbox.lease_due_outbox(session, "confirm-after-worker-proof")
+        assert not outbox.mark_outbox_published(
+            session,
+            lease.id,
+            "confirm-after-worker-proof",
+            now=boundary,
+            lease_attempt=lease.lease_attempt,
+        )
+        assert _intent(session, execution_id).status == "pending"
+        assert session.get(WorkerResourceReservation, reservation_id).status == "held"
 
 
 def test_claim_rechecks_capacity_and_attaches_attempt_only_on_commit(placement):
@@ -467,6 +518,7 @@ def test_claim_rechecks_capacity_and_attaches_attempt_only_on_commit(placement):
         reservation = session.get(WorkerResourceReservation, held)
         slot = session.get(AdapterExecutionSlot, (execution.adapter_id, 0))
         attempt = session.get(ExecutionAttempt, slot.active_attempt_id)
+        attempt_id = attempt.id
         assert execution.attempt_count == attempt.attempt_no == 1
         assert reservation.status == "claimed"
         assert reservation.attempt_id == attempt.id == slot.active_attempt_id
@@ -476,6 +528,18 @@ def test_claim_rechecks_capacity_and_attaches_attempt_only_on_commit(placement):
             worker_reservation.release_cleaned_attempt(session, execution, attempt)
     repeat, proposal = _prepare(factory, worker, message)
     assert repeat.decision == "ACK_NOOP" and proposal is None
+    with factory.begin() as session:
+        # Supply the existing v4 cleanup boundary as an isolated fixture.
+        execution = session.get(Execution, execution_id, with_for_update=True)
+        session.get(Worker, worker_id, with_for_update=True)
+        attempt = session.get(ExecutionAttempt, attempt_id)
+        attempt.status = "succeeded"
+        attempt.cleanup_settled_at = worker_availability.current_time(session)
+        worker_reservation.release_cleaned_attempt(session, execution, attempt)
+    with factory() as session:
+        assert session.get(WorkerResourceReservation, held).status == "released"
+        assert worker_capacity.occupied_resources(session, worker_id) == (0, 0, 0, 0, 0)
+        assert _intent(session, execution_id).status == "superseded"
 
 
 def _t2_custody(session, ids, subscription_id):
