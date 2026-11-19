@@ -36,6 +36,7 @@ from dlr.worker.client import ControlUnavailableError
 
 if TYPE_CHECKING:
     from dlr.worker.cache_maintenance_v4 import CacheMaintenance
+    from dlr.worker.sandbox import ResourceLimits, SandboxConfig
 
 logger = logging.getLogger("dlr.worker.v4")
 
@@ -64,6 +65,37 @@ class WorkerConfig:
     input_mode: str = "disabled"
     builtin_wheel_mode: str = "disabled"
     cache_root: Path | None = None
+    capacity_signing_key_file: Path | None = None
+
+
+def _report_capacity(
+    config: WorkerConfig,
+    sandbox_config: SandboxConfig,
+    receive_limits: ResourceLimits,
+    lease: lease_session_v4.WorkerLeaseSession,
+) -> None:
+    key_file = config.capacity_signing_key_file
+    if key_file is None:
+        return
+    from dlr.worker.capacity_attestation_v4 import signed_sample
+
+    try:
+        lease.report_capacity(
+            lambda identity, instance, generation: signed_sample(
+                identity=identity,
+                instance=instance,
+                generation=generation,
+                config=sandbox_config,
+                receive_limits=receive_limits,
+                runtime_root=config.runtime_root,
+                journal_root=config.journal_anchor,
+                cache_root=config.cache_root,
+                key_file=key_file,
+            )
+        )
+    except Exception:
+        # The last observation ages out independently of the cleanup lease.
+        logger.debug("Worker capacity observation unavailable")
 
 
 def run(config: WorkerConfig, stop: threading.Event) -> str:
@@ -84,6 +116,18 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
         or (
             config.cache_root is not None
             and (not isinstance(config.cache_root, Path) or not config.cache_root.is_absolute())
+        )
+        or (
+            config.capacity_signing_key_file is not None
+            and (
+                not isinstance(config.capacity_signing_key_file, Path)
+                or not config.capacity_signing_key_file.is_absolute()
+                or any(
+                    config.capacity_signing_key_file.is_relative_to(root)
+                    for root in (config.runtime_root, config.journal_anchor, config.cache_root)
+                    if root is not None
+                )
+            )
         )
         or not 0 < config.worker_id < 2**63
         or type(config.worker_identity_id) is not UUID
@@ -450,6 +494,7 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                         adapter_cleanup=cache is None,
                         cache_governance=cache is not None,
                     )
+                    _report_capacity(config, sandbox_config, receive_limits, lease)
                     consumer = FixedWorkerConsumer(
                         broker_file=config.broker_config_file,
                         lease=lease,
@@ -467,6 +512,7 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                         business_credentials=config.business_credentials_mode == "bindings",
                         managed_files=config.input_mode == "managed_files",
                         builtin_wheel=config.builtin_wheel_mode == "pure_python",
+                        check_capacity=config.capacity_signing_key_file is not None,
                     )
                     consumer_thread = threading.Thread(
                         target=consumer.run, name="dlr-v4-broker", daemon=True
@@ -488,6 +534,12 @@ def run(config: WorkerConfig, stop: threading.Event) -> str:
                     lease.replace_runtime_credential(current)
                     phase = "heartbeat_exchange"
                     lease.heartbeat(stop=stop)
+                    if (
+                        sandbox_config is not None
+                        and receive_limits is not None
+                        and not stop.is_set()
+                    ):
+                        _report_capacity(config, sandbox_config, receive_limits, lease)
                     if consumer is not None and started >= next_cleanup and not stop.is_set():
                         next_cleanup = started + 15.0
                         if cache is not None:
@@ -639,6 +691,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--cache-root", type=Path, default=os.environ.get("DLR_WORKER_CACHE_ROOT") or None
+    )
+    parser.add_argument(
+        "--capacity-signing-key-file",
+        type=Path,
+        default=os.environ.get("DLR_WORKER_CAPACITY_SIGNING_KEY_FILE") or None,
     )
     parser.add_argument("--claim-child-address-space-bytes", type=int, default=256 * 1024 * 1024)
     parser.add_argument("--claim-wire-budget-bytes", type=int, default=16 * 1024 * 1024)

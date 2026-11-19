@@ -29,7 +29,7 @@ V3_CONTEXT = b"dlr/recovery/observation/v3\x00"
 V2_WIRE = struct.Struct(WIRE.format + "B32s16sB")
 V2_TOKEN_LENGTH = ((V2_WIRE.size + 64 + 2) // 3) * 4
 STATUS_TO_CODE = {"succeeded": 1, "failed": 2, "timed_out": 3, "worker_lost": 4, "cancelled": 5}
-EXECUTION_TO_CODE = {"dead_letter": 1, "cancelled": 2}
+EXECUTION_TO_CODE = {"dead_letter": 1, "cancelled": 2, "retry_wait": 3}
 CODE_TO_EXECUTION = {value: key for key, value in EXECUTION_TO_CODE.items()}
 CODE_TO_STATUS = {value: key for key, value in STATUS_TO_CODE.items()}
 KIND_TO_CODE = {"committed_result": 1, "platform_terminal": 2, "force_stopped_no_result": 3}
@@ -188,6 +188,7 @@ def _parse(raw: bytes) -> RecoveryClaims | None:
                     not in {
                         ("worker_lost", "dead_letter"),
                         ("worker_lost", "cancelled"),
+                        ("worker_lost", "retry_wait"),
                         ("cancelled", "cancelled"),
                     }
                 )

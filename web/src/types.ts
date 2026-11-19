@@ -385,6 +385,15 @@ export interface ReliableExecutionDetail {
   replay_reason: string | null;
   route_snapshot?: import("./worker-pool-types").RouteSnapshot | null;
   replay_route?: import("./worker-pool-types").RoutePreview | null;
+  placement?: {
+    generation: number;
+    reason: string | null;
+    age_seconds: number | null;
+    deadline_at: string | null;
+    held_count: number;
+    reclaiming_attempts: number;
+    retry_available: boolean;
+  } | null;
 }
 
 export interface ReplayResponse {
@@ -643,7 +652,26 @@ export interface WorkerRecoveryDisposition {
   execution_id: number;
   attempt_id: number;
   attempt_status: "worker_lost" | "cancelled";
-  execution_status: "dead_letter" | "cancelled";
+  execution_status: "dead_letter" | "cancelled" | "retry_wait";
+}
+
+export interface PlacementResources {
+  cpu_millis: number;
+  memory_bytes: number;
+  pids: number;
+  tmp_bytes: number;
+  slots: number;
+}
+
+export interface WorkerPlacementLedger {
+  capacity: {
+    allocatable: PlacementResources | null;
+    sampled_at: string;
+    quarantine_until: string | null;
+  } | null;
+  held: PlacementResources;
+  claimed: PlacementResources;
+  reclaiming: PlacementResources;
 }
 
 export interface WorkerMaintenanceSnapshot {
@@ -671,6 +699,7 @@ export interface WorkerMaintenanceSnapshot {
   current_maintenance_action: WorkerMaintenanceAction | "reconcile" | null;
   force_stop_available?: boolean;
   last_recovery_disposition: WorkerRecoveryDisposition | null;
+  placement_ledger?: WorkerPlacementLedger | null;
 }
 
 export interface WorkerMaintenanceView {

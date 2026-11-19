@@ -195,6 +195,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     orphan_audit_task = asyncio.create_task(orphan_audit_loop())
     admission_task = asyncio.create_task(admission_reconciler_loop())
     attempt_task = asyncio.create_task(attempt_reconciler_loop())
+    placement_tasks: tuple[asyncio.Task[None], ...] = ()
+    if settings.worker_remote_v4_enabled:
+        from dlr.control.services.worker_placement_scheduler import run as placement_loop
+
+        placement_tasks = (asyncio.create_task(placement_loop()),)
     infrastructure_dlq_task = asyncio.create_task(infrastructure_dlq_loop())
     subscription_task = asyncio.create_task(subscription_maintenance_loop())
     quota_audit_task = asyncio.create_task(subscription_quota_audit_loop())
@@ -230,6 +235,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             orphan_audit_task,
             admission_task,
             attempt_task,
+            *placement_tasks,
             infrastructure_dlq_task,
             subscription_task,
             quota_audit_task,
@@ -252,6 +258,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await admission_task
         with contextlib.suppress(asyncio.CancelledError):
             await attempt_task
+        for placement_task in placement_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await placement_task
         with contextlib.suppress(asyncio.CancelledError):
             await infrastructure_dlq_task
         with contextlib.suppress(asyncio.CancelledError):

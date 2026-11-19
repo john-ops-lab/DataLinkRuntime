@@ -58,6 +58,7 @@ from dlr.control.schemas.reliable_runtime import (
     ClaimDecision,
     IncidentDispositionReceipt,
     InfrastructureIncidentSummary,
+    PlacementSnapshot,
     ReliableExecutionDetail,
     ReplayResponse,
     ResourceProfile,
@@ -406,6 +407,11 @@ def claim_dispatch(
         return _decision("PAUSE_CONSUMER", "worker_not_registered", retry_after_seconds=5)
     if int(worker.protocol_version or 1) != 3:
         return _decision("PAUSE_CONSUMER", "worker_protocol_incompatible", retry_after_seconds=30)
+    from dlr.control.services.worker_placement_cutover import mode
+
+    if mode(session, hold=True) != "fixed":
+        session.rollback()
+        return _decision("PAUSE_CONSUMER", "placement_cutover_paused", retry_after_seconds=5)
     if not bool(worker.rabbitmq_execution_v3):
         return _decision("PAUSE_CONSUMER", "isolation_capability_missing", retry_after_seconds=30)
     if message.target_worker_id != worker_id:
@@ -713,14 +719,25 @@ def _lock_attempt_context(
     if execution_id is None:
         raise domain_error(404, "attempt_not_found", "Attempt not found")
     identity = session.execute(
-        select(Execution.adapter_id, Execution.dispatch_backend).where(Execution.id == execution_id)
+        select(
+            Execution.adapter_id, Execution.dispatch_backend, Execution.requires_worker_reservation
+        ).where(Execution.id == execution_id)
     ).one_or_none()
     if identity is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
-    adapter_id, dispatch_backend = identity
+    adapter_id, dispatch_backend, requires_reservation = identity
     if existing_only and dispatch_backend != "rabbitmq":
         raise domain_error(409, "attempt_backend_invalid", "Attempt backend is incompatible")
     if dispatch_backend == "rabbitmq":
+        if requires_reservation:
+            from dlr.control.services.execution_cancellation import lock_reserved_subscription_scope
+
+            if (
+                session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True)
+                is None
+            ):
+                raise domain_error(404, "adapter_not_found", "Adapter not found")
+            lock_reserved_subscription_scope(session, execution_id)
         if existing_only:
             adapter = session.get(
                 Adapter, int(adapter_id), with_for_update=True, populate_existing=True
@@ -764,6 +781,10 @@ def _lock_attempt_context(
         slot = _slot(session, adapter.id)
     if attempt.worker_id != worker_id:
         raise domain_error(409, "attempt_not_owned", "Attempt is assigned to another Worker")
+    if requires_reservation:
+        from dlr.control.services.worker_reservation import lock_pool
+
+        lock_pool(session, execution)
     return execution, adapter, attempt, slot
 
 
@@ -1060,6 +1081,20 @@ def _apply_terminal_locked(
 ) -> ClaimDecision:
     if attempt.status in TERMINAL_ATTEMPT_STATUSES:
         return _decision("ACK_NOOP", "already_terminal", attempt_id=attempt.id)
+    if execution.requires_worker_reservation:
+        from dlr.control.services.worker_reservation import retain_terminal_charge
+
+        retain_terminal_charge(
+            session,
+            execution,
+            attempt,
+            now=now,
+            quarantine=(
+                status == "failed"
+                and error_code == "resource_capacity_unavailable"
+                and error_class == "platform_transient"
+            ),
+        )
     incidents, _outbox_rows = lock_incidents_and_outbox(session, execution.id)
     if after_tail is not None:
         now = after_tail()
@@ -1473,6 +1508,8 @@ def _recover_reserved_attempt(
     if attempt.status not in ACTIVE_ATTEMPT_STATUSES:
         session.rollback()
         return False
+    if execution.requires_worker_reservation:
+        return _recover_placement_attempt(session, execution, attempt, slot)
     locked_now = _utc(now or database_now(session))
     expired = _utc(attempt.lease_expires_at) <= locked_now
     if expired and attempt.worker_identity_id is None and worker_legacy_window.enabled_mode():
@@ -1517,6 +1554,38 @@ def _recover_reserved_attempt(
     return True
 
 
+def _recover_placement_attempt(
+    session: Session, execution: Execution, attempt: ExecutionAttempt, slot: AdapterExecutionSlot
+) -> bool:
+    from dlr.control.services.worker_placement_cutover import mode
+    from dlr.control.services.worker_reservation import fence_lost_attempt
+
+    if mode(session, hold=True) != "reserved":
+        session.rollback()
+        return False
+    _validate_recovery_snapshots(execution, attempt_id=attempt.id)
+    now = fence_lost_attempt(session, execution, attempt, slot)
+    if now is None:
+        session.rollback()
+        return False
+    _apply_terminal_locked(
+        session,
+        execution,
+        attempt,
+        slot,
+        status="worker_lost",
+        error_code="worker_lost",
+        error_class="worker_lost",
+        error="Worker Lease expired before a terminal result was accepted",
+        now=now,
+    )
+    if execution.next_attempt_at is not None and attempt.recovery_not_before is not None:
+        delay = execution.next_attempt_at - now
+        execution.next_attempt_at = max(now, attempt.recovery_not_before) + delay
+    session.commit()
+    return True
+
+
 def recover_expired_attempts(
     session: Session, *, limit: int = 100, now: datetime | None = None
 ) -> int:
@@ -1555,6 +1624,11 @@ def retry_dispatcher_once(
     session: Session, *, limit: int = 100, now: datetime | None = None
 ) -> int:
     """Move due retry_wait rows to a unique next generation and Outbox."""
+    from dlr.control.services.worker_placement_cutover import mode
+
+    if mode(session) != "fixed":
+        session.rollback()
+        return 0
     effective_now = _utc(now or database_now(session))
     candidates = list(
         session.execute(
@@ -1584,6 +1658,9 @@ def retry_dispatcher_once(
         if adapter is None:
             session.rollback()
             continue
+        if mode(session, hold=True) != "fixed":
+            session.rollback()
+            return dispatched
         try:
             cache_governance.ensure_reference_allowed(
                 session,
@@ -1648,7 +1725,7 @@ def retry_dispatcher_once(
 
 
 def execution_detail(
-    session: Session, execution_id: int, *, can_edit: bool = True
+    session: Session, execution_id: int, *, can_edit: bool = True, can_retry_placement: bool = False
 ) -> ReliableExecutionDetail:
     execution = session.get(Execution, execution_id)
     if execution is None:
@@ -1688,6 +1765,7 @@ def execution_detail(
     )
     active_attempts = any(item.status in ACTIVE_ATTEMPT_STATUSES for item in attempts)
     from dlr.control.services.incident_disposition import inspect_incident_disposition
+    from dlr.control.services.worker_placement_cutover import mode
 
     replay_available, replay_reason = _replay_availability(session, execution)
     replay_route = None
@@ -1703,7 +1781,7 @@ def execution_detail(
                 route=worker_pool.adapter_route(adapter), source="current-config"
             )
         if replay_route is not None:
-            if isinstance(replay_route.route, PoolRoute):
+            if isinstance(replay_route.route, PoolRoute) and mode(session) != "reserved":
                 replay_available, replay_reason = False, "pool_routing_not_enabled"
             elif replay_route.route is None:
                 replay_available, replay_reason = False, "worker_unavailable"
@@ -1773,6 +1851,48 @@ def execution_detail(
         replay_reason=replay_reason,
         route_snapshot=worker_pool.stored_snapshot(execution.route_snapshot),
         replay_route=replay_route,
+        placement=_placement_snapshot(session, execution, can_retry=can_retry_placement),
+    )
+
+
+def _placement_snapshot(
+    session: Session, execution: Execution, *, can_retry: bool
+) -> PlacementSnapshot | None:
+    from dlr.control.models import WorkerResourceReservation
+    from dlr.control.services.worker_placement_cutover import mode
+    from dlr.control.services.worker_placement_wait import expired
+
+    if not execution.requires_worker_reservation:
+        return None
+    now = database_now(session)
+    waiting = execution.status == "queued"
+    started = execution.queued_at
+    timeout = execution.placement_wait_timeout_seconds
+    if execution.placement_deadline_at is not None and timeout is not None:
+        started = execution.placement_deadline_at - timedelta(seconds=timeout)
+    reclaiming = session.scalar(
+        select(func.count())
+        .select_from(WorkerResourceReservation)
+        .where(
+            WorkerResourceReservation.execution_id == execution.id,
+            WorkerResourceReservation.status == "reclaiming",
+        )
+    )
+    return PlacementSnapshot(
+        generation=execution.dispatch_generation,
+        reason=execution.placement_reason,
+        age_seconds=max(0, int((now - started).total_seconds())) if waiting and started else None,
+        deadline_at=execution.placement_deadline_at if waiting else None,
+        held_count=execution.placement_hold_count,
+        reclaiming_attempts=reclaiming or 0,
+        retry_available=(
+            waiting
+            and can_retry
+            and not execution.cancel_requested
+            and execution.placement_reason == "placement_limit_reached"
+            and not expired(execution, now=now)
+            and mode(session) == "reserved"
+        ),
     )
 
 
@@ -1828,7 +1948,7 @@ def replay_execution(session: Session, execution_id: int) -> ReplayResponse:
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     if not dependency_check:
-        worker_pool.require_fixed_route(worker_pool.adapter_route(adapter))
+        worker_pool.require_accepting_route(session, worker_pool.adapter_route(adapter))
     admission.lock_admission_scope(session, adapter_id)
     replay_worker_id = target_snapshot if dependency_check else adapter.runtime_worker_id
     if replay_worker_id is None:
@@ -1986,6 +2106,9 @@ def expire_holds(session: Session, *, limit: int = 100, now: datetime | None = N
 def attempt_reconciler_once(session: Session, *, limit: int = 100) -> dict[str, int]:
     recovered = recover_expired_attempts(session, limit=limit)
     dispatched = retry_dispatcher_once(session, limit=limit)
+    from dlr.control.services.worker_placement_wait import retry_due
+
+    dispatched += retry_due(session, limit=limit)
     holds = expire_holds(session, limit=limit)
     return {"recovered": recovered, "retry_dispatched": dispatched, "holds_expired": holds}
 

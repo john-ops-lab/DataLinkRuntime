@@ -140,7 +140,11 @@ def _requeue_queued_generation(
     *,
     now: datetime,
 ) -> bool:
+    from dlr.control.services.worker_placement_cutover import mode
+
     if execution.status != "queued" or execution.dispatch_backend != "rabbitmq":
+        return False
+    if mode(session, hold=True) != "fixed":
         return False
     row = session.scalar(
         select(ExecutionOutbox)
@@ -260,11 +264,11 @@ def reconcile_message(
         and execution.status == "queued"
         and not delivery_limit
         and not cache_reclamation_blocked
+        and _requeue_queued_generation(session, execution, now=now)
     ):
         # A delivery-limit event is not automatically hot-looped.  It remains
         # an operator decision because repeatedly publishing it could hide a
         # persistent Broker/routing defect.
-        _requeue_queued_generation(session, execution, now=now)
         action = "requeue"
     session.commit()
     return InfrastructureReconcileResult(

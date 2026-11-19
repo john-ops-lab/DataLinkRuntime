@@ -30,6 +30,7 @@ LEGACY_SCHEMA = "0088_issue129_image_transition"
 J_SCHEMA = "0089_issue129_credential_ops"
 W1_SCHEMA = "0090_issue129_worker_cutover"
 W2_ROUTING_SCHEMA = "0091_issue129_pool_routing"
+W2_CAPACITY_SCHEMA = "0092_issue129_worker_capacity"
 SOURCE_SHA = "a37c9d3e19985acddb1f3e33ff6d3c7337147270"
 F_SOURCE_SHA = "0417b82c4ab6f76aefdf3eafe38327f46cb18358"
 # Verified F build inputs from its original delivery. Product provenance and
@@ -77,8 +78,10 @@ W1_SOURCE_SHA = "347be42970a765fc08557528991134d60c79dcae"
 _W1_RELEASE_SHAS = frozenset({W1_SOURCE_SHA, "bbfedfa93f37f9c008084085e8bbb7998fba8897"})
 W2_ROUTING_SOURCE_SHA = "f536419b59282891cf537e2d8fef65b7e8b92d1c"
 _W2_ROUTING_RELEASE_SHAS = frozenset({W2_ROUTING_SOURCE_SHA})
-_MAX_TRANSITIONS = 8
-_WRITABLE_TRANSITIONS = {4, 5, 6, 7}
+W2_CAPACITY_SOURCE_SHA = "36ee472851e2141ce908dcd9a9588c5f6a86f9eb"
+_W2_CAPACITY_RELEASE_SHAS = frozenset({W2_CAPACITY_SOURCE_SHA})
+_MAX_TRANSITIONS = 9
+_WRITABLE_TRANSITIONS = {4, 5, 6, 7, 8}
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _FIELDS = {
@@ -142,7 +145,14 @@ def read_intent(
                 and (previous.int == 0 or str(previous) != value["previous_id"])
             )
             or value["target_schema"]
-            not in (LEGACY_SCHEMA, J_SCHEMA, W1_SCHEMA, W2_ROUTING_SCHEMA, SCHEMA_REVISION)
+            not in (
+                LEGACY_SCHEMA,
+                J_SCHEMA,
+                W1_SCHEMA,
+                W2_ROUTING_SCHEMA,
+                W2_CAPACITY_SCHEMA,
+                SCHEMA_REVISION,
+            )
             or (value["source_schema"], value["source_sha"])
             not in {
                 (SOURCE_SCHEMA, SOURCE_SHA),
@@ -153,6 +163,7 @@ def read_intent(
                 *((J_SCHEMA, sha) for sha in _J_RELEASE_SHAS),
                 *((W1_SCHEMA, sha) for sha in _W1_RELEASE_SHAS),
                 *((W2_ROUTING_SCHEMA, sha) for sha in _W2_ROUTING_RELEASE_SHAS),
+                *((W2_CAPACITY_SCHEMA, sha) for sha in _W2_CAPACITY_RELEASE_SHAS),
             }
             or type(value["target_sha"]) is not str
             or _SHA.fullmatch(value["target_sha"]) is None
@@ -283,7 +294,7 @@ def _kind(intent: ImageTransition) -> int:
     elif (
         intent.source_schema == W2_ROUTING_SCHEMA
         and intent.source_sha in _W2_ROUTING_RELEASE_SHAS
-        and intent.target_schema == SCHEMA_REVISION
+        and intent.target_schema == W2_CAPACITY_SCHEMA
         and intent.target_sha
         not in _F_RELEASE_SHAS
         | _G_RELEASE_SHAS
@@ -295,6 +306,22 @@ def _kind(intent: ImageTransition) -> int:
         | {SOURCE_SHA}
     ):
         return 7
+    elif (
+        intent.source_schema == W2_CAPACITY_SCHEMA
+        and intent.source_sha in _W2_CAPACITY_RELEASE_SHAS
+        and intent.target_schema == SCHEMA_REVISION
+        and intent.target_sha
+        not in _F_RELEASE_SHAS
+        | _G_RELEASE_SHAS
+        | _H_RELEASE_SHAS
+        | _I_RELEASE_SHAS
+        | _J_RELEASE_SHAS
+        | _W1_RELEASE_SHAS
+        | _W2_ROUTING_RELEASE_SHAS
+        | _W2_CAPACITY_RELEASE_SHAS
+        | {SOURCE_SHA}
+    ):
+        return 8
     raise TransitionUnavailable("image_transition_pair_unavailable")
 
 
@@ -335,6 +362,7 @@ def _intent_prefix(intent: ImageTransition) -> list[ImageTransition]:
                     5: _J_RELEASE_SHAS,
                     6: _W1_RELEASE_SHAS,
                     7: _W2_ROUTING_RELEASE_SHAS,
+                    8: _W2_CAPACITY_RELEASE_SHAS,
                 }.get(kind, frozenset())
                 or item.previous_id != previous.operation_id
                 or previous.target_schema != item.source_schema
@@ -499,6 +527,7 @@ def _revision(session: Session) -> str:
         J_SCHEMA,
         W1_SCHEMA,
         W2_ROUTING_SCHEMA,
+        W2_CAPACITY_SCHEMA,
         SCHEMA_REVISION,
     ):
         raise TransitionUnavailable("image_transition_schema_unavailable")
@@ -562,7 +591,8 @@ def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
             4: J_SCHEMA,
             5: W1_SCHEMA,
             6: W2_ROUTING_SCHEMA,
-            7: SCHEMA_REVISION,
+            7: W2_CAPACITY_SCHEMA,
+            8: SCHEMA_REVISION,
         }.get(index, LEGACY_SCHEMA)
         if (
             row["target_schema"] != expected_schema
@@ -695,7 +725,14 @@ def check(session: Session, intent: ImageTransition, config: Settings) -> str:
     )
     if row is None or row["schema_revision"] != revision:
         raise TransitionUnavailable("image_transition_schema_unavailable")
-    if revision in (LEGACY_SCHEMA, J_SCHEMA, W1_SCHEMA, W2_ROUTING_SCHEMA, SCHEMA_REVISION):
+    if revision in (
+        LEGACY_SCHEMA,
+        J_SCHEMA,
+        W1_SCHEMA,
+        W2_ROUTING_SCHEMA,
+        W2_CAPACITY_SCHEMA,
+        SCHEMA_REVISION,
+    ):
         _owner_authorized(session, config)
         receipt = (
             session.execute(
@@ -782,7 +819,7 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
     if revision != intent.source_schema:
         raise TransitionUnavailable("image_transition_schema_unavailable")
     _migrate(session, intent.target_schema)
-    if intent.target_schema in (W1_SCHEMA, W2_ROUTING_SCHEMA, SCHEMA_REVISION):
+    if intent.target_schema in (W1_SCHEMA, W2_ROUTING_SCHEMA, W2_CAPACITY_SCHEMA, SCHEMA_REVISION):
         runtime_role = config.worker_v4_database_role
         if runtime_role is None:
             raise TransitionUnavailable("image_transition_owner_unavailable")
@@ -810,10 +847,18 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
                 f"worker_pool_audit_id_seq TO {quoted_role}"
             )
         )
-    if intent.target_schema == SCHEMA_REVISION:
+    if intent.target_schema == W2_CAPACITY_SCHEMA:
         tables = "worker_capacities, worker_resource_reservations"
         session.execute(text(f"REVOKE ALL ON {tables} FROM {quoted_role}"))
         session.execute(text(f"GRANT SELECT, INSERT, UPDATE ON {tables} TO {quoted_role}"))
+    if intent.target_schema == SCHEMA_REVISION:
+        tables = "worker_placement_cutover, worker_capacity_verifiers"
+        session.execute(text(f"REVOKE ALL ON {tables} FROM {quoted_role}"))
+        session.execute(text(f"GRANT SELECT ON {tables} TO {quoted_role}"))
+        session.execute(text(f"REVOKE ALL ON execution_placement_actions FROM {quoted_role}"))
+        session.execute(
+            text(f"GRANT SELECT, INSERT ON execution_placement_actions TO {quoted_role}")
+        )
     changed = session.execute(
         text("""
         UPDATE control_cluster_authority SET image_digest=:target, schema_revision=:schema

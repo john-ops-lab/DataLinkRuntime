@@ -75,6 +75,7 @@ class FixedWorkerConsumer:
         business_credentials: bool = False,
         managed_files: bool = False,
         builtin_wheel: bool = False,
+        check_capacity: bool = False,
     ) -> None:
         self._broker_file, self._lease = broker_file, lease
         self._root_lock, self._runtime_root = root_lock, runtime_root
@@ -97,6 +98,7 @@ class FixedWorkerConsumer:
             business_credentials=business_credentials,
             managed_files=managed_files,
             builtin_wheel=builtin_wheel,
+            check_capacity=check_capacity,
         )
 
     def _execute(self, body: bytes) -> _Outcome:

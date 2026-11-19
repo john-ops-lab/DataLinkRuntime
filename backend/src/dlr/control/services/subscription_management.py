@@ -415,9 +415,14 @@ def _fence(session: Session, subscription: EventSubscription) -> None:
 
 
 def _activate(session: Session, subscription: EventSubscription) -> SubscriptionActivation:
-    from dlr.control.services.reliable_execution import resolve_queue_target_worker
+    from dlr.control.schemas.worker_pool import FixedRoute
+    from dlr.control.services.reliable_execution import configured_dispatch_route
     from dlr.control.services.subscription_activation_policy import snapshot_policy
-    from dlr.control.services.worker_pool import fixed_route, snapshot_route
+    from dlr.control.services.worker_pool import (
+        adapter_route,
+        require_accepting_route,
+        snapshot_route,
+    )
     from dlr.control.services.worker_stage_capability_v4 import require_new_execution
 
     adapter = session.get(Adapter, subscription.adapter_id)
@@ -430,22 +435,23 @@ def _activate(session: Session, subscription: EventSubscription) -> Subscription
         from dlr.control.services.subscription_business_batch import require_revision_schema
 
         require_revision_schema(session, adapter.latest_version_id)
-    worker = resolve_queue_target_worker(session, adapter)
-    route = fixed_route(worker.id)
-    assert route is not None
+    reserved = require_accepting_route(session, adapter_route(adapter))
+    route = configured_dispatch_route(session, adapter, use_worker_reservations=reserved)
+    worker_id = route.worker_id if isinstance(route, FixedRoute) else None
     require_new_execution(
         session,
         adapter,
         version_id=adapter.latest_version_id,
         trigger="subscription",
         input_source_type="json",
-        target_worker_id=worker.id,
+        target_worker_id=worker_id,
+        awaiting_worker=reserved,
     )
     activation = SubscriptionActivation(
         subscription_id=subscription.id,
         config_version_id=config.id,
         revision_id=adapter.latest_version_id,
-        worker_id=worker.id,
+        worker_id=worker_id,
         route_snapshot=snapshot_route(session, route, adapter.language, "adapter").model_dump(
             mode="json"
         ),

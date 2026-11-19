@@ -10,6 +10,8 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    LargeBinary,
+    SmallInteger,
     String,
     UniqueConstraint,
     Uuid,
@@ -22,6 +24,68 @@ from dlr.control.db import Base
 
 RESOURCE_DIMENSIONS = ("cpu_millis", "memory_bytes", "pids", "tmp_bytes", "slots")
 OCCUPIED_RESERVATION_STATES = ("held", "claimed", "reclaiming")
+
+
+class WorkerPlacementCutover(Base):
+    __tablename__ = "worker_placement_cutover"
+    __table_args__ = (
+        CheckConstraint(
+            "id = 1 AND ((mode = 'fixed' AND paused_at IS NULL AND enabled_at IS NULL) "
+            "OR (mode = 'paused' AND paused_at IS NOT NULL AND enabled_at IS NULL) "
+            "OR (mode = 'reserved' AND enabled_at >= paused_at AND paused_at IS NOT NULL "
+            "AND enabled_at IS NOT NULL))",
+            name="ck_worker_placement_cutover_state",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, autoincrement=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ExecutionPlacementAction(Base):
+    """One audited explicit action on a frozen placement generation."""
+
+    __tablename__ = "execution_placement_actions"
+    __table_args__ = (
+        CheckConstraint(
+            "dispatch_generation > 0 AND action IN ('retry', 'cancel') AND "
+            "((actor_kind = 'superadmin' AND actor_id IS NULL) OR "
+            "(actor_kind = 'account' AND actor_id IS NOT NULL AND actor_id > 0))",
+            name="ck_execution_placement_actions_binding",
+        ),
+    )
+
+    execution_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("executions.id", ondelete="CASCADE"), primary_key=True
+    )
+    dispatch_generation: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    action: Mapped[str] = mapped_column(String(16), primary_key=True)
+    actor_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WorkerCapacityVerifier(Base):
+    __tablename__ = "worker_capacity_verifiers"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["worker_id", "worker_identity_id"],
+            ["workers.id", "workers.identity_id"],
+            name="fk_worker_capacity_verifiers_identity",
+        ),
+        CheckConstraint("octet_length(public_key)=32", name="ck_worker_capacity_verifier_key"),
+    )
+
+    worker_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    worker_identity_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    public_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    environment_name: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("worker_environment_classes.name", ondelete="RESTRICT"),
+        nullable=False,
+    )
 
 
 class WorkerResourceColumns:
@@ -68,6 +132,8 @@ class WorkerCapacities(WorkerResourceColumns, Base):
     nofile: Mapped[int] = mapped_column(BigInteger, nullable=False)
     storage_ready: Mapped[bool] = mapped_column(nullable=False)
     last_assignment_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    placement_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    quarantine_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class WorkerResourceReservation(WorkerResourceColumns, Base):

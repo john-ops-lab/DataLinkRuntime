@@ -1,4 +1,5 @@
 /** Read-only facts; maintenance actions have their own explicit intent flow. */
+import { Fragment } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { Worker } from "../types";
@@ -35,6 +36,33 @@ export default function WorkerMaintenanceObservation({ worker }: { worker: Worke
             <dt>{t("worker.maintenance.running")}</dt><dd>{snapshot.active_attempts}</dd>
             <dt>{t("worker.maintenance.unsettled")}</dt><dd>{snapshot.unsettled_attempts}</dd>
             <dt>{t("worker.maintenance.reconciliation")}</dt><dd>{t(snapshot.has_unreconciled_attempts ? "worker.maintenance.required" : "worker.maintenance.noHistoryBlock")}</dd>
+            {snapshot.placement_ledger && (
+              <>
+                {([
+                  ["allocatable", snapshot.placement_ledger.capacity?.allocatable ?? null],
+                  ["held", snapshot.placement_ledger.held],
+                  ["claimed", snapshot.placement_ledger.claimed],
+                  ["reclaiming", snapshot.placement_ledger.reclaiming],
+                ] as const).map(([name, resources]) => (
+                  <Fragment key={name}>
+                    <dt>{t(`worker.placement.${name}`)}</dt>
+                    <dd>{resources === null ? t("worker.placement.capacityUnknown") : t("worker.placement.resources", {
+                      cpu: resources.cpu_millis,
+                      memory: Math.floor(resources.memory_bytes / 1048576),
+                      pids: resources.pids,
+                      tmp: Math.floor(resources.tmp_bytes / 1048576),
+                      slots: resources.slots,
+                    })}</dd>
+                  </Fragment>
+                ))}
+                {snapshot.placement_ledger.capacity?.quarantine_until && (
+                  <>
+                    <dt>{t("worker.placement.quarantine")}</dt>
+                    <dd>{format(snapshot.placement_ledger.capacity.quarantine_until)}</dd>
+                  </>
+                )}
+              </>
+            )}
           </dl>
           {snapshot.last_recovery_disposition && (
             <div className="worker-maintenance-notice" data-testid="worker-recovery-disposition">

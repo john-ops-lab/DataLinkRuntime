@@ -1,6 +1,6 @@
 """Assignment and lifecycle of one prepaid dispatch generation."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from uuid import UUID
 
@@ -13,6 +13,7 @@ from dlr.common.cpu_accounting import CPU_ACCOUNTING_VERSION
 from dlr.control.models import (
     Adapter,
     AdapterExecutionSlot,
+    AttemptLeaseCandidateV4,
     Execution,
     ExecutionAttempt,
     ExecutionOutbox,
@@ -33,6 +34,7 @@ from dlr.control.services import (
     rabbitmq,
     worker_availability,
     worker_capacity,
+    worker_placement_wait,
     worker_pool,
 )
 from dlr.control.services.business_credentials_v4 import execution_bindings
@@ -108,29 +110,33 @@ def _candidate_page(
     return page, page[-1]
 
 
-def _allows(
+def _ineligible_reason(
     session: Session,
     execution: Execution,
     snapshot: RouteSnapshot,
     pool: WorkerPool | None,
     worker: Worker,
     environment: EnvironmentRule,
-) -> bool:
+) -> str | None:
     language = snapshot.required_language
     if language not in worker.capabilities or language not in environment.toolchains:
-        return False
+        return "environment_mismatch"
     route = snapshot.route
     if isinstance(route, FixedRoute):
-        return route.worker_id == execution.target_worker_id_snapshot == worker.id
+        return (
+            None
+            if route.worker_id == execution.target_worker_id_snapshot == worker.id
+            else "no_compatible_worker"
+        )
     if (
         pool is None
         or pool.id != route.pool_id
         or not isinstance(snapshot.environment, EnvironmentRule)
     ):
-        return False
+        return "no_compatible_worker"
     revision = session.get(WorkerPoolRevision, (pool.id, route.pool_revision))
     if revision is None or worker_pool.pool_route(revision) != route:
-        return False
+        return "no_compatible_worker"
     member = session.get(WorkerPoolMember, (pool.id, worker.id), populate_existing=True)
     scopes = set()
     if execution.input_source_type == "managed_files":
@@ -138,22 +144,28 @@ def _allows(
     if execution.builtin_package_snapshot is not None:
         scopes.add(builtin_wheel_v4.CAPABILITY)
     if not scopes.issubset(environment.builtin_materials):
-        return False
+        return "environment_mismatch"
+    reason = worker_pool.member_rule_reason(
+        pool,
+        revision,
+        worker,
+        member,
+        expected_environment=snapshot.environment,
+        verified_environment=environment,
+        language=language,
+        credential_ids=frozenset(
+            ref.credential_id for ref in execution_bindings(session, execution.id)
+        ),
+        material_scopes=frozenset(scopes),
+    )
     return (
-        worker_pool.member_rule_reason(
-            pool,
-            revision,
-            worker,
-            member,
-            expected_environment=snapshot.environment,
-            verified_environment=environment,
-            language=language,
-            credential_ids=frozenset(
-                ref.credential_id for ref in execution_bindings(session, execution.id)
-            ),
-            material_scopes=frozenset(scopes),
-        )
-        is None
+        {
+            "pool_placement_not_authorized": "scope_denied",
+            "worker_environment_incompatible": "environment_mismatch",
+            "worker_environment_unknown": "capacity_unknown",
+        }.get(reason, "no_compatible_worker")
+        if reason is not None
+        else None
     )
 
 
@@ -177,7 +189,9 @@ def _current_outbox(
     return next((r for r in rows if r.dispatch_generation == execution.dispatch_generation), None)
 
 
-def reserve_execution(session: Session, execution_id: int) -> UUID | None:
+def reserve_execution(
+    session: Session, execution_id: int, *, observed_change_at: datetime | None = None
+) -> UUID | None:
     """Place an awaiting Execution. The caller commits or rolls back the whole decision."""
     session.execute(text("SET LOCAL lock_timeout = '3s'"))
     adapter_id = session.scalar(
@@ -236,8 +250,20 @@ def reserve_execution(session: Session, execution_id: int) -> UUID | None:
         or execution.resource_class != "standard"
     ):
         return None
+    now = worker_availability.current_time(session)
+    tracks_placement = execution.placement_origin is not None
+    capacity_changed = observed_change_at is not None and (
+        execution.placement_checked_at is None
+        or observed_change_at > execution.placement_checked_at
+    )
+    if tracks_placement and not worker_placement_wait.can_place(
+        execution, now=now, capacity_changed=capacity_changed
+    ):
+        return None
     slot = _lock_slot(session, execution)
     if slot is None or slot.active_attempt_id is not None:
+        if tracks_placement:
+            worker_placement_wait.defer(execution, now=now, reason="adapter_slot_busy")
         return None
     execution.placement_after_worker_id = resume_at
     pool = lock_pool(session, execution)
@@ -249,43 +275,69 @@ def reserve_execution(session: Session, execution_id: int) -> UUID | None:
         if worker is not None:
             locked_workers.append((worker, worker_capacity.lock_capacity(session, worker.id)))
     if not locked_workers:
+        if tracks_placement:
+            worker_placement_wait.defer(
+                execution,
+                now=now,
+                reason="capacity_unknown" if page else "no_compatible_worker",
+                page_remaining=resume_at is not None,
+            )
         return None
     broker_targets = rabbitmq.ingress_ready_targets(
         session, [worker.id for worker, _ in locked_workers]
     )
     ranked = []
+    reason = "no_compatible_worker"
     for worker, capacity in locked_workers:
         if worker.id not in broker_targets:
+            reason = "broker_target_unverified"
             continue
         now = worker_availability.current_time(session)
         environment = worker_capacity.eligible_environment(
             session, worker, capacity, profile, now=now
         )
-        if (
-            environment is None
-            or capacity is None
-            or not _allows(session, execution, snapshot, pool, worker, environment)
-            or execution_block_reason(session, adapter, execution, candidate_worker_id=worker.id)
-            is not None
-        ):
+        if environment is None or capacity is None:
+            reason = (
+                "worker_draining" if worker.scheduling_state != "active" else "capacity_unknown"
+            )
+            continue
+        blocked_route = _ineligible_reason(session, execution, snapshot, pool, worker, environment)
+        if blocked_route is not None:
+            reason = blocked_route
+            continue
+        blocked = execution_block_reason(session, adapter, execution, candidate_worker_id=worker.id)
+        if blocked is not None:
+            reason = (
+                "scope_denied" if blocked.startswith("credentials_") else "environment_mismatch"
+            )
             continue
         used = worker_capacity.occupied_resources(session, worker.id)
         if used is None:
+            reason = "capacity_unknown"
             continue
         alloc = tuple(getattr(capacity, name) for name in RESOURCE_DIMENSIONS)
         if any(
             occupied + getattr(charge, name) > available
             for name, occupied, available in zip(RESOURCE_DIMENSIONS, used, alloc, strict=True)
         ):
+            reason = "capacity_insufficient"
             continue
         ratio = max(
             Fraction(occupied, available) for occupied, available in zip(used, alloc, strict=True)
         )
         assigned = capacity.last_assignment_at or datetime.min.replace(tzinfo=UTC)
         ranked.append(((ratio, assigned, worker.id), worker, capacity))
-    if not ranked or lock_generation(session, execution) is not None:
+    if not ranked:
+        if tracks_placement:
+            worker_placement_wait.defer(
+                execution, now=now, reason=reason, page_remaining=resume_at is not None
+            )
+        return None
+    if lock_generation(session, execution) is not None:
         return None
     now = worker_availability.current_time(session)
+    if tracks_placement and worker_placement_wait.expired(execution, now=now):
+        return None
     for _, worker, capacity in sorted(ranked, key=lambda item: item[0]):
         if (
             worker_capacity.eligible_environment(session, worker, capacity, profile, now=now)
@@ -314,10 +366,16 @@ def reserve_execution(session: Session, execution_id: int) -> UUID | None:
             raise ValueError("Worker reservation lacks its prepaid dispatch intent")
         execution.target_worker_id = worker.id
         execution.placement_after_worker_id = None
+        if tracks_placement:
+            worker_placement_wait.record_hold(execution)
         capacity.last_assignment_at = now
         outbox.bind_reservation(session, execution, row, reservation)
         session.flush()
         return reservation.id
+    if tracks_placement:
+        worker_placement_wait.defer(
+            execution, now=now, reason="capacity_unknown", page_remaining=resume_at is not None
+        )
     return None
 
 
@@ -335,6 +393,7 @@ def held_valid(
         reservation is None
         or capacity is None
         or reservation.status != "held"
+        or worker_placement_wait.expired(execution, now=now)
         or reservation.held_until <= now
         or reservation.execution_id != execution.id
         or reservation.dispatch_generation != execution.dispatch_generation
@@ -360,7 +419,7 @@ def held_valid(
     return (
         snapshot is not None
         and environment is not None
-        and _allows(session, execution, snapshot, pool, worker, environment)
+        and _ineligible_reason(session, execution, snapshot, pool, worker, environment) is None
     )
 
 
@@ -409,20 +468,29 @@ def invalidate_held(session: Session, execution_id: int) -> bool:
         or row.status not in {"pending", "published"}
     ):
         return False
-    release_held(reservation, now=now)
+    release_held(reservation, now=now, capacity=capacity)
     outbox.supersede(row, "worker_reservation_invalidated")
     execution.target_worker_id = None
     execution.dispatch_generation += 1
+    if execution.placement_origin is not None:
+        worker_placement_wait.reopen_after_revocation(execution, now=now)
     # This returns already accepted custody to the backlog even if it is now
     # above the new-admission line. Further ingress then fails the normal gate.
     outbox.create_dispatch_outbox(session, execution, available_at=now)
     return True
 
 
-def release_held(reservation: WorkerResourceReservation | None, *, now: datetime) -> None:
+def release_held(
+    reservation: WorkerResourceReservation | None,
+    *,
+    now: datetime,
+    capacity: WorkerCapacities | None = None,
+) -> None:
     if reservation is not None and reservation.status == "held":
         reservation.status = "released"
         reservation.released_at = now
+        if capacity is not None:
+            worker_capacity.signal_capacity_change(capacity, now=now)
 
 
 def release_cleaned_attempt(
@@ -431,7 +499,7 @@ def release_cleaned_attempt(
     """Use only while the verified cleanup transaction holds the Worker row."""
     if not execution.requires_worker_reservation:
         return
-    worker_capacity.lock_capacity(session, attempt.worker_id)
+    capacity = worker_capacity.lock_capacity(session, attempt.worker_id)
     reservation = session.scalar(
         select(WorkerResourceReservation)
         .where(WorkerResourceReservation.attempt_id == attempt.id)
@@ -449,7 +517,82 @@ def release_cleaned_attempt(
     if reservation.status in {"claimed", "reclaiming"}:
         reservation.status = "released"
         reservation.released_at = attempt.cleanup_settled_at
+        if capacity is not None:
+            worker_capacity.signal_capacity_change(capacity, now=attempt.cleanup_settled_at)
         _, rows = lock_incidents_and_outbox(session, execution.id)
         for row in rows:
             if row.reservation_id == reservation.id and row.status == "pending":
                 outbox.supersede(row, "worker_reservation_cleanup_settled")
+
+
+def fence_lost_attempt(
+    session: Session, execution: Execution, attempt: ExecutionAttempt, slot: AdapterExecutionSlot
+) -> datetime | None:
+    """Fence execution authority while retaining the original physical charge."""
+    from dlr.control.services.attempt_lease_candidates_v4 import (
+        AttemptLeaseCandidateError,
+        _already_committed,
+    )
+
+    _, worker, _, reservation = lock_target(session, execution)
+    if (
+        worker is None
+        or reservation is None
+        or reservation.status != "claimed"
+        or reservation.attempt_id != attempt.id
+        or reservation.worker_identity_id != worker.identity_id
+        or reservation.fencing_token != attempt.fencing_token
+        or slot.active_attempt_id != attempt.id
+        or slot.fencing_token != attempt.fencing_token
+        or execution.status != "running"
+        or execution.attempt_count != attempt.attempt_no
+    ):
+        return None
+    candidate = session.get(
+        AttemptLeaseCandidateV4, attempt.id, with_for_update=True, populate_existing=True
+    )
+    if candidate is None or candidate.nominal_until != attempt.lease_expires_at:
+        return None
+    try:
+        _already_committed(session, candidate)
+    except AttemptLeaseCandidateError:
+        return None
+    now = worker_availability.current_time(session)
+    lease_end = max(candidate.nominal_until, candidate.guard_until)
+    grace = execution.recovery_grace_seconds_snapshot
+    if grace is None or grace <= 0 or now < lease_end:
+        return None
+    attempt.recovery_not_before = lease_end + timedelta(seconds=grace)
+    reservation.status = "reclaiming"
+    if worker.instance_id == reservation.instance_id:
+        worker.capacity_state = "reconciling"
+    return now
+
+
+def retain_terminal_charge(
+    session: Session,
+    execution: Execution,
+    attempt: ExecutionAttempt,
+    *,
+    now: datetime,
+    quarantine: bool,
+) -> None:
+    """Keep a terminal Attempt's charge until its independent physical settlement."""
+    _, worker, capacity, reservation = lock_target(session, execution)
+    if (
+        worker is None
+        or capacity is None
+        or reservation is None
+        or reservation.status not in {"claimed", "reclaiming"}
+        or reservation.attempt_id != attempt.id
+        or reservation.fencing_token != attempt.fencing_token
+        or reservation.instance_id != attempt.worker_instance_id
+        or (quarantine and worker.instance_id != attempt.worker_instance_id)
+    ):
+        raise ValueError("Terminal Worker reservation binding unavailable")
+    reservation.status = "reclaiming"
+    if quarantine:
+        worker.capacity_state = "quarantined"
+        cutoff = now + timedelta(seconds=30)
+        capacity.quarantine_until = max(capacity.quarantine_until or cutoff, cutoff)
+        worker_capacity.signal_capacity_change(capacity, now=now)

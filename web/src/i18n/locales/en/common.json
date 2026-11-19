@@ -312,6 +312,15 @@
     "dispatchReady": "Message execution available",
     "dispatchUnavailable": "Message execution unavailable",
     "cacheManagement": "Manage cache",
+    "placement": {
+      "allocatable": "Verified allocatable capacity",
+      "held": "Reserved before Claim",
+      "claimed": "Claimed",
+      "reclaiming": "Awaiting physical cleanup",
+      "quarantine": "Earliest quarantine review",
+      "capacityUnknown": "No eligible current sample",
+      "resources": "{{cpu}} mCPU · {{memory}} MiB memory · {{pids}} PIDs · {{tmp}} MiB scratch · {{slots}} slots"
+    },
     "maintenance": {
       "summary": "{{ready}}/{{total}} Workers have normal observations",
       "remotePython": "Remote fixed Worker (limited)",

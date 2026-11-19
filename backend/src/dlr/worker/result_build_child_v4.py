@@ -214,11 +214,19 @@ def _run(channel: socket.socket, address_space_bytes: int) -> None:
                 error_code=WORKER_FORCE_STOP_CODE,
                 error_class="cancelled",
             )
-        elif stop_reason == "preparation_failed" and exit_code is None:
+        elif (
+            stop_reason in {"preparation_failed", "resource_capacity_unavailable"}
+            and exit_code is None
+        ):
+            capacity_failed = stop_reason == "resource_capacity_unavailable"
             result.update(
                 status="failed",
-                error="input preparation failed",
-                error_code="attempt_prepare_failed",
+                error="Worker resource capacity unavailable"
+                if capacity_failed
+                else "input preparation failed",
+                error_code="resource_capacity_unavailable"
+                if capacity_failed
+                else "attempt_prepare_failed",
                 error_class="platform_transient",
             )
         elif stop_reason == "toolchain_build_failed" and exit_code is None:

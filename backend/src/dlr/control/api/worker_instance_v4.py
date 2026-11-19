@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from dlr.common.builtin_wheel_v4 import CAPABILITY as BUILTIN_WHEEL_CAPABILITY
 from dlr.common.business_credentials_v4 import CAPABILITY
 from dlr.common.managed_files_v4 import CAPABILITY as MANAGED_FILES_CAPABILITY
+from dlr.common.worker_capacity_report import SignedCapacityObservation
 from dlr.common.worker_languages_v4 import valid_capabilities
 from dlr.common.worker_protocol_v4 import ADAPTER_CLEANUP_CAPABILITY
 from dlr.control import db
@@ -226,7 +227,9 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
     except (ValueError, UnicodeError, RecursionError, ValidationError):
         raise _error(422) from None
 
-    def commit_and_observe() -> None:
+    def commit_and_observe() -> str:
+        from dlr.control.services.worker_capacity import lock_capacity, signal_capacity_change
+
         process = _process(request)
 
         def verify() -> Worker:
@@ -259,8 +262,13 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
         worker.isolation_capabilities = expected_flags
         worker.v4_storage_profile = storage
         worker.isolation_preflight_status = "passed"
-        worker.isolation_preflight_at = worker_availability.current_time(session)
-        worker.capacity_state = "ready"
+        observed_at = worker_availability.current_time(session)
+        worker.isolation_preflight_at = observed_at
+        capacity = lock_capacity(session, worker.id)
+        state = "quarantined" if capacity is not None and capacity.quarantine_until else "ready"
+        if worker.capacity_state != state and capacity is not None:
+            signal_capacity_change(capacity, now=observed_at)
+        worker.capacity_state = state
         session.flush()
         verify()
         fence.check()
@@ -272,7 +280,7 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
         fence = process.worker_fence(session)
         worker = verify()
         if (
-            worker.capacity_state != "ready"
+            worker.capacity_state != state
             or worker.capabilities != report.capabilities
             or worker.isolation_capabilities != expected_flags
             or worker.v4_storage_profile != storage
@@ -283,15 +291,68 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
         process.check_authority()
         session.rollback()
         process.check_authority()
+        return state
 
     try:
-        await run_in_threadpool(commit_and_observe)
+        state = await run_in_threadpool(commit_and_observe)
     except Exception:  # noqa: BLE001 - a failed commit or observation remains unknown
         _rollback(session)
         raise _error(503) from None
     return JSONResponse(
-        {"capacity_state": "ready", "instance_generation": generation}, headers=_HEADERS
+        {"capacity_state": state, "instance_generation": generation}, headers=_HEADERS
     )
+
+
+@router.post("/api/workers/{worker_id}/v4/capacity")
+async def capacity(request: Request, worker_id: int, session: DbSession) -> JSONResponse:
+    """Accept only an observation signed by the independently enrolled verifier."""
+    from dlr.control.services import worker_capacity
+
+    credential, instance, generation, proof = _proved_identity(request, worker_id)
+    raw = bytearray()
+    try:
+        if request.url.query:
+            raise ValueError
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 4096:
+                raise ValueError
+            raw.extend(chunk)
+        report = SignedCapacityObservation.model_validate_json(raw)
+    except (ValueError, UnicodeError, RecursionError, ValidationError):
+        raise _error(422) from None
+
+    def commit_sample() -> int:
+        process = _process(request)
+        fence = process.worker_fence(session)
+        candidates.validate_current_proof(
+            session,
+            worker_id=worker_id,
+            credential=credential,
+            instance_id=instance,
+            generation=generation,
+            token=proof,
+            authority=process.worker_proof_authority(session),
+        )
+        worker = session.get(Worker, worker_id, populate_existing=True)
+        if worker is None:
+            raise ValueError
+        observed = worker_capacity.record_attested_capacity(session, worker, report)
+        version = observed.capacity_version
+        fence.check()
+        process.check_authority()
+        session.commit()
+        process.check_authority()
+        return version
+
+    try:
+        version = await run_in_threadpool(commit_sample)
+    except (ValueError, candidates.LeaseCandidateError):
+        _rollback(session)
+        raise _error(409) from None
+    except Exception:
+        _rollback(session)
+        raise _error(503) from None
+    return JSONResponse({"capacity_version": version}, headers=_HEADERS)
 
 
 @router.post("/api/workers/{worker_id}/v4/proof-offline", status_code=204)

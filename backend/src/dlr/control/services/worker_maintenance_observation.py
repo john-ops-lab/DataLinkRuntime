@@ -13,6 +13,7 @@ from dlr.control.security import Principal
 from dlr.control.services import worker_availability
 from dlr.control.services.attempt import ACTIVE_ATTEMPT_STATUSES
 from dlr.control.services.worker_identity_reservation import _actor
+from dlr.control.services.worker_placement_observation import worker_ledger
 
 
 class ObservationNotFound(Exception):
@@ -142,6 +143,7 @@ def read_status(
             current_drain,
             disposition,
             current_action,
+            worker_ledger(),
         )
         .select_from(Worker)
         .join(clock, true())
@@ -165,6 +167,7 @@ def read_status(
             drain,
             last,
             action,
+            ledger,
         ) = row
         return {
             "worker_id": worker.id,
@@ -172,6 +175,9 @@ def read_status(
             "scheduling_state": worker.scheduling_state,
             "maintenance_version": worker.maintenance_version,
             "capacity_state": worker.capacity_state,
+            "placement_ledger": ledger
+            if ledger["capacity"] or ledger["reclaiming"]["slots"]
+            else None,
             "online": worker_availability.is_effectively_online(worker, now=observed_at),
             "instance_id": str(worker.instance_id) if worker.instance_id is not None else None,
             "instance_generation": worker.instance_generation,

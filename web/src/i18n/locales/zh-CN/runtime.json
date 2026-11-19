@@ -381,6 +381,24 @@
       "responseTimeoutHint": "1–300 秒，默认 30 秒，包含排队和重试时间。超时返回 HTTP 504 和执行 ID，执行仍会继续；使用相同 Idempotency-Key 和请求内容重试可等待原执行。调用方及代理超时应大于此时限。"
     }
   },
+  "placement": {
+    "age": "已等待选址 · {{seconds}} 秒",
+    "deadline": "选址截止时间 · {{time}}",
+    "reclaiming": "待物理清理的尝试 · {{count}}",
+    "retry": "重试选址",
+    "reason": {
+      "adapter_slot_busy": "Adapter 的执行槽位已占用",
+      "no_compatible_worker": "没有可用的兼容 Worker",
+      "worker_draining": "兼容 Worker 正在排空或已停用",
+      "capacity_unknown": "等待经过核验的 Worker 容量",
+      "capacity_insufficient": "兼容 Worker 的可分配容量不足",
+      "environment_mismatch": "Worker 环境未满足冻结要求",
+      "scope_denied": "Worker 缺少所需的选址或材料授权",
+      "placement_limit_reached": "已达预留次数上限，管理员可重试选址",
+      "placement_deadline_expired": "已超过选址截止时间",
+      "broker_target_unverified": "等待核验 Worker 队列"
+    }
+  },
   "history": {
     "activeTrigger": "主动触发",
     "scheduledTrigger": "定时触发",

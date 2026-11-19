@@ -657,8 +657,11 @@ def _dispose_incident_transaction(
         )
         return _commit_result(session, receipt, incident, execution)
 
+    from dlr.control.services.worker_placement_cutover import mode
+
     if execution.dispatch_backend != "rabbitmq" or (
-        execution.requires_worker_reservation and action == "recover"
+        action == "recover"
+        and (execution.requires_worker_reservation or mode(session, hold=True) != "fixed")
     ):
         return _reject(
             session,

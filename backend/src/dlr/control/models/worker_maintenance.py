@@ -43,7 +43,8 @@ _RESULT_DISPOSITION = """
       AND recovery_disposition->>'result_intent_id' <>
           '00000000-0000-0000-0000-000000000000'
       AND ((recovery_disposition->>'attempt_status' = 'worker_lost'
-            AND recovery_disposition->>'execution_status' IN ('dead_letter','cancelled'))
+            AND recovery_disposition->>'execution_status'
+                IN ('dead_letter','cancelled','retry_wait'))
            OR (recovery_disposition->>'attempt_status' = 'cancelled'
                AND recovery_disposition->>'execution_status' = 'cancelled'))
       AND jsonb_typeof(recovery_disposition->'dispatch_generation') = 'number'
@@ -73,7 +74,7 @@ _FORCE_DISPOSITION = """
     AND recovery_disposition->>'force_stop_operation_id' <>
         '00000000-0000-0000-0000-000000000000'
     AND ((recovery_disposition->>'attempt_status' = 'worker_lost'
-          AND recovery_disposition->>'execution_status' IN ('dead_letter','cancelled'))
+          AND recovery_disposition->>'execution_status' IN ('dead_letter','cancelled','retry_wait'))
          OR (recovery_disposition->>'attempt_status' = 'cancelled'
              AND recovery_disposition->>'execution_status' = 'cancelled'))
     AND jsonb_typeof(recovery_disposition->'dispatch_generation') = 'number'

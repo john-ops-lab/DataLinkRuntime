@@ -1,9 +1,11 @@
 /** Strict, secret-free admin observation parsing; no execution authority. */
 import { REQUIRED_ISOLATION_CAPABILITIES } from "./system-status";
 import type {
+  PlacementResources,
   WorkerDrainOperation,
   WorkerMaintenanceReceipt,
   WorkerMaintenanceSnapshot,
+  WorkerPlacementLedger,
   WorkerRecoveryDisposition,
 } from "./types";
 
@@ -49,7 +51,8 @@ function disposition(value: unknown): value is WorkerRecoveryDisposition {
       || (value.kind === "force_stopped_no_result" && value.reason === "force_stop_no_result_outcome_unknown"))
     && integer(value.execution_id, 1) && integer(value.attempt_id, 1)
     && ((value.attempt_status === "worker_lost"
-      && (value.execution_status === "dead_letter" || value.execution_status === "cancelled"))
+      && (value.execution_status === "dead_letter" || value.execution_status === "cancelled"
+        || value.execution_status === "retry_wait"))
       || (value.attempt_status === "cancelled" && value.execution_status === "cancelled"));
 }
 
@@ -66,6 +69,28 @@ function pickDisposition(value: WorkerRecoveryDisposition): WorkerRecoveryDispos
     kind: value.kind, reason: value.reason, execution_id: value.execution_id,
     attempt_id: value.attempt_id, attempt_status: value.attempt_status, execution_status: value.execution_status,
   };
+}
+
+function placementResources(value: unknown): PlacementResources | null {
+  if (!record(value) || !integer(value.cpu_millis) || !integer(value.memory_bytes)
+    || !integer(value.pids) || !integer(value.tmp_bytes) || !integer(value.slots)) return null;
+  return { cpu_millis: value.cpu_millis, memory_bytes: value.memory_bytes,
+    pids: value.pids, tmp_bytes: value.tmp_bytes, slots: value.slots };
+}
+
+function placementLedger(value: unknown): WorkerPlacementLedger | null {
+  if (!record(value)) return null;
+  const held = placementResources(value.held);
+  const claimed = placementResources(value.claimed);
+  const reclaiming = placementResources(value.reclaiming);
+  if (held === null || claimed === null || reclaiming === null) return null;
+  if (value.capacity === null) return { capacity: null, held, claimed, reclaiming };
+  if (!record(value.capacity) || !time(value.capacity.sampled_at)
+    || !nullableTime(value.capacity.quarantine_until)) return null;
+  const allocatable = placementResources(value.capacity.allocatable);
+  if (allocatable === null && value.capacity.allocatable !== null) return null;
+  return { capacity: { allocatable, sampled_at: value.capacity.sampled_at,
+    quarantine_until: value.capacity.quarantine_until }, held, claimed, reclaiming };
 }
 
 /** Missing/unknown contracts remain unknown, including old Control responses. */
@@ -117,6 +142,7 @@ export function parseWorkerMaintenanceSnapshot(value: unknown, workerId: number)
     current_maintenance_action: value.current_maintenance_action,
     ...(value.force_stop_available === undefined ? {} : { force_stop_available: value.force_stop_available }),
     last_recovery_disposition: value.last_recovery_disposition === null ? null : pickDisposition(value.last_recovery_disposition),
+    ...(value.placement_ledger === undefined ? {} : { placement_ledger: placementLedger(value.placement_ledger) }),
   };
 }
 

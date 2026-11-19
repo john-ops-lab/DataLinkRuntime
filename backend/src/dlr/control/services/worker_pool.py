@@ -52,6 +52,16 @@ def require_fixed_route(route: FixedRoute | PoolRoute | None) -> None:
         raise domain_error(409, "pool_routing_not_enabled", "Worker Pool execution is not enabled")
 
 
+def require_accepting_route(session: Session, route: FixedRoute | PoolRoute | None) -> bool:
+    """Return whether a new responsibility uses reservation routing."""
+    from dlr.control.services.worker_placement_cutover import accepting_mode
+
+    reserved = accepting_mode(session) == "reserved"
+    if not reserved:
+        require_fixed_route(route)
+    return reserved
+
+
 def _pool(session: Session, pool_id: int, *, lock: bool = False) -> WorkerPool:
     row = session.get(WorkerPool, pool_id, with_for_update=lock, populate_existing=lock)
     if row is None:
@@ -106,7 +116,11 @@ def snapshot_route(
     if isinstance(route, PoolRoute):
         validate_pool_route(session, route)
         environment = _environment(session, route.environment_class)
-        wait_policy = PlacementWaitPolicy()
+        from dlr.common.config import settings
+
+        wait_policy = PlacementWaitPolicy(
+            placement_wait_timeout_seconds=settings.worker_placement_wait_timeout_seconds
+        )
     return RouteSnapshot.model_validate(
         {
             "route": route,
@@ -146,6 +160,12 @@ def delivery_target(
     ):
         return None
     return require_activation_worker(activation)
+
+
+def active_delivery_target(session: Session, activation: SubscriptionActivation) -> int | None:
+    from dlr.control.services.worker_placement_cutover import mode
+
+    return delivery_target(activation, use_worker_reservations=mode(session) == "reserved")
 
 
 def activation_snapshot(

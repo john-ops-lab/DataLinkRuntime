@@ -154,6 +154,12 @@ class StagedClaim:
     redaction_identity: tuple[int, int, int] | None = field(default=None, repr=False)
     preparation_failed: bool = False
     input_files: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    check_capacity: bool = False
+    capacity_failed: bool = False
+
+    @property
+    def preparation_only(self) -> bool:
+        return self.preparation_failed or self.capacity_failed
 
 
 class ClaimPreparer:
@@ -165,17 +171,20 @@ class ClaimPreparer:
         business_credentials: bool = False,
         managed_files: bool = False,
         builtin_wheel: bool = False,
+        check_capacity: bool = False,
     ) -> None:
         if (
             type(business_credentials) is not bool
             or type(managed_files) is not bool
             or type(builtin_wheel) is not bool
+            or type(check_capacity) is not bool
             or (builtin_wheel and not managed_files)
         ):
             raise ValueError("Worker capability unavailable")
         self._business_credentials = business_credentials
         self._managed_files = managed_files
         self._builtin_wheel = builtin_wheel
+        self._check_capacity = check_capacity
         self._pid = os.getpid()
         self._lock = threading.Lock()
         self._poisoned = False
@@ -521,6 +530,7 @@ class ClaimPreparer:
                     launch_max,
                     preparation_failed=failed,
                     input_files=input_files,
+                    check_capacity=self._check_capacity,
                 )
                 if prepared.business_credentials:
                     redaction_fd = os.dup(launch_fd)

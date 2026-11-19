@@ -249,6 +249,9 @@ def valid_stopped(
         if prepared.get("preparation_failed"):
             if value["stop_reason"] != "preparation_failed":
                 return False
+        elif value["stop_reason"] == "resource_capacity_unavailable":
+            if force or value["sandbox_mount_expected"] is not False:
+                return False
         elif value["stop_reason"] not in (
             None,
             "execution_cutoff",
@@ -672,6 +675,8 @@ def _persist_physical_stop(
                 stopped["stop_reason"] = (
                     WORKER_FORCE_STOP_CODE if force_operation else owner._observation.stop_reason
                 )
+                if staged.capacity_failed and stopped["stop_reason"] == "preparation_failed":
+                    stopped["stop_reason"] = "resource_capacity_unavailable"
             if result_record is None:
                 stopped.update(force_stop_operation_id=str(force_operation), result_record={})
             else:

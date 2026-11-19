@@ -418,6 +418,11 @@ def activate(
             worker.scheduling_state = "active"
             state = "active"
             worker.maintenance_version = version
+            from dlr.control.services.worker_capacity import lock_capacity, signal_capacity_change
+
+            capacity = lock_capacity(session, worker_id)
+            if capacity is not None:
+                signal_capacity_change(capacity, now=now)
             session.add(
                 WorkerMaintenanceOperation(
                     request_id=payload.request_id,

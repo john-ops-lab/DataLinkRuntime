@@ -17,6 +17,7 @@ from dlr.control.schemas.reliable_runtime import (
     IncidentDispositionBody,
     IncidentDispositionPage,
     IncidentDispositionResponse,
+    PlacementRetryBody,
     ReliableExecutionDetail,
     ReplayResponse,
 )
@@ -90,6 +91,7 @@ def get_reliable_detail(
         session,
         execution_id,
         can_edit=access.level in {"admin", "owner", "edit"},
+        can_retry_placement=principal.kind == "superadmin" or principal.role == "admin",
     )
 
 
@@ -183,7 +185,22 @@ def cancel_execution(
     """
     adapter_access.require_execution_access(session, execution_id, principal, "edit")
     return ExecutionResponse.model_validate(
-        execution_service.cancel_execution(session, execution_id)
+        execution_service.cancel_execution(session, execution_id, principal=principal)
+    )
+
+
+@router.post("/api/executions/{execution_id}/placement-retry", response_model=ExecutionResponse)
+def retry_placement(
+    execution_id: int,
+    payload: PlacementRetryBody,
+    principal: Annotated[Principal, Depends(require_admin_principal)],
+    session: DbSession,
+) -> ExecutionResponse:
+    from dlr.control.services.worker_placement_wait import retry_placement
+
+    adapter_access.require_execution_access(session, execution_id, principal, "edit")
+    return ExecutionResponse.model_validate(
+        retry_placement(session, execution_id, payload.expected_generation, principal)
     )
 
 

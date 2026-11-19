@@ -19,7 +19,7 @@ from dlr.common.config import settings
 from dlr.common.worker_languages_v4 import valid_capabilities
 from dlr.control.models import Adapter, AdapterCredentialBinding, AdapterVersion, Execution, Worker
 from dlr.control.models.subscription import SubscriptionActivation
-from dlr.control.schemas.worker_pool import RouteSource
+from dlr.control.schemas.worker_pool import FixedRoute, PoolRoute, RouteSource
 from dlr.control.services import admission, idempotency, outbox, worker_pool
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.execution import (
@@ -204,6 +204,28 @@ def resolve_queue_target_worker(
     return worker
 
 
+def configured_dispatch_route(
+    session: Session, adapter: Adapter, *, use_worker_reservations: bool
+) -> FixedRoute | PoolRoute:
+    if not use_worker_reservations:
+        fixed_route = worker_pool.fixed_route(resolve_queue_target_worker(session, adapter).id)
+        assert fixed_route is not None
+        return fixed_route
+    route = worker_pool.adapter_route(adapter)
+    if isinstance(route, PoolRoute):
+        return worker_pool.validate_pool_route(session, route)
+    if isinstance(route, FixedRoute):
+        worker = session.get(Worker, route.worker_id)
+        if (
+            worker is not None
+            and worker.protocol_version == 4
+            and worker.identity_lifecycle == "reserved"
+            and worker.identity_enrolled_at is not None
+        ):
+            return route
+    raise domain_error(409, "runtime_worker_invalid", "Runtime route is unavailable")
+
+
 def _db_now(session: Session) -> datetime:
     from dlr.control.services.input_config import database_now
 
@@ -359,7 +381,7 @@ def accept_execution(
     Production HTTP and background callers retain the default.
     """
 
-    from dlr.control.services import rabbitmq
+    from dlr.control.services import rabbitmq, worker_placement_cutover, worker_placement_wait
 
     if trigger != "subscription" and (
         credential_bindings_override is not None or subscription_activation_id is not None
@@ -408,6 +430,8 @@ def accept_execution(
             )
         return existing
 
+    reserved_mode = worker_placement_cutover.accepting_mode(session) == "reserved"
+    use_worker_reservations = use_worker_reservations or reserved_mode
     activation = None
     source: RouteSource
     if use_worker_reservations and not settings.worker_remote_v4_enabled:
@@ -465,7 +489,7 @@ def accept_execution(
             version_id=version_id,
             worker_id=worker_id_override,
         )
-    from dlr.control.schemas.worker_pool import FixedRoute
+    from dlr.control.schemas.worker_pool import PlacementWaitPolicy
     from dlr.control.services.worker_stage_capability_v4 import require_new_execution
 
     require_new_execution(
@@ -494,6 +518,8 @@ def accept_execution(
         route = (
             worker_pool.fixed_route(worker.id)
             if worker is not None
+            else configured_dispatch_route(session, adapter, use_worker_reservations=True)
+            if reserved_mode
             else worker_pool.adapter_route(adapter)
         )
         if route is None:
@@ -571,6 +597,15 @@ def accept_execution(
     )
     # Keep the DB clock as the accepted-at source for all generated facts.
     execution.queued_at = now
+    if reserved_mode:
+        wait_policy = route_snapshot.wait_policy
+        timeout = (
+            wait_policy.placement_wait_timeout_seconds
+            if isinstance(wait_policy, PlacementWaitPolicy)
+            else settings.worker_placement_wait_timeout_seconds
+        )
+        execution.placement_origin = "v4"
+        worker_placement_wait.start_cycle(execution, now=now, timeout_seconds=timeout)
     if lookup.record is not None:  # pragma: no cover - handled above
         raise AssertionError("duplicate idempotency record")
     if idempotency_key is not None:

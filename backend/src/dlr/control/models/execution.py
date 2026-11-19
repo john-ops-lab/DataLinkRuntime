@@ -206,6 +206,23 @@ class Execution(RouteSnapshotColumns, Base):
     __table_args__ = (
         pool_reference("fk_executions_pool_revision"),
         CheckConstraint(
+            "(placement_origin IS NULL OR placement_origin IN ('v4', 'legacy_v3', 'legacy_v4')) "
+            "AND (placement_wait_timeout_seconds IS NULL "
+            "OR placement_wait_timeout_seconds BETWEEN 30 AND 86400) "
+            "AND (placement_deadline_at IS NULL OR placement_wait_timeout_seconds IS NOT NULL) "
+            "AND (placement_origin IS DISTINCT FROM 'legacy_v3' "
+            "OR (placement_deadline_at IS NULL AND placement_wait_timeout_seconds IS NULL)) "
+            "AND placement_hold_count BETWEEN 0 AND 10 AND placement_misses BETWEEN 0 AND 6",
+            name="ck_executions_placement_cycle",
+        ),
+        Index(
+            "ix_executions_placement_due",
+            "next_placement_at",
+            "adapter_id",
+            "id",
+            postgresql_where=text("requires_worker_reservation AND status = 'queued'"),
+        ),
+        CheckConstraint(
             "route_pool_id IS NULL OR target_worker_id_snapshot IS NULL",
             name="ck_executions_pool_snapshot_target",
         ),
@@ -373,6 +390,18 @@ class Execution(RouteSnapshotColumns, Base):
     )
     # A bounded placement pass resumes after this Pool member on the next visit.
     placement_after_worker_id: Mapped[int | None] = mapped_column(BigInteger)
+    placement_origin: Mapped[str | None] = mapped_column(String(16))
+    placement_wait_timeout_seconds: Mapped[int | None] = mapped_column(Integer)
+    placement_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    placement_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_placement_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    placement_hold_count: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default=text("0")
+    )
+    placement_misses: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default=text("0")
+    )
+    placement_reason: Mapped[str | None] = mapped_column(String(64))
     queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempt_count: Mapped[int] = mapped_column(

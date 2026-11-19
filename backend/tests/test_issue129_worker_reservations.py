@@ -6,15 +6,18 @@ from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from dlr.common.config import settings
 from dlr.common.cpu_accounting import CPU_ACCOUNTING_VERSION
+from dlr.common.worker_capacity_report import CapacityObservation, sign_observation
 from dlr.control.models import (
     Adapter,
     AdapterExecutionSlot,
     AdapterVersion,
+    AttemptLeaseCandidateV4,
     EventDelivery,
     EventReceipt,
     EventSubscription,
@@ -28,13 +31,16 @@ from dlr.control.models import (
     SubscriptionQuota,
     Worker,
     WorkerLeaseCandidateV4,
+    WorkerPlacementCutover,
     WorkerPoolMember,
     WorkerResourceReservation,
 )
+from dlr.control.models.worker_capacity import ExecutionPlacementAction
 from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
 from dlr.control.schemas.worker_pool import EnvironmentRule, PoolRoute
 from dlr.control.security import Principal
 from dlr.control.services import (
+    attempt,
     incident_disposition,
     infrastructure_dlq,
     outbox,
@@ -45,6 +51,10 @@ from dlr.control.services import (
     worker_claim_v4,
     worker_credentials,
     worker_identity_reservation,
+    worker_maintenance_observation,
+    worker_placement_cutover,
+    worker_placement_scheduler,
+    worker_placement_wait,
     worker_pool,
     worker_reservation,
 )
@@ -59,6 +69,7 @@ from dlr.control.services.worker_lease_candidates_v4 import (
     issue_committed_candidate_proof,
     stage_renewal_candidate,
 )
+from dlr.control.services.worker_lease_proof_v4 import public_key_bytes
 from test_issue129_pool_routing import pool_setup  # noqa: F401
 from test_issue219_delivery import delivery_id, receive, world  # noqa: F401
 from test_issue222_business_batch import batch_world  # noqa: F401
@@ -76,33 +87,37 @@ def placement(session_factory, pool_setup, monkeypatch):  # noqa: F811
     return session_factory, pool, route, EnvironmentRule.model_validate(environment), authority
 
 
-def _capacity(session, worker_id, environment, *, slots=1, nofile=None, age=0):
+def _capacity(session, worker_id, environment, *, slots=1, nofile=None, age=0, signing_key=None):
     worker = session.get(Worker, worker_id)
     headroom = worker_capacity.Resources(
         cpu_millis=250, memory_bytes=32 * 1024 * 1024, pids=3, tmp_bytes=4096, slots=0
     )
-    return worker_capacity.record_verified_capacity(
-        session,
-        worker_id,
-        worker_capacity.VerifiedHostEnvelope(
-            worker_identity_id=worker.identity_id,
-            instance_id=worker.instance_id,
-            instance_generation=worker.instance_generation,
-            sampled_at=worker_availability.current_time(session) - timedelta(seconds=age),
-            envelope_fingerprint="e" * 64,
-            total=worker_capacity.Resources(
-                cpu_millis=260,
-                memory_bytes=settings.sandbox_memory_bytes + headroom.memory_bytes,
-                pids=settings.sandbox_pids + headroom.pids,
-                tmp_bytes=settings.sandbox_tmp_bytes + headroom.tmp_bytes,
-                slots=slots,
-            ),
-            headroom=headroom,
-            nofile=settings.sandbox_nofile if nofile is None else nofile,
-            storage_ready=True,
-            environment=environment,
+    envelope = worker_capacity.VerifiedHostEnvelope(
+        worker_identity_id=worker.identity_id,
+        instance_id=worker.instance_id,
+        instance_generation=worker.instance_generation,
+        sampled_at=worker_availability.current_time(session) - timedelta(seconds=age),
+        envelope_fingerprint="e" * 64,
+        total=worker_capacity.Resources(
+            cpu_millis=260,
+            memory_bytes=settings.sandbox_memory_bytes + headroom.memory_bytes,
+            pids=settings.sandbox_pids + headroom.pids,
+            tmp_bytes=settings.sandbox_tmp_bytes + headroom.tmp_bytes,
+            slots=slots,
         ),
+        headroom=headroom,
+        nofile=settings.sandbox_nofile if nofile is None else nofile,
+        storage_ready=True,
+        environment=environment,
     )
+    if signing_key is not None:
+        observation = CapacityObservation.model_validate(
+            envelope.model_dump(exclude={"environment"})
+        )
+        return worker_capacity.record_attested_capacity(
+            session, worker, sign_observation(observation, signing_key)
+        )
+    return worker_capacity.record_verified_capacity(session, worker_id, envelope)
 
 
 def _worker(placement, *, observe=True, labels=None):
@@ -155,9 +170,14 @@ def _worker(placement, *, observe=True, labels=None):
     )
 
 
-def _ordinary(session, route, name):
+def _ordinary(session, route, name, *, fixed_worker=None, staged=True):
     adapter = Adapter(
-        name=name, language="python", adapter_type="task", run_mode="manual", pool_route=route
+        name=name,
+        language="python",
+        adapter_type="task",
+        run_mode="manual",
+        pool_route=route,
+        runtime_worker_id=fixed_worker,
     )
     session.add(adapter)
     session.flush()
@@ -173,7 +193,7 @@ def _ordinary(session, route, name):
         input_source_type="json",
         input_config_revision=1,
         input_snapshot={"source_type": "json", "revision": 1},
-        use_worker_reservations=True,
+        use_worker_reservations=staged,
     )
 
 
@@ -212,6 +232,289 @@ def _finish(factory, worker, message, proposal):
             wire_budget=worker_claim_v4.ClaimWireBudget(65536),
             proposal=proposal,
         )
+
+
+def test_cutover_pauses_new_claim_and_fences_old_published_dispatch(placement):
+    factory, _, route, environment, _ = placement
+    worker = _worker(placement)
+    with factory.begin() as session:
+        old = _ordinary(session, None, "w1-fixed-source", fixed_worker=worker[0], staged=False)
+        execution_id = old.id
+        assert not old.requires_worker_reservation and old.target_worker_id == worker[0]
+    with factory() as session:
+        (leased,) = outbox.lease_due_outbox(session, "w1-source")
+        message = outbox.deserialize_outbox_payload(leased.payload_json)
+        assert outbox.mark_outbox_published(session, leased.id, "w1-source")
+    with factory.begin() as session:
+        assert worker_placement_cutover.pause(session) == "paused"
+    decision, proposal = _prepare(factory, worker, message)
+    assert decision.reason == "placement_cutover_paused" and proposal is None
+    with pytest.raises(HTTPException) as error, factory.begin() as session:
+        _ordinary(session, route, "paused-new", staged=False)
+    assert error.value.detail["code"] == "placement_cutover_paused"
+    with pytest.raises(HTTPException) as error, factory.begin() as session:
+        worker_placement_cutover.activate(session)
+    assert error.value.detail["code"] == "placement_cutover_not_drained"
+    with factory.begin() as session:
+        assert worker_placement_cutover.convert_waiting(session, execution_id)
+        node = session.get(Worker, worker[0])
+        node.scheduling_state = "disabled"
+        signing_key = b"v" * 32  # Synthetic verifier key.
+        worker_capacity.approve_host_verifier(
+            session, worker[0], environment.name, public_key_bytes(signing_key)
+        )
+        node.scheduling_state = "active"
+        with pytest.raises(ValueError, match="unauthorized"):
+            _capacity(session, worker[0], environment, signing_key=b"f" * 32)
+        _capacity(session, worker[0], environment, signing_key=signing_key)
+    with factory.begin() as session:
+        assert worker_placement_cutover.activate(session) == "reserved"
+    old_wire, proposal = _prepare(factory, worker, message)
+    assert old_wire.decision == "ACK_NOOP" and old_wire.reason == "stale_generation"
+    assert proposal is None
+    with factory.begin() as session:
+        accepted = _ordinary(session, route, "pool-after-cutover", staged=False)
+        assert accepted.requires_worker_reservation
+        assert accepted.placement_origin == "v4" and accepted.placement_hold_count == 0
+        assert accepted.placement_deadline_at == accepted.queued_at + timedelta(seconds=900)
+        converted = session.get(Execution, execution_id)
+        assert converted.requires_worker_reservation
+        assert converted.attempt_count == 0
+        assert _intent(session, execution_id).status == "superseded"
+        assert _intent(session, execution_id, 2).status == "awaiting_target"
+
+
+def _enable_test_scheduler(session):
+    """The separate cutover test exercises signed authority and the owner gate."""
+    now = worker_availability.current_time(session)
+    gate = session.get(WorkerPlacementCutover, 1)
+    gate.mode = "reserved"
+    gate.paused_at = gate.enabled_at = now
+    session.flush()
+
+
+def test_placement_limit_retry_expiration_and_cancel_keep_one_responsibility(placement, api_client):
+    factory, _, route, _, _ = placement
+    _worker(placement)
+    with factory.begin() as session:
+        _enable_test_scheduler(session)
+        execution = _ordinary(session, route, "placement-limit", staged=False)
+        first_id, first_deadline = execution.id, execution.placement_deadline_at
+
+    for ordinal in range(1, 11):
+        with factory.begin() as session:
+            hold = worker_reservation.reserve_execution(session, first_id)
+            reservation = session.get(WorkerResourceReservation, hold)
+            assert reservation is not None
+            reservation.held_until = worker_availability.current_time(session) - timedelta(
+                seconds=1
+            )
+        with factory.begin() as session:
+            assert worker_reservation.invalidate_held(session, first_id)
+            execution = session.get(Execution, first_id)
+            assert execution.placement_hold_count == ordinal
+            assert execution.placement_deadline_at == first_deadline
+            assert execution.attempt_count == 0
+
+    with factory.begin() as session:
+        execution = session.get(Execution, first_id)
+        generation = execution.dispatch_generation
+        assert execution.placement_reason == "placement_limit_reached"
+        assert worker_reservation.reserve_execution(session, first_id) is None
+        assert _intent(session, first_id, generation).status == "awaiting_target"
+
+    metrics = api_client.get("/api/workers/placement-metrics")
+    assert metrics.status_code == 200
+    assert metrics.json()["waiting"] == {"placement_limit_reached": 1}
+    assert metrics.json()["allocatable"]["slots"] == 1
+    detail = api_client.get(f"/api/executions/{first_id}/reliable-detail").json()["placement"]
+    assert detail["retry_available"] and detail["age_seconds"] >= 0
+    url = f"/api/executions/{first_id}/placement-retry"
+    assert api_client.post(url, json={"expected_generation": generation - 1}).status_code == 409
+    for _ in range(2):
+        response = api_client.post(url, json={"expected_generation": generation})
+        assert response.status_code == 200, response.text
+        assert response.json()["dispatch_generation"] == generation + 1
+    for _ in range(2):
+        assert api_client.post(f"/api/executions/{first_id}/cancel").json()["status"] == "cancelled"
+    with factory.begin() as session:
+        audits = list(
+            session.scalars(
+                select(ExecutionPlacementAction).order_by(
+                    ExecutionPlacementAction.dispatch_generation
+                )
+            )
+        )
+        assert [(audit.dispatch_generation, audit.action) for audit in audits] == [
+            (generation, "retry"),
+            (generation + 1, "cancel"),
+        ]
+        execution = session.get(Execution, first_id)
+        assert execution.attempt_count == 0 and execution.placement_hold_count == 0
+        assert execution.admission_released_at is not None
+        expiring = _ordinary(session, route, "placement-deadline", staged=False)
+        expiring.placement_deadline_at = worker_availability.current_time(session)
+        expiring_id = expiring.id
+    with factory.begin() as session:
+        assert worker_placement_wait.expire_queued(session, expiring_id)
+        execution = session.get(Execution, expiring_id)
+        assert execution.status == "expired" and execution.attempt_count == 0
+        assert execution.admission_released_at is not None
+        assert _intent(session, expiring_id).status == "superseded"
+
+
+def test_scheduler_rotates_and_uses_persisted_capacity_change_after_lost_notification(placement):
+    factory, _, route, environment, _ = placement
+    restricted_worker, *_ = _worker(placement, observe=False, labels={"zone": "blocked"})
+    compatible_worker, *_ = _worker(placement)
+    with factory.begin() as session:
+        _enable_test_scheduler(session)
+        blocked_id = _ordinary(
+            session,
+            None,
+            "waiting-first-adapter",
+            fixed_worker=restricted_worker,
+            staged=False,
+        ).id
+        compatible_id = _ordinary(session, route, "ready-second-adapter", staged=False).id
+    for _ in range(3):
+        with factory() as session:
+            worker_placement_scheduler.reconcile_once(session)
+    with factory.begin() as session:
+        blocked = session.get(Execution, blocked_id)
+        assert blocked.target_worker_id is None and blocked.placement_reason == "capacity_unknown"
+        assert (
+            blocked.attempt_count == 0
+            and session.get(Execution, compatible_id).target_worker_id == compatible_worker
+        )
+        blocked.next_placement_at = worker_availability.current_time(session) + timedelta(
+            seconds=29
+        )
+        _capacity(session, restricted_worker, environment)
+    worker_placement_scheduler._wake.clear()
+    for _ in range(3):
+        with factory() as session:
+            worker_placement_scheduler.reconcile_once(session)
+    with factory() as session:
+        blocked = session.get(Execution, blocked_id)
+        assert blocked.target_worker_id == restricted_worker and blocked.attempt_count == 0
+
+
+def test_pool_recovery_waits_grace_then_keeps_the_old_physical_charge(placement, monkeypatch):
+    factory, _, route, _, _ = placement
+    old = _worker(placement)
+    with factory.begin() as session:
+        _enable_test_scheduler(session)
+        execution = _ordinary(session, route, "lost-worker", staged=False)
+        execution_id = execution.id
+        held = worker_reservation.reserve_execution(session, execution_id)
+        first_message = outbox.deserialize_outbox_payload(
+            _intent(session, execution_id).payload_json
+        )
+    _, proposal = _prepare(factory, old, first_message)
+    assert proposal is not None
+    first = _finish(factory, old, first_message, proposal)
+    assert first.attempt_id is not None and first.decision == "EXECUTE"
+    with factory() as session:
+        lease = session.get(AttemptLeaseCandidateV4, first.attempt_id)
+        lease_end = max(lease.nominal_until, lease.guard_until)
+        grace = session.get(Execution, execution_id).recovery_grace_seconds_snapshot
+    now = lease_end - timedelta(microseconds=1)
+    monkeypatch.setattr(worker_availability, "current_time", lambda _: now)
+    with factory() as session:
+        assert attempt.recover_expired_attempts(session) == 0
+    now = lease_end
+    with factory() as session:
+        assert attempt.recover_expired_attempts(session) == 1
+    with factory() as session:
+        first_row = session.get(ExecutionAttempt, first.attempt_id)
+        until = lease_end + timedelta(seconds=grace)
+        assert first_row.recovery_not_before == until
+        assert first_row.status == "worker_lost" and first_row.cleanup_settled_at is None
+        assert session.get(WorkerResourceReservation, held).status == "reclaiming"
+        next_due = session.get(Execution, execution_id).next_attempt_at
+        assert next_due > until
+        now = until
+        assert worker_placement_wait.retry_due(session) == 0
+    now = next_due
+    replacement = _worker(placement)
+    with factory() as session:
+        assert worker_placement_wait.retry_due(session) == 1
+    with factory.begin() as session:
+        execution = session.get(Execution, execution_id)
+        assert execution.attempt_count == 1 and execution.dispatch_generation == 2
+        replacement_hold = worker_reservation.reserve_execution(session, execution_id)
+        assert execution.target_worker_id == replacement[0]
+        message = outbox.deserialize_outbox_payload(_intent(session, execution_id, 2).payload_json)
+    _, proposal = _prepare(factory, replacement, message)
+    assert proposal is not None
+    second = _finish(factory, replacement, message, proposal)
+    assert second.decision == "EXECUTE" and second.attempt_id != first.attempt_id
+    with factory.begin() as session:
+        execution = session.get(Execution, execution_id, with_for_update=True)
+        assert execution.attempt_count == 2
+        assert session.get(WorkerResourceReservation, held).status == "reclaiming"
+        slot = session.get(AdapterExecutionSlot, (execution.adapter_id, 0), with_for_update=True)
+        prior = session.get(ExecutionAttempt, first.attempt_id, with_for_update=True)
+        session.get(Worker, prior.worker_id, with_for_update=True)
+        # Supply only the original Attempt's physical receipt boundary.
+        prior.cleanup_settled_at = now
+        worker_reservation.release_cleaned_attempt(session, execution, prior)
+        worker_reservation.release_cleaned_attempt(session, execution, prior)
+        assert slot.active_attempt_id == second.attempt_id
+        assert session.get(WorkerResourceReservation, replacement_hold).status == "claimed"
+
+
+def test_post_claim_capacity_failure_keeps_charge_and_needs_fresh_preflight(placement):
+    factory, _, route, environment, _ = placement
+    worker = _worker(placement)
+    signing_key = b"q" * 32
+    with factory.begin() as session:
+        _enable_test_scheduler(session)
+        node = session.get(Worker, worker[0])
+        node.scheduling_state = "disabled"
+        worker_capacity.approve_host_verifier(
+            session, worker[0], environment.name, public_key_bytes(signing_key)
+        )
+        node.scheduling_state = "active"
+        execution_id = _ordinary(session, route, "capacity-drift", staged=False).id
+        held = worker_reservation.reserve_execution(session, execution_id)
+        message = outbox.deserialize_outbox_payload(_intent(session, execution_id).payload_json)
+    _, proposal = _prepare(factory, worker, message)
+    assert proposal is not None
+    claimed = _finish(factory, worker, message, proposal)
+    assert claimed.decision == "EXECUTE" and claimed.attempt_id is not None
+    with factory.begin() as session:
+        execution, _, claimed_row, slot = attempt._lock_attempt_context(
+            session, worker[0], claimed.attempt_id
+        )
+        now = worker_availability.current_time(session)
+        attempt._apply_terminal_locked(
+            session,
+            execution,
+            claimed_row,
+            slot,
+            status="failed",
+            error_code="resource_capacity_unavailable",
+            error_class="platform_transient",
+            error="Worker resource capacity unavailable",
+            now=now,
+        )
+        assert execution.attempt_count == 1 and execution.status == "retry_wait"
+        assert execution.next_attempt_at > now
+    with factory.begin() as session:
+        node = session.get(Worker, worker[0])
+        assert node.capacity_state == "quarantined"
+        reserved = session.get(WorkerResourceReservation, held)
+        assert reserved.status == "reclaiming"
+        capacity = _capacity(session, worker[0], environment, signing_key=signing_key)
+        assert capacity.quarantine_until >= now + timedelta(seconds=30)
+        assert node.capacity_state == "quarantined"
+    ledger = worker_maintenance_observation.read_status(
+        factory, worker[0], Principal(kind="superadmin")
+    )["placement_ledger"]
+    assert ledger["capacity"]["allocatable"] is None
+    assert ledger["claimed"]["slots"] == 0 and ledger["reclaiming"]["slots"] == 1
 
 
 def test_two_controls_contend_for_last_capacity_and_cancel_with_maintenance(placement):

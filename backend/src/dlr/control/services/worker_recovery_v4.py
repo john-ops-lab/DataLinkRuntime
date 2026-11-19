@@ -22,6 +22,7 @@ from dlr.control.models import (
     Worker,
     WorkerLeaseCandidateV4,
     WorkerMaintenanceOperation,
+    WorkerResourceReservation,
 )
 from dlr.control.security import Principal
 from dlr.control.services import worker_availability
@@ -65,7 +66,7 @@ class StoppedSettlement(BaseModel):
     result_intent_id: UUID
     body_mac: Sha
     attempt_status: Literal["worker_lost", "cancelled"]
-    execution_status: Literal["dead_letter", "cancelled"]
+    execution_status: Literal["dead_letter", "cancelled", "retry_wait"]
     acknowledgement: Literal["result_uncommitted_outcome_unknown"]
 
     @model_validator(mode="after")
@@ -85,7 +86,7 @@ class ForceStoppedSettlement(BaseModel):
     stopped_sha256: Sha
     force_stop_operation_id: UUID
     attempt_status: Literal["worker_lost", "cancelled"]
-    execution_status: Literal["dead_letter", "cancelled"]
+    execution_status: Literal["dead_letter", "cancelled", "retry_wait"]
     acknowledgement: Literal["force_stop_no_result_outcome_unknown"]
 
     @model_validator(mode="after")
@@ -199,6 +200,9 @@ def _lock_business(
     )
     if slot is None:
         raise RecoveryUnavailable
+    from dlr.control.services.worker_reservation import lock_pool
+
+    lock_pool(session, execution)
     return execution, attempts, slot
 
 
@@ -297,6 +301,69 @@ def _terminal_responsibility(
     return attempt
 
 
+def _disposition_attempt(
+    session: Session,
+    execution: Execution,
+    attempts: tuple[ExecutionAttempt, ...],
+    slot: AdapterExecutionSlot,
+    binding: RecoveryBinding,
+    settlement: Settlement,
+    *,
+    completed: bool,
+) -> tuple[ExecutionAttempt, int]:
+    if settlement.execution_status != "retry_wait":
+        return (
+            _terminal_responsibility(
+                execution,
+                attempts,
+                slot,
+                binding,
+                settlement.attempt_status,
+                settlement.execution_status,
+                completed=completed,
+            ),
+            execution.dispatch_generation,
+        )
+    # After Pool transfer, the current Execution and Slot may belong to a
+    # later Claim. The old Attempt's reservation is the independent authority.
+    ref = binding.attempt
+    attempt = next((item for item in attempts if item.id == ref.attempt_id), None)
+    reservation = session.scalar(
+        select(WorkerResourceReservation)
+        .where(WorkerResourceReservation.attempt_id == ref.attempt_id)
+        .execution_options(populate_existing=True)
+    )
+    if (
+        not execution.requires_worker_reservation
+        or execution.route_pool_id is None
+        or attempt is None
+        or attempt.status != "worker_lost"
+        or attempt.recovery_not_before is None
+        or reservation is None
+        or reservation.execution_id != execution.id
+        or reservation.worker_id != attempt.worker_id
+        or reservation.worker_identity_id != ref.worker_identity_id
+        or reservation.instance_id != ref.original_instance_id
+        or reservation.instance_generation != ref.original_instance_generation
+        or reservation.fencing_token != ref.fencing_token
+        or reservation.status != ("released" if completed else "reclaiming")
+        or (attempt.cleanup_settled_at is not None) != completed
+        or (
+            reservation.dispatch_generation >= execution.dispatch_generation
+            and (
+                reservation.dispatch_generation != execution.dispatch_generation
+                or execution.status != "retry_wait"
+            )
+        )
+        or (
+            slot.active_attempt_id == attempt.id
+            and (completed or slot.fencing_token != attempt.fencing_token)
+        )
+    ):
+        raise RecoveryUnavailable
+    return attempt, reservation.dispatch_generation
+
+
 def request_recovery(
     session: Session, worker_id: int, payload: RecoveryRequest, principal: Principal
 ) -> dict[str, object]:
@@ -389,13 +456,13 @@ def request_recovery(
     # Existing request IDs were locked above; result is the final lock suffix.
     if payload.settlement is not None:
         settlement = payload.settlement
-        _terminal_responsibility(
+        _, old_generation = _disposition_attempt(
+            session,
             execution,
             attempts,
             slot,
             payload.binding,
-            settlement.attempt_status,
-            settlement.execution_status,
+            settlement,
             completed=False,
         )
         if attempt.cleanup_settled_at is not None:
@@ -424,7 +491,7 @@ def request_recovery(
             **settlement.model_dump(mode="json"),
             "kind": kind,
             "reason": settlement.acknowledgement,
-            "dispatch_generation": execution.dispatch_generation,
+            "dispatch_generation": old_generation,
             "attempt_no": attempt.attempt_no,
         }
     session.add(operation)
@@ -558,7 +625,7 @@ def require_disposition(
     ):
         raise RecoveryUnavailable
     execution = session.get(Execution, lookup.binding.execution_id, populate_existing=True)
-    if execution is None or execution.dispatch_generation != snapshot["dispatch_generation"]:
+    if execution is None:
         raise RecoveryUnavailable
     attempts = tuple(
         session.scalars(
@@ -571,16 +638,22 @@ def require_disposition(
     slot = session.get(AdapterExecutionSlot, (execution.adapter_id, 0), populate_existing=True)
     if slot is None or not attempts:
         raise RecoveryUnavailable
-    attempt = _terminal_responsibility(
+    exact = next((item for item in attempts if item.id == lookup.binding.attempt.attempt_id), None)
+    if exact is None:
+        raise RecoveryUnavailable
+    attempt, old_generation = _disposition_attempt(
+        session,
         execution,
         attempts,
         slot,
         lookup.binding,
-        settlement.attempt_status,
-        settlement.execution_status,
-        completed=attempts[-1].cleanup_settled_at is not None,
+        settlement,
+        completed=exact.cleanup_settled_at is not None,
     )
-    if attempt.attempt_no != snapshot["attempt_no"]:
+    if (
+        attempt.attempt_no != snapshot["attempt_no"]
+        or old_generation != snapshot["dispatch_generation"]
+    ):
         raise RecoveryUnavailable
     if isinstance(settlement, ForceStoppedSettlement):
         if snapshot["kind"] != "force_stopped_no_result":

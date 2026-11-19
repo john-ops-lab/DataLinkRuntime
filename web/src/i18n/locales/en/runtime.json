@@ -381,6 +381,24 @@
       "responseTimeoutHint": "1–300 seconds; default 30. Includes queueing and retries. A timeout returns HTTP 504 and the execution ID; execution continues. Retry with the same Idempotency-Key and body to wait for the original execution. Client and proxy timeouts should exceed this limit."
     }
   },
+  "placement": {
+    "age": "Placement wait · {{seconds}} s",
+    "deadline": "Placement deadline · {{time}}",
+    "reclaiming": "Attempts awaiting physical cleanup · {{count}}",
+    "retry": "Retry placement",
+    "reason": {
+      "adapter_slot_busy": "Adapter execution slot is busy",
+      "no_compatible_worker": "No compatible Worker is available",
+      "worker_draining": "Compatible Worker is draining or disabled",
+      "capacity_unknown": "Waiting for verified Worker capacity",
+      "capacity_insufficient": "Compatible Workers have insufficient allocatable capacity",
+      "environment_mismatch": "Worker environment does not meet the frozen requirements",
+      "scope_denied": "Worker lacks the required placement or material grants",
+      "placement_limit_reached": "Reservation limit reached. An administrator can retry placement.",
+      "placement_deadline_expired": "Placement deadline expired",
+      "broker_target_unverified": "Waiting for the Worker queue to be verified"
+    }
+  },
   "history": {
     "activeTrigger": "Manual trigger",
     "scheduledTrigger": "Schedule trigger",

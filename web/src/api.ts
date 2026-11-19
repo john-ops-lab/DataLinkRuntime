@@ -539,6 +539,12 @@ export const api = {
   getReliableExecutionDetail: (executionId: number): Promise<ReliableExecutionDetail> =>
     request(`/api/executions/${executionId}/reliable-detail`),
 
+  retryExecutionPlacement: (executionId: number, generation: number): Promise<Execution> =>
+    request(`/api/executions/${executionId}/placement-retry`, {
+      method: "POST",
+      body: JSON.stringify({ expected_generation: generation }),
+    }),
+
   disposeInfrastructureIncident: (
     executionId: number,
     incidentId: number,

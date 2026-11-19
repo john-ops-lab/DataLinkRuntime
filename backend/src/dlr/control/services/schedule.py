@@ -50,7 +50,6 @@ from dlr.control.models import (
     AdapterSchedule,
     Execution,
     ScheduleDispatchOutcome,
-    Worker,
 )
 from dlr.control.schemas.schedule import ScheduleUpsert
 from dlr.control.services import (
@@ -70,7 +69,7 @@ from dlr.control.services.execution import (
     _create_execution_locked,
     integrity_constraint_name,
 )
-from dlr.control.services.reliable_execution import resolve_queue_target_worker
+from dlr.control.services.reliable_execution import configured_dispatch_route
 
 logger = logging.getLogger("dlr.control.schedule")
 
@@ -525,10 +524,11 @@ def upsert_schedule(
             "execution_input_override_not_supported",
             "Schedule input overrides are disabled; save the Adapter input first",
         )
+    reserved = False
     if data.enabled:
         from dlr.control.services.subscription_guards import require_no_subscription
 
-        worker_pool.require_fixed_route(worker_pool.adapter_route(adapter))
+        reserved = worker_pool.require_accepting_route(session, worker_pool.adapter_route(adapter))
         require_no_subscription(session, adapter.id)
 
     if data.enabled and adapter.latest_version_id is None:
@@ -537,7 +537,7 @@ def upsert_schedule(
             "adapter_has_no_version",
             "Save a Revision before enabling Schedule",
         )
-    if data.enabled and adapter.runtime_worker_id is None:
+    if data.enabled and adapter.runtime_worker_id is None and not reserved:
         raise domain_error(
             409,
             "runtime_worker_required",
@@ -608,9 +608,10 @@ def upsert_schedule(
             version_id=adapter.latest_version_id,
             trigger="schedule",
             input_source_type=config.source_type,
+            awaiting_worker=reserved,
         )
         if settings.worker_remote_v4_enabled:
-            resolve_queue_target_worker(session, adapter)
+            configured_dispatch_route(session, adapter, use_worker_reservations=reserved)
         input_config_service.validate_saved_config(config, session=session)
     now = worker_availability.current_time(session)
     next_run_at = next_run_after(cron, tz_name, now) if data.enabled else None
@@ -653,13 +654,13 @@ def _structural_gate_failure(session: Session, adapter: Adapter, schedule: Adapt
         or adapter.run_mode != "schedule"
     ):
         return True
-    if adapter.latest_version_id is None or adapter.runtime_worker_id is None:
-        return True
-    worker = session.get(Worker, adapter.runtime_worker_id)
-    if worker is None or adapter.language not in worker.capabilities:
+    from dlr.control.services.worker_placement_cutover import mode
+
+    reserved = mode(session) == "reserved"
+    if adapter.latest_version_id is None:
         return True
     try:
-        resolve_queue_target_worker(session, adapter)
+        configured_dispatch_route(session, adapter, use_worker_reservations=reserved)
     except HTTPException:
         return True
     return False
@@ -713,6 +714,10 @@ def process_due_schedule(
     """
     since = schedule.next_run_at
     if since is None:
+        return ScheduleTickResult.HELD
+    from dlr.control.services.worker_placement_cutover import mode
+
+    if mode(session, hold=True) == "paused":
         return ScheduleTickResult.HELD
     if _structural_gate_failure(session, adapter, schedule):
         return _process_structural_due_schedule(session, schedule, since=since, now=now)

@@ -32,6 +32,7 @@ from dlr.control.schemas.execution import (
     ExecutionResultReport,
     ExecutionSummary,
 )
+from dlr.control.security import Principal
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.execution_cancellation import (
     ExecutionLockTail,
@@ -329,9 +330,9 @@ def _create_execution_locked(
         return existing
 
     from dlr.control.services.subscription_guards import require_subscription_unlocked
-    from dlr.control.services.worker_pool import adapter_route, require_fixed_route
+    from dlr.control.services.worker_pool import adapter_route, require_accepting_route
 
-    require_fixed_route(adapter_route(adapter))
+    require_accepting_route(session, adapter_route(adapter))
     require_subscription_unlocked(session, adapter.id)
 
     # A Schedule run-now must take the same Schedule lock as the Scheduler,
@@ -559,7 +560,7 @@ def cancel_execution_locked(
 
             admission.release_admission_once(session, execution)
             if tail.reservation is not None:
-                release_held(tail.reservation, now=database_now(session))
+                release_held(tail.reservation, now=database_now(session), capacity=tail.capacity)
             outbox.settle_cancelled_outbox(session, execution.id, locked_rows=tail.outbox_rows)
         from dlr.control.services.incident_disposition import (
             converge_terminal_dispositions_locked,
@@ -572,7 +573,9 @@ def cancel_execution_locked(
     return execution
 
 
-def cancel_execution(session: Session, execution_id: int) -> Execution:
+def cancel_execution(
+    session: Session, execution_id: int, *, principal: Principal | None = None
+) -> Execution:
     """Request cancellation of one Execution (M3.2).
 
     Idempotent: queued Executions become ``cancelled`` immediately (they
@@ -584,7 +587,20 @@ def cancel_execution(session: Session, execution_id: int) -> Execution:
     execution = lock_execution_in_admission_order(session, execution_id)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
+    audit = (
+        principal is not None
+        and execution.requires_worker_reservation
+        and execution.status in {"queued", "retry_wait"}
+        and not execution.cancel_requested
+    )
     cancel_execution_locked(session, execution)
+    if audit and principal is not None and execution.status == "cancelled":
+        from dlr.control.services.input_config import database_now
+        from dlr.control.services.worker_placement_wait import audit_action
+
+        audit_action(
+            session, execution, principal=principal, action="cancel", now=database_now(session)
+        )
     # Terminal states are never rewritten.
     session.commit()
     session.refresh(execution)

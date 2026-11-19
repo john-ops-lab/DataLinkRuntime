@@ -7,6 +7,7 @@ import sys
 from contextlib import suppress
 from datetime import datetime
 
+from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
@@ -59,7 +60,16 @@ def _maintenance_main(args: list[str]) -> int:
             raise ValueError
         flags = dict(zip(args[1::2], args[2::2], strict=True))
         required = {"--source", "--target", "--intent"}
-        levels = ("previous", "root", "origin", "ancestor", "initial", "earliest", "first")
+        levels = (
+            "previous",
+            "root",
+            "origin",
+            "ancestor",
+            "initial",
+            "earliest",
+            "first",
+            "oldest",
+        )
         accepted = [
             required | {f"--{name}-{part}" for name in levels[:n] for part in ("source", "intent")}
             for n in range(len(levels) + 1)
@@ -149,6 +159,14 @@ def main() -> int:
             return _legacy_window_main(sys.argv[1:])
         if sys.argv[1] in {"proof-authority-apply", "proof-authority-observe"}:
             return _proof_rotation_main(sys.argv[1:])
+        if sys.argv[1] in {
+            "placement-pause",
+            "placement-reconcile",
+            "placement-enable",
+            "placement-status",
+            "placement-approve-capacity",
+        }:
+            return _placement_main(sys.argv[1:])
         return _maintenance_main(sys.argv[1:])
     try:
         deployment = read_declaration(settings)
@@ -160,6 +178,82 @@ def main() -> int:
     except Exception:
         # This includes a commit response loss: do not claim initialization.
         print(json.dumps({"status": "unavailable_or_commit_unknown"}))
+        return 1
+
+
+def _placement_main(args: list[str]) -> int:
+    """Drive the owner-only handoff on the already verified current schema."""
+    from sqlalchemy import select
+
+    from dlr.control.models import Execution
+    from dlr.control.services import worker_capacity
+    from dlr.control.services import worker_placement_cutover as placement
+
+    def verify_owner(session: Session) -> None:
+        try_control_gate(session)
+        transition._owner_authorized(session, settings)
+        declaration = read_declaration(settings)
+        authority = identity._authority(session, declaration.authority)
+        if authority["authority_epoch"] != declaration.authority_epoch:
+            raise identity.ControlIdentityUnavailable("control identity unavailable")
+
+    try:
+        action = args[0]
+        if len(args) != (4 if action == "placement-approve-capacity" else 1):
+            raise ValueError
+        with db.SessionLocal() as session:
+            verify_owner(session)
+            if action == "placement-approve-capacity":
+                worker_id = int(args[1])
+                if not 0 < worker_id < 2**63 or len(args[3]) != 64:
+                    raise ValueError
+                worker_capacity.approve_host_verifier(
+                    session, worker_id, args[2], bytes.fromhex(args[3])
+                )
+                session.commit()
+                print(json.dumps({"status": "capacity_verifier_committed"}))
+                return 0
+            if action == "placement-status":
+                print(json.dumps({"status": "observed", "placement_mode": placement.mode(session)}))
+                return 0
+            if action == "placement-reconcile":
+                if placement.mode(session) != "paused":
+                    raise ValueError
+                candidates = list(
+                    session.scalars(
+                        select(Execution.id)
+                        .where(
+                            ~Execution.requires_worker_reservation,
+                            Execution.status.in_(("queued", "retry_wait")),
+                        )
+                        .order_by(Execution.id)
+                        .limit(100)
+                    )
+                )
+            else:
+                changed = (
+                    placement.pause(session)
+                    if action == "placement-pause"
+                    else placement.activate(session)
+                )
+                session.commit()
+                print(json.dumps({"status": "committed", "placement_mode": changed}))
+                return 0
+        converted = 0
+        for execution_id in candidates:
+            with db.SessionLocal() as session:
+                verify_owner(session)
+                converted += int(placement.convert_waiting(session, execution_id))
+                session.commit()
+        print(json.dumps({"status": "committed", "converted": converted}))
+        return 0
+    except HTTPException as error:
+        detail = error.detail
+        code = detail.get("code") if isinstance(detail, dict) else None
+        print(json.dumps({"status": "refused", "code": code}))
+        return 1
+    except Exception:
+        print(json.dumps({"status": "placement_unavailable_or_commit_unknown"}))
         return 1
 
 

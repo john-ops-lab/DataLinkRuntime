@@ -185,6 +185,7 @@ export default function ExecutionHistoryPanel(props: {
   const [reliableDetail, setReliableDetail] = useState<ReliableExecutionDetail | null>(null);
   const [reliableDetailLoading, setReliableDetailLoading] = useState(false);
   const [reliableDetailError, setReliableDetailError] = useState<string | null>(null);
+  const [placementRetrying, setPlacementRetrying] = useState<number | null>(null);
   const [replayLoading, setReplayLoading] = useState(false);
   const [replayResult, setReplayResult] = useState<ReplayResponse | null>(null);
   const [dispositionLoading, setDispositionLoading] = useState<string | null>(null);
@@ -348,6 +349,26 @@ export default function ExecutionHistoryPanel(props: {
     }
     setReliableDetail(refreshed);
     return true;
+  }
+
+  async function retryPlacement(executionId: number, generation: number) {
+    const requestId = detailRequestRef.current;
+    const operation = watcher.beginOperation(executionId);
+    setPlacementRetrying(executionId);
+    setReliableDetailError(null);
+    try {
+      const updated = await api.retryExecutionPlacement(executionId, generation);
+      if (isCurrentDetailEpoch(executionId, requestId)) {
+        watcher.reconcileOperationResult(updated, operation);
+        await refreshReliableDetail(executionId, requestId);
+      }
+    } catch (error) {
+      if (isCurrentDetailEpoch(executionId, requestId)) {
+        setReliableDetailError(errorMessage(error));
+      }
+    } finally {
+      setPlacementRetrying((current) => current === executionId ? null : current);
+    }
   }
 
   function isCurrentComponentGeneration(generation: number): boolean {
@@ -591,6 +612,7 @@ export default function ExecutionHistoryPanel(props: {
       : (items.find((item) => item.id === requestedExecutionId) ?? null);
   const visibleDetail = detail?.id === requestedExecutionId ? detail : null;
   const processAvailable = visibleDetail !== null && reliableDetail?.execution_id === visibleDetail.id;
+  const placement = processAvailable ? reliableDetail?.placement : null;
 
   function showExecutionProcess() {
     const target = processRef.current;
@@ -877,6 +899,20 @@ export default function ExecutionHistoryPanel(props: {
                 </div>
                 {reliableDetail !== null && (
                   <>
+                    {placement && (
+                      <div className="reliable-runtime-section" data-testid="execution-placement">
+                        {placement.reason && <div>{t(`placement.reason.${placement.reason}`, { defaultValue: t("placement.reason.capacity_unknown") })}</div>}
+                        {placement.age_seconds !== null && <div>{t("placement.age", { seconds: placement.age_seconds })}</div>}
+                        {placement.deadline_at && <div>{t("placement.deadline", { time: formatTime(placement.deadline_at, locale) })}</div>}
+                        {placement.reclaiming_attempts > 0 && <div>{t("placement.reclaiming", { count: placement.reclaiming_attempts })}</div>}
+                        {placement.retry_available && (
+                          <Button size="small" loading={placementRetrying === visibleDetail.id}
+                            onClick={() => { void retryPlacement(visibleDetail.id, placement.generation); }}>
+                            {t("placement.retry")}
+                          </Button>
+                        )}
+                      </div>
+                    )}
                     <details key={visibleDetail.id} id={`execution-process-${visibleDetail.id}`} ref={processRef} className="reliable-runtime-section operations-disclosure" data-testid="execution-attempt-timeline">
                       <summary>{t("history.attemptTimeline")}</summary>
                       {reliableDetail.attempts.length === 0 ? (
