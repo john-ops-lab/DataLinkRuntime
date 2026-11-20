@@ -72,6 +72,10 @@ def memory_world(monkeypatch):
         def execute(self, *args, **kwargs):
             return SimpleNamespace(one=lambda: (False, False, False, False))
 
+        def scalar(self, statement):
+            assert "control_ha_capacity" in str(statement)
+            return False
+
     class Factory:
         def __call__(self):
             return Session()
