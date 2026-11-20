@@ -12,7 +12,7 @@ from dlr.worker import broker_config_v4, consumer_v4
 
 
 @pytest.mark.parametrize(
-    "value,expected", [(None, 30), ("false", 30), ("true", 10), ("invalid", None)]
+    "value,expected", [(None, 30), ("false", 30), ("true", 10), ("", None), ("invalid", None)]
 )
 def test_standalone_broker_heartbeat_is_opt_in(monkeypatch, tmp_path, value, expected):
     if value is None:

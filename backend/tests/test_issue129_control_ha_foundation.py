@@ -156,9 +156,9 @@ def test_two_slots_serialize_concurrent_joins_and_fence_expired_slot(
         )
 
 
-@pytest.mark.parametrize("clear_slot", [False, True])
+@pytest.mark.parametrize("slot_after_contention", ["a", None, "b"])
 def test_contended_ha_renewal_requires_original_slot(
-    test_engine, session_factory, ha_authority, monkeypatch, clear_slot
+    test_engine, session_factory, ha_authority, monkeypatch, slot_after_contention
 ):
     with session_factory() as session:
         epoch = session.scalar(text("SELECT authority_epoch FROM control_cluster_authority"))
@@ -175,11 +175,10 @@ def test_contended_ha_renewal_requires_original_slot(
         def rollback(self):
             super().rollback()
             rolled_back.append(self)
-            if clear_slot:
-                holder.execute(
-                    text("UPDATE control_process_instances SET ha_slot=NULL WHERE instance_id=:id"),
-                    {"id": process.instance_id},
-                )
+            holder.execute(
+                text("UPDATE control_process_instances SET ha_slot=:slot WHERE instance_id=:id"),
+                {"slot": slot_after_contention, "id": process.instance_id},
+            )
             holder.commit()
 
     factory = sessionmaker(bind=test_engine, class_=ContendedSession, expire_on_commit=False)
@@ -190,7 +189,7 @@ def test_contended_ha_renewal_requires_original_slot(
             identity.assert_live_control(
                 holder, ha_authority, instance_id=process.instance_id, instance_token=process._token
             )
-            if clear_slot:
+            if slot_after_contention != "a":
                 with pytest.raises(identity.ControlIdentityUnavailable):
                     process._cycle()
                 with pytest.raises(TokenFenceUnavailable):

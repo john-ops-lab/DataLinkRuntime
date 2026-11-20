@@ -23,6 +23,35 @@ POLICY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(POLICY)
 
 
+@pytest.mark.parametrize("configured", [None, "true", ""])
+def test_standalone_worker_compose_preserves_ha_opt_in(configured):
+    if shutil.which("docker") is None:
+        pytest.skip("Docker Compose CLI is needed to render the Worker deployment")
+    environment = {k: v for k, v in os.environ.items() if not k.startswith(("DLR_", "COMPOSE_"))}
+    if configured is not None:
+        environment["DLR_RABBITMQ_HA_ENABLED"] = configured
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            "worker-compose.env.example",
+            "-f",
+            "compose.wave1a.yml",
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=ROOT / "deploy/standalone-worker",
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    worker = json.loads(result.stdout)["services"]["worker"]["environment"]
+    assert worker["DLR_RABBITMQ_HA_ENABLED"] == ("false" if configured is None else configured)
+
+
 @pytest.mark.parametrize("mountpoint", ["/run/dlr-cgroup", "/run/dlr cgroup"])
 def test_bootstrap_checks_kernel_ancestor_mount(monkeypatch, mountpoint):
     escaped = mountpoint.replace(" ", r"\040")
