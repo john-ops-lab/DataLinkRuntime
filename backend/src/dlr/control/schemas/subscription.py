@@ -298,7 +298,7 @@ class RepairRevision(SubscriptionAction):
 
 class SyncRemainingReserve(ClosedModel):
     count: int = Field(ge=0, le=3, strict=True)
-    bytes: int = Field(ge=0, le=24576, strict=True)
+    bytes: int = Field(ge=0, le=62_976, strict=True)
 
 
 class SyncPendingGap(ClosedModel):
