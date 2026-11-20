@@ -22,6 +22,7 @@ export interface ExecutionWatcher {
   liveStderr: string;
   /** Logical line count of the server-saved streams, not the 2000-line view. */
   serverLogLineCount: number;
+  streamInterrupted: boolean;
   /** True when the bounded fallback polling ended without a terminal status. */
   fallbackExhausted: boolean;
   /** Start (or restart) watching one Execution; resets the live buffers. */
@@ -86,6 +87,7 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
   const serverStdoutRef = useRef("");
   const serverStderrRef = useRef("");
   const [fallbackExhausted, setFallbackExhausted] = useState(false);
+  const [streamInterrupted, setStreamInterrupted] = useState(false);
   const streamRef = useRef<ExecutionEventsHandle | null>(null);
   const fallbackTimerRef = useRef<number | null>(null);
   // Every watch() bumps the generation: only the newest watch's async work
@@ -217,6 +219,7 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
     const generation = generationRef.current;
     progressEpochRef.current = 0;
     setFallbackExhausted(false);
+    setStreamInterrupted(false);
     executionRef.current = initial;
     setExecution(initial);
     setLiveStdout(retainLiveLines(initial.stdout));
@@ -318,6 +321,7 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
           return;
         }
         streamRef.current?.close();
+        setStreamInterrupted(true);
         convergeOnFinalResult(generation, initial.id, FALLBACK_POLICY.maxPolls);
       },
       onError(message) {
@@ -395,6 +399,7 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
     liveStdout,
     liveStderr,
     serverLogLineCount,
+    streamInterrupted,
     fallbackExhausted,
     watch,
     beginOperation,

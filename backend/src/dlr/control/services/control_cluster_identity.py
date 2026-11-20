@@ -312,22 +312,35 @@ def register_control(
     instance_id: UUID,
     instance_token: str,
     single_process: bool = False,
+    ha_slot: str | None = None,
 ) -> DeclaredCompatibility | ExpiredControl:
     """Register once; retry does not renew and observed expiry must be committed."""
-    if not isinstance(instance_id, UUID):
+    if not isinstance(instance_id, UUID) or (
+        ha_slot is not None and (ha_slot not in ("a", "b") or single_process)
+    ):
         raise _invalid()
     token_digest = _token_digest(instance_token)
     try:
         # Serialize dedicated-stage admission with registration and renewal.
         # Take the authority lock first, matching every existing lease path.
-        authority = _authority(session, declaration, exclusive=single_process)
-        if single_process and session.scalar(
-            text(
-                "SELECT EXISTS (SELECT 1 FROM control_process_instances "
-                "WHERE instance_id <> :id AND NOT revoked "
-                "AND lease_until > pg_catalog.clock_timestamp())"
-            ),
-            {"id": instance_id},
+        authority = _authority(
+            session, declaration, exclusive=single_process or ha_slot is not None
+        )
+        if SCHEMA_REVISION == "0094_issue129_control_ha":
+            _check_admission(session, instance_id, ha_slot, single_process=single_process)
+        elif ha_slot is not None:
+            raise _invalid()
+        if (
+            single_process
+            and SCHEMA_REVISION != "0094_issue129_control_ha"
+            and session.scalar(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM control_process_instances "
+                    "WHERE instance_id <> :id AND NOT revoked "
+                    "AND lease_until > pg_catalog.clock_timestamp())"
+                ),
+                {"id": instance_id},
+            )
         ):
             raise _invalid()
         row = (
@@ -340,7 +353,11 @@ def register_control(
         )
         now = session.scalar(text("SELECT pg_catalog.clock_timestamp()"))
         if row is not None:
-            if row["revoked"] or not _existing_is_same(row, declaration, authority, token_digest):
+            if (
+                row["revoked"]
+                or row.get("ha_slot") != ha_slot
+                or not _existing_is_same(row, declaration, authority, token_digest)
+            ):
                 raise _invalid()
             if row["lease_until"] <= now:
                 return _record_expired(session, instance_id)
@@ -367,9 +384,47 @@ def register_control(
                 "created_at": now,
             },
         )
+        if ha_slot is not None:
+            session.execute(
+                text("UPDATE control_process_instances SET ha_slot=:slot WHERE instance_id=:id"),
+                {"slot": ha_slot, "id": instance_id},
+            )
         return _matches(authority, instance_id, expires, declaration)
     except Exception:
         raise _invalid() from None
+
+
+def _check_admission(
+    session: Session, instance_id: UUID, ha_slot: str | None, *, single_process: bool
+) -> None:
+    """Called with the authority locked exclusively for runtime registration."""
+    admitted_ha = session.scalar(text("SELECT id FROM control_ha_capacity WHERE id=1")) == 1
+    if admitted_ha != (ha_slot is not None):
+        raise _invalid()
+    if not single_process and ha_slot is None:
+        return
+    now = session.scalar(text("SELECT pg_catalog.clock_timestamp()"))
+    conflict = session.scalar(
+        text("""
+            SELECT EXISTS (SELECT 1 FROM control_process_instances
+            WHERE instance_id <> :id AND NOT revoked AND lease_until > :now
+              AND (CAST(:slot AS varchar) IS NULL OR ha_slot IS NULL OR ha_slot = :slot))
+        """),
+        {"id": instance_id, "slot": ha_slot, "now": now},
+    )
+    if conflict is not False:
+        raise _invalid()
+    if ha_slot is not None:
+        # Replacing this slot permanently fences the elapsed occupant, even
+        # if the database wall clock subsequently moves backward.
+        session.execute(
+            text("""
+                UPDATE control_process_instances SET revoked=true
+                WHERE instance_id <> :id AND NOT revoked AND lease_until <= :now
+                  AND (ha_slot IS NULL OR ha_slot = :slot)
+            """),
+            {"id": instance_id, "slot": ha_slot, "now": now},
+        )
 
 
 def _update_control(

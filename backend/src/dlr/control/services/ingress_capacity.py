@@ -251,6 +251,14 @@ def activate_profile(session: Session) -> bool:
     storage_available = _storage_budget_available(profile)
     _lock_global_quota(session)
     row = session.get(IngressCapacityConfiguration, 1, with_for_update=True, populate_existing=True)
+    if settings.control_ha_slot is not None:
+        from dlr.control.services.control_ha_capacity import admission_configured
+
+        return (
+            row is not None
+            and row.fingerprint == profile.fingerprint
+            and admission_configured(session)
+        )
     if row is not None and row.fingerprint == profile.fingerprint:
         return True
     if not storage_available:
@@ -289,7 +297,7 @@ def require_active_profile(session: Session) -> CapacityProfile:
             503, "ingress_capacity_unavailable", "Capacity profile is invalid"
         ) from error
     row = session.get(IngressCapacityConfiguration, 1, populate_existing=True)
-    if row is None:
+    if row is None and settings.control_ha_slot is None:
         activate_profile(session)
         row = session.get(IngressCapacityConfiguration, 1, populate_existing=True)
     if row is None or row.fingerprint != profile.fingerprint:

@@ -225,7 +225,12 @@ def _reserve(
     from dlr.control.services.ingress_capacity import require_active_profile, require_disk_capacity
 
     profile = require_active_profile(session)
-    require_disk_capacity()
+    if settings.control_ha_slot is None:
+        require_disk_capacity()
+    else:
+        from dlr.control.services.control_ha_capacity import require_storage
+
+        require_storage(session)
     limits = _limits(session, activation, profile)
     now = database_now(session)
     oldest = session.scalar(

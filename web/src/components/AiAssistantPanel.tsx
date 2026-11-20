@@ -1433,7 +1433,9 @@ async function resolveComposerAttachment(
         setPanelError(
           error instanceof ApiError && error.code === "ai_attachment_expired"
             ? t("assistant.attachments.prepared.expired")
-            : attachmentServerErrorMessage(error, t("assistant.errors.requestFailed")),
+            : error instanceof TypeError
+              ? t("assistant.errors.connectionInterrupted")
+              : attachmentServerErrorMessage(error, t("assistant.errors.requestFailed")),
         );
         // M5.5.5: failures converge to an explicit error state; no progress
         // line lingers or keeps claiming an unfinished stage.

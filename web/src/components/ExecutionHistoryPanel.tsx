@@ -715,12 +715,12 @@ export default function ExecutionHistoryPanel(props: {
         {visibleDetail !== null && !detailLoading && (
           <div className="execution-detail">
             <ExecutionBatchNotice execution={visibleDetail} />
-            {watcher.fallbackExhausted && !isTerminal(visibleDetail.status) && (
+            {(watcher.streamInterrupted || watcher.fallbackExhausted) && !isTerminal(visibleDetail.status) && (
               <Alert
                 type="warning"
                 showIcon
-                message={t("history.connectionLost")}
-                description={t("history.connectionLostDescription")}
+                message={t(watcher.fallbackExhausted ? "history.connectionLost" : "live.checkingAfterDisconnect")}
+                description={watcher.fallbackExhausted ? t("history.connectionLostDescription") : undefined}
               />
             )}
             {visibleDetail.status === "queued" && (

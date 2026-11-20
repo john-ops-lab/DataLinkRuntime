@@ -23,6 +23,7 @@ interface Props {
   /** Logical count of the server-saved streams; unlike liveStdout this is not capped. */
   serverLogLineCount?: number;
   fallbackExhausted: boolean;
+  streamInterrupted?: boolean;
   waitingForWebhook: boolean;
   /** M5.5.13: user selected masked browser-visible log text to add to the AI
    * context. Only the already-rendered (masked) text ever leaves this view. */
@@ -86,12 +87,12 @@ export default function LiveLogWorkspace(props: Props) {
         </div>
       ) : (
         <div className="live-log-content">
-          {props.fallbackExhausted && !isTerminal(execution.status) && (
+          {(props.streamInterrupted || props.fallbackExhausted) && !isTerminal(execution.status) && (
             <Alert
               type="warning"
               showIcon
-              message={t("live.connectionLost")}
-              description={t("live.connectionLostDescription")}
+              message={t(props.fallbackExhausted ? "live.connectionLost" : "live.checkingAfterDisconnect")}
+              description={props.fallbackExhausted ? t("live.connectionLostDescription") : undefined}
             />
           )}
           {execution.status === "queued" && (

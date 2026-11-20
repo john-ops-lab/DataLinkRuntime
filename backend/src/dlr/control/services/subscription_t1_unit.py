@@ -360,7 +360,12 @@ class T1Unit:
                 429, "subscription_capacity_exceeded", "Ready control owns the next token"
             )
         self._load_capacity()
-        require_disk_capacity()
+        if settings.control_ha_slot is None:
+            require_disk_capacity()
+        else:
+            from dlr.control.services.control_ha_capacity import require_storage
+
+            require_storage(self.session)
         assert self._maxima is not None
         oldest = self._oldest
         if oldest is not None and now - oldest >= timedelta(minutes=30):

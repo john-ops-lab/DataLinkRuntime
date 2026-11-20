@@ -150,6 +150,12 @@ class SubscriptionRuntimeManager:
         owner: _Owner | None = None
         try:
             with self.session_factory.begin() as session:
+                if settings.control_ha_slot is not None:
+                    from dlr.control.services.control_ha_capacity import admission_configured
+
+                    if not admission_configured(session):
+                        self._release_start(subscription_id)
+                        return False
                 _, sub = delivery.lock_subscription(session, subscription_id)
                 runner = self.registry.get(sub.source_type)
                 if (
@@ -555,6 +561,35 @@ class SubscriptionRuntimeManager:
         logger.warning("source shutdown awaiting native close")
         return False
 
+    def _owner_waiting(self) -> bool:
+        if not settings.event_subscriptions_enabled:
+            return False
+        with self.session_factory() as session:
+            from dlr.control.services.control_ha_capacity import admission_configured
+            from dlr.control.services.input_config import database_now
+
+            if not admission_configured(session):
+                return True
+            now = database_now(session)
+            active = exists().where(
+                SubscriptionLease.subscription_id == EventSubscription.id,
+                SubscriptionLease.lease_until > now,
+            )
+            return (
+                session.scalar(
+                    select(
+                        exists().where(
+                            EventSubscription.desired_state == "enabled",
+                            EventSubscription.activation_id.is_not(None),
+                            EventSubscription.connection_state != "blocked",
+                            EventSubscription.deleted_at.is_(None),
+                            ~active,
+                        )
+                    )
+                )
+                is True
+            )
+
     async def test_connection(
         self,
         subscription_id: int,
@@ -567,6 +602,8 @@ class SubscriptionRuntimeManager:
         runner = self.registry.get(source_type)
         if runner is None:
             raise SourceFailure("source_not_available")
+        if settings.control_ha_slot is not None and await asyncio.to_thread(self._owner_waiting):
+            raise SourceFailure("subscription_capacity_exceeded", "capacity")
         if not self._claim(subscription_id, probe=True):
             raise SourceFailure("subscription_capacity_exceeded", "capacity")
         loop = asyncio.get_running_loop()

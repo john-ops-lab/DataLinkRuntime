@@ -1,4 +1,4 @@
-"""Durable process identity used only by the isolated Control protocol."""
+"""Durable process identity for the Control protocol."""
 
 from datetime import datetime
 from uuid import UUID
@@ -15,6 +15,7 @@ class ControlProcessInstance(Base):
         CheckConstraint(
             "octet_length(instance_token_digest) = 32", name="ck_control_instance_token_digest"
         ),
+        CheckConstraint("ha_slot IN ('a', 'b')", name="ck_control_instance_ha_slot"),
     )
 
     instance_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
@@ -26,6 +27,7 @@ class ControlProcessInstance(Base):
     builtin_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     attachment_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     capacity_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    ha_slot: Mapped[str | None] = mapped_column(String(1))
     lease_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

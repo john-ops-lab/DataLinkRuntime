@@ -1,7 +1,9 @@
 """B1 management gates against PostgreSQL; no source listener or external source service."""
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 
 import pytest
 from fastapi import HTTPException
@@ -541,6 +543,33 @@ def test_enabled_budget_rejection_rolls_back_activation(api_client, monkeypatch,
         assert session.scalar(select(func.count()).select_from(SubscriptionActivation)) == 1
         assert session.get(EventSubscription, two["id"]).activation_id is None
         assert session.get(EventSubscription, two["id"]).desired_state == "disabled"
+
+
+def test_concurrent_enable_competes_for_last_cluster_subscription(
+    api_client, monkeypatch, session_factory
+):
+    candidates = [
+        setup_subscription(api_client, monkeypatch, name=f"cluster-{index}")[2]
+        for index in range(17)
+    ]
+    for subscription in candidates[:15]:
+        activate(api_client, monkeypatch, subscription)
+    barrier = Barrier(2)
+
+    def enable(subscription):
+        barrier.wait(timeout=5)
+        return action(api_client, subscription, "enable").status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(enable, candidates[15:]))
+    assert outcomes.count(429) == 1
+    assert len([status for status in outcomes if 200 <= status < 300]) == 1
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(SubscriptionActivation)) == 16
+        assert (
+            session.scalar(select(func.count()).where(EventSubscription.desired_state == "enabled"))
+            == 16
+        )
 
 
 def test_repair_with_backlog_preserves_old_activation(api_client, monkeypatch, session_factory):

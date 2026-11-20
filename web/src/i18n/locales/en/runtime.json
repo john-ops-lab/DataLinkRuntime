@@ -536,6 +536,7 @@
     "emptyTitle": "No live logs displayed yet",
     "emptyDescription": "Logs appear here after a task starts running.",
     "connectionLost": "Live connection lost; status may be stale",
+    "checkingAfterDisconnect": "Live connection interrupted. Checking the execution status…",
     "connectionLostDescription": "The execution has not been confirmed as ended and automatic status checks have paused. Refresh or check execution history later.",
     "queuedDescription": "The Execution is durably queued for its target Worker; a temporarily offline Worker is not a failure.",
     "retryDescription": "The server will continue at the next attempt time recorded in the Execution.",

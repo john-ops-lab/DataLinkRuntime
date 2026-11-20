@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -78,6 +79,11 @@ from dlr.control.services.subscription_runtime import get_runtime
 from dlr.control.template_catalog import get_template_catalog
 
 logger = logging.getLogger("dlr.control.app")
+_V4_SHARED_FILE_PATH = re.compile(
+    r"^/api/(?:builtin-packages(?:/|$)|adapters/\d+/(?:input-artifacts|ai/attachments)(?:/|$)"
+    r"|system/managed-input-(?:artifacts|deletion-jobs)(?:/|$)"
+    r"|workers/\d+/(?:v4/)?executions/\d+/(?:input-artifacts|builtin-packages)(?:/|$))"
+)
 
 
 class _EntryBoundary:
@@ -99,7 +105,13 @@ class _EntryBoundary:
         account_prefix = "/__dlr_account"
         path = scope["path"]
         if path == account_prefix or path.startswith(f"{account_prefix}/"):
-            if path == account_prefix:
+            if path == account_prefix or (
+                settings.control_ha_slot is not None
+                and (
+                    scope.get("client") is None
+                    or scope["client"][0] not in settings.control_ha_trusted_proxy_ips
+                )
+            ):
                 response = JSONResponse(status_code=404, content={"detail": "Not found"})
                 await response(scope, receive, send)
                 return
@@ -123,6 +135,27 @@ class _EntryBoundary:
                 require_csrf(Request(scope, receive=receive))
             except HTTPException as exc:
                 response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+                await response(scope, receive, send)
+                return
+        if settings.control_ha_slot is not None:
+            path = scope["path"]
+            if path not in ("/api/health", "/api/health/live", "/api/health/ready"):
+                process = getattr(scope["app"].state, "control_process_v4", None)
+                try:
+                    if process is None:
+                        raise ValueError
+                    process.check_authority()
+                except Exception:
+                    response = JSONResponse(
+                        status_code=503,
+                        content={"detail": {"code": "control_authority_unavailable"}},
+                    )
+                    await response(scope, receive, send)
+                    return
+            if _V4_SHARED_FILE_PATH.match(path):
+                response = JSONResponse(
+                    status_code=503, content={"detail": {"code": "shared_backend_unavailable"}}
+                )
                 await response(scope, receive, send)
                 return
         await self.app(scope, receive, send)
@@ -161,6 +194,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     background tasks and no external scheduler framework is introduced.
     """
     app.state.control_process_v4 = None
+    capacity_monitor: asyncio.Task[None] | None = None
     if settings.worker_remote_v4_enabled:
         from dlr.control.services.control_declaration_v4 import read_declaration
         from dlr.control.services.control_process_v4 import ControlProcess
@@ -182,17 +216,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 session.rollback()
             process.check_authority()
             app.state.control_process_v4 = process
+            if process.ha_slot is not None:
+                from dlr.control.services import control_ha_capacity
+                from dlr.control.services.control_claim_peer import ClaimPeer
+
+                app.state.control_claim_peer = ClaimPeer(
+                    settings.control_ha_peer_url, settings.control_ha_peer_ca_file
+                )
+                control_ha_capacity.set_local_process(process)
+                capacity_monitor = asyncio.create_task(control_ha_capacity.monitor())
         except Exception:
             if process is not None:
                 process.stop()
             raise RuntimeError("worker_remote_control_unavailable") from None
 
     bootstrap_task = asyncio.create_task(_demo_bootstrap_loop())
-    ai_attachment_task = asyncio.create_task(attachment_gc_loop())
+    local_storage_tasks: tuple[asyncio.Task[None], ...] = ()
+    if settings.control_ha_slot is None:
+        local_storage_tasks = (
+            asyncio.create_task(attachment_gc_loop()),
+            asyncio.create_task(artifact_gc_loop()),
+            asyncio.create_task(orphan_audit_loop()),
+        )
     task = asyncio.create_task(scheduler_loop())
     retention_task = asyncio.create_task(retention_loop())
-    artifact_gc_task = asyncio.create_task(artifact_gc_loop())
-    orphan_audit_task = asyncio.create_task(orphan_audit_loop())
     admission_task = asyncio.create_task(admission_reconciler_loop())
     attempt_task = asyncio.create_task(attempt_reconciler_loop())
     placement_tasks: tuple[asyncio.Task[None], ...] = ()
@@ -214,6 +261,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if capacity_monitor is not None:
+            capacity_monitor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await capacity_monitor
+            control_ha_capacity.set_local_process(None)
         coordinator = getattr(app.state, "claim_coordinator_v4", None)
         if coordinator is not None:
             coordinator.close()
@@ -228,11 +280,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await asyncio.to_thread(close_intake_database, native_closed=native_closed)
         for background_task in (
             task,
-            ai_attachment_task,
+            *local_storage_tasks,
             bootstrap_task,
             retention_task,
-            artifact_gc_task,
-            orphan_audit_task,
             admission_task,
             attempt_task,
             *placement_tasks,
@@ -244,16 +294,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             background_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-        with contextlib.suppress(asyncio.CancelledError):
-            await ai_attachment_task
+        for local_storage_task in local_storage_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await local_storage_task
         with contextlib.suppress(asyncio.CancelledError):
             await bootstrap_task
         with contextlib.suppress(asyncio.CancelledError):
             await retention_task
-        with contextlib.suppress(asyncio.CancelledError):
-            await artifact_gc_task
-        with contextlib.suppress(asyncio.CancelledError):
-            await orphan_audit_task
         with contextlib.suppress(asyncio.CancelledError):
             await admission_task
         with contextlib.suppress(asyncio.CancelledError):

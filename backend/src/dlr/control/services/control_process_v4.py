@@ -62,6 +62,7 @@ class ControlProcess:
 
         freeze(config)
         self._config, self._sessions, self._deployment = config, sessions, deployment
+        self.ha_slot = config.control_ha_slot
         self._pid = os.getpid()
         self._instance, self._token = uuid4(), identity.new_instance_token()
         self._stop = threading.Event()
@@ -74,6 +75,7 @@ class ControlProcess:
         self._last_clock: float | None = None
         self._probe_active: threading.Event | None = None
         self._probe_result: Status = "unknown"
+        self._compatibility: identity.DeclaredCompatibility | None = None
 
     def _lose_deadline_locked(self) -> None:
         self._deadline_lost = True
@@ -120,10 +122,35 @@ class ControlProcess:
             ):
                 raise TokenFenceUnavailable("control authority unavailable")
         try:
-            if read_declaration(self._config) != self._deployment:
+            if (
+                self._config.control_ha_slot != self.ha_slot
+                or read_declaration(self._config) != self._deployment
+            ):
                 raise ValueError
         except Exception:
             raise TokenFenceUnavailable("control authority unavailable") from None
+
+    def capacity_compatible(self) -> bool:
+        self.check_authority()
+        with self._lock:
+            return self._compatibility is not None and self._compatibility.capacity_match
+
+    def compatibility(self) -> identity.DeclaredCompatibility | None:
+        self.check_authority()
+        with self._lock:
+            return self._compatibility
+
+    def assert_live(self, session: Session) -> None:
+        self.check_authority()
+        epoch = identity.assert_live_control(
+            session,
+            self._deployment.authority,
+            instance_id=self._instance,
+            instance_token=self._token,
+        )
+        if epoch != self._deployment.authority_epoch:
+            raise TokenFenceUnavailable("control authority unavailable")
+        self.check_authority()
 
     def worker_fence(self, session: Session, *, issue_credentials: bool = False) -> Fence:
         """Acquire the database fence before taking any Worker business lock."""
@@ -386,7 +413,8 @@ class ControlProcess:
                     self._deployment.authority,
                     instance_id=self._instance,
                     instance_token=self._token,
-                    single_process=self._config.worker_remote_v4_enabled,
+                    single_process=self._config.worker_remote_v4_enabled and self.ha_slot is None,
+                    ha_slot=self.ha_slot,
                 )
             if isinstance(result, identity.ExpiredControl):
                 session.commit()  # revocation must itself be confirmed
@@ -416,6 +444,7 @@ class ControlProcess:
             session.commit()
         with self._lock:
             self._registered = True
+            self._compatibility = result
             finished = self._clock_locked()
             until = started + remaining
             if (
@@ -433,7 +462,7 @@ class ControlProcess:
                 result.capacity_match,
             )
         )
-        self._set("registered" if matched else "incompatible", until)
+        self._set("registered" if matched or self.ha_slot is not None else "incompatible", until)
         return True
 
     def _finish(self) -> None:

@@ -114,7 +114,7 @@ def get_managed_input_capability(session: DbSession) -> ManagedInputCapabilityRe
     quota usage, credentials and administrator-only details remain excluded.
     """
 
-    enabled = bool(settings.managed_files_enabled)
+    enabled = bool(settings.managed_files_enabled and settings.control_ha_slot is None)
     policy = managed_input_service.get_settings(session)
     return ManagedInputCapabilityResponse(
         managed_files_enabled=enabled,

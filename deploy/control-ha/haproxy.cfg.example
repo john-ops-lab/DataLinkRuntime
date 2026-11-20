@@ -1,0 +1,66 @@
+# Replace documentation addresses and certificate paths in private configuration.
+# Keep Control ports and the peer frontends on the private network.
+global
+    log stdout format raw local0
+    maxconn 512
+
+defaults
+    mode http
+    log global
+    log-format "%ci %ft %b/%s %ST %Tt"
+    timeout connect 3s
+    timeout http-request 10s
+    timeout queue 1s
+    timeout client 660s
+    timeout server 660s
+    retries 0
+
+frontend token_api
+    bind :8443 ssl crt /etc/dlr-tls/api.pem
+    http-request deny deny_status 404 unless { path_beg /api/ }
+    http-request del-header X-DLR-Claim-Forwarded
+    http-request del-header Forwarded
+    http-request del-header X-Forwarded-For
+    http-request set-header X-Forwarded-Proto https
+    default_backend controls
+
+frontend account_api
+    bind :9443 ssl crt /etc/dlr-tls/api.pem
+    http-request deny deny_status 404 unless { path_beg /api/ }
+    http-request del-header X-DLR-Claim-Forwarded
+    http-request del-header Forwarded
+    http-request del-header X-Forwarded-For
+    http-request set-header X-Forwarded-Proto https
+    http-request set-path /__dlr_account%[path]
+    default_backend controls
+
+backend controls
+    balance roundrobin
+    option httpchk
+    http-check send meth GET uri /api/health/ready ver HTTP/1.1 hdr Host control
+    http-check expect status 200
+    default-server check inter 2s fall 2 rise 1
+    server control_a 192.0.2.10:8443 ssl verify required ca-file /etc/dlr-tls/control-ca.pem verifyhost control-a.example.internal sni str(control-a.example.internal) check-sni control-a.example.internal
+    server control_b 192.0.2.11:8443 ssl verify required ca-file /etc/dlr-tls/control-ca.pem verifyhost control-b.example.internal sni str(control-b.example.internal) check-sni control-b.example.internal
+
+frontend claim_peer_a
+    bind 192.0.2.20:10443 ssl crt /etc/dlr-tls/claim-peer.pem
+    http-request deny unless { src 192.0.2.11 }
+    http-request deny unless METH_POST { path_reg ^/api/workers/[0-9]+/v4/claim/finalize$ }
+    http-request deny unless { hdr(X-DLR-Claim-Forwarded) -m str 1 }
+    default_backend claim_to_a
+
+frontend claim_peer_b
+    bind 192.0.2.20:11443 ssl crt /etc/dlr-tls/claim-peer.pem
+    http-request deny unless { src 192.0.2.10 }
+    http-request deny unless METH_POST { path_reg ^/api/workers/[0-9]+/v4/claim/finalize$ }
+    http-request deny unless { hdr(X-DLR-Claim-Forwarded) -m str 1 }
+    default_backend claim_to_b
+
+backend claim_to_a
+    timeout server 4s
+    server control_a 192.0.2.10:8443 ssl verify required ca-file /etc/dlr-tls/control-ca.pem verifyhost control-a.example.internal sni str(control-a.example.internal)
+
+backend claim_to_b
+    timeout server 4s
+    server control_b 192.0.2.11:8443 ssl verify required ca-file /etc/dlr-tls/control-ca.pem verifyhost control-b.example.internal sni str(control-b.example.internal)

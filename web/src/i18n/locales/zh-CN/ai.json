@@ -192,6 +192,7 @@
     },
     "errors": {
       "requestFailed": "AI 请求失败",
+      "connectionInterrupted": "AI 连接已断开，可以手动重试这次请求。",
       "gatewayPayloadTooLarge": "附件请求超过网关上限（32 MiB），请减少或压缩附件后重试",
       "gatewayTimeout": "模型服务响应超时（660 秒），请检查网络或稍后重试",
       "knowledgeUnavailable": "本轮知识库检索不可用：请确认管理员已配置可用知识源"

@@ -2363,6 +2363,7 @@ export function AdapterConsole({
                         liveStderr={liveWatcher.liveStderr}
                         serverLogLineCount={liveWatcher.serverLogLineCount}
                         fallbackExhausted={liveWatcher.fallbackExhausted}
+                        streamInterrupted={liveWatcher.streamInterrupted}
                         waitingForWebhook={
                           selected.adapter_type === "webhook" &&
                           waitingForWebhook &&
