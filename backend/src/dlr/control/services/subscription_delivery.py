@@ -116,27 +116,30 @@ def require_lease_control(
     from dlr.control.services.control_ha_capacity import assert_local_control
 
     receiver = assert_local_control(session)
-    if receiver is None or lease.control_instance_id == receiver:
+    if receiver is None:
         return
-    # The subscription row/lease generation is already locked. The peer's
-    # registration is a snapshot check, not a second Control/business lock.
+    if lease.lease_until <= database_now(session):
+        raise domain_error(409, "subscription_owner_stale", "Listener ownership expired")
+    if lease.control_instance_id == receiver:
+        return
+    # Peer and receiver hold compatible share locks. A peer being renewed or
+    # revoked is temporarily unavailable for new custody; do not wait behind it.
     if (
         passive_http
         and lease.control_instance_id is not None
         and session.scalar(
             text("""
-            SELECT EXISTS (
-              SELECT 1 FROM control_process_instances owner
-              JOIN control_process_instances receiver USING (cluster_id, authority_epoch)
-              WHERE owner.instance_id = :owner AND receiver.instance_id = :receiver
-                AND owner.ha_slot IS NOT NULL AND NOT owner.revoked
-                AND owner.image_digest = receiver.image_digest
-                AND owner.lease_until > pg_catalog.clock_timestamp()
-            )
+            SELECT 1 FROM control_process_instances owner
+            JOIN control_process_instances receiver USING (cluster_id, authority_epoch)
+            WHERE owner.instance_id = :owner AND receiver.instance_id = :receiver
+              AND owner.ha_slot IS NOT NULL AND NOT owner.revoked
+              AND owner.image_digest = receiver.image_digest
+              AND owner.lease_until > pg_catalog.clock_timestamp()
+            FOR SHARE OF owner SKIP LOCKED
         """),
             {"owner": lease.control_instance_id, "receiver": receiver},
         )
-        is True
+        == 1
     ):
         return
     raise domain_error(409, "subscription_owner_stale", "Listener Control ownership expired")
@@ -537,6 +540,8 @@ def receive_event(
         checkpoint.blocked_unaccepted = None
     session.flush()
     refresh_delivery_state(session, sub)
+    if receiver is not None:
+        require_lease_control(session, lease, passive_http=sub.source_type == "http")
     return receipt, False
 
 

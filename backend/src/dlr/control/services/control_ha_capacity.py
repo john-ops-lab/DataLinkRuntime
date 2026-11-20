@@ -40,12 +40,21 @@ def set_local_process(process: ControlProcess | None) -> None:
 def assert_local_control(session: Session) -> UUID | None:
     """Acquire the registered node fence before taking business locks in HA."""
     if settings.control_ha_slot is None:
+        if adopted(session):
+            raise RuntimeError("Control authority unavailable")
         return None
     process = _local_process
     if process is None:
         raise RuntimeError("Control authority unavailable")
     process.assert_live(session)
     return process.instance_id
+
+
+def recheck_local_control(session: Session) -> None:
+    """Check database-time authority after the writes and their lock waits."""
+    if settings.control_ha_slot is not None:
+        session.flush()
+        assert_local_control(session)
 
 
 def adopted(session: Session) -> bool:

@@ -39,7 +39,7 @@ from dlr.control.models import (
     SourceCheckpoint,
 )
 from dlr.control.services import subscription_delivery as delivery
-from dlr.control.services.control_ha_capacity import assert_local_control
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 
 logger = logging.getLogger("dlr.control.subscription_scheduler")
 Kind = Literal["pending", "processing"]
@@ -279,6 +279,7 @@ def _reserve_candidates(session: Session, kind: Kind, cursor: FairCursor) -> lis
     # unprocessed, so the next node may inspect it before the sweep wraps.
     durable.after_id = candidates[0].subscription_id if candidates else 0
     durable.upper_id = position.upper_subscription_id if candidates else 0
+    recheck_local_control(session)
     session.commit()
     return candidates
 
@@ -324,6 +325,7 @@ def run_delivery_pass(
                         changed = (
                             delivery.dispatch_delivery(session, candidate.delivery_id) is not None
                         )
+                recheck_local_control(session)
                 session.commit()
                 if changed:
                     progressed += 1

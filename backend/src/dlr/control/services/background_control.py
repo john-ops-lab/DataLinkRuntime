@@ -4,7 +4,7 @@ from sqlalchemy import Select, text
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from dlr.control.models import RuntimeReconciliationCursor
-from dlr.control.services.control_ha_capacity import assert_local_control
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 
 
 def reserve_page(
@@ -38,6 +38,7 @@ def reserve_page(
             ids = tuple(session.scalars(page.where(key <= cursor.upper_id)))
         if ids:
             cursor.after_id = ids[-1]
+        recheck_local_control(session)
         session.commit()
         return ids
     except Exception:

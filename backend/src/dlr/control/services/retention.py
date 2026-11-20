@@ -38,7 +38,7 @@ from dlr.control.models.reliable_execution import OPEN_OUTBOX_STATES
 from dlr.control.models.worker_capacity import OCCUPIED_RESERVATION_STATES
 from dlr.control.services.attempt import TERMINAL_ATTEMPT_STATUSES
 from dlr.control.services.background_control import reserve_page
-from dlr.control.services.control_ha_capacity import assert_local_control
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 from dlr.control.services.execution import TERMINAL_STATUSES
 from dlr.control.services.idempotency import cleanup_expired_records
 
@@ -220,6 +220,7 @@ def _delete_batch(session: Session, ids: list[int]) -> int:
         ),
     )
     deleted = int(result.rowcount or 0)
+    recheck_local_control(session)
     session.commit()
     return deleted
 

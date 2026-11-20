@@ -38,7 +38,7 @@ from dlr.control.models.reliable_execution import OPEN_OUTBOX_STATES
 from dlr.control.schemas.worker_pool import FixedRoute, PoolRoute
 from dlr.control.services import rabbitmq, worker_legacy_window, worker_pool
 from dlr.control.services.adapter import domain_error
-from dlr.control.services.control_ha_capacity import assert_local_control
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 from dlr.control.services.dispatch import (
     DISPATCH_EXCHANGE,
     assert_dispatch_message_safe,
@@ -600,6 +600,7 @@ def release_outbox_lease(
         seconds=min(delay, settings.rabbitmq_retry_max_seconds)
     )
     row.last_error_code = error_code[:64]
+    recheck_local_control(session)
     session.commit()
     return True
 
@@ -634,6 +635,7 @@ def mark_outbox_published(
     row.lease_owner = None
     row.lease_expires_at = None
     row.last_error_code = None
+    recheck_local_control(session)
     session.commit()
     return True
 

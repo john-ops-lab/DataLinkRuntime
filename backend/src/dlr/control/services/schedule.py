@@ -65,7 +65,7 @@ from dlr.control.services.adapter import (
     domain_error,
 )
 from dlr.control.services.background_control import reserve_page
-from dlr.control.services.control_ha_capacity import assert_local_control
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 from dlr.control.services.execution import (
     LEGACY_INPUT_COMPAT_METRICS,
     _create_execution_locked,
@@ -1246,6 +1246,7 @@ def _process_due_row(schedule_id: int, *, now: datetime) -> int:
         created = after_created - before_created
         if created < 0:  # pragma: no cover - the Adapter lock prevents this
             raise RuntimeError("Schedule Execution count moved backwards")
+        recheck_local_control(session)
         session.commit()
         return created
     except Exception:

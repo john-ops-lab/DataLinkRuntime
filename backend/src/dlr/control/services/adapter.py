@@ -846,7 +846,7 @@ def _delete_adapter_attempt(
 
 def finalize_one_v4_adapter_deletion(session: Session, *, after_adapter_id: int = 0) -> int | None:
     """Visit one ready Adapter so a blocked owner cannot stall later cleanup."""
-    from dlr.control.services.control_ha_capacity import assert_local_control
+    from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 
     assert_local_control(session)
     pending = select(WorkerCleanupRequest.id).where(
@@ -878,6 +878,7 @@ def finalize_one_v4_adapter_deletion(session: Session, *, after_adapter_id: int 
         if result is None:
             session.rollback()
             return adapter_id
+        recheck_local_control(session)
         session.commit()
     except (HTTPException, SQLAlchemyError) as error:
         session.rollback()

@@ -20,6 +20,7 @@ from dlr.control.models import (
     RuntimeReconciliationCursor,
 )
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.control_ha_capacity import recheck_local_control
 
 RABBITMQ_OUTSTANDING_STATUSES = ("queued", "running", "retry_wait")
 RABBITMQ_TERMINAL_STATUSES = ("succeeded", "dead_letter", "cancelled", "expired")
@@ -288,6 +289,7 @@ def reconcile_admission(
         if _durable_cursors is not None:
             for checkpoint in _durable_cursors:
                 checkpoint.after_id = checkpoint.upper_id = 0
+            recheck_local_control(session)
         session.commit()
         return AdmissionReconcileReport(0, 0, 0, global_count_delta, global_bytes_delta)
 
@@ -412,6 +414,7 @@ def reconcile_admission(
         adapter_cursor, execution_cursor = _durable_cursors
         adapter_cursor.after_id = adapter_cursor.upper_id = next_adapter_id or 0
         execution_cursor.after_id = execution_cursor.upper_id = next_execution_id or 0
+        recheck_local_control(session)
     session.commit()
     return AdmissionReconcileReport(
         adapters_checked=len(selected_ids),

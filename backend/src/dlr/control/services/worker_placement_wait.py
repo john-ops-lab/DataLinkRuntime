@@ -13,7 +13,7 @@ from dlr.common.config import settings
 from dlr.control.models import Execution, ExecutionAttempt
 from dlr.control.models.worker_capacity import ExecutionPlacementAction
 from dlr.control.services.background_control import reserve_page
-from dlr.control.services.control_ha_capacity import assert_local_control
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 
 if TYPE_CHECKING:
     from dlr.control.security import Principal
@@ -309,6 +309,7 @@ def retry_due(session: Session, *, limit: int = 100) -> int:
             session.execute(text("SET LOCAL lock_timeout = '1s'"))
             assert_local_control(session)
             if _retry_execution(session, execution_id):
+                recheck_local_control(session)
                 session.commit()
                 moved += 1
             else:

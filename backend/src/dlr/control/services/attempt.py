@@ -76,7 +76,7 @@ from dlr.control.services import (
 from dlr.control.services import execution as execution_service
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.background_control import reserve_page
-from dlr.control.services.control_ha_capacity import assert_local_control
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 from dlr.control.services.dispatch import deserialize_dispatch_message
 from dlr.control.services.execution_cancellation import (
     CANCELLATION_ERROR_CODE,
@@ -1537,6 +1537,7 @@ def _recover_reserved_attempt(
                 return False
             execution.cancel_requested = True
             if not expired:
+                recheck_local_control(session)
                 session.commit()
                 return False
     if not expired:
@@ -1554,6 +1555,7 @@ def _recover_reserved_attempt(
         error="Worker Lease expired before a terminal result was accepted",
         now=locked_now,
     )
+    recheck_local_control(session)
     session.commit()
     return True
 
@@ -1585,6 +1587,7 @@ def _recover_placement_attempt(
     if now is None:
         if forced:
             execution.cancel_requested = True
+            recheck_local_control(session)
             session.commit()
         else:
             session.rollback()
@@ -1605,6 +1608,7 @@ def _recover_placement_attempt(
     if execution.next_attempt_at is not None and attempt.recovery_not_before is not None:
         delay = execution.next_attempt_at - now
         execution.next_attempt_at = max(now, attempt.recovery_not_before) + delay
+    recheck_local_control(session)
     session.commit()
     return True
 
@@ -1751,6 +1755,7 @@ def retry_dispatcher_once(
         execution.queued_at = locked_now
         execution.next_attempt_at = None
         outbox.create_dispatch_outbox(session, execution, available_at=locked_now)
+        recheck_local_control(session)
         session.commit()
         dispatched += 1
     if dispatched:

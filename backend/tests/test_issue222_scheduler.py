@@ -393,6 +393,7 @@ def test_query_and_first_session_delay_do_not_consume_processing_budget(monkeypa
             clock[0] += 0.060
         yield SimpleNamespace(
             get=lambda model, identity: items[identity],
+            scalar=lambda _: False,
             commit=lambda: commits.append(True),
             rollback=lambda: pytest.fail("the successful transaction must not roll back"),
         )

@@ -109,6 +109,7 @@ class SubscriptionRuntimeManager:
         self._renewer: threading.Thread | None = None
         self._cursor = 0
         self._upper = 0
+        self._http_batch_routes: frozenset[str] = frozenset()
 
     @property
     def active_count(self) -> int:
@@ -146,6 +147,7 @@ class SubscriptionRuntimeManager:
 
         try:
             with self.session_factory.begin() as session:
+                assert_local_control(session)
                 if not legacy_policy_gate(session) or not activate_profile(session):
                     return False
         except Exception:
@@ -266,9 +268,9 @@ class SubscriptionRuntimeManager:
 
     def http_batch_hint(self, public_id: str) -> bool:
         """A scheduling hint only; T1 rechecks the locked authoritative binding."""
-        if settings.control_ha_slot is not None:
-            return settings.http_ingress_enabled and settings.event_subscriptions_enabled
         with self._lock:
+            if settings.control_ha_slot is not None:
+                return public_id in self._http_batch_routes
             return any(
                 owner.context.public_id == public_id
                 and owner.context.source_config.get("mode") == "business_batch"
@@ -395,8 +397,7 @@ class SubscriptionRuntimeManager:
                 "source close acknowledgement unavailable subscription_id=%s",
                 context.subscription_id,
             )
-            if settings.control_ha_slot is None or owner.close_unconfirmed:
-                return  # Retry acknowledgement without recreating or renewing the client.
+            return  # Retry acknowledgement without recreating or renewing the client.
         if owner.close_unconfirmed:
             return
         context.buffer.release_all()
@@ -464,6 +465,32 @@ class SubscriptionRuntimeManager:
                     context=owner.context,
                 )
         with self.session_factory() as session:
+            if settings.control_ha_slot is not None:
+                routes = session.scalars(
+                    select(HttpIngressRoute.public_id)
+                    .join(
+                        EventSubscription, EventSubscription.id == HttpIngressRoute.subscription_id
+                    )
+                    .join(
+                        SubscriptionActivation,
+                        SubscriptionActivation.id == EventSubscription.activation_id,
+                    )
+                    .join(
+                        SubscriptionConfigVersion,
+                        SubscriptionConfigVersion.id == SubscriptionActivation.config_version_id,
+                    )
+                    .where(
+                        EventSubscription.desired_state == "enabled",
+                        EventSubscription.deleted_at.is_(None),
+                        EventSubscription.source_epoch == HttpIngressRoute.source_epoch,
+                        SubscriptionConfigVersion.config["mode"].as_string() == "business_batch",
+                    )
+                    .order_by(HttpIngressRoute.public_id)
+                    .limit(16)
+                )
+                batch_routes = frozenset(routes)
+                with self._lock:
+                    self._http_batch_routes = batch_routes
             if retries:
                 still_enabled = set(
                     session.scalars(

@@ -31,7 +31,7 @@ from dlr.control.models import (
     ExecutionOutbox,
 )
 from dlr.control.services import outbox, rabbitmq
-from dlr.control.services.control_ha_capacity import assert_local_control
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 from dlr.control.services.dispatch import INFRASTRUCTURE_DLQ, deserialize_dispatch_message
 from dlr.control.services.execution_cancellation import lock_execution_in_admission_order
 from dlr.control.services.input_config import database_now
@@ -163,18 +163,13 @@ def _requeue_queued_generation(
         )
         .with_for_update()
     )
+    if settings.control_ha_slot is not None and (
+        row is None or publish_attempt != row.publish_attempts
+    ):
+        return False
     if row is None:
         row = outbox.create_dispatch_outbox(session, execution, available_at=now)
     else:
-        if settings.control_ha_slot is not None and (
-            (publish_attempt is not None and publish_attempt != row.publish_attempts)
-            or (
-                publish_attempt is None
-                and row.lease_expires_at is not None
-                and row.lease_expires_at > now
-            )
-        ):
-            return False
         # A delivery-limit or routing incident is an explicit repair event.
         # Releasing a published row back to pending preserves the same
         # generation/message identity and lets the normal bounded Relay own
@@ -329,6 +324,7 @@ def reconcile_message(
         # an operator decision because repeatedly publishing it could hide a
         # persistent Broker/routing defect.
         action = "requeue"
+    recheck_local_control(session)
     session.commit()
     return InfrastructureReconcileResult(
         action=action,

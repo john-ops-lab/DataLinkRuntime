@@ -903,6 +903,7 @@ def maintenance_tick() -> bool:
     from dlr.control.services.subscription_activation_policy import legacy_policy_gate
 
     with db.SessionLocal.begin() as session:
+        assert_local_control(session)
         policies_ready = legacy_policy_gate(session)
     dispatched = _scheduler.dispatch(db.SessionLocal) if policies_ready else None
     # History is not in the hot polling path. Advance only processed rows so a

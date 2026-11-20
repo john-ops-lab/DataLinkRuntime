@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from dlr.control.models import Execution, RuntimeReconciliationCursor
 from dlr.control.services import worker_placement_cutover, worker_placement_wait, worker_reservation
-from dlr.control.services.control_ha_capacity import assert_local_control
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 
 _PLACEMENT_CURSOR = "worker_placement"
 _EXPIRATION_CURSOR = "worker_placement_expiration"
@@ -135,6 +135,7 @@ def _expire_pass(session: Session, deadline: float) -> tuple[int, int]:
                 session.rollback()
                 break
             changed += int(worker_placement_wait.expire_queued(session, execution_id))
+            recheck_local_control(session)
             session.commit()
         except OperationalError as error:
             session.rollback()
@@ -170,6 +171,7 @@ def _placement_pass(session: Session, deadline: float, limit: int) -> int:
                     )
                     is not None
                 )
+            recheck_local_control(session)
             session.commit()
         except OperationalError as error:
             session.rollback()
