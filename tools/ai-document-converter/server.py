@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 import signal
@@ -233,6 +234,14 @@ class Supervisor:
             raise ConversionError("ai_attachment_filename_invalid")
         source = decode(request.get("data_base64"))
         deadline = time.monotonic() + min(60, max(0.05, float(request.get("timeout_seconds", 30))))
+        if request.get("converter_instance_bound") is True:
+            expires_at = request.get("expires_at")
+            if type(expires_at) not in (int, float) or not math.isfinite(expires_at):
+                raise ConversionError("ai_attachment_invalid")
+            remaining = expires_at - time.time()
+            if remaining <= 0:
+                raise ConversionError("ai_attachment_parse_timeout")
+            deadline = min(deadline, time.monotonic() + remaining)
         if not self.slots.acquire(blocking=False):
             self._recover_finished(deadline)
             if time.monotonic() >= deadline:

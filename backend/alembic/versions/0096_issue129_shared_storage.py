@@ -43,6 +43,19 @@ def upgrade() -> None:
             name="ck_control_storage_maintenance",
         ),
     )
+    op.create_table(
+        "control_storage_observations",
+        sa.Column("purpose", sa.String(20), primary_key=True),
+        sa.Column("slot", sa.String(1), primary_key=True),
+        sa.Column("namespace_id", sa.Uuid(), nullable=False),
+        sa.Column("generation", sa.BigInteger(), nullable=False),
+        sa.Column("instance_id", sa.Uuid(), nullable=False),
+        sa.Column("mount_id", sa.BigInteger(), nullable=False),
+        sa.Column("proof_id", sa.Uuid(), nullable=False),
+        sa.CheckConstraint(
+            "slot IN ('a','b') AND mount_id > 0", name="ck_control_storage_observation"
+        ),
+    )
     op.execute("""
         INSERT INTO control_storage_maintenance (purpose)
         VALUES ('managed_files'), ('builtin_packages'), ('ai_attachments')
@@ -72,10 +85,11 @@ def upgrade() -> None:
         sa.Column("parse_generation", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("resume_after", sa.DateTime(timezone=True), nullable=False),
         sa.Column("result_id", sa.Uuid()),
+        sa.Column("result_sha256", sa.String(64)),
         sa.CheckConstraint(
             "size_bytes > 0 AND charge >= size_bytes AND parse_generation >= 0 "
             "AND state IN ('allocating','pending','ready','closed') "
-            "AND (state <> 'ready' OR result_id IS NOT NULL)",
+            "AND (state <> 'ready' OR (result_id IS NOT NULL AND result_sha256 IS NOT NULL))",
             name="ck_control_attachment_object",
         ),
         sa.ForeignKeyConstraint(
@@ -106,6 +120,24 @@ def upgrade() -> None:
     op.create_index(
         "ix_control_attachment_jobs_reference", "control_attachment_jobs", ["reference"]
     )
+    op.create_table(
+        "control_attachment_retirements",
+        sa.Column("namespace_id", sa.Uuid(), primary_key=True),
+        sa.Column("deployment_id", sa.Uuid(), nullable=False),
+        sa.Column(
+            "retired_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+    )
+    op.create_table(
+        "worker_v4_input_streams",
+        sa.Column(
+            "attempt_id",
+            sa.BigInteger(),
+            sa.ForeignKey("execution_attempts.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        sa.Column("artifact_id", sa.BigInteger(), primary_key=True),
+    )
 
 
 def downgrade() -> None:
@@ -120,9 +152,12 @@ def downgrade() -> None:
         END $$;
     """)
     op.drop_table("control_storage_maintenance")
+    op.drop_table("control_storage_observations")
     op.drop_table("control_storage_bindings")
     op.drop_table("control_attachment_jobs")
     op.drop_table("control_attachment_objects")
     op.drop_table("control_attachment_scopes")
+    op.drop_table("control_attachment_retirements")
+    op.drop_table("worker_v4_input_streams")
     op.drop_column("builtin_package_uploads", "writer_started_at")
     op.drop_column("builtin_package_uploads", "cancelled_at")

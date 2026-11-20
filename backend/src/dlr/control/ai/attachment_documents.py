@@ -251,6 +251,8 @@ class DocumentConverterClient:
             "timeout_seconds": min(60.0, remaining),
             **options,
         }
+        if self.instance_id is not None:
+            payload["expires_at"] = time.time() + min(60.0, remaining)
         replies: list[dict[str, Any]] = []
         errors: list[Exception] = []
 

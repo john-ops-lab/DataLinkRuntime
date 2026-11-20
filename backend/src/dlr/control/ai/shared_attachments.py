@@ -64,8 +64,10 @@ _SELECT = """
     JOIN control_attachment_scopes s USING (namespace_id,principal_key,adapter_id,scope_id)
     WHERE o.namespace_id=:namespace AND o.principal_key=:principal AND o.adapter_id=:adapter
       AND o.scope_id=:scope AND o.reference=:ref AND NOT s.closed
-      AND o.state IN ('pending','ready') AND o.expires_at > pg_catalog.clock_timestamp()
+      AND o.state IN ('pending','ready')
+      AND (:admitted OR o.expires_at > pg_catalog.clock_timestamp())
 """
+_active_io = threading.BoundedSemaphore(MAX_ACTIVE_OPERATIONS)
 
 
 def _error(code: str, *, reason: str | None = None) -> DocumentConversionError:
@@ -89,6 +91,17 @@ class _Job:
     identity: UUID
     converter_id: UUID
     generation: int | None
+    control_slot: str
+
+
+@contextmanager
+def _io_slot() -> Iterator[None]:
+    if not _active_io.acquire(blocking=False):
+        raise _error("ai_attachment_converter_busy")
+    try:
+        yield
+    finally:
+        _active_io.release()
 
 
 def _read(directory: int, name: str, limit: int, *, sha256: str | None = None) -> bytes:
@@ -142,6 +155,7 @@ class SharedAttachmentStore:
             "adapter": scope.adapter,
             "scope": scope.scope,
             "ref": reference,
+            "admitted": False,
         }
 
     @contextmanager
@@ -179,12 +193,16 @@ class SharedAttachmentStore:
             finally:
                 os.close(descriptor)
 
-    def _lookup(self, scope: _Scope, reference: str, *, ready: bool = False) -> RowMapping:
+    def _lookup(
+        self, scope: _Scope, reference: str, *, ready: bool = False, admitted: bool = False
+    ) -> RowMapping:
         with db.SessionLocal() as session:
             if storage_backends.binding_generation(session, self.namespace) is None:
                 raise _error("ai_attachment_store_unavailable")
             row = (
-                session.execute(text(_SELECT), self._params(scope, reference))
+                session.execute(
+                    text(_SELECT), {**self._params(scope, reference), "admitted": admitted}
+                )
                 .mappings()
                 .one_or_none()
             )
@@ -347,18 +365,22 @@ class SharedAttachmentStore:
                     "converter": converter_id,
                     "slot": self.slot,
                     "generation": generation,
-                    "expires": row.expires_at,
+                    "expires": row.expires_at if operation == "prepare" else None,
                     "seconds": seconds,
                     "charge": charge,
                 },
             )
-        return _Job(identity, converter_id, generation)
+        return _Job(identity, converter_id, generation, self.slot)
 
-    def _converter(self, instance: UUID) -> DocumentConverterClient:
-        return DocumentConverterClient(self.client.url, instance_id=instance)
+    def _converter(self, job: _Job) -> DocumentConverterClient:
+        endpoint = storage_backends.converter_url(job.control_slot)
+        if endpoint is None:
+            raise _error("ai_attachment_converter_unavailable")
+        return DocumentConverterClient(endpoint, instance_id=job.converter_id)
 
     def _verify_job(self, session: Session, scope: _Scope, ref: str, job: _Job) -> RowMapping:
-        row = session.execute(text(_SELECT), self._params(scope, ref)).mappings().one_or_none()
+        params = {**self._params(scope, ref), "admitted": job.generation is None}
+        row = session.execute(text(_SELECT), params).mappings().one_or_none()
         valid = session.scalar(
             text("""
             SELECT lease_until > pg_catalog.clock_timestamp() FROM control_attachment_jobs
@@ -390,7 +412,7 @@ class SharedAttachmentStore:
             )
         if needed is not True:
             return
-        self._converter(job.converter_id).cancel(job.identity.hex)
+        self._converter(job).cancel(job.identity.hex)
         with self.namespace.open(slot=self.slot) as root:
             self._remove_result(root, identity, "g-" + job.identity.hex)
         with self._catalog() as session:
@@ -406,12 +428,12 @@ class SharedAttachmentStore:
         self, scope: _Scope, row: RowMapping, rooted: int, deadline: float, cancel: threading.Event
     ) -> AiPreparedAttachment:
         identity = row.object_id
-        with open_directory(rooted, "o-" + identity.hex) as directory:
+        with _io_slot(), open_directory(rooted, "o-" + identity.hex) as directory:
             header = read_record(directory, "source.json")
             data = _read(directory, "original", row.size_bytes, sha256=row.sha256)
             job = self._begin_job(scope, row.reference, "prepare", deadline)
             with self._pin(job.identity, exclusive=True, job=True):
-                client = self._converter(job.converter_id)
+                client = self._converter(job)
                 try:
                     with db.SessionLocal() as session:
                         self._verify_job(session, scope, row.reference, job)
@@ -427,7 +449,7 @@ class SharedAttachmentStore:
                     if cancel.is_set() or result.status == "failure":
                         raise _error("ai_attachment_parse_failed")
                     return self._publish(scope, row, directory, header, result, job)
-                except Exception:
+                except Exception as error:
                     # A failed commit may have published this exact generation.
                     with db.SessionLocal() as session:
                         published = session.scalar(
@@ -438,8 +460,29 @@ class SharedAttachmentStore:
                             {"ref": row.reference, "job": job.identity},
                         )
                     if published is not True:
+                        if cancel.is_set() or (
+                            isinstance(error, DocumentConversionError)
+                            and error.code
+                            not in {
+                                "ai_attachment_cancelled",
+                                "ai_attachment_converter_unavailable",
+                                "ai_attachment_cancel_failed",
+                                "ai_attachment_store_unavailable",
+                            }
+                        ):
+                            self._close_failed_generation(row.reference, job)
                         self._finish_failed_job(identity, job)
                     raise
+
+    def _close_failed_generation(self, reference: str, job: _Job) -> None:
+        with self._catalog() as session:
+            session.execute(
+                text("""
+                UPDATE control_attachment_objects SET state='closed'
+                WHERE reference=:ref AND state='pending' AND parse_generation=:generation
+            """),
+                {"ref": reference, "generation": job.generation},
+            )
 
     def _publish(
         self,
@@ -469,8 +512,14 @@ class SharedAttachmentStore:
             warnings=result.warnings,
             expires_at=row.expires_at,
         )
-        serialized = prepared.model_dump_json().encode()
         pdf = result.rendered_pdf or b""
+        serialized = json.dumps(
+            {
+                "prepared": prepared.model_dump(mode="json"),
+                "rendered_pdf_sha256": hashlib.sha256(pdf).hexdigest() if pdf else None,
+            },
+            separators=(",", ":"),
+        ).encode()
         derived = len(serialized) + len(pdf)
         if (
             len(serialized) > MAX_METADATA_BYTES
@@ -488,10 +537,15 @@ class SharedAttachmentStore:
             session.execute(
                 text("""
                 UPDATE control_attachment_objects
-                SET state='ready',result_id=:result,charge=charge+:size
+                SET state='ready',result_id=:result,result_sha256=:digest,charge=charge+:size
                 WHERE reference=:ref
             """),
-                {"result": job.identity, "size": derived, "ref": row.reference},
+                {
+                    "result": job.identity,
+                    "size": derived,
+                    "ref": row.reference,
+                    "digest": hashlib.sha256(serialized).hexdigest(),
+                },
             )
             self._delete_job(session, job.identity)
         return prepared
@@ -550,14 +604,16 @@ class SharedAttachmentStore:
         with self._pin(row.object_id) as root:
             return self._parse(scope, row, root, deadline, cancel)
 
-    def _prepared(self, root: int, row: RowMapping) -> AiPreparedAttachment:
+    def _prepared(self, root: int, row: RowMapping) -> tuple[AiPreparedAttachment, str | None]:
         with (
             open_directory(root, "o-" + row.object_id.hex) as directory,
             open_directory(directory, "g-" + row.result_id.hex) as result,
         ):
-            prepared = AiPreparedAttachment.model_validate_json(
-                _read(result, "prepared.json", MAX_METADATA_BYTES)
+            document = json.loads(
+                _read(result, "prepared.json", MAX_METADATA_BYTES, sha256=row.result_sha256)
             )
+            prepared = AiPreparedAttachment.model_validate(document["prepared"])
+            digest = document["rendered_pdf_sha256"]
         if (prepared.attachment_ref, prepared.sha256, prepared.size_bytes, prepared.expires_at) != (
             row.reference,
             row.sha256,
@@ -565,7 +621,7 @@ class SharedAttachmentStore:
             row.expires_at,
         ):
             raise _error("ai_attachment_hash_mismatch")
-        return prepared
+        return prepared, digest
 
     def get(
         self, owner: Owner, adapter_id: int, scope_id: UUID | str, reference: str
@@ -573,7 +629,7 @@ class SharedAttachmentStore:
         scope = _Scope.create(owner, adapter_id, scope_id)
         row = self._lookup(scope, reference, ready=True)
         with self._pin(row.object_id) as root:
-            return self._prepared(root, self._lookup(scope, reference, ready=True))
+            return self._prepared(root, self._lookup(scope, reference, ready=True))[0]
 
     def release(
         self, owner: Owner, adapter_id: int, scope_id: UUID | str, reference: str | None = None
@@ -624,12 +680,15 @@ class SharedAttachmentStore:
                       AND adapter_id=:adapter
                       AND scope_id=:scope AND (:close_scope OR reference=:ref) RETURNING reference
                 )
-                SELECT job_id,converter_id FROM control_attachment_jobs JOIN closed USING(reference)
+                SELECT job_id,converter_id,control_slot
+                FROM control_attachment_jobs JOIN closed USING(reference)
             """),
                 params,
             ).all()
         for job in jobs:
-            self._converter(job.converter_id).cancel(job.job_id.hex)
+            with suppress(DocumentConversionError):
+                captured = _Job(job.job_id, job.converter_id, None, job.control_slot)
+                self._converter(captured).cancel(job.job_id.hex)
 
     @contextmanager
     def reader(
@@ -652,7 +711,7 @@ class SharedAttachmentStore:
                     raise _error("ai_attachment_reference_invalid")
                 row = self._lookup(scope, ref, ready=True)
                 root = stack.enter_context(self._pin(row.object_id))
-                prepared = self._prepared(root, self._lookup(scope, ref, ready=True))
+                prepared, _ = self._prepared(root, self._lookup(scope, ref, ready=True))
                 if (prepared.sha256, prepared.representation_revision) != (
                     reference.sha256,
                     reference.representation_revision,
@@ -694,7 +753,8 @@ class SharedAttachmentStore:
         }
         rows = session.execute(
             text("""
-            SELECT j.job_id,j.converter_id,o.object_id FROM control_attachment_jobs j
+            SELECT j.job_id,j.converter_id,j.control_slot,o.object_id
+            FROM control_attachment_jobs j
             JOIN control_attachment_objects o USING(reference)
             WHERE o.namespace_id=:namespace AND j.job_id > :after
               AND (o.state='closed' OR o.expires_at <= pg_catalog.clock_timestamp()
@@ -712,7 +772,9 @@ class SharedAttachmentStore:
                 suppress(OSError, DocumentConversionError),
                 self._pin(row.job_id, exclusive=True, job=True),
             ):
-                self._finish_failed_job(row.object_id, _Job(row.job_id, row.converter_id, None))
+                self._finish_failed_job(
+                    row.object_id, _Job(row.job_id, row.converter_id, None, row.control_slot)
+                )
         return [str(row.job_id) for row in rows]
 
     def _reclaim_objects(self, session: Session, page: storage_maintenance.Page) -> list[str]:
@@ -833,21 +895,23 @@ class _SharedReader:
         self.pinned = pinned
         self.permission = permission
 
-    def _current(self, reference: str) -> tuple[int, RowMapping, AiPreparedAttachment]:
+    def _current(
+        self, reference: str, *, admitted: bool = False
+    ) -> tuple[int, RowMapping, AiPreparedAttachment, str | None]:
         if self.permission is not None:
             self.permission()
         selected = self.pinned.get(reference)
         if selected is None:
             raise _error("ai_attachment_reference_invalid")
         root, frozen = selected
-        row = self.store._lookup(self.scope, reference, ready=True)
-        prepared = self.store._prepared(root, row)
+        row = self.store._lookup(self.scope, reference, ready=True, admitted=admitted)
+        prepared, pdf_digest = self.store._prepared(root, row)
         if (prepared.sha256, prepared.representation_revision) != (
             frozen.sha256,
             frozen.representation_revision,
         ):
             raise _error("ai_attachment_hash_mismatch")
-        return root, row, prepared
+        return root, row, prepared, pdf_digest
 
     def overview(self) -> dict[str, object]:
         return {
@@ -878,10 +942,25 @@ class _SharedReader:
         sheet: str | None = None,
         range_a1: str | None = None,
     ) -> AttachmentReadResult:
+        with _io_slot():
+            return self._read_with_custody(
+                ref, timeout_seconds, page=page, view=view, sheet=sheet, range_a1=range_a1
+            )
+
+    def _read_with_custody(
+        self,
+        ref: str,
+        timeout_seconds: float,
+        *,
+        page: int | None = None,
+        view: str = "both",
+        sheet: str | None = None,
+        range_a1: str | None = None,
+    ) -> AttachmentReadResult:
         if timeout_seconds <= 0:
             raise _error("ai_attachment_parse_timeout")
         deadline = time.monotonic() + min(60, timeout_seconds)
-        root, row, prepared = self._current(ref)
+        root, row, prepared, pdf_digest = self._current(ref)
         if (page is not None and not 1 <= page <= prepared.page_count) or (
             sheet is not None and not any(item.get("name") == sheet for item in prepared.sheets)
         ):
@@ -889,17 +968,17 @@ class _SharedReader:
         pdf = None
         with open_directory(root, "o-" + row.object_id.hex) as directory:
             data = _read(directory, "original", row.size_bytes, sha256=row.sha256)
-            if page is not None:
-                with (
-                    open_directory(directory, "g-" + row.result_id.hex) as derivative,
-                    suppress(FileNotFoundError),
-                ):
+            if page is not None and pdf_digest is not None:
+                with open_directory(directory, "g-" + row.result_id.hex) as derivative:
                     pdf = _read(
-                        derivative, "rendered-pdf", settings.ai_attachment_derived_max_bytes
+                        derivative,
+                        "rendered-pdf",
+                        settings.ai_attachment_derived_max_bytes,
+                        sha256=pdf_digest,
                     )
         job = self.store._begin_job(self.scope, ref, "read", deadline)
         with self.store._pin(job.identity, exclusive=True, job=True):
-            client = self.store._converter(job.converter_id)
+            client = self.store._converter(job)
             try:
                 with db.SessionLocal() as session:
                     self.store._verify_job(session, self.scope, ref, job)
@@ -931,7 +1010,7 @@ class _SharedReader:
                     )
                     position = {"sheet": sheet, "range": range_a1}
                 client.cancel(job.identity.hex)
-                self._current(ref)
+                self._current(ref, admitted=True)
                 if result.status == "failure":
                     raise _error("ai_attachment_parse_failed")
                 if (result.source_sha256, result.representation_revision) != (

@@ -1182,7 +1182,7 @@ class _ClaimSlot:
         with self._lock:
             if self._result is not entry or entry.closed:
                 return False
-            if entry.input_active:
+            if entry.input_active and entry.metadata.get("operation") != "input":
                 # A lost read/HTTP scope is not proof that its actual I/O
                 # ended. Keep this allocation unavailable, even after reap.
                 self._poison()
@@ -1197,6 +1197,8 @@ class _ClaimSlot:
                 entry.channel.shutdown(socket.SHUT_RDWR)
             entry.channel.close()
             entry.envelope.close()
+            # A one-shot reader has no retained Attempt interpreter. Its
+            # pidfd/reap boundary proves that its file descriptors are gone.
             return self._discard_unpublished(entry.process, entry.pidfd, entry.spawn)
         except BaseException:
             self._poison()

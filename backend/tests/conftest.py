@@ -115,6 +115,7 @@ def _truncate(engine: Engine) -> None:
             text(
                 "TRUNCATE TABLE control_image_transitions, "
                 "control_storage_bindings, control_storage_maintenance, "
+                "control_storage_observations, control_attachment_retirements, "
                 "control_attachment_jobs, control_attachment_objects, control_attachment_scopes, "
                 "control_ha_capacity, control_process_instances, control_cluster_authority, "
                 "worker_pool_audit, worker_pool_members, worker_pool_revisions, "

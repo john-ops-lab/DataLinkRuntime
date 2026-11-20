@@ -648,6 +648,9 @@ class Settings(BaseSettings):
     ai_attachment_namespace_id: UUID | None = Field(
         default=None, validation_alias="DLR_AI_ATTACHMENT_NAMESPACE_ID"
     )
+    ai_attachment_peer_converter_url: str | None = Field(
+        default=None, repr=False, validation_alias="DLR_AI_ATTACHMENT_PEER_CONVERTER_URL"
+    )
     ai_attachment_ttl_seconds: int = Field(
         default=1800, ge=60, le=86400, validation_alias="DLR_AI_ATTACHMENT_TTL_SECONDS"
     )

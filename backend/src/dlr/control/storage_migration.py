@@ -7,12 +7,14 @@ import fcntl
 import hashlib
 import json
 import os
+import re
+import shutil
 import stat
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 from typing import Any, BinaryIO
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -21,6 +23,7 @@ from sqlalchemy.pool import NullPool
 from dlr.common.config import settings
 from dlr.common.schema_gate import acquire_migration_gate
 from dlr.common.schema_version import SCHEMA_REVISION
+from dlr.control.ai.attachment_documents import DocumentConverterClient
 from dlr.control.services import control_image_transition_v4 as transition
 from dlr.control.services.artifact_store import LocalFileArtifactStore
 from dlr.control.services.control_declaration_v4 import read_declaration
@@ -32,23 +35,25 @@ from dlr.control.services.shared_posix import (
     open_regular,
     open_root,
 )
-from dlr.control.services.storage_backends import policy_sha256
+from dlr.control.services.storage_backends import converter_url, policy_sha256
 
 _PAGE_SIZE = 64
 _CHUNK_SIZE = 256 * 1024
 _MANAGED = """
-    SELECT storage_key AS key, size_bytes AS size, sha256, false AS pending, false AS optional
+    SELECT storage_key AS key, size_bytes AS size, sha256, false AS pending,
+           status IN ('DELETING','DELETE_FAILED') AS optional
     FROM managed_input_artifacts WHERE status NOT IN ('UPLOADING', 'DELETED')
     UNION ALL
     SELECT a.storage_key, r.reserved_bytes, NULL, true, true FROM managed_input_artifacts a
     JOIN managed_input_upload_reservations r ON r.id=a.upload_reservation_id
     WHERE a.status='UPLOADING' AND r.status='ACTIVE'
     UNION ALL
-    SELECT storage_key, charged_bytes, NULL, false, true FROM artifact_deletion_jobs
+    SELECT storage_key, size_bytes, sha256, false, true FROM artifact_deletion_jobs
     WHERE status <> 'DELETED'
 """
 _BUILTIN = """
-    SELECT storage_key AS key, size_bytes AS size, sha256, false AS pending, false AS optional
+    SELECT storage_key AS key, size_bytes AS size, sha256, false AS pending,
+           status='deleting' AS optional
     FROM builtin_packages
     UNION ALL
     SELECT id, size_bytes, NULL, true, true FROM builtin_package_uploads
@@ -127,10 +132,13 @@ def _copy_one(
             raise SharedStorageUnavailable("Frozen file did not match its manifest")
         return facts
 
+    temporary = f".copy-{name}.part"
+    with suppress(FileNotFoundError):
+        os.close(open_regular(target, temporary, os.O_RDONLY))
+        os.unlink(temporary, dir_fd=target)
     try:
         previous = open_regular(target, name, os.O_RDONLY)
     except FileNotFoundError:
-        temporary = f".copy-{uuid4().hex}.part"
         try:
             with os.fdopen(
                 open_regular(target, temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL), "wb"
@@ -196,6 +204,7 @@ def _copy_catalog(
                     except FileNotFoundError:
                         if not row.optional:
                             raise SharedStorageUnavailable("Missing a referenced object") from None
+                        _assert_absent(target, managed, row.key, part)
                         record([row.key, part, None])
                         continue
                     destination, target_name = entries.enter_context(
@@ -207,6 +216,34 @@ def _copy_catalog(
         if manifest is not None:
             manifest.flush()
             os.fsync(manifest.fileno())
+
+
+def _assert_absent(target: int, managed: bool, key: str, part: bool) -> None:
+    try:
+        with _entry(target, managed, key, part, create=False) as (directory, name):
+            os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise SharedStorageUnavailable("Source absent but destination remains")
+
+
+def _check_attachment_selection(
+    session: Session, namespace: SharedNamespace, prior: UUID | None
+) -> None:
+    allowed = session.scalar(
+        text("""
+        SELECT NOT EXISTS (SELECT 1 FROM control_attachment_objects)
+           AND NOT EXISTS (SELECT 1 FROM control_attachment_retirements WHERE namespace_id=:target)
+           AND (CAST(:prior AS uuid) IS NULL OR EXISTS (
+             SELECT 1 FROM control_attachment_retirements WHERE namespace_id=:prior
+               AND deployment_id=:deployment))
+    """),
+        {"target": namespace.namespace_id, "prior": prior, "deployment": namespace.deployment_id},
+    )
+    if allowed is not True:
+        raise SharedStorageUnavailable(
+            "Previous temporary namespace has outstanding responsibility"
+        )
 
 
 def migrate(
@@ -230,6 +267,8 @@ def migrate(
             ),
             {"purpose": namespace.purpose},
         ).one_or_none()
+        if namespace.purpose == "ai_attachments":
+            _check_attachment_selection(session, namespace, prior.namespace_id if prior else None)
     if expected != (prior.generation if prior is not None else 0):
         raise SharedStorageUnavailable("Storage generation changed")
     if prior is not None and prior.namespace_id == namespace.namespace_id:
@@ -273,6 +312,10 @@ def migrate(
         with factory.begin() as session:
             if _owner(session) != namespace.deployment_id:
                 raise SharedStorageUnavailable("Wrong deployment")
+            if namespace.purpose == "ai_attachments":
+                _check_attachment_selection(
+                    session, namespace, prior.namespace_id if prior else None
+                )
             params = {
                 "purpose": namespace.purpose,
                 "deployment": namespace.deployment_id,
@@ -344,6 +387,90 @@ def observe(factory: sessionmaker[Session], namespace: SharedNamespace) -> dict[
     }
 
 
+@contextmanager
+def _temporary_custody(root: int, identity: UUID, area: str) -> Iterator[None]:
+    stripe = hashlib.sha256(identity.bytes).hexdigest()[:2]
+    with open_directory(root, area, create=True) as directory:
+        fd = open_regular(directory, stripe, os.O_RDWR | os.O_CREAT)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            yield
+        finally:
+            os.close(fd)
+
+
+def retire_temporary(factory: sessionmaker[Session], namespace: SharedNamespace) -> None:
+    """Close a revoked namespace only after physical readers and jobs finish."""
+    with factory() as session:
+        if _owner(session) != namespace.deployment_id:
+            raise SharedStorageUnavailable("Storage migration authority unavailable")
+        jobs = session.execute(
+            text("""
+            SELECT j.job_id,j.converter_id,j.control_slot FROM control_attachment_jobs j
+            JOIN control_attachment_objects o USING(reference) WHERE o.namespace_id=:namespace
+        """),
+            {"namespace": namespace.namespace_id},
+        ).all()
+    with namespace.open() as root:
+        namespace.verify_revoked(root)
+        migration_lock = open_regular(root, ".dlr-migration.lock", os.O_RDWR | os.O_CREAT)
+        try:
+            fcntl.flock(migration_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for job in jobs:
+                endpoint = converter_url(job.control_slot)
+                if endpoint is None:
+                    raise SharedStorageUnavailable("Original converter authority unavailable")
+                with _temporary_custody(root, job.job_id, ".job-locks"):
+                    DocumentConverterClient(endpoint, instance_id=job.converter_id).cancel(
+                        job.job_id.hex
+                    )
+            with os.scandir(root) as directories:
+                for item in directories:
+                    if re.fullmatch(r"o-[0-9a-f]{32}", item.name) is None:
+                        continue
+                    if not item.is_dir(follow_symlinks=False):
+                        raise SharedStorageUnavailable("Invalid temporary object")
+                    with _temporary_custody(root, UUID(item.name[2:]), ".reader-locks"):
+                        shutil.rmtree(item.name, dir_fd=root)
+            os.fsync(root)
+            with factory.begin() as session:
+                if _owner(session) != namespace.deployment_id:
+                    raise SharedStorageUnavailable("Storage migration authority unavailable")
+                params = {
+                    "namespace": namespace.namespace_id,
+                    "deployment": namespace.deployment_id,
+                }
+                session.execute(
+                    text("""
+                    DELETE FROM control_attachment_jobs USING control_attachment_objects o
+                    WHERE control_attachment_jobs.reference=o.reference
+                      AND o.namespace_id=:namespace
+                """),
+                    params,
+                )
+                session.execute(
+                    text("""
+                    DELETE FROM control_attachment_objects WHERE namespace_id=:namespace
+                """),
+                    params,
+                )
+                session.execute(
+                    text("""
+                    DELETE FROM control_attachment_scopes WHERE namespace_id=:namespace
+                """),
+                    params,
+                )
+                session.execute(
+                    text("""
+                    INSERT INTO control_attachment_retirements (namespace_id,deployment_id)
+                    VALUES (:namespace,:deployment) ON CONFLICT (namespace_id) DO NOTHING
+                """),
+                    params,
+                )
+        finally:
+            os.close(migration_lock)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("purpose", choices=PURPOSES)
@@ -355,6 +482,7 @@ def main() -> int:
     mode.add_argument("--expected-generation", type=int)
     mode.add_argument("--observe", action="store_true")
     mode.add_argument("--revoke-temporary", action="store_true")
+    mode.add_argument("--retire-temporary", action="store_true")
     args = parser.parse_args()
     engine = create_engine(settings.database_url, poolclass=NullPool)
     try:
@@ -372,6 +500,9 @@ def main() -> int:
                         raise SharedStorageUnavailable("Storage migration authority unavailable")
                 backend.revoke_temporary()
                 result = {"status": "revoked"}
+            elif args.retire_temporary:
+                retire_temporary(factory, backend)
+                result = {"status": "retired"}
             else:
                 manifest = None
                 if args.manifest is not None:

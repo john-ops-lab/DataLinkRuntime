@@ -2,6 +2,7 @@
 
 import asyncio
 import fcntl
+import hashlib
 import os
 import shutil
 import tarfile
@@ -33,7 +34,7 @@ from dlr.control.models.execution import Execution
 from dlr.control.models.platform import PackageSource
 from dlr.control.services import control_ha_capacity, storage_backends, storage_maintenance
 from dlr.control.services.adapter import domain_error
-from dlr.control.services.shared_posix import open_regular
+from dlr.control.services.shared_posix import open_directory, open_regular
 
 
 def root() -> Path:
@@ -107,9 +108,13 @@ def file_lock(key: str, *, shared: bool = False) -> BinaryIO:
     if settings.control_ha_slot is None:
         stream = storage_path(key, ".lock").open("a+b")
     else:
-        with _shared_root() as directory:
+        lock_name = hashlib.sha256(_material_name(key).encode("ascii")).hexdigest()[:2]
+        with (
+            _shared_root() as directory,
+            open_directory(directory, ".library-locks", create=True) as locks,
+        ):
             stream = os.fdopen(
-                open_regular(directory, _material_name(key, ".lock"), os.O_RDWR | os.O_CREAT),
+                open_regular(locks, lock_name, os.O_RDWR | os.O_CREAT),
                 "r+b",
             )
     try:
@@ -228,6 +233,11 @@ def begin_upload(
 def _begin_shared_upload(
     session: Session, upload_id: str
 ) -> tuple[BuiltinPackageUpload, BinaryIO, BinaryIO]:
+    reservation = session.get(BuiltinPackageUpload, upload_id)
+    available = reservation is not None and reservation.cancelled_at is None
+    session.rollback()
+    if not available:
+        raise domain_error(404, "builtin_upload_not_found", "Upload reservation not found")
     guard = file_lock(upload_id)
     try:
         control_ha_capacity.assert_local_control(session)

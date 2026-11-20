@@ -105,8 +105,13 @@ def serve(channel: Any, request: dict[str, Any], envelope: Any, *, idle_until: f
                 authority=authority,
                 builtin_package=package_download,
             )
+            if config.settings.control_ha_slot is not None:
+                downloads.take_shared_stream(session, grant, request["artifact_id"])
             gate.check()
-            session.rollback()
+            if config.settings.control_ha_slot is not None:
+                session.commit()
+            else:
+                session.rollback()
         deadline = min(deadline, started + remaining)
 
         def recheck() -> None:

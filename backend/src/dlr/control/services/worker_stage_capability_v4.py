@@ -104,7 +104,7 @@ def freeze_worker_wheel(
     from dlr.control.services import builtin_package
 
     requirements = _bounded_requirements(session, adapter.id, version_id)
-    if requirements != "" and not storage_backends.bound(session, "builtin_packages"):
+    if requirements != "" and not storage_backends.available("builtin_packages"):
         _reject("shared_backend")
     if requirements == "":
         return None
@@ -432,6 +432,8 @@ def require_new_execution(
     if reason is None:
         requirements = _bounded_requirements(session, adapter.id, version_id)
         if requirements != "":
+            if not storage_backends.available("builtin_packages"):
+                _reject("shared_backend")
             if not _builtin_default(session, adapter.language):
                 _reject("requirements")
             if not awaiting_worker:

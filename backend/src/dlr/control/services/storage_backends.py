@@ -5,6 +5,7 @@ import hashlib
 import json
 import time
 from pathlib import Path
+from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -13,11 +14,14 @@ from sqlalchemy.orm import Session
 from dlr.common.config import Settings, settings
 from dlr.control import db
 from dlr.control.ai.attachment_documents import DocumentConversionError, DocumentConverterClient
+from dlr.control.services import control_ha_capacity
 from dlr.control.services.control_declaration_v4 import DeclarationUnavailable, read_declaration
 from dlr.control.services.shared_posix import (
     SharedNamespace,
     SharedStorageUnavailable,
     StoragePurpose,
+    preflight_id,
+    runtime_mount_id,
 )
 
 _valid_until: dict[StoragePurpose, float] = {}
@@ -76,8 +80,16 @@ def policy_sha256(purpose: StoragePurpose) -> str:
             settings.ai_attachment_ttl_seconds,
             settings.ai_attachment_store_max_bytes,
             settings.ai_attachment_derived_max_bytes,
+            converter_url("a") or "",
+            converter_url("b") or "",
         )
     return hashlib.sha256(json.dumps(policy, separators=(",", ":")).encode()).hexdigest()
+
+
+def converter_url(slot: str) -> str | None:
+    if slot == settings.control_ha_slot:
+        return settings.ai_document_converter_url
+    return settings.ai_attachment_peer_converter_url or settings.ai_document_converter_url
 
 
 def active_namespace(purpose: StoragePurpose, config: Settings = settings) -> SharedNamespace:
@@ -104,13 +116,18 @@ def bound(session: Session, purpose: StoragePurpose) -> bool:
 
 def _probe(purpose: StoragePurpose) -> bool:
     try:
+        slot = settings.control_ha_slot
+        if slot is None:
+            return False
         namespace = active_namespace(purpose)
-        with namespace.open(slot=settings.control_ha_slot):
-            pass
+        with namespace.open(slot=slot) as directory:
+            proof = preflight_id(directory)
+            mounted = runtime_mount_id(directory)
         if purpose == "ai_attachments":
             if not settings.ai_document_converter_url:
                 return False
             DocumentConverterClient(settings.ai_document_converter_url).identity()
+        return _observe_mount(namespace, slot, proof, mounted)
     except (
         SQLAlchemyError,
         OSError,
@@ -120,7 +137,50 @@ def _probe(purpose: StoragePurpose) -> bool:
         DocumentConversionError,
     ):
         return False
-    return True
+
+
+def _observe_mount(namespace: SharedNamespace, slot: str, proof: UUID, mounted: int) -> bool:
+    with db.SessionLocal.begin() as session:
+        instance = control_ha_capacity.assert_local_control(session)
+        generation = binding_generation(session, namespace)
+        if instance is None or generation is None:
+            return False
+        params = {
+            "purpose": namespace.purpose,
+            "slot": slot,
+            "namespace": namespace.namespace_id,
+            "generation": generation,
+            "instance": instance,
+            "mount": mounted,
+            "proof": proof,
+        }
+        previous = session.execute(
+            text("""
+            SELECT namespace_id,generation,instance_id,mount_id,proof_id
+            FROM control_storage_observations WHERE purpose=:purpose AND slot=:slot FOR UPDATE
+        """),
+            params,
+        ).one_or_none()
+        if (
+            previous is not None
+            and previous.namespace_id == namespace.namespace_id
+            and previous.generation == generation
+            and previous.proof_id == proof
+        ):
+            return (previous.instance_id, previous.mount_id) == (instance, mounted)
+        session.execute(
+            text("""
+            INSERT INTO control_storage_observations
+              (purpose,slot,namespace_id,generation,instance_id,mount_id,proof_id)
+            VALUES (:purpose,:slot,:namespace,:generation,:instance,:mount,:proof)
+            ON CONFLICT (purpose,slot) DO UPDATE SET namespace_id=excluded.namespace_id,
+              generation=excluded.generation, instance_id=excluded.instance_id,
+              mount_id=excluded.mount_id, proof_id=excluded.proof_id
+        """),
+            params,
+        )
+        control_ha_capacity.recheck_local_control(session)
+        return True
 
 
 async def monitor(purpose: StoragePurpose) -> None:

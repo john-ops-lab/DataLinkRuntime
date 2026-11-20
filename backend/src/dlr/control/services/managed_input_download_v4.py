@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from dlr.common import builtin_wheel_v4 as wheels
@@ -240,6 +240,34 @@ def admit(
         version_id=execution.version_id if builtin_package else None,
     )
     return grant, remaining
+
+
+def take_shared_stream(session: Session, grant: InputReadGrant, artifact_id: int) -> None:
+    """Consume the Attempt's exact file once across receiving Control nodes."""
+    locked = session.scalar(
+        select(ExecutionAttempt.id)
+        .where(ExecutionAttempt.id == grant.attempt_id, ExecutionAttempt.status == "running")
+        .with_for_update(skip_locked=True)
+    )
+    if locked is None:
+        raise InputDownloadUnavailable("input_download_unavailable")
+    used = session.scalar(
+        text("""
+        SELECT count(*) FROM worker_v4_input_streams WHERE attempt_id=:attempt
+    """),
+        {"attempt": locked},
+    )
+    if used is None or used >= (1 if grant.package_kind is not None else contract.MAX_FILES):
+        raise InputDownloadUnavailable("input_download_unavailable")
+    selected = session.scalar(
+        text("""
+        INSERT INTO worker_v4_input_streams (attempt_id,artifact_id) VALUES (:attempt,:artifact)
+        ON CONFLICT DO NOTHING RETURNING 1
+    """),
+        {"attempt": locked, "artifact": artifact_id},
+    )
+    if selected != 1:
+        raise InputDownloadUnavailable("input_download_unavailable")
 
 
 def recheck(session: Session, grant: InputReadGrant) -> None:

@@ -70,6 +70,19 @@ def _mount(directory: int) -> str:
     return f"{device}:{inode}"
 
 
+def runtime_mount_id(directory: int) -> int:
+    facts = Path(f"/proc/self/fdinfo/{directory}").read_text(encoding="ascii").splitlines()
+    for entry in facts:
+        name, _, value = entry.partition(":")
+        if name == "mnt_id":
+            return int(value.strip())
+    raise SharedStorageUnavailable("Linux mount identity unavailable")
+
+
+def preflight_id(directory: int) -> UUID:
+    return UUID(read_record(directory, _PROOF)["proof_id"])
+
+
 @contextmanager
 def open_root(path: Path, *, private: bool = True) -> Iterator[int]:
     """Anchor operations at private directories and reject symlinks on the path."""
@@ -204,7 +217,8 @@ class SharedNamespace:
                     proof = read_record(directory, _PROOF)
                     marker = self.marker()
                     if (
-                        set(proof) != {*marker, "boot_a", "boot_b", "mount_a", "mount_b"}
+                        set(proof)
+                        != {*marker, "boot_a", "boot_b", "mount_a", "mount_b", "proof_id"}
                         or any(proof[key] != value for key, value in marker.items())
                         or proof[f"boot_{slot}"] != str(linux_boot_id())
                         or proof[f"mount_{slot}"] != _mount(directory)
@@ -225,7 +239,15 @@ class SharedNamespace:
         if self.purpose != "ai_attachments":
             raise SharedStorageUnavailable("Only temporary namespaces can be revoked here")
         with self.open() as directory:
-            publish_record(directory, _REVOKED, self.marker())
+            try:
+                publish_record(directory, _REVOKED, self.marker())
+            except FileExistsError:
+                self.verify_revoked(directory)
+                os.fsync(directory)
+
+    def verify_revoked(self, directory: int) -> None:
+        if self.purpose != "ai_attachments" or read_record(directory, _REVOKED) != self.marker():
+            raise SharedStorageUnavailable("Temporary namespace has not been revoked")
 
 
 def _wait_record(directory: int, name: str, deadline: float) -> dict[str, str]:
@@ -271,7 +293,8 @@ def prove(namespace: SharedNamespace, slot: Literal["a", "b"], probe: UUID, seco
                 publish_record(
                     directory,
                     _PROOF,
-                    {key: value for key, value in second.items() if key != "challenge"},
+                    {key: value for key, value in second.items() if key != "challenge"}
+                    | {"proof_id": str(UUID(first["challenge"]))},
                     replace=True,
                 )
                 for name in (challenge, answer, complete):

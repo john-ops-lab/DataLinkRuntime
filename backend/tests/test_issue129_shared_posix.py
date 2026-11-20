@@ -25,6 +25,7 @@ from dlr.control.services import (
 from dlr.control.services.artifact_store import ArtifactStoreBusyError
 from dlr.control.services.shared_artifact_store import SharedFileArtifactStore
 from dlr.control.services.shared_posix import SharedNamespace, SharedStorageUnavailable
+from dlr.control.storage_migration import _assert_absent, _check_attachment_selection, _copy_one
 
 
 @pytest.fixture
@@ -216,3 +217,61 @@ def test_shared_attachment_checks_scope_and_preserves_charge_until_pin_closes(
     assert not list(mount.root.glob("o-*"))
     with pytest.raises(DocumentConversionError, match="cancelled"):
         b.prepare(owner, 34, page, attachment, deadline=time.monotonic() + 8)
+
+
+def test_old_preflight_cannot_register_replaced_mount_or_control(
+    api_client, session_factory, tmp_path, monkeypatch
+):
+    mount = register_namespace(api_client, session_factory, tmp_path, monkeypatch, "managed_files")
+    original, replacement, proof = uuid4(), uuid4(), uuid4()
+    monkeypatch.setattr(control_ha_capacity, "assert_local_control", lambda _: original)
+    assert storage_backends._observe_mount(mount, "a", proof, 11)
+    assert not storage_backends._observe_mount(mount, "a", proof, 12)
+    monkeypatch.setattr(control_ha_capacity, "assert_local_control", lambda _: replacement)
+    assert not storage_backends._observe_mount(mount, "a", proof, 11)
+    assert storage_backends._observe_mount(mount, "a", uuid4(), 12)
+
+
+def test_copy_resume_can_reuse_only_verified_destination(tmp_path):
+    import os
+
+    source = tmp_path / "source"
+    source.write_bytes(b"verified measured bytes")
+    destination = tmp_path / "dest"
+    destination.mkdir(mode=0o700)
+    name = str(uuid4()) + ".blob"
+    residual = destination / f".copy-{name}.part"
+    residual.write_bytes(b"interrupted temporary data")
+    residual.chmod(0o600)
+    fd = os.open(destination, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        data = source.read_bytes()
+        expected = len(data), hashlib.sha256(data).hexdigest()
+        for _ in range(2):
+            with source.open("rb") as saved:
+                assert _copy_one(saved, fd, name, *expected) == expected
+        assert not residual.exists()
+        with pytest.raises(SharedStorageUnavailable, match="destination remains"):
+            _assert_absent(fd, False, name.removesuffix(".blob"), False)
+    finally:
+        os.close(fd)
+
+
+def test_attachment_binding_requires_retirement_and_cannot_reselect_retired_identity(
+    api_client, session_factory, tmp_path, monkeypatch
+):
+    mount = register_namespace(api_client, session_factory, tmp_path, monkeypatch, "ai_attachments")
+    replacement = SharedNamespace(mount.root, mount.purpose, mount.deployment_id, uuid4())
+    with session_factory.begin() as session:
+        with pytest.raises(SharedStorageUnavailable, match="outstanding"):
+            _check_attachment_selection(session, replacement, mount.namespace_id)
+        session.execute(
+            text("""
+            INSERT INTO control_attachment_retirements (namespace_id,deployment_id)
+            VALUES (:id,:deployment)
+        """),
+            {"id": mount.namespace_id, "deployment": mount.deployment_id},
+        )
+        _check_attachment_selection(session, replacement, mount.namespace_id)
+        with pytest.raises(SharedStorageUnavailable, match="outstanding"):
+            _check_attachment_selection(session, mount, None)

@@ -63,7 +63,10 @@ async function install(page: Page, locale: "zh-CN" | "en") {
 async function openPanel(page: Page) {
   await page.goto("/adapters"); await page.getByTestId("adapter-item").first().click();
   await page.getByTestId("open-ai-assistant").click();
+  await page.getByTestId("ai-help-button").click();
   await expect(page.getByTestId("ai-attachment-capability")).toContainText("synthetic-vision");
+  await page.getByRole("dialog").getByRole("button", { name: /close|关闭/i }).click();
+  await expect(page.getByTestId("ai-help")).toBeHidden();
 }
 
 /** Unload delivery is best-effort: observe the actual lifecycle and request attempt,

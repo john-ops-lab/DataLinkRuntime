@@ -62,6 +62,8 @@ async def prepare(
     store: Store,
 ) -> AiPreparedAttachment:
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    if settings.control_ha_slot is not None:
+        session.rollback()
     cancel = threading.Event()
     operation = asyncio.create_task(
         asyncio.to_thread(

@@ -980,6 +980,11 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
             text(f"GRANT SELECT, UPDATE ON control_storage_maintenance TO {quoted_role}")
         )
         session.execute(
+            text(f"GRANT SELECT, INSERT, UPDATE ON control_storage_observations TO {quoted_role}")
+        )
+        session.execute(text(f"GRANT SELECT, INSERT ON worker_v4_input_streams TO {quoted_role}"))
+        session.execute(text(f"REVOKE ALL ON control_attachment_retirements FROM {quoted_role}"))
+        session.execute(
             text(
                 "GRANT SELECT, INSERT, UPDATE, DELETE ON "
                 "control_attachment_scopes,control_attachment_objects,control_attachment_jobs "
