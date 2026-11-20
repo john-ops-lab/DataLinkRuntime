@@ -1,10 +1,12 @@
 # 内部 RabbitMQ 三节点部署与恢复
 
-DLR 使用 [RabbitMQ 4.3.5](https://www.rabbitmq.com/docs/4.3/quorum-queues) 派发任务。工作队列和 Infrastructure DLQ 都需要三个同步的投票成员。三个 Broker 应放在可独立失效的 Linux 宿主故障域，AMQPS 和管理 HTTPS 各使用稳定的冗余入口。业务订阅使用的外部 RabbitMQ、Kafka、RocketMQ 和 Kubernetes 仍有各自的可用性边界。
+DLR 使用 [RabbitMQ 4.3.5](https://www.rabbitmq.com/docs/4.3/quorum-queues) 派发任务。工作队列和 Infrastructure DLQ 都需要三个同步的投票成员。三个 Broker 分别部署在可独立隔离的 Linux VM 或节点上。AMQPS 和管理 HTTPS 各使用稳定的冗余入口。业务订阅使用的外部 RabbitMQ、Kafka、RocketMQ 和 Kubernetes 仍有各自的可用性边界。
+
+本阶段演练覆盖单台 Linux VM 或单个测试 Broker 失效。若两台 VM 共用物理宿主，整机停机时会同时失去两个投票成员，队列停止确认写入。需要承受任意一台物理宿主失效的部署应将三个投票成员放到三个独立的宿主故障域，并对该拓扑单独演练。
 
 ## 部署前记录
 
-记录三个 Broker 的故障域、稳定主机名、节点名、镜像摘要、持久卷和网络路径，以及每个入口背后的代理实例。为磁盘、内存、Erlang 分布端口、客户端连接和两个入口分别核对资源。在同一宿主共置 Control、Worker 或其他依赖时，记录停机共同影响。用隔离 vhost 演练，并记录测试前的队列参数、原业务键和 Outbox 责任。
+记录三个 Broker 的 Linux boot、VM 与物理宿主对应关系、稳定主机名、节点名、镜像摘要、持久卷和网络路径，以及每个入口背后的代理实例。为磁盘、内存、Erlang 分布端口、客户端连接和两个入口分别核对资源。在同一宿主共置 Control、Worker 或其他依赖时，记录停机共同影响。用隔离 vhost 演练，并记录测试前的队列参数、原业务键和 Outbox 责任。
 
 [Broker Compose](../../deploy/rabbitmq-ha/compose.yml) 在每台 Linux 宿主运行一个节点。[Broker 配置](../../deploy/rabbitmq-ha/rabbitmq.conf.example) 中的地址与节点名要替换为私有网络的实际值。
 
@@ -72,7 +74,7 @@ rabbitmq-queues quorum_status --vhost "$vhost" "$queue"
 
 `GET /api/health` 的 `rabbitmq.broker.quorum_queues` 分别展示 Worker 队列和 `infrastructure_dlq` 的成员数、报告在线数和 leader 是否在线。节点名称不进入应用健康响应。成员错配为 `incomplete`，无多数或 leader 为 `unavailable`，观测过期或格式无法确认时为 `unknown`。已确认三成员队列只剩两名在线且 leader 可用时显示 `degraded`。以 Broker CLI 核对实际投票和同步状态，以实际 Confirm 和 Claim 证明业务可用。
 
-- 分开中断 AMQPS 后端、管理后端和 leader。核对原 Worker 身份经稳定地址重新消费，发布经过原 Outbox，管理只读查询走存活路径。管理入口错误与单队列缺少 quorum 分开观察。分区前记录 Worker 实际连接的 Broker，确认少数派连接被摘除后重新消费。
+- 分开中断 AMQPS 活动入口、管理活动入口和 leader。轮流隔离每个 Broker 所在的单台 VM 或测试节点，恢复正常的三个投票成员后再进入下一轮。核对原 Worker 身份经稳定地址重新消费，发布经过原 Outbox，管理只读查询走存活路径。管理入口错误与单队列缺少 quorum 分开观察。分区前记录 Worker 实际连接的 Broker，确认少数派连接被摘除后重新消费。
 - 按真实故障 T0 分别记录稳定 AMQP 入口获得首次有效 Confirm 和 Worker 获得首次有效 Claim。保留多数派时两项均须在 60 秒内成功。对 2:1 分区中的少数派直接观察发布结果，恢复后再核对原三成员与 leader。
 - 确认回执丢失时保留原 Outbox 与输入键，核对原记录的后续回访和重发结果。以 Receipt、Execution、Attempt、物理清理和独立目标逐条对账。已确认责任丢失数和并存的双有效 Attempt 数均为零。记录首败、原始期限、重试与观察版本。
 - 轮换时预配权限相同的新身份并验证路径，再更新私有配置，清理旧连接并撤销旧凭据。管理凭据轮换后从两端核对新探测，Worker 独立账号轮换按[原维护流程](worker-v4-dispatch-contract.md)操作。日志和演练记录保留稳定错误码、计数和时间点。
