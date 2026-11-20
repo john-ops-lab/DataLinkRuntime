@@ -603,6 +603,7 @@ class ExecutionInfrastructureIncident(Base):
             name="ck_execution_infrastructure_incidents_status",
         ),
         CheckConstraint("attempts >= 0", name="ck_execution_infrastructure_incidents_attempts"),
+        UniqueConstraint("transport_event_key", name="uq_infrastructure_incident_transport_event"),
         Index(
             "ix_execution_infrastructure_incidents_execution_generation",
             "execution_id",
@@ -618,6 +619,7 @@ class ExecutionInfrastructureIncident(Base):
     )
     dispatch_generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     message_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    transport_event_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="open", server_default=text("'open'")

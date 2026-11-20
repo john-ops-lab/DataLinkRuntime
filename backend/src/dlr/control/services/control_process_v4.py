@@ -15,7 +15,7 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
@@ -105,6 +105,10 @@ class ControlProcess:
         with self._lock:
             if not self._stop.is_set():
                 self._state = "unknown"
+
+    @property
+    def instance_id(self) -> UUID:
+        return self._instance
 
     def check_authority(self) -> None:
         """Reject operations once this process cannot prove its local lease."""

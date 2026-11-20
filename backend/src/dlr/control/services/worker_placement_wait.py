@@ -6,11 +6,14 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import or_, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
 from dlr.control.models import Execution, ExecutionAttempt
 from dlr.control.models.worker_capacity import ExecutionPlacementAction
+from dlr.control.services.background_control import reserve_page
+from dlr.control.services.control_ha_capacity import assert_local_control
 
 if TYPE_CHECKING:
     from dlr.control.security import Principal
@@ -270,43 +273,48 @@ def retry_due(session: Session, *, limit: int = 100) -> int:
         session.rollback()
         return 0
     now = current_time(session)
-    ids = list(
-        session.scalars(
-            select(Execution.id)
-            .join(
-                ExecutionAttempt,
-                (ExecutionAttempt.execution_id == Execution.id)
-                & (ExecutionAttempt.attempt_no == Execution.attempt_count),
-            )
-            .where(
-                Execution.requires_worker_reservation,
-                Execution.status == "retry_wait",
-                Execution.next_attempt_at <= now,
-                or_(
-                    ExecutionAttempt.recovery_not_before.is_(None),
-                    ExecutionAttempt.recovery_not_before <= now,
-                ),
-                or_(
-                    ExecutionAttempt.worker_identity_id.is_(None),
-                    ExecutionAttempt.cleanup_settled_at.is_not(None),
-                    (
-                        Execution.route_pool_id.is_not(None)
-                        & (ExecutionAttempt.status == "worker_lost")
-                        & ExecutionAttempt.recovery_not_before.is_not(None)
-                    ),
-                ),
-            )
-            .order_by(Execution.next_attempt_at, Execution.id)
-            .limit(max(1, min(limit, 100)))
+    ids = reserve_page(
+        session,
+        "reserved_retry_due",
+        select(Execution.id)
+        .join(
+            ExecutionAttempt,
+            (ExecutionAttempt.execution_id == Execution.id)
+            & (ExecutionAttempt.attempt_no == Execution.attempt_count),
         )
+        .where(
+            Execution.requires_worker_reservation,
+            Execution.status == "retry_wait",
+            Execution.next_attempt_at <= now,
+            or_(
+                ExecutionAttempt.recovery_not_before.is_(None),
+                ExecutionAttempt.recovery_not_before <= now,
+            ),
+            or_(
+                ExecutionAttempt.worker_identity_id.is_(None),
+                ExecutionAttempt.cleanup_settled_at.is_not(None),
+                (
+                    Execution.route_pool_id.is_not(None)
+                    & (ExecutionAttempt.status == "worker_lost")
+                    & ExecutionAttempt.recovery_not_before.is_not(None)
+                ),
+            ),
+        ),
+        Execution.id,
+        limit=max(1, min(limit, 100)),
     )
-    session.commit()
     moved = 0
     for execution_id in ids:
-        session.execute(text("SET LOCAL lock_timeout = '1s'"))
-        if _retry_execution(session, execution_id):
-            moved += 1
-            session.commit()
-        else:
+        try:
+            session.execute(text("SET LOCAL lock_timeout = '1s'"))
+            assert_local_control(session)
+            if _retry_execution(session, execution_id):
+                session.commit()
+                moved += 1
+            else:
+                session.rollback()
+        except OperationalError as error:
             session.rollback()
+            if getattr(error.orig, "sqlstate", None) != "55P03":
+                raise
     return moved

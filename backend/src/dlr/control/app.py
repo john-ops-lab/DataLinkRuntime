@@ -268,13 +268,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             capacity_monitor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await capacity_monitor
-            control_ha_capacity.set_local_process(None)
         coordinator = getattr(app.state, "claim_coordinator_v4", None)
         if coordinator is not None:
             coordinator.close()
+        native_closed = await source_runtime.aclose()
         if app.state.control_process_v4 is not None:
             app.state.control_process_v4.stop()
-        native_closed = await source_runtime.aclose()
+        if capacity_monitor is not None:
+            control_ha_capacity.set_local_process(None)
         from dlr.control.api.ingress import flush_ingress_resources, shutdown_ingress_resources
         from dlr.control.services.ingress_database import close_intake_database
 

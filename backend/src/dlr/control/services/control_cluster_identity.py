@@ -326,13 +326,14 @@ def register_control(
         authority = _authority(
             session, declaration, exclusive=single_process or ha_slot is not None
         )
-        if SCHEMA_REVISION == "0094_issue129_control_ha":
+        dual_registration_schema = int(SCHEMA_REVISION.split("_", 1)[0]) >= 94
+        if dual_registration_schema:
             _check_admission(session, instance_id, ha_slot, single_process=single_process)
         elif ha_slot is not None:
             raise _invalid()
         if (
             single_process
-            and SCHEMA_REVISION != "0094_issue129_control_ha"
+            and not dual_registration_schema
             and session.scalar(
                 text(
                     "SELECT EXISTS (SELECT 1 FROM control_process_instances "

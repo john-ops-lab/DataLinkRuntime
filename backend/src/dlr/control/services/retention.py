@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import delete, exists, or_, select
+from sqlalchemy import delete, exists, or_, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
@@ -37,6 +37,8 @@ from dlr.control.models import (
 from dlr.control.models.reliable_execution import OPEN_OUTBOX_STATES
 from dlr.control.models.worker_capacity import OCCUPIED_RESERVATION_STATES
 from dlr.control.services.attempt import TERMINAL_ATTEMPT_STATUSES
+from dlr.control.services.background_control import reserve_page
+from dlr.control.services.control_ha_capacity import assert_local_control
 from dlr.control.services.execution import TERMINAL_STATUSES
 from dlr.control.services.idempotency import cleanup_expired_records
 
@@ -183,6 +185,9 @@ def _delete_batch(session: Session, ids: list[int]) -> int:
         return 0
     from dlr.control.services.subscription_delivery import execution_protected
 
+    if settings.control_ha_slot is not None:
+        session.execute(text("SET LOCAL lock_timeout = '250ms'"))
+        assert_local_control(session)
     # Serialize the recheck with Adapter archival before retiring any history.
     session.execute(
         select(Adapter.id)
@@ -225,6 +230,7 @@ def _cleanup_policy(
     *,
     now: datetime,
     batch_size: int,
+    adapter_page: tuple[int, ...] | None = None,
 ) -> tuple[int, int, int]:
     """Apply one policy, committing each small batch for safe interruption."""
 
@@ -233,7 +239,7 @@ def _cleanup_policy(
     failures = 0
     cutoff = now - timedelta(days=policy.days)
 
-    for adapter_id in _adapter_ids(session, policy):
+    for adapter_id in _adapter_ids(session, policy) if adapter_page is None else adapter_page:
         while True:
             stale_ids = list(
                 session.scalars(
@@ -246,8 +252,11 @@ def _cleanup_policy(
             if not stale_ids:
                 break
             try:
-                deleted += _delete_batch(session, stale_ids)
+                removed = _delete_batch(session, stale_ids)
+                deleted += removed
                 batches += 1
+                if adapter_page is not None or not removed:
+                    break
             except Exception:  # noqa: BLE001 - one batch must not stop retries
                 session.rollback()
                 failures += 1
@@ -270,8 +279,11 @@ def _cleanup_policy(
             if not over_limit_ids:
                 break
             try:
-                deleted += _delete_batch(session, over_limit_ids)
+                removed = _delete_batch(session, over_limit_ids)
+                deleted += removed
                 batches += 1
+                if adapter_page is not None or not removed:
+                    break
             except Exception:  # noqa: BLE001 - one batch must not stop retries
                 session.rollback()
                 failures += 1
@@ -305,7 +317,21 @@ def cleanup_execution_retention(
     # Expired records are removed first, but only when their Execution is
     # already terminal.  Remaining records keep their FK and therefore keep
     # the associated Execution inside the promised replay window.
+    assert_local_control(session)
     cleanup_expired_records(session, now=effective_now)
+    adapter_page = None
+    if settings.control_ha_slot is not None:
+        adapter_page = reserve_page(
+            session,
+            "execution_retention",
+            select(Adapter.id).where(
+                exists().where(
+                    Execution.adapter_id == Adapter.id, Execution.status.in_(TERMINAL_STATUSES)
+                )
+            ),
+            Adapter.id,
+            limit=16,
+        )
     total_deleted = 0
     total_batches = 0
     total_failures = 0
@@ -315,6 +341,7 @@ def cleanup_execution_retention(
             policy,
             now=effective_now,
             batch_size=settings.execution_retention_batch_size,
+            adapter_page=adapter_page,
         )
         total_deleted += deleted
         total_batches += batches

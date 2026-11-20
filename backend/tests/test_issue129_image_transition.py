@@ -352,9 +352,9 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
                 operation_id=str(uuid4()),
                 previous_id=str(placement.operation_id),
                 source_schema=transition.W2_PLACEMENT_SCHEMA,
-                target_schema=SCHEMA_REVISION,
+                target_schema=transition.W3_FOUNDATION_SCHEMA,
                 source_sha=transition.W2_PLACEMENT_SOURCE_SHA,
-                target_sha="a9" * 20,
+                target_sha=transition.W3_FOUNDATION_SOURCE_SHA,
             )
         )
     )
@@ -378,6 +378,41 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
             {"role": f.role},
         ).one()
         assert tuple(rights) == (True, False, False, True)
+
+    takeover_image = replace(
+        ha_image, authority=replace(ha_image.authority, image_digest="sha256:" + "95" * 32)
+    )
+    path.write_text(
+        json.dumps(
+            dict(
+                upgrade,
+                operation_id=str(uuid4()),
+                previous_id=str(ha.operation_id),
+                source_schema=transition.W3_FOUNDATION_SCHEMA,
+                target_schema=SCHEMA_REVISION,
+                source_sha=transition.W3_FOUNDATION_SOURCE_SHA,
+                target_sha="95" * 20,
+            )
+        )
+    )
+    takeover = transition.read_intent(str(path), ha_image, takeover_image, predecessor=ha)
+    assert transition._kind(takeover) == 10
+    assert maintain(f.factory, "check", takeover)["status"] == "source_checked"
+    assert maintain(f.factory, "apply", takeover)["status"] == "committed_current"
+    with f.factory() as session:
+        assert transition.observe(session, ha)["status"] == "committed_superseded"
+        assert (
+            session.scalar(
+                text(
+                    "SELECT count(*) FROM runtime_reconciliation_cursors "
+                    "WHERE name IN ('schedule_due','fixed_retry_due')"
+                )
+            )
+            == 2
+        )
+        assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == (
+            11 if previous else 6
+        )
 
 
 def test_placement_migration_backfills_a_settled_v3_execution(upgrade_database):  # noqa: F811

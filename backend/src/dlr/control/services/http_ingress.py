@@ -371,6 +371,9 @@ def receive(
     key: str | None,
     body: bytes,
 ) -> tuple[int, dict[str, Any]]:
+    from dlr.control.services.control_ha_capacity import assert_local_control
+
+    assert_local_control(session)
     route, sub = _authenticated(session, public_id, authorization)
     identity = require_key(key)
     digest = hashlib.sha256(body).hexdigest()

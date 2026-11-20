@@ -459,7 +459,9 @@ def _source_context(
     session: Session, context: SourceRunContext
 ) -> tuple[EventSubscription, SubscriptionActivation, SubscriptionConfigVersion]:
     from dlr.control.services import subscription_delivery as delivery
+    from dlr.control.services.control_ha_capacity import assert_local_control
 
+    assert_local_control(session)
     _, sub = delivery.lock_subscription(session, context.subscription_id)
     delivery._lease(session, sub, context.owner_id, context.generation)
     activation = session.get(SubscriptionActivation, context.activation_id)
@@ -704,6 +706,7 @@ def _insert_receipt(
 ) -> EventReceipt:
     from dlr.control.models import Adapter
     from dlr.control.services import worker_legacy_window
+    from dlr.control.services.control_ha_capacity import assert_local_control
     from dlr.control.services.subscription_activation_policy import ensure_policy
 
     worker_legacy_window.require_dispatch_target(
@@ -714,11 +717,18 @@ def _insert_receipt(
     ensure_policy(session, activation, adapter)
     now = database_now(session)
     object_key = envelope["event"]["object_key"]
+    receiver = assert_local_control(session)
+    lease = session.get(SubscriptionLease, sub.id) if receiver is not None else None
+    if receiver is not None and lease is None:
+        raise domain_error(409, "subscription_owner_stale", "Listener ownership expired")
     receipt = EventReceipt(
         subscription_id=sub.id,
         activation_id=activation.id,
         source_epoch=sub.source_epoch,
         source_event_id=envelope["event"]["id"],
+        receiver_control_instance_id=receiver,
+        source_owner_id=lease.owner_id if lease is not None else None,
+        source_owner_generation=lease.generation if lease is not None else None,
         content_hash=content_hash,
         envelope=envelope,
         payload_bytes=size,

@@ -24,6 +24,7 @@ from dlr.control.models import (
     AdapterVersion,
     Credential,
     Execution,
+    RuntimeReconciliationCursor,
 )
 from dlr.control.models.subscription import (
     ActivationCredentialReference,
@@ -855,6 +856,7 @@ def maintenance_tick() -> bool:
     from dlr.control import db
     from dlr.control.services import subscription_delivery as delivery
     from dlr.control.services import subscription_sync as sync
+    from dlr.control.services.control_ha_capacity import assert_local_control
     from dlr.control.services.subscription_scheduler import DeliveryScheduler
 
     global _scheduler, _subscription_cursor, _subscription_upper
@@ -876,6 +878,7 @@ def maintenance_tick() -> bool:
             break
         with db.SessionLocal() as session:
             try:
+                assert_local_control(session)
                 sync.maintain_batch(session, batches[0])
                 session.commit()
             except Exception:
@@ -891,6 +894,7 @@ def maintenance_tick() -> bool:
             break
         with db.SessionLocal() as session:
             try:
+                assert_local_control(session)
                 sync.materialize_ready_control(session, ticket)
                 session.commit()
             except Exception:
@@ -923,6 +927,7 @@ def maintenance_tick() -> bool:
                 break
             with db.SessionLocal() as session:
                 try:
+                    assert_local_control(session)
                     _, subscription = delivery.lock_subscription(session, subscriptions[0])
                     delivery.cleanup_history(session, subscriptions[0])
                     if subscription.deleted_at is None:
@@ -961,25 +966,58 @@ async def subscription_maintenance_loop() -> None:
 def quota_audit_tick() -> None:
     """Read-only bounded page; one ledger-only global comparison per low-frequency cycle."""
     from dlr.control import db
+    from dlr.control.services.background_control import reserve_page
+    from dlr.control.services.control_ha_capacity import assert_local_control
+    from dlr.control.services.input_config import database_now
     from dlr.control.services.subscription_delivery import audit_global_quota, audit_quota
 
     global _quota_cursor, _quota_upper
     with db.SessionLocal() as session:
-        ids, _quota_cursor, _quota_upper = bounded_page(
-            session,
-            select(EventSubscription.id),
-            EventSubscription.id,
-            _quota_cursor,
-            _quota_upper,
-        )
+        if settings.control_ha_slot is None:
+            ids, _quota_cursor, _quota_upper = bounded_page(
+                session,
+                select(EventSubscription.id),
+                EventSubscription.id,
+                _quota_cursor,
+                _quota_upper,
+            )
+        else:
+            ids = list(
+                reserve_page(
+                    session,
+                    "subscription_quota",
+                    select(EventSubscription.id),
+                    EventSubscription.id,
+                    limit=100,
+                )
+            )
     for subscription_id in ids:
         with db.SessionLocal() as session:
             report = audit_quota(session, subscription_id)
             if report["differences"]:
                 logger.warning("subscription quota drift subscription_id=%s", subscription_id)
     with db.SessionLocal() as session:
+        if settings.control_ha_slot is not None:
+            assert_local_control(session)
+            state = session.get(
+                RuntimeReconciliationCursor,
+                "subscription_global_quota",
+                with_for_update={"skip_locked": True},
+            )
+            now = database_now(session)
+            if state is None or (
+                state.after_id
+                and (now - state.updated_at).total_seconds()
+                < settings.event_subscription_quota_audit_seconds
+            ):
+                return
         if audit_global_quota(session)["differences"]:
             logger.warning("subscription global quota ledger drift")
+        if settings.control_ha_slot is not None:
+            assert state is not None
+            state.after_id = state.upper_id = 1
+            state.updated_at = now
+            session.commit()
 
 
 async def subscription_quota_audit_loop() -> None:

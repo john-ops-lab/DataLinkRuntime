@@ -153,7 +153,11 @@ def _truncate(engine: Engine) -> None:
         conn.execute(
             text(
                 "INSERT INTO runtime_reconciliation_cursors (name) "
-                "VALUES ('worker_placement'), ('worker_placement_expiration')"
+                "VALUES ('worker_placement'), ('worker_placement_expiration'), "
+                "('schedule_due'), ('fixed_retry_due'), ('reserved_retry_due'), "
+                "('subscription_dispatch'), ('subscription_completion'), ('rabbitmq_topology'), "
+                "('admission_adapter'), ('admission_execution'), ('execution_retention'), "
+                "('subscription_quota'), ('subscription_global_quota')"
             )
         )
         conn.execute(

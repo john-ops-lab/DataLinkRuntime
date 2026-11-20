@@ -10,17 +10,19 @@ import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from time import monotonic
 from typing import Any, cast
 from urllib.parse import quote, unquote, urlsplit
 from urllib.request import Request, urlopen
+from uuid import UUID
 
 import pika
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
-from dlr.control.models import RabbitMQRuntimeCapability, Worker
+from dlr.control.models import RabbitMQRuntimeCapability, RuntimeReconciliationCursor, Worker
 from dlr.control.services.dispatch import (
     DISPATCH_EXCHANGE,
     INFRASTRUCTURE_DLQ,
@@ -153,13 +155,61 @@ def _set_runtime_status(
         _runtime_status["worker_count"] = worker_count
 
 
-def _invalidate_persisted_capability() -> None:
+@dataclass(frozen=True)
+class TopologyObservation:
+    generation: int
+    control_instance_id: UUID
+    expires_at: datetime
+
+
+def reserve_topology_observation(session: Session) -> TopologyObservation | None:
+    """Allocate before Broker I/O and commit before leaving the database."""
+    from dlr.control.services.control_ha_capacity import assert_local_control
+    from dlr.control.services.input_config import database_now
+
+    instance_id = assert_local_control(session)
+    if instance_id is None:
+        return None
+    cursor = session.get(RuntimeReconciliationCursor, "rabbitmq_topology", with_for_update=True)
+    if cursor is None:
+        raise RabbitMQCapabilityPersistenceError("Topology observation cursor unavailable")
+    cursor.upper_id += 1
+    observation = TopologyObservation(
+        cursor.upper_id, instance_id, database_now(session) + timedelta(seconds=30)
+    )
+    session.commit()
+    return observation
+
+
+def _accept_topology_observation(session: Session, observation: TopologyObservation | None) -> bool:
+    if settings.control_ha_slot is None:
+        return True
+    from dlr.control.services.control_ha_capacity import assert_local_control
+    from dlr.control.services.input_config import database_now
+
+    instance_id = assert_local_control(session)
+    if observation is None or instance_id != observation.control_instance_id:
+        return False
+    cursor = session.get(RuntimeReconciliationCursor, "rabbitmq_topology", with_for_update=True)
+    if (
+        cursor is None
+        or not cursor.after_id < observation.generation <= cursor.upper_id
+        or database_now(session) >= observation.expires_at
+    ):
+        return False
+    cursor.after_id = observation.generation
+    return True
+
+
+def _invalidate_persisted_capability(observation: TopologyObservation | None = None) -> None:
     """Delete stale capability evidence in its own short DB transaction."""
 
     from dlr.control.db import SessionLocal
 
     try:
         with SessionLocal() as session:
+            if not _accept_topology_observation(session, observation):
+                return
             state = session.get(RabbitMQRuntimeCapability, 1, with_for_update=True)
             if state is not None:
                 session.delete(state)
@@ -176,14 +226,21 @@ def _invalidate_persisted_capability() -> None:
         ) from None
 
 
-def mark_runtime_failure(error_code: str) -> None:
+def mark_runtime_failure(
+    error_code: str, *, observation: TopologyObservation | None = None
+) -> None:
     """Record a stable non-sensitive Broker/topology failure for health."""
     _runtime_status["live_verified_at"] = None
     _set_runtime_status("degraded", error_code=error_code)
     if error_code in RABBITMQ_CAPABILITY_INVALIDATION_ERROR_CODES:
         _runtime_status["capability_verified"] = False
+        if settings.control_ha_slot is not None and observation is None:
+            return
         try:
-            _invalidate_persisted_capability()
+            if observation is None:
+                _invalidate_persisted_capability()
+            else:
+                _invalidate_persisted_capability(observation)
         except RabbitMQCapabilityPersistenceError:
             _runtime_status["last_error_code"] = "rabbitmq_capability_persistence_failed"
             raise
@@ -249,14 +306,18 @@ def configuration_fingerprint(worker_ids: list[int]) -> str:
 
 
 def _persist_runtime_capabilities(
-    worker_ids: list[int], capabilities: RabbitMQRuntimeCapabilities
-) -> None:
+    worker_ids: list[int],
+    capabilities: RabbitMQRuntimeCapabilities,
+    observation: TopologyObservation | None = None,
+) -> bool:
     """Persist the last live capability probe in a short DB transaction."""
 
     from dlr.control.db import SessionLocal
     from dlr.control.services.input_config import database_now
 
     with SessionLocal() as session:
+        if not _accept_topology_observation(session, observation):
+            return False
         state = session.get(RabbitMQRuntimeCapability, 1, with_for_update=True)
         if state is None:
             state = RabbitMQRuntimeCapability(
@@ -275,6 +336,7 @@ def _persist_runtime_capabilities(
             state.worker_ids = sorted(set(worker_ids))
             state.verified_at = database_now(session)
         session.commit()
+        return True
 
 
 def _persisted_ingress_workers(session: Session) -> frozenset[int] | None:
@@ -322,6 +384,9 @@ def _verified_ingress_workers(
         return False, None
     if _runtime_status["last_error_code"] in RABBITMQ_CONFIGURATION_ERROR_CODES:
         return False, None
+    if settings.control_ha_slot is not None:
+        workers = _persisted_ingress_workers(session) if session is not None else None
+        return workers is not None, workers
     runtime_fingerprint = _runtime_status["configuration_fingerprint"]
     runtime_workers = cast(
         frozenset[int] | None,
@@ -1076,6 +1141,7 @@ def bootstrap_configured_topology() -> int:
 
     with SessionLocal() as session:
         worker_ids = [int(worker_id) for worker_id in session.scalars(select(Worker.id)).all()]
+        observation = reserve_topology_observation(session) if worker_ids else None
     if not worker_ids:
         _runtime_status["capability_verified"] = False
         _set_runtime_status("waiting_for_worker", worker_count=0)
@@ -1086,9 +1152,16 @@ def bootstrap_configured_topology() -> int:
         capabilities = verify_runtime_capabilities(connection)
         for worker_id in worker_ids:
             bootstrap_worker_topology(connection, worker_id, capabilities=capabilities)
-        _persist_runtime_capabilities(worker_ids, capabilities)
+        if observation is None:
+            _persist_runtime_capabilities(worker_ids, capabilities)
+        elif not _persist_runtime_capabilities(worker_ids, capabilities, observation):
+            mark_runtime_failure("topology_observation_stale")
+            return 0
     except RabbitMQTopologyError as exc:
-        mark_runtime_failure(exc.code)
+        if observation is None:
+            mark_runtime_failure(exc.code)
+        else:
+            mark_runtime_failure(exc.code, observation=observation)
         raise
     except RabbitMQCapabilityPersistenceError:
         # A drift report whose durable invalidation failed is not a transient

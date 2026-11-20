@@ -38,6 +38,7 @@ from dlr.control.models.reliable_execution import OPEN_OUTBOX_STATES
 from dlr.control.schemas.worker_pool import FixedRoute, PoolRoute
 from dlr.control.services import rabbitmq, worker_legacy_window, worker_pool
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.control_ha_capacity import assert_local_control
 from dlr.control.services.dispatch import (
     DISPATCH_EXCHANGE,
     assert_dispatch_message_safe,
@@ -466,6 +467,7 @@ def lease_due_outbox(
         raise ValueError("outbox lease owner is invalid")
     from dlr.control.services.worker_placement_cutover import mode
 
+    assert_local_control(session)
     placement_mode = mode(session, hold=True)
     if placement_mode == "paused":
         session.rollback()
@@ -572,6 +574,7 @@ def release_outbox_lease(
 ) -> bool:
     """Release only a still-owned pending row and schedule bounded retry."""
 
+    assert_local_control(session)
     row = session.scalar(
         select(ExecutionOutbox)
         .where(
@@ -611,6 +614,7 @@ def mark_outbox_published(
 ) -> bool:
     """Mark published only if this Relay still owns the lease."""
 
+    assert_local_control(session)
     row = session.scalar(
         select(ExecutionOutbox)
         .where(
@@ -637,14 +641,17 @@ def mark_outbox_published(
 def _lease_current(
     session: Session, row: ExecutionOutbox, now: datetime, lease_attempt: int | None
 ) -> bool:
-    if lease_attempt is not None and row.publish_attempts != lease_attempt:
+    if (
+        row.lease_expires_at is None
+        or row.lease_expires_at <= now
+        or (lease_attempt is not None and row.publish_attempts != lease_attempt)
+        or (settings.control_ha_slot is not None and lease_attempt is None)
+    ):
         return False
     if row.reservation_id is None:
         return True
     return bool(
         lease_attempt is not None
-        and row.lease_expires_at is not None
-        and row.lease_expires_at > now
         and session.scalar(
             select(ExecutionOutbox.id).where(
                 ExecutionOutbox.id == row.id,
@@ -816,10 +823,16 @@ def _publish_row(
             channel.confirm_delivery()
             if publisher is not None:
                 publisher.channel = channel
+        publish_attempt = (
+            row.lease_attempt if isinstance(row, LeasedOutbox) else row.publish_attempts
+        )
         properties = pika.BasicProperties(
             delivery_mode=pika.DeliveryMode.Persistent,
             message_id=str(row.message_id),
             content_type="application/json",
+            headers={"x-dlr-publish-attempt": publish_attempt}
+            if settings.control_ha_slot is not None
+            else None,
         )
         channel.basic_publish(
             exchange=DISPATCH_EXCHANGE,
@@ -1046,6 +1059,7 @@ def _relay_once(
     rows = lease_due_outbox(session, owner, limit=limit)
     if not rows:
         return OutboxRelayResult(0, 0, 0)
+    observation = rabbitmq.reserve_topology_observation(session)
     published = 0
     failed = 0
     valid_rows: list[tuple[LeasedOutbox, Any]] = []
@@ -1113,7 +1127,10 @@ def _relay_once(
             if error_code == "topology_unavailable":
                 _record_publish_failure("publish_timeout_or_connection")
             try:
-                rabbitmq.mark_runtime_failure(exc.code)
+                if observation is None:
+                    rabbitmq.mark_runtime_failure(exc.code)
+                else:
+                    rabbitmq.mark_runtime_failure(exc.code, observation=observation)
             except rabbitmq.RabbitMQCapabilityPersistenceError:
                 # Keep the leased rows recoverable, but do not hide that the
                 # durable drift invalidation itself failed.
@@ -1146,6 +1163,23 @@ def _relay_once(
         # the complete fixed-Worker topology; the topology bootstrap loop is
         # the authority that records a full verified Worker set.
         for index, (row, _message) in enumerate(valid_rows):
+            if settings.control_ha_slot is not None:
+                assert_local_control(session)
+                current = session.scalar(
+                    select(ExecutionOutbox)
+                    .where(
+                        ExecutionOutbox.id == row.id,
+                        ExecutionOutbox.status == "pending",
+                        ExecutionOutbox.lease_owner == owner,
+                    )
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                if current is None or not _lease_current(
+                    session, current, _now(session), row.lease_attempt
+                ):
+                    session.rollback()
+                    continue
             execution_status = session.scalar(
                 select(Execution.status).where(Execution.id == row.execution_id)
             )
@@ -1157,6 +1191,7 @@ def _relay_once(
                 "cancelled",
                 "expired",
             }:
+                assert_local_control(session)
                 settle_cancelled_outbox(session, row.execution_id)
                 session.commit()
                 continue

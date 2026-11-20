@@ -164,12 +164,14 @@ def _cluster_health(
     request: Request, rabbitmq_status: dict[str, object], database_ok: bool
 ) -> dict[str, object]:
     from dlr.control.services import control_ha_capacity
+    from dlr.control.services.background_control import cluster_diagnostics
 
     process = getattr(request.app.state, "control_process_v4", None)
     compatibility = None
     registered: int | None = None
     storage = "unavailable"
     capacity_compatible: bool | None = None
+    background = None
     if database_ok and process is not None:
         try:
             with db.SessionLocal() as session:
@@ -185,6 +187,10 @@ def _cluster_health(
                     {"epoch": process._deployment.authority_epoch},
                 )
                 storage, capacity_compatible = control_ha_capacity.storage_state(session)
+                try:
+                    background = cluster_diagnostics(session)
+                except Exception:
+                    logger.warning("Control background diagnostics unavailable")
         except Exception:
             compatibility = None
     ingress = rabbitmq_status.get("ingress")
@@ -197,7 +203,7 @@ def _cluster_health(
             "registered": compatibility is not None,
             "capacity_compatible": capacity_compatible,
         },
-        "cluster": {"registered": registered, "max_nodes": 2},
+        "cluster": {"registered": registered, "max_nodes": 2, "background": background},
         "features": {
             "new_ingress": "available"
             if storage == "available" and ingress_ready

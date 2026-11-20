@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from dlr.control.models import Execution, RuntimeReconciliationCursor
 from dlr.control.services import worker_placement_cutover, worker_placement_wait, worker_reservation
+from dlr.control.services.control_ha_capacity import assert_local_control
 
 _PLACEMENT_CURSOR = "worker_placement"
 _EXPIRATION_CURSOR = "worker_placement_expiration"
@@ -64,6 +65,7 @@ def notify_capacity() -> None:
 def _next(session: Session) -> tuple[int, int, bool, datetime | None] | None:
     """Commit cursor advancement before entering any business transaction."""
     session.execute(text("SET LOCAL statement_timeout = '100ms'"))
+    assert_local_control(session)
     if worker_placement_cutover.mode(session) != "reserved":
         session.rollback()
         return None
@@ -89,6 +91,7 @@ def _next(session: Session) -> tuple[int, int, bool, datetime | None] | None:
 
 def _next_expired(session: Session) -> int | None:
     session.execute(text("SET LOCAL statement_timeout = '100ms'"))
+    assert_local_control(session)
     if worker_placement_cutover.mode(session) != "reserved":
         session.rollback()
         return None
@@ -127,6 +130,7 @@ def _expire_pass(session: Session, deadline: float) -> tuple[int, int]:
                 break
             selected += 1
             session.execute(text("SET LOCAL statement_timeout = '100ms'"))
+            assert_local_control(session)
             if worker_placement_cutover.mode(session, hold=True) != "reserved":
                 session.rollback()
                 break
@@ -153,6 +157,7 @@ def _placement_pass(session: Session, deadline: float, limit: int) -> int:
                 break
             adapters.add(adapter_id)
             session.execute(text("SET LOCAL statement_timeout = '100ms'"))
+            assert_local_control(session)
             if worker_placement_cutover.mode(session, hold=True) != "reserved":
                 session.rollback()
                 break
