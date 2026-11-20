@@ -7,7 +7,7 @@ from typing import Literal
 from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
-from pydantic import Field, PrivateAttr, field_validator, model_validator
+from pydantic import Field, PrivateAttr, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -316,6 +316,13 @@ class Settings(BaseSettings):
     rabbitmq_vhost: str | None = Field(default=None, validation_alias="DLR_RABBITMQ_VHOST")
     rabbitmq_management_url: str | None = Field(
         default=None, validation_alias="DLR_RABBITMQ_MANAGEMENT_URL"
+    )
+    rabbitmq_ha_enabled: bool = Field(default=False, validation_alias="DLR_RABBITMQ_HA_ENABLED")
+    rabbitmq_management_user: str | None = Field(
+        default=None, validation_alias="DLR_RABBITMQ_MANAGEMENT_USER"
+    )
+    rabbitmq_management_password: SecretStr | None = Field(
+        default=None, validation_alias="DLR_RABBITMQ_MANAGEMENT_PASSWORD"
     )
     rabbitmq_management_timeout_seconds: float = Field(
         default=5.0,
@@ -909,7 +916,31 @@ def validate_deployment_configuration(value: Settings) -> Settings:
             raise ValueError("DLR_RABBITMQ_MANAGEMENT_URL must be an http or https URL")
         if management.username is not None or management.password is not None:
             raise ValueError("DLR_RABBITMQ_MANAGEMENT_URL must not contain credentials")
+    _validate_rabbitmq_ha(value)
     return value
+
+
+def _validate_rabbitmq_ha(value: Settings) -> None:
+    management_user = value.rabbitmq_management_user
+    management_password = value.rabbitmq_management_password
+    if not value.rabbitmq_ha_enabled and management_user is None and management_password is None:
+        return
+    amqp = urlsplit(value.rabbitmq_url or "")
+    management = urlsplit(value.rabbitmq_management_url or "")
+    if (
+        not management_user
+        or ":" in management_user
+        or any(character.isspace() or ord(character) < 32 for character in management_user)
+        or management_user.casefold() == "guest"
+        or management_user == unquote(amqp.username or "")
+        or management_password is None
+        or not management_password.get_secret_value()
+    ):
+        raise ValueError("RabbitMQ management requires separate non-guest credentials")
+    if management.scheme != "https" or management.query or management.fragment:
+        raise ValueError("RabbitMQ management credentials require a static HTTPS URL")
+    if value.rabbitmq_ha_enabled and (amqp.scheme != "amqps" or amqp.query or amqp.fragment):
+        raise ValueError("RabbitMQ HA requires AMQPS with default TLS verification")
 
 
 settings = Settings()

@@ -454,7 +454,8 @@ def accept_execution(
 
         require_subscription_unlocked(session, adapter.id)
         source = route_source or ("dependency-check" if dependency_check else "adapter")
-    if not rabbitmq.ingress_configuration_ready(session):
+    # Fixed targets are checked below. Reserved placement filters the eligible Worker queues.
+    if not rabbitmq.ingress_configuration_ready(session, require_all_workers=False):
         raise domain_error(
             503,
             "rabbitmq_not_ready",

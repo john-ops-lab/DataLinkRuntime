@@ -79,6 +79,8 @@ def fingerprint(config: Settings) -> str:
         "intake_connections": 8,
         "management_connections": 4,
     }
+    if config.rabbitmq_ha_enabled:
+        contract["rabbitmq_ha_enabled"] = True
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -136,7 +138,7 @@ def require_storage(session: Session) -> None:
     if state == "available":
         from dlr.control.services.rabbitmq import ingress_configuration_ready
 
-        if not ingress_configuration_ready(session):
+        if not ingress_configuration_ready(session, require_all_workers=False):
             raise domain_error(503, "rabbitmq_unavailable", "Broker admission unavailable")
         return
     if state == "low":

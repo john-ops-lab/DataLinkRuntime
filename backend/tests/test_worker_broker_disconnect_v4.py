@@ -1,5 +1,6 @@
 """An AMQP disconnect cannot interrupt a provable in-flight execution."""
 
+import ssl
 from threading import Event
 from types import SimpleNamespace
 from uuid import uuid4
@@ -7,7 +8,32 @@ from uuid import uuid4
 import pika
 import pytest
 
-from dlr.worker import consumer_v4
+from dlr.worker import broker_config_v4, consumer_v4
+
+
+@pytest.mark.parametrize(
+    "value,expected", [(None, 30), ("false", 30), ("true", 10), ("", None), ("invalid", None)]
+)
+def test_standalone_broker_heartbeat_is_opt_in(monkeypatch, tmp_path, value, expected):
+    if value is None:
+        monkeypatch.delenv("DLR_RABBITMQ_HA_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("DLR_RABBITMQ_HA_ENABLED", value)
+    tls = ssl.create_default_context()
+    monkeypatch.setattr(ssl, "create_default_context", lambda *, cafile: tls)
+    config = broker_config_v4.BrokerConfigV4(
+        1, "broker.example", 5671, "test", "worker", "test", tmp_path / "ca.pem"
+    )
+    if expected is None:
+        with pytest.raises(broker_config_v4.BrokerConfigurationError):
+            config.connection_parameters()
+    else:
+        parameters = config.connection_parameters()
+        assert parameters.heartbeat == expected
+        assert (
+            parameters.ssl_options.context is tls
+            and parameters.ssl_options.server_hostname == config.host
+        )
 
 
 @pytest.mark.parametrize("outcome", ["ack", "unknown"])

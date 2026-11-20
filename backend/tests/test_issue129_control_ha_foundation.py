@@ -13,18 +13,21 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import event, text
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
-from dlr.common.config import settings
+from dlr.common.config import Settings, settings
 from dlr.control import db
 from dlr.control.app import create_app
 from dlr.control.services import control_cluster_identity as identity
 from dlr.control.services import control_ha_capacity as state
+from dlr.control.services import control_process_v4 as lifecycle
 from dlr.control.services import ingress_capacity, rabbitmq
 from dlr.control.services import postgres_capacity_provider as provider
+from dlr.control.services.control_declaration_v4 import DeploymentDeclaration
 from dlr.control.services.subscription_http import HttpSourceRunner
 from dlr.control.services.subscription_runtime import SubscriptionRuntimeManager
 from dlr.control.services.subscription_source import SourceFailure
+from dlr.control.services.worker_token_fence_v4 import TokenFenceUnavailable
 
 
 def test_startup_with_unknown_deployment_mode_does_not_start_single_control(monkeypatch):
@@ -149,7 +152,54 @@ def test_two_slots_serialize_concurrent_joins_and_fence_expired_slot(
             ha_authority,
             instance_id=identifier,
             instance_token=token,
+            ha_slot="a",
         )
+
+
+@pytest.mark.parametrize("slot_after_contention", ["a", None, "b"])
+def test_contended_ha_renewal_requires_original_slot(
+    test_engine, session_factory, ha_authority, monkeypatch, slot_after_contention
+):
+    with session_factory() as session:
+        epoch = session.scalar(text("SELECT authority_epoch FROM control_cluster_authority"))
+    deployment = DeploymentDeclaration(authority=ha_authority, authority_epoch=epoch)
+    monkeypatch.setattr(lifecycle, "read_declaration", lambda _: deployment)
+    config = Settings(
+        DLR_WORKER_REMOTE_V4_ENABLED=True,
+        DLR_CONTROL_HA_SLOT="a",
+        DLR_WORKER_V4_DEPLOYMENT_MODE="C",
+    )
+    rolled_back = []
+
+    class ContendedSession(Session):
+        def rollback(self):
+            super().rollback()
+            rolled_back.append(self)
+            holder.execute(
+                text("UPDATE control_process_instances SET ha_slot=:slot WHERE instance_id=:id"),
+                {"slot": slot_after_contention, "id": process.instance_id},
+            )
+            holder.commit()
+
+    factory = sessionmaker(bind=test_engine, class_=ContendedSession, expire_on_commit=False)
+    process = lifecycle.ControlProcess(config, factory, deployment)
+    assert process._cycle()
+    try:
+        with session_factory() as holder:
+            identity.assert_live_control(
+                holder, ha_authority, instance_id=process.instance_id, instance_token=process._token
+            )
+            if slot_after_contention != "a":
+                with pytest.raises(identity.ControlIdentityUnavailable):
+                    process._cycle()
+                with pytest.raises(TokenFenceUnavailable):
+                    process.check_authority()
+            else:
+                assert process._cycle()
+                process.check_authority()
+            assert len(rolled_back) == 1
+    finally:
+        process._finish()
 
 
 def test_storage_observation_order_and_hysteresis_are_database_authoritative(

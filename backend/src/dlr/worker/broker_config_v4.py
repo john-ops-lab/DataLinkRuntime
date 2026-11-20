@@ -12,11 +12,13 @@ from pathlib import Path
 from uuid import UUID
 
 import pika
+from pydantic import TypeAdapter
 
 from dlr.common.rabbitmq_names import worker_queue_name
 from dlr.worker import enrollment_v4, runtime_credential_v4
 
 _MAX_CONFIG_BYTES = 8192
+_BOOLEAN = TypeAdapter(bool)
 
 
 class BrokerConfigurationError(ValueError):
@@ -216,6 +218,7 @@ class BrokerConfigV4:
             context = ssl.create_default_context(cafile=str(self.ca_file))
             if context.verify_mode != ssl.CERT_REQUIRED or context.check_hostname is not True:
                 raise ValueError("TLS verification unavailable")
+            ha_enabled = _BOOLEAN.validate_python(os.getenv("DLR_RABBITMQ_HA_ENABLED", "false"))
             return pika.ConnectionParameters(
                 host=self.host,
                 port=self.port,
@@ -224,7 +227,7 @@ class BrokerConfigV4:
                     self.username, self.password, erase_on_connect=True
                 ),
                 ssl_options=pika.SSLOptions(context, self.host),
-                heartbeat=30,
+                heartbeat=10 if ha_enabled else 30,
                 socket_timeout=5,
                 stack_timeout=10,
                 blocked_connection_timeout=10,

@@ -1,0 +1,50 @@
+# Install on the independent proxy instances behind each site-owned stable address.
+# The AMQPS SAN is present on every broker certificate. Management verifies each node SAN.
+defaults
+    log global
+    timeout connect 1s
+    timeout client 75s
+    timeout server 75s
+
+frontend amqps
+    mode tcp
+    bind 192.0.2.10:5671
+    default_backend amqps_nodes
+
+backend amqps_nodes
+    mode tcp
+    balance roundrobin
+    retries 2
+    option redispatch 1
+    option tcp-check
+    tcp-check connect port 5671 ssl sni broker-amqp.example.invalid
+    tcp-check connect port 15671 ssl sni broker-amqp.example.invalid
+    tcp-check send "GET /api/nodes?disable_stats=true&columns=running HTTP/1.1\r\nHost: broker-amqp.example.invalid\r\nAuthorization: Basic ${DLR_RABBITMQ_PROXY_HEALTH_BASIC}\r\nConnection: close\r\n\r\n"
+    tcp-check expect rstring '^HTTP/1\.[01] 200'
+    tcp-check expect rstring '"running"[[:space:]]*:[[:space:]]*true.*"running"[[:space:]]*:[[:space:]]*true'
+    default-server check inter 2s fall 2 rise 1 on-marked-down shutdown-sessions
+    server broker_a 192.0.2.21:5671 verify required verifyhost broker-amqp.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
+    server broker_b 192.0.2.22:5671 verify required verifyhost broker-amqp.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
+    server broker_c 192.0.2.23:5671 verify required verifyhost broker-amqp.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
+
+frontend management_https
+    mode http
+    bind 192.0.2.10:443 ssl crt /run/dlr-broker-proxy/management.pem
+    http-request deny unless METH_GET { path_beg /api/ }
+    default_backend management_nodes
+
+backend management_nodes
+    mode http
+    balance roundrobin
+    timeout server 1s
+    retries 2
+    retry-on conn-failure empty-response response-timeout 500 502 503 504
+    option redispatch 1
+    option httpchk
+    http-check send meth GET uri /api/nodes?disable_stats=true&columns=running ver HTTP/1.1 hdr Host broker-management.example.invalid hdr Authorization "Basic ${DLR_RABBITMQ_PROXY_HEALTH_BASIC}"
+    http-check expect status 200
+    http-check expect rstring '"running"[[:space:]]*:[[:space:]]*true.*"running"[[:space:]]*:[[:space:]]*true'
+    default-server check inter 2s fall 2 rise 1
+    server broker_a 192.0.2.21:15671 ssl sni str(broker-a.example.invalid) check-sni broker-a.example.invalid verify required verifyhost broker-a.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
+    server broker_b 192.0.2.22:15671 ssl sni str(broker-b.example.invalid) check-sni broker-b.example.invalid verify required verifyhost broker-b.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
+    server broker_c 192.0.2.23:15671 ssl sni str(broker-c.example.invalid) check-sni broker-c.example.invalid verify required verifyhost broker-c.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
