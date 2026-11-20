@@ -195,9 +195,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 if enrolled and adopted(session):
                     raise RuntimeError("control_ha_registration_required")
         except SQLAlchemyError:
-            # The default Compose Control can start before its schema. Every
-            # subsequent intake transaction still checks durable enrollment.
-            logger.warning("Control deployment mode could not be read at startup")
+            # An unmigrated but reachable database returns NULL above. If the
+            # mode is unknown, no local service may assume single-Control duties.
+            raise RuntimeError("control_deployment_mode_unavailable") from None
     if settings.worker_remote_v4_enabled:
         from dlr.control.services.control_declaration_v4 import read_declaration
         from dlr.control.services.control_process_v4 import ControlProcess

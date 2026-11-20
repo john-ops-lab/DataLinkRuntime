@@ -1,5 +1,6 @@
 """Dual-Control admission and durable intake limits on real PostgreSQL."""
 
+import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -11,6 +12,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import event, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from dlr.common.config import settings
@@ -20,6 +22,41 @@ from dlr.control.services import control_cluster_identity as identity
 from dlr.control.services import control_ha_capacity as state
 from dlr.control.services import ingress_capacity, rabbitmq
 from dlr.control.services import postgres_capacity_provider as provider
+from dlr.control.services.subscription_http import HttpSourceRunner
+from dlr.control.services.subscription_runtime import SubscriptionRuntimeManager
+from dlr.control.services.subscription_source import SourceFailure
+
+
+def test_startup_with_unknown_deployment_mode_does_not_start_single_control(monkeypatch):
+    monkeypatch.setattr(settings, "worker_remote_v4_enabled", False)
+
+    def unavailable():
+        raise OperationalError(None, None, ConnectionError())
+
+    monkeypatch.setattr(db, "SessionLocal", unavailable)
+    with (
+        pytest.raises(RuntimeError, match="control_deployment_mode_unavailable"),
+        TestClient(create_app()),
+    ):
+        pytest.fail("Control started without confirming the deployment mode")
+
+
+def test_ha_diagnostic_preserves_all_owner_slots_before_a_peer_enables_more(
+    monkeypatch, session_factory
+):
+    monkeypatch.setattr(settings, "control_ha_slot", "a")
+    monkeypatch.setattr(settings, "event_subscriptions_enabled", True)
+    runtime = SubscriptionRuntimeManager(session_factory, {"http": HttpSourceRunner()})
+
+    async def precheck(*args, **kwargs):
+        pytest.fail("Rejected diagnostic enqueued work")
+
+    monkeypatch.setattr(asyncio, "to_thread", precheck)
+    with pytest.raises(SourceFailure) as rejected:
+        asyncio.run(runtime.test_connection(17, {"source_type": "http"}, {"token": "test"}))
+    assert rejected.value.code == "subscription_capacity_exceeded"
+    assert all(runtime._claim(number) for number in range(1, 17))
+    assert runtime.active_count == 16
 
 
 @pytest.fixture

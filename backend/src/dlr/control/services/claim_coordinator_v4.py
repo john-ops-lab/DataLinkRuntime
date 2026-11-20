@@ -231,7 +231,7 @@ class _ClaimSlot:
                     env={
                         name: value
                         for name, value in os.environ.items()
-                        if name != "DLR_POSTGRES_CAPACITY_TOKEN"
+                        if name.casefold() != "dlr_postgres_capacity_token"
                     },
                 )
             except BaseException:

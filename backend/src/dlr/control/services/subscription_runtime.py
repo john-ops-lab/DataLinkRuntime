@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
@@ -565,29 +565,6 @@ class SubscriptionRuntimeManager:
         logger.warning("source shutdown awaiting native close")
         return False
 
-    def _reserved_owner_count(self) -> int:
-        if not settings.event_subscriptions_enabled:
-            return 0
-        with self.session_factory() as session:
-            from dlr.control.services.control_ha_capacity import admission_configured
-
-            if not admission_configured(session):
-                return self._owner_limit
-            # Account for the full enabled set, including a peer's currently
-            # live owners. A local diagnostic cannot consume their takeover seats.
-            return int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(EventSubscription)
-                    .where(
-                        EventSubscription.desired_state == "enabled",
-                        EventSubscription.activation_id.is_not(None),
-                        EventSubscription.deleted_at.is_(None),
-                    )
-                )
-                or 0
-            )
-
     async def test_connection(
         self,
         subscription_id: int,
@@ -600,12 +577,13 @@ class SubscriptionRuntimeManager:
         runner = self.registry.get(source_type)
         if runner is None:
             raise SourceFailure("source_not_available")
-        reserved_owners = 0
-        if settings.control_ha_slot is not None:
-            try:
-                reserved_owners = await asyncio.to_thread(self._reserved_owner_count)
-            except Exception:
-                raise SourceFailure("subscription_capacity_exceeded", "capacity") from None
+        # A peer may enable another subscription while a diagnostic still holds
+        # its permit. Reserve the full takeover budget before starting any SDK.
+        reserved_owners = (
+            self._owner_limit
+            if settings.control_ha_slot is not None and settings.event_subscriptions_enabled
+            else 0
+        )
         if not self._claim(subscription_id, probe=True, reserved_owners=reserved_owners):
             raise SourceFailure("subscription_capacity_exceeded", "capacity")
         loop = asyncio.get_running_loop()

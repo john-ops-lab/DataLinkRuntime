@@ -27,6 +27,6 @@ W3 第一批提供同镜像双 Control 注册、分层健康与集群接收容�
 
 两节点使用相同的 `DLR_POSTGRES_CAPACITY_URL`、`DLR_POSTGRES_CAPACITY_TOKEN`、受信 CA 和接收配额，私有 CA 通过 `DLR_POSTGRES_CAPACITY_CA_FILE` 提供。端点为固定 HTTPS，返回 `schema_version=1`、`cluster_id`、`storage_domain_id`、正整数 `topology_epoch`、带时区的 `observed_at` 和非负整数 `writable_free_bytes`。采样覆盖实际可写主库和允许提升的副本容量域。DLR 按数据库时间核对 15 秒新鲜度与 5 秒未来偏差，容量下降至 5 GiB 暂停新接收，恢复至 6 GiB 后重新允许。不可用、过期或冲突的观测关闭新接收，旧 ID 仍按原授权读回。
 
-两节点的应用预算合计最多 256 个 HTTP 在途、16 MiB HTTP 接收缓冲、128 MiB 来源缓冲和 16 条 intake 数据库连接。每节点最多 16 个 owner/诊断名额，并保留 4 条管理与恢复数据库连接。PostgreSQL 最大连接数还需计入受监督子进程、监控、迁移和管理员连接。持久额度和速率由共享数据库事务裁决。
+两节点的应用预算合计最多 256 个 HTTP 在途、16 MiB HTTP 接收缓冲、128 MiB 来源缓冲和 16 条 intake 数据库连接。每节点最多 16 个 owner/诊断名额，并保留 4 条管理与恢复数据库连接。双节点启用来源服务时，每个节点为接管预留全部 16 席，在线连接测试会返回容量繁忙。PostgreSQL 最大连接数还需计入受监督子进程、监控、迁移和管理员连接。持久额度和速率由共享数据库事务裁决。
 
 切换容量配置时依次停止新接收、关闭两节点的实际本地来源工作和在途请求，确认租约退出并停止 Control，隔离受限运行角色。由 owner 使用新配置和更大的 epoch 执行 `ha-configure`，保留已有额度占用，清除原观测并围栏旧实例。统一安装新配置后再恢复两节点。新容量源必须提供匹配的新 epoch 样本并达到恢复水位。生产 PostgreSQL HA 容量域和基础设施切换在 W4 验证。

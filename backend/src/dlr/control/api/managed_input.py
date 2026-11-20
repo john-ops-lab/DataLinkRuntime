@@ -51,7 +51,7 @@ adapter_router = APIRouter(
 # Capability is intentionally readable by ordinary business users.  It is a
 # small set of safe release/form facts, not an alias for the admin settings resource.
 capability_router = APIRouter(dependencies=[Depends(require_business_principal)])
-upload_router = APIRouter(dependencies=[Depends(require_shared_backend)])
+upload_router = APIRouter()
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
@@ -409,6 +409,7 @@ async def upload_input_artifact(
     principal: CurrentUploadPrincipal,
 ) -> ManagedInputArtifactResponse:
     """Stream one file part into an opaque local object."""
+    require_shared_backend()
     return await _stream_upload(request, adapter_id, principal)
 
 
