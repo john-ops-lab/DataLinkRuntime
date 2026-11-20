@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定义 W3 第一批中双 Control 的注册、请求权限、健康探测和功能边界。后台和来源沿用各自既有所有权；三类文件的跨节点共享与故障接管分别验收。
+定义双 Control 的注册、请求权限、健康探测、后台责任及来源租约接管。三类文件的跨节点共享和后端接管由各自规格另行定义。
 
 ## Requirements
 
@@ -46,3 +46,52 @@ LB SHALL 使用 `/api/health/ready` 判定节点能否承担数据库及身份�
 #### Scenario: 数据库不可提交或长连接中断
 - **WHEN** 数据库只读或不可用，或者客户端正在使用的 SSE/Assist 连接中断
 - **THEN** 数据库不可提交的节点 ready 返回 503，新责任不能被报告为已接受。长连接中断对用户可见；查询或经用户发起的重试沿原权限进行，断连不自动重发 Provider 请求。
+
+### Requirement: 后台职责有持久并发与接管合同
+Scheduler、Outbox、Retry、Attempt/资源对账、配额audit、DLQ、T2/批次结算、retention、Worker 缓存/Adapter 清理和拓扑检查 SHALL 按职责使用可重领责任、唯一约束或带generation的单owner。MUST 不通过“部署只启动一份”保证HA；内存通知/游标丢失必须有有界持久扫描恢复。
+
+#### Scenario: 扫描后进程退出或候选前缀长期受阻
+- **WHEN** Scheduler、fixed/reserved Retry、Attempt 或 Reservation 扫描选择候选，进程在处理前退出，或部分候选暂时无法取得业务锁
+- **THEN** 有界扫描继续访问后页并可绕回重查，领取方在原业务锁序内重检条件和 generation；计划点、有效派发、Attempt 及预留各自遵循原有唯一约束。发布租约和迟到 Confirm 不得使已被替代的责任复活。
+
+#### Scenario: Worker 清理命令或对账在节点切换时仍未完成
+- **WHEN** Control 在请求提交后退出，另一节点接办，随后旧 Worker 回执到达
+- **THEN** 缓存与 Adapter 清理按原请求标识、实例和操作代次核对，未证实物理完成的责任保留，旧回执不能释放新操作或删除仍使用的缓存。
+
+#### Scenario: 观察来源和预留的集群责任
+- **WHEN** 运维查看双节点聚合健康
+- **THEN** 报告缺少有效 owner 的来源数量、活动 owner 自最近续租的最长时间、过期 held 及已到对账时点的 reclaiming 数量；这些读数不授权释放物理占用。
+
+#### Scenario: 集群拓扑观察迟到与 DLQ 消息重投
+- **WHEN** A 已获得数据库发放的 30 秒观察代次，B 在更新代次完成后 A 才返回；或 DLQ 在事务提交后、Broker ACK 前中断
+- **THEN** Broker I/O 在事务外进行，过时代次的成功或失效结果不能覆盖新代次，两节点独立活性探测继续；DLQ 以消息携带的发布尝试和实际投递/死亡事实区分事件，同一事实幂等结算，无法确认新事件或有效新租约时保留既有责任。
+
+#### Scenario: 持锁节点崩溃
+- **WHEN** A在上述职责的领取或提交窗口退出
+- **THEN** B按对应锁/租约恢复责任；A恢复后不能凭旧owner继续有效写入，不重复产生业务责任或释放容量
+
+#### Scenario: 本地完成通知丢失
+- **WHEN** Attempt在A终态但T2/投影运行于B，进程内通知没有送达
+- **THEN** 持久扫描继续推进，在既定负载/预算内收敛，不要求新增跨节点消息总线
+
+### Requirement: 原生来源保持唯一有效 owner
+Kafka、Kubernetes、RabbitMQ、RocketMQ SHALL 以数据库owner/generation/到期时间进行接管；旧owner不得新增责任或推进不安全checkpoint。来源确认 MUST 只对应已持久接管的安全前缀；租约失效不能视为旧SDK、连接、线程和本地缓冲已停止。
+
+#### Scenario: 旧 owner 恢复并继续读源
+- **WHEN** B接管后A恢复其SDK回调
+- **THEN** A的新T1和checkpoint写入被拒绝并关闭旧连接，最多重复确认已提交安全位置；原生工作预算直到真实结束才归还
+
+#### Scenario: 停用与接管竞争
+- **WHEN** 管理员停用/reset来源与B获取lease同时发生
+- **THEN** 原锁和generation决定唯一合法结果，不在停用后新增接收，不丢弃已接管责任或复用旧epoch
+
+### Requirement: 各来源按自身恢复合同验收
+来源恢复 SHALL 分别验证Kafka assignment/offset、RabbitMQ channel与ACK、RocketMQ receipt handle与确认、K8s resourceVersion及LIST/WATCH完整性；内部派发Broker HA不能替代外部来源恢复证据。来源不可用时 MUST 保留可解释等待/需同步事实。
+
+#### Scenario: 原生来源提交与确认之间崩溃
+- **WHEN** Kafka/RabbitMQ/RocketMQ的T1已提交而来源确认结果未知
+- **THEN** 新owner从安全位置恢复，重投命中原责任，不提前确认未提交后继，也不把来源重连算作业务重试
+
+#### Scenario: K8s 初始同步中断
+- **WHEN** LIST/WATCH或同步完成链尚未完整时owner切换
+- **THEN** 保留partial/失败及既有完成事实，按原合同重新同步，不向目标提供虚假的完整快照或清理资格

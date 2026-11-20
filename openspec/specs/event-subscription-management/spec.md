@@ -214,3 +214,14 @@ HTTP 来源 SHALL 使用有效激活及所有权进行接管，停用/配置切�
 #### Scenario: 保存 Pool 草稿后请求启用订阅
 - **WHEN** 用户显式请求开启采用 Pool 草稿的订阅
 - **THEN** 显示拒绝原因，草稿保留，未创建 Activation 或开始来源接收
+
+### Requirement: 跨节点被动接收校验共享有效 generation
+HTTP接收 SHALL 由任一合格Control在原事务锁内验证当前Activation、有效SubscriptionLease及generation后提交；接收节点身份与lease owner分别记录，MUST 不冒充owner或通过请求隐式续租。无有效lease时新接收按原503处理，既有记录的合法读回不依赖owner存活。
+
+#### Scenario: 非 owner 节点接收
+- **WHEN** A持有有效HTTP被动lease，合法POST落到B
+- **THEN** B验证共享generation并原子提交，责任可由任意合格Control继续处理；接收不依赖粘性会话
+
+#### Scenario: owner 到期与在途请求竞争
+- **WHEN** B的请求在T1前发现generation变更或原lease已过期
+- **THEN** 未提交请求明确拒绝，不记为坏消息；已提交责任保持且可跨节点读回

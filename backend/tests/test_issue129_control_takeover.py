@@ -9,11 +9,13 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 
 from dlr.common.config import settings
+from dlr.control import db
 from dlr.control.models import (
     Adapter,
     EventReceipt,
     ExecutionOutbox,
     IngressCapacityConfiguration,
+    RabbitMQRuntimeCapability,
     RuntimeReconciliationCursor,
     SubscriptionLease,
 )
@@ -162,3 +164,53 @@ def test_old_dlq_delivery_does_not_clear_the_successor_publish_lease(
         repeated = infrastructure_dlq.reconcile_message(session, body, headers=headers)
         assert (repeated.action, repeated.incident_id) == ("duplicate", first.incident_id)
         assert session.scalar(query).lease_owner == "successor"
+
+
+def test_expired_ordinary_outbox_confirm_preserves_pending_responsibility(
+    api_client, session_factory, monkeypatch
+):
+    _, execution, _ = _published_execution(api_client, session_factory, monkeypatch, "confirm")
+    with session_factory.begin() as session:
+        row = session.scalar(
+            select(ExecutionOutbox).where(ExecutionOutbox.execution_id == execution["id"])
+        )
+        assert row.reservation_id is None
+        row.status = "pending"
+        row.published_at = None
+    with session_factory() as session:
+        first = outbox.lease_due_outbox(session, "first", limit=1)[0]
+    with session_factory.begin() as session:
+        session.get(ExecutionOutbox, first.id).lease_expires_at = database_now(session) - timedelta(
+            seconds=1
+        )
+    with session_factory() as session:
+        assert not outbox.mark_outbox_published(
+            session, first.id, "first", lease_attempt=first.lease_attempt
+        )
+        second = outbox.lease_due_outbox(session, "second", limit=1)[0]
+        assert second.id == first.id and second.lease_attempt > first.lease_attempt
+        assert outbox.mark_outbox_published(
+            session, second.id, "second", lease_attempt=second.lease_attempt
+        )
+
+
+def test_late_topology_result_cannot_discard_a_newer_observation(session_factory, monkeypatch):
+    a, b = [SimpleNamespace(instance_id=uuid4(), assert_live=lambda _: None) for _ in range(2)]
+    monkeypatch.setattr(settings, "control_ha_slot", "a")
+    monkeypatch.setattr(capacity, "_local_process", a)
+    monkeypatch.setattr(db, "SessionLocal", session_factory)
+    with session_factory() as session:
+        old_failure = rabbitmq.reserve_topology_observation(session)
+        old_success = rabbitmq.reserve_topology_observation(session)
+    monkeypatch.setattr(capacity, "_local_process", b)
+    with session_factory() as session:
+        current = rabbitmq.reserve_topology_observation(session)
+    facts = rabbitmq.RabbitMQRuntimeCapabilities(
+        rabbitmq.RABBITMQ_BASELINE_VERSION, rabbitmq.REQUIRED_FEATURE_FLAGS
+    )
+    assert rabbitmq._persist_runtime_capabilities([], facts, current)
+    monkeypatch.setattr(capacity, "_local_process", a)
+    rabbitmq._invalidate_persisted_capability(old_failure)
+    assert not rabbitmq._persist_runtime_capabilities([42], facts, old_success)
+    with session_factory() as session:
+        assert session.get(RabbitMQRuntimeCapability, 1).worker_ids == []
