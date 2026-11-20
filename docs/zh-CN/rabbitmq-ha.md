@@ -46,6 +46,8 @@ Control 使用 `DLR_RABBITMQ_URL` 指向 AMQPS，`DLR_RABBITMQ_MANAGEMENT_URL` �
 
 初次开放 HA 前，用下一节的逐队列证据确认两个队列族均达到三名同步 voter，再启用 `DLR_RABBITMQ_HA_ENABLED=true`。双 Control 使用同一配置。启用此开关会改变 Control 容量配置指纹，按 [双 Control 容量维护流程](control-ha-foundation.md#postgresql-容量与维护) 先停接收并排空，以实际容量域和新 epoch 重绑配置，再恢复两端。单 Control 可在单独的部署维护窗口切换。确认新探测后再开放新业务。
 
+每台独立 Worker 也须在其 Compose 环境显式设置 `DLR_RABBITMQ_HA_ENABLED=true`。Worker 的新 AMQPS 连接将请求 10 秒心跳，默认配置使用 30 秒。部署时先排空 Worker，再用原身份和持久卷重建容器。经管理入口或 `rabbitmqctl list_connections user timeout` 核对 Worker 的实际协商值；仅调整 Broker 的建议值无法覆盖客户端显式请求。AMQP 心跳决定何时清除断开的消费者连接，Worker 的业务租约继续按原协议续租。
+
 ## 原位增加或替换队列成员
 
 先记录稳定 vhost、队列名、原成员和 leader、绑定及原消息/责任清单。准备经核验的可读备份。保留原队列、原持久卷、旧节点名和原绑定。集群中新加 Broker 不会自动把已有队列扩成三个副本。对每一条固定工作队列和 Infrastructure DLQ 分别操作。
@@ -79,7 +81,7 @@ rabbitmq-queues quorum_status --vhost "$vhost" "$queue"
 - 按真实故障 T0 分别记录稳定 AMQP 入口获得首次有效 Confirm 和 Worker 获得首次有效 Claim。保留多数派时两项均须在 60 秒内成功。对 2:1 分区中的少数派直接观察发布结果，恢复后再核对原三成员与 leader。
 - 在 T0 后用新业务键提交一笔任务，记录首次派发的 Outbox、Execution 和对应的 Attempt ID。通过 `GET /api/executions/{execution_id}/reliable-detail` 观察该 Attempt。在记录 T0 的同一计时端首次读到其 `started_at` 时，Worker 已持有效 Claim 证明上报启动，由此得到故障后领取耗时的保守上界。故障前已接受的任务另按原 ID 对账。
 - v4 会检查业务库的登录角色，管理员即使只读连接该库，也会干扰 Claim。演练期间用业务 API 观察进度。需要管理员权限核对 Outbox 时，可查询演练后的隔离快照。
-- 排查 Claim 返回 503 时，同时核对 Control 的登记状态和 PostgreSQL 锁等待。已登记的 Control 仅在 PostgreSQL 的英文诊断明确指出本实例行锁超时、事务已回滚且原租约仍有效时，立即重试一次续租。其他语言或无法识别的诊断沿用常规续租周期。等待期间 Control 拒绝授权，只有确认新提交后才恢复。
+- 排查 Claim 返回 503 时，同时核对 Control 的登记状态和 PostgreSQL 锁等待。首次续租仍在等锁时，原确认租约在截止前有效。收到超时错误后，Control 在回滚前即拒绝授权。仅当 PostgreSQL 的英文诊断明确指出本实例行锁超时、事务已回滚且原租约仍有效时，立即重试一次续租。其他语言或无法识别的诊断沿用常规续租周期。确认新提交后才能恢复授权。
 - 确认回执丢失时保留原 Outbox 与输入键，核对原记录的后续回访和重发结果。以 Receipt、Execution、Attempt、物理清理和独立目标逐条对账。已确认责任丢失数和并存的双有效 Attempt 数均为零。记录首败、原始期限、重试与观察版本。
 - 轮换时预配权限相同的新身份并验证路径，再更新私有配置，清理旧连接并撤销旧凭据。管理凭据轮换后从两端核对新探测，Worker 独立账号轮换按[原维护流程](worker-v4-dispatch-contract.md)操作。日志和演练记录保留稳定错误码、计数和时间点。
 
