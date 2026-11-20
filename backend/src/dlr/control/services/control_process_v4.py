@@ -12,7 +12,8 @@ import os
 import sys
 import threading
 import time
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID, uuid4
@@ -383,6 +384,24 @@ class ControlProcess:
             self._mark_unknown()
             raise
 
+    @contextmanager
+    def _cycle_session(self, *, was_authorized: bool) -> Iterator[Session]:
+        with self._sessions() as session:
+            try:
+                yield session
+            except identity.RenewalRowLockTimeout:
+                self._mark_unknown()
+                session.rollback()
+                if not was_authorized:
+                    raise identity.ControlIdentityUnavailable(
+                        "control authority unavailable"
+                    ) from None
+                raise
+            except BaseException:
+                # Revoke local use before implicit rollback or connection cleanup can block.
+                self._mark_unknown()
+                raise
+
     def _cycle_once(self) -> bool:
         if self._pid != os.getpid():
             return False
@@ -409,26 +428,18 @@ class ControlProcess:
         ):
             self._mark_unknown()
             return True
-        with self._sessions() as session:
+        with self._cycle_session(was_authorized=was_authorized) as session:
             try_control_gate(session)
             session.execute(text("SET LOCAL statement_timeout = '2000ms'"))
             session.execute(text("SET LOCAL lock_timeout = '500ms'"))
             if was_registered:
-                try:
-                    result = identity.renew_control(
-                        session,
-                        self._deployment.authority,
-                        instance_id=self._instance,
-                        instance_token=self._token,
-                    )
-                except identity.RenewalRowLockTimeout:
-                    self._mark_unknown()
-                    session.rollback()
-                    if not was_authorized:
-                        raise identity.ControlIdentityUnavailable(
-                            "control authority unavailable"
-                        ) from None
-                    raise
+                result = identity.renew_control(
+                    session,
+                    self._deployment.authority,
+                    instance_id=self._instance,
+                    instance_token=self._token,
+                    ha_slot=self.ha_slot,
+                )
             else:
                 result = identity.register_control(
                     session,

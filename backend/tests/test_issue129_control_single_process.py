@@ -174,7 +174,17 @@ def test_control_renewal_unknown_commit_cannot_use_the_old_confirmation(
 
 
 @pytest.mark.parametrize(
-    "outcome", ["released", "held", "revoked", "unknown_commit", "unknown_rollback"]
+    "outcome",
+    [
+        "released",
+        "held",
+        "revoked",
+        "slot_changed",
+        "expired_before_retry",
+        "already_unknown",
+        "unknown_commit",
+        "unknown_rollback",
+    ],
 )
 def test_control_renewal_row_contention(
     test_engine, session_factory, declaration, monkeypatch, outcome
@@ -197,6 +207,15 @@ def test_control_renewal_row_contention(
             super().rollback()
             if outcome == "unknown_rollback":
                 raise OSError("rollback acknowledgement lost")
+            if outcome == "expired_before_retry":
+                monkeypatch.setattr(lifecycle, "_cache_clock", lambda: previous)
+            if outcome == "slot_changed":
+                reader.execute(
+                    text(
+                        "UPDATE control_process_instances SET ha_slot = 'b' WHERE instance_id = :id"
+                    ),
+                    {"id": process.instance_id},
+                )
             if outcome == "revoked":
                 control.fence_control(
                     reader,
@@ -219,6 +238,13 @@ def test_control_renewal_row_contention(
     process = _process(factory, declaration, monkeypatch)
     assert process._cycle()
     previous = process._confirmed_until
+    if outcome == "already_unknown":
+        with session_factory.begin() as holder:
+            holder.execute(text("LOCK TABLE control_process_instances IN ACCESS EXCLUSIVE MODE"))
+            with pytest.raises(control.ControlIdentityUnavailable):
+                process._cycle()
+        with pytest.raises(TokenFenceUnavailable):
+            process.check_authority()
     monkeypatch.setattr(control, "renew_control", observe_renewal)
     with session_factory() as reader:
         control.assert_live_control(
@@ -227,6 +253,10 @@ def test_control_renewal_row_contention(
         if outcome == "released":
             assert process._cycle()
             process.check_authority()
+        elif outcome == "expired_before_retry":
+            assert process._cycle() is False
+            with pytest.raises(TokenFenceUnavailable):
+                process.check_authority()
         else:
             error = (
                 OSError
@@ -238,7 +268,8 @@ def test_control_renewal_row_contention(
             assert process._confirmed_until == previous
             with pytest.raises(TokenFenceUnavailable):
                 process.check_authority()
-        assert len(renewals) == (1 if outcome == "unknown_rollback" else 2)
+        single_attempt = outcome in {"already_unknown", "expired_before_retry", "unknown_rollback"}
+        assert len(renewals) == (1 if single_attempt else 2)
         if outcome == "held":
             monkeypatch.setattr(lifecycle, "_cache_clock", lambda: previous)
             assert process._cycle() is False
@@ -246,21 +277,43 @@ def test_control_renewal_row_contention(
     process._finish()
 
 
-def test_control_renewal_table_lock_timeout_is_not_retried(
-    session_factory, declaration, monkeypatch
+@pytest.mark.parametrize("ddl", ["table", "index"])
+def test_control_renewal_ddl_timeout_is_not_retried(
+    test_engine, session_factory, declaration, monkeypatch, ddl
 ):
-    process = _process(session_factory, declaration, monkeypatch)
-    assert process._cycle()
     started = []
     renew_control = control.renew_control
 
+    class ObserveClose(Session):
+        def close(self):
+            if self in started:
+                with pytest.raises(TokenFenceUnavailable):
+                    process.check_authority()
+            super().close()
+
+    factory = sessionmaker(bind=test_engine, class_=ObserveClose, expire_on_commit=False)
+    process = _process(factory, declaration, monkeypatch)
+    assert process._cycle()
+
     def observe_renewal(session, *args, **kwargs):
         started.append(session)
+        session.execute(text("SET LOCAL enable_seqscan = off"))
         return renew_control(session, *args, **kwargs)
 
     monkeypatch.setattr(control, "renew_control", observe_renewal)
     with session_factory.begin() as holder:
-        holder.execute(text("LOCK TABLE control_process_instances IN ACCESS EXCLUSIVE MODE"))
+        if ddl == "table":
+            holder.execute(text("LOCK TABLE control_process_instances IN ACCESS EXCLUSIVE MODE"))
+        else:
+            index = holder.scalar(
+                text(
+                    "SELECT indexrelid::regclass::text FROM pg_index "
+                    "WHERE indrelid = 'control_process_instances'::regclass AND indisprimary"
+                )
+            )
+            holder.execute(
+                text("REINDEX INDEX " + test_engine.dialect.identifier_preparer.quote(index))
+            )
         with pytest.raises(control.ControlIdentityUnavailable):
             process._cycle()
         assert len(started) == 1

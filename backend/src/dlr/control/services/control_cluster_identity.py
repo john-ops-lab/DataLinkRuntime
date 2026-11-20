@@ -30,6 +30,9 @@ from dlr.control.services import control_auth_proof
 LEASE_SECONDS = 30
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
+_INSTANCE_TUPLE_WAIT = re.compile(
+    r'while locking tuple \([0-9]+,[0-9]+\) in relation "control_process_instances"'
+)
 
 
 class _RedactedBytes(bytes):
@@ -440,18 +443,13 @@ def _update_control(
     instance_token: str,
     *,
     revoke: bool,
+    ha_slot: str | None = None,
 ) -> DeclaredCompatibility | ExpiredControl:
     if not isinstance(instance_id, UUID):
         raise _invalid()
     token_digest = _token_digest(instance_token)
     try:
         authority = _authority(session, declaration)
-        if not revoke:
-            # Acquire FOR UPDATE's table lock with the same column privileges
-            # but no rows, so a DDL timeout cannot masquerade as a row timeout.
-            session.execute(
-                text("SELECT instance_id FROM control_process_instances WHERE false FOR UPDATE")
-            )
         try:
             row = (
                 session.execute(
@@ -464,10 +462,15 @@ def _update_control(
                 .one_or_none()
             )
         except OperationalError as error:
+            # 55P03 also covers table and index locks. An absent or unrecognized
+            # server diagnostic stays on the ordinary fail-closed path.
+            context = getattr(getattr(error.orig, "diag", None), "context", None)
             if (
                 not revoke
                 and not error.connection_invalidated
                 and getattr(error.orig, "sqlstate", None) == "55P03"
+                and isinstance(context, str)
+                and _INSTANCE_TUPLE_WAIT.fullmatch(context)
             ):
                 raise RenewalRowLockTimeout("control instance row lock timed out") from None
             raise
@@ -475,6 +478,7 @@ def _update_control(
         if (
             row is None
             or row["revoked"]
+            or (not revoke and row.get("ha_slot") != ha_slot)
             or not _existing_is_same(row, declaration, authority, token_digest)
         ):
             raise _invalid()
@@ -496,10 +500,17 @@ def _update_control(
 
 
 def renew_control(
-    session: Session, declaration: ControlDeclaration, *, instance_id: UUID, instance_token: str
+    session: Session,
+    declaration: ControlDeclaration,
+    *,
+    instance_id: UUID,
+    instance_token: str,
+    ha_slot: str | None = None,
 ) -> DeclaredCompatibility | ExpiredControl:
     """Renew a live lease, or stage a permanent expiry fence for caller commit."""
-    return _update_control(session, declaration, instance_id, instance_token, revoke=False)
+    return _update_control(
+        session, declaration, instance_id, instance_token, revoke=False, ha_slot=ha_slot
+    )
 
 
 def fence_control(
