@@ -24,32 +24,37 @@ SPEC.loader.exec_module(POLICY)
 
 
 @pytest.mark.parametrize("configured", [None, "true", ""])
-def test_standalone_worker_compose_preserves_ha_opt_in(configured):
+def test_standalone_worker_compose_preserves_ha_opt_in(configured, tmp_path):
     if shutil.which("docker") is None:
         pytest.skip("Docker Compose CLI is needed to render the Worker deployment")
+    deployment = ROOT / "deploy/standalone-worker"
+    setting = "DLR_RABBITMQ_HA_ENABLED"
+    example = (deployment / "worker-compose.env.example").read_text().splitlines()
+    env_file = tmp_path / "worker.env"
+    env_file.write_text("\n".join(line for line in example if line.partition("=")[0] != setting))
     environment = {k: v for k, v in os.environ.items() if not k.startswith(("DLR_", "COMPOSE_"))}
     if configured is not None:
-        environment["DLR_RABBITMQ_HA_ENABLED"] = configured
+        environment[setting] = configured
     result = subprocess.run(
         [
             "docker",
             "compose",
             "--env-file",
-            "worker-compose.env.example",
+            str(env_file),
             "-f",
             "compose.wave1a.yml",
             "config",
             "--format",
             "json",
         ],
-        cwd=ROOT / "deploy/standalone-worker",
+        cwd=deployment,
         env=environment,
         check=True,
         capture_output=True,
         text=True,
     )
     worker = json.loads(result.stdout)["services"]["worker"]["environment"]
-    assert worker["DLR_RABBITMQ_HA_ENABLED"] == ("false" if configured is None else configured)
+    assert worker[setting] == ("false" if configured is None else configured)
 
 
 @pytest.mark.parametrize("mountpoint", ["/run/dlr-cgroup", "/run/dlr cgroup"])
