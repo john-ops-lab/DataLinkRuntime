@@ -163,7 +163,7 @@ def health(request: Request) -> JSONResponse:
 def _cluster_health(
     request: Request, rabbitmq_status: dict[str, object], database_ok: bool
 ) -> dict[str, object]:
-    from dlr.control.services import control_ha_capacity
+    from dlr.control.services import control_ha_capacity, storage_backends
     from dlr.control.services.background_control import cluster_diagnostics
 
     process = getattr(request.app.state, "control_process_v4", None)
@@ -210,8 +210,20 @@ def _cluster_health(
             else "unavailable",
             "postgres_capacity": storage,
             "mq_publish": "available" if publish_ready else "unavailable",
-            "managed_files": "awaiting_shared_backend",
-            "builtin_packages": "awaiting_shared_backend",
-            "ai_attachments": "awaiting_shared_backend",
+            "managed_files": (
+                "available"
+                if settings.managed_files_enabled and storage_backends.available("managed_files")
+                else "awaiting_shared_backend"
+            ),
+            "builtin_packages": (
+                "available"
+                if storage_backends.available("builtin_packages")
+                else "awaiting_shared_backend"
+            ),
+            "ai_attachments": (
+                "available"
+                if storage_backends.available("ai_attachments")
+                else "awaiting_shared_backend"
+            ),
         },
     }

@@ -6,11 +6,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from dlr.common.config import settings
 from dlr.control import db
 from dlr.control.ai import attachments
 from dlr.control.ai.attachment_reading import ScopedAttachmentReader
 from dlr.control.ai.attachment_store import get_attachment_store, principal_owner
+from dlr.control.api.shared_backend import require_ai_attachments
 from dlr.control.schemas.ai import (
     AiAssistRequest,
     AiAssistResponse,
@@ -138,8 +138,8 @@ def assist_adapter(
     request: Request,
 ) -> AiAssistResponse:
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
-    if payload.attachment_refs and settings.control_ha_slot is not None:
-        raise HTTPException(status_code=503, detail={"code": "shared_backend_unavailable"})
+    if payload.attachment_refs:
+        require_ai_attachments()
     bind = session.get_bind().engine
     authorization = request.headers.get("authorization")
     account_cookie = request.cookies.get("dlr_account_session")

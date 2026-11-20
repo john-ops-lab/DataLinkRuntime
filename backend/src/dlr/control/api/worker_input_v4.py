@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
 from dlr.common.attempt_lease_proof_wire_v4 import parse_untrusted_attempt_proof
-from dlr.control.api.shared_backend import require_shared_backend
+from dlr.control.api.shared_backend import require_backend
 from dlr.control.api.worker_claim_v4 import _coordinator
 from dlr.control.api.worker_instance_v4 import _HEADERS, _one_header, _process, _proved_identity
 from dlr.control.services.claim_child_v4 import _clock
@@ -50,7 +50,7 @@ async def _download(
     if request.url.scheme != "https":
         raise _error()
     credential, instance, generation, instance_proof = _proved_identity(request, worker_id)
-    require_shared_backend()
+    require_backend("builtin_packages" if builtin_package else "managed_files")
     try:
         if (
             request.url.query
@@ -86,7 +86,7 @@ async def _download(
             or not 1 <= len(claim_token) <= 512
         ):
             raise ValueError
-        # Parsed fields only select the retained slot. The child verifies both
+        # Parsed fields only select a bounded slot. The child verifies both
         # signatures/current candidates and every database ownership relation.
         metadata = {
             "worker_id": worker_id,

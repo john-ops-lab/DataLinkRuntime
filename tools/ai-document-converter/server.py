@@ -16,12 +16,14 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from uuid import uuid4
 
 from processor import ConversionError, archive_policy, decode
 
 MAX_WIRE = 96 * 1024 * 1024
 ROLE = os.environ.get("DLR_DOCUMENT_ROLE", "docling")
 OFFICE_URL = os.environ.get("DLR_OFFICE_CONVERTER_URL", "http://ai-office:5002").rstrip("/")
+INSTANCE_ID = str(uuid4())
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -29,15 +31,20 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def http_office(path, payload, timeout, method="POST"):
+def http_office(path, payload, timeout, method="POST", *, instance=None):
+    headers = {"Content-Type": "application/json"}
+    if instance is not None:
+        headers["X-DLR-Converter-Instance"] = instance
     request = urllib.request.Request(
         OFFICE_URL + path,
         data=json.dumps(payload).encode() if payload else None,
         method=method,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     with opener.open(request, timeout=timeout) as response:
+        if instance is not None and response.headers.get("X-DLR-Converter-Instance") != instance:
+            raise ConversionError("ai_attachment_cancel_failed")
         body = response.read(MAX_WIRE + 1)
     if len(body) > MAX_WIRE:
         raise ConversionError("ai_attachment_too_large")
@@ -95,6 +102,7 @@ class Job:
         self.group_reaped = False
         self.owns_slot = True
         self.office_started = False
+        self.office_instance = None
         self.office_reaped = False
         self.recovering = False
         self.registered = False
@@ -138,7 +146,10 @@ class Supervisor:
         if timeout <= 0:
             raise ConversionError("ai_attachment_cancel_failed")
         try:
-            reply = http_office(f"/v1/jobs/{job_id}", None, timeout, method="DELETE")
+            reply = http_office(
+                f"/v1/jobs/{job_id}", None, timeout, method="DELETE",
+                instance=job.office_instance if job else None,
+            )
         except (OSError, ValueError):
             raise ConversionError("ai_attachment_cancel_failed") from None
         if not isinstance(reply, dict) or reply.get("terminated") is not True:
@@ -246,16 +257,24 @@ class Supervisor:
                 blocked = archive_policy(source) if extension in {".xlsx", ".docx"} else []
                 request["office_warnings"] = blocked
                 if not blocked:
+                    office_instance = (
+                        http_office("/health", None, max(0.05, deadline-time.monotonic()), method="GET").get("instance_id")
+                        if request.get("converter_instance_bound") is True else None
+                    )
+                    if request.get("converter_instance_bound") is True and not office_instance:
+                        raise ConversionError("ai_attachment_converter_unavailable")
                     with self.lock:
                         if job.cancelled.is_set():
                             raise ConversionError("ai_attachment_cancelled")
                         job.office_started = True
+                        job.office_instance = office_instance
                         job.office_active = True
                     try:
                         reply = http_office(
                             "/v1/prepare",
                             request,
                             max(0.05, deadline - time.monotonic()),
+                            instance=office_instance,
                         )
                         request["rendered_pdf_base64"] = reply["rendered_pdf"]
                         with self.lock:
@@ -306,7 +325,7 @@ class Supervisor:
                     if time.monotonic() >= deadline:
                         terminate(job.process)
                         if ROLE == "docling" and getattr(job, "office_active", False):
-                            http_office(f"/v1/jobs/{job_id}", None, 3, method="DELETE")
+                            self._cancel_office(job_id, job)
                         raise ConversionError("ai_attachment_parse_timeout")
                 if output.exists() and output.stat().st_size <= MAX_WIRE:
                     result = json.loads(output.read_text())
@@ -344,17 +363,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Connection", "close")
+        self.send_header("X-DLR-Converter-Instance", INSTANCE_ID)
         self.end_headers()
         with contextlib.suppress(BrokenPipeError, ConnectionResetError):
             self.wfile.write(payload)
 
     def do_GET(self):
         if self.path == "/health":
-            self.reply(200, {"status": "ok", "role": ROLE, "max_workers": 1})
+            self.reply(200, {"status": "ok", "role": ROLE, "max_workers": 1, "instance_id": INSTANCE_ID})
         else:
             self.reply(404, {"code": "not_found"})
 
     def do_DELETE(self):
+        if not self._instance_matches():
+            return
         match = re.fullmatch(r"/v1/jobs/([A-Za-z0-9_-]{1,80})", self.path)
         if not match:
             self.reply(422, {"code": "ai_attachment_invalid"})
@@ -365,6 +387,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(503, {"code": error.code})
 
     def do_POST(self):
+        if not self._instance_matches():
+            return
         operation = {
             "/v1/prepare": "prepare",
             "/v1/read-page": "read-page",
@@ -381,6 +405,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(size))
             if not isinstance(body, dict):
                 raise ConversionError("ai_attachment_invalid")
+            body["converter_instance_bound"] = self.headers.get("X-DLR-Converter-Instance") == INSTANCE_ID
             self.reply(200, SUPERVISOR.run(body, operation))
         except ConversionError as error:
             self.reply(
@@ -391,6 +416,13 @@ class Handler(BaseHTTPRequestHandler):
             # Third-party archive/XML failures are sanitized just like child
             # failures; never echo source names, bodies or parser diagnostics.
             self.reply(422, {"code": "ai_attachment_parse_failed"})
+
+    def _instance_matches(self):
+        expected = self.headers.get("X-DLR-Converter-Instance")
+        if expected is None or expected == INSTANCE_ID:
+            return True
+        self.reply(503, {"code": "ai_attachment_converter_unavailable"})
+        return False
 
 
 if __name__ == "__main__":

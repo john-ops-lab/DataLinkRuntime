@@ -71,6 +71,7 @@ def _maintenance_main(args: list[str]) -> int:
             "oldest",
             "placement",
             "foundation",
+            "takeover",
         )
         accepted = [
             required | {f"--{name}-{part}" for name in levels[:n] for part in ("source", "intent")}

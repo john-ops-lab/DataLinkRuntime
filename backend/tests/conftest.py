@@ -114,6 +114,8 @@ def _truncate(engine: Engine) -> None:
         conn.execute(
             text(
                 "TRUNCATE TABLE control_image_transitions, "
+                "control_storage_bindings, control_storage_maintenance, "
+                "control_attachment_jobs, control_attachment_objects, control_attachment_scopes, "
                 "control_ha_capacity, control_process_instances, control_cluster_authority, "
                 "worker_pool_audit, worker_pool_members, worker_pool_revisions, "
                 "worker_pools, worker_environment_classes, "
@@ -149,6 +151,12 @@ def _truncate(engine: Engine) -> None:
             )
         )
         conn.execute(text("INSERT INTO system_settings (id, locale) VALUES (1, 'zh-CN')"))
+        conn.execute(
+            text("""
+            INSERT INTO control_storage_maintenance (purpose)
+            VALUES ('managed_files'), ('builtin_packages'), ('ai_attachments')
+        """)
+        )
         conn.execute(text("INSERT INTO worker_placement_cutover (id, mode) VALUES (1, 'fixed')"))
         conn.execute(
             text(

@@ -5,6 +5,7 @@ from os.path import isabs
 from pathlib import Path
 from typing import Literal
 from urllib.parse import unquote, urlsplit
+from uuid import UUID
 
 from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -30,6 +31,12 @@ class Settings(BaseSettings):
     )
     builtin_package_min_free_bytes: int = Field(
         default=268435456, ge=0, validation_alias="DLR_BUILTIN_PACKAGE_MIN_FREE_BYTES"
+    )
+    builtin_package_backend: Literal["local", "shared_posix"] = Field(
+        default="local", validation_alias="DLR_BUILTIN_PACKAGE_BACKEND"
+    )
+    builtin_package_namespace_id: UUID | None = Field(
+        default=None, validation_alias="DLR_BUILTIN_PACKAGE_NAMESPACE_ID"
     )
 
     # Static shared tokens (M2). Never persisted, never logged. When a token
@@ -549,6 +556,12 @@ class Settings(BaseSettings):
     artifact_store_root: str = Field(
         default="/var/lib/dlr/artifacts", validation_alias="DLR_ARTIFACT_STORE_ROOT"
     )
+    artifact_store_backend: Literal["local", "shared_posix"] = Field(
+        default="local", validation_alias="DLR_ARTIFACT_STORE_BACKEND"
+    )
+    artifact_store_namespace_id: UUID | None = Field(
+        default=None, validation_alias="DLR_ARTIFACT_STORE_NAMESPACE_ID"
+    )
     managed_files_enabled: bool = Field(default=True, validation_alias="DLR_MANAGED_FILES_ENABLED")
     artifact_gc_interval_seconds: float = Field(
         default=300.0,
@@ -628,6 +641,12 @@ class Settings(BaseSettings):
     )
     ai_attachment_root: Path = Field(
         default=Path("/tmp/dlr-ai-attachments"), validation_alias="DLR_AI_ATTACHMENT_ROOT"
+    )
+    ai_attachment_backend: Literal["local", "shared_posix"] = Field(
+        default="local", validation_alias="DLR_AI_ATTACHMENT_BACKEND"
+    )
+    ai_attachment_namespace_id: UUID | None = Field(
+        default=None, validation_alias="DLR_AI_ATTACHMENT_NAMESPACE_ID"
     )
     ai_attachment_ttl_seconds: int = Field(
         default=1800, ge=60, le=86400, validation_alias="DLR_AI_ATTACHMENT_TTL_SECONDS"
@@ -725,6 +744,37 @@ def validate_deployment_configuration(value: Settings) -> Settings:
     root = value.artifact_store_root
     if not isinstance(root, str) or not root.strip() or "\x00" in root or not isabs(root):
         raise ValueError("DLR_ARTIFACT_STORE_ROOT must be a non-empty absolute path")
+    declared = (
+        (value.artifact_store_backend, value.artifact_store_namespace_id, root),
+        (
+            value.builtin_package_backend,
+            value.builtin_package_namespace_id,
+            value.builtin_package_root,
+        ),
+        (value.ai_attachment_backend, value.ai_attachment_namespace_id, value.ai_attachment_root),
+    )
+    shared: list[Path] = []
+    namespace_ids: set[UUID] = set()
+    for backend, namespace, path in declared:
+        if backend == "local" and namespace is None:
+            continue
+        directory = Path(path)
+        if (
+            backend != "shared_posix"
+            or namespace is None
+            or namespace.int == 0
+            or namespace in namespace_ids
+            or value.control_ha_slot is None
+            or not directory.is_absolute()
+            or ".." in directory.parts
+            or len(directory.parts) < 2
+            or any(
+                directory.is_relative_to(item) or item.is_relative_to(directory) for item in shared
+            )
+        ):
+            raise ValueError("Invalid shared POSIX namespace configuration")
+        namespace_ids.add(namespace)
+        shared.append(directory)
     if not 0 < value.artifact_gc_interval_seconds <= 86_400:
         raise ValueError("DLR_ARTIFACT_GC_INTERVAL_SECONDS must be between 0 and 86400")
     if not 0 < value.artifact_audit_interval_seconds <= 604_800:

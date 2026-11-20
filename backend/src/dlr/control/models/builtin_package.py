@@ -71,3 +71,5 @@ class BuiltinPackageUpload(Base):
     repository_path: Mapped[str] = mapped_column(String(512), default="")
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    writer_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

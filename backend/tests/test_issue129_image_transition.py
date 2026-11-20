@@ -389,9 +389,9 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
                 operation_id=str(uuid4()),
                 previous_id=str(ha.operation_id),
                 source_schema=transition.W3_FOUNDATION_SCHEMA,
-                target_schema=SCHEMA_REVISION,
+                target_schema=transition.W3_TAKEOVER_SCHEMA,
                 source_sha=transition.W3_FOUNDATION_SOURCE_SHA,
-                target_sha="95" * 20,
+                target_sha=transition.W3_TAKEOVER_SOURCE_SHA,
             )
         )
     )
@@ -413,6 +413,39 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
         assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == (
             11 if previous else 6
         )
+
+    shared_image = replace(
+        takeover_image,
+        authority=replace(takeover_image.authority, image_digest="sha256:" + "96" * 32),
+    )
+    path.write_text(
+        json.dumps(
+            dict(
+                upgrade,
+                operation_id=str(uuid4()),
+                previous_id=str(takeover.operation_id),
+                source_schema=transition.W3_TAKEOVER_SCHEMA,
+                target_schema=SCHEMA_REVISION,
+                source_sha=transition.W3_TAKEOVER_SOURCE_SHA,
+                target_sha="96" * 20,
+            )
+        )
+    )
+    shared = transition.read_intent(str(path), takeover_image, shared_image, predecessor=takeover)
+    assert transition._kind(shared) == 11
+    assert maintain(f.factory, "check", shared)["status"] == "source_checked"
+    assert maintain(f.factory, "apply", shared)["status"] == "committed_current"
+    with f.factory() as session:
+        assert transition.observe(session, takeover)["status"] == "committed_superseded"
+        assert session.scalar(text("SELECT count(*) FROM control_storage_bindings")) == 0
+        rights = session.execute(
+            text("""
+            SELECT has_table_privilege(:role,'control_storage_bindings','SELECT'),
+                   has_table_privilege(:role,'control_storage_bindings','UPDATE')
+        """),
+            {"role": f.role},
+        ).one()
+        assert tuple(rights) == (True, False)
 
 
 def test_placement_migration_backfills_a_settled_v3_execution(upgrade_database):  # noqa: F811

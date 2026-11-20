@@ -21,7 +21,7 @@ LocalFileArtifactStore SHALL 在受信root下保留至多256个稳定0600条带�
 - **THEN** writer稳定返回暂不可用并保留原对象/待办/charge和退避，不在DB事务内等待；最后reader实际关闭后才允许取独占锁删除/发布，不把Lease消失当作IO终止
 
 ### Requirement: Managed Input 设置具有单一权威来源
-系统 SHALL 以数据库单例和管理员 API 管理默认保留期、单文件/Adapter/平台配额、手动删除许可、自定义保留上限、磁盘低水位和 STAGED TTL；所有值 MUST 非空、有界，只有管理员可写。ArtifactStore 根路径、feature flag、后台任务间隔和 Worker 协议/清理超时 MUST 仅由部署环境变量提供。
+系统 SHALL 以数据库单例和管理员 API 管理默认保留期、单文件/Adapter/平台配额、手动删除许可、自定义保留上限、磁盘低水位和 STAGED TTL；所有值 MUST 非空、有界，只有管理员可写。ArtifactStore 根路径、feature flag、后台任务间隔和 Worker 协议/清理超时 MUST 仅由部署环境变量提供。 部署提供 local/shared_posix、命名空间和根路径；数据库持久绑定决定当前可读写的后端与代次，变更本机环境配置不能切换该权威。
 
 #### Scenario: 管理员读取策略与用量
 - **WHEN** 管理员调用 `GET /api/system/managed-input-settings`
@@ -85,7 +85,7 @@ LocalFileArtifactStore SHALL 在受信root下保留至多256个稳定0600条带�
 - **THEN** 同一受锁状态机决定补偿方是否拥有文件清理权；核销先成为 `CONSUMED/STAGED` 时正式 Blob MUST 保留，取消先成为 `CANCELLED/DELETED` 时才可清理并释放预留，且不得出现 `STAGED` 但 Blob 缺失
 
 ### Requirement: ArtifactStore 保证受控、原子且不可猜测的对象路径
-LocalFileArtifactStore SHALL 使用随机不透明 `storage_key`，原始文件名不得参与真实路径；`.part` 与最终对象 MUST 位于同一支持原子 rename 的文件系统，并防御路径穿越与符号链接。
+LocalFileArtifactStore SHALL 使用随机不透明 `storage_key`，原始文件名不得参与真实路径；`.part` 与最终对象 MUST 位于同一支持原子 rename 的文件系统，并防御路径穿越与符号链接。 shared_posix 沿用相同的受控对象键、原子发布、锁与持久化要求，并须通过独立跨宿主预检。
 
 #### Scenario: 上传成功顺序
 - **WHEN** 流式大小与 SHA-256 校验成功
@@ -208,3 +208,37 @@ Artifact SHALL 使用 `UPLOADING → STAGED → READY → PENDING_DELETE → DEL
 #### Scenario: 审计失败操作
 - **WHEN** 上传、绑定或治理失败
 - **THEN** 审计记录稳定错误码和非敏感标识，普通日志与审计日志不包含用户文件内容或内部路径
+
+### Requirement: 共享读取与删除跨 Control 互斥
+任一合格Control SHALL 按数据库Artifact/Lease/Hold和当前请求授权读取同一不可变文件。活跃流式读取及上传发布 MUST 受跨节点引用/文件互斥保护，GC在删除前重检；数据库租约失效不能单独证明文件工作已结束。Worker只经Control获取内容，不依赖本地路径。
+
+#### Scenario: A 上传 B 为远程 Worker 提供下载
+- **WHEN** A完成上传绑定，合法Worker Claim后从B下载
+- **THEN** 内容size/hash及ordinal保持一致，B执行同样身份/Claim/Lease检查，不暴露storage key或共享存储权限
+
+#### Scenario: B 正在读取 A 发起 GC
+- **WHEN** TTL/删除扫描与跨节点流式读取并发
+- **THEN** 引用和互斥保护使合法读取完整完成，GC不能删除活动Lease/Hold或仍在读的对象，账本仅在真实删除后释放
+
+### Requirement: 共享后端故障保留文件与容量责任
+存储不可达、上传/删除IO未结束或数据库提交结果不明时，系统 MUST 保留不确定对象和相应charge/恢复责任，拒绝依赖不可用后端的新操作；不能把IO超时、取消等待或缺少本机文件当作全局对象不存在。
+
+#### Scenario: A 在发布后失联 B 对账
+- **WHEN** A已原子发布文件但数据库提交未知，B开始恢复
+- **THEN** B先核对权威Artifact、删除任务及共享对象；无法证明可删除则保留，原Lease和容量不被提前释放
+
+### Requirement: 共享迁移逐对象校验且不破坏旧引用
+local到shared_posix迁移 SHALL 停止相关写入、收敛在途工作、逐对象验证size/hash并切换数据库后端标识，支持中断续传并保留回退副本。已有InputArtifact Lease、Dead-letter Hold及Replay MUST 仍能定位原内容；未完成迁移不得宣称完整文件HA。
+
+#### Scenario: 迁移中断后继续
+- **WHEN** 部分对象已复制而切换尚未完成
+- **THEN** 旧后端继续作为权威，按清单校验并续传，不靠目录复制完成标记跳过缺项，不清空旧Lease/Hold
+
+
+#### Scenario: 切换后有新写入
+- **WHEN** 原命名空间副本仍存在，但目标命名空间已接受新对象或引用
+- **THEN** 只有在目标新增写入已反向补齐并核验后才可切回；原代次写者不能发布或结算新责任。
+
+#### Scenario: 普通 Worker 从另一 Control 下载冻结文件
+- **WHEN** 受权 Worker 的下载请求落到另一节点且数据可读
+- **THEN** 接收节点在有界传输内重新验证实例、Attempt、原证明和冻结对象的 size/hash/ordinal 与 Lease，持有读保护直到真实 fd/I/O 结束；节点失联不提前释放预算。

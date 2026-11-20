@@ -32,8 +32,8 @@ from dlr.control.models import (
 from dlr.control.schemas.reliable_runtime import ResourceProfile
 from dlr.control.schemas.worker import isolation_capabilities_ready
 from dlr.control.services import builtin_package
-from dlr.control.services.artifact_store import LocalFileArtifactStore
 from dlr.control.services.secrets import decrypt_fields
+from dlr.control.services.shared_artifact_store import configured_store
 
 _GUARDS_KEY = "incident_recovery_material_guards"
 _MANAGED_SNAPSHOT_KEYS = {
@@ -358,7 +358,7 @@ def _preflight_builtin_targets(session: Session, execution: Execution) -> tuple[
 def _hash_managed_targets(targets: tuple[FileTarget, ...]) -> tuple[FileProof, ...]:
     if not targets:
         return ()
-    store = LocalFileArtifactStore()
+    store = configured_store()
     proofs: list[FileProof] = []
     for target in targets:
         with store.open(target.storage_key) as stream:
@@ -372,13 +372,11 @@ def _hash_managed_targets(targets: tuple[FileTarget, ...]) -> tuple[FileProof, .
 def _hash_builtin_targets(targets: tuple[FileTarget, ...]) -> tuple[FileProof, ...]:
     proofs: list[FileProof] = []
     for target in targets:
-        with builtin_package.file_lock(target.storage_key, shared=True):
-            descriptor = os.open(
-                builtin_package.storage_path(target.storage_key),
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-            )
-            with os.fdopen(descriptor, "rb") as stream:
-                proof = _file_proof(target.row_id, target.storage_key, target.size_bytes, stream)
+        with (
+            builtin_package.file_lock(target.storage_key, shared=True),
+            builtin_package.open_blob(target.storage_key) as stream,
+        ):
+            proof = _file_proof(target.row_id, target.storage_key, target.size_bytes, stream)
         if proof.sha256 != target.sha256:
             raise ValueError("builtin package digest mismatch")
         proofs.append(proof)
@@ -515,7 +513,7 @@ def _validate_managed(
             .with_for_update()
         ).all()
     )
-    store = LocalFileArtifactStore()
+    store = configured_store()
     for ordinal, snapshot in enumerate(snapshots):
         lease = by_ordinal[ordinal]
         artifact = by_artifact.get(lease.artifact_id)
@@ -613,13 +611,9 @@ def _validate_builtin(
             return False
         try:
             guards.enter_context(builtin_package.file_lock(row.storage_key, shared=True))
-            descriptor = os.open(
-                builtin_package.storage_path(row.storage_key),
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-            )
+            stream = guards.enter_context(builtin_package.open_blob(row.storage_key))
         except (OSError, HTTPException):
             return False
-        stream = guards.enter_context(os.fdopen(descriptor, "rb"))
         if not _same_stat(os.fstat(stream.fileno()), item):
             return False
     return True

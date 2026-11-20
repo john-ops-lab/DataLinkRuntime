@@ -692,7 +692,18 @@ class _ClaimSlot:
             return False
 
     def begin_input(self, process: ControlProcess, metadata: dict[str, object]) -> _Input:
-        """Use the retained Claim child, never reserve another resource slot."""
+        """Use the Claim child locally, or a bounded one-shot child on the receiving node."""
+        if settings.control_ha_slot is not None:
+            one_shot = self.begin_result(
+                process, metadata={**metadata, "operation": "input"}, body_bytes=0
+            )
+            stream = _Input(one_shot, one_shot.deadline, 0)
+            try:
+                return self._input_reply(stream)
+            except BaseException:
+                if not stream.closed:
+                    self.end_result(one_shot)
+                raise
         with self._lock:
             self._live()
             entry = self._result
@@ -717,7 +728,7 @@ class _ClaimSlot:
                 raise ClaimUnavailable("input unavailable")
             self._spawning = True
             entry.input_active = True
-        stream = None
+        stream_or_none: _Input | None = None
         try:
             process.check_authority()
             self._check_envelope(entry.envelope, entry=entry)
@@ -730,11 +741,11 @@ class _ClaimSlot:
                 raise ClaimUnavailable("input unavailable")
             control_instance, control_token, confirmed = process.claim_child_identity()
             deadline = min(entry.retention_deadline, confirmed, entry.input_cutoff, _clock() + 5.0)
-            stream = _Input(entry, deadline, 0)
+            stream_or_none = _Input(entry, deadline, 0)
             if deadline <= _clock():
                 # No input command or file I/O has started. Preserve the
                 # original Result owner for the known preparation failure.
-                self._finish_input(stream)
+                self._finish_input(stream_or_none)
                 raise ClaimUnavailable("input unavailable")
             entry.channel.settimeout(max(0.001, deadline - _clock()))
             _send_frame(
@@ -748,42 +759,46 @@ class _ClaimSlot:
                     "control_deadline": deadline,
                 },
             )
-            reply = _read_frame(entry.channel)
-            if reply == {"state": "input_rejected"}:
-                self._finish_input(stream)
-                raise ClaimUnavailable("input unavailable")
-            size, child_deadline = reply.get("size"), reply.get("control_deadline")
-            if (
-                reply.get("state") != "input_ready"
-                or set(reply)
-                != (
-                    {"state", "size", "stream_id", "control_deadline"}
-                    | ({"closed"} if size == 0 else set())
-                )
-                or (size == 0 and reply.get("closed") is not True)
-                or type(size) is not int
-                or not 0 <= size <= 1024 * 1024
-                or not isinstance(child_deadline, (int, float))
-                or isinstance(child_deadline, bool)
-                or not math.isfinite(child_deadline)
-                or not _clock() < child_deadline <= deadline
-                or type(reply.get("stream_id")) is not str
-                or str(UUID(reply["stream_id"])) != reply["stream_id"]
-                or UUID(reply["stream_id"]).int == 0
-            ):
-                raise ClaimUnavailable("input unavailable")
-            stream.size, stream.deadline = size, float(child_deadline)
-            process.check_authority()
-            self._check_envelope(entry.envelope, entry=entry)
-            if _clock() >= stream.deadline:
-                raise ClaimUnavailable("input unavailable")
-            if size == 0:
-                self._finish_input(stream)
-            return stream
+            return self._input_reply(stream_or_none)
         except BaseException:
-            if stream is None or not stream.closed:
+            if stream_or_none is None or not stream_or_none.closed:
                 self.end_result(entry)
             raise
+
+    def _input_reply(self, stream: _Input) -> _Input:
+        entry = stream.result
+        reply = _read_frame(entry.channel)
+        if reply == {"state": "input_rejected"}:
+            self._finish_input(stream)
+            raise ClaimUnavailable("input unavailable")
+        size, child_deadline = reply.get("size"), reply.get("control_deadline")
+        if (
+            reply.get("state") != "input_ready"
+            or set(reply)
+            != (
+                {"state", "size", "stream_id", "control_deadline"}
+                | ({"closed"} if size == 0 else set())
+            )
+            or (size == 0 and reply.get("closed") is not True)
+            or type(size) is not int
+            or not 0 <= size <= 1024 * 1024
+            or not isinstance(child_deadline, (int, float))
+            or isinstance(child_deadline, bool)
+            or not math.isfinite(child_deadline)
+            or not _clock() < child_deadline <= stream.deadline
+            or type(reply.get("stream_id")) is not str
+            or str(UUID(reply["stream_id"])) != reply["stream_id"]
+            or UUID(reply["stream_id"]).int == 0
+        ):
+            raise ClaimUnavailable("input unavailable")
+        stream.size, stream.deadline = size, float(child_deadline)
+        entry.authority.check_authority()
+        self._check_envelope(entry.envelope, entry=entry)
+        if _clock() >= stream.deadline:
+            raise ClaimUnavailable("input unavailable")
+        if size == 0:
+            self._finish_input(stream)
+        return stream
 
     def _finish_input(self, stream: _Input) -> None:
         with self._lock:
@@ -793,6 +808,8 @@ class _ClaimSlot:
             stream.closed = True
             entry.input_active = False
             self._spawning = False
+        if entry.metadata.get("operation") == "input" and not self.end_result(entry):
+            raise ClaimUnavailable("input close unverified")
 
     def read_input(self, stream: _Input) -> bytes:
         with stream.io_lock:
@@ -875,6 +892,7 @@ class _ClaimSlot:
         self, process: ControlProcess, *, metadata: dict[str, object], body_bytes: int
     ) -> _Result:
         """Reserve the same single child slot used by Claim and stream a result."""
+        input_only = metadata.get("operation") == "input"
         with self._lock:
             self._live()
             existing = self._result
@@ -888,7 +906,8 @@ class _ClaimSlot:
                     expected = existing.pending_stage
                     incoming = {name: metadata.get(name) for name in expected}
                 if (
-                    existing.closed
+                    input_only
+                    or existing.closed
                     or existing.authority is not process
                     or expected is None
                     or type(body_bytes) is not int
@@ -916,11 +935,18 @@ class _ClaimSlot:
         try:
             process.check_authority()
             address_space = settings.worker_v4_claim_child_address_space_bytes
-            if type(body_bytes) is not int or not 0 < body_bytes <= address_space:
+            if type(body_bytes) is not int or (
+                (body_bytes != 0 or settings.control_ha_slot is None)
+                if input_only
+                else not 0 < body_bytes <= address_space
+            ):
                 raise ValueError("result unavailable")
             envelope = self._open_envelope(child_address_space_bytes=address_space)
             control_instance, control_token, confirmed_deadline = process.claim_child_identity()
-            deadline = min(confirmed_deadline, math.nextafter(_clock() + 25.0, -math.inf))
+            deadline = min(
+                confirmed_deadline,
+                math.nextafter(_clock() + (5.0 if input_only else 25.0), -math.inf),
+            )
             if deadline <= _clock():
                 raise ValueError("result unavailable")
             bind = process._sessions.kw.get("bind")
@@ -974,6 +1000,7 @@ class _ClaimSlot:
                 configuration=snapshot,
                 owner=self,
                 allocation=self._allocation,
+                input_active=input_only,
             )
             with self._lock:
                 self._live()
@@ -1396,6 +1423,8 @@ class ClaimCoordinator:
             self._return(slot)
 
     def read_input(self, entry: _Input) -> bytes:
+        if entry.closed and entry.received == entry.size:
+            return b""
         slot = self._entry_slot(entry.result)
         try:
             return slot.read_input(entry)

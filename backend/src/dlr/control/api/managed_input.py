@@ -13,10 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dlr.common.config import settings
 from dlr.common.managed_input import MANAGED_INPUT_FILE_EXTENSIONS
 from dlr.control import db
-from dlr.control.api.shared_backend import require_shared_backend
+from dlr.control.api.shared_backend import require_managed_files
 from dlr.control.models import ManagedInputArtifact, ManagedInputArtifactStatus
 from dlr.control.schemas.managed_input import (
     ManagedInputArtifactResponse,
@@ -34,19 +33,24 @@ from dlr.control.security import (
 from dlr.control.services import adapter_access, managed_input_gc, managed_input_upload
 from dlr.control.services import input_config as input_config_service
 from dlr.control.services import managed_input as managed_input_service
-from dlr.control.services.artifact_store import ArtifactStoreError, LocalFileArtifactStore
+from dlr.control.services.artifact_store import ArtifactStoreError
 from dlr.control.services.managed_input_upload import UploadSessionState
 from dlr.control.services.multipart import (
     MultipartBodyTooLargeError,
     MultipartParseError,
     MultipartReader,
 )
+from dlr.control.services.shared_artifact_store import (
+    ArtifactStore,
+    SharedFileArtifactStore,
+    configured_store,
+)
 
 logger = logging.getLogger("dlr.control.managed_input")
 
 router = APIRouter(dependencies=[Depends(require_admin_principal)])
 adapter_router = APIRouter(
-    dependencies=[Depends(require_business_principal), Depends(require_shared_backend)]
+    dependencies=[Depends(require_business_principal), Depends(require_managed_files)]
 )
 # Capability is intentionally readable by ordinary business users.  It is a
 # small set of safe release/form facts, not an alias for the admin settings resource.
@@ -88,7 +92,7 @@ def put_managed_input_settings(
 @router.post(
     "/api/system/managed-input-artifacts/{artifact_id}/retry-delete",
     status_code=204,
-    dependencies=[Depends(require_shared_backend)],
+    dependencies=[Depends(require_managed_files)],
 )
 def retry_managed_input_artifact_delete(artifact_id: int, session: DbSession) -> Response:
     """Release one DELETE_FAILED Artifact for an explicit administrator retry."""
@@ -99,7 +103,7 @@ def retry_managed_input_artifact_delete(artifact_id: int, session: DbSession) ->
 @router.post(
     "/api/system/managed-input-deletion-jobs/{job_id}/retry-delete",
     status_code=204,
-    dependencies=[Depends(require_shared_backend)],
+    dependencies=[Depends(require_managed_files)],
 )
 def retry_managed_input_deletion_job(job_id: int, session: DbSession) -> Response:
     """Release one thresholded detached job for an administrator retry."""
@@ -119,7 +123,7 @@ def get_managed_input_capability(session: DbSession) -> ManagedInputCapabilityRe
     quota usage, credentials and administrator-only details remain excluded.
     """
 
-    enabled = bool(settings.managed_files_enabled and settings.control_ha_slot is None)
+    enabled = managed_input_upload.feature_enabled()
     policy = managed_input_service.get_settings(session)
     return ManagedInputCapabilityResponse(
         managed_files_enabled=enabled,
@@ -155,22 +159,22 @@ async def _run_db[T](operation: Callable[[Session], T]) -> T:
     return await asyncio.to_thread(_run_in_session, operation)
 
 
-def _new_store_or_error() -> LocalFileArtifactStore:
+def _new_store_or_error() -> ArtifactStore:
     """Map local-store startup failures to the stable upload boundary."""
     try:
-        return LocalFileArtifactStore(settings.artifact_store_root)
+        return configured_store()
     except (ArtifactStoreError, OSError):
         raise _safe_upload_error("artifact_store_unavailable", 503) from None
 
 
-def _delete_upload_part(store: LocalFileArtifactStore, storage_key: str) -> None:
+def _delete_upload_part(store: ArtifactStore, storage_key: str) -> None:
     """Remove only unpublished bytes when DB state cannot authorize object deletion."""
     store.delete_part(storage_key)
 
 
 async def _compensate_upload(
     state: UploadSessionState | None,
-    store: LocalFileArtifactStore | None,
+    store: ArtifactStore | None,
     *,
     error_code: str,
 ) -> None:
@@ -205,7 +209,7 @@ def _renewal_delay_seconds(_state: UploadSessionState) -> float:
 
 async def _renew_upload_writer(
     state_box: list[UploadSessionState],
-    store: LocalFileArtifactStore,
+    store: ArtifactStore,
     stop: asyncio.Event,
 ) -> None:
     """Keep one active writer lease alive independently of incoming chunks."""
@@ -256,7 +260,7 @@ async def _stream_upload(
     managed_input_upload.require_feature_enabled()
     reader: MultipartReader
     state: UploadSessionState | None = None
-    store: LocalFileArtifactStore | None = None
+    store: ArtifactStore | None = None
     finalized = False
     file_seen = False
     total_bytes = 0
@@ -316,6 +320,16 @@ async def _stream_upload(
             handle: BinaryIO | None = None
             try:
                 handle = await asyncio.to_thread(part_context.__enter__)
+                if isinstance(store, SharedFileArtifactStore):
+                    state = await _run_db(
+                        functools.partial(
+                            managed_input_upload.renew_upload_reservation,
+                            adapter_id=adapter_id,
+                            upload_session_id=state.upload_session_id,
+                            store=store,
+                        )
+                    )
+                    renewal_state[0] = state
                 async for chunk in reader.iter_part_body():
                     if not chunk:
                         continue
@@ -409,7 +423,7 @@ async def upload_input_artifact(
     principal: CurrentUploadPrincipal,
 ) -> ManagedInputArtifactResponse:
     """Stream one file part into an opaque local object."""
-    require_shared_backend()
+    require_managed_files()
     return await _stream_upload(request, adapter_id, principal)
 
 

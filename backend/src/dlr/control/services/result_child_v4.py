@@ -101,6 +101,20 @@ def _run(
             from dlr.common.managed_files_v4 import MAX_FILES
             from dlr.control.services.input_child_v4 import serve
 
+            if _stage_binding is None and _finalize_binding is None and _idle_deadline is None:
+                deadline = request.get("control_deadline")
+                if (
+                    config.settings.control_ha_slot is None
+                    or request.get("body_bytes") != 0
+                    or isinstance(deadline, bool)
+                    or not isinstance(deadline, (int, float))
+                    or not math.isfinite(deadline)
+                    or deadline <= _clock()
+                ):
+                    raise ValueError("input unavailable")
+                _send_frame(channel, {"state": "ready"})
+                serve(channel, request, envelope, idle_until=deadline)
+                return
             if _stage_binding is None or _finalize_binding is not None or _idle_deadline is None:
                 raise ValueError("input unavailable")
             if (
