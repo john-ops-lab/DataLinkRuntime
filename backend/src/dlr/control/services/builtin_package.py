@@ -456,13 +456,16 @@ def _cancel_shared_upload(session: Session, upload_id: str, *, locked: bool = Fa
         _finish_cancelled(session, upload_id)
         return
     try:
-        guard = file_lock(upload_id)
+        with file_lock(upload_id):
+            _finish_cancelled(session, upload_id)
+    except OSError:
+        # Cancellation has committed. A lost mount leaves the reservation
+        # charged for the reconciliation loop with the publication fence set.
+        session.rollback()
     except HTTPException as error:
         if isinstance(error.detail, dict) and error.detail.get("code") == "builtin_package_busy":
             return
         raise
-    with guard:
-        _finish_cancelled(session, upload_id)
 
 
 def _finish_cancelled(session: Session, upload_id: str) -> None:

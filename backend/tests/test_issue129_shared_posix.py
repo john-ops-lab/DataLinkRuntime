@@ -163,6 +163,23 @@ def test_shared_builtin_cancel_holds_charge_while_writer_owns_part(
         assert not (mount.root / (upload.id + ".part")).exists()
 
 
+def test_shared_builtin_cancel_preserves_reservation_when_mount_changes(
+    api_client, session_factory, tmp_path, monkeypatch
+):
+    register_namespace(api_client, session_factory, tmp_path, monkeypatch, "builtin_packages")
+    with session_factory() as writer:
+        upload = builtin_package.reserve_upload(
+            writer, kind="pypi", filename="one.whl", size_bytes=83
+        )
+        identity = upload.id
+    monkeypatch.setattr(storage_backends, "runtime_mount_id", lambda _: 22)
+    with session_factory() as peer:
+        builtin_package.cancel_upload(peer, identity)
+        assert builtin_package.usage(peer)["reserved_bytes"] == 83
+        row = peer.get(builtin_package.BuiltinPackageUpload, identity)
+        assert row.cancelled_at is not None
+
+
 def test_shared_attachment_checks_scope_and_preserves_charge_until_pin_closes(
     api_client, session_factory, tmp_path, monkeypatch
 ):
