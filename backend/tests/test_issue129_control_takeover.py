@@ -9,11 +9,19 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 
 from dlr.common.config import settings
-from dlr.control.models import Adapter, EventReceipt, ExecutionOutbox, SubscriptionLease
+from dlr.control.models import (
+    Adapter,
+    EventReceipt,
+    ExecutionOutbox,
+    IngressCapacityConfiguration,
+    RuntimeReconciliationCursor,
+    SubscriptionLease,
+)
 from dlr.control.services import (
     background_control,
     http_ingress,
     infrastructure_dlq,
+    ingress_capacity,
     outbox,
     rabbitmq,
     subscription_delivery,
@@ -50,6 +58,16 @@ def test_committed_scan_page_survives_exit_and_wraps_unprocessed_rows(api_client
     # The first process closed after reserving its page without working it.
     assert observed == [*ids, ids[0]]
 
+    with session_factory.begin() as session:
+        cursor = session.get(RuntimeReconciliationCursor, "schedule_due")
+        cursor.after_id = 0
+        cursor.upper_id = ids[0]
+    with session_factory() as scan:
+        # The original upper-bound candidate ceased to qualify before its page was selected.
+        assert background_control.reserve_page(
+            scan, "schedule_due", query.where(Adapter.id > ids[0]), Adapter.id, limit=1
+        ) == (ids[1],)
+
 
 def test_passive_http_uses_current_peer_owner_and_records_real_receiver(
     session_factory, http_world, ha_authority, monkeypatch
@@ -61,6 +79,12 @@ def test_passive_http_uses_current_peer_owner_and_records_real_receiver(
         identity.new_instance_token(),
     )
     with session_factory.begin() as session:
+        profile = ingress_capacity.configured_profile()
+        session.add(
+            IngressCapacityConfiguration(
+                id=1, fingerprint=profile.fingerprint, profile=profile.as_dict()
+            )
+        )
         for slot, instance, token in (("a", a, a_token), ("b", b, b_token)):
             identity.register_control(
                 session, ha_authority, instance_id=instance, instance_token=token, ha_slot=slot

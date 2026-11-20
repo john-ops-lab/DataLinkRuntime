@@ -32,7 +32,7 @@ def reserve_page(
             cursor.upper_id = session.scalar(candidates.order_by(key.desc()).limit(1)) or 0
         page = candidates.order_by(key).limit(limit)
         ids = tuple(session.scalars(page.where(key > cursor.after_id, key <= cursor.upper_id)))
-        if not ids and cursor.after_id:
+        if not ids and cursor.upper_id:
             cursor.after_id = 0
             cursor.upper_id = session.scalar(candidates.order_by(key.desc()).limit(1)) or 0
             ids = tuple(session.scalars(page.where(key <= cursor.upper_id)))

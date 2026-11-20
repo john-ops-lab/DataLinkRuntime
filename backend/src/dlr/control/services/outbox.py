@@ -823,16 +823,17 @@ def _publish_row(
             channel.confirm_delivery()
             if publisher is not None:
                 publisher.channel = channel
-        publish_attempt = (
-            row.lease_attempt if isinstance(row, LeasedOutbox) else row.publish_attempts
-        )
+        headers = None
+        if settings.control_ha_slot is not None:
+            publish_attempt = (
+                row.lease_attempt if isinstance(row, LeasedOutbox) else row.publish_attempts
+            )
+            headers = {"x-dlr-publish-attempt": publish_attempt}
         properties = pika.BasicProperties(
             delivery_mode=pika.DeliveryMode.Persistent,
             message_id=str(row.message_id),
             content_type="application/json",
-            headers={"x-dlr-publish-attempt": publish_attempt}
-            if settings.control_ha_slot is not None
-            else None,
+            headers=headers,
         )
         channel.basic_publish(
             exchange=DISPATCH_EXCHANGE,
