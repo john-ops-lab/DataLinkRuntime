@@ -94,6 +94,22 @@ class _Job:
     control_slot: str
 
 
+def _converter_intent(root: int, job: _Job) -> None:
+    with open_directory(root, ".job-locks") as directory:
+        publish_record(
+            directory,
+            "j-" + job.identity.hex,
+            {"converter": str(job.converter_id), "slot": job.control_slot},
+        )
+
+
+def _clear_converter_intent(root: int, identity: UUID) -> None:
+    with open_directory(root, ".job-locks") as directory:
+        with suppress(FileNotFoundError):
+            os.unlink("j-" + identity.hex, dir_fd=directory)
+        os.fsync(directory)
+
+
 @contextmanager
 def _io_slot() -> Iterator[None]:
     if not _active_io.acquire(blocking=False):
@@ -174,7 +190,7 @@ class SharedAttachmentStore:
     def _pin(self, identity: UUID, *, exclusive: bool = False, job: bool = False) -> Iterator[int]:
         stripe = hashlib.sha256(identity.bytes).hexdigest()[:2]
         with (
-            self.namespace.open(slot=self.slot) as root,
+            storage_backends.verified_root(self.namespace, self.slot) as root,
             open_directory(root, ".job-locks" if job else ".reader-locks", create=True) as locks,
         ):
             descriptor = open_regular(locks, stripe, os.O_RDWR | os.O_CREAT)
@@ -399,7 +415,7 @@ class SharedAttachmentStore:
     def _delete_job(self, session: Session, job: UUID) -> None:
         session.execute(text("DELETE FROM control_attachment_jobs WHERE job_id=:job"), {"job": job})
 
-    def _finish_failed_job(self, identity: UUID, job: _Job) -> None:
+    def _finish_failed_job(self, identity: UUID, job: _Job, root: int) -> None:
         # The caller still holds the converter's local transport custody lock.
         with db.SessionLocal() as session:
             needed = session.scalar(
@@ -413,8 +429,8 @@ class SharedAttachmentStore:
         if needed is not True:
             return
         self._converter(job).cancel(job.identity.hex)
-        with self.namespace.open(slot=self.slot) as root:
-            self._remove_result(root, identity, "g-" + job.identity.hex)
+        _clear_converter_intent(root, job.identity)
+        self._remove_result(root, identity, "g-" + job.identity.hex)
         with self._catalog() as session:
             self._delete_job(session, job.identity)
 
@@ -428,15 +444,16 @@ class SharedAttachmentStore:
         self, scope: _Scope, row: RowMapping, rooted: int, deadline: float, cancel: threading.Event
     ) -> AiPreparedAttachment:
         identity = row.object_id
-        with _io_slot(), open_directory(rooted, "o-" + identity.hex) as directory:
+        with open_directory(rooted, "o-" + identity.hex) as directory:
             header = read_record(directory, "source.json")
             data = _read(directory, "original", row.size_bytes, sha256=row.sha256)
             job = self._begin_job(scope, row.reference, "prepare", deadline)
-            with self._pin(job.identity, exclusive=True, job=True):
+            with self._pin(job.identity, exclusive=True, job=True) as job_root:
                 client = self._converter(job)
                 try:
                     with db.SessionLocal() as session:
                         self._verify_job(session, scope, row.reference, job)
+                    _converter_intent(job_root, job)
                     result = client.prepare(
                         header["filename"],
                         header["content_type"],
@@ -446,6 +463,7 @@ class SharedAttachmentStore:
                         cancel=cancel,
                     )
                     client.cancel(job.identity.hex)
+                    _clear_converter_intent(job_root, job.identity)
                     if cancel.is_set() or result.status == "failure":
                         raise _error("ai_attachment_parse_failed")
                     return self._publish(scope, row, directory, header, result, job)
@@ -471,7 +489,7 @@ class SharedAttachmentStore:
                             }
                         ):
                             self._close_failed_generation(row.reference, job)
-                        self._finish_failed_job(identity, job)
+                        self._finish_failed_job(identity, job, job_root)
                     raise
 
     def _close_failed_generation(self, reference: str, job: _Job) -> None:
@@ -571,38 +589,41 @@ class SharedAttachmentStore:
         except attachments.AttachmentError as error:
             raise _error(error.code) from None
         scope = _Scope.create(owner, adapter_id, scope_id)
-        reference, identity = self._reserve(scope, data)
-        with self._pin(identity, exclusive=True) as root:
-            with db.SessionLocal() as session:
-                allowed = session.scalar(
-                    text("""
-                    SELECT state='allocating' AND expires_at > pg_catalog.clock_timestamp()
-                    FROM control_attachment_objects WHERE reference=:ref
-                """),
-                    {"ref": reference},
-                )
-            if not allowed or cancel.is_set():
-                raise _error("ai_attachment_cancelled")
-            with open_directory(root, "o-" + identity.hex, create=True) as directory:
-                _write(directory, "original", data)
-                publish_record(
-                    directory, "source.json", {"filename": filename, "content_type": content_type}
-                )
-            with self._catalog() as session:
-                updated = session.scalar(
-                    text("""
-                    UPDATE control_attachment_objects SET state='pending'
-                    WHERE reference=:ref AND state='allocating'
-                      AND expires_at > pg_catalog.clock_timestamp()
-                    RETURNING 1
-                """),
-                    {"ref": reference},
-                )
-                if updated != 1:
+        with _io_slot():
+            reference, identity = self._reserve(scope, data)
+            with self._pin(identity, exclusive=True) as root:
+                with db.SessionLocal() as session:
+                    allowed = session.scalar(
+                        text("""
+                        SELECT state='allocating' AND expires_at > pg_catalog.clock_timestamp()
+                        FROM control_attachment_objects WHERE reference=:ref
+                    """),
+                        {"ref": reference},
+                    )
+                if not allowed or cancel.is_set():
                     raise _error("ai_attachment_cancelled")
-        row = self._lookup(scope, reference)
-        with self._pin(row.object_id) as root:
-            return self._parse(scope, row, root, deadline, cancel)
+                with open_directory(root, "o-" + identity.hex, create=True) as directory:
+                    _write(directory, "original", data)
+                    publish_record(
+                        directory,
+                        "source.json",
+                        {"filename": filename, "content_type": content_type},
+                    )
+                with self._catalog() as session:
+                    updated = session.scalar(
+                        text("""
+                        UPDATE control_attachment_objects SET state='pending'
+                        WHERE reference=:ref AND state='allocating'
+                          AND expires_at > pg_catalog.clock_timestamp()
+                        RETURNING 1
+                    """),
+                        {"ref": reference},
+                    )
+                    if updated != 1:
+                        raise _error("ai_attachment_cancelled")
+            row = self._lookup(scope, reference)
+            with self._pin(row.object_id) as root:
+                return self._parse(scope, row, root, deadline, cancel)
 
     def _prepared(self, root: int, row: RowMapping) -> tuple[AiPreparedAttachment, str | None]:
         with (
@@ -628,7 +649,7 @@ class SharedAttachmentStore:
     ) -> AiPreparedAttachment:
         scope = _Scope.create(owner, adapter_id, scope_id)
         row = self._lookup(scope, reference, ready=True)
-        with self._pin(row.object_id) as root:
+        with _io_slot(), self._pin(row.object_id) as root:
             return self._prepared(root, self._lookup(scope, reference, ready=True))[0]
 
     def release(
@@ -705,22 +726,23 @@ class SharedAttachmentStore:
         pinned: dict[str, tuple[int, AiAttachmentReference]] = {}
         total = inline_bytes
         with ExitStack() as stack:
-            for reference in references:
-                ref = reference.attachment_ref
-                if ref in pinned:
-                    raise _error("ai_attachment_reference_invalid")
-                row = self._lookup(scope, ref, ready=True)
-                root = stack.enter_context(self._pin(row.object_id))
-                prepared, _ = self._prepared(root, self._lookup(scope, ref, ready=True))
-                if (prepared.sha256, prepared.representation_revision) != (
-                    reference.sha256,
-                    reference.representation_revision,
-                ):
-                    raise _error("ai_attachment_hash_mismatch")
-                pinned[ref] = root, reference
-                total += prepared.size_bytes
-            if total > attachments.MAX_TOTAL_BYTES:
-                raise _error("ai_attachment_total_too_large")
+            with _io_slot():
+                for reference in references:
+                    ref = reference.attachment_ref
+                    if ref in pinned:
+                        raise _error("ai_attachment_reference_invalid")
+                    row = self._lookup(scope, ref, ready=True)
+                    root = stack.enter_context(self._pin(row.object_id))
+                    prepared, _ = self._prepared(root, self._lookup(scope, ref, ready=True))
+                    if (prepared.sha256, prepared.representation_revision) != (
+                        reference.sha256,
+                        reference.representation_revision,
+                    ):
+                        raise _error("ai_attachment_hash_mismatch")
+                    pinned[ref] = root, reference
+                    total += prepared.size_bytes
+                if total > attachments.MAX_TOTAL_BYTES:
+                    raise _error("ai_attachment_total_too_large")
             yield _SharedReader(self, scope, pinned, permission_check)
 
     def sweep(self) -> None:
@@ -770,10 +792,10 @@ class SharedAttachmentStore:
             session.rollback()
             with (
                 suppress(OSError, DocumentConversionError),
-                self._pin(row.job_id, exclusive=True, job=True),
+                self._pin(row.job_id, exclusive=True, job=True) as root,
             ):
                 self._finish_failed_job(
-                    row.object_id, _Job(row.job_id, row.converter_id, None, row.control_slot)
+                    row.object_id, _Job(row.job_id, row.converter_id, None, row.control_slot), root
                 )
         return [str(row.job_id) for row in rows]
 
@@ -843,7 +865,11 @@ class SharedAttachmentStore:
         scope = _Scope(candidate.principal_key, candidate.adapter_id, candidate.scope_id)
         # Commit scan progress before waiting for converter I/O.
         storage_maintenance.finish(session, page, shard=2, after_key=candidate.reference)
-        with suppress(OSError, DocumentConversionError), self._pin(candidate.object_id) as root:
+        with (
+            suppress(OSError, DocumentConversionError),
+            _io_slot(),
+            self._pin(candidate.object_id) as root,
+        ):
             self._parse(
                 scope,
                 candidate,
@@ -914,10 +940,13 @@ class _SharedReader:
         return root, row, prepared, pdf_digest
 
     def overview(self) -> dict[str, object]:
-        return {
-            "attachments": [self._current(ref)[2].model_dump(mode="json") for ref in self.pinned],
-            "coverage": {"directory_only": True, "content_requires_read": True},
-        }
+        with _io_slot():
+            return {
+                "attachments": [
+                    self._current(ref)[2].model_dump(mode="json") for ref in self.pinned
+                ],
+                "coverage": {"directory_only": True, "content_requires_read": True},
+            }
 
     def read_page(
         self, attachment_ref: str, page: int, view: str, *, timeout_seconds: float
@@ -977,11 +1006,12 @@ class _SharedReader:
                         sha256=pdf_digest,
                     )
         job = self.store._begin_job(self.scope, ref, "read", deadline)
-        with self.store._pin(job.identity, exclusive=True, job=True):
+        with self.store._pin(job.identity, exclusive=True, job=True) as job_root:
             client = self.store._converter(job)
             try:
                 with db.SessionLocal() as session:
                     self.store._verify_job(session, self.scope, ref, job)
+                _converter_intent(job_root, job)
                 position: dict[str, str | int]
                 if page is not None:
                     result = client.read_page(
@@ -1010,6 +1040,7 @@ class _SharedReader:
                     )
                     position = {"sheet": sheet, "range": range_a1}
                 client.cancel(job.identity.hex)
+                _clear_converter_intent(job_root, job.identity)
                 self._current(ref, admitted=True)
                 if result.status == "failure":
                     raise _error("ai_attachment_parse_failed")
@@ -1043,5 +1074,5 @@ class _SharedReader:
                     self.store._delete_job(session, job.identity)
                 return answer
             except Exception:
-                self.store._finish_failed_job(row.object_id, job)
+                self.store._finish_failed_job(row.object_id, job, job_root)
                 raise

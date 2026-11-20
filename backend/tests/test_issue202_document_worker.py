@@ -185,14 +185,24 @@ def test_native_single_page_export_preserves_original_ordinal() -> None:
     assert asset["page_count"] == 1
 
 
-def test_cancel_before_registration_remains_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("full", [False, True])
+def test_cancel_before_registration_remains_terminal(
+    monkeypatch: pytest.MonkeyPatch, full: bool
+) -> None:
+    import time
+
     monkeypatch.syspath_prepend(str(TOOLS))
     # server's processor import intentionally has no document-library side effects.
     module = _module("server")
     monkeypatch.setattr(module, "ROLE", "office")
     supervisor = module.Supervisor()
     assert supervisor.cancel("cancel-first")["terminated"] is True
-    with pytest.raises(module.ConversionError):
+    if full:
+        supervisor.tombstones.update({f"finished-{n}": time.monotonic() for n in range(511)})
+        with pytest.raises(module.ConversionError) as failure:
+            supervisor.cancel("more")
+        assert failure.value.code == "ai_attachment_cancel_failed"
+    with pytest.raises(module.ConversionError) as rejection:
         supervisor.run(
             {
                 "job_id": "cancel-first",
@@ -202,6 +212,7 @@ def test_cancel_before_registration_remains_terminal(monkeypatch: pytest.MonkeyP
             "prepare",
         )
     assert supervisor.jobs == {}
+    assert rejection.value.code == "ai_attachment_cancelled"
 
 
 @pytest.mark.parametrize("launcher_exits", [False, True])

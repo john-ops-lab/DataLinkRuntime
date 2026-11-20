@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from email.message import Message
 from types import SimpleNamespace
 from uuid import uuid4
@@ -509,6 +510,28 @@ def test_pg_builtin_download_grant_holds_current_attempt_and_frozen_package(
         session.get(BuiltinPackage, file_id).status = "deleting"
     with session_factory() as session, pytest.raises(downloads.InputDownloadUnavailable):
         downloads.recheck(session, grant)
+
+
+def test_pg_shared_stream_admission_serializes_live_reads_and_remembers_consumed_files(
+    file_grant, session_factory
+):
+    from dlr.control.services import managed_input_download_v4 as downloads
+
+    kwargs, _facts, _candidate = file_grant
+    with session_factory.begin() as first:
+        grant, _ = downloads.admit(first, **kwargs)
+        downloads.take_shared_stream(first, grant)
+    other_file = replace(grant.file, artifact_id=grant.file.artifact_id + 1, ordinal=1)
+    second = replace(grant, stream_id=uuid4(), file=other_file)
+    with pytest.raises(downloads.InputDownloadUnavailable), session_factory.begin() as peer:
+        downloads.take_shared_stream(peer, second)
+    with session_factory.begin() as first:
+        downloads.close_shared_stream(first, grant.stream_id)
+    with session_factory.begin() as peer:
+        downloads.take_shared_stream(peer, second)
+        downloads.close_shared_stream(peer, second.stream_id)
+    with pytest.raises(downloads.InputDownloadUnavailable), session_factory.begin() as peer:
+        downloads.take_shared_stream(peer, replace(grant, stream_id=uuid4()))
 
 
 def test_pg_fresh_proofs_do_not_restart_original_claim_preparation_cutoff(

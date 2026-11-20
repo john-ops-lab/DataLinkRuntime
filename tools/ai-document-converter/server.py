@@ -195,8 +195,8 @@ class Supervisor:
         with self.lock:
             now = time.monotonic()
             self.tombstones = {k: v for k, v in self.tombstones.items() if now - v < 120}
-            if len(self.tombstones) >= 512:
-                self.tombstones.pop(next(iter(self.tombstones)))
+            if job_id not in self.tombstones and len(self.tombstones) >= 512:
+                raise ConversionError("ai_attachment_cancel_failed")
             self.tombstones[job_id] = now
             job = self.jobs.get(job_id)
             stopped_at = self.stopped.get(job_id)
@@ -253,6 +253,8 @@ class Supervisor:
             with self.lock:
                 if job_id in self.jobs or job_id in self.tombstones:
                     raise ConversionError("ai_attachment_cancelled")
+                if time.monotonic() >= deadline:
+                    raise ConversionError("ai_attachment_parse_timeout")
                 self.jobs[job_id] = job
                 job.registered = True
             request = {**request, "operation": operation}
@@ -318,6 +320,8 @@ class Supervisor:
                 with self.lock:
                     if job.cancelled.is_set():
                         raise ConversionError("ai_attachment_cancelled")
+                    if time.monotonic() >= deadline:
+                        raise ConversionError("ai_attachment_parse_timeout")
                     job.process = subprocess.Popen(
                         command,
                         start_new_session=True,

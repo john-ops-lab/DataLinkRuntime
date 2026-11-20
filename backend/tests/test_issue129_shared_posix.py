@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import text
 
 from dlr.common.config import settings
+from dlr.control import storage_migration
 from dlr.control.ai import shared_attachments
 from dlr.control.ai.attachment_documents import DocumentConversionError, DocumentResult
 from dlr.control.schemas.ai import AiAttachment, AiAttachmentReference
@@ -114,6 +115,7 @@ def register_namespace(api_client, session_factory, tmp_path, monkeypatch, purpo
     namespace = verified_mount(tmp_path, monkeypatch, purpose)
     monkeypatch.setattr(settings, "control_ha_slot", "a")
     monkeypatch.setattr(storage_backends, "configured", lambda *_: namespace)
+    monkeypatch.setattr(storage_backends, "runtime_mount_id", lambda _: 11)
     monkeypatch.setattr(control_ha_capacity, "assert_local_control", lambda _: uuid4())
     with session_factory.begin() as session:
         session.execute(
@@ -130,6 +132,8 @@ def register_namespace(api_client, session_factory, tmp_path, monkeypatch, purpo
                 "policy": storage_backends.policy_sha256(purpose),
             },
         )
+    with namespace.open(slot="a") as root:
+        assert storage_backends._observe_mount(namespace, "a", shared_posix.preflight_id(root), 11)
     return namespace
 
 
@@ -275,3 +279,48 @@ def test_attachment_binding_requires_retirement_and_cannot_reselect_retired_iden
         _check_attachment_selection(session, replacement, mount.namespace_id)
         with pytest.raises(SharedStorageUnavailable, match="outstanding"):
             _check_attachment_selection(session, mount, None)
+
+
+def test_retirement_requires_stop_for_job_created_after_backup(
+    api_client, session_factory, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "ai_document_converter_url", "http://converter.invalid")
+    mount = register_namespace(api_client, session_factory, tmp_path, monkeypatch, "ai_attachments")
+    job_id, converter_id = uuid4(), uuid4()
+    monkeypatch.setattr(storage_migration, "_owner", lambda _: mount.deployment_id)
+    monkeypatch.setattr(storage_backends, "runtime_mount_id", lambda _: 22)
+    with (
+        pytest.raises(SharedStorageUnavailable, match="current observation"),
+        storage_backends.verified_root(mount, "a"),
+    ):
+        pytest.fail("accepted a replaced mount before the next monitor probe")
+    assert mount.purpose == "ai_attachments"
+    (mount.root / ".job-locks").mkdir(mode=0o700)
+    stand_in = mount.root / ("o-" + uuid4().hex)
+    stand_in.mkdir(mode=0o700)
+    with mount.open(slot="a") as root:
+        shared_attachments._converter_intent(
+            root, shared_attachments._Job(job_id, converter_id, 1, "a")
+        )
+    mount.revoke_temporary()
+
+    class Converter:
+        stopped = False
+
+        def __init__(self, url, *, instance_id=None):
+            assert url == settings.ai_document_converter_url and instance_id == converter_id
+
+        def cancel(self, provided):
+            assert provided == job_id.hex
+            if not self.stopped:
+                raise DocumentConversionError("ai_attachment_cancel_failed")
+
+    monkeypatch.setattr(storage_migration, "DocumentConverterClient", Converter)
+    with pytest.raises(DocumentConversionError, match="cancel_failed"):
+        storage_migration.retire_temporary(session_factory, mount)
+    assert stand_in.is_dir()
+    assert (mount.root / ".job-locks" / ("j-" + job_id.hex)).exists()
+    Converter.stopped = True
+    storage_migration.retire_temporary(session_factory, mount)
+    assert not stand_in.exists()
+    assert not (mount.root / ".job-locks" / ("j-" + job_id.hex)).exists()

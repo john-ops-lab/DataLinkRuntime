@@ -974,23 +974,21 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
             )
         )
     if intent.target_schema == SCHEMA_REVISION:
-        session.execute(text(f"REVOKE ALL ON control_storage_bindings FROM {quoted_role}"))
-        session.execute(text(f"GRANT SELECT ON control_storage_bindings TO {quoted_role}"))
-        session.execute(
-            text(f"GRANT SELECT, UPDATE ON control_storage_maintenance TO {quoted_role}")
+        storage_grants = (
+            ("SELECT", "control_storage_bindings"),
+            ("SELECT, UPDATE", "control_storage_maintenance"),
+            ("SELECT, INSERT, UPDATE", "control_storage_observations"),
+            ("SELECT, INSERT, UPDATE (closed)", "worker_v4_input_streams"),
+            ("", "control_attachment_retirements"),
+            (
+                "SELECT, INSERT, UPDATE, DELETE",
+                "control_attachment_scopes,control_attachment_objects,control_attachment_jobs",
+            ),
         )
-        session.execute(
-            text(f"GRANT SELECT, INSERT, UPDATE ON control_storage_observations TO {quoted_role}")
-        )
-        session.execute(text(f"GRANT SELECT, INSERT ON worker_v4_input_streams TO {quoted_role}"))
-        session.execute(text(f"REVOKE ALL ON control_attachment_retirements FROM {quoted_role}"))
-        session.execute(
-            text(
-                "GRANT SELECT, INSERT, UPDATE, DELETE ON "
-                "control_attachment_scopes,control_attachment_objects,control_attachment_jobs "
-                f"TO {quoted_role}"
-            )
-        )
+        for rights, tables in storage_grants:
+            session.execute(text(f"REVOKE ALL ON {tables} FROM PUBLIC, {quoted_role}"))
+            if rights:
+                session.execute(text(f"GRANT {rights} ON {tables} TO {quoted_role}"))
     changed = session.execute(
         text("""
         UPDATE control_cluster_authority SET image_digest=:target, schema_revision=:schema

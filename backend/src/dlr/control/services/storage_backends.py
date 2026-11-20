@@ -4,7 +4,10 @@ import asyncio
 import hashlib
 import json
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import text
@@ -137,6 +140,32 @@ def _probe(purpose: StoragePurpose) -> bool:
         DocumentConversionError,
     ):
         return False
+
+
+@contextmanager
+def verified_root(namespace: SharedNamespace, slot: Literal["a", "b"]) -> Iterator[int]:
+    with namespace.open(slot=slot) as directory:
+        proof, mount = preflight_id(directory), runtime_mount_id(directory)
+        with db.SessionLocal() as session:
+            generation = binding_generation(session, namespace)
+            registered = session.scalar(
+                text("""
+                SELECT 1 FROM control_storage_observations
+                WHERE purpose=:purpose AND slot=:slot AND namespace_id=:namespace
+                  AND generation=:generation AND proof_id=:proof AND mount_id=:mount
+            """),
+                {
+                    "purpose": namespace.purpose,
+                    "slot": slot,
+                    "namespace": namespace.namespace_id,
+                    "generation": generation,
+                    "proof": proof,
+                    "mount": mount,
+                },
+            )
+        if registered != 1:
+            raise SharedStorageUnavailable("Shared mount requires a current observation")
+        yield directory
 
 
 def _observe_mount(namespace: SharedNamespace, slot: str, proof: UUID, mounted: int) -> bool:

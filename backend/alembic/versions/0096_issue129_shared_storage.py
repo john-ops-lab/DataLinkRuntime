@@ -137,6 +137,16 @@ def upgrade() -> None:
             primary_key=True,
         ),
         sa.Column("artifact_id", sa.BigInteger(), primary_key=True),
+        sa.Column("builtin", sa.Boolean(), primary_key=True),
+        sa.Column("stream_id", sa.Uuid(), nullable=False, unique=True),
+        sa.Column("closed", sa.Boolean(), nullable=False, server_default=sa.false()),
+    )
+    op.create_index(
+        "uq_worker_v4_active_input_stream",
+        "worker_v4_input_streams",
+        ["attempt_id"],
+        unique=True,
+        postgresql_where=sa.text("NOT closed"),
     )
 
 

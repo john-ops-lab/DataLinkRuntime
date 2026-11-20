@@ -34,6 +34,7 @@ from dlr.control.services.shared_posix import (
     open_directory,
     open_regular,
     open_root,
+    read_record,
 )
 from dlr.control.services.storage_backends import converter_url, policy_sha256
 
@@ -416,14 +417,32 @@ def retire_temporary(factory: sessionmaker[Session], namespace: SharedNamespace)
         migration_lock = open_regular(root, ".dlr-migration.lock", os.O_RDWR | os.O_CREAT)
         try:
             fcntl.flock(migration_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            for job in jobs:
-                endpoint = converter_url(job.control_slot)
-                if endpoint is None:
-                    raise SharedStorageUnavailable("Original converter authority unavailable")
-                with _temporary_custody(root, job.job_id, ".job-locks"):
-                    DocumentConverterClient(endpoint, instance_id=job.converter_id).cancel(
-                        job.job_id.hex
-                    )
+            authorities = {job.job_id: (job.converter_id, job.control_slot) for job in jobs}
+            with open_directory(root, ".job-locks", create=True) as directory:
+                for name in os.listdir(directory):
+                    if not name.startswith("j-"):
+                        continue
+                    if re.fullmatch(r"j-[0-9a-f]{32}", name) is None:
+                        raise SharedStorageUnavailable("Invalid converter custody record")
+                    identity = UUID(name[2:])
+                    record = read_record(directory, name)
+                    captured = UUID(record["converter"]), record["slot"]
+                    if captured[1] not in ("a", "b") or (
+                        identity in authorities and authorities[identity] != captured
+                    ):
+                        raise SharedStorageUnavailable("Conflicting converter authority")
+                    authorities[identity] = captured
+                for identity, (converter_id, slot) in authorities.items():
+                    endpoint = converter_url(slot)
+                    if endpoint is None:
+                        raise SharedStorageUnavailable("Original converter authority unavailable")
+                    with _temporary_custody(root, identity, ".job-locks"):
+                        DocumentConverterClient(endpoint, instance_id=converter_id).cancel(
+                            identity.hex
+                        )
+                        with suppress(FileNotFoundError):
+                            os.unlink("j-" + identity.hex, dir_fd=directory)
+                        os.fsync(directory)
             with os.scandir(root) as directories:
                 for item in directories:
                     if re.fullmatch(r"o-[0-9a-f]{32}", item.name) is None:

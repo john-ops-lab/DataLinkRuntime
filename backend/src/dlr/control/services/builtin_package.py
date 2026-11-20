@@ -54,8 +54,11 @@ def storage_path(key: str, suffix: str = ".blob") -> Path:
 
 @contextmanager
 def _shared_root() -> Iterator[int]:
+    slot = settings.control_ha_slot
+    if slot is None:
+        raise RuntimeError("Shared material slot unavailable")
     namespace = storage_backends.active_namespace("builtin_packages")
-    with namespace.open(slot=settings.control_ha_slot) as directory:
+    with storage_backends.verified_root(namespace, slot) as directory:
         yield directory
 
 

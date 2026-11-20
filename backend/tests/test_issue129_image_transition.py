@@ -432,6 +432,13 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
         )
     )
     shared = transition.read_intent(str(path), takeover_image, shared_image, predecessor=takeover)
+    with f.engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER DEFAULT PRIVILEGES GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES "
+                f'TO "{f.role}"'
+            )
+        )
     assert transition._kind(shared) == 11
     assert maintain(f.factory, "check", shared)["status"] == "source_checked"
     assert maintain(f.factory, "apply", shared)["status"] == "committed_current"
@@ -441,11 +448,15 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
         rights = session.execute(
             text("""
             SELECT has_table_privilege(:role,'control_storage_bindings','SELECT'),
-                   has_table_privilege(:role,'control_storage_bindings','UPDATE')
+                   has_table_privilege(:role,'control_storage_bindings','UPDATE'),
+                   has_table_privilege(:role,'worker_v4_input_streams','DELETE'),
+                   has_column_privilege(:role,'worker_v4_input_streams','closed','UPDATE'),
+                   has_column_privilege(:role,'worker_v4_input_streams','stream_id','UPDATE'),
+                   has_table_privilege(:role,'control_storage_observations','DELETE')
         """),
             {"role": f.role},
         ).one()
-        assert tuple(rights) == (True, False)
+        assert tuple(rights) == (True, False, False, True, False, False)
 
 
 def test_placement_migration_backfills_a_settled_v3_execution(upgrade_database):  # noqa: F811

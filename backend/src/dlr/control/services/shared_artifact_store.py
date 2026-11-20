@@ -9,10 +9,11 @@ import os
 import secrets
 import stat
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from typing import BinaryIO, Literal
 
 from dlr.common import config
+from dlr.control.services import storage_backends
 from dlr.control.services.artifact_store import (
     STORAGE_KEY_BYTES,
     ArtifactObjectStat,
@@ -33,12 +34,20 @@ from dlr.control.services.shared_posix import (
 class SharedFileArtifactStore:
     """Use the existing keys and lock stripes, anchored at verified descriptors."""
 
-    def __init__(self, namespace: SharedNamespace, slot: Literal["a", "b"]) -> None:
+    def __init__(
+        self, namespace: SharedNamespace, slot: Literal["a", "b"], *, verify_mount: bool = False
+    ) -> None:
         self.root = namespace.root
         self.namespace = namespace
         self.slot = slot
+        self.verify_mount = verify_mount
 
     validate_storage_key = staticmethod(LocalFileArtifactStore.validate_storage_key)
+
+    def _root(self) -> AbstractContextManager[int]:
+        if self.verify_mount:
+            return storage_backends.verified_root(self.namespace, self.slot)
+        return self.namespace.open(slot=self.slot)
 
     @contextmanager
     def _entry(self, root: int, area: str, key: str) -> Iterator[tuple[int, str]]:
@@ -72,7 +81,7 @@ class SharedFileArtifactStore:
 
     @contextmanager
     def custody(self, storage_key: str) -> Iterator[int]:
-        with self.namespace.open(slot=self.slot) as root:
+        with self._root() as root:
             descriptor = self._stripe(root, storage_key, shared=False)
             try:
                 yield root
@@ -84,13 +93,13 @@ class SharedFileArtifactStore:
         return secrets.token_hex(STORAGE_KEY_BYTES)
 
     def free_bytes(self) -> int:
-        with self.namespace.open(slot=self.slot) as root:
+        with self._root() as root:
             capacity = os.fstatvfs(root)
             return capacity.f_bavail * capacity.f_frsize
 
     @contextmanager
     def put_part(self, storage_key: str) -> Iterator[BinaryIO]:
-        with self.namespace.open(slot=self.slot) as root:
+        with self._root() as root:
             lock = self._stripe(root, storage_key, shared=False)
             release = True
             try:
@@ -133,7 +142,7 @@ class SharedFileArtifactStore:
             os.fsync(source)
 
     def open(self, storage_key: str) -> BinaryIO:
-        with self.namespace.open(slot=self.slot) as root:
+        with self._root() as root:
             lock = self._stripe(root, storage_key, shared=True)
             try:
                 with self._entry(root, "objects", storage_key) as (directory, name):
@@ -147,7 +156,7 @@ class SharedFileArtifactStore:
 
     def _stat_in(self, area: str, storage_key: str) -> ArtifactObjectStat | None:
         with (
-            self.namespace.open(slot=self.slot) as root,
+            self._root() as root,
             self._entry(root, area, storage_key) as (directory, name),
         ):
             try:
@@ -217,7 +226,7 @@ class SharedFileArtifactStore:
         """Yield safely named files from one shard without a directory-wide snapshot."""
         prefix = f"{shard:02x}"
         with (
-            self.namespace.open(slot=self.slot) as root,
+            self._root() as root,
             open_directory(root, "parts" if part else "objects", create=True) as area,
             open_directory(area, prefix, create=True) as directory,
             os.scandir(directory) as entries,
@@ -245,6 +254,6 @@ def configured_store() -> ArtifactStore:
     slot = config.settings.control_ha_slot
     if slot is None:
         return LocalFileArtifactStore(config.settings.artifact_store_root)
-    from dlr.control.services.storage_backends import active_namespace
-
-    return SharedFileArtifactStore(active_namespace("managed_files", config.settings), slot)
+    return SharedFileArtifactStore(
+        storage_backends.active_namespace("managed_files", config.settings), slot, verify_mount=True
+    )
