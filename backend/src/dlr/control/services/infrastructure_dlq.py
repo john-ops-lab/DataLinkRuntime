@@ -10,6 +10,7 @@ commits, so an interrupted reconciler cannot leave a Broker-only orphan.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -19,7 +20,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
@@ -30,6 +31,7 @@ from dlr.control.models import (
     ExecutionOutbox,
 )
 from dlr.control.services import outbox, rabbitmq
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 from dlr.control.services.dispatch import INFRASTRUCTURE_DLQ, deserialize_dispatch_message
 from dlr.control.services.execution_cancellation import lock_execution_in_admission_order
 from dlr.control.services.input_config import database_now
@@ -104,12 +106,17 @@ def _incident(
     message_id: uuid.UUID | None,
     execution_id: int | None,
     dispatch_generation: int | None,
+    transport_event_key: str | None = None,
 ) -> ExecutionInfrastructureIncident:
     query = select(ExecutionInfrastructureIncident).where(
         ExecutionInfrastructureIncident.kind == kind,
         ExecutionInfrastructureIncident.status == "open",
     )
-    if message_id is not None:
+    if transport_event_key is not None:
+        query = query.where(
+            ExecutionInfrastructureIncident.transport_event_key == transport_event_key
+        )
+    elif message_id is not None:
         query = query.where(ExecutionInfrastructureIncident.message_id == message_id)
     elif execution_id is not None:
         query = query.where(
@@ -123,6 +130,7 @@ def _incident(
             message_id=message_id,
             execution_id=execution_id,
             dispatch_generation=dispatch_generation,
+            transport_event_key=transport_event_key,
             attempts=1,
             last_error=kind,
         )
@@ -139,6 +147,7 @@ def _requeue_queued_generation(
     execution: Execution,
     *,
     now: datetime,
+    publish_attempt: int | None = None,
 ) -> bool:
     from dlr.control.services.worker_placement_cutover import mode
 
@@ -154,6 +163,10 @@ def _requeue_queued_generation(
         )
         .with_for_update()
     )
+    if settings.control_ha_slot is not None and (
+        row is None or publish_attempt != row.publish_attempts
+    ):
+        return False
     if row is None:
         row = outbox.create_dispatch_outbox(session, execution, available_at=now)
     else:
@@ -171,6 +184,26 @@ def _requeue_queued_generation(
     return True
 
 
+def _transport_event_key(
+    body: bytes, headers: Mapping[str, Any], queue: str | None, publish_attempt: int | None
+) -> str:
+    death = headers.get("x-death")
+    identity: tuple[int | None, str | int | None] = (None, None)
+    if isinstance(death, list) and queue is not None:
+        for event in death[:64]:
+            if isinstance(event, Mapping) and event.get("queue") == queue:
+                occurred = event.get("last-time", event.get("time"))
+                identity = (
+                    _positive_int(event.get("count")),
+                    occurred.isoformat()
+                    if isinstance(occurred, datetime)
+                    else (_positive_int(occurred)),
+                )
+                break
+    binding = json.dumps((publish_attempt, _death_reason(headers, queue_name=queue), identity))
+    return hashlib.sha256(hashlib.sha256(body).digest() + binding.encode("utf-8")).hexdigest()
+
+
 def reconcile_message(
     session: Session,
     body: bytes,
@@ -179,6 +212,7 @@ def reconcile_message(
 ) -> InfrastructureReconcileResult:
     """Record and converge one DLQ body without changing Business status."""
 
+    instance_id = assert_local_control(session)
     raw = _json_mapping(body)
     raw_execution_id = _positive_int(raw.get("execution_id"))
     raw_generation = _positive_int(raw.get("dispatch_generation"))
@@ -199,6 +233,25 @@ def reconcile_message(
         raw_execution_id = message.execution_id
         raw_generation = message.dispatch_generation
         raw_message_id = message.message_id
+
+    event_key = None
+    publish_attempt = _positive_int((headers or {}).get("x-dlr-publish-attempt"))
+    if instance_id is not None:
+        event_key = _transport_event_key(body, headers or {}, queue_name, publish_attempt)
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(:event)"),
+            {"event": int.from_bytes(bytes.fromhex(event_key[:16]), signed=True)},
+        )
+        previous = session.scalar(
+            select(ExecutionInfrastructureIncident.id).where(
+                ExecutionInfrastructureIncident.transport_event_key == event_key
+            )
+        )
+        if previous is not None:
+            session.rollback()
+            return InfrastructureReconcileResult(
+                "duplicate", kind, previous, raw_execution_id, raw_generation
+            )
 
     execution: Execution | None = None
     adapter: Adapter | None = None
@@ -232,6 +285,7 @@ def reconcile_message(
         message_id=raw_message_id,
         execution_id=raw_execution_id,
         dispatch_generation=raw_generation,
+        transport_event_key=event_key,
     )
     if message is None:
         # Only the fixed allowlisted transport reason is retained; never copy
@@ -264,12 +318,13 @@ def reconcile_message(
         and execution.status == "queued"
         and not delivery_limit
         and not cache_reclamation_blocked
-        and _requeue_queued_generation(session, execution, now=now)
+        and _requeue_queued_generation(session, execution, now=now, publish_attempt=publish_attempt)
     ):
         # A delivery-limit event is not automatically hot-looped.  It remains
         # an operator decision because repeatedly publishing it could hide a
         # persistent Broker/routing defect.
         action = "requeue"
+    recheck_local_control(session)
     session.commit()
     return InfrastructureReconcileResult(
         action=action,

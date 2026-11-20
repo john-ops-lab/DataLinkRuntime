@@ -75,6 +75,8 @@ from dlr.control.services import (
 )
 from dlr.control.services import execution as execution_service
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.background_control import reserve_page
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 from dlr.control.services.dispatch import deserialize_dispatch_message
 from dlr.control.services.execution_cancellation import (
     CANCELLATION_ERROR_CODE,
@@ -1422,6 +1424,7 @@ def reserve_recovery_candidates(
     batch_size = max(1, min(int(limit), 1_000))
     try:
         _set_reconciliation_lock_timeout(session)
+        assert_local_control(session)
         cursor = session.scalar(
             select(RuntimeReconciliationCursor)
             .where(RuntimeReconciliationCursor.name == RECONCILIATION_CURSOR_NAME)
@@ -1458,6 +1461,7 @@ def reserve_recovery_candidates(
             upper_id=int(cursor.upper_id),
             wrapped=wrapped,
         )
+        recheck_local_control(session)
         session.commit()
     except Exception:
         session.rollback()
@@ -1487,6 +1491,7 @@ def _recover_reserved_attempt(
     now: datetime | None,
 ) -> bool:
     _set_reconciliation_lock_timeout(session)
+    assert_local_control(session)
     identity = session.execute(
         select(ExecutionAttempt.worker_id, Worker.scheduling_state)
         .join(Worker, Worker.id == ExecutionAttempt.worker_id)
@@ -1533,6 +1538,7 @@ def _recover_reserved_attempt(
                 return False
             execution.cancel_requested = True
             if not expired:
+                recheck_local_control(session)
                 session.commit()
                 return False
     if not expired:
@@ -1550,6 +1556,7 @@ def _recover_reserved_attempt(
         error="Worker Lease expired before a terminal result was accepted",
         now=locked_now,
     )
+    recheck_local_control(session)
     session.commit()
     return True
 
@@ -1581,6 +1588,7 @@ def _recover_placement_attempt(
     if now is None:
         if forced:
             execution.cancel_requested = True
+            recheck_local_control(session)
             session.commit()
         else:
             session.rollback()
@@ -1601,6 +1609,7 @@ def _recover_placement_attempt(
     if execution.next_attempt_at is not None and attempt.recovery_not_before is not None:
         delay = execution.next_attempt_at - now
         execution.next_attempt_at = max(now, attempt.recovery_not_before) + delay
+    recheck_local_control(session)
     session.commit()
     return True
 
@@ -1649,28 +1658,33 @@ def retry_dispatcher_once(
         session.rollback()
         return 0
     effective_now = _utc(now or database_now(session))
-    candidates = list(
-        session.execute(
-            select(
-                Execution.id,
-                Execution.adapter_id,
-                Execution.version_id,
-                Execution.target_worker_id_snapshot,
-            )
-            .where(
-                Execution.dispatch_backend == "rabbitmq",
-                Execution.status == "retry_wait",
-                Execution.next_attempt_at <= effective_now,
-                ~Execution.requires_worker_reservation,
-                Execution.route_pool_id.is_(None),
-                Execution.target_worker_id_snapshot.is_not(None),
-            )
-            .order_by(Execution.next_attempt_at, Execution.id)
-            .limit(max(1, min(int(limit), 1_000)))
-        )
+    candidates = reserve_page(
+        session,
+        "fixed_retry_due",
+        select(Execution.id).where(
+            Execution.dispatch_backend == "rabbitmq",
+            Execution.status == "retry_wait",
+            Execution.next_attempt_at <= effective_now,
+            ~Execution.requires_worker_reservation,
+            Execution.route_pool_id.is_(None),
+            Execution.target_worker_id_snapshot.is_not(None),
+        ),
+        Execution.id,
+        limit=max(1, min(int(limit), 1_000)),
     )
     dispatched = 0
-    for execution_id, adapter_id, version_id, target_snapshot in candidates:
+    for execution_id in candidates:
+        _set_reconciliation_lock_timeout(session)
+        assert_local_control(session)
+        candidate = session.execute(
+            select(
+                Execution.adapter_id, Execution.version_id, Execution.target_worker_id_snapshot
+            ).where(Execution.id == execution_id)
+        ).one_or_none()
+        if candidate is None or candidate.target_worker_id_snapshot is None:
+            session.rollback()
+            continue
+        adapter_id, version_id, target_snapshot = candidate
         adapter = session.scalar(
             select(Adapter).where(Adapter.id == adapter_id).with_for_update(skip_locked=True)
         )
@@ -1695,7 +1709,13 @@ def retry_dispatcher_once(
         execution = session.scalar(
             select(Execution).where(Execution.id == execution_id).with_for_update(skip_locked=True)
         )
-        if execution is None or execution.status != "retry_wait":
+        if (
+            execution is None
+            or execution.status != "retry_wait"
+            or execution.requires_worker_reservation
+            or execution.route_pool_id is not None
+            or execution.target_worker_id_snapshot != target_snapshot
+        ):
             session.rollback()
             continue
         if execution.adapter_id != adapter.id:
@@ -1736,6 +1756,7 @@ def retry_dispatcher_once(
         execution.queued_at = locked_now
         execution.next_attempt_at = None
         outbox.create_dispatch_outbox(session, execution, available_at=locked_now)
+        recheck_local_control(session)
         session.commit()
         dispatched += 1
     if dispatched:
@@ -2100,6 +2121,7 @@ def purge_holds(session: Session, execution_id: int, *, actor: str, reason: str)
 
 
 def expire_holds(session: Session, *, limit: int = 100, now: datetime | None = None) -> int:
+    assert_local_control(session)
     effective_now = _utc(now or database_now(session))
     rows = list(
         session.scalars(
@@ -2118,6 +2140,7 @@ def expire_holds(session: Session, *, limit: int = 100, now: datetime | None = N
         row.purged_by = "system"
         row.purge_reason = "hold_expired"
     if rows:
+        recheck_local_control(session)
         session.commit()
     else:
         session.rollback()

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import exists, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -17,8 +17,10 @@ from dlr.control.models import (
     AdapterExecutionAdmission,
     Execution,
     GlobalExecutionAdmission,
+    RuntimeReconciliationCursor,
 )
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.control_ha_capacity import recheck_local_control
 
 RABBITMQ_OUTSTANDING_STATUSES = ("queued", "running", "retry_wait")
 RABBITMQ_TERMINAL_STATUSES = ("succeeded", "dead_letter", "cancelled", "expired")
@@ -238,6 +240,7 @@ def reconcile_admission(
     batch_size: int | None = None,
     after_adapter_id: int | None = None,
     after_execution_id: int | None = None,
+    _durable_cursors: tuple[RuntimeReconciliationCursor, RuntimeReconciliationCursor] | None = None,
 ) -> AdmissionReconcileReport:
     """Repair a bounded page without changing RabbitMQ Execution states.
 
@@ -283,6 +286,10 @@ def reconcile_admission(
         global_bytes_delta = int(global_bytes or 0) - global_counter.outstanding_bytes
         global_counter.outstanding_count = int(global_count or 0)
         global_counter.outstanding_bytes = int(global_bytes or 0)
+        if _durable_cursors is not None:
+            for checkpoint in _durable_cursors:
+                checkpoint.after_id = checkpoint.upper_id = 0
+            recheck_local_control(session)
         session.commit()
         return AdmissionReconcileReport(0, 0, 0, global_count_delta, global_bytes_delta)
 
@@ -403,6 +410,11 @@ def reconcile_admission(
         if has_more:
             next_adapter_id = last_adapter_id
     complete = next_adapter_id is None
+    if _durable_cursors is not None:
+        adapter_cursor, execution_cursor = _durable_cursors
+        adapter_cursor.after_id = adapter_cursor.upper_id = next_adapter_id or 0
+        execution_cursor.after_id = execution_cursor.upper_id = next_execution_id or 0
+        recheck_local_control(session)
     session.commit()
     return AdmissionReconcileReport(
         adapters_checked=len(selected_ids),
@@ -424,6 +436,23 @@ def _admission_tick() -> AdmissionReconcileReport:
     global _admission_reconcile_cursor
     cursor = _admission_reconcile_cursor
     with db.SessionLocal() as session:
+        if settings.control_ha_slot is not None:
+            from dlr.control.services.control_ha_capacity import assert_local_control
+
+            session.execute(text("SET LOCAL lock_timeout = '250ms'"))
+            assert_local_control(session)
+            if not session.scalar(text("SELECT pg_try_advisory_xact_lock(129, 903)")):
+                return AdmissionReconcileReport(0, 0, 0, 0, 0, complete=False)
+            adapters = session.get(RuntimeReconciliationCursor, "admission_adapter")
+            executions = session.get(RuntimeReconciliationCursor, "admission_execution")
+            if adapters is None or executions is None:
+                raise RuntimeError("Admission reconciliation cursor unavailable")
+            return reconcile_admission(
+                session,
+                after_adapter_id=adapters.after_id or None,
+                after_execution_id=executions.after_id or None,
+                _durable_cursors=(adapters, executions),
+            )
         report = reconcile_admission(
             session,
             after_adapter_id=cursor[0],

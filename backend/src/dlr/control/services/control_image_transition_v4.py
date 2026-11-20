@@ -32,6 +32,7 @@ W1_SCHEMA = "0090_issue129_worker_cutover"
 W2_ROUTING_SCHEMA = "0091_issue129_pool_routing"
 W2_CAPACITY_SCHEMA = "0092_issue129_worker_capacity"
 W2_PLACEMENT_SCHEMA = "0093_issue129_worker_placement"
+W3_FOUNDATION_SCHEMA = "0094_issue129_control_ha"
 SOURCE_SHA = "a37c9d3e19985acddb1f3e33ff6d3c7337147270"
 F_SOURCE_SHA = "0417b82c4ab6f76aefdf3eafe38327f46cb18358"
 # Verified F build inputs from its original delivery. Product provenance and
@@ -83,8 +84,10 @@ W2_CAPACITY_SOURCE_SHA = "36ee472851e2141ce908dcd9a9588c5f6a86f9eb"
 _W2_CAPACITY_RELEASE_SHAS = frozenset({W2_CAPACITY_SOURCE_SHA})
 W2_PLACEMENT_SOURCE_SHA = "9b3347578b1644706731e5f7c5c1461385b71741"
 _W2_PLACEMENT_RELEASE_SHAS = frozenset({W2_PLACEMENT_SOURCE_SHA})
-_MAX_TRANSITIONS = 10
-_WRITABLE_TRANSITIONS = {4, 5, 6, 7, 8, 9}
+W3_FOUNDATION_SOURCE_SHA = "686f6db768e48a63ca29229a713cf39ecce99a5d"
+_W3_FOUNDATION_RELEASE_SHAS = frozenset({W3_FOUNDATION_SOURCE_SHA})
+_MAX_TRANSITIONS = 11
+_WRITABLE_TRANSITIONS = {4, 5, 6, 7, 8, 9, 10}
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _FIELDS = {
@@ -155,6 +158,7 @@ def read_intent(
                 W2_ROUTING_SCHEMA,
                 W2_CAPACITY_SCHEMA,
                 W2_PLACEMENT_SCHEMA,
+                W3_FOUNDATION_SCHEMA,
                 SCHEMA_REVISION,
             )
             or (value["source_schema"], value["source_sha"])
@@ -169,6 +173,7 @@ def read_intent(
                 *((W2_ROUTING_SCHEMA, sha) for sha in _W2_ROUTING_RELEASE_SHAS),
                 *((W2_CAPACITY_SCHEMA, sha) for sha in _W2_CAPACITY_RELEASE_SHAS),
                 *((W2_PLACEMENT_SCHEMA, sha) for sha in _W2_PLACEMENT_RELEASE_SHAS),
+                *((W3_FOUNDATION_SCHEMA, sha) for sha in _W3_FOUNDATION_RELEASE_SHAS),
             }
             or type(value["target_sha"]) is not str
             or _SHA.fullmatch(value["target_sha"]) is None
@@ -330,7 +335,7 @@ def _kind(intent: ImageTransition) -> int:
     elif (
         intent.source_schema == W2_PLACEMENT_SCHEMA
         and intent.source_sha in _W2_PLACEMENT_RELEASE_SHAS
-        and intent.target_schema == SCHEMA_REVISION
+        and intent.target_schema == W3_FOUNDATION_SCHEMA
         and intent.target_sha
         not in _F_RELEASE_SHAS
         | _G_RELEASE_SHAS
@@ -344,6 +349,24 @@ def _kind(intent: ImageTransition) -> int:
         | {SOURCE_SHA}
     ):
         return 9
+    elif (
+        intent.source_schema == W3_FOUNDATION_SCHEMA
+        and intent.source_sha in _W3_FOUNDATION_RELEASE_SHAS
+        and intent.target_schema == SCHEMA_REVISION
+        and intent.target_sha
+        not in _F_RELEASE_SHAS
+        | _G_RELEASE_SHAS
+        | _H_RELEASE_SHAS
+        | _I_RELEASE_SHAS
+        | _J_RELEASE_SHAS
+        | _W1_RELEASE_SHAS
+        | _W2_ROUTING_RELEASE_SHAS
+        | _W2_CAPACITY_RELEASE_SHAS
+        | _W2_PLACEMENT_RELEASE_SHAS
+        | _W3_FOUNDATION_RELEASE_SHAS
+        | {SOURCE_SHA}
+    ):
+        return 10
     raise TransitionUnavailable("image_transition_pair_unavailable")
 
 
@@ -386,6 +409,7 @@ def _intent_prefix(intent: ImageTransition) -> list[ImageTransition]:
                     7: _W2_ROUTING_RELEASE_SHAS,
                     8: _W2_CAPACITY_RELEASE_SHAS,
                     9: _W2_PLACEMENT_RELEASE_SHAS,
+                    10: _W3_FOUNDATION_RELEASE_SHAS,
                 }.get(kind, frozenset())
                 or item.previous_id != previous.operation_id
                 or previous.target_schema != item.source_schema
@@ -508,6 +532,8 @@ def _clean(session: Session, *, allow_completed_v3: bool = False) -> None:
             OR (instance_id IS NOT NULL AND instance_lease_until >= clock_timestamp()))
           AND NOT EXISTS (SELECT 1 FROM control_process_instances
                           WHERE lease_until >= clock_timestamp())
+          AND NOT EXISTS (SELECT 1 FROM subscription_leases
+                          WHERE lease_until >= clock_timestamp())
           AND NOT EXISTS (SELECT 1 FROM worker_lease_candidates_v4
                           WHERE guard_until >= clock_timestamp()
                              OR nominal_until >= clock_timestamp())
@@ -558,6 +584,7 @@ def _revision(session: Session) -> str:
         W2_ROUTING_SCHEMA,
         W2_CAPACITY_SCHEMA,
         W2_PLACEMENT_SCHEMA,
+        W3_FOUNDATION_SCHEMA,
         SCHEMA_REVISION,
     ):
         raise TransitionUnavailable("image_transition_schema_unavailable")
@@ -623,7 +650,8 @@ def _validate_chain(rows: list[Any], intent: ImageTransition) -> Any | None:
             6: W2_ROUTING_SCHEMA,
             7: W2_CAPACITY_SCHEMA,
             8: W2_PLACEMENT_SCHEMA,
-            9: SCHEMA_REVISION,
+            9: W3_FOUNDATION_SCHEMA,
+            10: SCHEMA_REVISION,
         }.get(index, LEGACY_SCHEMA)
         if (
             row["target_schema"] != expected_schema
@@ -763,6 +791,7 @@ def check(session: Session, intent: ImageTransition, config: Settings) -> str:
         W2_ROUTING_SCHEMA,
         W2_CAPACITY_SCHEMA,
         W2_PLACEMENT_SCHEMA,
+        W3_FOUNDATION_SCHEMA,
         SCHEMA_REVISION,
     ):
         _owner_authorized(session, config)
@@ -796,7 +825,9 @@ def check(session: Session, intent: ImageTransition, config: Settings) -> str:
     if not _authority_matches(row, intent.source, intent.source_schema):
         raise TransitionUnavailable("image_transition_authority_unavailable")
     _clean(
-        session, allow_completed_v3=intent.target_schema in (W2_PLACEMENT_SCHEMA, SCHEMA_REVISION)
+        session,
+        allow_completed_v3=intent.target_schema
+        in (W2_PLACEMENT_SCHEMA, W3_FOUNDATION_SCHEMA, SCHEMA_REVISION),
     )
     return "source_checked"
 
@@ -849,7 +880,9 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
         text("SELECT instance_id FROM control_process_instances ORDER BY instance_id FOR UPDATE")
     ).all()
     _clean(
-        session, allow_completed_v3=intent.target_schema in (W2_PLACEMENT_SCHEMA, SCHEMA_REVISION)
+        session,
+        allow_completed_v3=intent.target_schema
+        in (W2_PLACEMENT_SCHEMA, W3_FOUNDATION_SCHEMA, SCHEMA_REVISION),
     )
     _owner_fence(session, config)
     if revision != intent.source_schema:
@@ -860,6 +893,7 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
         W2_ROUTING_SCHEMA,
         W2_CAPACITY_SCHEMA,
         W2_PLACEMENT_SCHEMA,
+        W3_FOUNDATION_SCHEMA,
         SCHEMA_REVISION,
     ):
         runtime_role = config.worker_v4_database_role
@@ -901,7 +935,7 @@ def apply(session: Session, intent: ImageTransition, config: Settings) -> None:
         session.execute(
             text(f"GRANT SELECT, INSERT ON execution_placement_actions TO {quoted_role}")
         )
-    if intent.target_schema == SCHEMA_REVISION:
+    if intent.target_schema == W3_FOUNDATION_SCHEMA:
         session.execute(text(f"REVOKE ALL ON control_ha_capacity FROM {quoted_role}"))
         session.execute(text(f"GRANT SELECT ON control_ha_capacity TO {quoted_role}"))
         session.execute(

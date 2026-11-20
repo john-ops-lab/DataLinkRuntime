@@ -15,17 +15,31 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Literal
 
-from sqlalchemy import BigInteger, Integer, Select, bindparam, case, func, or_, select, union_all
+from sqlalchemy import (
+    BigInteger,
+    Integer,
+    Select,
+    bindparam,
+    case,
+    func,
+    or_,
+    select,
+    text,
+    union_all,
+)
 from sqlalchemy.orm import Session, aliased
 
+from dlr.common.config import settings
 from dlr.control.models import (
     EventDelivery,
     EventReceipt,
     EventSubscription,
     Execution,
+    RuntimeReconciliationCursor,
     SourceCheckpoint,
 )
 from dlr.control.services import subscription_delivery as delivery
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 
 logger = logging.getLogger("dlr.control.subscription_scheduler")
 Kind = Literal["pending", "processing"]
@@ -250,6 +264,26 @@ def select_candidates(session: Session, kind: Kind, cursor: FairCursor) -> list[
     return [Candidate(int(row[0]), int(row[1]), int(row[2])) for row in rows]
 
 
+def _reserve_candidates(session: Session, kind: Kind, cursor: FairCursor) -> list[Candidate]:
+    if settings.control_ha_slot is None:
+        return select_candidates(session, kind, cursor)
+    session.execute(text("SET LOCAL statement_timeout = '1s'"))
+    assert_local_control(session)
+    name = "subscription_dispatch" if kind == "pending" else "subscription_completion"
+    durable = session.get(RuntimeReconciliationCursor, name, with_for_update={"skip_locked": True})
+    if durable is None:
+        return []
+    position = FairCursor(durable.after_id, durable.upper_id)
+    candidates = select_candidates(session, kind, position)
+    # Commit only the first advance. A time/byte budget can leave a suffix
+    # unprocessed, so the next node may inspect it before the sweep wraps.
+    durable.after_id = candidates[0].subscription_id if candidates else 0
+    durable.upper_id = position.upper_subscription_id if candidates else 0
+    recheck_local_control(session)
+    session.commit()
+    return candidates
+
+
 def run_delivery_pass(
     session_factory: Callable[[], Session],
     kind: Kind,
@@ -259,7 +293,7 @@ def run_delivery_pass(
 ) -> PassResult:
     """Bound selection separately from the 100-item/1MiB/50ms processing phase."""
     with session_factory() as session:
-        candidates = select_candidates(session, kind, cursor)
+        candidates = _reserve_candidates(session, kind, cursor)
     start: float | None = None
     attempted = progressed = payload_bytes = 0
     exhausted = False
@@ -280,6 +314,7 @@ def run_delivery_pass(
             if start is None:
                 start = monotonic()
             try:
+                assert_local_control(session)
                 item = session.get(EventDelivery, candidate.delivery_id)
                 changed = False
                 if item is not None and item.state == kind:
@@ -290,6 +325,7 @@ def run_delivery_pass(
                         changed = (
                             delivery.dispatch_delivery(session, candidate.delivery_id) is not None
                         )
+                recheck_local_control(session)
                 session.commit()
                 if changed:
                     progressed += 1

@@ -113,6 +113,9 @@ def cleanup_expired_records(
 ) -> int:
     """Delete expired records only after their associated Execution is terminal."""
 
+    from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
+
+    assert_local_control(session)
     if now is None:
         from dlr.control.services.input_config import database_now
 
@@ -138,5 +141,6 @@ def cleanup_expired_records(
     session.execute(
         delete(ExecutionIdempotencyRecord).where(ExecutionIdempotencyRecord.id.in_(ids))
     )
+    recheck_local_control(session)
     session.commit()
     return len(ids)

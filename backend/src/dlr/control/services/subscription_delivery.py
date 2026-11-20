@@ -10,7 +10,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
-from sqlalchemy import case, delete, exists, func, select, true
+from sqlalchemy import case, delete, exists, func, select, text, true
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.selectable import Exists
@@ -110,8 +110,48 @@ def refresh_delivery_state(session: Session, sub: EventSubscription) -> None:
         sub.delivery_state = "idle"
 
 
+def require_lease_control(
+    session: Session, lease: SubscriptionLease, *, passive_http: bool = False
+) -> None:
+    from dlr.control.services.control_ha_capacity import assert_local_control
+
+    receiver = assert_local_control(session)
+    if receiver is None:
+        return
+    if lease.lease_until <= database_now(session):
+        raise domain_error(409, "subscription_owner_stale", "Listener ownership expired")
+    if lease.control_instance_id == receiver:
+        return
+    # Peer and receiver hold compatible share locks. A peer being renewed or
+    # revoked is temporarily unavailable for new custody; do not wait behind it.
+    if (
+        passive_http
+        and lease.control_instance_id is not None
+        and session.scalar(
+            text("""
+            SELECT 1 FROM control_process_instances owner
+            JOIN control_process_instances receiver USING (cluster_id, authority_epoch)
+            WHERE owner.instance_id = :owner AND receiver.instance_id = :receiver
+              AND owner.ha_slot IS NOT NULL AND NOT owner.revoked
+              AND owner.image_digest = receiver.image_digest
+              AND owner.lease_until > pg_catalog.clock_timestamp()
+            FOR SHARE OF owner SKIP LOCKED
+        """),
+            {"owner": lease.control_instance_id, "receiver": receiver},
+        )
+        == 1
+    ):
+        return
+    raise domain_error(409, "subscription_owner_stale", "Listener Control ownership expired")
+
+
 def _lease(
-    session: Session, subscription: EventSubscription, owner_id: str, generation: int
+    session: Session,
+    subscription: EventSubscription,
+    owner_id: str,
+    generation: int,
+    *,
+    passive_http: bool = False,
 ) -> SubscriptionLease:
     lease = session.get(
         SubscriptionLease, subscription.id, with_for_update=True, populate_existing=True
@@ -125,6 +165,7 @@ def _lease(
         or subscription.deleted_at is not None
     ):
         raise domain_error(409, "subscription_owner_stale", "Listener ownership expired")
+    require_lease_control(session, lease, passive_http=passive_http)
     return lease
 
 
@@ -133,6 +174,9 @@ def acquire_lease(
 ) -> SubscriptionLease:
     if not owner_id or len(owner_id) > 128 or not 1 <= ttl <= 30:
         raise domain_error(422, "subscription_lease_invalid", "Invalid listener lease")
+    from dlr.control.services.control_ha_capacity import assert_local_control
+
+    instance_id = assert_local_control(session)
     _, sub = lock_subscription(session, subscription_id)
     if sub.desired_state != "enabled" or sub.deleted_at is not None:
         raise domain_error(409, "subscription_owner_stale", "Subscription is not enabled")
@@ -153,6 +197,7 @@ def acquire_lease(
         lease.owner_id = owner_id
         lease.generation += 1
         lease.lease_until = now + timedelta(seconds=ttl)
+    lease.control_instance_id = instance_id
     lease.closing_generation = None
     session.flush()
     return lease
@@ -163,6 +208,9 @@ def renew_lease(
 ) -> SubscriptionLease:
     if not owner_id or len(owner_id) > 128 or not 1 <= ttl <= 30:
         raise domain_error(422, "subscription_lease_invalid", "Invalid listener lease")
+    from dlr.control.services.control_ha_capacity import assert_local_control
+
+    instance_id = assert_local_control(session)
     # Renewal only locks Lease; desired changes are fenced by generation under the same row.
     lease = session.get(
         SubscriptionLease, subscription_id, with_for_update=True, populate_existing=True
@@ -172,6 +220,7 @@ def renew_lease(
         lease is None
         or lease.owner_id != owner_id
         or lease.generation != generation
+        or (instance_id is not None and lease.control_instance_id != instance_id)
         or lease.lease_until <= now
     ):
         raise domain_error(409, "subscription_owner_stale", "Listener ownership expired")
@@ -305,6 +354,9 @@ def receive_event(
     prevent_conflict_block: bool = False,
 ) -> tuple[EventReceipt | None, bool]:
     """T1. Source commit is allowed only after the caller commits this entire transaction."""
+    from dlr.control.services.control_ha_capacity import assert_local_control
+
+    receiver = assert_local_control(session)
     if envelope.get("source", {}).get("type") == "kubernetes":
         raise domain_error(
             422,
@@ -335,7 +387,7 @@ def receive_event(
             422, "event_position_invalid", "Kafka checkpoint requires safe next offset"
         )
     _, sub = lock_subscription(session, subscription_id)
-    _lease(session, sub, owner_id, generation)
+    lease = _lease(session, sub, owner_id, generation, passive_http=sub.source_type == "http")
     checkpoint = session.scalar(
         select(SourceCheckpoint)
         .where(
@@ -457,6 +509,9 @@ def receive_event(
         activation_id=activation.id,
         source_epoch=sub.source_epoch,
         source_event_id=envelope["event"]["id"],
+        receiver_control_instance_id=receiver,
+        source_owner_id=lease.owner_id if receiver is not None else None,
+        source_owner_generation=lease.generation if receiver is not None else None,
         content_hash=content_hash,
         envelope=envelope,
         source_raw_body=source_raw_body,
@@ -485,6 +540,8 @@ def receive_event(
         checkpoint.blocked_unaccepted = None
     session.flush()
     refresh_delivery_state(session, sub)
+    if receiver is not None:
+        require_lease_control(session, lease, passive_http=sub.source_type == "http")
     return receipt, False
 
 
@@ -1405,8 +1462,10 @@ def record_rejection(
 
     This is not a Receipt and never authorizes source ACK. One summary per bounded shard.
     """
+    from dlr.control.services.control_ha_capacity import assert_local_control
     from dlr.control.services.event_envelope import canonical
 
+    assert_local_control(session)
     _, sub = lock_subscription(session, subscription_id)
     _lease(session, sub, owner_id, generation)
     summary = {

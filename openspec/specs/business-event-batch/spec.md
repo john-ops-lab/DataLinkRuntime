@@ -91,3 +91,32 @@ T1 MUST 预付单成员完整未来输入及有界关联/结果预算，T2 的�
 #### Scenario: 一个成员到期而另一个失败
 - **WHEN** 成功成员原文或原 30 天窗口到期，但另一成员仍失败或重放中
 - **THEN** 仅释放真正删除的独立原文，共享输入/manifest/关联和其份额保持，旧版本不能误作单条结算或删除
+
+### Requirement: 多 Control 批次创建只承担一份有效成员责任
+多Control SHALL 在原T2事务及唯一关联下创建共享Execution、Admission、已计费Outbox意图和manifest，每个Delivery只能进入一份有效初始批次。批次仍须使用同Activation、冻结路由、规则revision及原可运行前缀；MUST 不因跨节点调度混用成员快照或增加Adapter活动Attempt。
+
+#### Scenario: 两节点同时组装相同前缀
+- **WHEN** A/B同时选择同订阅的pending成员
+- **THEN** 仅一份合法成员关联提交，另一方回读或回滚；pending扣减、共享预算和输入不重复
+
+#### Scenario: 组装事务中断
+- **WHEN** manifest写入后但commit前A退出
+- **THEN** B可从原pending恢复，没有半批成员、重复Execution或丢失计费
+
+### Requirement: 跨节点终态保留已验证成员事实
+Control/Worker故障恢复 SHALL 保留已验证持久的成功前缀、失败/unknown/not_run及原batch identity。未确认目标副作用 MUST 不被推断为平台成功；新Attempt继续受原lease/fence、Retry Policy和manifest约束，业务效果按稳定成员身份对账。
+
+#### Scenario: 部分业务写入后崩溃
+- **WHEN** 目标已写入部分成员，但完整结果尚未被Control验证持久化
+- **THEN** 未确认成员保持unknown或按可证明条件not_run；恢复使用原业务键，不能从日志或退出码补造成功前缀
+
+#### Scenario: 已提交终态响应丢失
+- **WHEN** A已原子保存完整结果和成员状态，响应丢失后Worker向B重复报告
+- **THEN** B幂等读回原终态，不重复释放Admission/预留，不改写成员顺序或重开已结清责任
+
+### Requirement: HA 不扩张共享取消和成员补处理保证
+共享取消 SHALL 继续影响整个共享Execution中的未完成成员；单成员Replay只创建原目标成员的新责任及新manifest，并保留原批次事实。跨节点迟到结果、自动清理或资源释放 MUST 不结清仍失败/未知的成员，也不得承诺单成员独立取消。
+
+#### Scenario: 取消后旧 Worker 恢复
+- **WHEN** 共享执行已取消并被fence，旧Worker提交全部成功
+- **THEN** 旧结果不能覆盖取消和原成员事实；必要输入/引用继续受保护，后续按原授权补处理和对账

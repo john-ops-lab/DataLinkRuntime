@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 from queue import Empty, Queue
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -511,8 +512,9 @@ def test_aclose_without_supervisor_fences_and_keeps_unfinished_native_permit(run
     assert manager.buffer.used_bytes == 0
 
 
+@pytest.mark.parametrize("ha", [False, True])
 def test_db_close_ack_failure_keeps_permit_until_reconciled(
-    runtime_world, session_factory, monkeypatch
+    runtime_world, session_factory, monkeypatch, ha
 ):
     subscription_id = runtime_world["subscriptions"]()[0]
     source = GatedSource()
@@ -522,6 +524,18 @@ def test_db_close_ack_failure_keeps_permit_until_reconciled(
     with session_factory.begin() as session:
         session.get(EventSubscription, subscription_id).desired_state = "disabled"
     manager.stop_single(subscription_id)
+    if ha:
+        from dlr.control.services import control_ha_capacity as capacity
+
+        process_id = uuid.uuid4()
+        with session_factory.begin() as session:
+            session.get(SubscriptionLease, subscription_id).control_instance_id = process_id
+        monkeypatch.setattr(settings, "control_ha_slot", "a")
+        monkeypatch.setattr(
+            capacity,
+            "_local_process",
+            SimpleNamespace(instance_id=process_id, assert_live=lambda _: None),
+        )
     attempted = threading.Event()
     acknowledge = management.listener_closed
 

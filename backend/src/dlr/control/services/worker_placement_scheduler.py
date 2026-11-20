@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from dlr.control.models import Execution, RuntimeReconciliationCursor
 from dlr.control.services import worker_placement_cutover, worker_placement_wait, worker_reservation
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 
 _PLACEMENT_CURSOR = "worker_placement"
 _EXPIRATION_CURSOR = "worker_placement_expiration"
@@ -64,6 +65,7 @@ def notify_capacity() -> None:
 def _next(session: Session) -> tuple[int, int, bool, datetime | None] | None:
     """Commit cursor advancement before entering any business transaction."""
     session.execute(text("SET LOCAL statement_timeout = '100ms'"))
+    assert_local_control(session)
     if worker_placement_cutover.mode(session) != "reserved":
         session.rollback()
         return None
@@ -79,16 +81,19 @@ def _next(session: Session) -> tuple[int, int, bool, datetime | None] | None:
     next_head = session.execute(_HEAD, {"after": cursor.after_id}).one_or_none()
     if next_head is None:
         cursor.after_id = cursor.upper_id = 0
+        recheck_local_control(session)
         session.commit()
         return None
     adapter_id, execution_id, target_worker_id, changed_at = next_head
     cursor.after_id = cursor.upper_id = adapter_id
+    recheck_local_control(session)
     session.commit()
     return adapter_id, execution_id, target_worker_id is not None, changed_at
 
 
 def _next_expired(session: Session) -> int | None:
     session.execute(text("SET LOCAL statement_timeout = '100ms'"))
+    assert_local_control(session)
     if worker_placement_cutover.mode(session) != "reserved":
         session.rollback()
         return None
@@ -113,6 +118,7 @@ def _next_expired(session: Session) -> int | None:
         .limit(1)
     )
     cursor.after_id = cursor.upper_id = execution_id or 0
+    recheck_local_control(session)
     session.commit()
     return execution_id
 
@@ -127,10 +133,12 @@ def _expire_pass(session: Session, deadline: float) -> tuple[int, int]:
                 break
             selected += 1
             session.execute(text("SET LOCAL statement_timeout = '100ms'"))
+            assert_local_control(session)
             if worker_placement_cutover.mode(session, hold=True) != "reserved":
                 session.rollback()
                 break
             changed += int(worker_placement_wait.expire_queued(session, execution_id))
+            recheck_local_control(session)
             session.commit()
         except OperationalError as error:
             session.rollback()
@@ -153,6 +161,7 @@ def _placement_pass(session: Session, deadline: float, limit: int) -> int:
                 break
             adapters.add(adapter_id)
             session.execute(text("SET LOCAL statement_timeout = '100ms'"))
+            assert_local_control(session)
             if worker_placement_cutover.mode(session, hold=True) != "reserved":
                 session.rollback()
                 break
@@ -165,6 +174,7 @@ def _placement_pass(session: Session, deadline: float, limit: int) -> int:
                     )
                     is not None
                 )
+            recheck_local_control(session)
             session.commit()
         except OperationalError as error:
             session.rollback()

@@ -459,7 +459,9 @@ def _source_context(
     session: Session, context: SourceRunContext
 ) -> tuple[EventSubscription, SubscriptionActivation, SubscriptionConfigVersion]:
     from dlr.control.services import subscription_delivery as delivery
+    from dlr.control.services.control_ha_capacity import assert_local_control
 
+    assert_local_control(session)
     _, sub = delivery.lock_subscription(session, context.subscription_id)
     delivery._lease(session, sub, context.owner_id, context.generation)
     activation = session.get(SubscriptionActivation, context.activation_id)
@@ -701,9 +703,13 @@ def _insert_receipt(
     batch_id: int | None,
     phase: str,
     page_index: int | None = None,
+    *,
+    control_batch: SyncBatch | None = None,
 ) -> EventReceipt:
     from dlr.control.models import Adapter
+    from dlr.control.services import subscription_delivery as delivery
     from dlr.control.services import worker_legacy_window
+    from dlr.control.services.control_ha_capacity import assert_local_control
     from dlr.control.services.subscription_activation_policy import ensure_policy
 
     worker_legacy_window.require_dispatch_target(
@@ -714,11 +720,28 @@ def _insert_receipt(
     ensure_policy(session, activation, adapter)
     now = database_now(session)
     object_key = envelope["event"]["object_key"]
+    receiver = assert_local_control(session)
+    owner_id, owner_generation = None, None
+    if receiver is not None:
+        if control_batch is not None:
+            owner_id = control_batch.owner_id
+            owner_generation = control_batch.owner_generation
+            if not owner_id or owner_generation is None:
+                receiver, owner_id, owner_generation = None, None, None
+        else:
+            lease = session.get(SubscriptionLease, sub.id)
+            if lease is None:
+                raise domain_error(409, "subscription_owner_stale", "Listener ownership expired")
+            delivery.require_lease_control(session, lease)
+            owner_id, owner_generation = lease.owner_id, lease.generation
     receipt = EventReceipt(
         subscription_id=sub.id,
         activation_id=activation.id,
         source_epoch=sub.source_epoch,
         source_event_id=envelope["event"]["id"],
+        receiver_control_instance_id=receiver,
+        source_owner_id=owner_id,
+        source_owner_generation=owner_generation,
         content_hash=content_hash,
         envelope=envelope,
         payload_bytes=size,
@@ -1379,7 +1402,16 @@ def materialize_ready_control(session: Session, ticket: ControlTicket) -> SyncSt
     batch.reserved_control_count -= 1
     batch.reserved_control_bytes -= CONTROL_BYTES
     receipt = _insert_receipt(
-        session, sub, activation, cp, envelope, content_hash, size, batch.id, kind
+        session,
+        sub,
+        activation,
+        cp,
+        envelope,
+        content_hash,
+        size,
+        batch.id,
+        kind,
+        control_batch=batch,
     )
     setattr(
         batch,

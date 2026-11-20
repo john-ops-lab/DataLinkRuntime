@@ -8,6 +8,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import inspect
 
@@ -48,6 +49,8 @@ def validate_metadata(row: Any, maximum: int) -> None:
         value = getattr(row, column.name)
         if isinstance(value, datetime):
             value = value.isoformat()
+        elif isinstance(value, UUID):
+            value = str(value)
         if value is None and (column.name == "id" or column.name.endswith("_id")):
             value = 9223372036854775807
         values[column.name] = value

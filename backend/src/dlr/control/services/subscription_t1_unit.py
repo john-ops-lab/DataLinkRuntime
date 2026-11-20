@@ -138,7 +138,10 @@ class T1Unit:
     ):
         if source_type not in {"http", "rabbitmq"}:
             raise domain_error(409, "subscription_config_conflict", "Unsupported T1 unit source")
+        from dlr.control.services.control_ha_capacity import assert_local_control
+
         self.session = session
+        self.receiver = assert_local_control(session)
         self.adapter, self.subscription = delivery.lock_subscription(session, subscription_id)
         self.source_type, self.source_epoch, self.shard = source_type, source_epoch, shard
         self.owner_id, self.generation = owner_id, generation
@@ -247,6 +250,7 @@ class T1Unit:
             or sub.deleted_at is not None
         ):
             raise domain_error(409, "subscription_owner_stale", "Listener ownership expired")
+        delivery.require_lease_control(self.session, lease, passive_http=self.source_type == "http")
         if self.source_type == "http" and (
             lease.closing_generation is not None or sub.connection_state != "listening"
         ):
@@ -555,6 +559,9 @@ class T1Unit:
                         "activation_id",
                         "source_epoch",
                         "source_event_id",
+                        "receiver_control_instance_id",
+                        "source_owner_id",
+                        "source_owner_generation",
                         "content_hash",
                         "envelope",
                         "source_raw_body",
@@ -686,12 +693,16 @@ class T1Unit:
                     item.envelope is not None
                     and value.content_hash is not None
                     and self._activation is not None
+                    and self._lease_row is not None
                 )
                 receipt = EventReceipt(
                     subscription_id=self.subscription.id,
                     activation_id=self._activation.id,
                     source_epoch=self.source_epoch,
                     source_event_id=item.identity,
+                    receiver_control_instance_id=self.receiver,
+                    source_owner_id=self._lease_row.owner_id if self.receiver else None,
+                    source_owner_generation=self._lease_row.generation if self.receiver else None,
                     content_hash=value.content_hash,
                     envelope=item.envelope,
                     source_raw_body=item.raw_body if self.source_type == "http" else None,

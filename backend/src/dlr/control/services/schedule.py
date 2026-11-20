@@ -64,6 +64,8 @@ from dlr.control.services.adapter import (
     _require_not_archived,
     domain_error,
 )
+from dlr.control.services.background_control import reserve_page
+from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 from dlr.control.services.execution import (
     LEGACY_INPUT_COMPAT_METRICS,
     _create_execution_locked,
@@ -1176,7 +1178,7 @@ def _process_queue_every_occurrence(
     return ScheduleTickResult.CREATED if created else ScheduleTickResult.CONSUMED
 
 
-def _process_due_row(schedule_id: int, adapter_id: int, *, now: datetime) -> int:
+def _process_due_row(schedule_id: int, *, now: datetime) -> int:
     """Process one due row in its own short transaction.
 
     Locks are taken in the platform order (Adapter first, Schedule second,
@@ -1189,6 +1191,10 @@ def _process_due_row(schedule_id: int, adapter_id: int, *, now: datetime) -> int
 
     session = SessionLocal()
     try:
+        assert_local_control(session)
+        adapter_id = session.scalar(
+            select(AdapterSchedule.adapter_id).where(AdapterSchedule.id == schedule_id)
+        )
         adapter = session.scalar(
             select(Adapter).where(Adapter.id == adapter_id).with_for_update(skip_locked=True)
         )
@@ -1206,7 +1212,12 @@ def _process_due_row(schedule_id: int, adapter_id: int, *, now: datetime) -> int
         # Re-check inside the final locks: another scheduler may already
         # have processed the row, or a concurrent PUT may have disabled or
         # re-based it to the future.
-        if not schedule.enabled or schedule.next_run_at is None or schedule.next_run_at > now:
+        if (
+            schedule.adapter_id != adapter.id
+            or not schedule.enabled
+            or schedule.next_run_at is None
+            or schedule.next_run_at > now
+        ):
             return 0
         before_created = int(
             session.scalar(
@@ -1235,6 +1246,7 @@ def _process_due_row(schedule_id: int, adapter_id: int, *, now: datetime) -> int
         created = after_created - before_created
         if created < 0:  # pragma: no cover - the Adapter lock prevents this
             raise RuntimeError("Schedule Execution count moved backwards")
+        recheck_local_control(session)
         session.commit()
         return created
     except Exception:
@@ -1244,30 +1256,25 @@ def _process_due_row(schedule_id: int, adapter_id: int, *, now: datetime) -> int
         session.close()
 
 
-def scheduler_tick(session: Session, *, now: datetime | None = None) -> int:
-    """One scheduler poll: process every due enabled Schedule once.
-
-    Discovery is a plain read; every due row is then processed in its own
-    transaction (see _process_due_row), so concurrent schedulers partition
-    due rows via SKIP LOCKED without releasing each other's locks mid-tick
-    and without processing a row whose due condition changed meanwhile.
-    Returns the number of Schedule Executions created this tick.
-    """
+def scheduler_tick(session: Session, *, now: datetime | None = None, limit: int = 100) -> int:
+    """Reserve a bounded scan page before any per-Adapter transaction."""
     if now is None:
         now = worker_availability.current_time(session)
-    candidates = session.execute(
-        select(AdapterSchedule.id, AdapterSchedule.adapter_id)
-        .where(
+    candidates = reserve_page(
+        session,
+        "schedule_due",
+        select(AdapterSchedule.id).where(
             AdapterSchedule.enabled.is_(True),
             AdapterSchedule.next_run_at.is_not(None),
             AdapterSchedule.next_run_at <= now,
-        )
-        .order_by(AdapterSchedule.next_run_at, AdapterSchedule.id)
-    ).all()
+        ),
+        AdapterSchedule.id,
+        limit=max(1, min(limit, 100)),
+    )
     created = 0
-    for schedule_id, adapter_id in candidates:
+    for schedule_id in candidates:
         try:
-            created += _process_due_row(schedule_id, adapter_id, now=now)
+            created += _process_due_row(schedule_id, now=now)
         except Exception:
             # One broken Schedule must never stall the whole tick.
             logger.exception("scheduler tick failed for schedule %s", schedule_id)

@@ -246,3 +246,14 @@ skip/reset SHALL 要求 edit 权限、原因与幂等请求 ID，并记录操作
 #### Scenario: 幂等读回与新补处理
 - **WHEN** 已有请求重送或用户针对同一历史事件发起新的补处理
 - **THEN** 按原权限与请求标识读回已有责任；新请求按所选来源检查路由及原失败屏障，已专用放弃或已闭合的成功 K8s completed 拒绝新补处理，原 Delivery 保留
+
+### Requirement: 多节点恢复不越过来源顺序和失败屏障
+跨Control/Worker恢复 SHALL 保留源身份、epoch、首次输入、来源安全位置及原Delivery链；partition_serial、scope_serial、receipt_serial和完成确认屏障仍然有效。MUST 不通过换Pool、重新创建初始责任、跳过失败或清理旧记录来获得进展。
+
+#### Scenario: 失败前序留在旧节点
+- **WHEN** A失效时前序Delivery失败或结果未知，B接管且后继仍pending
+- **THEN** B保留原阻塞并按原Retry/Replay/显式处置恢复；不能让后继越过，也不阻塞无关可运行分片
+
+#### Scenario: 已确认接管但没有 Execution
+- **WHEN** T1已提交而T2尚未发生时A退出
+- **THEN** B从持久Receipt/Delivery继续原责任，不依赖A内存或原请求连接，不重复来源确认对应的初始处理身份

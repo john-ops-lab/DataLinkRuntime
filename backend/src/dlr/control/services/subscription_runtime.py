@@ -31,6 +31,7 @@ from dlr.control.models.subscription import (
 )
 from dlr.control.services import subscription_delivery as delivery
 from dlr.control.services import subscription_management as management
+from dlr.control.services.control_ha_capacity import assert_local_control
 from dlr.control.services.secrets import decrypt_fields
 from dlr.control.services.subscription_http import HttpSourceRunner
 from dlr.control.services.subscription_queue_failure import LEGACY_LIFECYCLE_FAILURES
@@ -108,6 +109,7 @@ class SubscriptionRuntimeManager:
         self._renewer: threading.Thread | None = None
         self._cursor = 0
         self._upper = 0
+        self._http_batch_routes: frozenset[str] = frozenset()
 
     @property
     def active_count(self) -> int:
@@ -145,6 +147,7 @@ class SubscriptionRuntimeManager:
 
         try:
             with self.session_factory.begin() as session:
+                assert_local_control(session)
                 if not legacy_policy_gate(session) or not activate_profile(session):
                     return False
         except Exception:
@@ -154,6 +157,7 @@ class SubscriptionRuntimeManager:
         owner: _Owner | None = None
         try:
             with self.session_factory.begin() as session:
+                assert_local_control(session)
                 _, sub = delivery.lock_subscription(session, subscription_id)
                 if settings.control_ha_slot is not None:
                     from dlr.control.services.control_ha_capacity import admission_configured
@@ -265,6 +269,8 @@ class SubscriptionRuntimeManager:
     def http_batch_hint(self, public_id: str) -> bool:
         """A scheduling hint only; T1 rechecks the locked authoritative binding."""
         with self._lock:
+            if settings.control_ha_slot is not None:
+                return public_id in self._http_batch_routes
             return any(
                 owner.context.public_id == public_id
                 and owner.context.source_config.get("mode") == "business_batch"
@@ -280,6 +286,7 @@ class SubscriptionRuntimeManager:
             raise SourceFailure("subscription_owner_stale", "backoff")
         context = owner.context
         with self.session_factory.begin() as session:
+            assert_local_control(session)
             _, sub = delivery.lock_subscription(session, subscription_id)
             delivery._lease(session, sub, context.owner_id, context.generation)
             if not settings.event_subscriptions_enabled:
@@ -289,10 +296,29 @@ class SubscriptionRuntimeManager:
         with self._lock:
             self._retry.pop(subscription_id, None)
 
-    def _record_unowned_failure(self, subscription_id: int, error: SourceFailure) -> None:
+    def _record_unowned_failure(
+        self, subscription_id: int, error: SourceFailure, *, context: SourceRunContext | None = None
+    ) -> None:
         try:
             with self.session_factory.begin() as session:
+                instance = assert_local_control(session)
                 _, sub = delivery.lock_subscription(session, subscription_id)
+                if instance is not None:
+                    lease = session.get(SubscriptionLease, sub.id, with_for_update=True)
+                    if context is not None and lease is None:
+                        return
+                    if lease is not None:
+                        from dlr.control.services.input_config import database_now
+
+                        if context is None and lease.lease_until > database_now(session):
+                            return
+                        if context is not None and (
+                            lease.control_instance_id != instance
+                            or lease.owner_id != context.owner_id
+                            or context.generation
+                            not in (lease.generation, lease.closing_generation)
+                        ):
+                            return
                 if sub.desired_state == "enabled":
                     sub.connection_state = "blocked"
                     sub.last_error_code = error.code
@@ -329,9 +355,14 @@ class SubscriptionRuntimeManager:
         context.stop_event.set()
         try:
             with self.session_factory.begin() as session:
+                instance = assert_local_control(session)
                 _, sub = delivery.lock_subscription(session, context.subscription_id)
                 lease = session.get(SubscriptionLease, sub.id, with_for_update=True)
-                if lease is not None and lease.owner_id == context.owner_id:
+                if (
+                    lease is not None
+                    and lease.owner_id == context.owner_id
+                    and (instance is None or lease.control_instance_id == instance)
+                ):
                     same_owner = True
                 else:
                     same_owner = False
@@ -366,7 +397,7 @@ class SubscriptionRuntimeManager:
                 "source close acknowledgement unavailable subscription_id=%s",
                 context.subscription_id,
             )
-            return  # Retry the DB acknowledgement without recreating or renewing the client.
+            return  # Retry acknowledgement without recreating or renewing the client.
         if owner.close_unconfirmed:
             return
         context.buffer.release_all()
@@ -390,9 +421,14 @@ class SubscriptionRuntimeManager:
         context = owner.context
         try:
             with self.session_factory.begin() as session:
+                instance = assert_local_control(session)
                 _, sub = delivery.lock_subscription(session, subscription_id)
                 lease = session.get(SubscriptionLease, sub.id, with_for_update=True)
-                if lease is not None and lease.owner_id == context.owner_id:
+                if (
+                    lease is not None
+                    and lease.owner_id == context.owner_id
+                    and (instance is None or lease.control_instance_id == instance)
+                ):
                     if lease.generation == context.generation:
                         management._fence(session, sub)
                     if (
@@ -424,9 +460,37 @@ class SubscriptionRuntimeManager:
                 self._finish_owner(owner, owner.failure)
             elif owner.close_unconfirmed:
                 self._record_unowned_failure(
-                    owner.context.subscription_id, SourceFailure("source_close_unconfirmed")
+                    owner.context.subscription_id,
+                    SourceFailure("source_close_unconfirmed"),
+                    context=owner.context,
                 )
         with self.session_factory() as session:
+            if settings.control_ha_slot is not None:
+                routes = session.scalars(
+                    select(HttpIngressRoute.public_id)
+                    .join(
+                        EventSubscription, EventSubscription.id == HttpIngressRoute.subscription_id
+                    )
+                    .join(
+                        SubscriptionActivation,
+                        SubscriptionActivation.id == EventSubscription.activation_id,
+                    )
+                    .join(
+                        SubscriptionConfigVersion,
+                        SubscriptionConfigVersion.id == SubscriptionActivation.config_version_id,
+                    )
+                    .where(
+                        EventSubscription.desired_state == "enabled",
+                        EventSubscription.deleted_at.is_(None),
+                        EventSubscription.source_epoch == HttpIngressRoute.source_epoch,
+                        SubscriptionConfigVersion.config["mode"].as_string() == "business_batch",
+                    )
+                    .order_by(HttpIngressRoute.public_id)
+                    .limit(16)
+                )
+                batch_routes = frozenset(routes)
+                with self._lock:
+                    self._http_batch_routes = batch_routes
             if retries:
                 still_enabled = set(
                     session.scalars(

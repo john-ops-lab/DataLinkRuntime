@@ -131,6 +131,9 @@ def test_upgrade_preserves_pending_failed_and_kubernetes_control(upgrade_databas
         after = {table: snapshot(connection, table) for table in before}
         for row in after["event_receipts"]:
             assert row.pop("source_raw_body") is None
+            assert row.pop("receiver_control_instance_id") is None
+            assert row.pop("source_owner_id") is None
+            assert row.pop("source_owner_generation") is None
             row.pop("retained_payload_bytes")
             row.pop("retained_metadata_bytes")
             previous = next(value for value in before["event_receipts"] if value["id"] == row["id"])

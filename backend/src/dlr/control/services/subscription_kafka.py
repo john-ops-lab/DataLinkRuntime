@@ -463,6 +463,9 @@ class AssignmentTracker(ConsumerRebalanceListener):  # type: ignore[misc]
 
 
 def _lock_context(session: Session, context: SourceRunContext) -> None:
+    from dlr.control.services.control_ha_capacity import assert_local_control
+
+    assert_local_control(session)
     _, sub = delivery.lock_subscription(session, context.subscription_id)
     lease = session.get(SubscriptionLease, sub.id, with_for_update=True, populate_existing=True)
     if (
@@ -476,6 +479,7 @@ def _lock_context(session: Session, context: SourceRunContext) -> None:
         or sub.source_epoch != context.source_epoch
     ):
         raise SourceFailure("subscription_owner_stale", disposition="blocked")
+    delivery.require_lease_control(session, lease)
 
 
 def _checkpoint(

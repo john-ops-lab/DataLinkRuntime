@@ -68,9 +68,9 @@
 - **AND** 慢读/取消/关闭/submit拒绝和hint变陈回退沿同一所有权，尚未提交可恰一次释放，已提交两类预算持有至真实结束；不得先解析再补记账、增加隐藏排队或提前成功
 
 #### Scenario: 字节充足但同来源服务窗口已满
-- **WHEN** 同来源已有32个读取、收集、就绪或原生POST，尚有其他来源/GET需要使用全局名额
+- **WHEN** 同来源已有32个读取、收集、就绪或原生POST，尚有其他来源/GET需要使用本节点名额
 - **THEN** 新POST在正文读取前以429与Retry-After拒绝，ASGI可按同一只读窗口提前拒绝；窗口归属与原文预算一起持有至真实工作结束，取消不提前释放，结束后自动恢复
-- **AND** 不放宽16项收集、单路由active、FIFO、1秒ready期限或全球128/8MiB/8native上限；管理员诊断可查看有限计数/字节峰值但不见路由或输入
+- **AND** 保持每节点16项收集、单路由active、FIFO、1秒ready期限与128/8MiB/8native上限；管理员诊断可查看有限计数/字节峰值但不见路由或输入
 
 #### Scenario: 内容无法完整存储
 - **WHEN** 合法传输中的 JSON 值不符合当前无损存储合同
@@ -132,10 +132,10 @@ HTTP 多条模式的收集 SHALL 在 async 层有界完成，不让原生线程�
 - **AND** 模型测试 SHALL NOT 替代真实功能或容量验收。
 
 ### Requirement: 有界HTTP组按路由获得原生工作
-显式business_batch的实际原生单元 SHALL 同public_id最多一个未结束native单元，同路由成员FIFO、跨可运行路由轮转，并共享原8 native/8接收连接。所有等待成员 MUST 持有上述有界请求及原文额度，提交native前另取工作区，合计8MiB，不新增正文副本或无界路由/任务缓存；旧单条和GET路径 MUST 保持。
+显式business_batch的实际原生单元 SHALL 在每个 Control 上同 public_id 最多一个未结束 native 单元，同路由成员FIFO、跨可运行路由轮转，并共享该节点原 8 native/8 接收连接。所有等待成员 MUST 持有上述有界请求及原文额度，提交native前另取工作区，合计8MiB，不新增正文副本或无界路由/任务缓存；旧单条和GET路径 MUST 保持。
 
 #### Scenario: 同路由繁忙时等候、到期与其他路由推进
-- **WHEN** 封组后该路由尚有native组未结束或原全局native额度已满
+- **WHEN** 封组后该路由尚有native组未结束或本节点 native 额度已满
 - **THEN** 各成员在原额度内保留封组时起最多额外1秒的原就绪期限，不延长25ms收集窗口；原生claim时仅可转交已ready且未过期的同路由FIFO前缀，不直接拆借collector或已提交成员，也不等待新项；提前封组另按锁外准备场景，不能延长原ready期限
 - **AND** 未提交native即到期者返回原429/Retry-After，不产生接管/配额或坏消息，其他可运行路由获得轮转机会
 - **AND** 原有native释放包括GET/旧单条 SHALL 触发有限就绪提示，避免无新POST时挂起
@@ -178,3 +178,36 @@ Control关闭 SHALL 保持原15秒有界的原生来源等待；关闭回执 MUS
 #### Scenario: 两类接收工作均确认结束
 - **WHEN** 原生来源真实结束且HTTP原生executor已真正排空
 - **THEN** 才可dispose和清除原共享接收factory；管理/恢复保留池及持久责任规则不变
+
+### Requirement: 任意 Control 接收与读回同一 HTTP 责任
+任一合格Control SHALL 按同一source epoch、Idempotency-Key和原文哈希进行接收/查询；首次持久提交后才返回202。同身份同正文并发 MUST 只形成一份初始Receipt/Delivery与一次计费，不同正文仍409；提交后响应丢失允许从另一节点以原身份读回。
+
+#### Scenario: 双 Control 并发接收同 ID
+- **WHEN** 同一有效token、epoch、ID和原文同时到达A/B
+- **THEN** 首次提交返回202，其余按200读回同一receipt_id，无重复pending/history扣额或第二条初始Delivery
+
+#### Scenario: A 提交后响应丢失
+- **WHEN** A在commit后退出，发送方经B重投原ID和原文
+- **THEN** 读回原责任，不重复接管；同ID改正文仍返回409，原输入和激活绑定保持
+
+### Requirement: 局部故障不额外阻断已接管 HTTP 记录
+Broker、owner、新接收容量或可信磁盘观测不可用时，已接管记录 SHALL 在数据库、当前认证及原文/有限请求校验可用的前提下跨Control读回；新ID仍按原429/503和Retry-After拒绝。MUST 不把断线视为确定未提交、不放宽202门禁、不因查询需要而重新接管。
+
+#### Scenario: Broker 故障经真实 LB 查询
+- **WHEN** 两个Control的Broker功能诊断均失败但数据库正常
+- **THEN** LB保留责任API入口，GET及合法同ID原文读回可完成，新ID按门禁拒绝，查询不依赖原owner或原Control
+
+#### Scenario: 控制节点关闭但原生事务未结束
+- **WHEN** 等待者取消或A关闭超时，其实际native事务可能仍在提交
+- **THEN** 预算保留至真实结束，B按稳定身份查询/重试，不能提前释放A预算或伪造未提交
+
+#### Scenario: 两个节点并发接收同一订阅的不同 ID
+- **WHEN** A、B 各自在本节点收集请求并提交 T1
+- **THEN** 同订阅的 receipt_serial 按锁内分配并持久化的 EventReceipt.sequence 排序，EventDelivery.ordinal 保留各 Receipt 内的投递序号；各节点保持各自 FIFO、字节及连接预算，不跨节点拼接内存组。
+
+### Requirement: 双 Control 新接收记录真实来源归属
+双节点接收实例 MUST 先证明本地实例与事务权限。新 ID 的 T1 SHALL 在订阅和 lease 锁内以数据库时钟校验同一部署 authority 下来源 owner 实例、租约和 generation，在同一事务写入 receiver_control_instance_id、source_owner_id、source_owner_generation。正常换手保留 source_epoch。
+
+#### Scenario: B 代 A 接收后原 owner 失效
+- **WHEN** B 经 LB 接收时 A 仍是有效 owner，随后 A 失权或租约过期
+- **THEN** 已提交 T1 可追溯到 B、原 owner ID 和原 generation；后续新 ID 在有效 lease 建立前拒绝，旧 ID 按原认证与正文校验读回。0094 历史记录的三个归属字段均保留未知。

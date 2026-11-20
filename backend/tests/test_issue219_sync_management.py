@@ -270,6 +270,28 @@ def test_closed_old_epoch_batch_does_not_block_new_native_owner(
     assert manager.active_count == 0
 
 
+def test_partial_list_readback_accepts_the_full_control_reservation(
+    api_client, monkeypatch, session_factory
+):
+    _, _, sub = kube_subscription(api_client, monkeypatch)
+    sub = activate_kube(api_client, monkeypatch, sub)
+    remaining = {"count": sync.CONTROL_COUNT, "bytes": sync.CONTROL_COUNT * sync.CONTROL_BYTES}
+    batch_id = empty_batch(
+        session_factory,
+        sub,
+        state="reading",
+        reserved_control_count=remaining["count"],
+        reserved_control_bytes=remaining["bytes"],
+    )
+    root = f"/api/event-subscriptions/{sub['id']}"
+    summary = api_client.get(root)
+    assert summary.status_code == 200
+    assert summary.json()["latest_batch"]["remaining_reserve"] == remaining
+    detail = api_client.get(f"{root}/sync-batches/{batch_id}")
+    assert detail.status_code == 200
+    assert detail.json()["remaining_reserve"] == remaining
+
+
 def test_batch_reads_are_bounded_authorized_and_hide_raw_diagnostics(
     api_client, monkeypatch, session_factory
 ):

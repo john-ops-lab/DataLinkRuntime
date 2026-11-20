@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
     text,
 )
@@ -161,6 +163,7 @@ class SubscriptionLease(Base):
         BigInteger, ForeignKey("event_subscriptions.id"), primary_key=True
     )
     owner_id: Mapped[str] = mapped_column(String(128))
+    control_instance_id: Mapped[UUID | None] = mapped_column(Uuid())
     generation: Mapped[int] = mapped_column(BigInteger, default=1)
     closing_generation: Mapped[int | None] = mapped_column(BigInteger)
     lease_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -260,6 +263,13 @@ class EventReceipt(Base):
         ),
         CheckConstraint("payload_bytes >= 0", name="ck_receipt_payload_bytes"),
         CheckConstraint(
+            "(receiver_control_instance_id IS NULL AND source_owner_id IS NULL "
+            "AND source_owner_generation IS NULL) OR (receiver_control_instance_id IS NOT NULL "
+            "AND source_owner_id IS NOT NULL AND source_owner_generation IS NOT NULL "
+            "AND source_owner_generation > 0)",
+            name="ck_event_receipt_control_provenance",
+        ),
+        CheckConstraint(
             "retained_payload_bytes >= 0 AND retained_metadata_bytes BETWEEN 0 AND 4096",
             name="ck_receipt_retained_budget",
         ),
@@ -300,6 +310,9 @@ class EventReceipt(Base):
     activation_id: Mapped[int] = reference("subscription_activations")
     source_epoch: Mapped[str] = mapped_column(String(64))
     source_event_id: Mapped[str] = mapped_column(String(128))
+    receiver_control_instance_id: Mapped[UUID | None] = mapped_column(Uuid())
+    source_owner_id: Mapped[str | None] = mapped_column(String(128))
+    source_owner_generation: Mapped[int | None] = mapped_column(BigInteger)
     content_hash: Mapped[str] = mapped_column(String(64))
     source_raw_body: Mapped[bytes | None] = mapped_column(LargeBinary)
     envelope: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
