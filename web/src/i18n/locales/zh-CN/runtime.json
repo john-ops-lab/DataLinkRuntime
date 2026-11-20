@@ -536,6 +536,7 @@
     "emptyTitle": "暂未显示实时日志",
     "emptyDescription": "开始运行任务后，日志会显示在这里。",
     "connectionLost": "实时连接已断开，状态可能已过期",
+    "checkingAfterDisconnect": "实时连接已断开，正在查询执行状态…",
     "connectionLostDescription": "暂未确认执行已结束，自动查询已暂停。请刷新或稍后到执行记录中查看。",
     "queuedDescription": "已可靠排队，等待目标运行节点；运行节点暂时离线不会被视为失败。",
     "retryDescription": "系统将按服务端的下一次尝试时间继续处理。",

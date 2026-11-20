@@ -2,16 +2,63 @@
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
+from dlr.common.schema_gate import try_control_gate
+from dlr.common.schema_version import SCHEMA_REVISION
 from dlr.control import db
 from dlr.control.services import attempt, outbox, rabbitmq
 
 router = APIRouter()
 logger = logging.getLogger("dlr.control.health")
+_NO_CACHE = {"Cache-Control": "no-store"}
+
+
+@router.get("/api/health/live")
+def live() -> JSONResponse:
+    return JSONResponse({"status": "live"}, headers=_NO_CACHE)
+
+
+@router.get("/api/health/ready")
+def ready(request: Request) -> JSONResponse:
+    """Check core transaction authority independently of Broker and storage."""
+    available = False
+    try:
+        with db.SessionLocal.begin() as session:
+            # A standby/read-only login can answer SELECT 1 but cannot
+            # accept responsibility. Check the normal transaction mode and
+            # the actual schema and lease, including transaction completion.
+            if session.scalar(text("SHOW transaction_read_only")) != "off":
+                raise ValueError("read-only database transaction")
+            try_control_gate(session)
+            session.execute(text("SET LOCAL statement_timeout = '1500ms'"))
+            if session.execute(text("SELECT version_num FROM alembic_version")).scalars().all() != [
+                SCHEMA_REVISION
+            ]:
+                raise ValueError("incompatible schema")
+            if settings.worker_remote_v4_enabled:
+                process = getattr(request.app.state, "control_process_v4", None)
+                if process is None:
+                    raise ValueError("Control authority unavailable")
+                process.assert_live(session)
+                if settings.control_ha_slot is not None:
+                    from dlr.control.services.worker_token_fence_v4 import _database_fence
+
+                    _database_fence(session)
+        available = True
+    except Exception:
+        # Failed probes are ordinary during maintenance; no backend exception
+        # or configuration values belong in this public response or log.
+        pass
+    return JSONResponse(
+        {"service": "dlr-control", "status": "ready" if available else "not_ready"},
+        status_code=200 if available else 503,
+        headers=_NO_CACHE,
+    )
 
 
 def _repair_health_ok(rabbitmq_status: dict[str, object], outbox_status: dict[str, object]) -> bool:
@@ -64,7 +111,7 @@ def read_outbox_health(database_ok: bool, *, session: Session | None = None) -> 
 
 
 @router.get("/api/health")
-def health() -> JSONResponse:
+def health(request: Request) -> JSONResponse:
     """Report Control, ingress, repair and Outbox health without secrets."""
     database_ok = db.check_database()
     if database_ok:
@@ -108,4 +155,57 @@ def health() -> JSONResponse:
         "outbox": outbox_status,
         "reliable_runtime": {"attempt": attempt.metrics_snapshot()},
     }
+    if settings.control_ha_slot is not None:
+        payload["control_ha"] = _cluster_health(request, rabbitmq_status, database_ok)
     return JSONResponse(content=payload, status_code=200 if healthy else 503)
+
+
+def _cluster_health(
+    request: Request, rabbitmq_status: dict[str, object], database_ok: bool
+) -> dict[str, object]:
+    from dlr.control.services import control_ha_capacity
+
+    process = getattr(request.app.state, "control_process_v4", None)
+    compatibility = None
+    registered: int | None = None
+    storage = "unavailable"
+    capacity_compatible: bool | None = None
+    if database_ok and process is not None:
+        try:
+            with db.SessionLocal() as session:
+                try_control_gate(session)
+                process.assert_live(session)
+                compatibility = process.compatibility()
+                registered = session.scalar(
+                    text("""
+                        SELECT count(DISTINCT ha_slot) FROM control_process_instances
+                        WHERE NOT revoked AND lease_until > pg_catalog.clock_timestamp()
+                          AND authority_epoch = :epoch AND ha_slot IS NOT NULL
+                    """),
+                    {"epoch": process._deployment.authority_epoch},
+                )
+                storage, capacity_compatible = control_ha_capacity.storage_state(session)
+        except Exception:
+            compatibility = None
+    ingress = rabbitmq_status.get("ingress")
+    repair = rabbitmq_status.get("repair")
+    ingress_ready = isinstance(ingress, dict) and ingress.get("ready") is True
+    publish_ready = isinstance(repair, dict) and repair.get("ready") is True
+    return {
+        "node": {
+            "slot": settings.control_ha_slot,
+            "registered": compatibility is not None,
+            "capacity_compatible": capacity_compatible,
+        },
+        "cluster": {"registered": registered, "max_nodes": 2},
+        "features": {
+            "new_ingress": "available"
+            if storage == "available" and ingress_ready
+            else "unavailable",
+            "postgres_capacity": storage,
+            "mq_publish": "available" if publish_ready else "unavailable",
+            "managed_files": "awaiting_shared_backend",
+            "builtin_packages": "awaiting_shared_backend",
+            "ai_attachments": "awaiting_shared_backend",
+        },
+    }

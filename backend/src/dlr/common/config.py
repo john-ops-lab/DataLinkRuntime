@@ -1,5 +1,6 @@
 """Platform settings loaded from environment variables."""
 
+from ipaddress import ip_address
 from os.path import isabs
 from pathlib import Path
 from typing import Literal
@@ -43,6 +44,27 @@ class Settings(BaseSettings):
     )
     worker_v4_deployment_mode: Literal["A", "B", "C"] = Field(
         default="B", validation_alias="DLR_WORKER_V4_DEPLOYMENT_MODE"
+    )
+    control_ha_slot: Literal["a", "b"] | None = Field(
+        default=None, validation_alias="DLR_CONTROL_HA_SLOT"
+    )
+    control_ha_peer_url: str | None = Field(
+        default=None, repr=False, validation_alias="DLR_CONTROL_HA_PEER_URL"
+    )
+    control_ha_peer_ca_file: str | None = Field(
+        default=None, repr=False, validation_alias="DLR_CONTROL_HA_PEER_CA_FILE"
+    )
+    control_ha_trusted_proxy_ips: list[str] = Field(
+        default_factory=list, validation_alias="DLR_CONTROL_HA_TRUSTED_PROXY_IPS"
+    )
+    postgres_capacity_url: str | None = Field(
+        default=None, repr=False, validation_alias="DLR_POSTGRES_CAPACITY_URL"
+    )
+    postgres_capacity_token: str | None = Field(
+        default=None, repr=False, validation_alias="DLR_POSTGRES_CAPACITY_TOKEN"
+    )
+    postgres_capacity_ca_file: str | None = Field(
+        default=None, repr=False, validation_alias="DLR_POSTGRES_CAPACITY_CA_FILE"
     )
     worker_v4_database_role: str | None = Field(
         default=None, validation_alias="DLR_WORKER_V4_DATABASE_ROLE"
@@ -687,6 +709,19 @@ class Settings(BaseSettings):
 
 def validate_deployment_configuration(value: Settings) -> Settings:
     """Run the deployment gate for both Pydantic and app-factory callers."""
+    if value.control_ha_slot is not None and (
+        value.control_ha_slot not in ("a", "b")
+        or value.worker_remote_v4_enabled is not True
+        or value.worker_v4_deployment_mode != "C"
+    ):
+        raise ValueError("Control HA requires explicit v4 cluster mode")
+    if value.control_ha_slot is not None:
+        proxies = value.control_ha_trusted_proxy_ips
+        try:
+            if len(proxies) > 8 or any(str(ip_address(item)) != item for item in proxies):
+                raise ValueError
+        except (TypeError, ValueError):
+            raise ValueError("Invalid trusted Control HA proxy addresses") from None
     root = value.artifact_store_root
     if not isinstance(root, str) or not root.strip() or "\x00" in root or not isabs(root):
         raise ValueError("DLR_ARTIFACT_STORE_ROOT must be a non-empty absolute path")

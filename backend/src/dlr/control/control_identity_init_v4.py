@@ -69,6 +69,7 @@ def _maintenance_main(args: list[str]) -> int:
             "earliest",
             "first",
             "oldest",
+            "placement",
         )
         accepted = [
             required | {f"--{name}-{part}" for name in levels[:n] for part in ("source", "intent")}
@@ -159,6 +160,8 @@ def main() -> int:
             return _legacy_window_main(sys.argv[1:])
         if sys.argv[1] in {"proof-authority-apply", "proof-authority-observe"}:
             return _proof_rotation_main(sys.argv[1:])
+        if sys.argv[1] == "ha-configure":
+            return _ha_configure_main(sys.argv[2:])
         if sys.argv[1] in {
             "placement-pause",
             "placement-reconcile",
@@ -177,6 +180,22 @@ def main() -> int:
         return 0
     except Exception:
         # This includes a commit response loss: do not claim initialization.
+        print(json.dumps({"status": "unavailable_or_commit_unknown"}))
+        return 1
+
+
+def _ha_configure_main(args: list[str]) -> int:
+    from dlr.control.services.control_ha_capacity import configure
+
+    try:
+        domain, epoch_text = args
+        if int(epoch_text) <= 0 or str(int(epoch_text)) != epoch_text:
+            raise ValueError
+        with db.SessionLocal.begin() as session:
+            result = configure(session, settings, domain, int(epoch_text))
+        print(json.dumps(result))
+        return 0
+    except Exception:
         print(json.dumps({"status": "unavailable_or_commit_unknown"}))
         return 1
 

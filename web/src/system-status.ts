@@ -44,7 +44,21 @@ export interface ControlHealthPayload {
   database: boolean;
   rabbitmq?: RabbitMqHealth;
   outbox?: OutboxHealth;
+  control_ha?: {
+    node: { slot: "a" | "b"; registered: boolean; capacity_compatible: boolean | null };
+    cluster: { registered: number | null; max_nodes: number };
+    features: Record<ControlHaFeature, string>;
+  };
 }
+
+export const CONTROL_HA_FEATURES = [
+  "new_ingress", "postgres_capacity", "mq_publish", "managed_files",
+  "builtin_packages", "ai_attachments",
+] as const;
+type ControlHaFeature = (typeof CONTROL_HA_FEATURES)[number];
+const CONTROL_HA_STATES: ReadonlySet<unknown> = new Set([
+  "available", "unavailable", "low", "conflict", "awaiting_shared_backend",
+]);
 
 export const REQUIRED_ISOLATION_CAPABILITIES = [
   "cgroup_v2",
@@ -77,6 +91,20 @@ function isOptionalRecord(value: unknown): boolean {
   return value === undefined || isRecord(value);
 }
 
+function isControlHa(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value) || !isRecord(value.node) || !isRecord(value.cluster) || !isRecord(value.features)) {
+    return false;
+  }
+  const { node, cluster, features } = value;
+  return (node.slot === "a" || node.slot === "b")
+    && typeof node.registered === "boolean"
+    && (node.capacity_compatible === null || typeof node.capacity_compatible === "boolean")
+    && cluster.max_nodes === 2
+    && (cluster.registered === null || cluster.registered === 0 || cluster.registered === 1 || cluster.registered === 2)
+    && CONTROL_HA_FEATURES.every((feature) => CONTROL_HA_STATES.has(features[feature]));
+}
+
 /** Reject malformed health payloads instead of turning unknown facts green. */
 export function isHealthPayload(value: unknown): value is ControlHealthPayload {
   if (!isRecord(value)) {
@@ -88,6 +116,7 @@ export function isHealthPayload(value: unknown): value is ControlHealthPayload {
     && (value.service === undefined || typeof value.service === "string")
     && isOptionalRecord(value.rabbitmq)
     && isOptionalRecord(value.outbox)
+    && isControlHa(value.control_ha)
   );
 }
 

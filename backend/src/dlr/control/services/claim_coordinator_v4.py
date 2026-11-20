@@ -33,6 +33,12 @@ from dlr.control.services.dispatch import DispatchMessage
 logger = logging.getLogger(__name__)
 
 
+def _child_settings() -> dict[str, object]:
+    snapshot = settings.model_dump(mode="json")
+    snapshot["postgres_capacity_token"] = None
+    return snapshot
+
+
 class ClaimUnavailable(Exception):
     """No committed execution authority can be returned for this operation."""
 
@@ -222,6 +228,11 @@ class _ClaimSlot:
                     stderr=subprocess.DEVNULL,
                     close_fds=True,
                     pass_fds=(child.fileno(),),
+                    env={
+                        name: value
+                        for name, value in os.environ.items()
+                        if name.casefold() != "dlr_postgres_capacity_token"
+                    },
                 )
             except BaseException:
                 pass
@@ -330,7 +341,7 @@ class _ClaimSlot:
             bind = process._sessions.kw.get("bind")
             if not isinstance(bind, Engine):
                 raise ValueError("Claim unavailable")
-            snapshot = settings.model_dump(mode="json")
+            snapshot = _child_settings()
             if snapshot["worker_v4_claim_child_address_space_bytes"] != address_space_bytes:
                 raise ValueError("Claim unavailable")
             snapshot["database_url"] = bind.url.render_as_string(hide_password=False)
@@ -378,6 +389,9 @@ class _ClaimSlot:
                 raise ValueError("Claim unavailable")
             process.check_authority()
             self._check_envelope(envelope)
+            token = secrets.token_urlsafe(32)
+            if settings.control_ha_slot is not None:
+                token = settings.control_ha_slot + token[1:]
             entry = _Claim(
                 child,
                 spawn,
@@ -385,7 +399,7 @@ class _ClaimSlot:
                 channel,
                 envelope,
                 process,
-                secrets.token_urlsafe(32),
+                token,
                 credential,
                 worker_id,
                 instance_id,
@@ -563,12 +577,15 @@ class _ClaimSlot:
             self._check_envelope(entry.envelope, entry=entry)
             if _clock() >= entry.deadline:
                 raise ClaimUnavailable("Claim unavailable")
-            self._retain_result_from_claim(
-                entry,
-                attempt_id=candidate.attempt_id,
-                execution_timeout=response["execution_timeout_seconds"],
-                idle_until=response["result_idle_until"],
-            )
+            if settings.control_ha_slot is None:
+                self._retain_result_from_claim(
+                    entry,
+                    attempt_id=candidate.attempt_id,
+                    execution_timeout=response["execution_timeout_seconds"],
+                    idle_until=response["result_idle_until"],
+                )
+            elif not self._expire(entry):
+                raise ClaimUnavailable("Claim transport cleanup unconfirmed")
             entry.authority.check_authority()
             if _clock() >= entry.deadline:
                 raise ClaimUnavailable("Claim unavailable")
@@ -707,7 +724,7 @@ class _ClaimSlot:
             bind = process._sessions.kw.get("bind")
             if not isinstance(bind, Engine) or entry.process.poll() is not None:
                 raise ClaimUnavailable("input unavailable")
-            configuration = settings.model_dump(mode="json")
+            configuration = _child_settings()
             configuration["database_url"] = bind.url.render_as_string(hide_password=False)
             if configuration != entry.configuration:
                 raise ClaimUnavailable("input unavailable")
@@ -909,7 +926,7 @@ class _ClaimSlot:
             bind = process._sessions.kw.get("bind")
             if not isinstance(bind, Engine):
                 raise ValueError("result unavailable")
-            snapshot = settings.model_dump(mode="json")
+            snapshot = _child_settings()
             if snapshot["worker_v4_claim_child_address_space_bytes"] != address_space:
                 raise ValueError("result unavailable")
             snapshot["database_url"] = bind.url.render_as_string(hide_password=False)
@@ -1000,7 +1017,7 @@ class _ClaimSlot:
             bind = entry.authority._sessions.kw.get("bind")
             if not isinstance(bind, Engine):
                 raise ValueError("result unavailable")
-            configuration = settings.model_dump(mode="json")
+            configuration = _child_settings()
             configuration["database_url"] = bind.url.render_as_string(hide_password=False)
             if configuration != entry.configuration or entry.process.poll() is not None:
                 raise ValueError("result unavailable")
@@ -1107,23 +1124,28 @@ class _ClaimSlot:
                     or entry.process.poll() is not None
                 ):
                     raise ClaimUnavailable("result unavailable")
-                with self._lock:
-                    self._live()
-                    if self._result is not entry or entry.closed or _clock() >= entry.deadline:
-                        raise ClaimUnavailable("result unavailable")
-                    entry.pending_finalize = {
-                        **entry.metadata,
-                        "operation": "finalize",
-                        "intent_id": response["intent_id"],
-                        "result_proof": response["result_proof"],
-                    }
-                    self._spawning = False
+                if settings.control_ha_slot is None:
+                    with self._lock:
+                        self._live()
+                        if self._result is not entry or entry.closed or _clock() >= entry.deadline:
+                            raise ClaimUnavailable("result unavailable")
+                        entry.pending_finalize = {
+                            **entry.metadata,
+                            "operation": "finalize",
+                            "intent_id": response["intent_id"],
+                            "result_proof": response["result_proof"],
+                        }
+                        self._spawning = False
+                elif _clock() >= entry.deadline or not self.end_result(entry):
+                    raise ClaimUnavailable("result transport cleanup unconfirmed")
             elif _clock() >= entry.deadline or not self.end_result(entry):
                 raise ClaimUnavailable("result unavailable")
             entry.authority.check_authority()
             if _clock() >= entry.deadline:
                 raise ClaimUnavailable("result unavailable")
-            retained = entry.metadata.get("operation") == "stage"
+            retained = (
+                entry.metadata.get("operation") == "stage" and settings.control_ha_slot is None
+            )
             return response
         finally:
             if not retained:

@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
 from dlr.common.attempt_lease_proof_wire_v4 import parse_untrusted_attempt_proof
+from dlr.control.api.shared_backend import require_shared_backend
 from dlr.control.api.worker_claim_v4 import _coordinator
 from dlr.control.api.worker_instance_v4 import _HEADERS, _one_header, _process, _proved_identity
 from dlr.control.services.claim_child_v4 import _clock
@@ -49,6 +50,7 @@ async def _download(
     if request.url.scheme != "https":
         raise _error()
     credential, instance, generation, instance_proof = _proved_identity(request, worker_id)
+    require_shared_backend()
     try:
         if (
             request.url.query

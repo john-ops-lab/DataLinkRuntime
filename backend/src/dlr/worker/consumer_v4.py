@@ -101,7 +101,7 @@ class FixedWorkerConsumer:
             check_capacity=check_capacity,
         )
 
-    def _execute(self, body: bytes) -> _Outcome:
+    def _execute(self, body: bytes, *, claim_confirmed: threading.Event) -> _Outcome:
         stage = "dispatch"
         try:
             if type(body) is not bytes or not 0 < len(body) <= _MAX_DISPATCH_BYTES:
@@ -154,6 +154,7 @@ class FixedWorkerConsumer:
                 return "retry"
             if result.state != "claimed" or result.claimed is None:
                 return _unknown(stage)
+            claim_confirmed.set()
             stage = "staging"
             staged = self._preparer.stage_execution(
                 result.claimed,
@@ -209,6 +210,7 @@ class FixedWorkerConsumer:
         while not self._stop.is_set():
             connection = None
             active: threading.Thread | None = None
+            claim_confirmed = threading.Event()
             outcomes: queue.SimpleQueue[_Outcome] = queue.SimpleQueue()
             delivery_tag: int | None = None
             try:
@@ -228,6 +230,7 @@ class FixedWorkerConsumer:
                     _properties: object,
                     body: bytes,
                     result_queue: queue.SimpleQueue[_Outcome] = outcomes,
+                    confirmed: threading.Event = claim_confirmed,
                 ) -> None:
                     nonlocal active, delivery_tag
                     self.idle.clear()
@@ -237,9 +240,10 @@ class FixedWorkerConsumer:
                         self._stop.set()
                         return
                     delivery_tag = tag
+                    confirmed.clear()
 
                     def work() -> None:
-                        result_queue.put(self._execute(body))
+                        result_queue.put(self._execute(body, claim_confirmed=confirmed))
 
                     active = threading.Thread(target=work, name="dlr-v4-attempt", daemon=True)
                     active.start()
@@ -280,6 +284,23 @@ class FixedWorkerConsumer:
                         break
             except Exception as error:
                 logger.warning("fixed Worker Broker unavailable: error=%s", type(error).__name__)
+                if (
+                    active is not None
+                    and claim_confirmed.is_set()
+                    and isinstance(error, pika.exceptions.AMQPConnectionError)
+                ):
+                    # The delivery tag belongs to the disconnected channel. Keep the
+                    # existing HTTP lease, supervision and settlement running before
+                    # consuming again. A subsequent delivery uses the normal Claim
+                    # decision to acknowledge a previously settled execution.
+                    while active.is_alive() and not self._stop.is_set():
+                        active.join(timeout=0.25)
+                    if not self._stop.is_set():
+                        try:
+                            if outcomes.get_nowait() != "unknown":
+                                active = None
+                        except queue.Empty:
+                            pass
                 if active is not None:
                     self.failed.set()
                     self._stop.set()

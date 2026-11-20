@@ -42,6 +42,8 @@ def _matches_trigger(kind: str, trigger: str, source: str) -> bool:
 
 
 def require_input_source(source_type: str) -> None:
+    if settings.control_ha_slot is not None and source_type == "managed_files":
+        _reject("shared_backend")
     if settings.worker_remote_v4_enabled and source_type not in {"none", "json", "managed_files"}:
         _reject("input_source")
 
@@ -102,6 +104,8 @@ def freeze_worker_wheel(
     from dlr.control.services import builtin_package
 
     requirements = _bounded_requirements(session, adapter.id, version_id)
+    if settings.control_ha_slot is not None and requirements != "":
+        _reject("shared_backend")
     if requirements == "":
         return None
     requested = wheels.requirement(requirements)
@@ -215,6 +219,10 @@ def _configuration_reason(
     if input_source_type not in {"none", "json", "managed_files"}:
         return "input_source"
     requirements = _bounded_requirements(session, adapter.id, version_id)
+    if settings.control_ha_slot is not None and (
+        input_source_type == "managed_files" or requirements != ""
+    ):
+        return "shared_backend"
     if requirements != "" and not (
         adapter.language == "python"
         and input_source_type in {"none", "json"}

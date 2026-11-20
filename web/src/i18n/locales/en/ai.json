@@ -192,6 +192,7 @@
     },
     "errors": {
       "requestFailed": "AI request failed",
+      "connectionInterrupted": "The AI connection was interrupted. You can retry this request.",
       "gatewayPayloadTooLarge": "The attachment request exceeds the 32 MiB gateway limit; remove or compress files and try again",
       "gatewayTimeout": "The model service timed out after 660 seconds; check the network or try again later",
       "knowledgeUnavailable": "Knowledge search is unavailable for this round; ask an administrator to configure an available source"

@@ -312,9 +312,9 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
                 operation_id=str(uuid4()),
                 previous_id=str(capacity.operation_id),
                 source_schema=transition.W2_CAPACITY_SCHEMA,
-                target_schema=SCHEMA_REVISION,
+                target_schema=transition.W2_PLACEMENT_SCHEMA,
                 source_sha=transition.W2_CAPACITY_SOURCE_SHA,
-                target_sha="b" * 40,
+                target_sha=transition.W2_PLACEMENT_SOURCE_SHA,
             )
         )
     )
@@ -340,6 +340,44 @@ def test_j_cutover_preserves_prior_receipts_and_moves_the_authority(
             {"role": f.role},
         ).one()
         assert tuple(rights) == (True, False)
+
+    ha_image = replace(
+        placement_image,
+        authority=replace(placement_image.authority, image_digest="sha256:" + "a9" * 32),
+    )
+    path.write_text(
+        json.dumps(
+            dict(
+                upgrade,
+                operation_id=str(uuid4()),
+                previous_id=str(placement.operation_id),
+                source_schema=transition.W2_PLACEMENT_SCHEMA,
+                target_schema=SCHEMA_REVISION,
+                source_sha=transition.W2_PLACEMENT_SOURCE_SHA,
+                target_sha="a9" * 20,
+            )
+        )
+    )
+    ha = transition.read_intent(str(path), placement_image, ha_image, predecessor=placement)
+    assert transition._kind(ha) == 9
+    assert maintain(f.factory, "check", ha)["status"] == "source_checked"
+    assert maintain(f.factory, "apply", ha)["status"] == "committed_current"
+    with f.factory() as session:
+        assert transition.observe(session, placement)["status"] == "committed_superseded"
+        assert session.scalar(text("SELECT count(*) FROM control_ha_capacity")) == 0
+        assert session.scalar(text("SELECT count(*) FROM control_image_transitions")) == (
+            10 if previous else 5
+        )
+        rights = session.execute(
+            text("""
+                SELECT has_table_privilege(:role,'control_ha_capacity','SELECT'),
+                       has_table_privilege(:role,'control_ha_capacity','INSERT'),
+                       has_column_privilege(:role,'control_ha_capacity','topology_epoch','UPDATE'),
+                       has_column_privilege(:role,'control_ha_capacity','state','UPDATE')
+            """),
+            {"role": f.role},
+        ).one()
+        assert tuple(rights) == (True, False, False, True)
 
 
 def test_placement_migration_backfills_a_settled_v3_execution(upgrade_database):  # noqa: F811

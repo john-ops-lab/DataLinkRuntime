@@ -16,6 +16,7 @@ from starlette.concurrency import run_in_threadpool
 
 from dlr.common.config import settings
 from dlr.control import db
+from dlr.control.api.shared_backend import require_shared_backend
 from dlr.control.models.builtin_package import BuiltinPackage, BuiltinPackageUpload
 from dlr.control.schemas.execution import ExecutionResponse
 from dlr.control.security import (
@@ -27,9 +28,16 @@ from dlr.control.services import builtin_package as library
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.worker import validate_claim_for_route
 
-router = APIRouter(prefix="/api/builtin-packages", dependencies=[Depends(require_admin_principal)])
+router = APIRouter(
+    prefix="/api/builtin-packages",
+    dependencies=[Depends(require_admin_principal), Depends(require_shared_backend)],
+)
 worker_router = APIRouter(
-    dependencies=[Depends(require_worker_token), Depends(reject_enrolled_legacy_worker)]
+    dependencies=[
+        Depends(require_worker_token),
+        Depends(reject_enrolled_legacy_worker),
+        Depends(require_shared_backend),
+    ]
 )
 DbSession = Annotated[Session, Depends(db.get_session)]
 

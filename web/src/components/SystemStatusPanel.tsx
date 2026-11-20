@@ -14,6 +14,7 @@ import { ReloadOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
 import {
+  CONTROL_HA_FEATURES,
   systemStatusBadgeStatus,
   type ControlHealthPayload,
   type HealthStatus,
@@ -68,13 +69,13 @@ function formatDuration(value: number | null | undefined, suffix: string): strin
 }
 
 function statusColor(status: string | undefined): "green" | "gold" | "red" | "default" {
-  if (status === "ok" || status === "ready" || status === "passed") {
+  if (status === "ok" || status === "ready" || status === "passed" || status === "available") {
     return "green";
   }
-  if (status === "degraded" || status === "waiting_for_worker") {
+  if (status === "degraded" || status === "waiting_for_worker" || status === "awaiting_shared_backend") {
     return "gold";
   }
-  if (status === "error" || status === "failed" || status === "unavailable") {
+  if (status === "error" || status === "failed" || status === "unavailable" || status === "low" || status === "conflict") {
     return "red";
   }
   return "default";
@@ -86,6 +87,7 @@ export default function SystemStatusPanel(props: SystemStatusPanelProps) {
   const rabbitmq = props.healthPayload?.rabbitmq;
   const broker = rabbitmq?.broker;
   const outbox = props.healthPayload?.outbox;
+  const controlHa = props.healthPayload?.control_ha;
 
   function stateTag(value: string | undefined) {
     const state = value ?? "unknown";
@@ -98,6 +100,10 @@ export default function SystemStatusPanel(props: SystemStatusPanelProps) {
       unavailable: t("systemStatus.states.unavailable"),
       failed: t("systemStatus.states.failed"),
       unknown: t("systemStatus.states.unknown"),
+      available: t("systemStatus.states.ready"),
+      low: t("systemStatus.states.lowCapacity"),
+      conflict: t("systemStatus.states.capacityConflict"),
+      awaiting_shared_backend: t("systemStatus.states.awaitingSharedBackend"),
     };
     return <Tag color={statusColor(value)}>{knownStates[state] ?? state}</Tag>;
   }
@@ -141,6 +147,29 @@ export default function SystemStatusPanel(props: SystemStatusPanelProps) {
             : formatTime(props.healthCheckedAt, locale),
         },
       ];
+
+  if (controlHa) {
+    controlItems.push(
+      { key: "slot", label: t("systemStatus.ha.slot"), children: controlHa.node.slot.toUpperCase() },
+      { key: "registered", label: t("systemStatus.ha.registered"), children: booleanTag(controlHa.node.registered) },
+      { key: "capacity", label: t("systemStatus.ha.capacityCompatible"), children: booleanTag(controlHa.node.capacity_compatible ?? undefined) },
+    );
+  }
+  const clusterItems: DescriptionsProps["items"] = controlHa ? [
+    {
+      key: "registeredTotal",
+      label: t("systemStatus.ha.registeredTotal"),
+      children: t("systemStatus.headroomValue", {
+        available: controlHa.cluster.registered ?? "—",
+        limit: controlHa.cluster.max_nodes,
+      }),
+    },
+    ...CONTROL_HA_FEATURES.map((feature) => ({
+      key: feature,
+      label: t(`systemStatus.ha.${feature}`),
+      children: stateTag(controlHa.features[feature]),
+    })),
+  ] : [];
 
   const runtimeItems: DescriptionsProps["items"] = props.healthPayload === null
     ? []
@@ -250,6 +279,10 @@ export default function SystemStatusPanel(props: SystemStatusPanelProps) {
               <details className="admin-help" open={props.health !== "ok"}><summary>{t("systemStatus.serviceDetails")}</summary>
                 <Typography.Title level={5}>{t("systemStatus.controlTitle")}</Typography.Title>
                 <Descriptions size="small" column={1} items={controlItems} />
+                {controlHa && <>
+                  <Typography.Title level={5}>{t("systemStatus.ha.clusterTitle")}</Typography.Title>
+                  <Descriptions size="small" column={1} items={clusterItems} />
+                </>}
                 <Typography.Title level={5}>{t("systemStatus.runtimeTitle")}</Typography.Title>
                 <Descriptions size="small" column={1} items={runtimeItems} />
               </details>

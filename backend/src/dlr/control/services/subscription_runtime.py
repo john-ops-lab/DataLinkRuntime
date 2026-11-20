@@ -94,6 +94,7 @@ class SubscriptionRuntimeManager:
         self.intake_session_factory = intake_session_factory or session_factory
         self.registry = dict(implemented_sources() if registry is None else registry)
         self.buffer = ApplicationBufferBudget(buffer_limit_bytes)
+        self._owner_limit = max_listeners
         self._permits = threading.BoundedSemaphore(max_listeners)
         self._lock = threading.RLock()
         self._owners: dict[int, _Owner] = {}
@@ -113,13 +114,16 @@ class SubscriptionRuntimeManager:
         with self._lock:
             return len(self._owners) + len(self._probes) + len(self._starting)
 
-    def _claim(self, subscription_id: int, *, probe: bool = False) -> bool:
+    def _claim(
+        self, subscription_id: int, *, probe: bool = False, reserved_owners: int = 0
+    ) -> bool:
         with self._lock:
             if (
                 self._shutdown.is_set()
                 or subscription_id in self._owners
                 or subscription_id in self._probes
                 or subscription_id in self._starting
+                or (probe and len(self._probes) >= self._owner_limit - reserved_owners)
                 or not self._permits.acquire(blocking=False)
             ):
                 return False
@@ -151,6 +155,12 @@ class SubscriptionRuntimeManager:
         try:
             with self.session_factory.begin() as session:
                 _, sub = delivery.lock_subscription(session, subscription_id)
+                if settings.control_ha_slot is not None:
+                    from dlr.control.services.control_ha_capacity import admission_configured
+
+                    if not admission_configured(session):
+                        self._release_start(subscription_id)
+                        return False
                 runner = self.registry.get(sub.source_type)
                 if (
                     runner is None
@@ -567,7 +577,14 @@ class SubscriptionRuntimeManager:
         runner = self.registry.get(source_type)
         if runner is None:
             raise SourceFailure("source_not_available")
-        if not self._claim(subscription_id, probe=True):
+        # A peer may enable another subscription while a diagnostic still holds
+        # its permit. Reserve the full takeover budget before starting any SDK.
+        reserved_owners = (
+            self._owner_limit
+            if settings.control_ha_slot is not None and settings.event_subscriptions_enabled
+            else 0
+        )
+        if not self._claim(subscription_id, probe=True, reserved_owners=reserved_owners):
             raise SourceFailure("subscription_capacity_exceeded", "capacity")
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()

@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 
+from anyio import to_thread
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from dlr.common.config import settings
 from dlr.control.api.worker_instance_v4 import _HEADERS, _one_header, _process, _proved_identity
 from dlr.control.services.claim_coordinator_v4 import ClaimCapacityBusy, ClaimCoordinator
+from dlr.control.services.control_claim_peer import ClaimPeer
 from dlr.control.services.dispatch import deserialize_dispatch_message
 
 router = APIRouter()
@@ -114,15 +118,39 @@ async def finalize(request: Request, worker_id: int) -> JSONResponse:
         if chunk:
             raise _error(422)
     try:
-        proof = await run_in_threadpool(
-            _coordinator(request).finalize,
-            token=token,
-            worker_id=worker_id,
-            instance_id=instance,
-            generation=generation,
-            credential=credential,
-            instance_proof=instance_proof,
-        )
+        slot = settings.control_ha_slot
+        if slot is not None and token[0] not in ("a", "b"):
+            raise ValueError("Claim slot unavailable")
+        if slot is not None and token[0] != slot:
+            process = _process(request)
+            process.check_authority()
+            peer = getattr(request.app.state, "control_claim_peer", None)
+            if not isinstance(peer, ClaimPeer) or request.headers.getlist("x-dlr-claim-forwarded"):
+                raise ValueError("Claim peer unavailable")
+
+            def forward() -> str:
+                return peer.finalize(
+                    worker_id,
+                    proposal=token,
+                    credential=credential,
+                    instance=str(instance),
+                    generation=generation,
+                    instance_proof=instance_proof,
+                )
+
+            async with asyncio.timeout(4.0):
+                proof = await to_thread.run_sync(forward, abandon_on_cancel=True)
+            process.check_authority()
+        else:
+            proof = await run_in_threadpool(
+                _coordinator(request).finalize,
+                token=token,
+                worker_id=worker_id,
+                instance_id=instance,
+                generation=generation,
+                credential=credential,
+                instance_proof=instance_proof,
+            )
     except Exception:  # noqa: BLE001 - final commit may already have completed
         raise _error(503) from None
     return JSONResponse({"attempt_proof": proof}, headers=_HEADERS)
