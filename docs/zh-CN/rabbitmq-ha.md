@@ -8,11 +8,13 @@ DLR 使用 [RabbitMQ 4.3.5](https://www.rabbitmq.com/docs/4.3/quorum-queues) 派
 
 [Broker Compose](../../deploy/rabbitmq-ha/compose.yml) 在每台 Linux 宿主运行一个节点。[Broker 配置](../../deploy/rabbitmq-ha/rabbitmq.conf.example) 中的地址与节点名要替换为私有网络的实际值。
 
-- 为每个节点指定独立的 `DLR_RABBITMQ_DATA_DIR`、`DLR_RABBITMQ_CONFIG_FILE` 和 `DLR_RABBITMQ_TLS_DIR`。数据目录归 Broker 运行身份所有，先放置内容相同、仅该身份可读的 `.erlang.cookie`。已经运行的节点以原节点名、命名方式和原数据目录加入方案。
+- 为每个节点指定独立的 `DLR_RABBITMQ_DATA_DIR`、`DLR_RABBITMQ_CONFIG_FILE` 和 `DLR_RABBITMQ_TLS_DIR`。将 `DLR_RABBITMQ_NODE_HOST` 设为节点主机名，`DLR_RABBITMQ_NODE_NAME` 与 seed 列表中的 `rabbit@主机名` 对应。复用原短名节点时显式设置 `DLR_RABBITMQ_USE_LONGNAME=false`。数据目录归 Broker 运行身份所有，先放置内容相同、仅该身份可读的 `.erlang.cookie`。已经运行的节点以原节点名、命名方式和原数据目录加入方案。
 - 安装各自的 `node.pem`、`node.key` 和 `ca.pem`。节点证书同时包含自身 DNS 名及稳定 AMQPS 名，节点私钥独立。限制 Erlang 节点通信在 Broker 间，监听跨域流量使用私网。检查 `rabbitmq-diagnostics -s listeners`，原生 AMQP 只开放 TLS，管理 HTTP 限于本机回环。
 - 依次启动 A、B、C。全新部署的 A 用仅含自身的 seed 列表启动，B、C 使用参考配置的三个地址加入。以 `rabbitmqctl cluster_status` 核对相同集群和三个运行节点后，才配置新工作队列。扩容既有部署时，A 使用原数据目录和节点名，B、C 使用专用空目录及受控命名。若目标节点已有其他集群数据，先独立处置其责任。
 
 在两个独立代理实例上安装 [HAProxy 配置](../../deploy/rabbitmq-ha/haproxy.cfg.example)，用站点提供的冗余入口指向这些实例。每台代理用实际地址和受信 CA 校验 Broker。AMQPS 在代理处透传 TLS，由客户端验证稳定名，建立后端连接失败时可换路。管理入口由代理终止 TLS，PEM 文件仅向代理运行身份开放，后端 HTTPS 校验节点名。运行入口允许只读 API GET。后端连接、空响应或指定 5xx 失败时，代理对 GET 执行有界换路。入队和 Confirm 仍由 RabbitMQ 与 Outbox 裁决。
+
+两类入口的后端健康检查访问每个节点自己的管理 HTTPS，读取精简的 `/api/nodes`。在固定三节点集群中，代理只向看到至少两个运行成员的后端转发。AMQPS 健康检查失败会关闭该后端的既有连接，使已连到少数派的 Worker 按原逻辑重连。该检查反映集群连通性，每条队列的状态与实际 Confirm 仍分别核验。代理从私有环境读取 `DLR_RABBITMQ_PROXY_HEALTH_BASIC`，其值是探测账号 `用户名:密码` 的 Base64 编码。
 
 ## 角色与 Control 配置
 
@@ -23,6 +25,7 @@ Broker 运维凭据只用于隔离管理路径或宿主 CLI。运行身份各有
 | Control AMQP | 仅指定 vhost 的 DLR 工作队列、派发交换机和 Infrastructure DLQ/DLX。允许现有声明、绑定、发布和基础设施 DLQ 消费。 |
 | Worker | 仅 read 自己的 `dlr.worker.<ID>.q`，授信、队列和稳定 AMQPS 名按现有 Worker 私有配置安装。 |
 | Control 管理探测 | 使用独立账号和 `management` tag。只绑定目标 vhost，configure/write/read 使用 `^$`。运行入口的功能是读取 feature flags 和队列状态。 |
+| 代理多数派探测 | 独立账号和 `monitoring` tag，用于读取各节点的集群连通性。目标 vhost 的 configure/write/read 均使用 `^$`。 |
 
 在运维节点确认变量均来自目标部署。下面的 Control 资源模式涵盖 DLR 当前的两种队列和两个交换机。
 
@@ -31,6 +34,8 @@ dlr_resources='^(dlr\.execution\.(dispatch\.v1|infrastructure\.(dlx|dlq))|dlr\.w
 rabbitmqctl set_permissions -p "$vhost" "$control_user" "$dlr_resources" "$dlr_resources" "$dlr_resources"
 rabbitmqctl set_permissions -p "$vhost" "$management_user" '^$' '^$' '^$'
 rabbitmqctl set_user_tags "$management_user" management
+rabbitmqctl set_permissions -p "$vhost" "$proxy_probe_user" '^$' '^$' '^$'
+rabbitmqctl set_user_tags "$proxy_probe_user" monitoring
 rabbitmqctl set_permissions -p "$vhost" "$worker_user" '^$' '^$' "^dlr\.worker\.${worker_id}\.q$"
 ```
 
@@ -67,7 +72,7 @@ rabbitmq-queues quorum_status --vhost "$vhost" "$queue"
 
 `GET /api/health` 的 `rabbitmq.broker.quorum_queues` 分别展示 Worker 队列和 `infrastructure_dlq` 的成员数、报告在线数和 leader 是否在线。节点名称不进入应用健康响应。成员错配为 `incomplete`，无多数或 leader 为 `unavailable`，观测过期或格式无法确认时为 `unknown`。已确认三成员队列只剩两名在线且 leader 可用时显示 `degraded`。以 Broker CLI 核对实际投票和同步状态，以实际 Confirm 和 Claim 证明业务可用。
 
-- 分开中断 AMQPS 后端、管理后端和 leader。核对原 Worker 身份经稳定地址重新消费，发布经过原 Outbox，管理只读查询走存活路径。管理入口错误与单队列缺少 quorum 分开观察。
+- 分开中断 AMQPS 后端、管理后端和 leader。核对原 Worker 身份经稳定地址重新消费，发布经过原 Outbox，管理只读查询走存活路径。管理入口错误与单队列缺少 quorum 分开观察。分区前记录 Worker 实际连接的 Broker，确认少数派连接被摘除后重新消费。
 - 按真实故障 T0 分别记录稳定 AMQP 入口获得首次有效 Confirm 和 Worker 获得首次有效 Claim。保留多数派时两项均须在 60 秒内成功。对 2:1 分区中的少数派直接观察发布结果，恢复后再核对原三成员与 leader。
 - 确认回执丢失时保留原 Outbox 与输入键，核对原记录的后续回访和重发结果。以 Receipt、Execution、Attempt、物理清理和独立目标逐条对账。已确认责任丢失数和并存的双有效 Attempt 数均为零。记录首败、原始期限、重试与观察版本。
 - 轮换时预配权限相同的新身份并验证路径，再更新私有配置，清理旧连接并撤销旧凭据。管理凭据轮换后从两端核对新探测，Worker 独立账号轮换按[原维护流程](worker-v4-dispatch-contract.md)操作。日志和演练记录保留稳定错误码、计数和时间点。

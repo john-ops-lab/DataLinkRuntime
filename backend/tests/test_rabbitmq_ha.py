@@ -32,7 +32,7 @@ def ha(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_quorum_needs_the_online_leader_of_a_declared_majority(
     ha, members, online, leader, state, error
 ) -> None:
-    payload = {"members": members, "online": online, "leader": leader}
+    payload = {"members": members, "online": online, "leader": leader, "state": "running"}
     if error is None:
         rabbitmq._require_queue_quorum("1", payload)
     else:
@@ -45,7 +45,13 @@ def test_quorum_needs_the_online_leader_of_a_declared_majority(
 
 
 def test_ha_requires_quorum_on_both_queue_families(ha, monkeypatch: pytest.MonkeyPatch) -> None:
-    healthy = {"type": "quorum", "members": NODES, "online": NODES, "leader": NODES[0]}
+    healthy = {
+        "type": "quorum",
+        "members": NODES,
+        "online": NODES,
+        "leader": NODES[0],
+        "state": "running",
+    }
     work = {**healthy, "arguments": rabbitmq.work_queue_arguments()}
     dlq = {**healthy, "arguments": rabbitmq.infrastructure_queue_arguments(), "online": NODES[:1]}
     queues = {rabbitmq.topology_names(1).queue: work, rabbitmq.INFRASTRUCTURE_DLQ: dlq}
@@ -58,7 +64,9 @@ def test_ha_requires_quorum_on_both_queue_families(ha, monkeypatch: pytest.Monke
 
 def test_expired_quorum_evidence_turns_unknown(ha, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rabbitmq, "monotonic", lambda: 20.0)
-    rabbitmq._require_queue_quorum("1", {"members": NODES, "online": NODES, "leader": NODES[0]})
+    rabbitmq._require_queue_quorum(
+        "1", {"members": NODES, "online": NODES, "leader": NODES[0], "state": "running"}
+    )
     monkeypatch.setattr(rabbitmq, "monotonic", lambda: 30.1)
     health = rabbitmq._broker_health_payload()
     assert health["quorum_queues"]["1"] == {
@@ -77,17 +85,58 @@ def test_down_queue_cannot_reuse_earlier_membership_observation(ha) -> None:
     assert exc.value.code == "topology_unavailable"
 
 
+@pytest.mark.parametrize("state", [None, "unrecognized"])
+def test_unconfirmed_queue_state_is_unknown(ha, state) -> None:
+    payload = {"members": NODES, "online": NODES, "leader": NODES[0]}
+    if state is not None:
+        payload["state"] = state
+    with pytest.raises(rabbitmq.RabbitMQTopologyError):
+        rabbitmq._require_queue_quorum("1", payload)
+    assert rabbitmq._broker_health_payload()["quorum_queues"]["1"]["state"] == "unknown"
+
+
+def test_fresh_batch_cannot_admit_against_stale_queue(ha, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rabbitmq, "_verified_ingress_workers", lambda _: (True, frozenset({1, 2})))
+    monkeypatch.setitem(rabbitmq._runtime_status, "status", "ready")
+    payload = {"members": NODES, "online": NODES, "leader": NODES[0], "state": "running"}
+    monkeypatch.setattr(rabbitmq, "monotonic", lambda: 20.0)
+    rabbitmq._require_queue_quorum("1", payload)
+    monkeypatch.setattr(rabbitmq, "monotonic", lambda: 31.0)
+    monkeypatch.setitem(rabbitmq._runtime_status, "live_verified_at", 31.0)
+    rabbitmq._require_queue_quorum("2", payload)
+    rabbitmq._require_queue_quorum("infrastructure_dlq", payload)
+    session = object()
+    assert not rabbitmq.ingress_configuration_ready(session, worker_id=1)
+    assert rabbitmq.ingress_configuration_ready(session, worker_id=2)
+    assert not rabbitmq.ingress_configuration_ready(session)
+    assert rabbitmq.ingress_ready_targets(session, [1, 2]) == frozenset({2})
+
+    monkeypatch.setattr(rabbitmq, "monotonic", lambda: 42.0)
+    monkeypatch.setitem(rabbitmq._runtime_status, "live_verified_at", 42.0)
+    rabbitmq._require_queue_quorum("2", payload)
+    assert not rabbitmq.ingress_configuration_ready(session, worker_id=2)
+    assert not rabbitmq.ingress_ready_targets(session, [2])
+
+
 @pytest.mark.parametrize(
-    "override",
+    ("override", "reason"),
     [
-        {"DLR_RABBITMQ_MANAGEMENT_USER": "publisher"},
-        {"DLR_RABBITMQ_MANAGEMENT_PASSWORD": ""},
-        {"DLR_RABBITMQ_MANAGEMENT_URL": "http://management.example.invalid"},
-        {"DLR_RABBITMQ_URL": "amqp://publisher:placeholder@broker.example.invalid/"},
-        {"DLR_RABBITMQ_URL": "amqps://publisher:placeholder@broker.example.invalid/?heartbeat=5"},
+        ({"DLR_RABBITMQ_MANAGEMENT_USER": "publisher"}, "separate non-guest credentials"),
+        ({"DLR_RABBITMQ_MANAGEMENT_PASSWORD": ""}, "separate non-guest credentials"),
+        ({"DLR_RABBITMQ_MANAGEMENT_URL": "http://management.example.invalid"}, "static HTTPS URL"),
+        (
+            {"DLR_RABBITMQ_URL": "amqp://publisher:placeholder@broker.example.invalid/"},
+            "requires AMQPS",
+        ),
+        (
+            {
+                "DLR_RABBITMQ_URL": "amqps://publisher:placeholder@broker.example.invalid/?heartbeat=5"
+            },
+            "default TLS verification",
+        ),
     ],
 )
-def test_ha_settings_preserve_endpoint_trust(override) -> None:
+def test_ha_settings_preserve_endpoint_trust(override, reason) -> None:
     values = {
         "DLR_RABBITMQ_HA_ENABLED": True,
         "DLR_RABBITMQ_URL": "amqps://publisher:placeholder@broker.example.invalid/",
@@ -95,7 +144,8 @@ def test_ha_settings_preserve_endpoint_trust(override) -> None:
         "DLR_RABBITMQ_MANAGEMENT_USER": "observer",
         "DLR_RABBITMQ_MANAGEMENT_PASSWORD": "placeholder",
     }
-    with pytest.raises(ValidationError) as exc:
+    assert Settings(**values).rabbitmq_ha_enabled is True
+    with pytest.raises(ValidationError, match=reason) as exc:
         Settings(**(values | override))
     assert "placeholder" not in str(exc.value)
 

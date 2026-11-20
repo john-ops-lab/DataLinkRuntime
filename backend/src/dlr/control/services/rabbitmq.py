@@ -148,6 +148,9 @@ class QueueQuorumObservation:
     leader_online: bool
     observed_at: float
 
+    def fresh(self, now: float) -> bool:
+        return 0 <= now - self.observed_at <= _LIVE_BROKER_VERIFICATION_SECONDS
+
 
 _quorum_observations: dict[str, QueueQuorumObservation] = {}
 
@@ -440,21 +443,48 @@ def _verified_ingress_workers(
     return persisted is not None, persisted
 
 
+def _live_broker_ready(now: float) -> bool:
+    verified = _runtime_status["live_verified_at"]
+    return (
+        _runtime_status["status"] == "ready"
+        and isinstance(verified, float)
+        and 0 <= now - verified <= _LIVE_BROKER_VERIFICATION_SECONDS
+    )
+
+
+def _queue_quorum_ready(name: str, now: float) -> bool:
+    observation = _quorum_observations.get(name)
+    return (
+        observation is not None
+        and observation.fresh(now)
+        and observation.state in {"healthy", "degraded"}
+    )
+
+
 def ingress_configuration_ready(
     session: Session | None = None,
     *,
     worker_id: int | None = None,
 ) -> bool:
     """Return whether live or restart-persisted capability permits ingress."""
-    if settings.control_ha_slot is not None or settings.rabbitmq_ha_enabled:
-        verified = _runtime_status["live_verified_at"]
+    now = monotonic()
+    if (settings.control_ha_slot is not None or settings.rabbitmq_ha_enabled) and not (
+        _live_broker_ready(now)
+    ):
+        return False
+    ready, workers = _verified_ingress_workers(session)
+    if settings.rabbitmq_ha_enabled:
+        now = monotonic()
         if (
-            _runtime_status["status"] != "ready"
-            or not isinstance(verified, float)
-            or not 0 <= monotonic() - verified <= _LIVE_BROKER_VERIFICATION_SECONDS
+            not ready
+            or not workers
+            or not _live_broker_ready(now)
+            or not _queue_quorum_ready("infrastructure_dlq", now)
         ):
             return False
-    ready, workers = _verified_ingress_workers(session)
+        if worker_id is not None:
+            return worker_id in workers and _queue_quorum_ready(str(worker_id), now)
+        return session is not None and all(_queue_quorum_ready(str(i), now) for i in workers)
     if not ready or workers is None:
         return ready
     if worker_id is not None:
@@ -469,6 +499,15 @@ def ingress_ready_targets(session: Session, candidates: list[int]) -> frozenset[
     ready, workers = _verified_ingress_workers(session)
     if not ready:
         return frozenset()
+    if settings.rabbitmq_ha_enabled:
+        now = monotonic()
+        if (
+            not workers
+            or not _live_broker_ready(now)
+            or not _queue_quorum_ready("infrastructure_dlq", now)
+        ):
+            return frozenset()
+        return frozenset(i for i in candidates if i in workers and _queue_quorum_ready(str(i), now))
     return frozenset(candidates) if workers is None else workers.intersection(candidates)
 
 
@@ -527,7 +566,7 @@ def _broker_health_payload() -> dict[str, object]:
         now = monotonic()
         quorum_queues: dict[str, dict[str, object]] = {}
         for name, observation in _quorum_observations.copy().items():
-            fresh = 0 <= now - observation.observed_at <= _LIVE_BROKER_VERIFICATION_SECONDS
+            fresh = observation.fresh(now)
             state = observation.state if fresh else "unknown"
             quorum_queues[name] = {
                 "state": state,
@@ -914,17 +953,19 @@ def _observe_queue_quorum(payload: dict[str, object]) -> QueueQuorumObservation:
     now = monotonic()
     members = _queue_nodes(payload.get("members"))
     online = _queue_nodes(payload.get("online"))
-    if not members or online is None or not online <= members:
+    queue_state = payload.get("state")
+    if (
+        not members
+        or online is None
+        or not online <= members
+        or queue_state not in ("running", "down", "crashed", "stopped")
+    ):
         return QueueQuorumObservation("unknown", None, None, False, now)
     leader = payload.get("leader")
     leader_online = isinstance(leader, str) and leader in online
     if len(members) != HA_QUORUM_MEMBERS:
         state = "incomplete"
-    elif (
-        len(online) <= HA_QUORUM_MEMBERS // 2
-        or not leader_online
-        or payload.get("state") in ("down", "crashed", "stopped")
-    ):
+    elif len(online) <= HA_QUORUM_MEMBERS // 2 or not leader_online or queue_state != "running":
         state = "unavailable"
     elif len(online) < HA_QUORUM_MEMBERS:
         state = "degraded"

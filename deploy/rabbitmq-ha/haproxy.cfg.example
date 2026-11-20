@@ -16,10 +16,15 @@ backend amqps_nodes
     balance roundrobin
     retries 2
     option redispatch 1
+    option httpchk
+    http-check connect port 15671 ssl sni broker-amqp.example.invalid
+    http-check send meth GET uri /api/nodes?disable_stats=true&columns=running ver HTTP/1.1 hdr Host broker-amqp.example.invalid hdr Authorization "Basic ${DLR_RABBITMQ_PROXY_HEALTH_BASIC}"
+    http-check expect status 200
+    http-check expect rstring '"running"[[:space:]]*:[[:space:]]*true.*"running"[[:space:]]*:[[:space:]]*true'
     default-server check inter 2s fall 2 rise 1 on-marked-down shutdown-sessions
-    server broker_a 192.0.2.21:5671 check-ssl check-sni broker-amqp.example.invalid verify required verifyhost broker-amqp.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
-    server broker_b 192.0.2.22:5671 check-ssl check-sni broker-amqp.example.invalid verify required verifyhost broker-amqp.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
-    server broker_c 192.0.2.23:5671 check-ssl check-sni broker-amqp.example.invalid verify required verifyhost broker-amqp.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
+    server broker_a 192.0.2.21:5671 verify required verifyhost broker-amqp.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
+    server broker_b 192.0.2.22:5671 verify required verifyhost broker-amqp.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
+    server broker_c 192.0.2.23:5671 verify required verifyhost broker-amqp.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
 
 frontend management_https
     mode http
@@ -35,8 +40,9 @@ backend management_nodes
     retry-on conn-failure empty-response response-timeout 500 502 503 504
     option redispatch 1
     option httpchk
-    http-check send meth GET uri / ver HTTP/1.1 hdr Host localhost
+    http-check send meth GET uri /api/nodes?disable_stats=true&columns=running ver HTTP/1.1 hdr Host broker-management.example.invalid hdr Authorization "Basic ${DLR_RABBITMQ_PROXY_HEALTH_BASIC}"
     http-check expect status 200
+    http-check expect rstring '"running"[[:space:]]*:[[:space:]]*true.*"running"[[:space:]]*:[[:space:]]*true'
     default-server check inter 2s fall 2 rise 1
     server broker_a 192.0.2.21:15671 ssl sni str(broker-a.example.invalid) check-sni broker-a.example.invalid verify required verifyhost broker-a.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
     server broker_b 192.0.2.22:15671 ssl sni str(broker-b.example.invalid) check-sni broker-b.example.invalid verify required verifyhost broker-b.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
