@@ -79,6 +79,8 @@ def fingerprint(config: Settings) -> str:
         "intake_connections": 8,
         "management_connections": 4,
     }
+    if config.rabbitmq_ha_enabled:
+        contract["rabbitmq_ha_enabled"] = True
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 

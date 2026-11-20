@@ -8,13 +8,15 @@ import hashlib
 import json
 import logging
 import math
+import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from http.client import HTTPMessage
 from time import monotonic
-from typing import Any, cast
+from typing import IO, Any, cast
 from urllib.parse import quote, unquote, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener, urlopen
 from uuid import UUID
 
 import pika
@@ -59,6 +61,8 @@ RABBITMQ_CAPABILITY_INVALIDATION_ERROR_CODES = frozenset(
 WORK_QUEUE_PREFIX = "dlr.worker."
 WORK_QUEUE_SUFFIX = ".q"
 INFRASTRUCTURE_ROUTING_KEY = "infrastructure"
+HA_QUORUM_MEMBERS = 3
+_LIVE_BROKER_VERIFICATION_SECONDS = 10
 
 
 class RabbitMQTopologyError(RuntimeError):
@@ -132,6 +136,20 @@ class RabbitMQRuntimeCapabilities:
 
     version: str
     feature_flags: frozenset[str]
+
+
+@dataclass(frozen=True)
+class QueueQuorumObservation:
+    """The member and leader information reported by the queue API."""
+
+    state: str
+    members: int | None
+    online: int | None
+    leader_online: bool
+    observed_at: float
+
+
+_quorum_observations: dict[str, QueueQuorumObservation] = {}
 
 
 _runtime_status: dict[str, object] = {
@@ -260,6 +278,11 @@ def mark_runtime_ready(
         frozenset(worker_ids) if worker_ids is not None else None
     )
     _runtime_status["live_verified_at"] = monotonic()
+    if settings.rabbitmq_ha_enabled and worker_ids is not None:
+        active_queues = {str(worker_id) for worker_id in worker_ids}
+        active_queues.add("infrastructure_dlq")
+        for name in _quorum_observations.keys() - active_queues:
+            _quorum_observations.pop(name, None)
 
 
 def effective_rabbitmq_url() -> str:
@@ -305,6 +328,12 @@ def configuration_fingerprint(worker_ids: list[int]) -> str:
         "broker_headroom_messages": settings.rabbitmq_broker_headroom_messages,
         "broker_headroom_bytes": settings.rabbitmq_broker_headroom_bytes,
     }
+    if settings.rabbitmq_management_user is not None:
+        facts["management_credentials_sha256"] = hashlib.sha256(
+            _management_auth_header().encode("ascii")
+        ).hexdigest()
+    if settings.rabbitmq_ha_enabled:
+        facts["quorum_members"] = HA_QUORUM_MEMBERS
     return hashlib.sha256(canonicalize(facts)).hexdigest()
 
 
@@ -417,12 +446,12 @@ def ingress_configuration_ready(
     worker_id: int | None = None,
 ) -> bool:
     """Return whether live or restart-persisted capability permits ingress."""
-    if settings.control_ha_slot is not None:
+    if settings.control_ha_slot is not None or settings.rabbitmq_ha_enabled:
         verified = _runtime_status["live_verified_at"]
         if (
             _runtime_status["status"] != "ready"
             or not isinstance(verified, float)
-            or not 0 <= monotonic() - verified <= 10
+            or not 0 <= monotonic() - verified <= _LIVE_BROKER_VERIFICATION_SECONDS
         ):
             return False
     ready, workers = _verified_ingress_workers(session)
@@ -484,7 +513,7 @@ def _broker_health_payload() -> dict[str, object]:
         alerts.append("broker_queue_length_overshoot")
     if max_bytes is not None and max_bytes > settings.rabbitmq_queue_max_bytes:
         alerts.append("broker_queue_bytes_overshoot")
-    return {
+    health: dict[str, object] = {
         "queue_max_length": settings.rabbitmq_queue_max_length,
         "queue_max_bytes": settings.rabbitmq_queue_max_bytes,
         "configured_headroom_messages": settings.rabbitmq_broker_headroom_messages,
@@ -494,6 +523,25 @@ def _broker_health_payload() -> dict[str, object]:
         "headroom_bytes": headroom_bytes,
         "alerts": alerts,
     }
+    if settings.rabbitmq_ha_enabled:
+        now = monotonic()
+        quorum_queues: dict[str, dict[str, object]] = {}
+        for name, observation in _quorum_observations.copy().items():
+            fresh = 0 <= now - observation.observed_at <= _LIVE_BROKER_VERIFICATION_SECONDS
+            state = observation.state if fresh else "unknown"
+            quorum_queues[name] = {
+                "state": state,
+                "members": observation.members if fresh else None,
+                "online": observation.online if fresh else None,
+                "leader_online": observation.leader_online if fresh else None,
+            }
+        states = {queue["state"] for queue in quorum_queues.values()} or {"unknown"}
+        for state in ("incomplete", "unavailable", "degraded", "unknown"):
+            if state in states:
+                alerts.append(f"broker_queue_quorum_{state}")
+        health["quorum_member_target"] = HA_QUORUM_MEMBERS
+        health["quorum_queues"] = quorum_queues
+    return health
 
 
 def runtime_health(session: Session | None = None) -> dict[str, object]:
@@ -670,6 +718,8 @@ def connection_parameters() -> pika.ConnectionParameters:
         parameters = pika.URLParameters(effective_rabbitmq_url())
     except (TypeError, ValueError) as exc:
         raise RabbitMQTopologyError("RabbitMQ URL is invalid") from exc
+    if settings.rabbitmq_ha_enabled:
+        parameters.ssl_options = pika.SSLOptions(ssl.create_default_context(), parameters.host)
     parameters.heartbeat = 30
     parameters.blocked_connection_timeout = settings.rabbitmq_publish_timeout_seconds
     parameters.socket_timeout = settings.rabbitmq_stack_timeout_seconds
@@ -716,8 +766,17 @@ def _management_resource_url(resource: str) -> str:
 
 
 def _management_auth_header() -> str:
-    """Build Basic auth from the AMQP URL without returning it in errors."""
+    """Read explicit management credentials or the legacy shared credentials."""
 
+    if settings.rabbitmq_management_user is not None:
+        management_password = settings.rabbitmq_management_password
+        if management_password is None:
+            raise RabbitMQTopologyError(
+                "RabbitMQ management credentials are not configured",
+                code="rabbitmq_capability_probe_failed",
+            )
+        auth = f"{settings.rabbitmq_management_user}:{management_password.get_secret_value()}"
+        return "Basic " + base64.b64encode(auth.encode()).decode("ascii")
     if not settings.rabbitmq_url:
         raise RabbitMQTopologyError(
             "RabbitMQ management probe is not configured",
@@ -749,6 +808,13 @@ def _configured_vhost() -> str:
     return unquote(raw_path or "/")
 
 
+class _NoManagementRedirect(HTTPRedirectHandler):
+    def redirect_request(
+        self, req: Request, fp: IO[bytes], code: int, msg: str, headers: HTTPMessage, newurl: str
+    ) -> None:
+        return None
+
+
 def _management_request_json(resource: str) -> object:
     """Read one bounded management response with stable redacted failures."""
 
@@ -760,7 +826,13 @@ def _management_request_json(resource: str) -> object:
                 "Authorization": _management_auth_header(),
             },
         )
-        with urlopen(request, timeout=settings.rabbitmq_management_timeout_seconds) as response:
+        open_request = (
+            build_opener(ProxyHandler({}), _NoManagementRedirect()).open
+            if settings.rabbitmq_management_user is not None
+            else urlopen
+        )
+        timeout = settings.rabbitmq_management_timeout_seconds
+        with open_request(request, timeout=timeout) as response:
             return json.loads(response.read(1_048_576))
     except RabbitMQTopologyError:
         raise
@@ -831,13 +903,59 @@ def _record_broker_queue_observation(worker_id: int, payload: dict[str, object])
     }
 
 
+def _queue_nodes(value: object) -> set[str] | None:
+    if not isinstance(value, list) or not all(isinstance(node, str) and node for node in value):
+        return None
+    nodes = set(value)
+    return nodes if len(nodes) == len(value) else None
+
+
+def _observe_queue_quorum(payload: dict[str, object]) -> QueueQuorumObservation:
+    now = monotonic()
+    members = _queue_nodes(payload.get("members"))
+    online = _queue_nodes(payload.get("online"))
+    if not members or online is None or not online <= members:
+        return QueueQuorumObservation("unknown", None, None, False, now)
+    leader = payload.get("leader")
+    leader_online = isinstance(leader, str) and leader in online
+    if len(members) != HA_QUORUM_MEMBERS:
+        state = "incomplete"
+    elif (
+        len(online) <= HA_QUORUM_MEMBERS // 2
+        or not leader_online
+        or payload.get("state") in ("down", "crashed", "stopped")
+    ):
+        state = "unavailable"
+    elif len(online) < HA_QUORUM_MEMBERS:
+        state = "degraded"
+    else:
+        state = "healthy"
+    return QueueQuorumObservation(state, len(members), len(online), leader_online, now)
+
+
+def _require_queue_quorum(name: str, payload: dict[str, object]) -> None:
+    if not settings.rabbitmq_ha_enabled:
+        return
+    observation = _observe_queue_quorum(payload)
+    _quorum_observations[name] = observation
+    if observation.state == "incomplete":
+        raise RabbitMQTopologyError("RabbitMQ queue member count drift", code="topology_drift")
+    if observation.state in {"unavailable", "unknown"}:
+        raise RabbitMQTopologyError(
+            "RabbitMQ queue quorum unavailable", code="topology_unavailable"
+        )
+
+
 def inspect_topology_policies(worker_id: int) -> None:
     """Inspect effective queue policy without deleting or recreating queues."""
     names = topology_names(worker_id)
     worker_queue = _fetch_queue_details(names.queue)
     _assert_queue_policy(worker_queue, work_queue_arguments())
+    _require_queue_quorum(str(worker_id), worker_queue)
     _record_broker_queue_observation(worker_id, worker_queue)
-    _assert_queue_policy(_fetch_queue_details(INFRASTRUCTURE_DLQ), infrastructure_queue_arguments())
+    dlq = _fetch_queue_details(INFRASTRUCTURE_DLQ)
+    _assert_queue_policy(dlq, infrastructure_queue_arguments())
+    _require_queue_quorum("infrastructure_dlq", dlq)
 
 
 def infrastructure_dlq_observation() -> dict[str, int]:
@@ -845,6 +963,7 @@ def infrastructure_dlq_observation() -> dict[str, int]:
 
     payload = _fetch_queue_details(INFRASTRUCTURE_DLQ)
     _assert_queue_policy(payload, infrastructure_queue_arguments())
+    _require_queue_quorum("infrastructure_dlq", payload)
     messages_ready = payload.get("messages_ready")
     messages_unacknowledged = payload.get("messages_unacknowledged")
     if (

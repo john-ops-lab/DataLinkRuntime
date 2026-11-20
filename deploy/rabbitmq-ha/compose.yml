@@ -1,0 +1,31 @@
+services:
+  broker:
+    image: rabbitmq:4.3.5-management@sha256:45226f38499559b9f56875c752cc6689ff90e8f20796fe80fd9bc28d64723031
+    hostname: ${DLR_RABBITMQ_NODE_HOST:?set the stable broker hostname}
+    network_mode: host
+    environment:
+      RABBITMQ_NODENAME: ${DLR_RABBITMQ_NODE_NAME:?set the stable Erlang node name}
+      RABBITMQ_USE_LONGNAME: ${DLR_RABBITMQ_USE_LONGNAME:-true}
+    volumes:
+      - type: bind
+        source: ${DLR_RABBITMQ_DATA_DIR:?set the node-specific persistent directory}
+        target: /var/lib/rabbitmq
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DLR_RABBITMQ_CONFIG_FILE:?set the private node configuration path}
+        target: /etc/rabbitmq/rabbitmq.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DLR_RABBITMQ_TLS_DIR:?set the private node certificate directory}
+        target: /run/dlr-broker-tls
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12

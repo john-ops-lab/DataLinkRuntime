@@ -19,6 +19,8 @@ W3 第一批提供同镜像双 Control 注册、分层健康与集群接收容�
 - `GET /api/health/ready` 供负载均衡使用，以可写数据库、schema 和有效 Control 权威为基础。
 - `GET /api/health` 保留聚合诊断，并单列当前节点、集群登记数及接收、发布、存储能力。Broker 中断时，依赖 Broker 的能力单独降级，合法续租、JSON 结果、Receipt 读回使用任意仍就绪的节点。
 
+内部 Broker 采用三节点时，按 [RabbitMQ HA 部署与恢复](rabbitmq-ha.md) 配置 AMQPS、管理 HTTPS 和两个队列族的成员。
+
 正在准备的 Claim 使用原 proposal 发起确认。收到请求的节点在必要时向预置对端转交一次，原节点继续校验 proposal、身份、期限和子进程预算。为每节点配置 `DLR_CONTROL_HA_PEER_URL` 及 `DLR_CONTROL_HA_PEER_CA_FILE`，将该地址指向相对槽位的专用私网 HTTPS 入口。TLS CA 应仅签发此内部用途的服务证书。普通负载均衡、私网转交都禁用非幂等请求自动重试。正在进行的 Assist 中断后由用户决定是否重试。Execution SSE 中断后浏览器通过已有 Execution ID 做有界读取。
 
 这批的双 Control 接受纯 JSON 执行。Claim 提交和结果暂存各自确认本地子进程退出再返回证明。任一合格节点都可用同一持久 intent 和原证明完成结果提交，正文 MAC、有效期限和原 Attempt 围栏继续生效。接收新责任依赖本节点近 10 秒内的 Broker 校验，已知故障时关闭接收。旧 Receipt 读回、续租和可提交的结果分别判断。
