@@ -101,7 +101,7 @@ class FixedWorkerConsumer:
             check_capacity=check_capacity,
         )
 
-    def _execute(self, body: bytes, *, supervised: threading.Event) -> _Outcome:
+    def _execute(self, body: bytes, *, claim_confirmed: threading.Event) -> _Outcome:
         stage = "dispatch"
         try:
             if type(body) is not bytes or not 0 < len(body) <= _MAX_DISPATCH_BYTES:
@@ -154,6 +154,7 @@ class FixedWorkerConsumer:
                 return "retry"
             if result.state != "claimed" or result.claimed is None:
                 return _unknown(stage)
+            claim_confirmed.set()
             stage = "staging"
             staged = self._preparer.stage_execution(
                 result.claimed,
@@ -170,7 +171,6 @@ class FixedWorkerConsumer:
             owner = execution_supervision_v4.start_execution(staged, stop=self._stop)
             if owner is None:
                 return _unknown(stage)
-            supervised.set()
             while not self._stop.is_set():
                 observed = owner.observe(timeout=1.0)
                 if observed.state == "pending":
@@ -210,7 +210,7 @@ class FixedWorkerConsumer:
         while not self._stop.is_set():
             connection = None
             active: threading.Thread | None = None
-            supervised = threading.Event()
+            claim_confirmed = threading.Event()
             outcomes: queue.SimpleQueue[_Outcome] = queue.SimpleQueue()
             delivery_tag: int | None = None
             try:
@@ -230,7 +230,7 @@ class FixedWorkerConsumer:
                     _properties: object,
                     body: bytes,
                     result_queue: queue.SimpleQueue[_Outcome] = outcomes,
-                    running: threading.Event = supervised,
+                    confirmed: threading.Event = claim_confirmed,
                 ) -> None:
                     nonlocal active, delivery_tag
                     self.idle.clear()
@@ -240,10 +240,10 @@ class FixedWorkerConsumer:
                         self._stop.set()
                         return
                     delivery_tag = tag
-                    running.clear()
+                    confirmed.clear()
 
                     def work() -> None:
-                        result_queue.put(self._execute(body, supervised=running))
+                        result_queue.put(self._execute(body, claim_confirmed=confirmed))
 
                     active = threading.Thread(target=work, name="dlr-v4-attempt", daemon=True)
                     active.start()
@@ -286,7 +286,7 @@ class FixedWorkerConsumer:
                 logger.warning("fixed Worker Broker unavailable: error=%s", type(error).__name__)
                 if (
                     active is not None
-                    and supervised.is_set()
+                    and claim_confirmed.is_set()
                     and isinstance(error, pika.exceptions.AMQPConnectionError)
                 ):
                     # The delivery tag belongs to the disconnected channel. Keep the

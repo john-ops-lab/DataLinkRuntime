@@ -35,13 +35,13 @@ LB SHALL 使用 `/api/health/ready` 判定节点能否承担数据库及身份�
 - **WHEN** Broker 不可用，但数据库可提交且身份有效
 - **THEN** 经真实 LB 的合法续租、纯 JSON 结果和 Receipt 读回可继续；新接收和 MQ 发布按各自条件拒绝。双节点下 Managed Files、内置材料和 AI 附件的共享路径在对应后端交付前显示不可用，且不能借用另一项的健康状态。 HA 新接收与发布使用最近成功的 Broker 活性观测，约每 5 秒探测，观测超过 10 秒视为不可用，已知故障立即关门；恢复须有新的成功观测和原能力条件。
 
-#### Scenario: 已确认 Claim 的普通任务运行中失去 AMQP 连接
-- **WHEN** Worker 已收到 delivery、已确认原 Attempt 并开始运行，此时 Broker 连接中断，而数据库、HTTP 管理入口、身份与租约仍有效
-- **THEN** Worker MUST 停止新领取，保留同一受监管 Attempt 及原时间预算，并允许合法 HTTP 续租、纯 JSON 结果和清理。连接丢失本身不取消业务；真正停机、取消、失权及任何未知责任仍按原合同停止或对账。原 channel 的 delivery tag 不得在新 channel 确认。正常重连后每次重投须以当前投递及权威状态判定 ACK_NOOP，不得重复执行业务。
+#### Scenario: Worker 验证 Claim 证明后在 staging、构建或执行期间失去 AMQP 连接
+- **WHEN** Worker 已收到 delivery 并验证原 Claim 证明，此时在已有 staging、受监督构建（包括 Go）或业务执行中发生 AMQP 连接中断，而数据库、HTTP 管理入口、身份与租约仍有效
+- **THEN** Worker MUST 停止新领取，保留同一受监管 Attempt，分别遵守原准备与执行截止；无须等待 start_execution 返回，并允许合法 HTTP 续租、纯 JSON 结果和清理。连接丢失本身不取消业务；尚未验证 Claim 证明、真正停机、取消、失权及任何未知责任仍按原合同停止或对账。原 channel 的 delivery tag 不得在新 channel 确认。正常重连后每次重投须以当前投递及权威状态判定 ACK_NOOP，不得重复执行业务。
 
 #### Scenario: 诊断与接管共用节点预算
 - **WHEN** 两个位置分担启用订阅，节点收到新的连接诊断请求
-- **THEN** 每节点为当前数据库中全部启用订阅预留足以接管的 owner 名额，包括当前由对端持有的订阅；诊断仅可使用剩余名额，实际运行中的工作仍占用资源至结束。 本批验证容量预留，来源实际接管按相应协议另验。
+- **THEN** 启用来源接收的双 Control 每节点固定为 owner 保留全部 16 个共享原生名额，当前启用数不足 16 时也不出借。在线原生诊断直接返回容量繁忙，不为名额裁决查询启用数或启动 SDK；既有工作实际结束后才释放占用。来源接管时限按对应协议另验。
 
 #### Scenario: 数据库不可提交或长连接中断
 - **WHEN** 数据库只读或不可用，或者客户端正在使用的 SSE/Assist 连接中断

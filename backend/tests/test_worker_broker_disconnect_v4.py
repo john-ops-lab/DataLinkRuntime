@@ -12,7 +12,7 @@ from dlr.worker import consumer_v4
 
 @pytest.mark.parametrize("outcome", ["ack", "unknown"])
 def test_reconnect_only_after_resolving_the_active_delivery(monkeypatch, tmp_path, outcome):
-    stop, supervised, disconnected, finished = Event(), Event(), Event(), Event()
+    stop, staging, disconnected = Event(), Event(), Event()
     calls = []
     config = SimpleNamespace(queue="worker-queue", connection_parameters=lambda: None)
     monkeypatch.setattr(
@@ -35,17 +35,40 @@ def test_reconnect_only_after_resolving_the_active_delivery(monkeypatch, tmp_pat
         stop=stop,
     )
 
-    def execute(body, **kwargs):
-        assert body == b"same delivery"
-        if not finished.is_set():
-            kwargs["supervised"].set()
-            supervised.set()
-            assert disconnected.wait(timeout=2)
-            calls.append(("execution_completed", stop.is_set()))
-            finished.set()
-            return outcome
-        calls.append(("redelivery_claim", stop.is_set()))
-        return "ack"
+    claim = object()
+
+    def prepare(**kwargs):
+        assert kwargs["dispatch"] == b"same delivery"
+        if disconnected.is_set():
+            calls.append(("redelivery_claim", stop.is_set()))
+            return SimpleNamespace(state="decision", decision="ACK_NOOP")
+        return SimpleNamespace(state="claimed", claimed=claim)
+
+    def stage(claimed, **_kwargs):
+        assert claimed is claim
+        staging.set()
+        assert disconnected.wait(timeout=2)
+        calls.append(("staging_resumed", stop.is_set()))
+        return claim if outcome == "ack" else None
+
+    monkeypatch.setattr(
+        consumer_v4,
+        "deserialize_dispatch_message",
+        lambda _: SimpleNamespace(target_worker_id=1, language="python"),
+    )
+    monkeypatch.setattr(consumer._preparer, "prepare", prepare)
+    monkeypatch.setattr(consumer._preparer, "stage_execution", stage)
+    owner = SimpleNamespace(
+        observe=lambda **_kwargs: SimpleNamespace(state="observed", stop_reason=None),
+        build_result=lambda: object(),
+    )
+    monkeypatch.setattr(
+        consumer_v4.execution_supervision_v4, "start_execution", lambda *_args, **_kwargs: owner
+    )
+    monkeypatch.setattr(
+        consumer_v4.result_exchange_v4, "submit_result", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(consumer_v4.cleanup_execution_v4, "settle_execution", lambda *_args: True)
 
     class Connection:
         def __init__(self, tag):
@@ -68,7 +91,7 @@ def test_reconnect_only_after_resolving_the_active_delivery(monkeypatch, tmp_pat
             self.delivered = True
             self.deliver(self, SimpleNamespace(delivery_tag=self.tag), None, b"same delivery")
             if self.tag == 1:
-                assert supervised.wait(timeout=2)
+                assert staging.wait(timeout=2)
                 disconnected.set()
                 raise pika.exceptions.ConnectionClosedByBroker(320, "shutdown")
 
@@ -81,10 +104,9 @@ def test_reconnect_only_after_resolving_the_active_delivery(monkeypatch, tmp_pat
 
     sessions = iter((Connection(1), Connection(2)))
     monkeypatch.setattr(consumer_v4.pika, "BlockingConnection", lambda _: next(sessions))
-    monkeypatch.setattr(consumer, "_execute", execute)
     consumer.run()
 
-    assert calls[0] == ("execution_completed", False)
+    assert calls[0] == ("staging_resumed", False)
     if outcome == "ack":
         assert calls[1:] == [("redelivery_claim", False), ("broker_ack", 2)]
         assert not consumer.failed.is_set()
