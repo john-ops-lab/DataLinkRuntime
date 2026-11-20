@@ -373,7 +373,12 @@ class ControlProcess:
     def _cycle(self) -> bool:
         """One commit-confirmed register/renew; False means terminal expiry."""
         try:
-            return self._cycle_once()
+            try:
+                return self._cycle_once()
+            except identity.RenewalRowLockTimeout:
+                # The failed session has rolled back and closed. Recheck the
+                # previous deadline and all authority in a fresh transaction.
+                return self._cycle_once()
         except BaseException:
             self._mark_unknown()
             raise
@@ -386,6 +391,7 @@ class ControlProcess:
                 return False
             previous_until = self._confirmed_until
             was_registered = self._registered
+            was_authorized = self._state == "registered"
             started = self._clock_locked()
             if started is None:
                 return False
@@ -397,7 +403,10 @@ class ControlProcess:
             # any failed/unknown outcome below immediately marks us unknown.
             if not was_registered:
                 self._state = "unknown"
-        if read_declaration(self._config) != self._deployment:
+        if (
+            self._config.control_ha_slot != self.ha_slot
+            or read_declaration(self._config) != self._deployment
+        ):
             self._mark_unknown()
             return True
         with self._sessions() as session:
@@ -405,12 +414,21 @@ class ControlProcess:
             session.execute(text("SET LOCAL statement_timeout = '2000ms'"))
             session.execute(text("SET LOCAL lock_timeout = '500ms'"))
             if was_registered:
-                result = identity.renew_control(
-                    session,
-                    self._deployment.authority,
-                    instance_id=self._instance,
-                    instance_token=self._token,
-                )
+                try:
+                    result = identity.renew_control(
+                        session,
+                        self._deployment.authority,
+                        instance_id=self._instance,
+                        instance_token=self._token,
+                    )
+                except identity.RenewalRowLockTimeout:
+                    self._mark_unknown()
+                    session.rollback()
+                    if not was_authorized:
+                        raise identity.ControlIdentityUnavailable(
+                            "control authority unavailable"
+                        ) from None
+                    raise
             else:
                 result = identity.register_control(
                     session,
@@ -442,7 +460,10 @@ class ControlProcess:
             ):
                 self._mark_unknown()
                 return True
-            if read_declaration(self._config) != self._deployment:
+            if (
+                self._config.control_ha_slot != self.ha_slot
+                or read_declaration(self._config) != self._deployment
+            ):
                 self._mark_unknown()
                 return True
             session.commit()

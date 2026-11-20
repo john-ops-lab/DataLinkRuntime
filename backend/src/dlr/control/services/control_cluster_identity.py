@@ -20,6 +20,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.engine import RowMapping
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from dlr.common.schema_gate import try_control_gate
@@ -40,6 +41,10 @@ class _RedactedBytes(bytes):
 
 class ControlIdentityUnavailable(Exception):
     """Generic, non-sensitive authority or lease failure."""
+
+
+class RenewalRowLockTimeout(ControlIdentityUnavailable):
+    """The renewing transaction timed out locking its own row before any write."""
 
 
 @dataclass(frozen=True)
@@ -441,14 +446,31 @@ def _update_control(
     token_digest = _token_digest(instance_token)
     try:
         authority = _authority(session, declaration)
-        row = (
+        if not revoke:
+            # Acquire FOR UPDATE's table lock with the same column privileges
+            # but no rows, so a DDL timeout cannot masquerade as a row timeout.
             session.execute(
-                text("SELECT * FROM control_process_instances WHERE instance_id = :id FOR UPDATE"),
-                {"id": instance_id},
+                text("SELECT instance_id FROM control_process_instances WHERE false FOR UPDATE")
             )
-            .mappings()
-            .one_or_none()
-        )
+        try:
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM control_process_instances WHERE instance_id = :id FOR UPDATE"
+                    ),
+                    {"id": instance_id},
+                )
+                .mappings()
+                .one_or_none()
+            )
+        except OperationalError as error:
+            if (
+                not revoke
+                and not error.connection_invalidated
+                and getattr(error.orig, "sqlstate", None) == "55P03"
+            ):
+                raise RenewalRowLockTimeout("control instance row lock timed out") from None
+            raise
         now = session.scalar(text("SELECT pg_catalog.clock_timestamp()"))
         if (
             row is None
@@ -467,6 +489,8 @@ def _update_control(
             {"expires": expires, "revoked": revoke, "id": instance_id},
         )
         return _matches(authority, instance_id, expires, declaration)
+    except RenewalRowLockTimeout:
+        raise
     except Exception:
         raise _invalid() from None
 
