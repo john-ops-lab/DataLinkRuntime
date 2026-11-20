@@ -1,4 +1,4 @@
-# Copy per broker. Replace both listener addresses and all three Erlang names.
+# Copy per broker. Replace the private node address and all three Erlang names.
 listeners.tcp = none
 listeners.ssl.1 = 192.0.2.21:5671
 ssl_options.cacertfile = /run/dlr-broker-tls/ca.pem
@@ -11,8 +11,10 @@ management.ssl.port = 15671
 management.ssl.cacertfile = /run/dlr-broker-tls/ca.pem
 management.ssl.certfile = /run/dlr-broker-tls/node.pem
 management.ssl.keyfile = /run/dlr-broker-tls/node.key
+prometheus.tcp.ip = 127.0.0.1
 loopback_users.guest = true
 
+distribution.listener.interface = 192.0.2.21
 cluster_formation.peer_discovery_backend = classic_config
 cluster_formation.classic_config.nodes.1 = rabbit@broker-a.example.invalid
 cluster_formation.classic_config.nodes.2 = rabbit@broker-b.example.invalid
