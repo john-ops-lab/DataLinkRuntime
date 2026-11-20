@@ -77,6 +77,8 @@ rabbitmq-queues quorum_status --vhost "$vhost" "$queue"
 
 - 分开中断 AMQPS 活动入口、管理活动入口和 leader。轮流隔离每个 Broker 所在的单台 VM 或测试节点，恢复正常的三个投票成员后再进入下一轮。核对原 Worker 身份经稳定地址重新消费，发布经过原 Outbox，管理只读查询走存活路径。管理入口错误与单队列缺少 quorum 分开观察。分区前记录 Worker 实际连接的 Broker，确认少数派连接被摘除后重新消费。
 - 按真实故障 T0 分别记录稳定 AMQP 入口获得首次有效 Confirm 和 Worker 获得首次有效 Claim。保留多数派时两项均须在 60 秒内成功。对 2:1 分区中的少数派直接观察发布结果，恢复后再核对原三成员与 leader。
+- 在 T0 后用新业务键提交一笔任务，记录首次派发的 Outbox、Execution 和对应的 Attempt ID。通过 `GET /api/executions/{execution_id}/reliable-detail` 观察该 Attempt。在记录 T0 的同一计时端首次读到其 `started_at` 时，Worker 已持有效 Claim 证明上报启动，由此得到故障后领取耗时的保守上界。故障前已接受的任务另按原 ID 对账。
+- v4 会检查业务库的登录角色，管理员即使只读连接该库，也会干扰 Claim。演练期间用业务 API 观察进度。需要管理员权限核对 Outbox 时，可查询演练后的隔离快照。
 - 确认回执丢失时保留原 Outbox 与输入键，核对原记录的后续回访和重发结果。以 Receipt、Execution、Attempt、物理清理和独立目标逐条对账。已确认责任丢失数和并存的双有效 Attempt 数均为零。记录首败、原始期限、重试与观察版本。
 - 轮换时预配权限相同的新身份并验证路径，再更新私有配置，清理旧连接并撤销旧凭据。管理凭据轮换后从两端核对新探测，Worker 独立账号轮换按[原维护流程](worker-v4-dispatch-contract.md)操作。日志和演练记录保留稳定错误码、计数和时间点。
 
