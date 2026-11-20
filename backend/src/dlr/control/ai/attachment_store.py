@@ -24,7 +24,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from dlr.common.config import settings
@@ -43,6 +43,9 @@ from dlr.control.ai.attachment_reading import (
 )
 from dlr.control.schemas.ai import AiAttachment, AiAttachmentReference, AiPreparedAttachment
 from dlr.control.security import Principal
+
+if TYPE_CHECKING:
+    from dlr.control.ai.shared_attachments import SharedAttachmentStore
 
 MAX_SCOPES = 128
 MAX_TRACKED_SCOPES = MAX_SCOPES * 4
@@ -807,10 +810,14 @@ _default_store: AiAttachmentStore | None = None
 _default_lock = threading.Lock()
 
 
-def get_attachment_store() -> AiAttachmentStore:
+def get_attachment_store() -> AiAttachmentStore | SharedAttachmentStore:
     global _default_store
     if not settings.ai_document_converter_url:
         raise _error("ai_attachment_converter_unavailable")
+    if settings.control_ha_slot is not None:
+        from dlr.control.ai.shared_attachments import SharedAttachmentStore
+
+        return SharedAttachmentStore()
     with _default_lock:
         if _default_store is None:
             _default_store = AiAttachmentStore(
@@ -834,6 +841,19 @@ def close_attachment_store() -> None:
 async def attachment_gc_loop() -> None:
     try:
         while True:
+            if settings.control_ha_slot is not None:
+                from sqlalchemy.exc import SQLAlchemyError
+
+                from dlr.control.ai.shared_attachments import SharedAttachmentStore
+                from dlr.control.services import storage_backends
+
+                if storage_backends.available("ai_attachments"):
+                    try:
+                        await asyncio.to_thread(lambda: SharedAttachmentStore().sweep())
+                    except (OSError, DocumentConversionError, RuntimeError, SQLAlchemyError):
+                        logger.warning("AI attachment cleanup will retry")
+                await asyncio.sleep(5)
+                continue
             if _default_store is not None:
                 try:
                     await asyncio.to_thread(_default_store.sweep)

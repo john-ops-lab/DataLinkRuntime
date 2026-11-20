@@ -185,14 +185,24 @@ def test_native_single_page_export_preserves_original_ordinal() -> None:
     assert asset["page_count"] == 1
 
 
-def test_cancel_before_registration_remains_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("full", [False, True])
+def test_cancel_before_registration_remains_terminal(
+    monkeypatch: pytest.MonkeyPatch, full: bool
+) -> None:
+    import time
+
     monkeypatch.syspath_prepend(str(TOOLS))
     # server's processor import intentionally has no document-library side effects.
     module = _module("server")
     monkeypatch.setattr(module, "ROLE", "office")
     supervisor = module.Supervisor()
     assert supervisor.cancel("cancel-first")["terminated"] is True
-    with pytest.raises(module.ConversionError):
+    if full:
+        supervisor.tombstones.update({f"finished-{n}": time.monotonic() for n in range(511)})
+        with pytest.raises(module.ConversionError) as failure:
+            supervisor.cancel("more")
+        assert failure.value.code == "ai_attachment_cancel_failed"
+    with pytest.raises(module.ConversionError) as rejection:
         supervisor.run(
             {
                 "job_id": "cancel-first",
@@ -202,6 +212,7 @@ def test_cancel_before_registration_remains_terminal(monkeypatch: pytest.MonkeyP
             "prepare",
         )
     assert supervisor.jobs == {}
+    assert rejection.value.code == "ai_attachment_cancelled"
 
 
 @pytest.mark.parametrize("launcher_exits", [False, True])
@@ -396,7 +407,8 @@ def test_supervisor_cancel_waits_for_run_cleanup_before_releasing_capacity(
             assert cleanup_continue.wait(3)
             return super().__exit__(*args)
 
-    def office(path, payload, timeout, method="POST"):
+    def office(path, payload, timeout, method="POST", *, instance=None):
+        assert instance is None
         assert phase == "office_call", "A PDF job must never depend on Office availability"
         if method == "DELETE":
             return {"terminated": True}
@@ -486,7 +498,8 @@ def test_office_unknown_termination_is_quarantined_and_next_request_recovers(
     delete_calls = []
     next_thread = None
 
-    def office(path, payload, timeout, method="POST"):
+    def office(path, payload, timeout, method="POST", *, instance=None):
+        assert instance is None
         if method == "DELETE":
             delete_calls.append(path)
             if fault.is_set():
@@ -635,7 +648,8 @@ def test_quarantine_recovery_consumes_only_new_request_remaining_deadline(
     supervisor.jobs["quarantined"] = job
     timeouts = []
 
-    def office(path, payload, timeout, method="POST"):
+    def office(path, payload, timeout, method="POST", *, instance=None):
+        assert instance is None
         assert method == "DELETE"
         timeouts.append(timeout)
         now[0] += timeout

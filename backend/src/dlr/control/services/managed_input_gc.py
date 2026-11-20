@@ -9,6 +9,7 @@ Control process reclaim an expired delete lease.
 from __future__ import annotations
 
 import asyncio
+import heapq
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,14 +33,21 @@ from dlr.control.models import (
     ManagedInputDeletionJobStatus,
     ManagedInputUploadReservation,
 )
+from dlr.control.services import control_ha_capacity, storage_backends, storage_maintenance
 from dlr.control.services import input_config as input_config_service
 from dlr.control.services import managed_input as policy_service
 from dlr.control.services.artifact_store import (
+    ORPHAN_GRACE_SECONDS,
     ArtifactAuditResult,
+    ArtifactStoreBusyError,
     ArtifactStoreError,
-    LocalFileArtifactStore,
 )
 from dlr.control.services.managed_input_audit import record_audit_event
+from dlr.control.services.shared_artifact_store import (
+    ArtifactStore,
+    SharedFileArtifactStore,
+    configured_store,
+)
 
 logger = logging.getLogger("dlr.control.managed_input_gc")
 
@@ -52,6 +60,7 @@ DELETE_LEASE_SECONDS = 60
 DELETE_BACKOFF_BASE_SECONDS = 5
 MAX_DELETE_BACKOFF_SECONDS = 300
 GC_BATCH_SIZE = 100
+ORPHAN_PAGE_SIZE = 50
 ArtifactProtectionHook = Callable[[Session, int], bool]
 
 
@@ -243,6 +252,7 @@ def claim_artifact_deletion(
     provide its database-backed Lease implementation without making this
     lifecycle module import or inspect the C0 schema.
     """
+    _assert_shared_authority(session)
     effective_now = _as_utc(now) or utcnow()
     artifact = session.scalar(
         select(ManagedInputArtifact)
@@ -271,6 +281,7 @@ def claim_artifact_deletion(
     artifact.delete_started_at = started_at
     artifact.delete_lease_until = lease_until
     artifact.last_error_code = None
+    control_ha_capacity.recheck_local_control(session)
     session.commit()
     return ArtifactDeletionClaim(
         artifact_id=int(artifact.id),
@@ -298,6 +309,7 @@ def finalize_artifact_deletion(
     error_code: str = "input_artifact_delete_failed",
 ) -> bool:
     """Finish a claim only if it still owns the exact delete lease."""
+    _assert_shared_authority(session)
     effective_now = _as_utc(now) or utcnow()
     artifact = session.scalar(
         select(ManagedInputArtifact)
@@ -310,6 +322,7 @@ def finalize_artifact_deletion(
         or int(artifact.delete_attempts) != claim.attempt
         or not _same_timestamp(artifact.delete_started_at, claim.started_at)
         or not _same_timestamp(artifact.delete_lease_until, claim.lease_until)
+        or (settings.control_ha_slot is not None and claim.lease_until <= utcnow())
     ):
         session.rollback()
         return False
@@ -321,6 +334,7 @@ def finalize_artifact_deletion(
         artifact.deleted_at = effective_now
         artifact.delete_lease_until = None
         artifact.last_error_code = None
+        control_ha_capacity.recheck_local_control(session)
         session.commit()
         record_audit_event(
             "gc_delete",
@@ -337,6 +351,7 @@ def finalize_artifact_deletion(
         if claim.attempt >= settings.artifact_delete_alert_threshold
         else effective_now + timedelta(seconds=_backoff_seconds(claim.attempt))
     )
+    control_ha_capacity.recheck_local_control(session)
     session.commit()
     logger.warning(
         "managed input artifact deletion failed adapter=%s artifact=%s code=%s "
@@ -367,7 +382,7 @@ def finalize_artifact_deletion(
 def process_artifact_deletions(
     session: Session,
     *,
-    store: LocalFileArtifactStore | None = None,
+    store: ArtifactStore | None = None,
     now: datetime | None = None,
     limit: int = GC_BATCH_SIZE,
     protection_hook: ArtifactProtectionHook | None = None,
@@ -376,7 +391,7 @@ def process_artifact_deletions(
     if limit <= 0:
         return ArtifactDeletionReport()
     effective_now = _as_utc(now) or utcnow()
-    store = store or LocalFileArtifactStore()
+    store = store or configured_store()
     claimed = deleted = failed = 0
     candidate_ids = _artifact_candidate_ids(session, effective_now, limit)
     for artifact_id in candidate_ids:
@@ -434,6 +449,7 @@ def mark_expired_staged_artifacts(
     )
     marked = 0
     for artifact_id in candidate_ids:
+        _assert_shared_authority(session)
         artifact = session.scalar(
             select(ManagedInputArtifact)
             .where(ManagedInputArtifact.id == int(artifact_id))
@@ -452,6 +468,7 @@ def mark_expired_staged_artifacts(
         artifact.status = ManagedInputArtifactStatus.PENDING_DELETE
         artifact.delete_lease_until = None
         artifact.last_error_code = None
+        control_ha_capacity.recheck_local_control(session)
         session.commit()
         record_audit_event(
             "artifact_ttl",
@@ -710,6 +727,7 @@ def claim_deletion_job(
     lease_seconds: int = DELETE_LEASE_SECONDS,
 ) -> DeletionJobClaim | None:
     """Claim one detached deletion job with an expiring database lease."""
+    _assert_shared_authority(session)
     effective_now = _as_utc(now) or utcnow()
     job = session.scalar(
         select(ArtifactDeletionJob)
@@ -726,6 +744,7 @@ def claim_deletion_job(
     job.delete_started_at = effective_now
     job.delete_lease_until = lease_until
     job.last_error_code = None
+    control_ha_capacity.recheck_local_control(session)
     session.commit()
     return DeletionJobClaim(
         job_id=int(job.id),
@@ -809,6 +828,7 @@ def finalize_deletion_job(
     error_code: str = "input_artifact_delete_failed",
 ) -> bool:
     """Complete or back off a job only when its claim is still current."""
+    _assert_shared_authority(session)
     effective_now = _as_utc(now) or utcnow()
     job = session.scalar(
         select(ArtifactDeletionJob).where(ArtifactDeletionJob.id == claim.job_id).with_for_update()
@@ -819,6 +839,7 @@ def finalize_deletion_job(
         or int(job.delete_attempts) != claim.attempt
         or not _same_timestamp(job.delete_started_at, claim.started_at)
         or not _same_timestamp(job.delete_lease_until, claim.lease_until)
+        or (settings.control_ha_slot is not None and claim.lease_until <= utcnow())
     ):
         session.rollback()
         return False
@@ -831,6 +852,7 @@ def finalize_deletion_job(
         job.completed_at = effective_now
         job.delete_lease_until = None
         job.last_error_code = None
+        control_ha_capacity.recheck_local_control(session)
         session.commit()
         record_audit_event(
             "deletion_job",
@@ -847,6 +869,7 @@ def finalize_deletion_job(
         if claim.attempt >= settings.artifact_delete_alert_threshold
         else effective_now + timedelta(seconds=_backoff_seconds(claim.attempt))
     )
+    control_ha_capacity.recheck_local_control(session)
     session.commit()
     logger.warning(
         "managed input deletion job failed job=%s code=%s retry_after_seconds=%s",
@@ -872,7 +895,7 @@ def finalize_deletion_job(
 def process_deletion_jobs(
     session: Session,
     *,
-    store: LocalFileArtifactStore | None = None,
+    store: ArtifactStore | None = None,
     now: datetime | None = None,
     limit: int = GC_BATCH_SIZE,
 ) -> DeletionJobReport:
@@ -880,7 +903,7 @@ def process_deletion_jobs(
     if limit <= 0:
         return DeletionJobReport()
     effective_now = _as_utc(now) or utcnow()
-    store = store or LocalFileArtifactStore()
+    store = store or configured_store()
     claimed = completed = failed = 0
     for job_id in _job_candidate_ids(session, effective_now, limit):
         claim = claim_deletion_job(session, int(job_id), now=effective_now)
@@ -906,11 +929,13 @@ def process_deletion_jobs(
 def run_orphan_audit(
     session: Session,
     *,
-    store: LocalFileArtifactStore | None = None,
+    store: ArtifactStore | None = None,
     older_than: datetime | None = None,
 ) -> ArtifactAuditResult:
     """Quarantine only old legal random objects absent from all DB metadata."""
-    store = store or LocalFileArtifactStore()
+    store = store or configured_store()
+    if isinstance(store, SharedFileArtifactStore):
+        return _audit_shared(session, store, older_than=older_than)
     artifact_keys = set(
         session.scalars(
             select(ManagedInputArtifact.storage_key).where(
@@ -932,10 +957,67 @@ def run_orphan_audit(
     return result
 
 
+def _assert_shared_authority(session: Session) -> None:
+    if settings.control_ha_slot is not None:
+        control_ha_capacity.assert_local_control(session)
+
+
+def _audit_shared(
+    session: Session, store: SharedFileArtifactStore, *, older_than: datetime | None
+) -> ArtifactAuditResult:
+    claim = storage_maintenance.claim(session, store.namespace)
+    if claim is None:
+        return ArtifactAuditResult()
+    part = claim.shard >= 256
+    cutoff = _as_utc(older_than) or (utcnow() - timedelta(seconds=ORPHAN_GRACE_SECONDS))
+    page = heapq.nsmallest(
+        ORPHAN_PAGE_SIZE,
+        (
+            item
+            for item in store.scan(part=part, shard=claim.shard % 256)
+            if item.storage_key > claim.after_key
+        ),
+        key=lambda item: item.storage_key,
+    )
+    quarantined = 0
+    for item in page:
+        if item.modified_at >= cutoff:
+            continue
+        try:
+            with store.custody(item.storage_key) as root:
+                if not storage_maintenance.current(session, claim):
+                    session.rollback()
+                    return ArtifactAuditResult()
+                owned = session.scalar(
+                    select(
+                        exists().where(
+                            ManagedInputArtifact.storage_key == item.storage_key,
+                            ManagedInputArtifact.status != ManagedInputArtifactStatus.DELETED,
+                        )
+                        | exists().where(ArtifactDeletionJob.storage_key == item.storage_key)
+                    )
+                )
+                session.rollback()
+                if not owned and store.quarantine_orphan(root, item.storage_key, part=part):
+                    quarantined += 1
+        except ArtifactStoreBusyError:
+            continue
+    has_more = len(page) == ORPHAN_PAGE_SIZE
+    storage_maintenance.finish(
+        session,
+        claim,
+        shard=claim.shard if has_more else (claim.shard + 1) % 512,
+        after_key=page[-1].storage_key if has_more else "",
+    )
+    if part:
+        return ArtifactAuditResult(inspected_parts=len(page), quarantined_parts=quarantined)
+    return ArtifactAuditResult(inspected_objects=len(page), quarantined_objects=quarantined)
+
+
 def run_gc_cycle(
     session: Session,
     *,
-    store: LocalFileArtifactStore | None = None,
+    store: ArtifactStore | None = None,
     now: datetime | None = None,
     limit: int = GC_BATCH_SIZE,
     protection_hook: ArtifactProtectionHook | None = None,
@@ -944,7 +1026,7 @@ def run_gc_cycle(
     if limit <= 0:
         return GarbageCollectionReport()
     effective_now = _as_utc(now) or utcnow()
-    store = store or LocalFileArtifactStore()
+    store = store or configured_store()
     from dlr.control.services.managed_input_upload import expire_upload_reservations
 
     reservations_expired = expire_upload_reservations(
@@ -983,13 +1065,13 @@ def run_gc_cycle(
 
 def _gc_tick() -> None:
     with db.SessionLocal() as session:
-        store = LocalFileArtifactStore(settings.artifact_store_root)
+        store = configured_store()
         run_gc_cycle(session, store=store)
 
 
 def _audit_tick() -> None:
     with db.SessionLocal() as session:
-        store = LocalFileArtifactStore(settings.artifact_store_root)
+        store = configured_store()
         run_orphan_audit(session, store=store)
 
 
@@ -1001,6 +1083,9 @@ async def artifact_gc_loop() -> None:
         GC_BATCH_SIZE,
     )
     while True:
+        if not storage_backends.available("managed_files"):
+            await _asyncio_sleep(2)
+            continue
         try:
             await _asyncio_to_thread(_gc_tick)
         except asyncio.CancelledError:
@@ -1024,6 +1109,9 @@ async def orphan_audit_loop() -> None:
         settings.artifact_audit_interval_seconds,
     )
     while True:
+        if not storage_backends.available("managed_files"):
+            await _asyncio_sleep(2)
+            continue
         try:
             await _asyncio_to_thread(_audit_tick)
         except asyncio.CancelledError:

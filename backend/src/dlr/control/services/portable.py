@@ -34,9 +34,9 @@ from dlr.control.security import Principal
 from dlr.control.services import adapter as adapter_service
 from dlr.control.services import adapter_access, input_config, managed_input_upload
 from dlr.control.services.adapter import domain_error
-from dlr.control.services.artifact_store import LocalFileArtifactStore
 from dlr.control.services.import_names import insert_with_available_name
 from dlr.control.services.portable_zip import MAX_EXPANDED_BYTES, encode_package
+from dlr.control.services.shared_artifact_store import ArtifactStore, configured_store
 
 
 def export_adapter(
@@ -103,7 +103,7 @@ def export_adapter(
             package.input.json_value = current.json_value
         if current.source_type == "managed_files" and options.include_files:
             managed_input_upload.require_feature_enabled()
-            store = LocalFileArtifactStore()
+            store = configured_store()
             total = 0
             package.input.included = True
             for summary in current.artifacts:
@@ -182,7 +182,7 @@ def import_adapter(
     )
     if package.runtime_route_requires_rebind and request.runtime_worker_id is None:
         adapter.configuration_notes["runtime_route_requires_rebind"] = True
-    store: LocalFileArtifactStore | None = None
+    store: ArtifactStore | None = None
     created_keys: list[str] = []
 
     def insert(name: str) -> None:
@@ -236,7 +236,7 @@ def import_adapter(
                 )
             if package.input.included and package.input.source_type == "managed_files":
                 managed_input_upload.require_feature_enabled()
-                store = LocalFileArtifactStore()
+                store = configured_store()
                 artifact_ids = []
                 for file in package.input.files:
                     state = managed_input_upload.begin_upload(

@@ -29,7 +29,7 @@ from dlr.control.models import (
 )
 from dlr.control.models.platform import PackageSource
 from dlr.control.services import business_credentials_v4 as business_credentials
-from dlr.control.services import worker_legacy_window
+from dlr.control.services import storage_backends, worker_legacy_window
 from dlr.control.services.adapter import domain_error
 
 
@@ -42,7 +42,7 @@ def _matches_trigger(kind: str, trigger: str, source: str) -> bool:
 
 
 def require_input_source(source_type: str) -> None:
-    if settings.control_ha_slot is not None and source_type == "managed_files":
+    if source_type == "managed_files" and not storage_backends.available("managed_files"):
         _reject("shared_backend")
     if settings.worker_remote_v4_enabled and source_type not in {"none", "json", "managed_files"}:
         _reject("input_source")
@@ -104,7 +104,7 @@ def freeze_worker_wheel(
     from dlr.control.services import builtin_package
 
     requirements = _bounded_requirements(session, adapter.id, version_id)
-    if settings.control_ha_slot is not None and requirements != "":
+    if requirements != "" and not storage_backends.available("builtin_packages"):
         _reject("shared_backend")
     if requirements == "":
         return None
@@ -219,9 +219,10 @@ def _configuration_reason(
     if input_source_type not in {"none", "json", "managed_files"}:
         return "input_source"
     requirements = _bounded_requirements(session, adapter.id, version_id)
-    if settings.control_ha_slot is not None and (
-        input_source_type == "managed_files" or requirements != ""
-    ):
+    if (
+        input_source_type == "managed_files"
+        and not storage_backends.bound(session, "managed_files")
+    ) or (requirements != "" and not storage_backends.bound(session, "builtin_packages")):
         return "shared_backend"
     if requirements != "" and not (
         adapter.language == "python"
@@ -431,6 +432,8 @@ def require_new_execution(
     if reason is None:
         requirements = _bounded_requirements(session, adapter.id, version_id)
         if requirements != "":
+            if not storage_backends.available("builtin_packages"):
+                _reject("shared_backend")
             if not _builtin_default(session, adapter.language):
                 _reject("requirements")
             if not awaiting_worker:

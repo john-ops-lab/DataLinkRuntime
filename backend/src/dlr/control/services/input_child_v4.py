@@ -12,6 +12,7 @@ import math
 import os
 import stat
 from typing import Any, BinaryIO
+from uuid import UUID
 
 from dlr.common import managed_files_v4 as contract
 from dlr.control.services.claim_child_v4 import _clock, _read_frame, _send_frame
@@ -27,13 +28,13 @@ def serve(channel: Any, request: dict[str, Any], envelope: Any, *, idle_until: f
     from dlr.control.schemas.reliable_runtime import AttemptActionBody
     from dlr.control.services import builtin_package
     from dlr.control.services import managed_input_download_v4 as downloads
-    from dlr.control.services.artifact_store import LocalFileArtifactStore
     from dlr.control.services.attempt_result_finalize_v4 import (
         ResultControlFence,
         _control_authority,
     )
     from dlr.control.services.control_declaration_v4 import read_declaration
     from dlr.control.services.result_child_v4 import _uuid
+    from dlr.control.services.shared_artifact_store import configured_store
 
     started = _clock()
     deadline = request["control_deadline"]
@@ -52,12 +53,13 @@ def serve(channel: Any, request: dict[str, Any], envelope: Any, *, idle_until: f
     )
     stream: BinaryIO | None = None
     storage_guard: BinaryIO | None = None
+    shared_stream: UUID | None = None
     close_uncertain = False
     ready = False
     command_pending = True
 
     def close_stream() -> None:
-        nonlocal stream, storage_guard, close_uncertain
+        nonlocal stream, storage_guard, shared_stream, close_uncertain
         if close_uncertain:
             raise _CloseUnknown("input close unverified")
         try:
@@ -67,6 +69,13 @@ def serve(channel: Any, request: dict[str, Any], envelope: Any, *, idle_until: f
             if storage_guard is not None:
                 storage_guard.close()
                 storage_guard = None
+            if shared_stream is not None:
+                with db.SessionLocal() as session:
+                    gate, _ = _control_authority(session, control)
+                    downloads.close_shared_stream(session, shared_stream)
+                    gate.check()
+                    session.commit()
+                shared_stream = None
         except BaseException:
             # Never unlock a library object following an uncertain stream
             # close. The retained child's reaper owns that boundary.
@@ -105,8 +114,14 @@ def serve(channel: Any, request: dict[str, Any], envelope: Any, *, idle_until: f
                 authority=authority,
                 builtin_package=package_download,
             )
+            if config.settings.control_ha_slot is not None:
+                downloads.take_shared_stream(session, grant)
             gate.check()
-            session.rollback()
+            if config.settings.control_ha_slot is not None:
+                session.commit()
+                shared_stream = grant.stream_id
+            else:
+                session.rollback()
         deadline = min(deadline, started + remaining)
 
         def recheck() -> None:
@@ -122,13 +137,9 @@ def serve(channel: Any, request: dict[str, Any], envelope: Any, *, idle_until: f
         if grant.package_kind is not None:
             storage_guard = builtin_package.file_lock(grant.storage_key, shared=True)
             recheck()
-            fd = os.open(
-                builtin_package.storage_path(grant.storage_key),
-                os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
-            )
-            stream = os.fdopen(fd, "rb")
+            stream = builtin_package.open_blob(grant.storage_key)
         else:
-            store = LocalFileArtifactStore(config.settings.artifact_store_root)
+            store = configured_store()
             stream = store.open(grant.storage_key)
         before = os.fstat(stream.fileno())
         if (

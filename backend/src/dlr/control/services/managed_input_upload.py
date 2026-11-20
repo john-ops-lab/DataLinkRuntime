@@ -37,14 +37,20 @@ from dlr.control.models import (
 from dlr.control.schemas.managed_input import (
     ManagedInputArtifactResponse,
 )
+from dlr.control.services import control_ha_capacity, storage_backends
 from dlr.control.services import managed_input as policy_service
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.artifact_store import (
     ArtifactAuditResult,
     ArtifactStoreError,
-    LocalFileArtifactStore,
 )
 from dlr.control.services.managed_input_audit import record_audit_event
+from dlr.control.services.shared_artifact_store import (
+    ArtifactStore,
+    SharedFileArtifactStore,
+    configured_store,
+)
+from dlr.control.services.storage_backends import available
 
 logger = logging.getLogger("dlr.control.managed_input_upload")
 
@@ -107,7 +113,7 @@ def _delete_claim_is_live(artifact: ManagedInputArtifact) -> bool:
 
 def feature_enabled() -> bool:
     """Return the deployment flag without creating a store or a DB row."""
-    return bool(settings.managed_files_enabled and settings.control_ha_slot is None)
+    return settings.managed_files_enabled and available("managed_files")
 
 
 def require_feature_enabled() -> None:
@@ -259,19 +265,21 @@ def _adapter_usage(session: Session, adapter_id: int) -> tuple[int, int]:
     return int(actual or 0), int(reserved or 0)
 
 
-def _free_bytes(store: LocalFileArtifactStore) -> int:
+def _free_bytes(store: ArtifactStore) -> int:
+    if isinstance(store, SharedFileArtifactStore):
+        return store.free_bytes()
     return int(shutil.disk_usage(store.root).free)
 
 
 def check_stream_low_watermark(
-    store: LocalFileArtifactStore, setting: ManagedInputSettings, additional_bytes: int
+    store: ArtifactStore, setting: ManagedInputSettings, additional_bytes: int
 ) -> None:
     """Check free space immediately before one stream write."""
     check_stream_low_watermark_bytes(store, int(setting.min_free_space_bytes), additional_bytes)
 
 
 def check_stream_low_watermark_bytes(
-    store: LocalFileArtifactStore, min_free_space_bytes: int, additional_bytes: int
+    store: ArtifactStore, min_free_space_bytes: int, additional_bytes: int
 ) -> None:
     """Check a reservation-boundary watermark without holding a DB Session."""
     if additional_bytes <= 0:
@@ -290,9 +298,10 @@ def _check_capacity(
     setting: ManagedInputSettings,
     capacity: ManagedInputCapacity,
     additional_bytes: int,
-    store: LocalFileArtifactStore,
+    store: ArtifactStore,
     *,
     preferred_bytes: int | None = None,
+    observed_free: int | None = None,
 ) -> int:
     """Validate required growth and bound optional batching under the writer locks."""
     if additional_bytes <= 0:
@@ -316,12 +325,25 @@ def _check_capacity(
             ManagedInputErrorCode.PLATFORM_QUOTA_EXCEEDED.value,
             "Platform input quota exceeded",
         )
-    check_stream_low_watermark(store, setting, additional_bytes)
+    if observed_free is None:
+        check_stream_low_watermark(store, setting, additional_bytes)
+        if preferred_bytes is None:
+            return additional_bytes
+        disk_available = max(0, _free_bytes(store) - int(setting.min_free_space_bytes))
+    else:
+        disk_available = max(
+            0, observed_free - int(setting.min_free_space_bytes) - int(capacity.reserved_bytes)
+        )
+        if additional_bytes > disk_available:
+            raise domain_error(
+                409,
+                ManagedInputErrorCode.LOW_WATERMARK.value,
+                "Artifact storage is below its configured free-space watermark",
+            )
     if preferred_bytes is None:
         return additional_bytes
     # Optional headroom must never turn a legal write into a quota rejection.
     # Actual writes still perform their own immediate low-watermark check.
-    disk_available = max(0, _free_bytes(store) - int(setting.min_free_space_bytes))
     return max(
         additional_bytes,
         min(preferred_bytes, adapter_available, platform_available, disk_available),
@@ -382,13 +404,15 @@ def begin_upload(
     content_type: str | None,
     created_by_user_id: int | None = None,
     actor_kind: str | None = None,
-    store: LocalFileArtifactStore | None = None,
+    store: ArtifactStore | None = None,
 ) -> UploadSessionState:
     """Create one UPLOADING Artifact and its ACTIVE reservation atomically."""
     require_feature_enabled()
     original_filename = validate_original_filename(original_filename)
     normalized_type = normalize_content_type(content_type)
-    store = store or LocalFileArtifactStore()
+    store = store or configured_store()
+    observed = _free_bytes(store) if isinstance(store, SharedFileArtifactStore) else None
+    _assert_store(session, store)
 
     # Every writer takes Adapter then platform capacity.  This is also the
     # order used by deletion/expiry paths and prevents a quota race deadlock.
@@ -403,6 +427,7 @@ def begin_upload(
         1,
         store,
         preferred_bytes=min(INITIAL_RESERVATION_BYTES, int(setting.max_file_bytes)),
+        observed_free=observed,
     )
     now = utcnow()
     expires_at = _refresh_expiry(setting, now)
@@ -431,6 +456,7 @@ def begin_upload(
     session.add(artifact)
     capacity.reserved_bytes += initial_bytes
     try:
+        control_ha_capacity.recheck_local_control(session)
         session.commit()
     except Exception:
         session.rollback()
@@ -477,9 +503,10 @@ def renew_upload_reservation(
     adapter_id: int,
     upload_session_id: str,
     *,
-    store: LocalFileArtifactStore | None = None,
+    store: ArtifactStore | None = None,
 ) -> UploadSessionState:
     """Conditionally renew an ACTIVE writer lease under the common lock order."""
+    _assert_store(session, store)
     _lock_adapter(session, adapter_id)
     capacity = _lock_capacity(session)
     reservation = _lock_reservation(session, adapter_id, upload_session_id)
@@ -488,6 +515,8 @@ def renew_upload_reservation(
     if reservation.status != ManagedInputReservationStatus.ACTIVE:
         _terminal_upload_error()
     if _as_utc(reservation.expires_at) <= now:
+        if isinstance(store, SharedFileArtifactStore):
+            _terminal_upload_error()
         key = artifact.storage_key if artifact is not None else None
         _expire_locked_upload(capacity, reservation, artifact, now)
         session.commit()
@@ -498,6 +527,7 @@ def renew_upload_reservation(
     reservation.expires_at = _refresh_expiry(setting, now)
     if artifact is not None and artifact.status == ManagedInputArtifactStatus.UPLOADING:
         artifact.expires_at = reservation.expires_at
+    control_ha_capacity.recheck_local_control(session)
     session.commit()
     if artifact is None:
         raise domain_error(
@@ -514,7 +544,7 @@ def expand_upload_reservation(
     upload_session_id: str,
     requested_total_bytes: int,
     *,
-    store: LocalFileArtifactStore | None = None,
+    store: ArtifactStore | None = None,
     growth_bytes: int | None = None,
 ) -> UploadSessionState:
     """Atomically extend a reservation before a writer stores new bytes.
@@ -530,6 +560,8 @@ def expand_upload_reservation(
             "Input size is invalid",
             {"reason": "size"},
         )
+    observed = _free_bytes(store) if isinstance(store, SharedFileArtifactStore) else None
+    _assert_store(session, store)
     _lock_adapter(session, adapter_id)
     capacity = _lock_capacity(session)
     reservation = _lock_reservation(session, adapter_id, upload_session_id)
@@ -538,6 +570,8 @@ def expand_upload_reservation(
     if reservation.status != ManagedInputReservationStatus.ACTIVE:
         _terminal_upload_error()
     if _as_utc(reservation.expires_at) <= now:
+        if isinstance(store, SharedFileArtifactStore):
+            _terminal_upload_error()
         key = artifact.storage_key if artifact is not None else None
         _expire_locked_upload(capacity, reservation, artifact, now)
         session.commit()
@@ -565,7 +599,7 @@ def expand_upload_reservation(
         )
     delta = requested_total_bytes - int(reservation.reserved_bytes)
     if delta > 0:
-        store = store or LocalFileArtifactStore()
+        store = store or configured_store()
         delta = _check_capacity(
             session,
             adapter_id,
@@ -574,11 +608,13 @@ def expand_upload_reservation(
             delta,
             store,
             preferred_bytes=preferred_total_bytes - int(reservation.reserved_bytes),
+            observed_free=observed,
         )
         reservation.reserved_bytes += delta
         capacity.reserved_bytes += delta
     reservation.expires_at = _refresh_expiry(setting, now)
     artifact.expires_at = reservation.expires_at
+    control_ha_capacity.recheck_local_control(session)
     session.commit()
     return _state(artifact, reservation, setting)
 
@@ -590,7 +626,7 @@ def consume_upload_reservation(
     *,
     actual_size_bytes: int,
     sha256: str,
-    store: LocalFileArtifactStore | None = None,
+    store: ArtifactStore | None = None,
 ) -> ManagedInputArtifact:
     """Commit STAGED metadata and capacity charge in one DB transaction."""
     if actual_size_bytes < 0:
@@ -606,6 +642,19 @@ def consume_upload_reservation(
             ManagedInputErrorCode.CHECKSUM_INVALID.value,
             "Input Artifact checksum is invalid",
         )
+    published_key = None
+    if isinstance(store, SharedFileArtifactStore):
+        existing = _artifact_for_session(session, adapter_id, upload_session_id)
+        published_key = existing.storage_key if existing is not None else None
+        session.rollback()
+        published = store.stat(published_key) if published_key is not None else None
+        if published is None or published.size_bytes != actual_size_bytes:
+            raise domain_error(
+                503,
+                ManagedInputErrorCode.UPLOAD_FAILED.value,
+                "Input upload could not be finalized",
+            )
+    _assert_store(session, store)
     _lock_adapter(session, adapter_id)
     capacity = _lock_capacity(session)
     reservation = _lock_reservation(session, adapter_id, upload_session_id)
@@ -614,6 +663,8 @@ def consume_upload_reservation(
     if reservation.status != ManagedInputReservationStatus.ACTIVE:
         _terminal_upload_error()
     if _as_utc(reservation.expires_at) <= now:
+        if isinstance(store, SharedFileArtifactStore):
+            _terminal_upload_error()
         key = artifact.storage_key if artifact is not None else None
         _expire_locked_upload(capacity, reservation, artifact, now)
         session.commit()
@@ -626,7 +677,7 @@ def consume_upload_reservation(
             ManagedInputErrorCode.ARTIFACT_NOT_READY.value,
             "Input Artifact is not uploading",
         )
-    if store is not None:
+    if store is not None and not isinstance(store, SharedFileArtifactStore):
         published = store.stat(artifact.storage_key)
         if published is None or published.size_bytes != actual_size_bytes:
             raise domain_error(
@@ -634,6 +685,8 @@ def consume_upload_reservation(
                 ManagedInputErrorCode.UPLOAD_FAILED.value,
                 "Input upload could not be finalized",
             )
+    if isinstance(store, SharedFileArtifactStore) and artifact.storage_key != published_key:
+        _terminal_upload_error()
     setting = policy_service.get_settings(session)
     if actual_size_bytes > int(setting.max_file_bytes):
         raise domain_error(
@@ -646,7 +699,9 @@ def consume_upload_reservation(
     # Grow under the same capacity lock instead of silently overcharging.
     delta = actual_size_bytes - int(reservation.reserved_bytes)
     if delta > 0:
-        store = store or LocalFileArtifactStore()
+        if isinstance(store, SharedFileArtifactStore):
+            _terminal_upload_error()
+        store = store or configured_store()
         _check_capacity(session, adapter_id, setting, capacity, delta, store)
         reservation.reserved_bytes = actual_size_bytes
         capacity.reserved_bytes += delta
@@ -658,6 +713,7 @@ def consume_upload_reservation(
     artifact.sha256 = sha256
     artifact.status = ManagedInputArtifactStatus.STAGED
     artifact.expires_at = _refresh_expiry(setting, now)
+    control_ha_capacity.recheck_local_control(session)
     session.commit()
     logger.info(
         "managed input upload staged adapter=%s artifact=%s reservation=%s size=%s",
@@ -681,9 +737,11 @@ def abort_upload(
     upload_session_id: str,
     *,
     error_code: str = ManagedInputErrorCode.UPLOAD_FAILED.value,
-    store: LocalFileArtifactStore | None = None,
+    store: ArtifactStore | None = None,
 ) -> AbortUploadResult:
     """Cancel an active writer exactly once; repeated compensation is safe."""
+    if isinstance(store, SharedFileArtifactStore):
+        return _release_shared_upload(session, adapter_id, upload_session_id, store, error_code)
     _lock_adapter(session, adapter_id)
     capacity = _lock_capacity(session)
     reservation = _lock_reservation(session, adapter_id, upload_session_id)
@@ -756,7 +814,101 @@ def abort_upload(
     )
 
 
-def _cleanup_paths(store: LocalFileArtifactStore, storage_key: str) -> None:
+def _assert_store(session: Session, store: ArtifactStore | None) -> None:
+    if settings.control_ha_slot is None:
+        return
+    control_ha_capacity.assert_local_control(session)
+    if (
+        not isinstance(store, SharedFileArtifactStore)
+        or storage_backends.binding_generation(session, store.namespace) is None
+    ):
+        raise domain_error(503, "artifact_store_unavailable", "Input storage is unavailable")
+
+
+def _release_shared_upload(
+    session: Session,
+    adapter_id: int,
+    upload_session_id: str,
+    store: SharedFileArtifactStore,
+    error_code: str,
+    *,
+    expired_at: datetime | None = None,
+) -> AbortUploadResult:
+    """Revoke the writer, prove physical cleanup, then release its reservation."""
+    artifact = _artifact_for_session(session, adapter_id, upload_session_id)
+    key = artifact.storage_key if artifact is not None else None
+    session.rollback()
+    unchanged = AbortUploadResult(AbortUploadOutcome.INCONSISTENT, False)
+    if key is None:
+        return unchanged
+    with store.custody(key) as root:
+        control_ha_capacity.assert_local_control(session)
+        if storage_backends.binding_generation(session, store.namespace) is None:
+            session.rollback()
+            return unchanged
+        _lock_adapter(session, adapter_id)
+        reservation = _lock_reservation(session, adapter_id, upload_session_id)
+        artifact = _artifact_for_session(session, adapter_id, upload_session_id)
+        if reservation.status == ManagedInputReservationStatus.CONSUMED or (
+            artifact is not None
+            and artifact.status
+            in {
+                ManagedInputArtifactStatus.STAGED,
+                ManagedInputArtifactStatus.READY,
+                ManagedInputArtifactStatus.PENDING_DELETE,
+                ManagedInputArtifactStatus.DELETING,
+                ManagedInputArtifactStatus.DELETE_FAILED,
+            }
+        ):
+            session.rollback()
+            return AbortUploadResult(AbortUploadOutcome.FINALIZED, False)
+        if (
+            reservation.status != ManagedInputReservationStatus.ACTIVE
+            or artifact is None
+            or artifact.status != ManagedInputArtifactStatus.UPLOADING
+            or artifact.storage_key != key
+            or (expired_at is not None and _as_utc(reservation.expires_at) > expired_at)
+        ):
+            session.rollback()
+            return unchanged
+        stopped_at = min(utcnow(), _as_utc(reservation.expires_at))
+        reservation.expires_at = stopped_at
+        control_ha_capacity.recheck_local_control(session)
+        session.commit()
+
+        store.discard(root, key, part=True)
+        store.discard(root, key)
+
+        control_ha_capacity.assert_local_control(session)
+        if storage_backends.binding_generation(session, store.namespace) is None:
+            session.rollback()
+            return unchanged
+        _lock_adapter(session, adapter_id)
+        capacity = _lock_capacity(session)
+        reservation = _lock_reservation(session, adapter_id, upload_session_id)
+        artifact = _artifact_for_session(session, adapter_id, upload_session_id)
+        if (
+            reservation.status != ManagedInputReservationStatus.ACTIVE
+            or _as_utc(reservation.expires_at) != stopped_at
+            or artifact is None
+            or artifact.status != ManagedInputArtifactStatus.UPLOADING
+            or artifact.storage_key != key
+        ):
+            session.rollback()
+            return unchanged
+        _release_reserved(capacity, int(reservation.reserved_bytes))
+        reservation.status = (
+            ManagedInputReservationStatus.EXPIRED
+            if expired_at is not None
+            else ManagedInputReservationStatus.CANCELLED
+        )
+        _mark_upload_deleted(artifact, utcnow(), error_code)
+        control_ha_capacity.recheck_local_control(session)
+        session.commit()
+        return AbortUploadResult(AbortUploadOutcome.CANCELLED, True)
+
+
+def _cleanup_paths(store: ArtifactStore, storage_key: str) -> None:
     """Best-effort idempotent compensation for a failed writer."""
     try:
         store.delete_part(storage_key)
@@ -768,7 +920,7 @@ def _cleanup_paths(store: LocalFileArtifactStore, storage_key: str) -> None:
 def expire_upload_reservations(
     session: Session,
     *,
-    store: LocalFileArtifactStore | None = None,
+    store: ArtifactStore | None = None,
     now: datetime | None = None,
     limit: int = 100,
 ) -> int:
@@ -791,8 +943,25 @@ def expire_upload_reservations(
             .limit(limit)
         ).all()
     )
-    store = store or LocalFileArtifactStore()
+    store = store or configured_store()
     count = 0
+    if isinstance(store, SharedFileArtifactStore):
+        session.rollback()
+        for _, adapter_id, upload_session_id in candidates:
+            try:
+                result = _release_shared_upload(
+                    session,
+                    adapter_id,
+                    upload_session_id,
+                    store,
+                    ManagedInputErrorCode.SESSION_EXPIRED.value,
+                    expired_at=now,
+                )
+            except (ArtifactStoreError, OSError, HTTPException):
+                session.rollback()
+                continue
+            count += int(result.cleanup_authorized)
+        return count
     for reservation_id, adapter_id, upload_session_id in candidates:
         try:
             capacity = _lock_capacity(session)
@@ -872,7 +1041,7 @@ def delete_staged(
     *,
     actor_kind: str | None = None,
     actor_id: int | None = None,
-    store: LocalFileArtifactStore | None = None,
+    store: ArtifactStore | None = None,
 ) -> bool:
     """Delete a staged blob and release actual bytes exactly once."""
     _lock_adapter(session, adapter_id)
@@ -908,7 +1077,7 @@ def delete_staged(
             ManagedInputErrorCode.ARTIFACT_NOT_READY.value,
             "Input Artifact is not staged",
         )
-    store = store or LocalFileArtifactStore()
+    store = store or configured_store()
     # Keep the synchronous HTTP contract for explicit user deletion while
     # using the same short database claim and idempotent finalization as GC.
     # ``force`` only bypasses a previous GC backoff because this is an explicit
@@ -989,11 +1158,15 @@ def delete_staged(
 def audit_unowned_objects(
     session: Session,
     *,
-    store: LocalFileArtifactStore | None = None,
+    store: ArtifactStore | None = None,
     older_than: datetime | None = None,
 ) -> ArtifactAuditResult:
     """Audit random keys absent from live Artifact and deletion-job metadata."""
-    store = store or LocalFileArtifactStore()
+    store = store or configured_store()
+    if isinstance(store, SharedFileArtifactStore):
+        from dlr.control.services.managed_input_gc import run_orphan_audit
+
+        return run_orphan_audit(session, store=store, older_than=older_than)
     artifact_keys = set(
         session.scalars(
             select(ManagedInputArtifact.storage_key).where(

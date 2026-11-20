@@ -234,12 +234,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             raise RuntimeError("worker_remote_control_unavailable") from None
 
     bootstrap_task = asyncio.create_task(_demo_bootstrap_loop())
-    local_storage_tasks: tuple[asyncio.Task[None], ...] = ()
+    storage_tasks: list[asyncio.Task[None]] = []
     if settings.control_ha_slot is None:
-        local_storage_tasks = (
-            asyncio.create_task(attachment_gc_loop()),
-            asyncio.create_task(artifact_gc_loop()),
-            asyncio.create_task(orphan_audit_loop()),
+        storage_tasks.append(asyncio.create_task(attachment_gc_loop()))
+    elif settings.ai_attachment_backend == "shared_posix":
+        from dlr.control.services import storage_backends
+
+        storage_tasks.extend(
+            (
+                asyncio.create_task(storage_backends.monitor("ai_attachments")),
+                asyncio.create_task(attachment_gc_loop()),
+            )
+        )
+    if settings.control_ha_slot is None or settings.artifact_store_backend == "shared_posix":
+        from dlr.control.services import storage_backends
+
+        if settings.control_ha_slot is not None:
+            storage_tasks.append(asyncio.create_task(storage_backends.monitor("managed_files")))
+        storage_tasks.extend(
+            (asyncio.create_task(artifact_gc_loop()), asyncio.create_task(orphan_audit_loop()))
+        )
+    if settings.control_ha_slot is not None and settings.builtin_package_backend == "shared_posix":
+        from dlr.control.services import builtin_package, storage_backends
+
+        storage_tasks.extend(
+            (
+                asyncio.create_task(storage_backends.monitor("builtin_packages")),
+                asyncio.create_task(builtin_package.reconcile_loop()),
+            )
         )
     task = asyncio.create_task(scheduler_loop())
     retention_task = asyncio.create_task(retention_loop())
@@ -291,7 +313,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await asyncio.to_thread(close_intake_database, native_closed=native_closed)
         for background_task in (
             task,
-            *local_storage_tasks,
+            *storage_tasks,
             bootstrap_task,
             retention_task,
             admission_task,
@@ -305,7 +327,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             background_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-        for local_storage_task in local_storage_tasks:
+        for local_storage_task in storage_tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await local_storage_task
         with contextlib.suppress(asyncio.CancelledError):

@@ -2,7 +2,7 @@
 
 import hashlib
 import os
-import shutil
+import time
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
@@ -16,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 
 from dlr.common.config import settings
 from dlr.control import db
-from dlr.control.api.shared_backend import require_shared_backend
+from dlr.control.api.shared_backend import require_builtin_packages
 from dlr.control.models.builtin_package import BuiltinPackage, BuiltinPackageUpload
 from dlr.control.schemas.execution import ExecutionResponse
 from dlr.control.security import (
@@ -30,13 +30,13 @@ from dlr.control.services.worker import validate_claim_for_route
 
 router = APIRouter(
     prefix="/api/builtin-packages",
-    dependencies=[Depends(require_admin_principal), Depends(require_shared_backend)],
+    dependencies=[Depends(require_admin_principal), Depends(require_builtin_packages)],
 )
 worker_router = APIRouter(
     dependencies=[
         Depends(require_worker_token),
         Depends(reject_enrolled_legacy_worker),
-        Depends(require_shared_backend),
+        Depends(require_builtin_packages),
     ]
 )
 DbSession = Annotated[Session, Depends(db.get_session)]
@@ -117,13 +117,17 @@ async def upload_content(upload_id: str, request: Request, session: DbSession) -
     upload, guard, stream = await run_in_threadpool(library.begin_upload, session, upload_id)
     total = 0
     digest = hashlib.sha256()
+    check_at = time.monotonic()
     try:
         async for chunk in request.stream():
             total += len(chunk)
             if total > upload.size_bytes:
                 raise domain_error(413, "builtin_upload_too_large", "Upload exceeds reserved size")
+            if settings.control_ha_slot is not None and time.monotonic() >= check_at:
+                await run_in_threadpool(library.check_shared_upload, upload_id)
+                check_at = time.monotonic() + 1
             if (
-                shutil.disk_usage(library.root()).free - len(chunk)
+                await run_in_threadpool(library.free_bytes) - len(chunk)
                 < settings.builtin_package_min_free_bytes
             ):
                 raise domain_error(
@@ -133,13 +137,13 @@ async def upload_content(upload_id: str, request: Request, session: DbSession) -
             digest.update(chunk)
         await run_in_threadpool(stream.flush)
         await run_in_threadpool(os.fsync, stream.fileno())
-        stream.close()
+        await run_in_threadpool(stream.close)
         return await run_in_threadpool(
             library.finish_upload, session, upload_id, digest.hexdigest()
         )
     finally:
-        stream.close()
-        guard.close()
+        await run_in_threadpool(stream.close)
+        await run_in_threadpool(guard.close)
         # Failed/interrupted reservations stay charged until explicit cancel/retry.
         # No timeout can prove a stream is no longer active; file_lock does.
 

@@ -13,6 +13,7 @@ import urllib.request
 from contextlib import closing, suppress
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import UUID
 
 MAX_ATTACHMENT_MEDIA_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENT_PIXELS = 16_000_000
@@ -166,22 +167,40 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class DocumentConverterClient:
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, *, instance_id: UUID | None = None) -> None:
         self.url = url.rstrip("/")
+        self.instance_id = instance_id
+
+    def identity(self) -> UUID:
+        try:
+            value = self._http("/health", None, 3.0, method="GET")["instance_id"]
+            identity = UUID(value)
+            if identity.int == 0 or str(identity) != value:
+                raise ValueError
+        except (KeyError, TypeError, AttributeError, ValueError):
+            raise DocumentConversionError("ai_attachment_converter_unavailable") from None
+        return identity
 
     def _http(
         self, path: str, payload: dict[str, Any] | None, timeout: float, *, method: str = "POST"
     ) -> dict[str, Any]:
         encoded = json.dumps(payload).encode() if payload is not None else None
+        headers = {"Content-Type": "application/json"}
+        if self.instance_id is not None:
+            headers["X-DLR-Converter-Instance"] = str(self.instance_id)
         request = urllib.request.Request(
             self.url + path,
             data=encoded,
             method=method,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         try:
             with opener.open(request, timeout=timeout) as response:
+                if self.instance_id is not None and response.headers.get(
+                    "X-DLR-Converter-Instance"
+                ) != str(self.instance_id):
+                    raise DocumentConversionError("ai_attachment_converter_unavailable")
                 body = response.read(MAX_WIRE_BYTES + 1)
             if len(body) > MAX_WIRE_BYTES:
                 raise DocumentConversionError("ai_attachment_too_large")
@@ -232,6 +251,8 @@ class DocumentConverterClient:
             "timeout_seconds": min(60.0, remaining),
             **options,
         }
+        if self.instance_id is not None:
+            payload["expires_at"] = time.time() + min(60.0, remaining)
         replies: list[dict[str, Any]] = []
         errors: list[Exception] = []
 
@@ -243,16 +264,21 @@ class DocumentConverterClient:
 
         worker = threading.Thread(target=transport, daemon=True)
         worker.start()
-        while worker.is_alive():
-            if time.monotonic() >= deadline or (cancel is not None and cancel.is_set()):
-                self.cancel(job_id)
-                worker.join(timeout=2)
-                raise DocumentConversionError(
-                    "ai_attachment_cancelled"
-                    if cancel is not None and cancel.is_set()
-                    else "ai_attachment_parse_timeout"
-                )
-            worker.join(timeout=0.05)
+        try:
+            while worker.is_alive():
+                if time.monotonic() >= deadline or (cancel is not None and cancel.is_set()):
+                    self.cancel(job_id)
+                    worker.join(timeout=2)
+                    raise DocumentConversionError(
+                        "ai_attachment_cancelled"
+                        if cancel is not None and cancel.is_set()
+                        else "ai_attachment_parse_timeout"
+                    )
+                worker.join(timeout=0.05)
+        finally:
+            if self.instance_id is not None:
+                # The shared job still owns its physical transport lock here.
+                worker.join()
         if errors:
             self.cancel(job_id)
             raise errors[0]

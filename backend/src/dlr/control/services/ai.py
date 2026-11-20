@@ -862,6 +862,8 @@ def _assist_messages(
 def attachment_capabilities(session: Session | None = None) -> AiAttachmentCapabilitiesResponse:
     """Stable Wave B3 contract: limits, accepted MIME types and the explicit
     per-Provider native-attachment capability table."""
+    from dlr.control.services import storage_backends
+
     selected = None
     setting = get_setting(session) if session is not None else None
     if setting is not None and session is not None:
@@ -879,7 +881,7 @@ def attachment_capabilities(session: Session | None = None) -> AiAttachmentCapab
     return AiAttachmentCapabilitiesResponse(
         selected=selected,
         prepared_attachments_enabled=bool(
-            settings.ai_document_converter_url and settings.control_ha_slot is None
+            settings.ai_document_converter_url and storage_backends.available("ai_attachments")
         ),
         limits=AiAttachmentLimits(
             max_attachments=attachments_service.MAX_ATTACHMENTS,

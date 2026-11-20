@@ -18,7 +18,8 @@ from dlr.control.ai.attachment_store import (
     get_attachment_store,
     principal_owner,
 )
-from dlr.control.api.shared_backend import require_shared_backend
+from dlr.control.ai.shared_attachments import SharedAttachmentStore
+from dlr.control.api.shared_backend import require_ai_attachments
 from dlr.control.schemas.ai import (
     AiAttachmentCapabilitiesResponse,
     AiAttachmentPrepareRequest,
@@ -31,7 +32,7 @@ from dlr.control.services import ai as ai_service
 router = APIRouter(dependencies=[Depends(require_business_principal)])
 DbSession = Annotated[Session, Depends(db.get_session)]
 CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
-Store = Annotated[AiAttachmentStore, Depends(get_attachment_store)]
+Store = Annotated[AiAttachmentStore | SharedAttachmentStore, Depends(get_attachment_store)]
 
 
 @router.get(
@@ -50,7 +51,7 @@ def capabilities(
 @router.post(
     "/api/adapters/{adapter_id}/ai/attachments",
     response_model=AiPreparedAttachment,
-    dependencies=[Depends(require_shared_backend)],
+    dependencies=[Depends(require_ai_attachments)],
 )
 async def prepare(
     adapter_id: int,
@@ -61,6 +62,8 @@ async def prepare(
     store: Store,
 ) -> AiPreparedAttachment:
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    if settings.control_ha_slot is not None:
+        session.rollback()
     cancel = threading.Event()
     operation = asyncio.create_task(
         asyncio.to_thread(
@@ -92,7 +95,7 @@ async def prepare(
 @router.delete(
     "/api/adapters/{adapter_id}/ai/attachments/scopes/{scope_id}",
     status_code=204,
-    dependencies=[Depends(require_shared_backend)],
+    dependencies=[Depends(require_ai_attachments)],
 )
 def release_scope(
     adapter_id: int,
@@ -108,7 +111,7 @@ def release_scope(
 @router.get(
     "/api/adapters/{adapter_id}/ai/attachments/{attachment_ref}",
     response_model=AiPreparedAttachment,
-    dependencies=[Depends(require_shared_backend)],
+    dependencies=[Depends(require_ai_attachments)],
 )
 def get_prepared(
     adapter_id: int,
@@ -125,7 +128,7 @@ def get_prepared(
 @router.delete(
     "/api/adapters/{adapter_id}/ai/attachments/{attachment_ref}",
     status_code=204,
-    dependencies=[Depends(require_shared_backend)],
+    dependencies=[Depends(require_ai_attachments)],
 )
 def release_attachment(
     adapter_id: int,
