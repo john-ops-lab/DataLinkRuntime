@@ -318,7 +318,6 @@ def cleanup_execution_retention(
     # Expired records are removed first, but only when their Execution is
     # already terminal.  Remaining records keep their FK and therefore keep
     # the associated Execution inside the promised replay window.
-    assert_local_control(session)
     cleanup_expired_records(session, now=effective_now)
     adapter_page = None
     if settings.control_ha_slot is not None:

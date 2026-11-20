@@ -546,6 +546,7 @@ def lease_due_outbox(
                 lease_attempt=row.publish_attempts,
             )
         )
+    recheck_local_control(session)
     session.commit()
     return leased
 
@@ -1196,6 +1197,7 @@ def _relay_once(
             }:
                 assert_local_control(session)
                 settle_cancelled_outbox(session, row.execution_id)
+                recheck_local_control(session)
                 session.commit()
                 continue
             try:

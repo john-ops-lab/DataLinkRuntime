@@ -1461,6 +1461,7 @@ def reserve_recovery_candidates(
             upper_id=int(cursor.upper_id),
             wrapped=wrapped,
         )
+        recheck_local_control(session)
         session.commit()
     except Exception:
         session.rollback()
@@ -2139,6 +2140,7 @@ def expire_holds(session: Session, *, limit: int = 100, now: datetime | None = N
         row.purged_by = "system"
         row.purge_reason = "hold_expired"
     if rows:
+        recheck_local_control(session)
         session.commit()
     else:
         session.rollback()

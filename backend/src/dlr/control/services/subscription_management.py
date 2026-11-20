@@ -856,7 +856,7 @@ def maintenance_tick() -> bool:
     from dlr.control import db
     from dlr.control.services import subscription_delivery as delivery
     from dlr.control.services import subscription_sync as sync
-    from dlr.control.services.control_ha_capacity import assert_local_control
+    from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
     from dlr.control.services.subscription_scheduler import DeliveryScheduler
 
     global _scheduler, _subscription_cursor, _subscription_upper
@@ -880,6 +880,7 @@ def maintenance_tick() -> bool:
             try:
                 assert_local_control(session)
                 sync.maintain_batch(session, batches[0])
+                recheck_local_control(session)
                 session.commit()
             except Exception:
                 session.rollback()
@@ -896,6 +897,7 @@ def maintenance_tick() -> bool:
             try:
                 assert_local_control(session)
                 sync.materialize_ready_control(session, ticket)
+                recheck_local_control(session)
                 session.commit()
             except Exception:
                 session.rollback()
@@ -905,6 +907,7 @@ def maintenance_tick() -> bool:
     with db.SessionLocal.begin() as session:
         assert_local_control(session)
         policies_ready = legacy_policy_gate(session)
+        recheck_local_control(session)
     dispatched = _scheduler.dispatch(db.SessionLocal) if policies_ready else None
     # History is not in the hot polling path. Advance only processed rows so a
     # budget boundary never silently skips a selected subscription.
@@ -933,6 +936,7 @@ def maintenance_tick() -> bool:
                     delivery.cleanup_history(session, subscriptions[0])
                     if subscription.deleted_at is None:
                         delivery.refresh_delivery_state(session, subscription)
+                    recheck_local_control(session)
                     session.commit()
                 except Exception:
                     session.rollback()
@@ -968,7 +972,7 @@ def quota_audit_tick() -> None:
     """Read-only bounded page; one ledger-only global comparison per low-frequency cycle."""
     from dlr.control import db
     from dlr.control.services.background_control import reserve_page
-    from dlr.control.services.control_ha_capacity import assert_local_control
+    from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
     from dlr.control.services.input_config import database_now
     from dlr.control.services.subscription_delivery import audit_global_quota, audit_quota
 
@@ -1018,6 +1022,7 @@ def quota_audit_tick() -> None:
             assert state is not None
             state.after_id = state.upper_id = 1
             state.updated_at = now
+            recheck_local_control(session)
             session.commit()
 
 

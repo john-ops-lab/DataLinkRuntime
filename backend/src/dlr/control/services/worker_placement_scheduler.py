@@ -81,10 +81,12 @@ def _next(session: Session) -> tuple[int, int, bool, datetime | None] | None:
     next_head = session.execute(_HEAD, {"after": cursor.after_id}).one_or_none()
     if next_head is None:
         cursor.after_id = cursor.upper_id = 0
+        recheck_local_control(session)
         session.commit()
         return None
     adapter_id, execution_id, target_worker_id, changed_at = next_head
     cursor.after_id = cursor.upper_id = adapter_id
+    recheck_local_control(session)
     session.commit()
     return adapter_id, execution_id, target_worker_id is not None, changed_at
 
@@ -116,6 +118,7 @@ def _next_expired(session: Session) -> int | None:
         .limit(1)
     )
     cursor.after_id = cursor.upper_id = execution_id or 0
+    recheck_local_control(session)
     session.commit()
     return execution_id
 

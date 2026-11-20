@@ -164,7 +164,7 @@ class TopologyObservation:
 
 def reserve_topology_observation(session: Session) -> TopologyObservation | None:
     """Allocate before Broker I/O and commit before leaving the database."""
-    from dlr.control.services.control_ha_capacity import assert_local_control
+    from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
     from dlr.control.services.input_config import database_now
 
     instance_id = assert_local_control(session)
@@ -177,6 +177,7 @@ def reserve_topology_observation(session: Session) -> TopologyObservation | None
     observation = TopologyObservation(
         cursor.upper_id, instance_id, database_now(session) + timedelta(seconds=30)
     )
+    recheck_local_control(session)
     session.commit()
     return observation
 
@@ -205,6 +206,7 @@ def _invalidate_persisted_capability(observation: TopologyObservation | None = N
     """Delete stale capability evidence in its own short DB transaction."""
 
     from dlr.control.db import SessionLocal
+    from dlr.control.services.control_ha_capacity import recheck_local_control
 
     try:
         with SessionLocal() as session:
@@ -213,6 +215,7 @@ def _invalidate_persisted_capability(observation: TopologyObservation | None = N
             state = session.get(RabbitMQRuntimeCapability, 1, with_for_update=True)
             if state is not None:
                 session.delete(state)
+            recheck_local_control(session)
             session.commit()
     except Exception:
         # Do not claim that a drifted generation was durably disabled when the
@@ -313,6 +316,7 @@ def _persist_runtime_capabilities(
     """Persist the last live capability probe in a short DB transaction."""
 
     from dlr.control.db import SessionLocal
+    from dlr.control.services.control_ha_capacity import recheck_local_control
     from dlr.control.services.input_config import database_now
 
     with SessionLocal() as session:
@@ -335,6 +339,7 @@ def _persist_runtime_capabilities(
             state.feature_flags = sorted(capabilities.feature_flags)
             state.worker_ids = sorted(set(worker_ids))
             state.verified_at = database_now(session)
+        recheck_local_control(session)
         session.commit()
         return True
 
