@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from fastapi import HTTPException
-from sqlalchemy import JSON, delete, func, null, select
+from sqlalchemy import JSON, delete, func, null, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -848,6 +848,8 @@ def finalize_one_v4_adapter_deletion(session: Session, *, after_adapter_id: int 
     """Visit one ready Adapter so a blocked owner cannot stall later cleanup."""
     from dlr.control.services.control_ha_capacity import assert_local_control, recheck_local_control
 
+    if settings.control_ha_slot is not None:
+        session.execute(text("SET LOCAL lock_timeout = '250ms'"))
     assert_local_control(session)
     pending = select(WorkerCleanupRequest.id).where(
         WorkerCleanupRequest.adapter_id == Adapter.id,

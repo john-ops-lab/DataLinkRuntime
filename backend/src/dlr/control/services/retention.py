@@ -359,24 +359,34 @@ def cleanup_execution_retention(
     return report
 
 
-def _retention_tick(after_adapter_id: int = 0) -> int:
+def _retention_tick() -> None:
     """Run one blocking cleanup cycle in a short-lived database session."""
 
     from dlr.control.db import SessionLocal
 
-    session = SessionLocal()
-    try:
-        adapter_cursor = 0
-        if settings.worker_remote_v4_enabled:
-            from dlr.control.services.adapter import finalize_one_v4_adapter_deletion
-
-            adapter_cursor = (
-                finalize_one_v4_adapter_deletion(session, after_adapter_id=after_adapter_id) or 0
-            )
+    with SessionLocal() as session:
         cleanup_execution_retention(session)
-        return adapter_cursor
-    finally:
-        session.close()
+
+
+def _finalize_adapter_tick(after_adapter_id: int) -> int:
+    from dlr.control.db import SessionLocal
+    from dlr.control.services.adapter import finalize_one_v4_adapter_deletion
+
+    with SessionLocal() as session:
+        return finalize_one_v4_adapter_deletion(session, after_adapter_id=after_adapter_id) or 0
+
+
+async def adapter_cleanup_loop() -> None:
+    """Observe completed Worker cleanup independently of the retention interval."""
+    cursor = 0
+    while True:
+        try:
+            cursor = await asyncio.to_thread(_finalize_adapter_tick, cursor)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Adapter cleanup finalization tick failed")
+        await asyncio.sleep(1)
 
 
 async def retention_loop() -> None:
@@ -387,10 +397,9 @@ async def retention_loop() -> None:
         settings.execution_retention_interval_seconds,
         settings.execution_retention_batch_size,
     )
-    adapter_cursor = 0
     while True:
         try:
-            adapter_cursor = await asyncio.to_thread(_retention_tick, adapter_cursor)
+            await asyncio.to_thread(_retention_tick)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - keep the service loop alive

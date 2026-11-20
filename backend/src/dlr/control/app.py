@@ -70,7 +70,7 @@ from dlr.control.services.infrastructure_dlq import infrastructure_dlq_loop
 from dlr.control.services.managed_input_gc import artifact_gc_loop, orphan_audit_loop
 from dlr.control.services.outbox import outbox_relay_loop
 from dlr.control.services.rabbitmq import topology_bootstrap_loop
-from dlr.control.services.retention import retention_loop
+from dlr.control.services.retention import adapter_cleanup_loop, retention_loop
 from dlr.control.services.schedule import scheduler_loop
 from dlr.control.services.secrets import bootstrap_demo_credentials
 from dlr.control.services.subscription_management import (
@@ -245,11 +245,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     retention_task = asyncio.create_task(retention_loop())
     admission_task = asyncio.create_task(admission_reconciler_loop())
     attempt_task = asyncio.create_task(attempt_reconciler_loop())
-    placement_tasks: tuple[asyncio.Task[None], ...] = ()
+    worker_tasks: tuple[asyncio.Task[None], ...] = ()
     if settings.worker_remote_v4_enabled:
         from dlr.control.services.worker_placement_scheduler import run as placement_loop
 
-        placement_tasks = (asyncio.create_task(placement_loop()),)
+        worker_tasks = (
+            asyncio.create_task(placement_loop()),
+            asyncio.create_task(adapter_cleanup_loop()),
+        )
     infrastructure_dlq_task = asyncio.create_task(infrastructure_dlq_loop())
     subscription_task = asyncio.create_task(subscription_maintenance_loop())
     quota_audit_task = asyncio.create_task(subscription_quota_audit_loop())
@@ -293,7 +296,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             retention_task,
             admission_task,
             attempt_task,
-            *placement_tasks,
+            *worker_tasks,
             infrastructure_dlq_task,
             subscription_task,
             quota_audit_task,
@@ -313,9 +316,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await admission_task
         with contextlib.suppress(asyncio.CancelledError):
             await attempt_task
-        for placement_task in placement_tasks:
+        for worker_task in worker_tasks:
             with contextlib.suppress(asyncio.CancelledError):
-                await placement_task
+                await worker_task
         with contextlib.suppress(asyncio.CancelledError):
             await infrastructure_dlq_task
         with contextlib.suppress(asyncio.CancelledError):

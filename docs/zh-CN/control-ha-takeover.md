@@ -11,7 +11,7 @@
 | Outbox、批次、完成投影 | Relay 逐行领取 Outbox，使用部署配置的发布租约，默认 60 秒。Broker I/O 在事务外执行。回执写回复核原租约及领取次数。本机通知丢失时，T2 仍按有界轮询扫描，本地轮询等待上限为 1 秒。 | `test_issue130_b1_runtime`、`test_issue222_business_batch`、`test_issue222_scheduler` |
 | Admission、配额与拓扑 | Admission 协调数据库游标，配额审计只对账。以 30 秒观察代次协调拓扑成功和失效，节点独立观测。 | `test_issue219_management`、`test_issue129_control_takeover` |
 | Infrastructure DLQ | 同一发布尝试和死信重复投递读取原处置结果。数据库事务提交后确认原 channel 的 delivery tag。 | `test_issue152_infrastructure_dlq`、`test_issue129_control_takeover` |
-| Retention、缓存与 Adapter 清理 | 按持久责任分批重新核对引用。复用原 request ID、Worker 实例、命令租约和独占删除证据。 | `test_retention`、`test_issue161_cache_governance`、`test_issue173_adapter_cleanup` |
+| Retention、缓存与 Adapter 清理 | 按持久责任分批重新核对引用。复用原 request ID、Worker 实例、命令租约和独占删除证据。允许远程 v4 Worker 的 Control 独立轮询已完成的清理票据，每次处理一个 Adapter，轮询等待 1 秒。冷历史仍按配置周期清理。 | `test_retention`、`test_issue161_cache_governance`、`test_issue173_adapter_cleanup` |
 
 `GET /api/health` 的 `control_ha.cluster.background` 给出缺少有效来源 owner 的启用订阅数、最近续租距今最久的有效 owner 年龄、过期 held 预留数和超过恢复等待期的 reclaiming 预留数。来源租约为 30 秒，续租间隔为 10 秒。监控可在无有效 owner 的订阅数持续非零超过 60 秒，或过期 held 连续两轮对账仍未收敛时告警。检查告警应同时核对原来源、执行或维护票据和 Worker 的物理关闭证据。每个节点的 `live` 和 `ready` 继续使用[基础部署约定](control-ha-foundation.md)。
 
