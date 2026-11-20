@@ -323,6 +323,39 @@ def test_runtime_capability_probe_reads_pika_blocking_connection_properties(
     )
 
 
+def test_fixed_ha_admission_checks_its_own_queue(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_rabbitmq_test(monkeypatch)
+    stale = _register_reliable_worker(api_client, "ha-worker-with-stale-observation")
+    ready = _register_reliable_worker(api_client, "ha-worker-with-fresh-observation")
+    stale_adapter = _prepare_reliable_task(api_client, stale, "ha-task-stale-queue")
+    ready_adapter = _prepare_reliable_task(api_client, ready, "ha-task-fresh-queue")
+    monkeypatch.setattr(settings, "rabbitmq_ha_enabled", True)
+    monkeypatch.setattr(rabbitmq, "_quorum_observations", {})
+    members = ["rabbit@a", "rabbit@b", "rabbit@c"]
+    quorum = {"members": members, "online": members, "leader": members[0], "state": "running"}
+    monkeypatch.setattr(rabbitmq, "monotonic", lambda: 20.0)
+    rabbitmq._require_queue_quorum(str(stale["id"]), quorum)
+    monkeypatch.setattr(rabbitmq, "monotonic", lambda: 31.0)
+    rabbitmq._require_queue_quorum(str(ready["id"]), quorum)
+    rabbitmq._require_queue_quorum("infrastructure_dlq", quorum)
+    rabbitmq.mark_runtime_ready(2, worker_ids=[stale["id"], ready["id"]])
+
+    blocked = api_client.post(f"/api/adapters/{stale_adapter['id']}/executions", json={})
+    assert blocked.status_code == 503, blocked.text
+    assert blocked.json()["detail"]["code"] == "rabbitmq_not_ready"
+    accepted = api_client.post(f"/api/adapters/{ready_adapter['id']}/executions", json={})
+    assert accepted.status_code == 202, accepted.text
+    assert _execution_count(session_factory) == 1
+    with session_factory() as session:
+        execution = session.get(Execution, accepted.json()["id"])
+        assert execution is not None and execution.target_worker_id == ready["id"]
+        assert not rabbitmq.ingress_configuration_ready(session)
+
+
 def test_runtime_probe_requires_explicit_management_url_without_guessing_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

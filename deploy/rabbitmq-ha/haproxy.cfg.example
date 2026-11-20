@@ -16,11 +16,12 @@ backend amqps_nodes
     balance roundrobin
     retries 2
     option redispatch 1
-    option httpchk
-    http-check connect port 15671 ssl sni broker-amqp.example.invalid
-    http-check send meth GET uri /api/nodes?disable_stats=true&columns=running ver HTTP/1.1 hdr Host broker-amqp.example.invalid hdr Authorization "Basic ${DLR_RABBITMQ_PROXY_HEALTH_BASIC}"
-    http-check expect status 200
-    http-check expect rstring '"running"[[:space:]]*:[[:space:]]*true.*"running"[[:space:]]*:[[:space:]]*true'
+    option tcp-check
+    tcp-check connect port 5671 ssl sni broker-amqp.example.invalid
+    tcp-check connect port 15671 ssl sni broker-amqp.example.invalid
+    tcp-check send "GET /api/nodes?disable_stats=true&columns=running HTTP/1.1\r\nHost: broker-amqp.example.invalid\r\nAuthorization: Basic ${DLR_RABBITMQ_PROXY_HEALTH_BASIC}\r\nConnection: close\r\n\r\n"
+    tcp-check expect rstring '^HTTP/1\.[01] 200'
+    tcp-check expect rstring '"running"[[:space:]]*:[[:space:]]*true.*"running"[[:space:]]*:[[:space:]]*true'
     default-server check inter 2s fall 2 rise 1 on-marked-down shutdown-sessions
     server broker_a 192.0.2.21:5671 verify required verifyhost broker-amqp.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem
     server broker_b 192.0.2.22:5671 verify required verifyhost broker-amqp.example.invalid ca-file /run/dlr-broker-proxy/broker-ca.pem

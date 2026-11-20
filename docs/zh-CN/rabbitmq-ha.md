@@ -14,7 +14,7 @@ DLR 使用 [RabbitMQ 4.3.5](https://www.rabbitmq.com/docs/4.3/quorum-queues) 派
 
 在两个独立代理实例上安装 [HAProxy 配置](../../deploy/rabbitmq-ha/haproxy.cfg.example)，用站点提供的冗余入口指向这些实例。每台代理用实际地址和受信 CA 校验 Broker。AMQPS 在代理处透传 TLS，由客户端验证稳定名，建立后端连接失败时可换路。管理入口由代理终止 TLS，PEM 文件仅向代理运行身份开放，后端 HTTPS 校验节点名。运行入口允许只读 API GET。后端连接、空响应或指定 5xx 失败时，代理对 GET 执行有界换路。入队和 Confirm 仍由 RabbitMQ 与 Outbox 裁决。
 
-两类入口的后端健康检查访问每个节点自己的管理 HTTPS，读取精简的 `/api/nodes`。在固定三节点集群中，代理只向看到至少两个运行成员的后端转发。AMQPS 健康检查失败会关闭该后端的既有连接，使已连到少数派的 Worker 按原逻辑重连。该检查反映集群连通性，每条队列的状态与实际 Confirm 仍分别核验。代理从私有环境读取 `DLR_RABBITMQ_PROXY_HEALTH_BASIC`，其值是探测账号 `用户名:密码` 的 Base64 编码。
+两类入口的后端健康检查访问每个节点自己的管理 HTTPS，读取精简的 `/api/nodes`。在固定三节点集群中，代理只向看到至少两个运行成员的后端转发。AMQPS 探测还在该节点的 5671 端口验证实际 TLS 握手和证书。AMQPS 健康检查失败会关闭该后端的既有连接，使已连到少数派的 Worker 按原逻辑重连。该检查反映集群连通性，每条队列的状态与实际 Confirm 仍分别核验。代理从私有环境读取 `DLR_RABBITMQ_PROXY_HEALTH_BASIC`，其值是探测账号 `用户名:密码` 的 Base64 编码。
 
 ## 角色与 Control 配置
 

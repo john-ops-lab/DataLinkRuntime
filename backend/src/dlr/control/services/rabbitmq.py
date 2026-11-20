@@ -465,6 +465,7 @@ def ingress_configuration_ready(
     session: Session | None = None,
     *,
     worker_id: int | None = None,
+    require_all_workers: bool = True,
 ) -> bool:
     """Return whether live or restart-persisted capability permits ingress."""
     now = monotonic()
@@ -484,7 +485,10 @@ def ingress_configuration_ready(
             return False
         if worker_id is not None:
             return worker_id in workers and _queue_quorum_ready(str(worker_id), now)
-        return session is not None and all(_queue_quorum_ready(str(i), now) for i in workers)
+        if session is None:
+            return False
+        queue_readiness = (_queue_quorum_ready(str(i), now) for i in workers)
+        return all(queue_readiness) if require_all_workers else any(queue_readiness)
     if not ready or workers is None:
         return ready
     if worker_id is not None:
