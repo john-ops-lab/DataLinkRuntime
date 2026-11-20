@@ -6,14 +6,14 @@
 
 | 职责 | 接管依据 | 核对入口 |
 | --- | --- | --- |
-| Schedule、固定和预留 Retry | 先提交扫描页，再在独立事务按原业务锁序处理。阻塞项在绕回时重试，计划点及下一派发代次由数据库唯一性裁决。 | `test_schedule_trigger`、`test_issue129_control_takeover`、`test_issue130_b2_runtime` |
+| Schedule、固定和预留 Retry | 两个 Control 共享持久扫描游标。候选页查询限 1 秒，Schedule 默认每 5 秒检查一次。各节点先提交扫描位置，再按原业务锁序推进。阻塞项在绕回时重试，计划点及下一派发代次由数据库唯一性裁决。 | `test_schedule_trigger`、`test_issue129_control_takeover`、`test_issue130_b2_runtime` |
 | Attempt、Reservation | 使用持久扫描进度重新检查已有租约、Slot 和资源。物理清理未结的旧 Worker 继续承担原资源责任。 | `test_issue134_reconciliation`、`test_issue129_worker_reservations` |
-| Outbox、批次、完成投影 | Outbox 逐行领取，Broker I/O 在事务外执行。回执写回复核原租约、发布时间与领取次数；本机通知丢失后重新扫描持久责任。 | `test_issue130_b1_runtime`、`test_issue222_business_batch`、`test_issue222_scheduler` |
+| Outbox、批次、完成投影 | Relay 逐行领取 Outbox，使用部署配置的发布租约，默认 60 秒。Broker I/O 在事务外执行。回执写回复核原租约及领取次数。本机通知丢失时，T2 仍按有界轮询扫描，本地轮询等待上限为 1 秒。 | `test_issue130_b1_runtime`、`test_issue222_business_batch`、`test_issue222_scheduler` |
 | Admission、配额与拓扑 | Admission 协调数据库游标，配额审计只对账。以 30 秒观察代次协调拓扑成功和失效，节点独立观测。 | `test_issue219_management`、`test_issue129_control_takeover` |
 | Infrastructure DLQ | 同一发布尝试和死信重复投递读取原处置结果。数据库事务提交后确认原 channel 的 delivery tag。 | `test_issue152_infrastructure_dlq`、`test_issue129_control_takeover` |
 | Retention、缓存与 Adapter 清理 | 按持久责任分批重新核对引用。复用原 request ID、Worker 实例、命令租约和独占删除证据。 | `test_retention`、`test_issue161_cache_governance`、`test_issue173_adapter_cleanup` |
 
-`GET /api/health` 的 `control_ha.cluster.background` 给出缺少有效来源 owner 的启用订阅数、有效 owner 最长续租间隔、过期 held 预留数和超过恢复等待期的 reclaiming 预留数。持续告警时先用原执行、来源或维护票据查看责任归属，并核对物理关闭证据。每个节点的 `live` 和 `ready` 继续使用[基础部署约定](control-ha-foundation.md)。
+`GET /api/health` 的 `control_ha.cluster.background` 给出缺少有效来源 owner 的启用订阅数、最近续租距今最久的有效 owner 年龄、过期 held 预留数和超过恢复等待期的 reclaiming 预留数。来源租约为 30 秒，续租间隔为 10 秒。监控可在无有效 owner 的订阅数持续非零超过 60 秒，或过期 held 连续两轮对账仍未收敛时告警。检查告警应同时核对原来源、执行或维护票据和 Worker 的物理关闭证据。每个节点的 `live` 和 `ready` 继续使用[基础部署约定](control-ha-foundation.md)。
 
 ## 来源恢复
 
