@@ -90,24 +90,29 @@ def _fresh(now: datetime, observed: datetime, recorded: datetime) -> bool:
     return -_MAX_FUTURE <= now - observed <= _MAX_AGE and timedelta(0) <= now - recorded <= _MAX_AGE
 
 
-def storage_state(session: Session, *, for_accept: bool = False) -> str:
-    """Read the current committed state, optionally locking to the T1 commit."""
+def storage_state(session: Session, *, for_accept: bool = False) -> tuple[str, bool | None]:
+    """Read the observation and active configuration match under the same authority."""
     try:
         row = _verified(session, lock=" FOR SHARE" if for_accept else "")
+    except capacity.CapacityUnavailable:
+        return "unavailable", False
+    except Exception:
+        return "unavailable", None
+    try:
         now = session.scalar(text("SELECT pg_catalog.clock_timestamp()"))
         if (
             now is None
             or row["observed_at"] is None
             or not _fresh(now, row["observed_at"], row["recorded_at"])
         ):
-            return "unavailable"
-        return str(row["state"])
+            return "unavailable", True
+        return str(row["state"]), True
     except Exception:
-        return "unavailable"
+        return "unavailable", None
 
 
 def require_storage(session: Session) -> None:
-    state = storage_state(session, for_accept=True)
+    state, _ = storage_state(session, for_accept=True)
     if state == "available":
         from dlr.control.services.rabbitmq import ingress_configuration_ready
 
@@ -223,7 +228,8 @@ def _poll(provider: capacity.PostgresCapacityProvider) -> bool:
     with db.SessionLocal.begin() as session:
         _record(session, probe, observation)
     with db.SessionLocal() as session:
-        return storage_state(session) == "available"
+        state, _ = storage_state(session)
+        return state == "available"
 
 
 async def monitor() -> None:

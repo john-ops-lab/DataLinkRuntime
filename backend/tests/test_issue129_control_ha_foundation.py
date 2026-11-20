@@ -186,7 +186,7 @@ def test_storage_observation_order_and_hysteresis_are_database_authoritative(
         with session_factory.begin() as reporter:
             state._record(reporter, state._start_probe(reporter), sample)
         with session_factory() as receiver:
-            assert state.storage_state(receiver, for_accept=True) == expected
+            assert state.storage_state(receiver, for_accept=True) == (expected, True)
 
     observe(first, 7 * 1024**3, "available")
     observe(second, 5 * 1024**3, "low")
@@ -197,9 +197,12 @@ def test_storage_observation_order_and_hysteresis_are_database_authoritative(
     first_failed_at = now - timedelta(seconds=4)
     with session_factory.begin() as session:
         state._record(session, state._Probe(current, first_failed_at), None)
-        assert state.storage_state(session) == "available"
+        assert state.storage_state(session) == ("available", True)
         state._record(session, state._start_probe(session), None)
-        assert state.storage_state(session) == "unavailable"
+        assert state.storage_state(session) == ("unavailable", True)
+    monkeypatch.setattr(settings, "ingress_capacity_profile", '{"global":{"rate":49}}')
+    with session_factory() as session:
+        assert state.storage_state(session) == ("unavailable", False)
 
 
 def test_enrolled_database_rejects_noncluster_intake(session_factory, ha_authority, monkeypatch):

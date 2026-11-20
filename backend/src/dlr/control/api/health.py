@@ -169,6 +169,7 @@ def _cluster_health(
     compatibility = None
     registered: int | None = None
     storage = "unavailable"
+    capacity_compatible: bool | None = None
     if database_ok and process is not None:
         try:
             with db.SessionLocal() as session:
@@ -183,7 +184,7 @@ def _cluster_health(
                     """),
                     {"epoch": process._deployment.authority_epoch},
                 )
-                storage = control_ha_capacity.storage_state(session)
+                storage, capacity_compatible = control_ha_capacity.storage_state(session)
         except Exception:
             compatibility = None
     ingress = rabbitmq_status.get("ingress")
@@ -194,7 +195,7 @@ def _cluster_health(
         "node": {
             "slot": settings.control_ha_slot,
             "registered": compatibility is not None,
-            "capacity_compatible": compatibility.capacity_match if compatibility else None,
+            "capacity_compatible": capacity_compatible,
         },
         "cluster": {"registered": registered, "max_nodes": 2},
         "features": {
