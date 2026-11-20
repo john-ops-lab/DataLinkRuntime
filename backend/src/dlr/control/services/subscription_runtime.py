@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
@@ -94,6 +94,7 @@ class SubscriptionRuntimeManager:
         self.intake_session_factory = intake_session_factory or session_factory
         self.registry = dict(implemented_sources() if registry is None else registry)
         self.buffer = ApplicationBufferBudget(buffer_limit_bytes)
+        self._owner_limit = max_listeners
         self._permits = threading.BoundedSemaphore(max_listeners)
         self._lock = threading.RLock()
         self._owners: dict[int, _Owner] = {}
@@ -113,13 +114,16 @@ class SubscriptionRuntimeManager:
         with self._lock:
             return len(self._owners) + len(self._probes) + len(self._starting)
 
-    def _claim(self, subscription_id: int, *, probe: bool = False) -> bool:
+    def _claim(
+        self, subscription_id: int, *, probe: bool = False, reserved_owners: int = 0
+    ) -> bool:
         with self._lock:
             if (
                 self._shutdown.is_set()
                 or subscription_id in self._owners
                 or subscription_id in self._probes
                 or subscription_id in self._starting
+                or (probe and len(self._probes) >= self._owner_limit - reserved_owners)
                 or not self._permits.acquire(blocking=False)
             ):
                 return False
@@ -150,13 +154,13 @@ class SubscriptionRuntimeManager:
         owner: _Owner | None = None
         try:
             with self.session_factory.begin() as session:
+                _, sub = delivery.lock_subscription(session, subscription_id)
                 if settings.control_ha_slot is not None:
                     from dlr.control.services.control_ha_capacity import admission_configured
 
                     if not admission_configured(session):
                         self._release_start(subscription_id)
                         return False
-                _, sub = delivery.lock_subscription(session, subscription_id)
                 runner = self.registry.get(sub.source_type)
                 if (
                     runner is None
@@ -561,33 +565,27 @@ class SubscriptionRuntimeManager:
         logger.warning("source shutdown awaiting native close")
         return False
 
-    def _owner_waiting(self) -> bool:
+    def _reserved_owner_count(self) -> int:
         if not settings.event_subscriptions_enabled:
-            return False
+            return 0
         with self.session_factory() as session:
             from dlr.control.services.control_ha_capacity import admission_configured
-            from dlr.control.services.input_config import database_now
 
             if not admission_configured(session):
-                return True
-            now = database_now(session)
-            active = exists().where(
-                SubscriptionLease.subscription_id == EventSubscription.id,
-                SubscriptionLease.lease_until > now,
-            )
-            return (
+                return self._owner_limit
+            # Account for the full enabled set, including a peer's currently
+            # live owners. A local diagnostic cannot consume their takeover seats.
+            return int(
                 session.scalar(
-                    select(
-                        exists().where(
-                            EventSubscription.desired_state == "enabled",
-                            EventSubscription.activation_id.is_not(None),
-                            EventSubscription.connection_state != "blocked",
-                            EventSubscription.deleted_at.is_(None),
-                            ~active,
-                        )
+                    select(func.count())
+                    .select_from(EventSubscription)
+                    .where(
+                        EventSubscription.desired_state == "enabled",
+                        EventSubscription.activation_id.is_not(None),
+                        EventSubscription.deleted_at.is_(None),
                     )
                 )
-                is True
+                or 0
             )
 
     async def test_connection(
@@ -602,9 +600,13 @@ class SubscriptionRuntimeManager:
         runner = self.registry.get(source_type)
         if runner is None:
             raise SourceFailure("source_not_available")
-        if settings.control_ha_slot is not None and await asyncio.to_thread(self._owner_waiting):
-            raise SourceFailure("subscription_capacity_exceeded", "capacity")
-        if not self._claim(subscription_id, probe=True):
+        reserved_owners = 0
+        if settings.control_ha_slot is not None:
+            try:
+                reserved_owners = await asyncio.to_thread(self._reserved_owner_count)
+            except Exception:
+                raise SourceFailure("subscription_capacity_exceeded", "capacity") from None
+        if not self._claim(subscription_id, probe=True, reserved_owners=reserved_owners):
             raise SourceFailure("subscription_capacity_exceeded", "capacity")
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()

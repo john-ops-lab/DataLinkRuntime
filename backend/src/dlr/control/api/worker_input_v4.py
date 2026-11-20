@@ -5,18 +5,19 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
 from dlr.common.attempt_lease_proof_wire_v4 import parse_untrusted_attempt_proof
+from dlr.control.api.shared_backend import require_shared_backend
 from dlr.control.api.worker_claim_v4 import _coordinator
 from dlr.control.api.worker_instance_v4 import _HEADERS, _one_header, _process, _proved_identity
 from dlr.control.services.claim_child_v4 import _clock
 from dlr.control.services.worker_protocol import CLAIM_TOKEN_HEADER
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_shared_backend)])
 
 
 def _error() -> HTTPException:

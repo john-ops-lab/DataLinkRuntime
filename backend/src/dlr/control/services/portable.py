@@ -235,6 +235,7 @@ def import_adapter(
                     dismiss_import_review=False,
                 )
             if package.input.included and package.input.source_type == "managed_files":
+                managed_input_upload.require_feature_enabled()
                 store = LocalFileArtifactStore()
                 artifact_ids = []
                 for file in package.input.files:

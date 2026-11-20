@@ -21,6 +21,8 @@ W3 第一批提供同镜像双 Control 注册、分层健康与集群接收容�
 
 正在准备的 Claim 使用原 proposal 发起确认。收到请求的节点在必要时向预置对端转交一次，原节点继续校验 proposal、身份、期限和子进程预算。为每节点配置 `DLR_CONTROL_HA_PEER_URL` 及 `DLR_CONTROL_HA_PEER_CA_FILE`，将该地址指向相对槽位的专用私网 HTTPS 入口。TLS CA 应仅签发此内部用途的服务证书。普通负载均衡、私网转交都禁用非幂等请求自动重试。正在进行的 Assist 中断后由用户决定是否重试。Execution SSE 中断后浏览器通过已有 Execution ID 做有界读取。
 
+这批的双 Control 接受纯 JSON 执行。Claim 提交和结果暂存各自确认本地子进程退出再返回证明。任一合格节点都可用同一持久 intent 和原证明完成结果提交，正文 MAC、有效期限和原 Attempt 围栏继续生效。接收新责任依赖本节点近 10 秒内的 Broker 校验，已知故障时关闭接收。旧 Receipt 读回、续租和可提交的结果分别判断。
+
 ## PostgreSQL 容量与维护
 
 两节点使用相同的 `DLR_POSTGRES_CAPACITY_URL`、`DLR_POSTGRES_CAPACITY_TOKEN`、受信 CA 和接收配额，私有 CA 通过 `DLR_POSTGRES_CAPACITY_CA_FILE` 提供。端点为固定 HTTPS，返回 `schema_version=1`、`cluster_id`、`storage_domain_id`、正整数 `topology_epoch`、带时区的 `observed_at` 和非负整数 `writable_free_bytes`。采样覆盖实际可写主库和允许提升的副本容量域。DLR 按数据库时间核对 15 秒新鲜度与 5 秒未来偏差，容量下降至 5 GiB 暂停新接收，恢复至 6 GiB 后重新允许。不可用、过期或冲突的观测关闭新接收，旧 ID 仍按原授权读回。

@@ -107,7 +107,7 @@ def _delete_claim_is_live(artifact: ManagedInputArtifact) -> bool:
 
 def feature_enabled() -> bool:
     """Return the deployment flag without creating a store or a DB row."""
-    return bool(settings.managed_files_enabled)
+    return bool(settings.managed_files_enabled and settings.control_ha_slot is None)
 
 
 def require_feature_enabled() -> None:

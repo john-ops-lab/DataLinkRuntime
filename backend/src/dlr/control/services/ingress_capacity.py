@@ -248,16 +248,18 @@ def activate_profile(session: Session) -> bool:
         profile = configured_profile()
     except CapacityProfileError:
         return False
-    storage_available = _storage_budget_available(profile)
+    from dlr.control.services import control_ha_capacity
+
+    cluster_mode = control_ha_capacity.adopted(session)
+    storage_available = not cluster_mode and _storage_budget_available(profile)
     _lock_global_quota(session)
     row = session.get(IngressCapacityConfiguration, 1, with_for_update=True, populate_existing=True)
-    if settings.control_ha_slot is not None:
-        from dlr.control.services.control_ha_capacity import admission_configured
-
+    if cluster_mode or settings.control_ha_slot is not None:
         return (
             row is not None
             and row.fingerprint == profile.fingerprint
-            and admission_configured(session)
+            and settings.control_ha_slot is not None
+            and control_ha_capacity.admission_configured(session)
         )
     if row is not None and row.fingerprint == profile.fingerprint:
         return True
@@ -290,6 +292,12 @@ def activate_profile(session: Session) -> bool:
 
 def require_active_profile(session: Session) -> CapacityProfile:
     """Called after locking quotas in T1, and only for a genuinely new event."""
+    from dlr.control.services.control_ha_capacity import adopted
+
+    if settings.control_ha_slot is None and adopted(session):
+        raise domain_error(
+            503, "ingress_capacity_unavailable", "Control is not registered for intake"
+        )
     try:
         profile = configured_profile()
     except CapacityProfileError as error:

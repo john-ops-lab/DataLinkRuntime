@@ -1433,7 +1433,7 @@ async function resolveComposerAttachment(
         setPanelError(
           error instanceof ApiError && error.code === "ai_attachment_expired"
             ? t("assistant.attachments.prepared.expired")
-            : error instanceof TypeError
+            : error instanceof ApiError && error.code === "network_error"
               ? t("assistant.errors.connectionInterrupted")
               : attachmentServerErrorMessage(error, t("assistant.errors.requestFailed")),
         );

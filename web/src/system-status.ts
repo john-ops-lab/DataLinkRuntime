@@ -56,6 +56,9 @@ export const CONTROL_HA_FEATURES = [
   "builtin_packages", "ai_attachments",
 ] as const;
 type ControlHaFeature = (typeof CONTROL_HA_FEATURES)[number];
+const CONTROL_HA_STATES: ReadonlySet<unknown> = new Set([
+  "available", "unavailable", "low", "conflict", "awaiting_shared_backend",
+]);
 
 export const REQUIRED_ISOLATION_CAPABILITIES = [
   "cgroup_v2",
@@ -99,7 +102,7 @@ function isControlHa(value: unknown): boolean {
     && (node.capacity_compatible === null || typeof node.capacity_compatible === "boolean")
     && cluster.max_nodes === 2
     && (cluster.registered === null || cluster.registered === 0 || cluster.registered === 1 || cluster.registered === 2)
-    && CONTROL_HA_FEATURES.every((feature) => typeof features[feature] === "string");
+    && CONTROL_HA_FEATURES.every((feature) => CONTROL_HA_STATES.has(features[feature]));
 }
 
 /** Reject malformed health payloads instead of turning unknown facts green. */

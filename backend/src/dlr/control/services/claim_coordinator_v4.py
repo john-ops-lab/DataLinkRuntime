@@ -22,7 +22,6 @@ from uuid import UUID
 from sqlalchemy import Engine
 
 from dlr.common.config import settings
-from dlr.common.result_intent_proof_wire_v4 import verify_result_intent_proof_signature
 from dlr.control.schemas.reliable_runtime import AttemptActionBody
 from dlr.control.services import business_credentials_v4 as business_credentials
 from dlr.control.services.attempt_lease_candidates_v4 import AttemptCandidateRef
@@ -32,6 +31,12 @@ from dlr.control.services.control_process_v4 import ControlProcess
 from dlr.control.services.dispatch import DispatchMessage
 
 logger = logging.getLogger(__name__)
+
+
+def _child_settings() -> dict[str, object]:
+    snapshot = settings.model_dump(mode="json")
+    snapshot["postgres_capacity_token"] = None
+    return snapshot
 
 
 class ClaimUnavailable(Exception):
@@ -223,6 +228,11 @@ class _ClaimSlot:
                     stderr=subprocess.DEVNULL,
                     close_fds=True,
                     pass_fds=(child.fileno(),),
+                    env={
+                        name: value
+                        for name, value in os.environ.items()
+                        if name != "DLR_POSTGRES_CAPACITY_TOKEN"
+                    },
                 )
             except BaseException:
                 pass
@@ -331,11 +341,10 @@ class _ClaimSlot:
             bind = process._sessions.kw.get("bind")
             if not isinstance(bind, Engine):
                 raise ValueError("Claim unavailable")
-            snapshot = settings.model_dump(mode="json")
+            snapshot = _child_settings()
             if snapshot["worker_v4_claim_child_address_space_bytes"] != address_space_bytes:
                 raise ValueError("Claim unavailable")
             snapshot["database_url"] = bind.url.render_as_string(hide_password=False)
-            snapshot["postgres_capacity_token"] = None
             channel, child_channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
             channel.settimeout(min(5.0, deadline - _clock()))
             owned_child = child_channel
@@ -568,12 +577,15 @@ class _ClaimSlot:
             self._check_envelope(entry.envelope, entry=entry)
             if _clock() >= entry.deadline:
                 raise ClaimUnavailable("Claim unavailable")
-            self._retain_result_from_claim(
-                entry,
-                attempt_id=candidate.attempt_id,
-                execution_timeout=response["execution_timeout_seconds"],
-                idle_until=response["result_idle_until"],
-            )
+            if settings.control_ha_slot is None:
+                self._retain_result_from_claim(
+                    entry,
+                    attempt_id=candidate.attempt_id,
+                    execution_timeout=response["execution_timeout_seconds"],
+                    idle_until=response["result_idle_until"],
+                )
+            elif not self._expire(entry):
+                raise ClaimUnavailable("Claim transport cleanup unconfirmed")
             entry.authority.check_authority()
             if _clock() >= entry.deadline:
                 raise ClaimUnavailable("Claim unavailable")
@@ -712,7 +724,7 @@ class _ClaimSlot:
             bind = process._sessions.kw.get("bind")
             if not isinstance(bind, Engine) or entry.process.poll() is not None:
                 raise ClaimUnavailable("input unavailable")
-            configuration = settings.model_dump(mode="json")
+            configuration = _child_settings()
             configuration["database_url"] = bind.url.render_as_string(hide_password=False)
             if configuration != entry.configuration:
                 raise ClaimUnavailable("input unavailable")
@@ -859,52 +871,10 @@ class _ClaimSlot:
         finally:
             stream.io_lock.release()
 
-    def _retire_staging_for_peer_result(
-        self, process: ControlProcess, metadata: dict[str, object]
-    ) -> float | None:
-        """Use the durable intent to reclaim only this idle, matching child."""
-        if settings.control_ha_slot is None or metadata.get("operation") != "finalize":
-            return None
-        with self._lock:
-            entry = self._result
-            if entry is None or entry.pending_stage is None or entry.authority is not process:
-                return None
-            expected = entry.pending_stage
-            if any(
-                metadata.get(key) != expected[key]
-                for key in ("worker_id", "attempt_id", "instance_id", "generation")
-            ) or not hmac.compare_digest(
-                str(metadata.get("credential")), str(expected["credential"])
-            ):
-                return None
-            authority = process._deployment
-            proof = verify_result_intent_proof_signature(
-                metadata.get("result_proof"), authority.authority.worker_proof_public_key
-            )
-            if (
-                proof is None
-                or proof.cluster_id != authority.authority.cluster_id
-                or proof.authority_epoch != authority.authority_epoch
-                or proof.worker_id != expected["worker_id"]
-                or proof.attempt_id != expected["attempt_id"]
-                or str(proof.instance_id) != expected["instance_id"]
-                or proof.generation != expected["generation"]
-                or str(proof.intent_id) != metadata.get("intent_id")
-                or str(proof.observation_nonce) != metadata.get("observation_nonce")
-                or _clock() >= entry.deadline
-            ):
-                return None
-            deadline = entry.deadline
-        process.check_authority()
-        if not self.end_result(entry, idle_stage_only=True):
-            raise ClaimUnavailable("result child removal unavailable")
-        return deadline
-
     def begin_result(
         self, process: ControlProcess, *, metadata: dict[str, object], body_bytes: int
     ) -> _Result:
         """Reserve the same single child slot used by Claim and stream a result."""
-        retained_deadline = self._retire_staging_for_peer_result(process, metadata)
         with self._lock:
             self._live()
             existing = self._result
@@ -951,18 +921,15 @@ class _ClaimSlot:
             envelope = self._open_envelope(child_address_space_bytes=address_space)
             control_instance, control_token, confirmed_deadline = process.claim_child_identity()
             deadline = min(confirmed_deadline, math.nextafter(_clock() + 25.0, -math.inf))
-            if retained_deadline is not None:
-                deadline = min(deadline, retained_deadline)
             if deadline <= _clock():
                 raise ValueError("result unavailable")
             bind = process._sessions.kw.get("bind")
             if not isinstance(bind, Engine):
                 raise ValueError("result unavailable")
-            snapshot = settings.model_dump(mode="json")
+            snapshot = _child_settings()
             if snapshot["worker_v4_claim_child_address_space_bytes"] != address_space:
                 raise ValueError("result unavailable")
             snapshot["database_url"] = bind.url.render_as_string(hide_password=False)
-            snapshot["postgres_capacity_token"] = None
             channel, child_channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
             channel.settimeout(min(5.0, deadline - _clock()))
             owned_child, child_channel = child_channel, None
@@ -1050,7 +1017,7 @@ class _ClaimSlot:
             bind = entry.authority._sessions.kw.get("bind")
             if not isinstance(bind, Engine):
                 raise ValueError("result unavailable")
-            configuration = settings.model_dump(mode="json")
+            configuration = _child_settings()
             configuration["database_url"] = bind.url.render_as_string(hide_password=False)
             if configuration != entry.configuration or entry.process.poll() is not None:
                 raise ValueError("result unavailable")
@@ -1157,35 +1124,36 @@ class _ClaimSlot:
                     or entry.process.poll() is not None
                 ):
                     raise ClaimUnavailable("result unavailable")
-                with self._lock:
-                    self._live()
-                    if self._result is not entry or entry.closed or _clock() >= entry.deadline:
-                        raise ClaimUnavailable("result unavailable")
-                    entry.pending_finalize = {
-                        **entry.metadata,
-                        "operation": "finalize",
-                        "intent_id": response["intent_id"],
-                        "result_proof": response["result_proof"],
-                    }
-                    self._spawning = False
+                if settings.control_ha_slot is None:
+                    with self._lock:
+                        self._live()
+                        if self._result is not entry or entry.closed or _clock() >= entry.deadline:
+                            raise ClaimUnavailable("result unavailable")
+                        entry.pending_finalize = {
+                            **entry.metadata,
+                            "operation": "finalize",
+                            "intent_id": response["intent_id"],
+                            "result_proof": response["result_proof"],
+                        }
+                        self._spawning = False
+                elif _clock() >= entry.deadline or not self.end_result(entry):
+                    raise ClaimUnavailable("result transport cleanup unconfirmed")
             elif _clock() >= entry.deadline or not self.end_result(entry):
                 raise ClaimUnavailable("result unavailable")
             entry.authority.check_authority()
             if _clock() >= entry.deadline:
                 raise ClaimUnavailable("result unavailable")
-            retained = entry.metadata.get("operation") == "stage"
+            retained = (
+                entry.metadata.get("operation") == "stage" and settings.control_ha_slot is None
+            )
             return response
         finally:
             if not retained:
                 self.end_result(entry)
 
-    def end_result(self, entry: _Result, *, idle_stage_only: bool = False) -> bool:
+    def end_result(self, entry: _Result) -> bool:
         with self._lock:
-            if (
-                self._result is not entry
-                or entry.closed
-                or (idle_stage_only and (entry.pending_stage is None or entry.input_active))
-            ):
+            if self._result is not entry or entry.closed:
                 return False
             if entry.input_active:
                 # A lost read/HTTP scope is not proof that its actual I/O

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from dlr.common.config import settings
 from dlr.common.managed_input import MANAGED_INPUT_FILE_EXTENSIONS
 from dlr.control import db
+from dlr.control.api.shared_backend import require_shared_backend
 from dlr.control.models import ManagedInputArtifact, ManagedInputArtifactStatus
 from dlr.control.schemas.managed_input import (
     ManagedInputArtifactResponse,
@@ -44,11 +45,13 @@ from dlr.control.services.multipart import (
 logger = logging.getLogger("dlr.control.managed_input")
 
 router = APIRouter(dependencies=[Depends(require_admin_principal)])
-adapter_router = APIRouter(dependencies=[Depends(require_business_principal)])
+adapter_router = APIRouter(
+    dependencies=[Depends(require_business_principal), Depends(require_shared_backend)]
+)
 # Capability is intentionally readable by ordinary business users.  It is a
 # small set of safe release/form facts, not an alias for the admin settings resource.
 capability_router = APIRouter(dependencies=[Depends(require_business_principal)])
-upload_router = APIRouter()
+upload_router = APIRouter(dependencies=[Depends(require_shared_backend)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
@@ -85,6 +88,7 @@ def put_managed_input_settings(
 @router.post(
     "/api/system/managed-input-artifacts/{artifact_id}/retry-delete",
     status_code=204,
+    dependencies=[Depends(require_shared_backend)],
 )
 def retry_managed_input_artifact_delete(artifact_id: int, session: DbSession) -> Response:
     """Release one DELETE_FAILED Artifact for an explicit administrator retry."""
@@ -95,6 +99,7 @@ def retry_managed_input_artifact_delete(artifact_id: int, session: DbSession) ->
 @router.post(
     "/api/system/managed-input-deletion-jobs/{job_id}/retry-delete",
     status_code=204,
+    dependencies=[Depends(require_shared_backend)],
 )
 def retry_managed_input_deletion_job(job_id: int, session: DbSession) -> Response:
     """Release one thresholded detached job for an administrator retry."""

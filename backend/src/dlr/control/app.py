@@ -3,14 +3,16 @@
 import asyncio
 import contextlib
 import logging
-import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from dlr.common.config import settings, validate_deployment_configuration
@@ -79,11 +81,6 @@ from dlr.control.services.subscription_runtime import get_runtime
 from dlr.control.template_catalog import get_template_catalog
 
 logger = logging.getLogger("dlr.control.app")
-_V4_SHARED_FILE_PATH = re.compile(
-    r"^/api/(?:builtin-packages(?:/|$)|adapters/\d+/(?:input-artifacts|ai/attachments)(?:/|$)"
-    r"|system/managed-input-(?:artifacts|deletion-jobs)(?:/|$)"
-    r"|workers/\d+/(?:v4/)?executions/\d+/(?:input-artifacts|builtin-packages)(?:/|$))"
-)
 
 
 class _EntryBoundary:
@@ -144,7 +141,7 @@ class _EntryBoundary:
                 try:
                     if process is None:
                         raise ValueError
-                    process.check_authority()
+                    await run_in_threadpool(process.check_authority)
                 except Exception:
                     response = JSONResponse(
                         status_code=503,
@@ -152,12 +149,6 @@ class _EntryBoundary:
                     )
                     await response(scope, receive, send)
                     return
-            if _V4_SHARED_FILE_PATH.match(path):
-                response = JSONResponse(
-                    status_code=503, content={"detail": {"code": "shared_backend_unavailable"}}
-                )
-                await response(scope, receive, send)
-                return
         await self.app(scope, receive, send)
 
 
@@ -195,6 +186,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     app.state.control_process_v4 = None
     capacity_monitor: asyncio.Task[None] | None = None
+    if not settings.worker_remote_v4_enabled:
+        from dlr.control.services.control_ha_capacity import adopted
+
+        try:
+            with db.SessionLocal() as session:
+                enrolled = session.scalar(text("SELECT to_regclass('public.control_ha_capacity')"))
+                if enrolled and adopted(session):
+                    raise RuntimeError("control_ha_registration_required")
+        except SQLAlchemyError:
+            # The default Compose Control can start before its schema. Every
+            # subsequent intake transaction still checks durable enrollment.
+            logger.warning("Control deployment mode could not be read at startup")
     if settings.worker_remote_v4_enabled:
         from dlr.control.services.control_declaration_v4 import read_declaration
         from dlr.control.services.control_process_v4 import ControlProcess

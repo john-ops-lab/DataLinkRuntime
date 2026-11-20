@@ -61,7 +61,7 @@
     "ha": {
       "slot": "Control 槽位",
       "registered": "本节点已注册",
-      "capacityCompatible": "本节点容量配置匹配",
+      "capacityCompatible": "本节点容量声明匹配",
       "clusterTitle": "Control 集群",
       "registeredTotal": "已注册节点 / 上限",
       "new_ingress": "本节点接收新事件",

@@ -18,6 +18,7 @@ from dlr.control.ai.attachment_store import (
     get_attachment_store,
     principal_owner,
 )
+from dlr.control.api.shared_backend import require_shared_backend
 from dlr.control.schemas.ai import (
     AiAttachmentCapabilitiesResponse,
     AiAttachmentPrepareRequest,
@@ -46,7 +47,11 @@ def capabilities(
     return ai_service.attachment_capabilities(session)
 
 
-@router.post("/api/adapters/{adapter_id}/ai/attachments", response_model=AiPreparedAttachment)
+@router.post(
+    "/api/adapters/{adapter_id}/ai/attachments",
+    response_model=AiPreparedAttachment,
+    dependencies=[Depends(require_shared_backend)],
+)
 async def prepare(
     adapter_id: int,
     payload: AiAttachmentPrepareRequest,
@@ -84,7 +89,11 @@ async def prepare(
         raise
 
 
-@router.delete("/api/adapters/{adapter_id}/ai/attachments/scopes/{scope_id}", status_code=204)
+@router.delete(
+    "/api/adapters/{adapter_id}/ai/attachments/scopes/{scope_id}",
+    status_code=204,
+    dependencies=[Depends(require_shared_backend)],
+)
 def release_scope(
     adapter_id: int,
     scope_id: UUID,
@@ -99,6 +108,7 @@ def release_scope(
 @router.get(
     "/api/adapters/{adapter_id}/ai/attachments/{attachment_ref}",
     response_model=AiPreparedAttachment,
+    dependencies=[Depends(require_shared_backend)],
 )
 def get_prepared(
     adapter_id: int,
@@ -112,7 +122,11 @@ def get_prepared(
     return store.get(principal_owner(principal), adapter_id, scope_id, attachment_ref)
 
 
-@router.delete("/api/adapters/{adapter_id}/ai/attachments/{attachment_ref}", status_code=204)
+@router.delete(
+    "/api/adapters/{adapter_id}/ai/attachments/{attachment_ref}",
+    status_code=204,
+    dependencies=[Depends(require_shared_backend)],
+)
 def release_attachment(
     adapter_id: int,
     attachment_ref: str,

@@ -8,6 +8,7 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import event, text
 from sqlalchemy.orm import sessionmaker
@@ -17,6 +18,7 @@ from dlr.control import db
 from dlr.control.app import create_app
 from dlr.control.services import control_cluster_identity as identity
 from dlr.control.services import control_ha_capacity as state
+from dlr.control.services import ingress_capacity, rabbitmq
 from dlr.control.services import postgres_capacity_provider as provider
 
 
@@ -161,6 +163,28 @@ def test_storage_observation_order_and_hysteresis_are_database_authoritative(
         assert state.storage_state(session) == "available"
         state._record(session, state._start_probe(session), None)
         assert state.storage_state(session) == "unavailable"
+
+
+def test_enrolled_database_rejects_noncluster_intake(session_factory, ha_authority, monkeypatch):
+    def unexpected_disk_read():
+        pytest.fail("cluster database must not inspect the Control's local disk")
+
+    monkeypatch.setattr(ingress_capacity, "_storage_free_bytes", unexpected_disk_read)
+    with session_factory.begin() as session:
+        assert not ingress_capacity.activate_profile(session)
+        with pytest.raises(HTTPException) as error:
+            ingress_capacity.require_active_profile(session)
+        assert error.value.detail["code"] == "ingress_capacity_unavailable"
+
+
+def test_dual_ingress_rejects_known_broker_outage_despite_topology_cache(monkeypatch):
+    monkeypatch.setattr(settings, "control_ha_slot", "a")
+    monkeypatch.setattr(rabbitmq, "_verified_ingress_workers", lambda session: (True, None))
+    monkeypatch.setattr(rabbitmq, "_runtime_status", dict(rabbitmq._runtime_status))
+    rabbitmq.mark_runtime_ready()
+    assert rabbitmq.ingress_configuration_ready()
+    rabbitmq.mark_runtime_failure("topology_unavailable")
+    assert not rabbitmq.ingress_configuration_ready()
 
 
 def test_ready_checks_write_authority_without_using_broker(test_engine, monkeypatch) -> None:

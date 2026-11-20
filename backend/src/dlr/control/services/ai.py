@@ -878,7 +878,9 @@ def attachment_capabilities(session: Session | None = None) -> AiAttachmentCapab
         )
     return AiAttachmentCapabilitiesResponse(
         selected=selected,
-        prepared_attachments_enabled=bool(settings.ai_document_converter_url),
+        prepared_attachments_enabled=bool(
+            settings.ai_document_converter_url and settings.control_ha_slot is None
+        ),
         limits=AiAttachmentLimits(
             max_attachments=attachments_service.MAX_ATTACHMENTS,
             max_file_bytes=attachments_service.MAX_FILE_BYTES,

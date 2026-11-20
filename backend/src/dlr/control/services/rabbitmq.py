@@ -10,6 +10,7 @@ import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any, cast
 from urllib.parse import quote, unquote, urlsplit
 from urllib.request import Request, urlopen
@@ -139,6 +140,7 @@ _runtime_status: dict[str, object] = {
     "configuration_fingerprint": None,
     "verified_worker_ids": None,
     "broker_observations": {},
+    "live_verified_at": None,
 }
 
 
@@ -176,6 +178,7 @@ def _invalidate_persisted_capability() -> None:
 
 def mark_runtime_failure(error_code: str) -> None:
     """Record a stable non-sensitive Broker/topology failure for health."""
+    _runtime_status["live_verified_at"] = None
     _set_runtime_status("degraded", error_code=error_code)
     if error_code in RABBITMQ_CAPABILITY_INVALIDATION_ERROR_CODES:
         _runtime_status["capability_verified"] = False
@@ -196,6 +199,7 @@ def mark_runtime_ready(
     _runtime_status["verified_worker_ids"] = (
         frozenset(worker_ids) if worker_ids is not None else None
     )
+    _runtime_status["live_verified_at"] = monotonic()
 
 
 def effective_rabbitmq_url() -> str:
@@ -343,6 +347,14 @@ def ingress_configuration_ready(
     worker_id: int | None = None,
 ) -> bool:
     """Return whether live or restart-persisted capability permits ingress."""
+    if settings.control_ha_slot is not None:
+        verified = _runtime_status["live_verified_at"]
+        if (
+            _runtime_status["status"] != "ready"
+            or not isinstance(verified, float)
+            or not 0 <= monotonic() - verified <= 10
+        ):
+            return False
     ready, workers = _verified_ingress_workers(session)
     if not ready or workers is None:
         return ready

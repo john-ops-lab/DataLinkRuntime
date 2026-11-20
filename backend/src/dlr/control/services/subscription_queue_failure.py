@@ -46,6 +46,8 @@ PLATFORM_RECEPTION_FAILURES = frozenset(
         "ingress_capacity_unavailable",
         "ingress_disk_low",
         "ingress_disk_unavailable",
+        "ingress_storage_capacity_unavailable",
+        "rabbitmq_unavailable",
         "placement_cutover_paused",
     }
 )

@@ -24,16 +24,20 @@ Worker SHALL 沿用原协议和认证，通过同一入口办理注册、心跳�
 - **WHEN** A 生成带静态位置标志的 43 字符 opaque proposal，B 收到 Worker 原样回传的 finalize
 - **THEN** B 仅向预配置且通过 TLS 验证的同部署 HTTPS 对端转交一次；A 校验完整随机 proposal、身份及原截止时间。路由标志不授权，转交不接受客户端目的地、重定向或非幂等自动重发。
 
-#### Scenario: A 办理 Claim 后在 B 暂存结果，finalize 回到 A
-- **WHEN** Worker 提交 B 已签名且持久化的有效 intent，而 A 仍有等待 stage 的本机子进程
-- **THEN** A 核对身份、正文与同一 Attempt 的证明和期限，只在原槽内安全回收自己的子进程后使用剩余预算提交；回收未知保留占用。重复办理只结算同一结果，无效请求不能驱逐其他工作。
+#### Scenario: Claim A、结果 stage B 与 finalize A 分阶段回收
+- **WHEN** 双节点纯 JSON 请求依次在 A 完成 Claim、在 B 持久暂存结果，再由 A 接收 finalize
+- **THEN** 双节点纯 JSON 模式中，Claim 已知持久提交后，原节点须在本阶段原有本地截止前确认自己的 child 实际退出并回收，再返回 Attempt proof。结果 stage 已持久化后也须在原截止内回收该阶段 child，再返回已签名 intent proof。任一节点在空闲且有额度的槽中为 finalize 启动新的有界 child，核对原 nonce、签名、正文 MAC、Worker/实例/generation、Attempt、持久 intent 和原证明有效期；新 child 不延长证明有效期。无效或迟到的 finalize 不关闭其他进程；回收未知保留占用与持久责任，不返回声称本阶段已完成的证明。默认单 Control 保留原通道及文件支持。
 
 ### Requirement: LB、管理入口和能力健康分别定界
 LB SHALL 使用 `/api/health/ready` 判定节点能否承担数据库及身份相关请求，`/api/health/live` 单独报告进程活性。`/api/health` 保留聚合诊断并分别显示本节点、集群登记及功能状态。账户、管理 token、CSRF、来源与 Worker 的入口授权 MUST 沿用原规则；外部传入的私有路由或身份字段不得被当成可信上游。
 
 #### Scenario: Broker 或单项后端失效
 - **WHEN** Broker 不可用，但数据库可提交且身份有效
-- **THEN** 经真实 LB 的合法续租、纯 JSON 结果和 Receipt 读回可继续；新接收和 MQ 发布按各自条件拒绝。双节点下 Managed Files、内置材料和 AI 附件的共享路径在对应后端交付前显示不可用，且不能借用另一项的健康状态。
+- **THEN** 经真实 LB 的合法续租、纯 JSON 结果和 Receipt 读回可继续；新接收和 MQ 发布按各自条件拒绝。双节点下 Managed Files、内置材料和 AI 附件的共享路径在对应后端交付前显示不可用，且不能借用另一项的健康状态。 HA 新接收与发布使用最近成功的 Broker 活性观测，约每 5 秒探测，观测超过 10 秒视为不可用，已知故障立即关门；恢复须有新的成功观测和原能力条件。
+
+#### Scenario: 诊断与接管共用节点预算
+- **WHEN** 两个位置分担启用订阅，节点收到新的连接诊断请求
+- **THEN** 每节点为当前数据库中全部启用订阅预留足以接管的 owner 名额，包括当前由对端持有的订阅；诊断仅可使用剩余名额，实际运行中的工作仍占用资源至结束。 本批验证容量预留，来源实际接管按相应协议另验。
 
 #### Scenario: 数据库不可提交或长连接中断
 - **WHEN** 数据库只读或不可用，或者客户端正在使用的 SSE/Assist 连接中断

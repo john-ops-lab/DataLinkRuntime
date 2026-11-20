@@ -37,6 +37,11 @@ def set_local_process(process: ControlProcess | None) -> None:
     _local_process = process
 
 
+def adopted(session: Session) -> bool:
+    """Dual intake is an authority fact even for a misconfigured process."""
+    return session.scalar(text("SELECT EXISTS (SELECT 1 FROM control_ha_capacity)")) is True
+
+
 def fingerprint(config: Settings) -> str:
     from dlr.control.services.ingress_capacity import parse_profile
 
@@ -199,7 +204,7 @@ def _record(
         """),
         {
             "measured": measured,
-            "now": now,
+            "now": probe.started_at,
             "free": free,
             "blocked": blocked,
             "state": state,
