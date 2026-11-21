@@ -176,9 +176,20 @@ def _claimed_child(coordinator, authority):
     return entry, coordinator._result
 
 
-def test_idle_dependencies_load_without_deployment_or_business_io():
+def test_idle_dependencies_load_without_deployment_or_business_io(tmp_path):
+    for name, value in (
+        ("memory.max", "402653184"),
+        ("pids.max", "32"),
+        ("memory.swap.max", "0"),
+        ("memory.swap.current", "0"),
+    ):
+        (tmp_path / name).write_text(value)
     check = """
 import os, sys
+from contextlib import closing
+from pathlib import Path
+from unittest.mock import patch
+
 violations = []
 class Guard:
     def find_spec(self, name, *unused):
@@ -197,11 +208,31 @@ sys.meta_path.insert(0, Guard())
 sys.addaudithook(audit)
 from dlr.control.services import claim_envelope_v4
 from dlr.control.services.result_preload_v4 import _load_dependencies
+
+root = Path(sys.argv[1])
+real_stat = os.stat
+def stat(path, *args, **kwargs):
+    return real_stat(root if path == '/proc/self/ns/cgroup' else path, *args, **kwargs)
+
+kind = claim_envelope_v4.ClaimEnvelope
+with (
+    patch.object(kind, '_root', root),
+    patch.object(kind, '_location'),
+    patch.object(claim_envelope_v4.cgroup_namespace, '_mount_id', return_value=1),
+    patch.object(os, 'stat', stat),
+    patch.object(sys, 'platform', 'linux'),
+    closing(kind.open(child_address_space_bytes=128 * 1024**2, preload=True)) as envelope,
+):
+    envelope.check()
+    assert envelope._limits == (402653184, 32)
+
 _load_dependencies()
 assert not violations
 assert not any(key.upper().startswith(('DLR_', 'DATABASE_URL')) for key in os.environ)
 """
-    subprocess.run([sys.executable, "-I", "-c", check], env={}, check=True, timeout=10)
+    subprocess.run(
+        [sys.executable, "-I", "-c", check, str(tmp_path)], env={}, check=True, timeout=10
+    )
 
 
 @pytest.mark.parametrize("late", [False, True])
@@ -374,9 +405,15 @@ class ResultChildLifetimeTests(unittest.TestCase):
                     closer.join(3)
             self.assertFalse(timer.is_alive() or closer.is_alive())
             self.assertFalse(pool._shutdown_failures)
-            self.assertIsNotNone(entry.process.poll())
+            self.assertIsNotNone(entry.process.returncode)
 
     def test_shutdown_waits_after_pidfd_transfer_before_result_publication(self):
+        # A regression can leave the executor and close() waiting on each
+        # other. Bound the entire scenario, including fixture teardown.
+        scenario = f"{type(self).__name__}._shutdown_after_transfer"
+        subprocess.run([sys.executable, __file__, scenario], check=True, timeout=18)
+
+    def _shutdown_after_transfer(self):
         with (
             _world(slots=2) as (pool, authority, children),
             patch.object(module.settings, "control_ha_slot", "a"),
@@ -411,7 +448,7 @@ class ResultChildLifetimeTests(unittest.TestCase):
                 with self.assertRaises(module.ClaimUnavailable):
                     caller.result(timeout=3)
             self.assertFalse(closer.is_alive())
-            self.assertTrue(all(p.poll() is not None for p in children))
+            self.assertTrue(all(p.returncode is not None for p in children))
             self.assertFalse(pool._shutdown_failures)
 
     def test_shutdown_waits_for_allocated_handoff_and_reports_unconfirmed_reap(self):

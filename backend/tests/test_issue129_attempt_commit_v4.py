@@ -353,7 +353,7 @@ def test_finalize_rechecks_proof_after_intent_lock_before_terminal_write(
         proof = intents.observe_result_in_session(
             session, ctx, ref, max_body_bytes=100_000, observation_nonce=uuid4()
         )
-        cutoff = session.get(AttemptResultIntentV4, ctx.attempt_id).proof_before
+    before_attestation = proof.observed_at - timedelta(microseconds=1)
     # The case exercises ownership in real PG transactions. The deployment
     # fence itself is exercised by the restricted-role integration tests.
     gate = Mock(spec=["check"])
@@ -374,8 +374,14 @@ def test_finalize_rechecks_proof_after_intent_lock_before_terminal_write(
     engine = session_factory.kw["bind"]
     with monkeypatch.context() as patch_clock:
         clock = intents.worker_availability.current_time
+        verify = Mock(wraps=finalizer.verify_result_attestation)
+        finish = Mock(wraps=finalizer.attempt.finish_attempt)
+        patch_clock.setattr(finalizer, "verify_result_attestation", verify)
+        patch_clock.setattr(finalizer.attempt, "finish_attempt", finish)
         patch_clock.setattr(
-            intents.worker_availability, "current_time", lambda s: cutoff if locked else clock(s)
+            intents.worker_availability,
+            "current_time",
+            lambda s: before_attestation if locked else clock(s),
         )
         event.listen(engine, "after_cursor_execute", after_sql)
         try:
@@ -383,6 +389,9 @@ def test_finalize_rechecks_proof_after_intent_lock_before_terminal_write(
                 finalize()
         finally:
             event.remove(engine, "after_cursor_execute", after_sql)
+        verify.assert_called_once()
+        assert verify.call_args.kwargs["now"] == before_attestation
+        finish.assert_not_called()
     with session_factory() as session:
         assert locked
         assert (
