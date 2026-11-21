@@ -10,19 +10,18 @@ WORKDIR /app
 ENV UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/app/.venv
 
-# Install locked dependencies first for better layer caching.
+# Supervised Control children start fresh interpreters. Cache bytecode for the
+# locked dependencies and the base Python standard library in reusable layers.
 COPY backend/pyproject.toml backend/uv.lock backend/.python-version ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project --compile-bytecode
+RUN python -m compileall -q -x '/(site-packages|test|tests)/' \
+    "$(python -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')"
 
 COPY backend/src ./src
 COPY backend/alembic.ini ./
 COPY backend/alembic ./alembic
-# Each supervised Control child starts a fresh interpreter.
-RUN uv sync --frozen --no-dev --compile-bytecode \
-    && /app/.venv/bin/python -m compileall -q src/dlr
-# The base image also ships standard-library modules without bytecode.
-RUN python -m compileall -q -x '/(site-packages|test|tests)/' \
-    "$(python -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')"
+RUN uv sync --frozen --no-dev \
+    && /app/.venv/bin/python -m compileall -q -x '/template_catalog/variants/' src/dlr
 
 ENV PATH="/app/.venv/bin:$PATH"
 
