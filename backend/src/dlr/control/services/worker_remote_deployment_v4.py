@@ -5,6 +5,44 @@ from sqlalchemy.orm import Session
 
 from dlr.control.services import worker_legacy_window
 
+# Recognize settled v3 history after the operator adopts the stopped Worker.
+# The release never rewrites the original Attempt with a v4 instance identity.
+_ADOPTED_LEGACY_ATTEMPT = """
+    AND NOT EXISTS (
+        SELECT 1
+        FROM worker_identity_reservations r
+        JOIN workers w ON w.id=r.worker_id AND w.name=r.name
+        JOIN executions e ON e.id=a.execution_id AND e.adapter_id=a.adapter_id
+        JOIN worker_legacy_window l ON l.id=1
+        WHERE r.worker_id=a.worker_id
+          AND l.closed_at IS NOT NULL AND r.created_at >= l.opened_at
+          AND r.legacy_stop_evidence_sha256 <> repeat('0',64)
+          AND a.claim_token_hash <> repeat('0',64) AND a.cleanup_token_hash <> repeat('0',64)
+          AND a.status NOT IN ('claimed','running')
+          AND a.claimed_at <= a.ended_at AND a.ended_at <= r.created_at
+          AND a.cleanup_summary->>'workspace_cleanup_status' = 'completed'
+          AND (a.attempt_no < e.attempt_count
+               OR (a.attempt_no = e.attempt_count AND e.workspace_cleanup_status = 'completed'))
+          AND e.dispatch_backend = 'rabbitmq' AND e.placement_origin = 'legacy_v3'
+          AND e.route_snapshot #>> '{route,mode}' = 'fixed'
+          AND e.route_snapshot #>> '{route,worker_id}' = a.worker_id::text
+          AND e.target_worker_id_snapshot = a.worker_id
+          AND (
+              (NOT e.requires_worker_reservation AND e.target_worker_id = a.worker_id
+               AND e.admission_released_at IS NOT NULL
+               AND e.status IN ('succeeded','dead_letter','cancelled','expired'))
+              OR (e.requires_worker_reservation
+                  AND (e.target_worker_id IS NULL OR e.target_worker_id = a.worker_id)
+                  AND EXISTS (
+                      SELECT 1 FROM execution_outbox o
+                      WHERE o.execution_id=e.id AND o.dispatch_generation<e.dispatch_generation
+                        AND o.status='superseded'
+                        AND o.last_error_code='placement_cutover_generation'
+                  ))
+          )
+    )
+"""
+
 
 class RemoteDeploymentUnavailable(RuntimeError):
     """A stable diagnostic which contains no database or credential details."""
@@ -14,9 +52,9 @@ def require_dedicated_deployment(session: Session, *, readonly: bool = False) ->
     """Check persistent provenance before disabling the legacy Worker APIs.
 
     Valid stage data remains valid across ordinary Control restarts. An empty
-    queue alone is insufficient: retained legacy identities and executions also
-    prevent switching. This check does not prove external writers or local
-    Worker journals have stopped; role fencing and Worker startup own those.
+    queue alone is insufficient. Legacy history requires confirmed adoption,
+    cleanup and preserved custody. Role fencing and the deployment operator
+    establish whether external writers and local Worker journals have stopped.
     """
     session.execute(text("SET LOCAL lock_timeout = '500ms'"))
     session.execute(text("SET LOCAL statement_timeout = '2000ms'"))
@@ -97,6 +135,7 @@ def require_dedicated_deployment(session: Session, *, readonly: bool = False) ->
             {unassigned_custody}
         ) OR EXISTS (
             SELECT 1 FROM execution_attempts a WHERE a.worker_identity_id IS NULL
+            {_ADOPTED_LEGACY_ATTEMPT if placement_installed else ""}
         )
     """)
     )
