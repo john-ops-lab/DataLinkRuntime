@@ -630,7 +630,7 @@ def test_candidate_reference_rejects_boolean_identity():
         CandidateRef(True, uuid4(), 1, 1, uuid4())
 
 
-def test_candidate_storage_requires_every_named_trigger_and_rejects_inherited_delete(
+def test_candidate_storage_requires_every_named_trigger_and_rejects_reachable_delete(
     session_factory,
 ):
     from dlr.control.services.worker_candidate_storage_preflight_v4 import inspect_candidate_storage
@@ -684,5 +684,15 @@ def test_candidate_storage_requires_every_named_trigger_and_rejects_inherited_de
                 "RENAME TO dlr_worker_maintenance_immutable"
             )
         )
+        assert posture() == "observed"
         session.execute(text(f"GRANT DELETE ON worker_cleanup_intents_v4 TO {group}"))
+        assert posture() == "blocked"
+        session.execute(text(f"GRANT {group} TO {runtime} WITH INHERIT FALSE, SET TRUE"))
+        assert session.execute(
+            text(
+                "SELECT has_table_privilege(:runtime, 'worker_cleanup_intents_v4', 'DELETE'), "
+                "pg_has_role(:runtime, :group, 'SET')"
+            ),
+            {"runtime": runtime, "group": group},
+        ).one() == (False, True)
         assert posture() == "blocked"
