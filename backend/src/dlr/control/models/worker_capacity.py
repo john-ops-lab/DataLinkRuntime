@@ -21,7 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from dlr.control.db import Base
+from dlr.control.model_base import Base
 
 RESOURCE_DIMENSIONS = ("cpu_millis", "memory_bytes", "pids", "tmp_bytes", "slots")
 OCCUPIED_RESERVATION_STATES = ("held", "claimed", "reclaiming")

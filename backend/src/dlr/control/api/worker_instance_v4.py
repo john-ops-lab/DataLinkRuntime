@@ -154,7 +154,7 @@ def heartbeat(request: Request, worker_id: int, session: DbSession) -> JSONRespo
     credential, instance, generation, proof = _proved_identity(request, worker_id)
     try:
         process = _process(request)
-        fence = process.worker_fence(session)
+        fence = process.worker_fence(session, wait_for_renewal_retry=True)
         authority = process.worker_proof_authority(session)
         candidate = candidates.stage_renewal_candidate(
             session,
@@ -256,7 +256,7 @@ async def ready(request: Request, worker_id: int, session: DbSession) -> JSONRes
                 raise ValueError("Worker readiness unavailable")
             return worker
 
-        fence = process.worker_fence(session)
+        fence = process.worker_fence(session, wait_for_renewal_retry=True)
         worker = verify()
         worker.capabilities = list(report.capabilities)
         worker.isolation_capabilities = expected_flags

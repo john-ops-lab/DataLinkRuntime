@@ -1,0 +1,12 @@
+# Append to the dedicated API HAProxy process. Use port 18081 in its VRRP check.
+frontend local_api_proxy_health
+    mode http
+    bind 127.0.0.1:18081
+    maxconn 4
+    timeout http-request 250ms
+    timeout client 400ms
+    acl ready_path path /ready
+    acl ready_get method GET
+    http-request deny deny_status 404 unless ready_path ready_get
+    http-request set-path /api/health/ready
+    default_backend controls

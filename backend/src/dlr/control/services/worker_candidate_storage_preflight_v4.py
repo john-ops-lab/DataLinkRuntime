@@ -170,9 +170,9 @@ def inspect_candidate_storage(
         # require a separate maintenance fence.
         preparer = session.get_bind().dialect.identifier_preparer
         schema = preparer.quote_schema(expected_schema)
-        for table_name in sorted({item[0] for item in _TABLES}):
-            table = preparer.quote(table_name)
-            session.execute(text(f"LOCK TABLE {schema}.{table} IN ROW EXCLUSIVE MODE NOWAIT"))
+        table_names = sorted({name for name, _, _ in _TABLES})
+        qualified_tables = ", ".join(f"{schema}.{preparer.quote(name)}" for name in table_names)
+        session.execute(text(f"LOCK TABLE {qualified_tables} IN ROW EXCLUSIVE MODE NOWAIT"))
         version_table = (
             session.execute(
                 text(
@@ -239,7 +239,74 @@ def inspect_candidate_storage(
         versions = session.execute(text(f"SELECT version_num FROM {schema}.alembic_version"))
         if versions.scalars().all() != [SCHEMA_REVISION]:
             return _BLOCKED
+        # Each observation reads the full trigger and role posture in one snapshot.
+        # The candidate write and its post-commit witness still observe independently.
+        rows = (
+            session.execute(
+                text(
+                    """
+                SELECT c.relname AS table_name, t.tgname AS trigger_name,
+                       c.relkind, c.relrowsecurity, c.relforcerowsecurity,
+                       t.tgenabled, t.tgtype, t.tgnargs,
+                       (t.tgqual IS NULL) AS no_trigger_condition,
+                       t.tgisinternal,
+                       (SELECT pg_catalog.count(*) FROM pg_catalog.pg_trigger AS all_triggers
+                        WHERE all_triggers.tgrelid = c.oid AND NOT all_triggers.tgisinternal)
+                           AS user_trigger_count,
+                       (SELECT pg_catalog.count(*) FROM pg_catalog.pg_rewrite AS rules
+                        WHERE rules.ev_class = c.oid) AS rule_count,
+                       p.proname, p.prosrc,
+                       p.prosecdef, p.provolatile, p.proconfig, p.prokind,
+                       pn.nspname AS function_schema, l.lanname,
+                       (p.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype)
+                           AS returns_trigger,
+                       (c.oid = pg_catalog.to_regclass(pg_catalog.quote_ident(c.relname)))
+                           AS resolves_to_expected,
+                       pg_catalog.has_table_privilege(
+                           current_user, c.oid, 'SELECT'
+                       ) AS can_select,
+                       pg_catalog.has_table_privilege(
+                           current_user, c.oid, 'INSERT'
+                       ) AS can_insert,
+                       pg_catalog.has_table_privilege(
+                           current_user, c.oid, 'UPDATE'
+                       ) AS can_update,
+                       EXISTS (
+                           SELECT 1 FROM pg_catalog.pg_roles AS r
+                           WHERE (r.rolname = current_user OR
+                                  pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER'))
+                             AND (
+                                 pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER') OR
+                                 pg_catalog.pg_has_role(r.oid, n.nspowner, 'MEMBER') OR
+                                 pg_catalog.pg_has_role(r.oid, p.proowner, 'MEMBER') OR
+                                 pg_catalog.has_schema_privilege(r.oid, n.oid, 'CREATE') OR
+                                 pg_catalog.has_table_privilege(
+                                     r.oid, c.oid, 'DELETE,TRUNCATE,TRIGGER'
+                                 )
+                             )
+                       ) AS unsafe
+                FROM pg_catalog.pg_class AS c
+                JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+                JOIN pg_catalog.pg_trigger AS t ON t.tgrelid = c.oid AND NOT t.tgisinternal
+                LEFT JOIN pg_catalog.pg_proc AS p ON p.oid = t.tgfoid
+                LEFT JOIN pg_catalog.pg_namespace AS pn ON pn.oid = p.pronamespace
+                LEFT JOIN pg_catalog.pg_language AS l ON l.oid = p.prolang
+                WHERE n.nspname = :schema_name
+                  AND c.relname = ANY(CAST(:table_names AS pg_catalog.name[]))
+                """
+                ),
+                {"schema_name": expected_schema, "table_names": table_names},
+            )
+            .mappings()
+            .all()
+        )
+        by_trigger = {(row["table_name"], row["trigger_name"]): row for row in rows}
+        if len(rows) != len(_TABLES) or len(by_trigger) != len(rows):
+            return _BLOCKED
         for table_name, trigger_name, trigger_type in _TABLES:
+            row = by_trigger.get((table_name, trigger_name))
+            if row is None:
+                return _BLOCKED
             disposition = table_name == "worker_maintenance_operations"
             immutable = trigger_name == "dlr_worker_maintenance_immutable"
             expected_function = (
@@ -249,61 +316,9 @@ def inspect_candidate_storage(
             if immutable:
                 expected_function = "dlr_worker_maintenance_immutable"
                 expected_source = _EXPECTED_AUDIT_PROSRC
-            row = (
-                session.execute(
-                    text(
-                        """
-                    SELECT c.oid AS table_oid, c.relkind, c.relrowsecurity,
-                           c.relforcerowsecurity, c.relowner AS table_owner,
-                           n.oid AS schema_oid, n.nspowner AS schema_owner,
-                           t.tgenabled, t.tgtype, t.tgnargs,
-                           (t.tgqual IS NULL) AS no_trigger_condition,
-                           t.tgisinternal,
-                           (SELECT pg_catalog.count(*) FROM pg_catalog.pg_trigger AS all_triggers
-                            WHERE all_triggers.tgrelid = c.oid AND NOT all_triggers.tgisinternal)
-                               AS user_trigger_count,
-                           (SELECT pg_catalog.count(*) FROM pg_catalog.pg_rewrite AS rules
-                            WHERE rules.ev_class = c.oid) AS rule_count,
-                           p.proowner AS function_owner, p.proname, p.prosrc,
-                           p.prosecdef, p.provolatile, p.proconfig, p.prokind,
-                           pn.nspname AS function_schema, l.lanname,
-                           (p.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype)
-                               AS returns_trigger,
-                           (c.oid = pg_catalog.to_regclass(:table_name)) AS resolves_to_expected,
-                           pg_catalog.has_table_privilege(
-                               current_user, c.oid, 'SELECT'
-                           ) AS can_select,
-                           pg_catalog.has_table_privilege(
-                               current_user, c.oid, 'INSERT'
-                           ) AS can_insert,
-                           pg_catalog.has_table_privilege(
-                               current_user, c.oid, 'UPDATE'
-                           ) AS can_update
-                    FROM pg_catalog.pg_class AS c
-                    JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
-                    LEFT JOIN pg_catalog.pg_trigger AS t
-                        ON t.tgrelid = c.oid AND t.tgname = :trigger_name
-                    LEFT JOIN pg_catalog.pg_proc AS p ON p.oid = t.tgfoid
-                    LEFT JOIN pg_catalog.pg_namespace AS pn ON pn.oid = p.pronamespace
-                    LEFT JOIN pg_catalog.pg_language AS l ON l.oid = p.prolang
-                    WHERE c.oid = pg_catalog.to_regclass(
-                        pg_catalog.format(
-                            '%I.%I', CAST(:schema_name AS text), CAST(:table_name AS text)
-                        )
-                    )
-                    """
-                    ),
-                    {
-                        "schema_name": expected_schema,
-                        "table_name": table_name,
-                        "trigger_name": trigger_name,
-                    },
-                )
-                .mappings()
-                .one_or_none()
-            )
-            if row is None or (
-                row["relkind"] != "r"
+            if (
+                row["unsafe"] is not False
+                or row["relkind"] != "r"
                 or row["relrowsecurity"] is not False
                 or row["relforcerowsecurity"] is not False
                 or row["tgenabled"] != "A"
@@ -327,35 +342,6 @@ def inspect_candidate_storage(
                 or row["can_insert"] is not True
                 or row["can_update"] is not True
             ):
-                return _BLOCKED
-            unsafe = session.scalar(
-                text(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1 FROM pg_catalog.pg_roles AS r
-                        WHERE (r.rolname = current_user OR
-                               pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER'))
-                          AND (
-                              pg_catalog.pg_has_role(r.oid, :table_owner, 'MEMBER') OR
-                              pg_catalog.pg_has_role(r.oid, :schema_owner, 'MEMBER') OR
-                              pg_catalog.pg_has_role(r.oid, :function_owner, 'MEMBER') OR
-                              pg_catalog.has_schema_privilege(r.oid, :schema_oid, 'CREATE') OR
-                              pg_catalog.has_table_privilege(
-                                  r.oid, :table_oid, 'DELETE,TRUNCATE,TRIGGER'
-                              )
-                          )
-                    )
-                    """
-                ),
-                {
-                    "table_owner": row["table_owner"],
-                    "schema_owner": row["schema_owner"],
-                    "function_owner": row["function_owner"],
-                    "schema_oid": row["schema_oid"],
-                    "table_oid": row["table_oid"],
-                },
-            )
-            if unsafe is not False:
                 return _BLOCKED
         return _OBSERVED
     except UnicodeError:

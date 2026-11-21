@@ -1,17 +1,21 @@
 """Real Linux child lifetime across one intent, with synthetic transaction frames."""
 
 import asyncio
+import inspect
 import json
 import os
 import signal
+import socket
+import struct
 import subprocess
 import sys
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -69,7 +73,18 @@ def _world(seconds=10, slots=None, real_resources=False):
         popen = subprocess.Popen
 
         def launch(command, **kwargs):
-            child = popen([sys.executable, "-I", "-S", "-c", _CHILD, *command[3:]], **kwargs)
+            script = _CHILD
+            if command[1] == "-I":
+                script = script.replace(
+                    "    channel.sendall(b'R')",
+                    "    import time\n"
+                    "    assert not set(os.environ) - {'LC_CTYPE'}\n"
+                    f"    end=time.clock_gettime(time.CLOCK_BOOTTIME)+{module.IDLE_SECONDS!r}\n"
+                    "    channel.sendall(b'R'+struct.pack('!d',end))\n"
+                    "    assert read(channel,1)==b'T'\n"
+                    "    channel.sendall(b'G')",
+                )
+            child = popen([sys.executable, "-I", "-S", "-c", script, *command[-3:]], **kwargs)
             children.append(child)
             return child
 
@@ -162,6 +177,157 @@ def _claimed_child(coordinator, authority):
     return entry, coordinator._result
 
 
+def test_idle_dependencies_load_without_deployment_or_business_io(tmp_path):
+    for name, value in (
+        ("memory.max", "402653184"),
+        ("pids.max", "32"),
+        ("memory.swap.max", "0"),
+        ("memory.swap.current", "0"),
+    ):
+        (tmp_path / name).write_text(value)
+    check = """
+import os, sys
+violations = []
+class Guard:
+    def find_spec(self, name, *unused):
+        if name in {'dlr.common.config', 'dlr.control.db'}:
+            violations.append(name)
+            raise RuntimeError(name)
+def audit(event, args):
+    forbidden = event.startswith(('socket.connect', 'socket.bind', 'socket.getaddrinfo',
+                                  'subprocess.Popen', 'os.posix_spawn', 'os.fork'))
+    roots = ('/run/secrets/', '/run/dlr-', '/etc/dlr')
+    private = event == 'open' and str(args[0]).startswith(roots)
+    if forbidden or private:
+        violations.append(event)
+        raise RuntimeError(event)
+sys.meta_path.insert(0, Guard())
+sys.addaudithook(audit)
+if len(sys.argv) == 2:
+    from contextlib import closing
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from dlr.control.services import claim_envelope_v4
+    from dlr.control.services.result_preload_v4 import _load_dependencies
+    root = Path(sys.argv[1])
+    real_stat = os.stat
+    def stat(path, *args, **kwargs):
+        return real_stat(root if path == '/proc/self/ns/cgroup' else path, *args, **kwargs)
+
+    kind = claim_envelope_v4.ClaimEnvelope
+    with (
+        patch.object(kind, '_root', root),
+        patch.object(kind, '_location'),
+        patch.object(claim_envelope_v4.cgroup_namespace, '_mount_id', return_value=1),
+        patch.object(os, 'stat', stat),
+        patch.object(sys, 'platform', 'linux'),
+        closing(kind.open(child_address_space_bytes=128 * 1024**2, preload=True)) as envelope,
+    ):
+        envelope.check()
+        assert envelope._limits == (402653184, 32)
+    _load_dependencies()
+else:
+    from dlr.control.services.result_preload_v4 import main
+    assert main() == 1   # The test closes the channel without handing over a request.
+assert not violations
+assert not any(key.upper().startswith(('DLR_', 'DATABASE_URL')) for key in os.environ)
+"""
+    command = [sys.executable, "-I", "-c", check]
+    if sys.platform != "linux" or os.environ.get("DLR_TEST_CLAIM_PROCESS") != "1":
+        subprocess.run([*command, str(tmp_path)], env={}, check=True, timeout=10)
+        return
+    parent, channel = socket.socketpair()
+    with parent, channel:
+        child = subprocess.Popen(
+            [*command, str(channel.fileno()), str(os.getpid()), str(512 * 1024**2)],
+            env={},
+            pass_fds=(channel.fileno(),),
+        )
+        channel.close()
+        try:
+            parent.settimeout(8)
+            assert module._read_exact(parent, 1) == b"R"
+            idle_until = struct.unpack("!d", module._read_exact(parent, 8))[0]
+            assert idle_until > module._clock()
+            parent.shutdown(socket.SHUT_WR)
+            assert child.wait(timeout=4) == 0
+        finally:
+            if child.returncode is None:
+                child.kill()
+                child.wait(timeout=2)
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_preload_handoff_reads_one_metadata_frame_before_ready(monkeypatch, late):
+    from dlr.common import config
+    from dlr.control.services import control_declaration_v4, result_child_v4, result_preload_v4
+
+    snapshot = {
+        **module._child_settings(),
+        "worker_v4_control_slots": 2,
+        "control_ha_slot": "a",
+        "worker_remote_v4_enabled": True,
+        "worker_v4_deployment_mode": "C",
+    }
+    space = snapshot["worker_v4_claim_child_address_space_bytes"]
+    checked, opened = [], []
+    envelope = SimpleNamespace(check=lambda: checked.append(True), close=lambda: None)
+    signature = inspect.signature(module.ClaimEnvelope.open)
+
+    def open_envelope(**kwargs):
+        binding = signature.bind(**kwargs)
+        binding.apply_defaults()
+        opened.append(
+            (binding.arguments["child_address_space_bytes"], binding.arguments["preload"])
+        )
+        return envelope
+
+    monkeypatch.setattr(module.ClaimEnvelope, "open", open_envelope)
+    monkeypatch.setattr(result_preload_v4, "_restrict", lambda *_: None)
+    monkeypatch.setattr(result_preload_v4, "_load_dependencies", lambda: None)
+    now = None
+    monkeypatch.setattr(result_preload_v4, "_clock", lambda: now or time.monotonic())
+    monkeypatch.setattr(result_child_v4, "_clock", time.monotonic)
+    monkeypatch.setattr(control_declaration_v4, "read_declaration", lambda _: None)
+    monkeypatch.setattr(config, "settings", config.settings)
+    parent, child = socket.socketpair()
+    monkeypatch.setattr(sys, "argv", ["preload", str(child.detach()), str(os.getpid()), str(space)])
+    with parent, patch.dict(os.environ, {}, clear=True):
+        parent.settimeout(4)
+        thread = threading.Thread(target=result_preload_v4.main)
+        thread.start()
+        try:
+            assert module._read_exact(parent, 1) == b"R"
+            assert opened == [(space, True)]
+            deadline = struct.unpack("!d", module._read_exact(parent, 8))[0]
+            assert deadline > time.monotonic()
+            if late:
+                now = deadline
+            parent.sendall(b"T")
+            if late:
+                assert parent.recv(1) == b""
+                return
+            assert module._read_exact(parent, 1) == b"G" and len(checked) >= 2
+            module._send_frame(
+                parent,
+                {
+                    **_metadata(),
+                    "settings": snapshot,
+                    "body_bytes": 2,
+                    "control_instance": str(uuid4()),
+                    "control_token": "fixture",
+                    "control_deadline": time.monotonic() + 4,
+                },
+            )
+            assert module._read_frame(parent) == {"state": "ready"}
+            assert opened == [(space, True), (space, False)]
+        finally:
+            parent.close()
+            thread.join(4)
+            assert not thread.is_alive()
+
+
 @unittest.skipUnless(
     sys.platform.startswith("linux")
     and hasattr(os, "pidfd_open")
@@ -169,6 +335,260 @@ def _claimed_child(coordinator, authority):
     "requires Linux supervised child ownership",
 )
 class ResultChildLifetimeTests(unittest.TestCase):
+    def test_unstarted_preload_leaves_both_slots_available(self):
+        with (
+            _world(slots=2) as (pool, authority, children),
+            patch.object(module.settings, "control_ha_slot", "a"),
+        ):
+            started = []
+            start = threading.Thread.start
+
+            def start_then_raise(thread):
+                start(thread)
+                started.append(thread)
+                raise RuntimeError("native thread already started")
+
+            with patch.object(threading.Thread, "start", start_then_raise):
+                pool.anticipate_result(authority)
+            self.assertEqual(len(started), 1)
+            started[0].join(3)
+            self.assertFalse(started[0].is_alive())
+            self.assertIsNone(pool._warm)
+            self.assertFalse(children)
+            with pool._borrow(1, existing=False), pool._borrow(2, existing=False):
+                self.assertFalse(pool._poisoned.is_set())
+
+    def test_only_observed_stage_can_overlap_a_second_sterile_child(self):
+        from dlr.control.api import worker_attempt_authority_v4 as api
+
+        current, previous = "test-only-attempt", "previous-proof"
+        for proof, credential in (
+            (previous, "test-only"),
+            (current, "other"),
+            (current, "test-only"),
+        ):
+            with (
+                self.subTest(proof=proof, credential=credential),
+                _world(slots=2) as (pool, authority, children),
+                patch.object(module.settings, "control_ha_slot", "a"),
+                patch.object(api, "_process", return_value=authority),
+                patch.object(
+                    api, "_proved_identity", return_value=("test-only", uuid4(), 1, "instance")
+                ),
+                patch.object(api, "_one_header", return_value=previous),
+                patch.object(api.candidates, "stage_attempt_renewal"),
+            ):
+                request = SimpleNamespace(
+                    app=SimpleNamespace(state=SimpleNamespace(claim_coordinator_v4=pool))
+                )
+                authority.worker_fence = Mock()
+                authority.worker_proof_authority = Mock()
+                authority.observe_attempt_candidate = Mock(return_value=current)
+                response = api._renew(request, Mock(), 1, 9, Mock())
+                self.assertEqual(json.loads(response.body), {"attempt_proof": current})
+                metadata = _metadata()
+                metadata.update(attempt_proof=proof, credential=credential)
+                matches = proof == current and credential == "test-only"
+                original = pool._warm
+                with patch.object(
+                    pool, "anticipate_result", wraps=pool.anticipate_result
+                ) as next_child:
+                    entry = pool.begin_result(authority, metadata=metadata, body_bytes=2)
+                    if matches:
+                        next_child.assert_called_once_with(authority)
+                    else:
+                        next_child.assert_not_called()
+                self.assertTrue(original.finished.wait(3))
+                if matches:
+                    spare = pool._warm
+                    self.assertIsNot(spare, original)
+                    with spare.condition:
+                        self.assertTrue(spare.condition.wait_for(lambda w=spare: w.transport, 3))
+                        self.assertIsNot(spare.transport.process, entry.process)
+                    self.assertIsNone(spare.demand)
+                self.assertEqual(len(children), 2 if matches else 1)
+                self.assertTrue(pool.end_result(entry))
+                pool.close()
+                self.assertTrue(all(p.poll() is not None for p in children))
+
+    def _bounded_scenario(self, method):
+        # A regression can leave close() or the fixture teardown waiting
+        # on another thread. Bound the entire scenario in a subprocess.
+        subprocess.run(
+            [sys.executable, __file__, f"{type(self).__name__}.{method}"], check=True, timeout=18
+        )
+
+    def test_shutdown_waits_for_timer_reap(self):
+        self._bounded_scenario("_shutdown_during_timer_reap")
+
+    def _shutdown_during_timer_reap(self):
+        with _world(slots=2) as (pool, authority, _):
+            entry = pool.begin_result(authority, metadata=_metadata(), body_bytes=2)
+            slot = entry.owner
+            reap_entered, allow_reap = threading.Event(), threading.Event()
+            original = slot._discard_unpublished
+
+            def delayed(*args):
+                reap_entered.set()
+                assert allow_reap.wait(3)
+                return original(*args)
+
+            with patch.object(slot, "_discard_unpublished", side_effect=delayed):
+                timer = threading.Timer(0, slot.end_result, args=(entry,))
+                timer.start()
+                self.assertTrue(reap_entered.wait(3))
+                closer = threading.Thread(target=pool.close)
+                closer.start()
+                try:
+                    self.assertTrue(pool._poisoned.wait(3))
+                    closer.join(0.05)
+                    self.assertTrue(closer.is_alive())
+                    self.assertIsNone(entry.process.returncode)
+                finally:
+                    allow_reap.set()
+                    timer.join(3)
+                    closer.join(3)
+            self.assertFalse(timer.is_alive() or closer.is_alive())
+            self.assertFalse(pool._shutdown_failures)
+            self.assertIsNotNone(entry.process.returncode)
+
+    def test_shutdown_waits_after_pidfd_transfer_before_result_publication(self):
+        self._bounded_scenario("_shutdown_after_transfer")
+
+    def _shutdown_after_transfer(self):
+        with (
+            _world(slots=2) as (pool, authority, children),
+            patch.object(module.settings, "control_ha_slot", "a"),
+        ):
+            pool.anticipate_result(authority)
+            warm = pool._warm
+            transferred, release = threading.Event(), threading.Event()
+            reaping, allow_reap = threading.Event(), threading.Event()
+            original = warm.take
+            discard = warm.slot._discard_unpublished
+
+            def take(deadline):
+                transport = original(deadline)
+                assert transport is not None
+                transferred.set()
+                assert release.wait(3)
+                return transport
+
+            def delayed_reap(*args):
+                reaping.set()
+                assert allow_reap.wait(3)
+                return discard(*args)
+
+            with (
+                patch.object(warm, "take", side_effect=take),
+                patch.object(warm.slot, "_discard_unpublished", side_effect=delayed_reap),
+                ThreadPoolExecutor(1) as executor,
+            ):
+                caller = executor.submit(
+                    pool.begin_result, authority, metadata=_metadata(), body_bytes=2
+                )
+                self.assertTrue(transferred.wait(3))
+                self.assertIsNone(warm.slot._result)
+                closer = threading.Thread(target=pool.close)
+                closer.start()
+                try:
+                    self.assertTrue(pool._poisoned.wait(3))
+                    closer.join(0.05)
+                    self.assertTrue(closer.is_alive())
+                    release.set()
+                    self.assertTrue(reaping.wait(3))
+                    closer.join(0.05)
+                    self.assertTrue(closer.is_alive())
+                    self.assertIsNone(children[0].returncode)
+                finally:
+                    release.set()
+                    allow_reap.set()
+                    closer.join(3)
+                with self.assertRaises(module.ClaimUnavailable):
+                    caller.result(timeout=3)
+            self.assertFalse(closer.is_alive())
+            self.assertTrue(all(p.returncode is not None for p in children))
+            self.assertFalse(pool._shutdown_failures)
+
+    def test_shutdown_waits_for_allocated_handoff_and_reports_unconfirmed_reap(self):
+        with (
+            _world(slots=2) as (pool, authority, _),
+            patch.object(module.settings, "control_ha_slot", "a"),
+        ):
+            pool.anticipate_result(authority)
+            warm = pool._warm
+            with warm.condition:
+                self.assertTrue(warm.condition.wait_for(lambda: warm.transport is not None, 3))
+            original = warm.slot._discard_unpublished
+
+            def unconfirmed(*args):
+                assert original(*args)
+                return False
+
+            with patch.object(warm.slot, "_discard_unpublished", side_effect=unconfirmed):
+                with pool._borrow(7, existing=True, result=True):
+                    closer = threading.Thread(target=pool.close)
+                    closer.start()
+                    self.assertTrue(warm.finished.wait(3))
+                    self.assertTrue(closer.is_alive())
+                closer.join(3)
+            self.assertFalse(closer.is_alive())
+            self.assertTrue(pool._shutdown_failures)
+
+    def test_idle_result_uses_one_slot_and_transfers_one_pid(self):
+        with (
+            _world(slots=2) as (pool, authority, children),
+            patch.object(module.settings, "control_ha_slot", "a"),
+            patch.dict(os.environ, {"DLR_TEST_PARENT_SENTINEL": "present"}),
+        ):
+            pool.anticipate_result(authority)
+            warm = pool._warm
+            self.assertIsNotNone(warm)
+            with warm.condition:
+                self.assertTrue(warm.condition.wait_for(lambda: warm.transport is not None, 3))
+                original = warm.transport.process
+            with pool._borrow(11, existing=False) as (other, _):
+                self.assertIsNot(other, warm.slot)
+                pool.anticipate_result(authority)
+                with pool._borrow(12, existing=True, result=True) as (slot, attached):
+                    self.assertIs(attached, warm)
+                    with self.assertRaises(module.ClaimCapacityBusy):
+                        pool.begin_result(authority, metadata=_metadata(12), body_bytes=2)
+                    with self.assertRaises(module.ClaimCapacityBusy):
+                        pool.begin_result(authority, metadata=_metadata(13), body_bytes=2)
+                    entry = slot.begin_result(
+                        authority, metadata=_metadata(12), body_bytes=2, warm=attached
+                    )
+                    self.assertIs(entry.process, original)
+                    self.assertTrue(pool.end_result(entry))
+                    self.assertIsNotNone(original.poll())
+                    self.assertFalse(entry.spawn.thread.is_alive())
+            self.assertEqual(len(children), 1)
+
+    def test_claim_preempts_spare_only_after_reap_and_idle_does_not_rotate(self):
+        with (
+            _world(slots=2) as (pool, authority, children),
+            patch.object(module.settings, "control_ha_slot", "b"),
+        ):
+            pool.anticipate_result(authority)
+            warm = pool._warm
+            with warm.condition:
+                self.assertTrue(warm.condition.wait_for(lambda: warm.transport is not None, 3))
+                child = warm.transport
+            with (
+                pool._borrow(1, existing=False),
+                pool._borrow(2, existing=False) as (slot, _),
+            ):
+                self.assertIs(slot, warm.slot)
+                self.assertIsNotNone(child.process.poll())
+                self.assertFalse(child.spawn.thread.is_alive())
+            with patch.object(module, "IDLE_SECONDS", 0.1):
+                pool.anticipate_result(authority)
+                warm = pool._warm
+                self.assertTrue(warm.finished.wait(3))
+            self.assertIsNotNone(children[-1].poll())
+            self.assertEqual(len(children), 2)
+
     def test_claim_handoff_keeps_one_child_and_requires_fresh_operation_authority(self):
         with _world() as (coordinator, authority, children):
             old, retained = _claimed_child(coordinator, authority)

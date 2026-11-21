@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import CheckConstraint, DateTime, SmallInteger, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from dlr.control.db import Base
+from dlr.control.model_base import Base
 
 
 class SystemSetting(Base):

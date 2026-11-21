@@ -628,3 +628,71 @@ def test_generation_inconsistent_with_immutable_history_cannot_be_signed(
 def test_candidate_reference_rejects_boolean_identity():
     with pytest.raises(LeaseCandidateError):
         CandidateRef(True, uuid4(), 1, 1, uuid4())
+
+
+def test_candidate_storage_requires_every_named_trigger_and_rejects_reachable_delete(
+    session_factory,
+):
+    from dlr.control.services.worker_candidate_storage_preflight_v4 import inspect_candidate_storage
+
+    suffix = uuid4().hex
+    runtime = f"posture_runtime_{suffix}"
+    group = f"posture_group_{suffix}"
+    with session_factory() as session:
+        # Roles, grants and trigger changes exist only inside this test transaction.
+        database = session.get_bind().dialect.identifier_preparer.quote(
+            session.scalar(text("SELECT current_database()"))
+        )
+        session.execute(text(f"CREATE ROLE {runtime} NOLOGIN"))
+        session.execute(text(f"CREATE ROLE {group} NOLOGIN"))
+        session.execute(text(f"GRANT {group} TO {runtime}"))
+        session.execute(text(f"REVOKE TEMPORARY ON DATABASE {database} FROM PUBLIC"))
+        session.execute(text("REVOKE CREATE ON SCHEMA public FROM PUBLIC"))
+        session.execute(text(f"GRANT USAGE ON SCHEMA public TO {runtime}"))
+        session.execute(
+            text(
+                "GRANT SELECT ON alembic_version, worker_placement_cutover, "
+                f"worker_capacity_verifiers TO {runtime}"
+            )
+        )
+        session.execute(text(f"GRANT SELECT, INSERT ON execution_placement_actions TO {runtime}"))
+        session.execute(
+            text(
+                "GRANT SELECT, INSERT, UPDATE ON worker_lease_candidates_v4, "
+                "attempt_lease_candidates_v4, attempt_result_intents_v4, "
+                f"worker_cleanup_intents_v4, worker_maintenance_operations TO {runtime}"
+            )
+        )
+
+        def posture():
+            session.execute(text(f"SET LOCAL SESSION AUTHORIZATION {runtime}"))
+            result = inspect_candidate_storage(session, expected_schema="public")
+            session.execute(text("SET LOCAL SESSION AUTHORIZATION DEFAULT"))
+            return result.state
+
+        assert posture() == "observed"
+        session.execute(
+            text(
+                "ALTER TRIGGER dlr_worker_maintenance_immutable ON worker_maintenance_operations "
+                "RENAME TO unexpected_audit_trigger"
+            )
+        )
+        assert posture() == "blocked"
+        session.execute(
+            text(
+                "ALTER TRIGGER unexpected_audit_trigger ON worker_maintenance_operations "
+                "RENAME TO dlr_worker_maintenance_immutable"
+            )
+        )
+        assert posture() == "observed"
+        session.execute(text(f"GRANT DELETE ON worker_cleanup_intents_v4 TO {group}"))
+        assert posture() == "blocked"
+        session.execute(text(f"GRANT {group} TO {runtime} WITH INHERIT FALSE, SET TRUE"))
+        assert session.execute(
+            text(
+                "SELECT has_table_privilege(:runtime, 'worker_cleanup_intents_v4', 'DELETE'), "
+                "pg_has_role(:runtime, :group, 'SET')"
+            ),
+            {"runtime": runtime, "group": group},
+        ).one() == (False, True)
+        assert posture() == "blocked"

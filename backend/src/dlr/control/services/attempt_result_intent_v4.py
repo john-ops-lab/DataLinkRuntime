@@ -17,7 +17,7 @@ from uuid import UUID, uuid4
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import HTTPException
-from sqlalchemy import BigInteger, literal_column, select
+from sqlalchemy import BigInteger, literal_column, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.result_intent_mac_v4 import RESULT_INTENT_MAC_CONTEXT, result_body_mac
@@ -207,6 +207,117 @@ def _snapshot(
         raise ResultIntentError("result intent unavailable") from None
 
 
+# Unreserved Attempts share this lock set. The initial
+# full validation owns those row locks through the transaction. Re-read each
+# tuple version at every checkpoint, including changes made by our own flush.
+# ctid distinguishes successive updates sharing one xmin. Neither identity is
+# persisted or compared across transactions.
+_LOCKED_ROWS = text("""
+    SELECT pg_catalog.txid_current(),
+           ROW(e.tableoid,e.xmin,e.ctid, a.tableoid,a.xmin,a.ctid,
+               d.tableoid,d.xmin,d.ctid, ac.tableoid,ac.xmin,ac.ctid,
+               gc.tableoid,gc.xmin,gc.ctid, s.tableoid,s.xmin,s.ctid,
+               w.tableoid,w.xmin,w.ctid, c.tableoid,c.xmin,c.ctid,
+               h.tableoid,h.xmin,h.ctid, i.tableoid,i.xmin,i.ctid,
+               l.tableoid,l.xmin,l.ctid,
+               ARRAY(SELECT ROW(other.tableoid,other.xmin,other.ctid)::text
+                       FROM public.execution_attempts other
+                      WHERE other.execution_id = e.id ORDER BY other.id))::text,
+           i.xmin::text::bigint, l.xmin::text::bigint
+      FROM public.execution_attempts a
+      JOIN public.executions e ON e.id = a.execution_id
+      JOIN public.adapters d ON d.id = e.adapter_id
+      JOIN public.adapter_execution_admission ac ON ac.adapter_id = d.id
+      JOIN public.global_execution_admission gc ON gc.singleton_key = 'global'
+      JOIN public.adapter_execution_slots s ON s.adapter_id = d.id AND s.slot_no = 0
+      JOIN public.workers w ON w.id = a.worker_id
+      JOIN public.worker_credentials c ON c.worker_id = w.id AND c.kind = 'runtime'
+           AND c.secret_digest = :digest AND c.revoked_at IS NULL
+      JOIN public.worker_instance_history h ON h.worker_id = w.id
+           AND h.instance_id = :instance AND h.generation = :generation
+      JOIN public.worker_lease_candidates_v4 i ON i.worker_id = w.id
+      JOIN public.attempt_lease_candidates_v4 l ON l.attempt_id = a.id
+     WHERE a.id = :attempt AND w.id = :worker AND e.dispatch_backend = 'rabbitmq'
+       AND e.requires_worker_reservation IS FALSE
+""")
+
+
+class _IntentChecks:
+    """Revalidate the same locked ownership at each result-stage checkpoint."""
+
+    def __init__(self, session: Session, context: ResultIntentContext) -> None:
+        self.session = session
+        self.context = context
+        self.lease, self.instance, self.expires, _ = _snapshot(session, context)
+        self.transaction = session.get_transaction()
+        self.nested = session.get_nested_transaction()
+        self.action = (
+            context.action.attempt_id,
+            context.action.fencing_token,
+            context.action.claim_token,
+        )
+        self.parameters = {
+            "attempt": context.attempt_id,
+            "worker": context.worker_id,
+            "instance": context.instance_id,
+            "generation": context.generation,
+            "digest": worker_credentials._digest(context.credential),
+        }
+        self.versions = self._versions() if context.action.status == "succeeded" else None
+
+    def _versions(self) -> tuple[int, str] | None:
+        row = self.session.execute(_LOCKED_ROWS, self.parameters).one_or_none()
+        if row is None:
+            return None
+        xid, versions, instance_xmin, attempt_xmin = row
+        if not _committed_xid_matches(xid, self.instance.writer_xid, instance_xmin) or not (
+            _committed_xid_matches(xid, self.lease.writer_xid, attempt_xmin)
+        ):
+            raise ResultIntentError("result intent unavailable")
+        return xid, versions
+
+    def recheck(
+        self,
+    ) -> tuple[AttemptLeaseCandidateV4, WorkerLeaseCandidateV4, datetime | None, datetime]:
+        session, context = self.session, self.context
+        if (
+            self.transaction is None
+            or self.transaction is not session.get_transaction()
+            or self.nested is not session.get_nested_transaction()
+        ):
+            raise ResultIntentError("result intent transaction changed")
+        if self.versions is None:
+            return _snapshot(session, context)
+        session.flush()
+        if (
+            self._versions() != self.versions
+            or self.action
+            != (context.action.attempt_id, context.action.fencing_token, context.action.claim_token)
+            or context.action.status != "succeeded"
+        ):
+            # A changed row may still be legitimate. Resume the complete
+            # validation contract for all subsequent checks in this transaction.
+            self.versions = None
+            return _snapshot(session, context)
+        # Sample strictly after all potentially blocking SQL, including the
+        # intent row lock or flush immediately preceding this checkpoint.
+        now = worker_availability.current_time(session)
+        if self.expires is not None and now >= self.expires:
+            raise ResultIntentError("result intent unavailable")
+        try:
+            _check_instance_at(self.instance, context.authority, context.instance_proof, now)
+        except AttemptLeaseCandidateError:
+            raise ResultIntentError("result intent unavailable") from None
+        if not verify_attempt_lease_proof(
+            token=context.attempt_proof,
+            key=context.authority.key,
+            binding=_binding(self.lease, context.authority),
+            database_now=now,
+        ):
+            raise ResultIntentError("result intent unavailable")
+        return self.lease, self.instance, self.expires, now
+
+
 def _matches(
     row: AttemptResultIntentV4,
     context: ResultIntentContext,
@@ -261,9 +372,9 @@ def stage_result_intent(
     """Stage or rebind one keyed digest under the existing ownership locks."""
     if type(context) is not ResultIntentContext or type(context.authority) is not ProofAuthority:
         raise ResultIntentError("result intent unavailable")
-    lease, instance, expires, _ = _snapshot(session, context)
+    checks = _IntentChecks(session, context)
     body_mac = _body_mac(context, max_body_bytes)
-    lease, instance, expires, now = _snapshot(session, context)
+    lease, instance, expires, now = checks.recheck()
     row = session.scalar(
         select(AttemptResultIntentV4)
         .where(AttemptResultIntentV4.attempt_id == context.attempt_id)
@@ -274,7 +385,7 @@ def stage_result_intent(
         if row.finalization_id is not None:
             raise ResultIntentError("result intent unavailable")
         _already_committed(session, row)
-        lease, instance, _, now = _snapshot(session, context)
+        lease, instance, _, now = checks.recheck()
         if _matches(row, context, lease, instance, body_mac) and now < row.proof_before:
             return ResultIntentRef(row.attempt_id, row.intent_id)
         # A proven renewal may invalidate the original candidate binding.
@@ -300,9 +411,9 @@ def stage_result_intent(
             )
         ):
             raise ResultIntentError("result intent unavailable")
-        lease, instance, expires, now = _snapshot(session, context)
+        lease, instance, expires, now = checks.recheck()
     else:
-        lease, instance, expires, now = _snapshot(session, context)
+        lease, instance, expires, now = checks.recheck()
     proof_before = min(
         lease.nominal_until, lease.guard_until, instance.nominal_until, instance.guard_until
     )
@@ -330,7 +441,7 @@ def stage_result_intent(
     row.proof_before = proof_before
     row.writer_xid = writer_xid
     session.flush()
-    lease, instance, _, now = _snapshot(session, context)
+    lease, instance, _, now = checks.recheck()
     if now >= proof_before or not _matches(row, context, lease, instance, body_mac):
         raise ResultIntentError("result intent unavailable")
     return ResultIntentRef(row.attempt_id, row.intent_id)
@@ -389,7 +500,7 @@ def observe_result_in_session(
         or observation_nonce.int == 0
     ):
         raise ResultIntentError("result intent unavailable")
-    lease, instance, _, _ = _snapshot(session, context)
+    checks = _IntentChecks(session, context)
     row = session.scalar(
         select(AttemptResultIntentV4)
         .where(AttemptResultIntentV4.attempt_id == ref.attempt_id)
@@ -400,7 +511,7 @@ def observe_result_in_session(
     if row is None or row.intent_id != ref.intent_id or row.finalization_id is not None:
         raise ResultIntentError("result intent unavailable")
     _already_committed(session, row)
-    lease, instance, _, now = _snapshot(session, context)
+    lease, instance, _, now = checks.recheck()
     if now >= row.proof_before or not _matches(row, context, lease, instance, body_mac):
         raise ResultIntentError("result intent unavailable")
     try:

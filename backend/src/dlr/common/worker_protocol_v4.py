@@ -9,10 +9,10 @@ from urllib.parse import urlsplit
 INSTANCE_LEASE_SECONDS = 30
 INSTANCE_HEARTBEAT_SECONDS = 5
 
-# This margin assumes DB time and the local elapsed clock cannot diverge by
-# more than two seconds during a lease. Pairwise wall-clock skew alone does
-# not prove that assumption, especially across coordinated jumps.
-V4_LEASE_CLOCK_MARGIN_NS = 2_000_000_000
+# Subtract this margin when deriving a local deadline and use the same
+# bound for signed elapsed-time observations. The deployment must bound
+# relative clock movement across the lease, including PostgreSQL failover.
+V4_LEASE_CLOCK_MARGIN_NS = 5_000_000_000
 WORKER_CREDENTIAL_PREFIX = "dlrw4_"
 WORKER_FORCE_STOP_CODE = "worker_force_stop"
 ADAPTER_CLEANUP_CAPABILITY = "adapter_ephemeral_cleanup_v1"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import logging
@@ -10,11 +11,13 @@ import os
 import secrets
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Iterator
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Literal
 from uuid import UUID
@@ -29,6 +32,7 @@ from dlr.control.services.claim_child_v4 import _clock, _read_exact, _read_frame
 from dlr.control.services.claim_envelope_v4 import ClaimEnvelope, ClaimEnvelopeUnavailable
 from dlr.control.services.control_process_v4 import ControlProcess
 from dlr.control.services.dispatch import DispatchMessage
+from dlr.control.services.result_preload_v4 import IDLE_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,10 @@ def _child_settings() -> dict[str, object]:
     snapshot = settings.model_dump(mode="json")
     snapshot["postgres_capacity_token"] = None
     return snapshot
+
+
+def _demand_digest(credential: str, attempt_proof: str) -> bytes:
+    return hashlib.sha256(credential.encode() + b"\0" + attempt_proof.encode()).digest()
 
 
 class ClaimUnavailable(Exception):
@@ -54,6 +62,152 @@ class _Spawn:
     process: subprocess.Popen[bytes] | None = field(default=None, repr=False)
     thread: threading.Thread | None = field(default=None, repr=False)
     abandoned: bool = False
+
+
+@dataclass
+class _ChildTransport:
+    channel: socket.socket = field(repr=False)
+    spawn: _Spawn = field(repr=False)
+    process: subprocess.Popen[bytes] = field(repr=False)
+    pidfd: int
+
+
+class _WarmResult:
+    """One charged slot, from before spawn through handoff or physical reap."""
+
+    def __init__(self, coordinator: ClaimCoordinator, slot: _ClaimSlot) -> None:
+        self.coordinator = coordinator
+        self.slot = slot
+        # Parent-only hint from a verified start or renewal. It grants no
+        # child or transaction authority and is never sent over the socket.
+        self.demand: tuple[int, int, bytes] | None = None
+        self.allocated = False  # protected by the coordinator allocation lock
+        self.condition = threading.Condition()
+        self.channel: socket.socket | None = None
+        self.transport: _ChildTransport | None = None
+        self.idle_until = 0.0
+        self.transferred = False
+        self.cancelled = False
+        self.reaped = False
+        self.finished = threading.Event()
+
+    def run(self, process: ControlProcess) -> None:
+        deadline = _clock() + 5.0
+        channel = None
+        spawn = child = None
+        pidfd = None
+        try:
+            # The launcher publishes or cancels its ticket under this same
+            # lock, even when Thread.start raises after a native thread exists.
+            with self.coordinator._lock:
+                if self.coordinator._warm is not self:
+                    return
+            self.coordinator._check_resources(process)
+            space = self.coordinator._address_space
+            with self.condition:
+                if self.cancelled:
+                    return
+                channel, other = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.channel = channel
+            spawn, child = self.slot._spawn_child(
+                other, deadline, space, module="dlr.control.services.result_preload_v4"
+            )
+            pidfd = os.pidfd_open(child.pid, 0)  # type: ignore[attr-defined, unused-ignore]
+            channel.settimeout(deadline - _clock())
+            if (
+                _read_exact(channel, 1) != b"R"
+                or spawn.thread is None
+                or not spawn.thread.is_alive()
+            ):
+                raise ClaimUnavailable("result preload unavailable")
+            idle_until = struct.unpack("!d", _read_exact(channel, 8))[0]
+            self.coordinator._check_resources(process)
+            with self.condition:
+                now = _clock()
+                if self.cancelled or now >= deadline or not now < idle_until <= now + IDLE_SECONDS:
+                    return
+                self.transport = _ChildTransport(channel, spawn, child, pidfd)
+                self.idle_until = idle_until
+                self.condition.notify_all()
+                while not self.transferred and not self.cancelled:
+                    left = self.idle_until - _clock()
+                    if left <= 0:
+                        break
+                    self.condition.wait(left)
+                self.cancelled = not self.transferred
+        except Exception:
+            pass  # the cold path remains available only after confirmed cleanup
+        finally:
+            with self.condition:
+                self.cancelled = not self.transferred
+                self.channel = self.transport = None
+            try:
+                if not self.transferred:
+                    try:
+                        if channel is not None:
+                            channel.close()
+                    finally:
+                        clean = self.slot._discard_unpublished(child, pidfd, spawn)
+                        with self.slot._lock:
+                            self.reaped = clean and not self.slot._unresolved
+            finally:
+                self.finished.set()
+                with self.condition:
+                    self.condition.notify_all()
+                self.coordinator._warm_finished(self)
+
+    def take(self, deadline: float) -> _ChildTransport | None:
+        with self.condition:
+            while not self.finished.is_set() and not self.cancelled:
+                now = _clock()
+                if now >= deadline:
+                    raise ClaimUnavailable("result preload deadline expired")
+                if self.transport is not None:
+                    if now >= self.idle_until or self.transferred:
+                        break
+                    self.transferred = True
+                    self.condition.notify_all()
+                    return self.transport
+                self.condition.wait(deadline - now)
+        self.retire(deadline)
+        return None
+
+    def cancel(self) -> None:
+        with self.condition:
+            if self.transferred:
+                return
+            self.cancelled = True
+            if self.channel is not None:
+                with suppress(OSError):
+                    self.channel.shutdown(socket.SHUT_RDWR)
+            self.condition.notify_all()
+
+    def anticipate_finalize(self, process: ControlProcess, metadata: dict[str, object]) -> None:
+        demand = self.demand  # fixed once _borrow allocates this ticket
+        credential, proof = metadata.get("credential"), metadata.get("attempt_proof")
+        if (
+            demand is not None
+            and metadata.get("operation") == "stage"
+            and (metadata.get("worker_id"), metadata.get("attempt_id")) == demand[:2]
+            and type(credential) is str
+            and type(proof) is str
+            and hmac.compare_digest(demand[2], _demand_digest(credential, proof))
+        ):
+            # The real request now owns the first slot and its pidfd. Only an
+            # independently free second slot can start a new sterile child.
+            self.coordinator._warm_finished(self)
+            self.coordinator.anticipate_result(process)
+
+    def retire(self, deadline: float) -> None:
+        self.cancel()
+        with self.condition:
+            if self.transferred:
+                return
+        if not self.finished.wait(max(0.0, deadline - _clock())):
+            # A late spawn or unresolved reap still owns the original slot.
+            raise ClaimUnavailable("result preload cleanup unconfirmed")
+        if not self.reaped:
+            raise ClaimUnavailable("result preload cleanup unconfirmed")
 
 
 @dataclass(eq=False)
@@ -129,6 +283,7 @@ class _ClaimSlot:
         self._closing = False
         self._pid = os.getpid()
         self._lock = threading.RLock()
+        self._reap_finished = threading.Condition(self._lock)
         self._current: _Claim | None = None
         self._result: _Result | None = None
         self._spawning = False
@@ -207,6 +362,7 @@ class _ClaimSlot:
         if module not in {
             "dlr.control.services.claim_child_v4",
             "dlr.control.services.result_child_v4",
+            "dlr.control.services.result_preload_v4",
         }:
             raise ClaimUnavailable("Claim unavailable")
         ticket = _Spawn(child)
@@ -217,6 +373,7 @@ class _ClaimSlot:
                 process = subprocess.Popen(
                     [
                         sys.executable,
+                        *(["-I"] if module.endswith(".result_preload_v4") else []),
                         "-m",
                         module,
                         str(child.fileno()),
@@ -228,7 +385,9 @@ class _ClaimSlot:
                     stderr=subprocess.DEVNULL,
                     close_fds=True,
                     pass_fds=(child.fileno(),),
-                    env={
+                    env={}
+                    if module.endswith(".result_preload_v4")
+                    else {
                         name: value
                         for name, value in os.environ.items()
                         if name.casefold() != "dlr_postgres_capacity_token"
@@ -311,6 +470,7 @@ class _ClaimSlot:
         instance_proof: str,
         message: DispatchMessage,
         wire_budget: int,
+        request_deadline: float = math.inf,
     ) -> _Claim:
         with self._lock:
             self._live()
@@ -335,7 +495,9 @@ class _ClaimSlot:
             address_space_bytes = settings.worker_v4_claim_child_address_space_bytes
             envelope = self._open_envelope(child_address_space_bytes=address_space_bytes)
             control_instance, control_token, confirmed_deadline = process.claim_child_identity()
-            deadline = min(confirmed_deadline, math.nextafter(_clock() + 25.0, -math.inf))
+            deadline = min(
+                confirmed_deadline, request_deadline, math.nextafter(_clock() + 25.0, -math.inf)
+            )
             if deadline <= _clock() or type(wire_budget) is not int or not 0 < wire_budget < 2**63:
                 raise ValueError("Claim unavailable")
             bind = process._sessions.kw.get("bind")
@@ -691,11 +853,20 @@ class _ClaimSlot:
                 self._unresolved.append((process, pidfd, spawn))
             return False
 
-    def begin_input(self, process: ControlProcess, metadata: dict[str, object]) -> _Input:
+    def begin_input(
+        self,
+        process: ControlProcess,
+        metadata: dict[str, object],
+        *,
+        request_deadline: float = math.inf,
+    ) -> _Input:
         """Use the Claim child locally, or a bounded one-shot child on the receiving node."""
         if settings.control_ha_slot is not None:
             one_shot = self.begin_result(
-                process, metadata={**metadata, "operation": "input"}, body_bytes=0
+                process,
+                metadata={**metadata, "operation": "input"},
+                body_bytes=0,
+                request_deadline=request_deadline,
             )
             stream = _Input(one_shot, one_shot.deadline, 0)
             try:
@@ -740,7 +911,13 @@ class _ClaimSlot:
             if configuration != entry.configuration:
                 raise ClaimUnavailable("input unavailable")
             control_instance, control_token, confirmed = process.claim_child_identity()
-            deadline = min(entry.retention_deadline, confirmed, entry.input_cutoff, _clock() + 5.0)
+            deadline = min(
+                entry.retention_deadline,
+                confirmed,
+                entry.input_cutoff,
+                request_deadline,
+                _clock() + 5.0,
+            )
             stream_or_none = _Input(entry, deadline, 0)
             if deadline <= _clock():
                 # No input command or file I/O has started. Preserve the
@@ -889,7 +1066,13 @@ class _ClaimSlot:
             stream.io_lock.release()
 
     def begin_result(
-        self, process: ControlProcess, *, metadata: dict[str, object], body_bytes: int
+        self,
+        process: ControlProcess,
+        *,
+        metadata: dict[str, object],
+        body_bytes: int,
+        warm: _WarmResult | None = None,
+        request_deadline: float = math.inf,
     ) -> _Result:
         """Reserve the same single child slot used by Claim and stream a result."""
         input_only = metadata.get("operation") == "input"
@@ -926,7 +1109,7 @@ class _ClaimSlot:
                 existing.sent = 0
             self._spawning = True
         if existing is not None:
-            return self._resume_result(existing, metadata)
+            return self._resume_result(existing, metadata, request_deadline)
         channel = child_channel = None
         child = spawn = None
         pidfd = None
@@ -945,6 +1128,7 @@ class _ClaimSlot:
             control_instance, control_token, confirmed_deadline = process.claim_child_identity()
             deadline = min(
                 confirmed_deadline,
+                request_deadline,
                 math.nextafter(_clock() + (5.0 if input_only else 25.0), -math.inf),
             )
             if deadline <= _clock():
@@ -956,21 +1140,39 @@ class _ClaimSlot:
             if snapshot["worker_v4_claim_child_address_space_bytes"] != address_space:
                 raise ValueError("result unavailable")
             snapshot["database_url"] = bind.url.render_as_string(hide_password=False)
-            channel, child_channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            prepared = warm.take(min(deadline, _clock() + 5.0)) if warm is not None else None
+            if prepared is None:
+                self._live()
+                channel, child_channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+                channel.settimeout(min(5.0, deadline - _clock()))
+                owned_child, child_channel = child_channel, None
+                spawn, child = self._spawn_child(
+                    owned_child,
+                    deadline,
+                    address_space,
+                    module="dlr.control.services.result_child_v4",
+                )
+                pidfd = os.pidfd_open(child.pid, 0)  # type: ignore[attr-defined, unused-ignore]
+                if _read_exact(channel, 1) != b"R":
+                    raise ValueError("result child unavailable")
+            else:
+                channel, spawn, child, pidfd = (
+                    prepared.channel,
+                    prepared.spawn,
+                    prepared.process,
+                    prepared.pidfd,
+                )
+                channel.settimeout(min(5.0, deadline - _clock()))
+                channel.sendall(b"T")
+                if _read_exact(channel, 1) != b"G":
+                    raise ValueError("result child handoff unavailable")
             channel.settimeout(min(5.0, deadline - _clock()))
-            owned_child, child_channel = child_channel, None
-            spawn, child = self._spawn_child(
-                owned_child, deadline, address_space, module="dlr.control.services.result_child_v4"
-            )
-            pidfd = os.pidfd_open(child.pid, 0)  # type: ignore[attr-defined, unused-ignore]
-            if (
-                _read_exact(channel, 1) != b"R"
-                or spawn.thread is None
-                or not spawn.thread.is_alive()
-            ):
+            if spawn.thread is None or not spawn.thread.is_alive() or child.poll() is not None:
                 raise ValueError("result child unavailable")
             self._check_envelope(envelope)
             process.check_authority()
+            if prepared is not None and warm is not None:
+                warm.anticipate_finalize(process, metadata)
             _send_frame(
                 channel,
                 {
@@ -1036,7 +1238,9 @@ class _ClaimSlot:
                 with self._lock:
                     self._spawning = False
 
-    def _resume_result(self, entry: _Result, metadata: dict[str, object]) -> _Result:
+    def _resume_result(
+        self, entry: _Result, metadata: dict[str, object], request_deadline: float
+    ) -> _Result:
         """End idle retention with fresh authority; never extend an intent deadline."""
         try:
             entry.authority.check_authority()
@@ -1049,6 +1253,7 @@ class _ClaimSlot:
             if configuration != entry.configuration or entry.process.poll() is not None:
                 raise ValueError("result unavailable")
             control_instance, control_token, confirmed = entry.authority.claim_child_identity()
+            entry.deadline = min(entry.deadline, request_deadline)
             if entry.metadata.get("operation") == "stage" and entry.retention_deadline is not None:
                 # The child was only idle while business ran. This operation
                 # gets a fresh, separately confirmed Control deadline, capped
@@ -1059,6 +1264,7 @@ class _ClaimSlot:
                     entry.deadline = min(
                         entry.retention_deadline,
                         confirmed,
+                        request_deadline,
                         math.nextafter(_clock() + 25, -math.inf),
                     )
                     if entry.timer is not None:
@@ -1208,9 +1414,10 @@ class _ClaimSlot:
                 self._discard_unpublished(entry.process, entry.pidfd, entry.spawn)
             raise
         finally:
-            with self._lock:
+            with self._reap_finished:
                 self._spawning = False
                 self._closing = False
+                self._reap_finished.notify_all()
             self._notify_idle()
 
     def _expire(self, entry: _Claim) -> bool:
@@ -1236,8 +1443,9 @@ class _ClaimSlot:
                 self._discard_unpublished(entry.process, entry.pidfd, entry.spawn)
             raise
         finally:
-            with self._lock:
+            with self._reap_finished:
                 self._closing = False
+                self._reap_finished.notify_all()
             self._notify_idle()
 
     def close(self) -> None:
@@ -1270,11 +1478,59 @@ class ClaimCoordinator:
         self._limit = limit
         self._address_space = settings.worker_v4_claim_child_address_space_bytes
         self._lock = threading.Lock()
+        self._drained = threading.Condition(self._lock)
         self._resource_lock = threading.Lock()
         self._envelope: ClaimEnvelope | None = None
         self._poisoned = threading.Event()
         self._shutdown_failures: list[BaseException] = []
         self._slots = tuple(_ClaimSlot(self) for _ in range(limit))
+        self._warm: _WarmResult | None = None
+
+    def anticipate_result(
+        self, process: ControlProcess, *, observed: tuple[int, int, str, str] | None = None
+    ) -> None:
+        """Use at most one free slot in response to an observed, active Attempt."""
+        if (
+            sys.platform != "linux"
+            or self._limit != 2
+            or settings.control_ha_slot not in {"a", "b"}
+        ):
+            return
+        try:
+            with self._lock:
+                self._live()
+                demand = (
+                    (observed[0], observed[1], _demand_digest(observed[2], observed[3]))
+                    if observed is not None
+                    else None
+                )
+                if self._warm is not None:
+                    if demand is not None and not self._warm.allocated:
+                        self._warm.demand = demand
+                    return
+                slot = next((item for item in self._slots if item._worker_id is None), None)
+                if slot is None:
+                    return
+                warm = self._warm = _WarmResult(self, slot)
+                warm.demand = demand
+                try:
+                    threading.Thread(
+                        target=warm.run, args=(process,), name="dlr-result-preload", daemon=True
+                    ).start()
+                except BaseException as error:
+                    # run() cannot pass its initial allocation check until
+                    # this lock is released. An uncertain launch owns no PID.
+                    self._warm = None
+                    if not isinstance(error, RuntimeError):
+                        raise
+        except ClaimUnavailable:
+            pass
+
+    def _warm_finished(self, warm: _WarmResult) -> None:
+        with self._lock:
+            if self._warm is warm:
+                self._warm = None
+        warm.slot._notify_idle()
 
     def _live(self) -> None:
         if (
@@ -1302,23 +1558,45 @@ class ClaimCoordinator:
         process.check_authority()
         self._live()
 
-    def _take(self, worker_id: object, *, existing: bool) -> _ClaimSlot:
+    @contextmanager
+    def _borrow(
+        self, worker_id: object, *, existing: bool, result: bool = False, deadline: float = math.inf
+    ) -> Iterator[tuple[_ClaimSlot, _WarmResult | None]]:
         if type(worker_id) is not int or not 0 < worker_id < 2**63:
             raise ClaimUnavailable("Claim unavailable")
         with self._lock:
             self._live()
+            warm = self._warm
+            attached = None
             slot = next((item for item in self._slots if item._worker_id == worker_id), None)
             if slot is not None:
-                if not existing:
+                if not existing or (warm is not None and warm.slot is slot and warm.allocated):
                     raise ClaimCapacityBusy("Control transport busy")
             else:
-                slot = next((item for item in self._slots if item._worker_id is None), None)
+                free = [item for item in self._slots if item._worker_id is None]
+                if warm is not None and warm.slot in free:
+                    free.remove(warm.slot)
+                    if not warm.allocated and (result or not free):
+                        attached = warm
+                        warm.allocated = True
+                        free.insert(0, warm.slot)
+                slot = next(iter(free), None)
                 if slot is None:
                     raise ClaimCapacityBusy("Control transport busy")
                 slot._worker_id = worker_id
                 slot._allocation += 1
             slot._calls += 1
-            return slot
+        try:
+            if attached is not None and not result:
+                attached.retire(min(deadline, _clock() + 5.0))
+                self._live()
+            yield slot, attached
+        finally:
+            try:
+                if attached is not None:
+                    attached.cancel()
+            finally:
+                self._return(slot)
 
     def _entry_slot(self, entry: _Claim | _Result) -> _ClaimSlot:
         with self._lock:
@@ -1334,12 +1612,15 @@ class ClaimCoordinator:
             return slot
 
     def _return(self, slot: _ClaimSlot) -> None:
-        with self._lock:
+        with self._drained:
             slot._calls -= 1
+            self._drained.notify_all()
         slot._notify_idle()
 
     def _release_idle(self, slot: _ClaimSlot, allocation: int) -> None:
         with self._lock:
+            if self._warm is not None and self._warm.slot is slot and self._warm.allocated:
+                return
             if slot._allocation == allocation and slot._calls == 0 and not self._poisoned.is_set():
                 slot._worker_id = None
 
@@ -1355,9 +1636,9 @@ class ClaimCoordinator:
         message: DispatchMessage,
         wire_budget: int,
     ) -> _Claim:
+        deadline = math.nextafter(_clock() + 25.0, -math.inf)
         self._check_resources(process)
-        slot = self._take(worker_id, existing=False)
-        try:
+        with self._borrow(worker_id, existing=False, deadline=deadline) as (slot, _):
             return slot.prepare(
                 process,
                 worker_id=worker_id,
@@ -1367,9 +1648,8 @@ class ClaimCoordinator:
                 instance_proof=instance_proof,
                 message=message,
                 wire_budget=wire_budget,
+                request_deadline=deadline,
             )
-        finally:
-            self._return(slot)
 
     def stream(self, entry: _Claim) -> Iterator[bytes]:
         slot = self._entry_slot(entry)
@@ -1409,20 +1689,24 @@ class ClaimCoordinator:
     def begin_result(
         self, process: ControlProcess, *, metadata: dict[str, object], body_bytes: int
     ) -> _Result:
+        deadline = math.nextafter(_clock() + 25.0, -math.inf)
         self._check_resources(process)
-        slot = self._take(metadata.get("worker_id"), existing=True)
-        try:
-            return slot.begin_result(process, metadata=metadata, body_bytes=body_bytes)
-        finally:
-            self._return(slot)
+        with self._borrow(
+            metadata.get("worker_id"), existing=True, result=True, deadline=deadline
+        ) as (slot, warm):
+            return slot.begin_result(
+                process,
+                metadata=metadata,
+                body_bytes=body_bytes,
+                warm=warm,
+                request_deadline=deadline,
+            )
 
     def begin_input(self, process: ControlProcess, *, metadata: dict[str, object]) -> _Input:
+        deadline = math.nextafter(_clock() + 5.0, -math.inf)
         self._check_resources(process)
-        slot = self._take(metadata.get("worker_id"), existing=True)
-        try:
-            return slot.begin_input(process, metadata)
-        finally:
-            self._return(slot)
+        with self._borrow(metadata.get("worker_id"), existing=True, deadline=deadline) as (slot, _):
+            return slot.begin_input(process, metadata, request_deadline=deadline)
 
     def read_input(self, entry: _Input) -> bytes:
         if entry.closed and entry.received == entry.size:
@@ -1452,9 +1736,15 @@ class ClaimCoordinator:
     def finish_result(self, entry: _Result) -> dict[str, object]:
         slot = self._entry_slot(entry)
         try:
-            return slot.finish_result(entry)
+            response = slot.finish_result(entry)
         finally:
             self._return(slot)
+        if settings.control_ha_slot is not None and entry.metadata.get("operation") == "stage":
+            self.anticipate_result(entry.authority)
+            entry.authority.check_authority()
+            if _clock() >= entry.deadline:
+                raise ClaimUnavailable("result unavailable")
+        return response
 
     def end_result(self, entry: _Result) -> bool:
         try:
@@ -1469,11 +1759,38 @@ class ClaimCoordinator:
     def close(self) -> None:
         self._poisoned.set()
         failures: list[BaseException] = []
+        closed_slots = []
+        with self._lock:
+            warm = self._warm
+        if warm is not None:
+            try:
+                warm.retire(_clock() + 5.0)
+            except BaseException as error:
+                failures.append(error)
         for slot in self._slots:
             try:
                 slot.close()
             except BaseException as error:
                 failures.append(error)
+            else:
+                closed_slots.append(slot)
+        # A handoff may own a real pidfd between take() and publication in
+        # _result. Its original request owns reap and wakes this waiter.
+        drain_deadline = time.monotonic() + 5
+        with self._drained:
+            if not self._drained.wait_for(lambda: all(s._calls == 0 for s in self._slots), 5):
+                failures.append(ClaimUnavailable("Control child handoff still in progress"))
+        for slot in closed_slots:
+            # Timers reap outside the registry's request count.
+            with slot._reap_finished:
+                while slot._closing:
+                    remaining = drain_deadline - time.monotonic()
+                    if remaining <= 0:
+                        failures.append(ClaimUnavailable("Control child reap still in progress"))
+                        break
+                    slot._reap_finished.wait(remaining)
+                if slot._unresolved:
+                    failures.append(ClaimUnavailable("Control child cleanup unconfirmed"))
         with self._resource_lock:
             if self._envelope is not None:
                 try:

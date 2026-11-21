@@ -204,6 +204,10 @@ def test_control_renewal_row_contention(
         def rollback(self):
             with pytest.raises(TokenFenceUnavailable):
                 process.check_authority()
+            if len(renewals) == 1:
+                assert process._renewal_retry is None
+                with pytest.raises(TokenFenceUnavailable):
+                    process.check_authority(wait_for_renewal_retry=True)
             super().rollback()
             if outcome == "unknown_rollback":
                 raise OSError("rollback acknowledgement lost")
@@ -275,6 +279,174 @@ def test_control_renewal_row_contention(
             assert process._cycle() is False
             assert len(renewals) == 2
     process._finish()
+
+
+@pytest.mark.parametrize("outcome", ["confirmed", "commit_unknown", "wait_timeout", "old_deadline"])
+def test_worker_first_fence_waits_only_for_the_confirmed_control_retry(
+    session_factory, test_engine, declaration, monkeypatch, outcome
+):
+    retry_started, allow_retry, worker_waiting = Event(), Event(), Event()
+    renewals = []
+    original_renew = control.renew_control
+    fence = object()
+    fence_obtained = Event()
+
+    class RenewalSession(Session):
+        def commit(self):
+            super().commit()
+            if outcome == "commit_unknown" and retry_started.is_set():
+                raise OSError("renewal commit acknowledgement unavailable")
+
+    def renew(session, *args, **kwargs):
+        renewals.append(session)
+        if len(renewals) == 2:
+            retry_started.set()
+            assert allow_retry.wait(5)
+        return original_renew(session, *args, **kwargs)
+
+    def acquire(*args, **kwargs):
+        fence_obtained.set()
+        return fence
+
+    factory = sessionmaker(bind=test_engine, class_=RenewalSession, expire_on_commit=False)
+    process = _process(factory, declaration, monkeypatch)
+    assert process._cycle()
+    previous = process._confirmed_until
+    monkeypatch.setattr(control, "renew_control", renew)
+    monkeypatch.setattr(lifecycle, "acquire_worker_fence", acquire)
+    if outcome == "wait_timeout":
+        monkeypatch.setattr(lifecycle, "_WORKER_RENEWAL_RETRY_WAIT_SECONDS", 0.1)
+    now = 0.0
+    if outcome == "old_deadline":
+        assert previous is not None
+        now = previous - 0.25
+        monkeypatch.setattr(lifecycle, "_cache_clock", lambda: now)
+    try:
+        with session_factory() as holder, ThreadPoolExecutor(max_workers=2) as executor:
+            control.assert_live_control(
+                holder, declaration, instance_id=process.instance_id, instance_token=process._token
+            )
+            renewal = executor.submit(process._cycle)
+            try:
+                assert retry_started.wait(4)
+                with pytest.raises(TokenFenceUnavailable):
+                    process.check_authority()
+                retry = process._renewal_retry
+                assert retry is not None
+                original_wait = retry.finished.wait
+
+                def wait(seconds):
+                    nonlocal now
+                    worker_waiting.set()
+                    if outcome == "old_deadline":
+                        assert 0 < seconds <= 0.25
+                        assert original_wait(4)
+                        now = previous + 0.05
+                        return True
+                    return original_wait(seconds)
+
+                monkeypatch.setattr(retry.finished, "wait", wait)
+
+                def enter_worker():
+                    with session_factory() as session:
+                        return process.worker_fence(session, wait_for_renewal_retry=True)
+
+                worker = executor.submit(enter_worker)
+                assert worker_waiting.wait(1)
+                assert not fence_obtained.is_set()
+                if outcome == "wait_timeout":
+                    with pytest.raises(TokenFenceUnavailable):
+                        worker.result(timeout=2)
+            finally:
+                holder.rollback()
+                allow_retry.set()
+            if outcome == "commit_unknown":
+                with pytest.raises(OSError):
+                    renewal.result(timeout=4)
+                with pytest.raises(TokenFenceUnavailable):
+                    worker.result(timeout=2)
+            else:
+                assert renewal.result(timeout=4)
+                if outcome == "confirmed":
+                    assert worker.result(timeout=2) is fence
+                elif outcome == "old_deadline":
+                    with pytest.raises(TokenFenceUnavailable):
+                        worker.result(timeout=2)
+                    process.check_authority()  # The successor is live for a fresh caller.
+        assert len(renewals) == 2
+        assert fence_obtained.is_set() == (outcome == "confirmed")
+        assert process._renewal_retry is None
+    finally:
+        process._finish()
+
+
+@pytest.mark.parametrize(
+    ("route", "initial_failure"), [("heartbeat", True), ("ready", True), ("ready", False)]
+)
+def test_worker_proof_handler_opts_in_only_at_initial_fence(monkeypatch, route, initial_failure):
+    import asyncio
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import Mock, call
+
+    from fastapi import HTTPException
+
+    from dlr.control.api import worker_instance_v4
+    from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
+    from dlr.control.services import worker_capacity
+
+    instance = uuid4()
+    process = Mock()
+    monkeypatch.setattr(worker_instance_v4, "_process", lambda _: process)
+    monkeypatch.setattr(
+        worker_instance_v4, "_proved_identity", lambda *_: ("fixture", instance, 1, "proof")
+    )
+
+    async def stream():
+        flags = {name: True for name in REQUIRED_ISOLATION_CAPABILITIES}
+        yield json.dumps({"isolation_capabilities": flags}).encode()
+
+    request = SimpleNamespace(url=SimpleNamespace(query=""), stream=stream)
+    session = Mock()
+    if initial_failure:
+        process.worker_fence.side_effect = TokenFenceUnavailable("unconfirmed")
+        with pytest.raises(HTTPException) as failure:
+            if route == "heartbeat":
+                worker_instance_v4.heartbeat(request, 1, session)
+            else:
+                asyncio.run(worker_instance_v4.ready(request, 1, session))
+        assert failure.value.status_code == 503
+        process.worker_fence.assert_called_once_with(session, wait_for_renewal_retry=True)
+        session.commit.assert_not_called()
+    else:
+        session.get.return_value = SimpleNamespace(
+            id=1,
+            identity_lifecycle="reserved",
+            instance_id=instance,
+            instance_generation=1,
+            v4_storage_profile=None,
+            capacity_state="unready",
+        )
+        monkeypatch.setattr(worker_instance_v4.candidates, "validate_current_proof", Mock())
+        monkeypatch.setattr(worker_instance_v4.worker_availability, "current_time", Mock())
+        monkeypatch.setattr(
+            worker_instance_v4.worker_availability,
+            "has_unreconciled_v4_attempt",
+            Mock(return_value=False),
+        )
+        monkeypatch.setattr(worker_capacity, "lock_capacity", Mock(return_value=None))
+        transaction = Mock()
+        transaction.attach_mock(process.worker_fence, "fence")
+        transaction.attach_mock(session.commit, "commit")
+
+        response = asyncio.run(worker_instance_v4.ready(request, 1, session))
+        assert response.status_code == 200
+        assert transaction.method_calls == [
+            call.fence(session, wait_for_renewal_retry=True),
+            call.commit(),
+            call.fence(session),
+        ]
+    session.rollback.assert_called_once_with()
 
 
 @pytest.mark.parametrize("ddl", ["table", "index"])

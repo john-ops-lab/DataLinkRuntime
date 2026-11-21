@@ -7,6 +7,7 @@ import struct
 import sys
 import threading
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -652,6 +653,115 @@ def test_new_http_credential_cannot_revive_expired_local_lease(monkeypatch):
     assert lease._credential_record_id is None and lease._instance_id == instance
     assert lease._credential == "" and lease._claims is None
     assert lease._lost.is_set()
+
+
+@pytest.mark.parametrize(
+    ("exchanges", "failure"),
+    [
+        ([(105.0, 109.0, 9.8999)], None),
+        ([(105.0, 109.0, 9.9001)], "elapsed_bounds"),
+        ([(105.0, 105.1, 8.0), (110.0, 110.1, 16.0)], "rolling_bounds"),
+        ([(106.0, 106.1, 3.1), (112.0, 112.1, 6.1)], "rolling_bounds"),
+        (
+            [
+                (105.0, 105.1, 5.5),
+                (110.0, 110.1, 11.0),
+                (115.0, 115.1, 16.5),
+                (120.0, 120.1, 22.0),
+                (125.0, 125.1, 28.0),
+                (129.0, 129.1, 34.2),
+            ],
+            "rolling_bounds",
+        ),
+        ([(105.0, 105.1, 5.0), (123.0, 125.0, 23.0)], "local_deadline"),
+    ],
+    ids=["under-five", "over-five", "db-faster", "db-slower", "rolling-tail", "late-renewal"],
+)
+def test_five_second_margin_uses_signed_observations_and_earlier_stop(
+    monkeypatch, caplog, exchanges, failure
+):
+    from dlr.control.services.worker_lease_proof_v4 import (
+        LeaseProofBinding,
+        issue_observation_proof,
+        public_key_bytes,
+    )
+    from dlr.worker.lease_session_v4 import WorkerLeaseError, WorkerLeaseSession
+
+    cluster, epoch, identity, instance = (uuid4() for _ in range(4))
+    signing_key = b"a" * 32
+    now = 100.0
+    lease = WorkerLeaseSession(
+        base_url="https://control.example",
+        worker_id=1,
+        worker_identity_id=identity,
+        credential="dlrw4_" + "a" * 64,
+        instance_id=instance,
+        verification_key=public_key_bytes(signing_key),
+        cluster_id=cluster,
+        authority_epoch=epoch,
+        clock=lambda: now,
+    )
+    db_start = datetime(2026, 1, 1, tzinfo=UTC)
+    scheduled = iter([(100.0, 100.1, 0.0), *exchanges])
+    revision = 0
+    nominal = guard = db_start + timedelta(seconds=30)
+
+    def request(operation, **_kwargs):
+        nonlocal now, revision, nominal, guard
+        started, now, db_offset = next(scheduled)
+        assert lease._last_clock == started
+        observed = db_start + timedelta(seconds=db_offset)
+        proof_before = min(nominal, guard)
+        nominal, guard = observed + timedelta(seconds=30), nominal
+        revision += 1
+        claim = LeaseProofBinding(
+            cluster,
+            epoch,
+            1,
+            identity,
+            instance,
+            1,
+            revision,
+            uuid4(),
+            nominal,
+            guard,
+            proof_before,
+        )
+        proof = issue_observation_proof(key=signing_key, binding=claim, observed_at=observed)
+        response = {"instance_proof": proof.token}
+        if operation == "register":
+            response.update(
+                worker_identity_id=str(identity),
+                instance_id=str(instance),
+                instance_generation=1,
+            )
+        return json.dumps(response).encode()
+
+    monkeypatch.setattr(lease, "_request", request)
+    lease.register()
+    assert 124.999999 < lease._active_deadline() < 125
+    previous_observed = 0.0
+    for index, (start, finish, observed) in enumerate(exchanges, start=1):
+        now = start
+        assert lease._nominal_deadline is not None
+        successor_guard = min(lease._nominal_deadline, start + 25 + previous_observed - observed)
+        if index == len(exchanges) and failure:
+            if failure == "local_deadline":
+                assert start < lease._active_deadline() <= finish < successor_guard
+            with pytest.raises(WorkerLeaseError):
+                lease.heartbeat()
+            assert lease._lost.is_set()
+            assert lease._proof is None and revision == index + 1
+            with pytest.raises(WorkerLeaseError):
+                lease.heartbeat()
+            if failure != "local_deadline":
+                assert f"reason={failure}" in caplog.text
+        else:
+            lease.heartbeat()
+            assert lease._claims is not None and lease._claims.revision == index + 1
+            assert now < lease._active_deadline() < start + 25
+            assert lease._active_deadline() == pytest.approx(successor_guard, abs=1e-6, rel=0)
+        previous_observed = observed
 
 
 def test_missing_sealing_api_has_no_plaintext_launch_fallback(monkeypatch):

@@ -60,9 +60,9 @@ from dlr.control.services.attempt_result_intent_v4 import (
     ResultIntentRef,
     _already_committed,
     _body_mac,
+    _IntentChecks,
     _matches,
     _same_responsibility,
-    _snapshot,
     attestation_from_token,
     verify_result_attestation,
 )
@@ -249,12 +249,16 @@ def finalize_unconfirmed_result(
                     gate.check()
 
             event.listen(session, "before_commit", on_commit)
+            checks: _IntentChecks | None = None
 
             def check() -> None:
-                nonlocal locked
+                nonlocal locked, checks
                 if type(ref) is not ResultIntentRef or ref.attempt_id != frozen.attempt_id:
                     raise ResultIntentError("result unavailable")
-                _snapshot(session, frozen)
+                if checks is None:
+                    checks = _IntentChecks(session, frozen)
+                else:
+                    checks.recheck()
                 row = session.scalar(
                     select(AttemptResultIntentV4)
                     .where(AttemptResultIntentV4.attempt_id == frozen.attempt_id)
@@ -265,7 +269,7 @@ def finalize_unconfirmed_result(
                 if row is None or row.intent_id != ref.intent_id:
                     raise ResultIntentError("result unavailable")
                 _already_committed(session, row)
-                lease, instance, _, now = _snapshot(session, frozen)
+                lease, instance, _, now = checks.recheck()
                 if not _matches(row, frozen, lease, instance, body_mac) or not (
                     verify_result_attestation(row, frozen.authority, attestation, now=now)
                 ):

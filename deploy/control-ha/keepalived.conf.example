@@ -1,0 +1,34 @@
+# Private L2 reference. Reverse unicast_src_ip and peer on the standby LB.
+# Set different priorities and use the same unused router ID on this pair.
+global_defs {
+    router_id dlr_control_a
+    enable_script_security
+    script_user root
+}
+
+vrrp_script control_proxy {
+    script "/etc/dlr-private/check-ready.sh 18080"
+    interval 1
+    timeout 1
+    fall 2
+    rise 2
+}
+
+vrrp_instance DLR_CONTROL_ENTRY {
+    state BACKUP
+    interface eth0
+    virtual_router_id 61
+    priority 110
+    advert_int 1
+    nopreempt
+    unicast_src_ip 192.0.2.21
+    unicast_peer {
+        192.0.2.22
+    }
+    virtual_ipaddress {
+        192.0.2.20/24 dev eth0
+    }
+    track_script {
+        control_proxy
+    }
+}

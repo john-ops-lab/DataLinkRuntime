@@ -18,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from dlr.control.db import Base
+from dlr.control.model_base import Base
 
 V4_CACHE_OWNER_CHECK = """
     (v4_identity_id IS NULL AND v4_instance_id IS NULL AND v4_generation IS NULL) OR
