@@ -435,14 +435,17 @@ def test_worker_proof_handler_opts_in_only_at_initial_fence(monkeypatch, route, 
             Mock(return_value=False),
         )
         monkeypatch.setattr(worker_capacity, "lock_capacity", Mock(return_value=None))
+        transaction = Mock()
+        transaction.attach_mock(process.worker_fence, "fence")
+        transaction.attach_mock(session.commit, "commit")
 
         response = asyncio.run(worker_instance_v4.ready(request, 1, session))
         assert response.status_code == 200
-        assert process.worker_fence.call_args_list == [
-            call(session, wait_for_renewal_retry=True),
-            call(session),
+        assert transaction.method_calls == [
+            call.fence(session, wait_for_renewal_retry=True),
+            call.commit(),
+            call.fence(session),
         ]
-        session.commit.assert_called_once_with()
     session.rollback.assert_called_once_with()
 
 
