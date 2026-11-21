@@ -17,7 +17,10 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY backend/src ./src
 COPY backend/alembic.ini ./
 COPY backend/alembic ./alembic
-RUN uv sync --frozen --no-dev
+# Each supervised Control child starts a fresh interpreter. Compile both the
+# installed dependencies and the editable application before serving requests.
+RUN uv sync --frozen --no-dev --compile-bytecode \
+    && /app/.venv/bin/python -m compileall -q src/dlr
 
 ENV PATH="/app/.venv/bin:$PATH"
 
