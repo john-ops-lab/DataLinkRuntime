@@ -662,9 +662,20 @@ def test_new_http_credential_cannot_revive_expired_local_lease(monkeypatch):
         ([(105.0, 109.0, 9.9001)], "elapsed_bounds"),
         ([(105.0, 105.1, 8.0), (110.0, 110.1, 16.0)], "rolling_bounds"),
         ([(106.0, 106.1, 3.1), (112.0, 112.1, 6.1)], "rolling_bounds"),
-        ([(123.0, 125.0, 23.1)], "local_deadline"),
+        (
+            [
+                (105.0, 105.1, 5.5),
+                (110.0, 110.1, 11.0),
+                (115.0, 115.1, 16.5),
+                (120.0, 120.1, 22.0),
+                (125.0, 125.1, 28.0),
+                (129.0, 129.1, 34.2),
+            ],
+            "rolling_bounds",
+        ),
+        ([(105.0, 105.1, 5.0), (123.0, 125.0, 23.0)], "local_deadline"),
     ],
-    ids=["under-five", "over-five", "db-faster", "db-slower", "late-renewal"],
+    ids=["under-five", "over-five", "db-faster", "db-slower", "rolling-tail", "late-renewal"],
 )
 def test_five_second_margin_uses_signed_observations_and_earlier_stop(
     monkeypatch, caplog, exchanges, failure
@@ -729,9 +740,14 @@ def test_five_second_margin_uses_signed_observations_and_earlier_stop(
     monkeypatch.setattr(lease, "_request", request)
     lease.register()
     assert 124.999999 < lease._active_deadline() < 125
-    for index, (start, _finish, observed) in enumerate(exchanges, start=1):
+    previous_observed = 0.0
+    for index, (start, finish, observed) in enumerate(exchanges, start=1):
         now = start
+        assert lease._nominal_deadline is not None
+        successor_guard = min(lease._nominal_deadline, start + 25 + previous_observed - observed)
         if index == len(exchanges) and failure:
+            if failure == "local_deadline":
+                assert start < lease._active_deadline() <= finish < successor_guard
             with pytest.raises(WorkerLeaseError):
                 lease.heartbeat()
             assert lease._lost.is_set()
@@ -743,8 +759,9 @@ def test_five_second_margin_uses_signed_observations_and_earlier_stop(
         else:
             lease.heartbeat()
             assert lease._claims is not None and lease._claims.revision == index + 1
-            assert now < lease._active_deadline() < 125
-            assert lease._active_deadline() == pytest.approx(min(125, start + 25 - observed))
+            assert now < lease._active_deadline() < start + 25
+            assert lease._active_deadline() == pytest.approx(successor_guard, abs=1e-6, rel=0)
+        previous_observed = observed
 
 
 def test_missing_sealing_api_has_no_plaintext_launch_fallback(monkeypatch):
