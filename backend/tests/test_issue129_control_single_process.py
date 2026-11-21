@@ -204,6 +204,8 @@ def test_control_renewal_row_contention(
         def rollback(self):
             with pytest.raises(TokenFenceUnavailable):
                 process.check_authority()
+            with pytest.raises(TokenFenceUnavailable):
+                process.check_authority(wait_for_renewal_retry=True)
             super().rollback()
             if outcome == "unknown_rollback":
                 raise OSError("rollback acknowledgement lost")
@@ -275,6 +277,89 @@ def test_control_renewal_row_contention(
             assert process._cycle() is False
             assert len(renewals) == 2
     process._finish()
+
+
+@pytest.mark.parametrize("outcome", ["confirmed", "commit_unknown", "wait_timeout"])
+def test_worker_first_fence_waits_only_for_the_confirmed_control_retry(
+    session_factory, test_engine, declaration, monkeypatch, outcome
+):
+    retry_started, allow_retry, worker_waiting = Event(), Event(), Event()
+    renewals = []
+    original_renew = control.renew_control
+    fence = object()
+    fence_obtained = Event()
+
+    class RenewalSession(Session):
+        def commit(self):
+            super().commit()
+            if outcome == "commit_unknown" and retry_started.is_set():
+                raise OSError("renewal commit acknowledgement unavailable")
+
+    def renew(session, *args, **kwargs):
+        renewals.append(session)
+        if len(renewals) == 2:
+            retry_started.set()
+            assert allow_retry.wait(5)
+        return original_renew(session, *args, **kwargs)
+
+    def acquire(*args, **kwargs):
+        fence_obtained.set()
+        return fence
+
+    factory = sessionmaker(bind=test_engine, class_=RenewalSession, expire_on_commit=False)
+    process = _process(factory, declaration, monkeypatch)
+    assert process._cycle()
+    monkeypatch.setattr(control, "renew_control", renew)
+    monkeypatch.setattr(lifecycle, "acquire_worker_fence", acquire)
+    if outcome == "wait_timeout":
+        monkeypatch.setattr(lifecycle, "_WORKER_RENEWAL_RETRY_WAIT_SECONDS", 0.1)
+    try:
+        with session_factory() as holder, ThreadPoolExecutor(max_workers=2) as executor:
+            control.assert_live_control(
+                holder, declaration, instance_id=process.instance_id, instance_token=process._token
+            )
+            renewal = executor.submit(process._cycle)
+            try:
+                assert retry_started.wait(4)
+                with pytest.raises(TokenFenceUnavailable):
+                    process.check_authority()
+                retry = process._renewal_retry
+                assert retry is not None
+                original_wait = retry.finished.wait
+
+                def wait(seconds):
+                    worker_waiting.set()
+                    return original_wait(seconds)
+
+                monkeypatch.setattr(retry.finished, "wait", wait)
+
+                def enter_worker():
+                    with session_factory() as session:
+                        return process.worker_fence(session, wait_for_renewal_retry=True)
+
+                worker = executor.submit(enter_worker)
+                assert worker_waiting.wait(1)
+                assert not fence_obtained.is_set()
+                if outcome == "wait_timeout":
+                    with pytest.raises(TokenFenceUnavailable):
+                        worker.result(timeout=2)
+            finally:
+                holder.rollback()
+                allow_retry.set()
+            if outcome == "commit_unknown":
+                with pytest.raises(OSError):
+                    renewal.result(timeout=4)
+                with pytest.raises(TokenFenceUnavailable):
+                    worker.result(timeout=2)
+            else:
+                assert renewal.result(timeout=4)
+                if outcome == "confirmed":
+                    assert worker.result(timeout=2) is fence
+        assert len(renewals) == 2
+        assert fence_obtained.is_set() == (outcome == "confirmed")
+        assert process._renewal_retry is None
+    finally:
+        process._finish()
 
 
 @pytest.mark.parametrize("ddl", ["table", "index"])

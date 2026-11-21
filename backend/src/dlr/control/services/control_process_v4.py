@@ -14,7 +14,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -36,6 +36,7 @@ from dlr.control.services.worker_token_fence_v4 import acquire as acquire_worker
 Status = Literal["unknown", "registered", "incompatible", "expired", "stopped"]
 _RENEW_SECONDS = 10.0
 _PROBE_WAIT_SECONDS = 3.0
+_WORKER_RENEWAL_RETRY_WAIT_SECONDS = 1.0
 
 
 def _cache_clock() -> float | None:
@@ -53,6 +54,12 @@ def _cache_clock() -> float | None:
 @dataclass(frozen=True)
 class ProcessStatus:
     state: Status
+
+
+@dataclass
+class _RenewalRetry:
+    finished: threading.Event = field(default_factory=threading.Event)
+    confirmed: bool = False
 
 
 class ControlProcess:
@@ -77,6 +84,7 @@ class ControlProcess:
         self._probe_active: threading.Event | None = None
         self._probe_result: Status = "unknown"
         self._compatibility: identity.DeclaredCompatibility | None = None
+        self._renewal_retry: _RenewalRetry | None = None
 
     def _lose_deadline_locked(self) -> None:
         self._deadline_lost = True
@@ -111,7 +119,7 @@ class ControlProcess:
     def instance_id(self) -> UUID:
         return self._instance
 
-    def check_authority(self) -> None:
+    def check_authority(self, *, wait_for_renewal_retry: bool = False) -> None:
         """Reject operations once this process cannot prove its local lease."""
         if self._pid != os.getpid():
             raise TokenFenceUnavailable("control authority unavailable")
@@ -119,13 +127,30 @@ class ControlProcess:
             now = self._clock_locked()
             if (
                 self._stop.is_set()
-                or self._state != "registered"
                 or not self._registered
                 or now is None
                 or self._confirmed_until is None
                 or now >= self._confirmed_until
             ):
                 raise TokenFenceUnavailable("control authority unavailable")
+            retry = None
+            if self._state != "registered":
+                if wait_for_renewal_retry and self._state == "unknown":
+                    retry = self._renewal_retry
+                if retry is None:
+                    raise TokenFenceUnavailable("control authority unavailable")
+            wait_until = min(self._confirmed_until, now + _WORKER_RENEWAL_RETRY_WAIT_SECONDS)
+        if retry is not None:
+            # This is only used before the caller's transaction has obtained
+            # a fence. Waiting cannot extend either process's old deadline.
+            if not retry.finished.wait(wait_until - now) or not retry.confirmed:
+                raise TokenFenceUnavailable("control authority unavailable")
+            with self._lock:
+                resumed = self._clock_locked()
+                if resumed is None or resumed >= wait_until:
+                    raise TokenFenceUnavailable("control authority unavailable")
+            self.check_authority()
+            return
         try:
             if (
                 self._config.control_ha_slot != self.ha_slot
@@ -157,9 +182,15 @@ class ControlProcess:
             raise TokenFenceUnavailable("control authority unavailable")
         self.check_authority()
 
-    def worker_fence(self, session: Session, *, issue_credentials: bool = False) -> Fence:
+    def worker_fence(
+        self,
+        session: Session,
+        *,
+        issue_credentials: bool = False,
+        wait_for_renewal_retry: bool = False,
+    ) -> Fence:
         """Acquire the database fence before taking any Worker business lock."""
-        self.check_authority()
+        self.check_authority(wait_for_renewal_retry=wait_for_renewal_retry)
         fence = acquire_worker_fence(
             session,
             self._deployment.authority,
@@ -373,16 +404,28 @@ class ControlProcess:
 
     def _cycle(self) -> bool:
         """One commit-confirmed register/renew; False means terminal expiry."""
+        retry = None
         try:
             try:
                 return self._cycle_once()
             except identity.RenewalRowLockTimeout:
                 # The failed session has rolled back and closed. Recheck the
                 # previous deadline and all authority in a fresh transaction.
-                return self._cycle_once()
+                retry = _RenewalRetry()
+                with self._lock:
+                    self._renewal_retry = retry
+                continuing = self._cycle_once()
+                with self._lock:
+                    retry.confirmed = continuing and self._state == "registered"
+                return continuing
         except BaseException:
             self._mark_unknown()
             raise
+        finally:
+            if retry is not None:
+                with self._lock:
+                    self._renewal_retry = None
+                    retry.finished.set()
 
     @contextmanager
     def _cycle_session(self, *, was_authorized: bool) -> Iterator[Session]:
