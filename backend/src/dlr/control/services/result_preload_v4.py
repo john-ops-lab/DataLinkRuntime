@@ -4,22 +4,33 @@ from __future__ import annotations
 
 import os
 import socket
+import struct
 import sys
+from contextlib import closing
 
-from dlr.control.services.claim_child_v4 import _clock, _read_frame, _restrict
+from dlr.control.services.claim_child_v4 import _clock, _read_exact, _read_frame, _restrict
+from dlr.control.services.claim_envelope_v4 import ClaimEnvelope
 
 IDLE_SECONDS = 5.0
 
 
 def _load_dependencies() -> None:
     import fastapi  # noqa: F401
+    import pika  # noqa: F401
     import psycopg  # noqa: F401
     import pydantic_settings  # noqa: F401
+    from cryptography import fernet  # noqa: F401
     from cryptography.hazmat.primitives.asymmetric import ed25519  # noqa: F401
     from sqlalchemy.orm import configure_mappers
 
+    from dlr.common import result_receipt_proof_v4  # noqa: F401
     from dlr.control import models  # noqa: F401
-    from dlr.control.schemas import reliable_runtime  # noqa: F401
+    from dlr.control.schemas import (  # noqa: F401
+        adapter,
+        execution,
+        managed_input,
+        reliable_runtime,
+    )
 
     configure_mappers()
     if "dlr.common.config" in sys.modules or "dlr.control.db" in sys.modules:
@@ -30,11 +41,21 @@ def main() -> int:
     try:
         fd, parent_pid, address_space = map(int, sys.argv[1:])
         _restrict(parent_pid, address_space)
-        with socket.socket(fileno=fd) as channel:
+        if set(os.environ) - {"LC_CTYPE"}:
+            raise ValueError("unclean preload environment")
+        envelope = ClaimEnvelope.open(child_address_space_bytes=address_space, preload=True)
+        with closing(envelope), socket.socket(fileno=fd) as channel:
             _load_dependencies()
+            envelope.check()
+            idle_until = _clock() + IDLE_SECONDS
             channel.settimeout(IDLE_SECONDS)
-            channel.sendall(b"R")
+            channel.sendall(b"R" + struct.pack("!d", idle_until))
+            if _read_exact(channel, 1) != b"T" or _clock() >= idle_until:
+                raise ValueError("expired result preload")
+            envelope.check()
+            channel.sendall(b"G")
             request = _read_frame(channel)
+            envelope.check()
             snapshot = request["settings"]
             if (
                 request.get("operation") not in {"stage", "finalize"}

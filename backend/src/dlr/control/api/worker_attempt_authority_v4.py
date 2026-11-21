@@ -158,8 +158,8 @@ def _start(
         fence.check()
         process.check_authority()
         session.rollback()
-        process.check_authority()
         _anticipate_result(request, process)
+        process.check_authority()
         return JSONResponse(
             {
                 "decision": "ACK_NOOP",
@@ -209,6 +209,7 @@ def _renew(
         process.check_authority()
         proof = process.observe_attempt_candidate(candidate, credential, instance_proof, action)
         _anticipate_result(request, process)
+        process.check_authority()
         return JSONResponse({"attempt_proof": proof}, headers=_HEADERS)
     except Exception:  # noqa: BLE001 - commit or observation may be unknown
         _rollback(session)

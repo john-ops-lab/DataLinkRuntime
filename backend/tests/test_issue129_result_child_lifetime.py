@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 import signal
+import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -69,7 +71,18 @@ def _world(seconds=10, slots=None, real_resources=False):
         popen = subprocess.Popen
 
         def launch(command, **kwargs):
-            child = popen([sys.executable, "-I", "-S", "-c", _CHILD, *command[-3:]], **kwargs)
+            script = _CHILD
+            if command[1] == "-I":
+                script = script.replace(
+                    "    channel.sendall(b'R')",
+                    "    import time\n"
+                    "    assert not set(os.environ) - {'LC_CTYPE'}\n"
+                    f"    end=time.clock_gettime(time.CLOCK_BOOTTIME)+{module.IDLE_SECONDS!r}\n"
+                    "    channel.sendall(b'R'+struct.pack('!d',end))\n"
+                    "    assert read(channel,1)==b'T'\n"
+                    "    channel.sendall(b'G')",
+                )
+            child = popen([sys.executable, "-I", "-S", "-c", script, *command[-3:]], **kwargs)
             children.append(child)
             return child
 
@@ -189,6 +202,56 @@ assert not any(key.upper().startswith(('DLR_', 'DATABASE_URL')) for key in os.en
     subprocess.run([sys.executable, "-I", "-c", check], env={}, check=True, timeout=10)
 
 
+def test_preload_handoff_reads_one_metadata_frame_before_ready(monkeypatch):
+    from dlr.common import config
+    from dlr.control.services import control_declaration_v4, result_child_v4, result_preload_v4
+
+    snapshot = {
+        **module._child_settings(),
+        "worker_v4_control_slots": 2,
+        "control_ha_slot": "a",
+        "worker_remote_v4_enabled": True,
+        "worker_v4_deployment_mode": "C",
+    }
+    space = snapshot["worker_v4_claim_child_address_space_bytes"]
+    checked = []
+    envelope = SimpleNamespace(check=lambda: checked.append(True), close=lambda: None)
+    monkeypatch.setattr(module.ClaimEnvelope, "open", lambda **_: envelope)
+    monkeypatch.setattr(result_preload_v4, "_restrict", lambda *_: None)
+    monkeypatch.setattr(result_preload_v4, "_load_dependencies", lambda: None)
+    monkeypatch.setattr(result_preload_v4, "_clock", time.monotonic)
+    monkeypatch.setattr(result_child_v4, "_clock", time.monotonic)
+    monkeypatch.setattr(control_declaration_v4, "read_declaration", lambda _: None)
+    monkeypatch.setattr(config, "settings", config.settings)
+    parent, child = socket.socketpair()
+    monkeypatch.setattr(sys, "argv", ["preload", str(child.detach()), str(os.getpid()), str(space)])
+    with parent, patch.dict(os.environ, {}, clear=True):
+        parent.settimeout(4)
+        thread = threading.Thread(target=result_preload_v4.main)
+        thread.start()
+        try:
+            assert module._read_exact(parent, 1) == b"R"
+            assert struct.unpack("!d", module._read_exact(parent, 8))[0] > time.monotonic()
+            parent.sendall(b"T")
+            assert module._read_exact(parent, 1) == b"G" and len(checked) >= 2
+            module._send_frame(
+                parent,
+                {
+                    **_metadata(),
+                    "settings": snapshot,
+                    "body_bytes": 2,
+                    "control_instance": str(uuid4()),
+                    "control_token": "fixture",
+                    "control_deadline": time.monotonic() + 4,
+                },
+            )
+            assert module._read_frame(parent) == {"state": "ready"}
+        finally:
+            parent.shutdown(socket.SHUT_RDWR)
+            thread.join(4)
+        assert not thread.is_alive()
+
+
 @unittest.skipUnless(
     sys.platform.startswith("linux")
     and hasattr(os, "pidfd_open")
@@ -196,10 +259,48 @@ assert not any(key.upper().startswith(('DLR_', 'DATABASE_URL')) for key in os.en
     "requires Linux supervised child ownership",
 )
 class ResultChildLifetimeTests(unittest.TestCase):
+    def test_unstarted_preload_leaves_both_slots_available(self):
+        with (
+            _world(slots=2) as (pool, authority, children),
+            patch.object(module.settings, "control_ha_slot", "a"),
+        ):
+            with patch.object(threading.Thread, "start", side_effect=RuntimeError):
+                pool.anticipate_result(authority)
+            self.assertIsNone(pool._warm)
+            self.assertFalse(children)
+            with pool._borrow(1, existing=False), pool._borrow(2, existing=False):
+                self.assertFalse(pool._poisoned.is_set())
+
+    def test_shutdown_waits_for_allocated_handoff_and_reports_unconfirmed_reap(self):
+        with (
+            _world(slots=2) as (pool, authority, _),
+            patch.object(module.settings, "control_ha_slot", "a"),
+        ):
+            pool.anticipate_result(authority)
+            warm = pool._warm
+            with warm.condition:
+                self.assertTrue(warm.condition.wait_for(lambda: warm.transport is not None, 3))
+            original = warm.slot._discard_unpublished
+
+            def unconfirmed(*args):
+                assert original(*args)
+                return False
+
+            with patch.object(warm.slot, "_discard_unpublished", side_effect=unconfirmed):
+                with pool._borrow(7, existing=True, result=True):
+                    closer = threading.Thread(target=pool.close)
+                    closer.start()
+                    self.assertTrue(warm.finished.wait(3))
+                    self.assertTrue(closer.is_alive())
+                closer.join(3)
+            self.assertFalse(closer.is_alive())
+            self.assertTrue(pool._shutdown_failures)
+
     def test_idle_result_uses_one_slot_and_transfers_one_pid(self):
         with (
             _world(slots=2) as (pool, authority, children),
             patch.object(module.settings, "control_ha_slot", "a"),
+            patch.dict(os.environ, {"DLR_TEST_PARENT_SENTINEL": "present"}),
         ):
             pool.anticipate_result(authority)
             warm = pool._warm

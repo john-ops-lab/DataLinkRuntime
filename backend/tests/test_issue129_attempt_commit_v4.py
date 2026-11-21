@@ -210,6 +210,50 @@ def _args(facts, authority, instance_proof, ref, action):
     )
 
 
+@pytest.mark.parametrize("change", ["clock", "credential", "transaction"])
+def test_result_recheck_keeps_current_time_locked_rows_and_transaction(
+    api_client, session_factory, monkeypatch, change
+):
+    from dlr.control.schemas.reliable_runtime import AttemptResultBody
+    from dlr.control.services import attempt_result_intent_v4 as intents
+
+    facts, authority, instance_proof, ref, action, attempt_proof = _setup(
+        api_client, session_factory
+    )
+    result = AttemptResultBody(**action.model_dump(), status="succeeded", output={"ok": True})
+    context = intents.ResultIntentContext(
+        facts["worker_id"],
+        ref.attempt_id,
+        facts["credential"],
+        facts["instance_id"],
+        1,
+        instance_proof,
+        attempt_proof,
+        result,
+        authority,
+    )
+    with session_factory() as session:
+        checks = intents._IntentChecks(session, context)
+        assert checks.versions is not None
+        checks.recheck()
+        if change == "clock":
+            monkeypatch.setattr(
+                intents.worker_availability, "current_time", lambda _: checks.instance.guard_until
+            )
+        elif change == "credential":
+            session.execute(
+                text(
+                    "UPDATE worker_credentials SET revoked_at = clock_timestamp() "
+                    "WHERE worker_id = :worker AND kind = 'runtime'"
+                ),
+                {"worker": facts["worker_id"]},
+            )
+        else:
+            session.rollback()
+        with pytest.raises(intents.ResultIntentError):
+            checks.recheck()
+
+
 def test_cancel_before_attempt_renewal_does_not_extend_lease(api_client, session_factory):
     facts, authority, instance, initial, action, old = _setup(api_client, session_factory)
     args = _args(facts, authority, instance, initial, action)

@@ -8,12 +8,17 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 
-from dlr.common.config import settings
 from dlr.worker import cgroup_namespace, sandbox
 
 
 class ClaimEnvelopeUnavailable(Exception):
     """The Control process cannot prove its configured local resource boundary."""
+
+
+def _configured_slots() -> int:
+    from dlr.common.config import settings
+
+    return settings.worker_v4_control_slots
 
 
 class ClaimEnvelope:
@@ -25,11 +30,12 @@ class ClaimEnvelope:
 
     _root = Path("/sys/fs/cgroup")
 
-    def __init__(self, fd: int, *, child_address_space_bytes: int) -> None:
+    def __init__(self, fd: int, *, child_address_space_bytes: int, preload: bool = False) -> None:
         self._fd = fd
         self._pid = os.getpid()
         self._child_address_space_bytes = child_address_space_bytes
-        slots = settings.worker_v4_control_slots
+        self._preload = preload
+        slots = 2 if preload else _configured_slots()
         if type(slots) is not int or slots not in {1, 2}:
             raise ValueError("invalid Control slot limit")
         self._slots = slots
@@ -41,7 +47,7 @@ class ClaimEnvelope:
         self._limits: tuple[int, int] | None = None
 
     @classmethod
-    def open(cls, *, child_address_space_bytes: int) -> ClaimEnvelope:
+    def open(cls, *, child_address_space_bytes: int, preload: bool = False) -> ClaimEnvelope:
         fd = -1
         try:
             if (
@@ -51,7 +57,7 @@ class ClaimEnvelope:
             ):
                 raise ValueError
             fd = os.open(cls._root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-            envelope = cls(fd, child_address_space_bytes=child_address_space_bytes)
+            envelope = cls(fd, child_address_space_bytes=child_address_space_bytes, preload=preload)
             envelope.check()
             return envelope
         except Exception:
@@ -132,7 +138,7 @@ class ClaimEnvelope:
                 or not memory.isdecimal()
                 or not pids.isascii()
                 or not pids.isdecimal()
-                or settings.worker_v4_control_slots != self._slots
+                or (not self._preload and _configured_slots() != self._slots)
                 or int(pids) < 1 + self._slots
                 or int(memory) < self._slots * self._child_address_space_bytes + 128 * 1024 * 1024
                 or self._read("memory.swap.max") != "0"
