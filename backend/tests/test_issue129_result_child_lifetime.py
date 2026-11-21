@@ -11,9 +11,10 @@ import sys
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -194,6 +195,7 @@ def audit(event, args):
         raise RuntimeError(event)
 sys.meta_path.insert(0, Guard())
 sys.addaudithook(audit)
+from dlr.control.services import claim_envelope_v4
 from dlr.control.services.result_preload_v4 import _load_dependencies
 _load_dependencies()
 assert not violations
@@ -291,26 +293,54 @@ class ResultChildLifetimeTests(unittest.TestCase):
                 self.assertFalse(pool._poisoned.is_set())
 
     def test_only_observed_stage_can_overlap_a_second_sterile_child(self):
-        for proof_matches in (False, True):
+        from dlr.control.api import worker_attempt_authority_v4 as api
+
+        current, previous = "test-only-attempt", "previous-proof"
+        for proof, credential in (
+            (previous, "test-only"),
+            (current, "other"),
+            (current, "test-only"),
+        ):
             with (
-                self.subTest(proof_matches=proof_matches),
+                self.subTest(proof=proof, credential=credential),
                 _world(slots=2) as (pool, authority, children),
                 patch.object(module.settings, "control_ha_slot", "a"),
+                patch.object(api, "_process", return_value=authority),
+                patch.object(
+                    api, "_proved_identity", return_value=("test-only", uuid4(), 1, "instance")
+                ),
+                patch.object(api, "_one_header", return_value=previous),
+                patch.object(api.candidates, "stage_attempt_renewal"),
             ):
+                request = SimpleNamespace(
+                    app=SimpleNamespace(state=SimpleNamespace(claim_coordinator_v4=pool))
+                )
+                authority.worker_fence = Mock()
+                authority.worker_proof_authority = Mock()
+                authority.observe_attempt_candidate = Mock(return_value=current)
+                response = api._renew(request, Mock(), 1, 9, Mock())
+                self.assertEqual(json.loads(response.body), {"attempt_proof": current})
                 metadata = _metadata()
-                proof = metadata["attempt_proof"] if proof_matches else "different"
-                pool.anticipate_result(authority, observed=(1, 9, metadata["credential"], proof))
+                metadata.update(attempt_proof=proof, credential=credential)
+                matches = proof == current and credential == "test-only"
                 original = pool._warm
-                entry = pool.begin_result(authority, metadata=metadata, body_bytes=2)
+                with patch.object(
+                    pool, "anticipate_result", wraps=pool.anticipate_result
+                ) as next_child:
+                    entry = pool.begin_result(authority, metadata=metadata, body_bytes=2)
+                    if matches:
+                        next_child.assert_called_once_with(authority)
+                    else:
+                        next_child.assert_not_called()
                 self.assertTrue(original.finished.wait(3))
-                if proof_matches:
+                if matches:
                     spare = pool._warm
                     self.assertIsNot(spare, original)
                     with spare.condition:
                         self.assertTrue(spare.condition.wait_for(lambda w=spare: w.transport, 3))
                         self.assertIsNot(spare.transport.process, entry.process)
                     self.assertIsNone(spare.demand)
-                self.assertEqual(len(children), 2 if proof_matches else 1)
+                self.assertEqual(len(children), 2 if matches else 1)
                 self.assertTrue(pool.end_result(entry))
                 pool.close()
                 self.assertTrue(all(p.poll() is not None for p in children))
@@ -342,6 +372,7 @@ class ResultChildLifetimeTests(unittest.TestCase):
                     allow_reap.set()
                     timer.join(3)
                     closer.join(3)
+            self.assertFalse(timer.is_alive() or closer.is_alive())
             self.assertFalse(pool._shutdown_failures)
             self.assertIsNotNone(entry.process.poll())
 
@@ -362,13 +393,10 @@ class ResultChildLifetimeTests(unittest.TestCase):
                 assert release.wait(3)
                 return transport
 
-            def request():
-                with self.assertRaises(module.ClaimUnavailable):
-                    pool.begin_result(authority, metadata=_metadata(), body_bytes=2)
-
-            with patch.object(warm, "take", side_effect=take):
-                caller = threading.Thread(target=request)
-                caller.start()
+            with patch.object(warm, "take", side_effect=take), ThreadPoolExecutor(1) as executor:
+                caller = executor.submit(
+                    pool.begin_result, authority, metadata=_metadata(), body_bytes=2
+                )
                 self.assertTrue(transferred.wait(3))
                 self.assertIsNone(warm.slot._result)
                 closer = threading.Thread(target=pool.close)
@@ -379,9 +407,10 @@ class ResultChildLifetimeTests(unittest.TestCase):
                     self.assertTrue(closer.is_alive())
                 finally:
                     release.set()
-                    caller.join(3)
                     closer.join(3)
-            self.assertFalse(caller.is_alive() or closer.is_alive())
+                with self.assertRaises(module.ClaimUnavailable):
+                    caller.result(timeout=3)
+            self.assertFalse(closer.is_alive())
             self.assertTrue(all(p.poll() is not None for p in children))
             self.assertFalse(pool._shutdown_failures)
 

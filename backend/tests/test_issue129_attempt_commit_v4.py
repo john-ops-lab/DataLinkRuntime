@@ -256,13 +256,18 @@ def test_result_recheck_keeps_current_time_locked_rows_and_transaction(
                 {"worker": context.worker_id},
             )
         elif change == "expiry":
+            expiry = min(checks.instance.guard_until, checks.lease.guard_until) - timedelta(
+                seconds=1
+            )
             session.execute(
                 text(
-                    "UPDATE worker_credentials SET expires_at = clock_timestamp() "
+                    "UPDATE worker_credentials SET expires_at = :expiry "
                     "WHERE worker_id = :worker AND kind = 'runtime'"
                 ),
-                {"worker": context.worker_id},
+                {"worker": context.worker_id, "expiry": expiry},
             )
+            checks.recheck()
+            monkeypatch.setattr(intents.worker_availability, "current_time", lambda _: expiry)
         else:
             session.rollback()
         with pytest.raises(intents.ResultIntentError):
@@ -330,6 +335,66 @@ def test_unchanged_result_locks_are_acquired_once_per_transaction(
             session, ctx, ref, max_body_bytes=100_000, observation_nonce=uuid4()
         )
     assert observed.token and snapshot.call_count == 2
+
+
+def test_finalize_rechecks_proof_after_intent_lock_before_terminal_write(
+    successful_result_context, session_factory, monkeypatch
+):
+    from unittest.mock import Mock
+
+    from dlr.control.models import AttemptResultIntentV4
+    from dlr.control.services import attempt_result_finalize_v4 as finalizer
+    from dlr.control.services import attempt_result_intent_v4 as intents
+
+    ctx = successful_result_context
+    with session_factory.begin() as session:
+        ref = intents.stage_result_intent(session, ctx, max_body_bytes=100_000)
+    with session_factory() as session:
+        proof = intents.observe_result_in_session(
+            session, ctx, ref, max_body_bytes=100_000, observation_nonce=uuid4()
+        )
+        cutoff = session.get(AttemptResultIntentV4, ctx.attempt_id).proof_before
+    # The case exercises ownership in real PG transactions. The deployment
+    # fence itself is exercised by the restricted-role integration tests.
+    gate = Mock(spec=["check"])
+    control = finalizer.ResultControlFence(Mock(), uuid4(), "fixture", gate.check)
+    monkeypatch.setattr(finalizer, "_control_authority", lambda *_: (gate, ctx.authority))
+    locked = False
+
+    def after_sql(_conn, _cursor, statement, *_args):
+        nonlocal locked
+        sql = statement.lower()
+        locked |= "from attempt_result_intents_v4" in sql and "for update" in sql
+
+    def finalize():
+        finalizer.finalize_unconfirmed_result(
+            session_factory, ctx, ref, proof, max_body_bytes=100_000, _control=control
+        )
+
+    engine = session_factory.kw["bind"]
+    with monkeypatch.context() as patch_clock:
+        clock = intents.worker_availability.current_time
+        patch_clock.setattr(
+            intents.worker_availability, "current_time", lambda s: cutoff if locked else clock(s)
+        )
+        event.listen(engine, "after_cursor_execute", after_sql)
+        try:
+            with pytest.raises(finalizer.ResultFinalizeRejected):
+                finalize()
+        finally:
+            event.remove(engine, "after_cursor_execute", after_sql)
+    with session_factory() as session:
+        assert locked
+        assert (
+            session.get(ExecutionAttempt, ctx.attempt_id).status
+            not in attempt_service.TERMINAL_ATTEMPT_STATUSES
+        )
+        assert session.get(AttemptResultIntentV4, ctx.attempt_id).finalization_id is None
+    with pytest.raises(finalizer.ResultFinalizeUnknown):
+        finalize()
+    with session_factory() as session:
+        assert session.get(ExecutionAttempt, ctx.attempt_id).status == "succeeded"
+        assert session.get(AttemptResultIntentV4, ctx.attempt_id).finalization_id is not None
 
 
 def test_cancel_before_attempt_renewal_does_not_extend_lease(api_client, session_factory):
