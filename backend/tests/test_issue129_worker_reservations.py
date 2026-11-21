@@ -426,6 +426,34 @@ def test_closed_window_preserves_adopted_v3_attempt_and_retry_custody(
                     require_dedicated_deployment(session, readonly=True)
                 savepoint.rollback()
 
+        execution.attempt_count = 2
+        execution.status = "running"
+        execution.target_worker_id = worker_id
+        execution.next_attempt_at = None
+        execution.workspace_cleanup_status = "pending"
+        session.add(
+            ExecutionAttempt(
+                execution_id=execution_id,
+                adapter_id=execution.adapter_id,
+                worker_id=worker_id,
+                worker_identity_id=worker.identity_id,
+                worker_instance_id=uuid4(),
+                worker_instance_generation=1,
+                attempt_no=2,
+                fencing_token=2,
+                status="running",
+                claimed_at=now,
+                started_at=now,
+                lease_expires_at=now + timedelta(seconds=30),
+            )
+        )
+        session.flush()
+        require_dedicated_deployment(session, readonly=True)
+        attempt_row.cleanup_summary = {"workspace_cleanup_status": "deferred"}
+        session.flush()
+        with pytest.raises(RemoteDeploymentUnavailable):
+            require_dedicated_deployment(session, readonly=True)
+
 
 def test_placement_limit_retry_expiration_and_cancel_keep_one_responsibility(placement, api_client):
     factory, _, route, _, _ = placement

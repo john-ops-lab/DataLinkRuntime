@@ -701,6 +701,8 @@ J最小验收依次为定向PG/API、现有Linux安装/期限/责任、PG原子�
 )
 ```
 
+导入失败时 PostgreSQL 撤销导入事务，保留该次新建的库和失败记录。换一个新库名恢复，读回核对后再选择可用副本。
+
 产生 v4、Pool 或共享后端责任后保留新库和现有卷，按当前 schema 向前恢复。确需退回单 Control 时，保留原 Pool 和共享责任并使用能读取当前 schema 的制品。
 
 在同一镜像上离线轮换签名权威时，准备两份现有格式的私有声明和与各自公钥匹配的签名密钥文件。保留集群 ID 与其他指纹，目标声明使用新 epoch 和新钥。intent 仅包含非零 `operation_id`、当前镜像回执 `image_transition_id`（fresh 为 null）和环境对账材料的 `evidence_sha256`：
