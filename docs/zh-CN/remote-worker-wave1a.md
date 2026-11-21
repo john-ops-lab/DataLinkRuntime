@@ -571,7 +571,7 @@ python -m dlr.control.control_identity_init_v4 check \
 
 ## 实际资源归属
 
-Control 为一次 Attempt 保留一个有限资源的 Claim 子进程，在 Claim 结束后销毁旧业务帧，只留下小型归属绑定。同一子进程依次处理该 Attempt 的结果 stage 和 finalize，避免重复启动解释器占用两秒保守时钟区间。它不是跨任务进程池，也不赋予跨 Control 的结果亲和/接管能力。
+Control 为一次 Attempt 保留一个有限资源的 Claim 子进程，在 Claim 结束后销毁旧业务帧，只留下小型归属绑定。同一子进程依次处理该 Attempt 的结果 stage 和 finalize，避免重复启动解释器扩大签名观测区间。它不是跨任务进程池，也不赋予跨 Control 的结果亲和/接管能力。
 
 保留子进程只保留资源，不保留授权：stage/finalize 必须重新核对当前 Control 权威、身份、证明和原 intent 期限。父进程从 Claim 句柄向结果句柄移交原 pidfd、socket 和创建者；在确认原子进程回收前不结束其 IO/资源名额。超期、失权或回收不明时停止或保持未知，不能重新创建一个句柄冒充原进程。
 
@@ -708,7 +708,9 @@ python -m dlr.control.control_identity_init_v4 proof-authority-apply \
 
 模式 A 和 B 的 v4 Worker 链路使用验证证书链与 DNS 名称的 HTTPS 和 AMQPS。Standalone Control 在 TLS 监听端口关闭代理头处理。若使用反向代理，部署方应让代理验证上游 Control 证书链和名称，禁止代理到 Control 之间降级为 HTTP。验收时分别核对 Worker→代理与代理→Control 的实际证书、名称和拒绝路径。
 
-Control 的 PostgreSQL 时间和每台 Worker 的 Linux elapsed clock 在租期内须保持已登记的相对速率边界。应持续监测时钟同步状态、偏差与跳变，重启、休眠或时钟不明后先保留责任并重新核对时钟。Worker 对每次签名观察继续核对原请求窗口、相对经过时间及保守的两秒余量。
+v4 的 PostgreSQL 实例租约为 30 秒，Worker 默认每 5 秒心跳。Worker 在签名观测校验和本地截止计算中使用同一个 5 秒安全余量。一份完整租约的本地截止最晚为对应请求发起后 25 秒，并受已确认的先前授权和每笔 Attempt 自身截止约束。Worker 拒绝超出余量的相邻或滚动观测，也拒绝原本地截止到达后的续租回执。
+
+部署方需持续监测当前及所有可提升 PostgreSQL 节点与 Worker 的时钟，在整个租期和提升过程中将数据库时钟与 Worker 单调经过时间的相对变化控制在 5 秒内。升级时在同一持久卷上完成原 Worker 的受控停机，再按原流程启动新实例并核对未结责任。混合版本期间，存活的旧 Worker 仍需满足原 2 秒条件。
 
 使用现有主机监控持续采集 PostgreSQL 宿主和各 Worker 的 NTP 同步状态、偏差及采样新鲜度。在使用 `systemd-timesyncd` 的主机上，用 `timedatectl show -p NTPSynchronized -p NTP` 核对状态，用 `timedatectl timesync-status` 核对偏差和轮询间隔，并监视服务日志中的失步。Worker 日志出现 `fixed Worker clock observation unavailable` 或 `phase=heartbeat_exchange` 时核对当前租约和容量。出现失步、跳变或监控中断时暂停新提交，保留并对账现有责任。恢复可信时钟观察后，读回当前维护状态、有效租约和容量。已恢复为可调度的 active Worker 可以重新开放入队。disabled Worker 按原维护流程显式激活后再开放入队。
 

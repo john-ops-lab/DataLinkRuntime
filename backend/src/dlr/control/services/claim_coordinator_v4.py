@@ -1783,10 +1783,12 @@ class ClaimCoordinator:
         for slot in closed_slots:
             # Timers reap outside the registry's request count.
             with slot._reap_finished:
-                if not slot._reap_finished.wait_for(
-                    lambda slot=slot: not slot._closing, max(0.0, drain_deadline - time.monotonic())
-                ):
-                    failures.append(ClaimUnavailable("Control child reap still in progress"))
+                while slot._closing:
+                    remaining = drain_deadline - time.monotonic()
+                    if remaining <= 0:
+                        failures.append(ClaimUnavailable("Control child reap still in progress"))
+                        break
+                    slot._reap_finished.wait(remaining)
                 if slot._unresolved:
                     failures.append(ClaimUnavailable("Control child cleanup unconfirmed"))
         with self._resource_lock:
