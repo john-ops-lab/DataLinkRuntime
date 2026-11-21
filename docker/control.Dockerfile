@@ -17,10 +17,12 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY backend/src ./src
 COPY backend/alembic.ini ./
 COPY backend/alembic ./alembic
-# Each supervised Control child starts a fresh interpreter. Compile both the
-# installed dependencies and the editable application before serving requests.
+# Each supervised Control child starts a fresh interpreter.
 RUN uv sync --frozen --no-dev --compile-bytecode \
     && /app/.venv/bin/python -m compileall -q src/dlr
+# The base image also ships standard-library modules without bytecode.
+RUN python -m compileall -q -x '/(site-packages|test|tests)/' \
+    "$(python -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')"
 
 ENV PATH="/app/.venv/bin:$PATH"
 
