@@ -29,12 +29,15 @@ WITH target AS (
   WHERE d.datname = :'runtime_database' AND r.rolname = :'runtime_role'
 )
 SELECT json_build_object(
-  'node', pg_catalog.current_setting('dlr_capacity.node_id', true),
+  'node', pg_catalog.current_setting('cluster_name'),
   'system_identifier', (pg_catalog.pg_control_system()).system_identifier::text,
   'data_directory', pg_catalog.current_setting('data_directory'),
   'standby', pg_catalog.pg_is_in_recovery(),
   'synchronous_commit', pg_catalog.current_setting('synchronous_commit'),
-  'runtime_settings_safe', NOT EXISTS (
+  'runtime_settings_safe', EXISTS (
+     SELECT FROM pg_catalog.pg_settings
+     WHERE name = 'synchronous_commit' AND source IN ('configuration file', 'command line')
+  ) AND NOT EXISTS (
      SELECT FROM pg_catalog.pg_db_role_setting s, LATERAL unnest(s.setconfig) AS c(setting)
      WHERE s.setdatabase IN (0, target.database_oid) AND s.setrole IN (0, target.role_oid)
        AND split_part(c.setting, '=', 1) = 'synchronous_commit'
@@ -180,6 +183,7 @@ def capacity(topology: Path, batch: Path) -> dict:
             writable = min(writable, available)
         if node == primary:
             sync = _SYNC.fullmatch(row["synchronous_standby_names"].strip())
+            peers = row["synchronous_peers"]
             if (
                 row["synchronous_commit"] != "remote_apply"
                 or row["runtime_settings_safe"] is not True
@@ -187,7 +191,9 @@ def capacity(topology: Path, batch: Path) -> dict:
                 or int(sync[1]) != len(standbys)
                 or sorted(name.strip() for name in sync[2].split(","))
                 != sorted(standbys)
-                or sorted(row["synchronous_peers"]) != sorted(standbys)
+                or not isinstance(peers, list)
+                or not all(isinstance(peer, str) for peer in peers)
+                or sorted(peers) != sorted(standbys)
             ):
                 raise ValueError("PostgreSQL synchronous candidates unavailable")
 
@@ -201,8 +207,12 @@ def capacity(topology: Path, batch: Path) -> dict:
     }
 
 
+class RequestDeadlineExceeded(Exception):
+    """The connection must be closed without a response."""
+
+
 def _request_deadline(_signum, _frame) -> None:
-    raise TimeoutError("Capacity request deadline exceeded")
+    raise RequestDeadlineExceeded
 
 
 class CapacityServer(HTTPServer):

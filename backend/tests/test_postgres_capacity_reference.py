@@ -52,7 +52,7 @@ def observation_files(tmp_path):
             "runtime_database": "dlr",
             "runtime_role": "dlr_runtime",
         }
-        for name, wal_free, seconds in (("a", 10_000, 3), ("b", 12_000, 1), ("c", 2_500, 2))
+        for name, wal_free, seconds in (("a", 10_000, 2), ("b", 12_000, 3), ("c", 2_500, 1))
     ]
     batch = tmp_path / "batch.json"
     batch.write_text(json.dumps({"samples": samples}))
@@ -67,7 +67,7 @@ def test_capacity_uses_all_members_and_earliest_observation(observation_files):
         "storage_domain_id": "pg-data",
         "cluster_id": json.loads(topology.read_text())["cluster_id"],
         "topology_epoch": 7,
-        "observed_at": samples[0]["observed_at"],
+        "observed_at": samples[1]["observed_at"],
         "writable_free_bytes": 2_500,
     }
 
@@ -78,6 +78,7 @@ def test_capacity_uses_all_members_and_earliest_observation(observation_files):
         (0, "synchronous_commit", "off"),
         (0, "synchronous_standby_names", "FIRST 1 (b, c)"),
         (0, "synchronous_peers", ["b"]),
+        (0, "synchronous_peers", "bc"),
         (0, "runtime_settings_safe", False),
         (2, "persistent_wal", False),
         (2, "system_identifier", "7465828699174792762"),

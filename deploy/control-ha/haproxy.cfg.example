@@ -17,7 +17,8 @@ defaults
     retries 0
 
 frontend local_proxy_health
-    bind 127.0.0.1:18080
+    bind 127.0.0.1:18080 unlimited
+    maxconn 4
     http-request return status 200 content-type text/plain string ready if { path /ready }
     http-request deny deny_status 404
 

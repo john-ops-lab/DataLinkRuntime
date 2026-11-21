@@ -15,11 +15,11 @@
 
 ## PostgreSQL 容量 provider
 
-[参考采集与 HTTPS 服务](../../deploy/control-ha/postgres_capacity.py)覆盖主库及全部可提升副本。在每台数据库节点的 PostgreSQL 进程及挂载命名空间内，用独立维护身份运行 `observe --activation-id <uuid> --database <runtime-db> --role <runtime-role>`。采集进程通过本机 Unix socket 连接维护库。本机 PostgreSQL 提供角色、复制状态及实例名 `dlr_capacity.node_id`。该设置来自各实例独立的私有配置，需分配唯一值并避免在基准备份时复制。容量直接读取实例 data 目录和 `pg_wal` 所在的文件系统。输出用于运维采集。服务仅向 DLR 返回 D10 的六个字段，容量取所有节点 data/WAL 余量的最小值。如果卷受配额限制，或使用其他表空间，须由供方计入额外限制后给出保守值。
+[参考采集与 HTTPS 服务](../../deploy/control-ha/postgres_capacity.py)覆盖主库及全部可提升副本。在每台数据库节点的 PostgreSQL 进程及挂载命名空间内，用独立维护身份运行 `observe --activation-id <uuid> --database <runtime-db> --role <runtime-role>`。采集进程通过本机 Unix socket 连接维护库。本机 PostgreSQL 提供角色、复制状态及实例名 `cluster_name`。该启动级设置来自各实例独立的私有配置，需分配唯一值并避免在基准备份时复制。容量直接读取实例 data 目录和 `pg_wal` 所在的文件系统。输出用于运维采集。服务仅向 DLR 返回 D10 的六个字段，容量取所有节点 data/WAL 余量的最小值。如果卷受配额限制，或使用其他表空间，须由供方计入额外限制后给出保守值。
 
 - 采集账户只需要 PostgreSQL 维护库 `postgres` 的连接、复制观测、设置读取、系统标识读取及其本机目录的查询权限。用独立账户和本机 Unix socket。可向专用角色授予 `pg_monitor` 和 `EXECUTE ON FUNCTION pg_catalog.pg_control_system()`，并在目标业务库移除其 CONNECT 权限及 PUBLIC 默认授权。证书、数据库口令、私有观测和采集身份由部署方管理。可用独立受限 SSH 命令按节点拉取。
-- 从[拓扑示例](../../deploy/control-ha/postgres-capacity-topology.json.example)创建私有拓扑文件。每 2–3 秒从该拓扑采集一整轮，使用同一个 `activation_id`、业务库和运行角色。将完整本轮输出组装为 `{"samples":[…]}`，在目标目录用临时文件加原子 rename 发布整批。丢失任一成员时旧批次会在 10 秒内失效。每次换代更新主库、全部候选、实际时间线、DLR epoch 和新生成的 `activation_id`，以前的采样无法用于新拓扑。时钟保持同步。DLR 以数据库时间再检查原有 15 秒窗口并持久记录观测。
-- 先运行 `python3 postgres_capacity.py check "$TOPOLOGY" "$BATCH_FILE"`。通过后，使用 `serve "$TOPOLOGY" "$BATCH_FILE" --address "$PRIVATE_BIND" --port "$PORT" --token-file "$TOKEN_FILE" --certificate "$CERT" --private-key "$KEY"`。两台 Control 使用同一 HTTPS URL（`/capacity`）、受信 CA 和 Bearer token。服务缺少成员、实际同步条件或存在异步的业务库/角色配置时返回 503，DLR 也会拒绝超时、错误域或旧 epoch。对运行连接禁止通过 DSN 或会话声明覆盖同步设置。容量汇总和 HTTPS 服务部署在声明故障会保留的故障域，或提供稳定 URL 下连同采样权威的受控切换。可用容量沿用停止 5 GiB、恢复 6 GiB。
+- 从[拓扑示例](../../deploy/control-ha/postgres-capacity-topology.json.example)创建私有拓扑文件。每 2–3 秒从该拓扑采集一整轮，使用同一个 `activation_id`、业务库和运行角色。将完整本轮输出组装为 `{"samples":[…]}`，在目标目录用临时文件加原子 rename 发布整批。丢失任一成员时，旧批次超过最早观测时间 10 秒即失效。受允许的 5 秒时差影响，按实际经过时间上限可达 15 秒。每次换代更新主库、全部候选、实际时间线、DLR epoch 和新生成的 `activation_id`，以前的采样无法用于新拓扑。时钟保持同步。DLR 以数据库时间再检查原有 15 秒窗口并持久记录观测。
+- 先运行 `python3 postgres_capacity.py check "$TOPOLOGY" "$BATCH_FILE"`。通过后，使用 `serve "$TOPOLOGY" "$BATCH_FILE" --address "$PRIVATE_BIND" --port "$PORT" --token-file "$TOKEN_FILE" --certificate "$CERT" --private-key "$KEY"`。两台 Control 使用同一 HTTPS URL（`/capacity`）、受信 CA 和 Bearer token。服务缺少成员、实际同步条件或存在异步的业务库/角色配置时返回 503，DLR 也会拒绝超时、错误域或旧 epoch。将同步值设置在 PostgreSQL 实例配置。对采集连接及运行连接禁止通过角色、业务库、DSN 或会话覆盖同步设置。容量汇总和 HTTPS 服务部署在声明故障会保留的故障域，或提供稳定 URL 下连同采样权威的受控切换。可用容量沿用停止 5 GiB、恢复 6 GiB。
 
 数据库部署至少预算双 Control 的 16 条 intake、8 条管理和恢复连接，再计复制连接、探针、独立运维、迁移和数据库紧急保留。记录每个节点的 `max_connections`、`max_wal_senders`、保留连接与实际峰值，照顾故障后单 Control 接管全部订阅的本地并发预算。
 
@@ -27,7 +27,7 @@
 
 在两个独立 Linux 节点运行 [Control HAProxy](../../deploy/control-ha/haproxy.cfg.example)，用[私有 VRRP 示例](../../deploy/control-ha/keepalived.conf.example)提供稳定地址。在等效外部负载均衡上保留同样的路径、TLS 和不自动重发写请求的行为。VRRP 需要受控的同一 L2、兼容的地址接管与明确的分区路由。两台专用入口机均先启用 `net.ipv4.ip_nonlocal_bind=1`，保证尚未持有 VIP 的节点可以启动 HAProxy。检查两台代理的本机 Unix Runtime socket 和 `127.0.0.1:18080/ready`，再启动 VRRP。VRRP 探测代理的真实应答，活动代理卡死时也能转移。节点共损、L2 整体不可用和 VIP 回切均须按实际拓扑验证。
 
-稳定数据库入口可附加[专用 TCP 后端](../../deploy/control-ha/postgres-rw.cfg.example)。示例只监听私有 VIP 并限制来源。允许两台 Control 的固定私有来源及经授权的运维探测入口。数据库为代理来源配置受限网络和运行角色权限。运行客户端使用 `sslmode=verify-full` 和稳定主机名，数据库服务端证书含该名称。两台代理默认关闭全部候选后端。只在供方验证旧主隔离和新主同步后端到位、容量权威切换成功后，动态启用两端同一个后端。对于 HAProxy 管理 socket，先对旧后端执行 `disable server postgres_primary/<name>` 和 `shutdown sessions server postgres_primary/<name>`，待新主完成验证后执行 `enable server postgres_primary/<name>`。两台代理分别在 global 配置仅限本机操作身份的 Unix Runtime socket，使用 `level admin` 和 `mode 0600`。对两台分别核对命令执行结果。重启代理后根据当前权威重新授权。TCP 健康检查用于摘除失联地址，提升由数据库供方执行。
+稳定数据库入口可附加[专用 TCP 后端](../../deploy/control-ha/postgres-rw.cfg.example)。示例只监听私有 VIP 并限制来源。允许两台 Control 的固定私有来源及经授权的运维探测入口。数据库为代理来源配置受限网络和运行角色权限。运行客户端使用 `sslmode=verify-full` 和稳定主机名，数据库服务端证书含该名称。两台代理默认关闭全部候选后端。附加示例时按文件注释更新本机健康规则，只有唯一已启用且连通的 PostgreSQL 后端才具备 VIP 资格。冷启动、代理重启和维护关闭后按当前权威重新授权。只在供方验证旧主隔离和新主同步后端到位、容量权威切换成功后，动态启用两端同一个后端。对于 HAProxy 管理 socket，先对旧后端执行 `disable server postgres_primary/<name>` 和 `shutdown sessions server postgres_primary/<name>`，待新主完成验证后执行 `enable server postgres_primary/<name>`。两台代理分别在 global 配置仅限本机操作身份的 Unix Runtime socket，使用 `level admin` 和 `mode 0600`。对两台分别核对命令执行结果。重启代理后根据当前权威重新授权。TCP 健康检查用于摘除失联地址，提升由数据库供方执行。
 
 ## 共享文件存储
 

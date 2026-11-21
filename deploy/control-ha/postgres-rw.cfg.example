@@ -1,5 +1,7 @@
 # Append this section to the private Control HAProxy configuration on both LBs.
 # PostgreSQL terminates TLS. Keep the private VIP and caller ACL aligned on both LBs.
+# Before the 200 rule in local_proxy_health, add the following rule when enabling this section.
+#   http-request return status 503 unless { nbsrv(postgres_primary) eq 1 }
 frontend postgres_rw
     mode tcp
     bind 192.0.2.20:6432
