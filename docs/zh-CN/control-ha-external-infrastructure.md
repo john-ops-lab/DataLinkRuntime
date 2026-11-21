@@ -31,10 +31,10 @@
 
 在两个独立 Linux 节点各运行 API 和 PostgreSQL 两个代理进程。为两条入口配置独立的服务单元、VIP、VRRP 实例和本机探测。这样 API 代理停止或卡死时，仍能维持 Control 已打开的 PostgreSQL 会话。两条入口也可由等效外部负载均衡分别提供，保留原有的路由、TLS 和不自动重发写请求的行为。
 
-- API 代理加载 [Control HAProxy](../../deploy/control-ha/haproxy.cfg.example)及 [API 就绪检测](../../deploy/control-ha/api-ready.cfg.example)。业务前端和私有对端前端分别绑定 API VIP 上原有端口，数据库地址保持独立。API 的 VRRP 配置使用 `127.0.0.1:18081/ready`。至少一个 Control 当前就绪且本机代理能够应答时，才公布 API VIP。
-- PostgreSQL 代理加载[专用 TCP 配置](../../deploy/control-ha/postgres-rw.cfg.example)及[主库映射示例](../../deploy/control-ha/pg-primary.map.example)。数据库的 `global` 段独立设置 `maxconn 128` 和 `stats socket /run/haproxy-postgres/admin.sock mode 0600 level admin`。PostgreSQL 的 VRRP 配置使用 `127.0.0.1:18080/ready`。监听地址和来源 ACL 只开放给获准的客户端。数据库为代理分配受限网络和角色。客户端用 `sslmode=verify-full` 连接稳定主机名，数据库服务端证书含该名称。
+- API 代理加载 [Control HAProxy](../../deploy/control-ha/haproxy.cfg.example)及 [API 就绪检测](../../deploy/control-ha/api-ready.cfg.example)。将 `token_api`、`account_api`、`claim_peer_a`、`claim_peer_b` 的 `bind` 地址均替换为同一个 API VIP，依次保留 `8443`、`9443`、`10443`、`11443` 端口。去掉两个业务前端的通配地址。API 的 VRRP 配置使用 `127.0.0.1:18081/ready`，由本机代理转发到真实 Control 的 `/api/health/ready`，实际收到 200 才能公布 API VIP。
+- PostgreSQL 代理加载[专用 TCP 配置](../../deploy/control-ha/postgres-rw.cfg.example)及[主库映射示例](../../deploy/control-ha/pg-primary.map.example)。把 `postgres_rw` 的 `bind` 替换为独立的 PostgreSQL VIP 和原 `6432` 端口。数据库的 `global` 段独立设置 `maxconn 128` 和 `stats socket /run/haproxy-postgres/admin.sock mode 0600 level admin`。PostgreSQL 的 VRRP 配置使用 `127.0.0.1:18080/ready`。监听地址和来源 ACL 只开放给获准的客户端。数据库为代理分配受限网络和角色。客户端用 `sslmode=verify-full` 连接稳定主机名，数据库服务端证书含该名称。
 
-为两条入口各从[私有 VRRP 示例](../../deploy/control-ha/keepalived.conf.example)生成一份配置，替换对应的 `router_id`、实例名、服务检查、`virtual_router_id` 和 VIP。配置独立服务单元，确保重启 API 代理不会终止 PostgreSQL 代理。VRRP 需要受控的同一 L2、兼容的地址接管与明确的分区路由。两台入口机均先启用 `net.ipv4.ip_nonlocal_bind=1`，确认证书、Unix Runtime socket 和本机就绪探测，再启动 VRRP。代理业务前端连接上限之和须低于各自全局上限，为本机探测预留连接。节点共损、L2 整体不可用和 VIP 回切均须按实际拓扑验证。
+为两条入口各从[私有 VRRP 示例](../../deploy/control-ha/keepalived.conf.example)生成一份配置，替换对应的 `router_id`、实例名、服务检查、`virtual_router_id` 和 VIP。两套 Keepalived 服务均以 `--vrrp` 运行，各用独立的 `--pid` 和 `--vrrp_pid` 文件。分别管理两个 HAProxy 服务单元，重启 API 代理时保持 PostgreSQL 代理运行。VRRP 需要受控的同一 L2、兼容的地址接管与明确的分区路由。两台入口机均先启用 `net.ipv4.ip_nonlocal_bind=1`，确认证书、Unix Runtime socket 和本机就绪探测，再启动 VRRP。两个 VIP 分属不同节点时，从客户端分别核对实际 API、Control 对端和 PostgreSQL 监听。代理业务前端连接上限之和须低于各自全局上限，为本机探测预留连接。节点共损、L2 整体不可用和 VIP 回切均须按实际拓扑验证。
 
 VRRP 对端心跳隔离时，两端各自健康可能导致双 VIP。要求控制 L2 分区后入口唯一的部署，应另外提供网络侧隔离和地址所有权机制，按实际方案验证。
 
