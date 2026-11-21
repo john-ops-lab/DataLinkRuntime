@@ -1,8 +1,9 @@
 # Append this section to the private Control HAProxy configuration on both LBs.
-# PostgreSQL terminates TLS. Only the operator may open the verified primary.
+# PostgreSQL terminates TLS. Keep the private VIP and caller ACL aligned on both LBs.
 frontend postgres_rw
     mode tcp
-    bind :6432
+    bind 192.0.2.20:6432
+    tcp-request connection reject unless { src 192.0.2.10 192.0.2.11 }
     default_backend postgres_primary
 
 backend postgres_primary

@@ -1,4 +1,4 @@
-"""Capacity provider publication rules for a named synchronous PostgreSQL topology."""
+"""Capacity publication rules for every member of a PostgreSQL topology."""
 
 from __future__ import annotations
 
@@ -26,79 +26,89 @@ def observation_files(tmp_path):
         "topology_epoch": 7,
         "system_identifier": "7465828699174792761",
         "timeline": 4,
-        "primary": "b",
-        "promotable": ["c"],
-        "activated_at": (now - timedelta(seconds=5)).isoformat(),
+        "primary": "a",
+        "promotable": ["b", "c"],
+        "activation_id": str(uuid4()),
+        "runtime_database": "dlr",
+        "runtime_role": "dlr_runtime",
     }
-    observations = tmp_path / "observations"
-    observations.mkdir()
-    path = tmp_path / "topology.json"
-    path.write_text(json.dumps(topology))
-    for name, wal_free in (("b", 12_000), ("c", 2_500)):
-        (observations / f"{name}.json").write_text(
-            json.dumps(
-                {
-                    "node": name,
-                    "observed_at": (now - timedelta(seconds=1 if name == "b" else 2)).isoformat(),
-                    "system_identifier": topology["system_identifier"],
-                    "timeline": 4,
-                    "standby": name == "c",
-                    "synchronous_commit": "remote_apply",
-                    "synchronous_peers": ["c"] if name == "b" else [],
-                    "synchronous_standby_names": "FIRST 1 (c)" if name == "b" else "",
-                    "persistent_wal": True,
-                    "data_free_bytes": 13_000,
-                    "wal_free_bytes": wal_free,
-                }
-            )
-        )
-    return path, observations
+    top_path = tmp_path / "topology.json"
+    top_path.write_text(json.dumps(topology))
+    samples = [
+        {
+            "node": name,
+            "observed_at": (now - timedelta(seconds=seconds)).isoformat(),
+            "system_identifier": topology["system_identifier"],
+            "timeline": 4,
+            "standby": name != "a",
+            "synchronous_commit": "remote_apply",
+            "synchronous_peers": ["c", "b"] if name == "a" else [],
+            "synchronous_standby_names": "FIRST 2 (b, c)" if name == "a" else "",
+            "runtime_settings_safe": True,
+            "persistent_wal": True,
+            "data_free_bytes": 13_000,
+            "wal_free_bytes": wal_free,
+            "activation_id": topology["activation_id"],
+            "runtime_database": "dlr",
+            "runtime_role": "dlr_runtime",
+        }
+        for name, wal_free, seconds in (("a", 10_000, 3), ("b", 12_000, 1), ("c", 2_500, 2))
+    ]
+    batch = tmp_path / "batch.json"
+    batch.write_text(json.dumps({"samples": samples}))
+    return top_path, batch, samples
 
 
-def test_capacity_uses_limiting_actual_volume_and_earliest_observation(observation_files):
-    topology, observations = observation_files
-    result = PROVIDER.capacity(topology, observations)
-    standby = json.loads((observations / "c.json").read_text())
+def test_capacity_uses_all_members_and_earliest_observation(observation_files):
+    topology, batch, samples = observation_files
+    result = PROVIDER.capacity(topology, batch)
     assert result == {
         "schema_version": 1,
         "storage_domain_id": "pg-data",
         "cluster_id": json.loads(topology.read_text())["cluster_id"],
         "topology_epoch": 7,
-        "observed_at": standby["observed_at"],
+        "observed_at": samples[0]["observed_at"],
         "writable_free_bytes": 2_500,
     }
 
 
 @pytest.mark.parametrize(
-    ("node", "field", "value"),
+    ("index", "field", "value"),
     [
-        ("b", "synchronous_commit", "off"),
-        ("b", "synchronous_standby_names", "FIRST 1 (a)"),
-        ("b", "synchronous_peers", []),
-        ("c", "persistent_wal", False),
-        ("c", "system_identifier", "7465828699174792762"),
-        ("c", "standby", False),
-        ("c", "timeline", 3),
-        ("c", "wal_free_bytes", -1),
+        (0, "synchronous_commit", "off"),
+        (0, "synchronous_standby_names", "FIRST 1 (b, c)"),
+        (0, "synchronous_peers", ["b"]),
+        (0, "runtime_settings_safe", False),
+        (2, "persistent_wal", False),
+        (2, "system_identifier", "7465828699174792762"),
+        (2, "standby", False),
+        (2, "timeline", 3),
+        (2, "wal_free_bytes", -1),
+        (2, "node", "b"),
     ],
 )
-def test_mismatched_promotion_member_cannot_authorize_capacity(
-    observation_files, node, field, value
-):
-    topology, observations = observation_files
-    path = observations / f"{node}.json"
-    mismatched = json.loads(path.read_text())
-    mismatched[field] = value
-    path.write_text(json.dumps(mismatched))
+def test_mismatched_promotion_member_closes_capacity(observation_files, index, field, value):
+    topology, batch, samples = observation_files
+    samples[index][field] = value
+    batch.write_text(json.dumps({"samples": samples}))
     with pytest.raises(ValueError):
-        PROVIDER.capacity(topology, observations)
+        PROVIDER.capacity(topology, batch)
 
 
-def test_prior_topology_observation_rejected_while_it_is_still_fresh(observation_files):
-    topology, observations = observation_files
-    path = observations / "c.json"
-    stale_epoch = json.loads(path.read_text())
-    stale_epoch["observed_at"] = (datetime.now(UTC) - timedelta(seconds=7)).isoformat()
-    path.write_text(json.dumps(stale_epoch))
+def test_missing_or_stale_final_member_closes_capacity(observation_files):
+    topology, batch, samples = observation_files
+    batch.write_text(json.dumps({"samples": samples[:2]}))
     with pytest.raises(ValueError):
-        PROVIDER.capacity(topology, observations)
+        PROVIDER.capacity(topology, batch)
+    samples[2]["observed_at"] = (datetime.now(UTC) - timedelta(seconds=11)).isoformat()
+    batch.write_text(json.dumps({"samples": samples}))
+    with pytest.raises(ValueError):
+        PROVIDER.capacity(topology, batch)
+
+
+def test_fresh_prior_activation_is_rejected(observation_files):
+    topology, batch, samples = observation_files
+    samples[2]["activation_id"] = str(uuid4())
+    batch.write_text(json.dumps({"samples": samples}))
+    with pytest.raises(ValueError):
+        PROVIDER.capacity(topology, batch)

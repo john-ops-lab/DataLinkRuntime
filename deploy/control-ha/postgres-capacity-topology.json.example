@@ -4,7 +4,9 @@
   "topology_epoch": 1,
   "system_identifier": "7465828699174792761",
   "timeline": 1,
-  "activated_at": "2026-01-01T00:00:00+00:00",
+  "activation_id": "c805946e-34ae-4d3b-865e-effd13e4a18a",
+  "runtime_database": "dlr",
+  "runtime_role": "dlr_runtime",
   "primary": "a",
   "promotable": ["b", "c"]
 }
