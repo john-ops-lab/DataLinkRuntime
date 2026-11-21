@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import Boolean, CheckConstraint, DateTime, LargeBinary, String, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from dlr.control.db import Base
+from dlr.control.model_base import Base
 
 
 class ControlProcessInstance(Base):

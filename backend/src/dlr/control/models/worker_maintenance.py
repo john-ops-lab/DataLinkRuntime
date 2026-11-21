@@ -17,7 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from dlr.control.db import Base
+from dlr.control.model_base import Base
 
 _RESULT_DISPOSITION = """
     (recovery_disposition_id IS NULL AND recovery_disposition_xid IS NULL

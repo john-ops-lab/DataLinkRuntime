@@ -49,6 +49,7 @@ def _run(
     _stage_binding: dict[str, object] | None = None,
     _idle_deadline: float | None = None,
     _input_cutoff: float | None = None,
+    _first_request: dict[str, Any] | None = None,
 ) -> None:
     from dlr.control.services.claim_envelope_v4 import ClaimEnvelope
 
@@ -70,7 +71,8 @@ def _run(
                 if remaining <= 0:
                     raise ValueError("result authority unavailable")
                 channel.settimeout(remaining)
-            request = _read_frame(channel)
+            request = _first_request if _first_request is not None else _read_frame(channel)
+            _first_request = None
             input_request = request.get("operation") == "input"
             if _stage_binding is not None and any(
                 request.get(name) != value

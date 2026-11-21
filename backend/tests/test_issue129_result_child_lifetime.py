@@ -69,7 +69,7 @@ def _world(seconds=10, slots=None, real_resources=False):
         popen = subprocess.Popen
 
         def launch(command, **kwargs):
-            child = popen([sys.executable, "-I", "-S", "-c", _CHILD, *command[3:]], **kwargs)
+            child = popen([sys.executable, "-I", "-S", "-c", _CHILD, *command[-3:]], **kwargs)
             children.append(child)
             return child
 
@@ -162,6 +162,33 @@ def _claimed_child(coordinator, authority):
     return entry, coordinator._result
 
 
+def test_idle_dependencies_load_without_deployment_or_business_io():
+    check = """
+import os, sys
+violations = []
+class Guard:
+    def find_spec(self, name, *unused):
+        if name in {'dlr.common.config', 'dlr.control.db'}:
+            violations.append(name)
+            raise RuntimeError(name)
+def audit(event, args):
+    forbidden = event.startswith(('socket.connect', 'socket.bind', 'socket.getaddrinfo',
+                                  'subprocess.Popen', 'os.posix_spawn', 'os.fork'))
+    roots = ('/run/secrets/', '/run/dlr-', '/etc/dlr')
+    private = event == 'open' and str(args[0]).startswith(roots)
+    if forbidden or private:
+        violations.append(event)
+        raise RuntimeError(event)
+sys.meta_path.insert(0, Guard())
+sys.addaudithook(audit)
+from dlr.control.services.result_preload_v4 import _load_dependencies
+_load_dependencies()
+assert not violations
+assert not any(key.upper().startswith(('DLR_', 'DATABASE_URL')) for key in os.environ)
+"""
+    subprocess.run([sys.executable, "-I", "-c", check], env={}, check=True, timeout=10)
+
+
 @unittest.skipUnless(
     sys.platform.startswith("linux")
     and hasattr(os, "pidfd_open")
@@ -169,6 +196,59 @@ def _claimed_child(coordinator, authority):
     "requires Linux supervised child ownership",
 )
 class ResultChildLifetimeTests(unittest.TestCase):
+    def test_idle_result_uses_one_slot_and_transfers_one_pid(self):
+        with (
+            _world(slots=2) as (pool, authority, children),
+            patch.object(module.settings, "control_ha_slot", "a"),
+        ):
+            pool.anticipate_result(authority)
+            warm = pool._warm
+            self.assertIsNotNone(warm)
+            with warm.condition:
+                self.assertTrue(warm.condition.wait_for(lambda: warm.transport is not None, 3))
+                original = warm.transport.process
+            with pool._borrow(11, existing=False) as (other, _):
+                self.assertIsNot(other, warm.slot)
+                pool.anticipate_result(authority)
+                with pool._borrow(12, existing=True, result=True) as (slot, attached):
+                    self.assertIs(attached, warm)
+                    with self.assertRaises(module.ClaimCapacityBusy):
+                        pool.begin_result(authority, metadata=_metadata(12), body_bytes=2)
+                    with self.assertRaises(module.ClaimCapacityBusy):
+                        pool.begin_result(authority, metadata=_metadata(13), body_bytes=2)
+                    entry = slot.begin_result(
+                        authority, metadata=_metadata(12), body_bytes=2, warm=attached
+                    )
+                    self.assertIs(entry.process, original)
+                    self.assertTrue(pool.end_result(entry))
+                    self.assertIsNotNone(original.poll())
+                    self.assertFalse(entry.spawn.thread.is_alive())
+            self.assertEqual(len(children), 1)
+
+    def test_claim_preempts_spare_only_after_reap_and_idle_does_not_rotate(self):
+        with (
+            _world(slots=2) as (pool, authority, children),
+            patch.object(module.settings, "control_ha_slot", "b"),
+        ):
+            pool.anticipate_result(authority)
+            warm = pool._warm
+            with warm.condition:
+                self.assertTrue(warm.condition.wait_for(lambda: warm.transport is not None, 3))
+                child = warm.transport
+            with (
+                pool._borrow(1, existing=False),
+                pool._borrow(2, existing=False) as (slot, _),
+            ):
+                self.assertIs(slot, warm.slot)
+                self.assertIsNotNone(child.process.poll())
+                self.assertFalse(child.spawn.thread.is_alive())
+            with patch.object(module, "IDLE_SECONDS", 0.1):
+                pool.anticipate_result(authority)
+                warm = pool._warm
+                self.assertTrue(warm.finished.wait(3))
+            self.assertIsNotNone(children[-1].poll())
+            self.assertEqual(len(children), 2)
+
     def test_claim_handoff_keeps_one_child_and_requires_fresh_operation_authority(self):
         with _world() as (coordinator, authority, children):
             old, retained = _claimed_child(coordinator, authority)

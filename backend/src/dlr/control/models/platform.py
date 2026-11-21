@@ -29,7 +29,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from dlr.control.db import Base
+from dlr.control.model_base import Base
 
 # Fields each credential type exposes to bindings.
 CREDENTIAL_FIELDS: dict[str, tuple[str, ...]] = {

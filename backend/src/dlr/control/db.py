@@ -4,9 +4,10 @@ import logging
 from collections.abc import Generator
 
 from sqlalchemy import Engine, create_engine, text
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
+from dlr.control.model_base import Base as Base
 
 logger = logging.getLogger("dlr.control.db")
 
@@ -23,10 +24,6 @@ engine: Engine = create_engine(
     },
 )
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
-
-
-class Base(DeclarativeBase):
-    """Declarative base shared by all Control Node models."""
 
 
 def get_session() -> Generator[Session]:

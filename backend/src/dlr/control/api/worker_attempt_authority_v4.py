@@ -29,10 +29,18 @@ from dlr.control.schemas.reliable_runtime import AttemptActionBody, AttemptProgr
 from dlr.control.services import attempt as attempt_service
 from dlr.control.services import attempt_lease_candidates_v4 as candidates
 from dlr.control.services import worker_availability
+from dlr.control.services.claim_coordinator_v4 import ClaimCoordinator
+from dlr.control.services.control_process_v4 import ControlProcess
 
 router = APIRouter()
 DbSession = Annotated[Session, Depends(db.get_session)]
 _MAX_ACTION_BYTES = 4096
+
+
+def _anticipate_result(request: Request, process: ControlProcess) -> None:
+    coordinator = getattr(request.app.state, "claim_coordinator_v4", None)
+    if isinstance(coordinator, ClaimCoordinator):
+        coordinator.anticipate_result(process)
 
 
 def _error(status: int) -> HTTPException:
@@ -151,6 +159,7 @@ def _start(
         process.check_authority()
         session.rollback()
         process.check_authority()
+        _anticipate_result(request, process)
         return JSONResponse(
             {
                 "decision": "ACK_NOOP",
@@ -199,6 +208,7 @@ def _renew(
         session.commit()
         process.check_authority()
         proof = process.observe_attempt_candidate(candidate, credential, instance_proof, action)
+        _anticipate_result(request, process)
         return JSONResponse({"attempt_proof": proof}, headers=_HEADERS)
     except Exception:  # noqa: BLE001 - commit or observation may be unknown
         _rollback(session)
