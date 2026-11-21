@@ -352,7 +352,7 @@ def test_closed_window_preserves_adopted_v3_attempt_and_retry_custody(
     factory, _, _, _, _ = placement
     monkeypatch.setattr(settings, "worker_remote_v4_enabled", False)
     worker_id = register(api_client, "legacy-retry-history")
-    with factory.begin() as session:
+    with factory() as session:
         execution = _ordinary(session, None, "legacy-retry", fixed_worker=worker_id, staged=False)
         execution_id = execution.id
         now = worker_availability.current_time(session)
@@ -360,6 +360,7 @@ def test_closed_window_preserves_adopted_v3_attempt_and_retry_custody(
         execution.status = "retry_wait"
         execution.next_attempt_at = due
         execution.attempt_count = 1
+        execution.workspace_cleanup_status = "completed"
         attempt_row = ExecutionAttempt(
             execution_id=execution.id,
             adapter_id=execution.adapter_id,
@@ -376,62 +377,54 @@ def test_closed_window_preserves_adopted_v3_attempt_and_retry_custody(
         )
         session.add(attempt_row)
         session.flush()
-        attempt_id = attempt_row.id
 
-    monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
-    monkeypatch.setattr(settings, "worker_v4_deployment_mode", "A")
-    monkeypatch.setattr(settings, "worker_v4_control_slots", 1)
-    with factory.begin() as session:
+        monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
+        monkeypatch.setattr(settings, "worker_v4_deployment_mode", "A")
+        monkeypatch.setattr(settings, "worker_v4_control_slots", 1)
         worker_legacy_window.open_once(session, due)
         assert worker_placement_cutover.pause(session) == "paused"
-    with factory.begin() as session:
         assert worker_placement_cutover.convert_waiting(session, execution_id)
         worker = session.get(Worker, worker_id)
-        reservation_id = uuid4()
-        session.add(
-            WorkerIdentityReservation(
-                request_id=reservation_id,
-                worker_id=worker_id,
-                name=worker.name,
-                actor_kind="superadmin",
-                legacy_stop_evidence_sha256="c" * 64,
-            )
+        adoption = WorkerIdentityReservation(
+            request_id=uuid4(),
+            worker_id=worker_id,
+            name=worker.name,
+            actor_kind="superadmin",
+            legacy_stop_evidence_sha256="c" * 64,
+            created_at=worker_availability.current_time(session),
         )
+        session.add(adoption)
         worker.status = "offline"
         worker.protocol_version = 4
         worker.identity_lifecycle = "reserved"
+        session.flush()
 
-    monkeypatch.setattr(settings, "worker_v4_deployment_mode", "C")
-    monkeypatch.setattr(settings, "worker_v4_control_slots", 2)
-    with factory() as session, pytest.raises(RemoteDeploymentUnavailable):
-        require_dedicated_deployment(session)
-    monkeypatch.setattr(settings, "worker_v4_deployment_mode", "A")
-    monkeypatch.setattr(settings, "worker_v4_control_slots", 1)
-    with factory.begin() as session:
+        monkeypatch.setattr(settings, "worker_v4_deployment_mode", "C")
+        monkeypatch.setattr(settings, "worker_v4_control_slots", 2)
+        with pytest.raises(RemoteDeploymentUnavailable):
+            require_dedicated_deployment(session)
+        monkeypatch.setattr(settings, "worker_v4_deployment_mode", "A")
+        monkeypatch.setattr(settings, "worker_v4_control_slots", 1)
         worker_legacy_window.close(session)
 
-    monkeypatch.setattr(settings, "worker_v4_deployment_mode", "C")
-    monkeypatch.setattr(settings, "worker_v4_control_slots", 2)
-    with factory() as session:
+        monkeypatch.setattr(settings, "worker_v4_deployment_mode", "C")
+        monkeypatch.setattr(settings, "worker_v4_control_slots", 2)
         require_dedicated_deployment(session)
-        assert session.get(ExecutionAttempt, attempt_id).worker_identity_id is None
-        assert session.get(Execution, execution_id).next_attempt_at == due
-    with factory() as session:
-        row = session.get(ExecutionAttempt, attempt_id)
-        row.cleanup_summary = {"workspace_cleanup_status": "deferred"}
-        session.flush()
-        with pytest.raises(RemoteDeploymentUnavailable):
-            require_dedicated_deployment(session, readonly=True)
-    with factory() as session:
-        session.get(WorkerIdentityReservation, reservation_id).legacy_stop_evidence_sha256 = None
-        session.flush()
-        with pytest.raises(RemoteDeploymentUnavailable):
-            require_dedicated_deployment(session, readonly=True)
-    with factory() as session:
-        _intent(session, execution_id).last_error_code = "unknown"
-        session.flush()
-        with pytest.raises(RemoteDeploymentUnavailable):
-            require_dedicated_deployment(session, readonly=True)
+        assert attempt_row.worker_identity_id is None
+        assert execution.next_attempt_at == due
+        cases = (
+            (attempt_row, "cleanup_summary", {"workspace_cleanup_status": "deferred"}),
+            (execution, "workspace_cleanup_status", "deferred"),
+            (adoption, "legacy_stop_evidence_sha256", None),
+            (_intent(session, execution_id), "last_error_code", "unknown"),
+        )
+        for row, field, value in cases:
+            with session.begin_nested() as savepoint:
+                setattr(row, field, value)
+                session.flush()
+                with pytest.raises(RemoteDeploymentUnavailable):
+                    require_dedicated_deployment(session, readonly=True)
+                savepoint.rollback()
 
 
 def test_placement_limit_retry_expiration_and_cancel_keep_one_responsibility(placement, api_client):

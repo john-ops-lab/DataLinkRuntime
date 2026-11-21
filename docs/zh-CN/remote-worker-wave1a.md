@@ -684,14 +684,21 @@ J最小验收依次为定向PG/API、现有Linux安装/期限/责任、PG原子�
 1. 暂停新入口，等待在途处理结束，记录旧 Worker ID、Activation、Receipt/Delivery、Execution、所有 Attempt 和 Outbox 的消息 ID 与代次。保留输入及资源快照、文件 Lease 与待重试时间。确认旧 Control、Relay、旧 Worker 及其业务进程、读写 I/O 和本地清理已停止。记录原队列消息与消费者状态，保存原卷、journal 和私有停机证据。
 2. 备份数据库、Broker 与原文件。先将备份恢复到独立新库并核对原样本。停用旧运行登录并让目标运行角色保持 NOLOGIN，由 owner 对原库执行目标制品的 `alembic upgrade head`。只在源库从未登记过 v4 权威时，由 owner 在模式 A 首次登记新权威并开启一次性 v3 窗口，再用 `legacy-window-status` 核对数据库时间与截止。
 3. 使用 `placement-pause` 暂停接收与 Claim，再执行 `placement-reconcile`，逐项核对待办责任。queued 保留原 Execution，旧 Outbox 被标记为已取代，新代等待选址。retry_wait 保留原到期时间并在到期后生成新派发代。原固定路由、Activation、Receipt/Delivery 和旧 Attempt 继续用各自 ID 对账。对仍在进行、清理不明或缺失责任证明的记录保持停机，查清后再采用。
-4. 在模式 A 采用物理停止的原 Worker，将停机证据的 SHA-256 写入采用回执。读取原数值 ID、原队列和新登记的 v4 身份。停止模式 A Control 后由离线 owner 运行 `legacy-window-close` 并独立读回 `closed_at`，用旧共享令牌验证拒绝。v4 使用单独的 HTTP 引导与运行凭据及限于原队列的 Broker 用户。停用旧运行账号的 Broker 权限并核对原队列消息。
-5. [迁移三类文件](control-ha-shared-storage.md#升级和文件迁移)，从两个 Linux 节点验证共享命名空间。采用历史 v3 Attempt 时，启动门禁核对窗口已关闭、原 Worker 停机回执、终态清理和原 fixed 责任归属。新 Control 启动后完成原 Worker 身份的 v4 引导，激活通过容量校验的实例，再启用预留派发。先沿原 ID 核对 fixed 责任，再为新任务配置 Pool 并核对预留及实际结果。[Worker Pool 路由](worker-pool-routing.md)
+4. 在模式 A 采用物理停止的原 Worker，将停机证据的 SHA-256 写入采用回执。读取原数值 ID、原队列和新登记的 v4 身份。停止模式 A Control 后由离线 owner 运行 `legacy-window-close` 并独立读回 `closed_at`。v4 使用单独的 HTTP 引导与运行凭据及限于原队列的 Broker 用户。停用旧运行账号的 Broker 权限并核对原队列消息。
+5. [迁移三类文件](control-ha-shared-storage.md#升级和文件迁移)，从两个 Linux 节点验证共享命名空间。启动门禁核对窗口已关闭、原 Worker 停机回执、终态清理和原 fixed 责任归属。新 Control 就绪后，用旧共享令牌验证 Worker API 返回 401。在已确认旧 Worker 的全部本地责任清洁后，原样保留旧 runtime 与 journal，选择同一已确认卷上的独立 v4 工作目录和 journal。按冻结凭据引用，为原 Worker 显式配置业务凭据能力和相同的 Control 授权。完成原身份的 v4 引导，激活通过容量校验的实例，再启用预留派发。先沿原 ID 核对 fixed 责任，再为新任务配置 Pool 并核对预留及实际结果。[Worker Pool 路由](worker-pool-routing.md)
 
-备份恢复使用独立新库。两条命令使用同一套私有 PostgreSQL 连接设置，目标名称已存在时 `createdb` 失败，恢复随即停止。
+备份恢复使用独立新库。目标库名须为最长 63 字节的小写 ASCII 标识符，连接信息通过同一套私有 PostgreSQL 配置提供。目标名称已存在时 `createdb` 失败，恢复随即停止。
 
 ```sh
-createdb --owner="$DLR_DB_OWNER" -- "$DLR_RESTORE_DB" &&
-  pg_restore --single-transaction --exit-on-error --dbname="$DLR_RESTORE_DB" "$DLR_SOURCE_DUMP"
+(
+  export LC_ALL=C
+  case "${DLR_RESTORE_DB:-}" in
+    ''|[!a-z_]*|*[!a-z0-9_]*) exit 2 ;;
+  esac
+  [ "${#DLR_RESTORE_DB}" -le 63 ] &&
+    createdb --owner="$DLR_DB_OWNER" -- "$DLR_RESTORE_DB" &&
+    pg_restore --single-transaction --exit-on-error --dbname="$DLR_RESTORE_DB" "$DLR_SOURCE_DUMP"
+)
 ```
 
 产生 v4、Pool 或共享后端责任后保留新库和现有卷，按当前 schema 向前恢复。确需退回单 Control 时，保留原 Pool 和共享责任并使用能读取当前 schema 的制品。

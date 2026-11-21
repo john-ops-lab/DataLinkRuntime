@@ -21,6 +21,8 @@ _ADOPTED_LEGACY_ATTEMPT = """
           AND a.status NOT IN ('claimed','running')
           AND a.claimed_at <= a.ended_at AND a.ended_at <= r.created_at
           AND a.cleanup_summary->>'workspace_cleanup_status' = 'completed'
+          AND (a.attempt_no < e.attempt_count
+               OR (a.attempt_no = e.attempt_count AND e.workspace_cleanup_status = 'completed'))
           AND e.dispatch_backend = 'rabbitmq' AND e.placement_origin = 'legacy_v3'
           AND e.route_snapshot #>> '{route,mode}' = 'fixed'
           AND e.route_snapshot #>> '{route,worker_id}' = a.worker_id::text
