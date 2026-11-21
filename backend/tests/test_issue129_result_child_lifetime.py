@@ -176,20 +176,9 @@ def _claimed_child(coordinator, authority):
     return entry, coordinator._result
 
 
-def test_idle_dependencies_load_without_deployment_or_business_io(tmp_path):
-    for name, value in (
-        ("memory.max", "402653184"),
-        ("pids.max", "32"),
-        ("memory.swap.max", "0"),
-        ("memory.swap.current", "0"),
-    ):
-        (tmp_path / name).write_text(value)
+def test_idle_dependencies_load_without_deployment_or_business_io():
     check = """
 import os, sys
-from contextlib import closing
-from pathlib import Path
-from unittest.mock import patch
-
 violations = []
 class Guard:
     def find_spec(self, name, *unused):
@@ -206,33 +195,39 @@ def audit(event, args):
         raise RuntimeError(event)
 sys.meta_path.insert(0, Guard())
 sys.addaudithook(audit)
-from dlr.control.services import claim_envelope_v4
-from dlr.control.services.result_preload_v4 import _load_dependencies
-
-root = Path(sys.argv[1])
-real_stat = os.stat
-def stat(path, *args, **kwargs):
-    return real_stat(root if path == '/proc/self/ns/cgroup' else path, *args, **kwargs)
-
-kind = claim_envelope_v4.ClaimEnvelope
-with (
-    patch.object(kind, '_root', root),
-    patch.object(kind, '_location'),
-    patch.object(claim_envelope_v4.cgroup_namespace, '_mount_id', return_value=1),
-    patch.object(os, 'stat', stat),
-    patch.object(sys, 'platform', 'linux'),
-    closing(kind.open(child_address_space_bytes=128 * 1024**2, preload=True)) as envelope,
-):
-    envelope.check()
-    assert envelope._limits == (402653184, 32)
-
-_load_dependencies()
+if len(sys.argv) == 1:
+    from dlr.control.services import claim_envelope_v4
+    from dlr.control.services.result_preload_v4 import _load_dependencies
+    _load_dependencies()
+else:
+    from dlr.control.services.result_preload_v4 import main
+    assert main() == 1   # The test closes the channel without handing over a request.
 assert not violations
 assert not any(key.upper().startswith(('DLR_', 'DATABASE_URL')) for key in os.environ)
 """
-    subprocess.run(
-        [sys.executable, "-I", "-c", check, str(tmp_path)], env={}, check=True, timeout=10
-    )
+    command = [sys.executable, "-I", "-c", check]
+    if sys.platform != "linux" or os.environ.get("DLR_TEST_CLAIM_PROCESS") != "1":
+        subprocess.run(command, env={}, check=True, timeout=10)
+        return
+    parent, channel = socket.socketpair()
+    with parent, channel:
+        child = subprocess.Popen(
+            [*command, str(channel.fileno()), str(os.getpid()), str(512 * 1024**2)],
+            env={},
+            pass_fds=(channel.fileno(),),
+        )
+        channel.close()
+        try:
+            parent.settimeout(8)
+            assert module._read_exact(parent, 1) == b"R"
+            idle_until = struct.unpack("!d", module._read_exact(parent, 8))[0]
+            assert idle_until > module._clock()
+            parent.shutdown(socket.SHUT_WR)
+            assert child.wait(timeout=4) == 0
+        finally:
+            if child.returncode is None:
+                child.kill()
+                child.wait(timeout=2)
 
 
 @pytest.mark.parametrize("late", [False, True])
@@ -248,9 +243,14 @@ def test_preload_handoff_reads_one_metadata_frame_before_ready(monkeypatch, late
         "worker_v4_deployment_mode": "C",
     }
     space = snapshot["worker_v4_claim_child_address_space_bytes"]
-    checked = []
+    checked, opened = [], []
     envelope = SimpleNamespace(check=lambda: checked.append(True), close=lambda: None)
-    monkeypatch.setattr(module.ClaimEnvelope, "open", lambda **_: envelope)
+
+    def open_envelope(*, child_address_space_bytes, preload=False):
+        opened.append((child_address_space_bytes, preload))
+        return envelope
+
+    monkeypatch.setattr(module.ClaimEnvelope, "open", open_envelope)
     monkeypatch.setattr(result_preload_v4, "_restrict", lambda *_: None)
     monkeypatch.setattr(result_preload_v4, "_load_dependencies", lambda: None)
     now = None
@@ -266,6 +266,7 @@ def test_preload_handoff_reads_one_metadata_frame_before_ready(monkeypatch, late
         thread.start()
         try:
             assert module._read_exact(parent, 1) == b"R"
+            assert opened == [(space, True)]
             deadline = struct.unpack("!d", module._read_exact(parent, 8))[0]
             assert deadline > time.monotonic()
             if late:
@@ -287,6 +288,7 @@ def test_preload_handoff_reads_one_metadata_frame_before_ready(monkeypatch, late
                 },
             )
             assert module._read_frame(parent) == {"state": "ready"}
+            assert opened == [(space, True), (space, False)]
         finally:
             parent.close()
             thread.join(4)
@@ -376,7 +378,17 @@ class ResultChildLifetimeTests(unittest.TestCase):
                 pool.close()
                 self.assertTrue(all(p.poll() is not None for p in children))
 
+    def _bounded_scenario(self, method):
+        # A regression can leave close() or the fixture teardown waiting
+        # on another thread. Bound the entire scenario in a subprocess.
+        subprocess.run(
+            [sys.executable, __file__, f"{type(self).__name__}.{method}"], check=True, timeout=18
+        )
+
     def test_shutdown_waits_for_timer_reap(self):
+        self._bounded_scenario("_shutdown_during_timer_reap")
+
+    def _shutdown_during_timer_reap(self):
         with _world(slots=2) as (pool, authority, _):
             entry = pool.begin_result(authority, metadata=_metadata(), body_bytes=2)
             slot = entry.owner
@@ -408,10 +420,7 @@ class ResultChildLifetimeTests(unittest.TestCase):
             self.assertIsNotNone(entry.process.returncode)
 
     def test_shutdown_waits_after_pidfd_transfer_before_result_publication(self):
-        # A regression can leave the executor and close() waiting on each
-        # other. Bound the entire scenario, including fixture teardown.
-        scenario = f"{type(self).__name__}._shutdown_after_transfer"
-        subprocess.run([sys.executable, __file__, scenario], check=True, timeout=18)
+        self._bounded_scenario("_shutdown_after_transfer")
 
     def _shutdown_after_transfer(self):
         with (
@@ -421,7 +430,9 @@ class ResultChildLifetimeTests(unittest.TestCase):
             pool.anticipate_result(authority)
             warm = pool._warm
             transferred, release = threading.Event(), threading.Event()
+            reaping, allow_reap = threading.Event(), threading.Event()
             original = warm.take
+            discard = warm.slot._discard_unpublished
 
             def take(deadline):
                 transport = original(deadline)
@@ -430,7 +441,16 @@ class ResultChildLifetimeTests(unittest.TestCase):
                 assert release.wait(3)
                 return transport
 
-            with patch.object(warm, "take", side_effect=take), ThreadPoolExecutor(1) as executor:
+            def delayed_reap(*args):
+                reaping.set()
+                assert allow_reap.wait(3)
+                return discard(*args)
+
+            with (
+                patch.object(warm, "take", side_effect=take),
+                patch.object(warm.slot, "_discard_unpublished", side_effect=delayed_reap),
+                ThreadPoolExecutor(1) as executor,
+            ):
                 caller = executor.submit(
                     pool.begin_result, authority, metadata=_metadata(), body_bytes=2
                 )
@@ -442,8 +462,14 @@ class ResultChildLifetimeTests(unittest.TestCase):
                     self.assertTrue(pool._poisoned.wait(3))
                     closer.join(0.05)
                     self.assertTrue(closer.is_alive())
+                    release.set()
+                    self.assertTrue(reaping.wait(3))
+                    closer.join(0.05)
+                    self.assertTrue(closer.is_alive())
+                    self.assertIsNone(children[0].returncode)
                 finally:
                     release.set()
+                    allow_reap.set()
                     closer.join(3)
                 with self.assertRaises(module.ClaimUnavailable):
                     caller.result(timeout=3)
