@@ -187,10 +187,6 @@ def test_idle_dependencies_load_without_deployment_or_business_io(tmp_path):
         (tmp_path / name).write_text(value)
     check = """
 import os, sys
-from contextlib import closing
-from pathlib import Path
-from unittest.mock import patch
-
 violations = []
 class Guard:
     def find_spec(self, name, *unused):
@@ -208,6 +204,10 @@ def audit(event, args):
 sys.meta_path.insert(0, Guard())
 sys.addaudithook(audit)
 if len(sys.argv) == 2:
+    from contextlib import closing
+    from pathlib import Path
+    from unittest.mock import patch
+
     from dlr.control.services import claim_envelope_v4
     from dlr.control.services.result_preload_v4 import _load_dependencies
     root = Path(sys.argv[1])
