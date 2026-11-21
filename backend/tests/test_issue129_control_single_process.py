@@ -338,11 +338,12 @@ def test_worker_first_fence_waits_only_for_the_confirmed_control_retry(
                 def wait(seconds):
                     nonlocal now
                     worker_waiting.set()
-                    finished = original_wait(seconds)
                     if outcome == "old_deadline":
-                        assert finished and 0 < seconds <= 0.25
+                        assert 0 < seconds <= 0.25
+                        assert original_wait(4)
                         now = previous + 0.05
-                    return finished
+                        return True
+                    return original_wait(seconds)
 
                 monkeypatch.setattr(retry.finished, "wait", wait)
 
@@ -379,21 +380,23 @@ def test_worker_first_fence_waits_only_for_the_confirmed_control_retry(
         process._finish()
 
 
-@pytest.mark.parametrize("route", ["heartbeat", "ready"])
-def test_worker_proof_handler_opts_in_only_at_initial_fence(monkeypatch, route):
+@pytest.mark.parametrize(
+    ("route", "initial_failure"), [("heartbeat", True), ("ready", True), ("ready", False)]
+)
+def test_worker_proof_handler_opts_in_only_at_initial_fence(monkeypatch, route, initial_failure):
     import asyncio
     import json
     from types import SimpleNamespace
-    from unittest.mock import Mock
+    from unittest.mock import Mock, call
 
     from fastapi import HTTPException
 
     from dlr.control.api import worker_instance_v4
     from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
+    from dlr.control.services import worker_capacity
 
     instance = uuid4()
     process = Mock()
-    process.worker_fence.side_effect = TokenFenceUnavailable("unconfirmed")
     monkeypatch.setattr(worker_instance_v4, "_process", lambda _: process)
     monkeypatch.setattr(
         worker_instance_v4, "_proved_identity", lambda *_: ("fixture", instance, 1, "proof")
@@ -405,15 +408,42 @@ def test_worker_proof_handler_opts_in_only_at_initial_fence(monkeypatch, route):
 
     request = SimpleNamespace(url=SimpleNamespace(query=""), stream=stream)
     session = Mock()
-    with pytest.raises(HTTPException) as failure:
-        if route == "heartbeat":
-            worker_instance_v4.heartbeat(request, 1, session)
-        else:
-            asyncio.run(worker_instance_v4.ready(request, 1, session))
-    assert failure.value.status_code == 503
-    process.worker_fence.assert_called_once_with(session, wait_for_renewal_retry=True)
+    if initial_failure:
+        process.worker_fence.side_effect = TokenFenceUnavailable("unconfirmed")
+        with pytest.raises(HTTPException) as failure:
+            if route == "heartbeat":
+                worker_instance_v4.heartbeat(request, 1, session)
+            else:
+                asyncio.run(worker_instance_v4.ready(request, 1, session))
+        assert failure.value.status_code == 503
+        process.worker_fence.assert_called_once_with(session, wait_for_renewal_retry=True)
+        session.commit.assert_not_called()
+    else:
+        session.get.return_value = SimpleNamespace(
+            id=1,
+            identity_lifecycle="reserved",
+            instance_id=instance,
+            instance_generation=1,
+            v4_storage_profile=None,
+            capacity_state="unready",
+        )
+        monkeypatch.setattr(worker_instance_v4.candidates, "validate_current_proof", Mock())
+        monkeypatch.setattr(worker_instance_v4.worker_availability, "current_time", Mock())
+        monkeypatch.setattr(
+            worker_instance_v4.worker_availability,
+            "has_unreconciled_v4_attempt",
+            Mock(return_value=False),
+        )
+        monkeypatch.setattr(worker_capacity, "lock_capacity", Mock(return_value=None))
+
+        response = asyncio.run(worker_instance_v4.ready(request, 1, session))
+        assert response.status_code == 200
+        assert process.worker_fence.call_args_list == [
+            call(session, wait_for_renewal_retry=True),
+            call(session),
+        ]
+        session.commit.assert_called_once_with()
     session.rollback.assert_called_once_with()
-    session.commit.assert_not_called()
 
 
 @pytest.mark.parametrize("ddl", ["table", "index"])
