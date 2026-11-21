@@ -50,3 +50,10 @@
 #### Scenario: 切换时旧样本仍在有效期
 - **WHEN** 外部供方提升候选，旧主的容量样本仍在 15 秒有效期内
 - **THEN** 部署 owner SHALL 按离线流程推进 topology_epoch。新 ID 接收 MUST 保持关闭，直到固定的受认证 provider 依据新主所在时间线，重新观测新主及全部可提升副本的实际数据与 WAL 文件系统，返回与当前 cluster、domain、epoch 匹配的 v1 样本，并满足既有恢复水位及预算。
+
+### Requirement: 模式 C 的 API 与数据库入口可独立切换
+模式 C 的 HTTPS API 与 PostgreSQL SHALL 使用独立的稳定服务地址和可独立切换的代理。采用 HAProxy 与 VRRP 的部署 MUST 为两种服务分别配置代理进程、VRRP 实例和 VIP。
+
+#### Scenario: 活动 API 代理冻结
+- **WHEN** 活动 API 代理冻结，数据库及其入口保持健康
+- **THEN** PostgreSQL 入口 MUST 持续支持实际 SQL 访问，两个 Control 的有效租约 MUST 持续续租且不中断。客户端 SHALL 从故障发生起 60 秒内经原 API VIP 完成合法新请求并读回已接受记录，接管后的后续合法新请求也应经同一入口成功。

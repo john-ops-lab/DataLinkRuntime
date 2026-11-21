@@ -1,6 +1,16 @@
-# Append this section to both copies of the private Control HAProxy configuration.
+# Append to both copies of the private PostgreSQL HAProxy configuration.
+# Configure a dedicated global maxconn and root-only Runtime socket before this fragment.
 # Install pg-primary.map from the example. Its on-disk value fences clients on
 # every restart. Runtime routing selects at most one explicit primary backend.
+
+defaults postgres_tcp
+    mode tcp
+    timeout connect 2s
+    timeout server 660s
+    timeout client 660s
+    timeout check 2s
+    retries 0
+    default-server check inter 2s fall 2 rise 1 on-marked-down shutdown-sessions
 
 frontend local_proxy_health
     mode http
@@ -26,15 +36,6 @@ frontend postgres_rw
     use_backend postgres_b if { var(sess.pg_primary) -m str postgres_b }
     use_backend postgres_c if { var(sess.pg_primary) -m str postgres_c }
     default_backend postgres_fenced
-
-defaults postgres_tcp
-    mode tcp
-    timeout connect 2s
-    timeout server 660s
-    timeout client 660s
-    timeout check 2s
-    retries 0
-    default-server check inter 2s fall 2 rise 1 on-marked-down shutdown-sessions
 
 backend postgres_fenced
     tcp-request content reject
