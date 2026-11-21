@@ -1,0 +1,10 @@
+{
+  "cluster_id": "169cabc8-964a-443f-9515-48ec34f61914",
+  "storage_domain_id": "postgres-data-wal",
+  "topology_epoch": 1,
+  "system_identifier": "7465828699174792761",
+  "timeline": 1,
+  "activated_at": "2026-01-01T00:00:00+00:00",
+  "primary": "a",
+  "promotable": ["b", "c"]
+}

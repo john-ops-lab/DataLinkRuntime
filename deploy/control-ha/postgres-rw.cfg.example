@@ -1,0 +1,17 @@
+# Append this section to the private Control HAProxy configuration on both LBs.
+# PostgreSQL terminates TLS. Only the operator may open the verified primary.
+frontend postgres_rw
+    mode tcp
+    bind :6432
+    default_backend postgres_primary
+
+backend postgres_primary
+    mode tcp
+    timeout connect 2s
+    timeout server 660s
+    timeout check 2s
+    retries 0
+    default-server check inter 2s fall 2 rise 1 on-marked-down shutdown-sessions
+    server pg_a 192.0.2.31:5432 disabled
+    server pg_b 192.0.2.32:5432 disabled
+    server pg_c 192.0.2.33:5432 disabled

@@ -43,3 +43,10 @@
 #### Scenario: 区分本节点配置错配与当前 epoch 样本不可用
 - **WHEN** 离线切换后 A 的部署声明及运行配额 fingerprint 与当前数据库容量权威匹配，B 仍使用旧运行配额；新 epoch 尚无有效观测或后续观测已过期
 - **THEN** 聚合健康 SHALL 分别报告 A 的 capacity_compatible 为 true、B 为 false，A 的 PostgreSQL 容量功能不可用。无法读取配置权威时不得报告匹配；新鲜匹配样本恢复只更新容量功能状态，不能把 B 的旧配置变为匹配。
+
+### Requirement: PostgreSQL HA 切换后重新建立容量权威
+声明已确认责任零丢失的部署，其外部 PostgreSQL 供方 MUST 保证每个可提升同步副本持久保存已确认提交，并独立于 DLR 裁决提升资格。切换时 MUST 关闭运行入口、隔离旧运行会话和旧主，在确认候选满足持久性要求后才可提升。新主开放运行写入前 MUST 已建立所需同步副本保障。运行入口开放期间不得取消提交的同步等待或降低所需确认数以释放等待。
+
+#### Scenario: 切换时旧样本仍在有效期
+- **WHEN** 外部供方提升候选，旧主的容量样本仍在 15 秒有效期内
+- **THEN** 部署 owner SHALL 按离线流程推进 topology_epoch。新 ID 接收 MUST 保持关闭，直到固定的受认证 provider 依据新主所在时间线，重新观测新主及全部可提升副本的实际数据与 WAL 文件系统，返回与当前 cluster、domain、epoch 匹配的 v1 样本，并满足既有恢复水位及预算。
