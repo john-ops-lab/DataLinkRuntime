@@ -6,6 +6,7 @@ frontend local_api_proxy_health
     timeout http-request 250ms
     timeout client 400ms
     acl ready_path path /ready
-    http-request deny deny_status 404 unless ready_path METH_GET
+    acl ready_get method GET
+    http-request deny deny_status 404 unless ready_path ready_get
     http-request set-path /api/health/ready
     default_backend controls

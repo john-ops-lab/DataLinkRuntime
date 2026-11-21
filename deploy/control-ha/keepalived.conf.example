@@ -7,7 +7,7 @@ global_defs {
 }
 
 vrrp_script control_proxy {
-    script "/usr/bin/curl -q --noproxy 127.0.0.1 --fail --silent --output /dev/null --max-time 0.5 http://127.0.0.1:18080/ready"
+    script "/etc/dlr-private/check-ready.sh 18080"
     interval 1
     timeout 1
     fall 2

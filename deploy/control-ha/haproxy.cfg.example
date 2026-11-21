@@ -39,6 +39,7 @@ frontend account_api
 
 backend controls
     balance roundrobin
+    http-request set-timeout server 300ms if { fe_name local_api_proxy_health }
     option httpchk
     http-check send meth GET uri /api/health/ready ver HTTP/1.1 hdr Host control
     http-check expect status 200

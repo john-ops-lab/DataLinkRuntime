@@ -55,5 +55,5 @@
 模式 C 的 HTTPS API 与 PostgreSQL SHALL 使用独立的稳定服务地址和可独立切换的代理。采用 HAProxy 与 VRRP 的部署 MUST 为两种服务分别配置代理进程、VRRP 实例和 VIP。
 
 #### Scenario: 活动 API 代理冻结
-- **WHEN** 注入前 API 与数据库健康、两台 Control 各持有效租约，客户端已建立 SQL 会话；在真实容量观测持续匹配当前权威、新鲜且足量，接收预算充足的条件下冻结活动 API 代理
-- **THEN** PostgreSQL 入口 MUST 保持可用，注入前的同一 SQL 会话 MUST 无需重连即可持续查询并完成真实事务，两个原 Control 实例的租约 MUST 持续有效并续期。客户端 SHALL 在故障发生后 60 秒内经原稳定 HTTPS 服务地址，使用冻结前未用过的新 ID 完成合法请求并独立读回已接受记录，后续合法新请求也须经同一地址成功。采用 HAProxy 与 VRRP 时，还须核验原 API VIP 已由备用节点接管。
+- **WHEN** 注入前 API 与数据库健康、两台 Control 各持有效租约，客户端已通过原 PostgreSQL 稳定服务地址建立 SQL 会话。在真实容量观测持续匹配当前权威、新鲜且足量，接收预算充足的条件下冻结活动 API 代理
+- **THEN** PostgreSQL 入口 MUST 保持可用，客户端 MUST 复用注入前的同一 SQL 会话，无需重连即可持续查询并完成真实事务，两个原 Control 实例的租约 MUST 持续有效并续期。客户端 SHALL 在故障发生后 60 秒内经原稳定 HTTPS 服务地址，使用冻结前未用过的新 ID 完成合法请求并独立读回已接受记录，后续合法新请求也须经同一地址成功。采用 HAProxy 与 VRRP 时，还须核验原 API VIP 已由备用节点接管。
