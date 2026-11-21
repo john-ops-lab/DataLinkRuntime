@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import logging
@@ -14,6 +15,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
@@ -39,6 +41,10 @@ def _child_settings() -> dict[str, object]:
     snapshot = settings.model_dump(mode="json")
     snapshot["postgres_capacity_token"] = None
     return snapshot
+
+
+def _demand_digest(credential: str, attempt_proof: str) -> bytes:
+    return hashlib.sha256(credential.encode() + b"\0" + attempt_proof.encode()).digest()
 
 
 class ClaimUnavailable(Exception):
@@ -72,6 +78,9 @@ class _WarmResult:
     def __init__(self, coordinator: ClaimCoordinator, slot: _ClaimSlot) -> None:
         self.coordinator = coordinator
         self.slot = slot
+        # Parent-only hint from a verified start or renewal. It grants no
+        # child or transaction authority and is never sent over the socket.
+        self.demand: tuple[int, int, bytes] | None = None
         self.allocated = False  # protected by the coordinator allocation lock
         self.condition = threading.Condition()
         self.channel: socket.socket | None = None
@@ -173,6 +182,22 @@ class _WarmResult:
                     self.channel.shutdown(socket.SHUT_RDWR)
             self.condition.notify_all()
 
+    def anticipate_finalize(self, process: ControlProcess, metadata: dict[str, object]) -> None:
+        demand = self.demand  # fixed once _borrow allocates this ticket
+        credential, proof = metadata.get("credential"), metadata.get("attempt_proof")
+        if (
+            demand is not None
+            and metadata.get("operation") == "stage"
+            and (metadata.get("worker_id"), metadata.get("attempt_id")) == demand[:2]
+            and type(credential) is str
+            and type(proof) is str
+            and hmac.compare_digest(demand[2], _demand_digest(credential, proof))
+        ):
+            # The real request now owns the first slot and its pidfd. Only an
+            # independently free second slot can start a new sterile child.
+            self.coordinator._warm_finished(self)
+            self.coordinator.anticipate_result(process)
+
     def retire(self, deadline: float) -> None:
         self.cancel()
         with self.condition:
@@ -258,6 +283,7 @@ class _ClaimSlot:
         self._closing = False
         self._pid = os.getpid()
         self._lock = threading.RLock()
+        self._reap_finished = threading.Condition(self._lock)
         self._current: _Claim | None = None
         self._result: _Result | None = None
         self._spawning = False
@@ -1083,7 +1109,7 @@ class _ClaimSlot:
                 existing.sent = 0
             self._spawning = True
         if existing is not None:
-            return self._resume_result(existing, metadata)
+            return self._resume_result(existing, metadata, request_deadline)
         channel = child_channel = None
         child = spawn = None
         pidfd = None
@@ -1145,6 +1171,8 @@ class _ClaimSlot:
                 raise ValueError("result child unavailable")
             self._check_envelope(envelope)
             process.check_authority()
+            if prepared is not None and warm is not None:
+                warm.anticipate_finalize(process, metadata)
             _send_frame(
                 channel,
                 {
@@ -1210,7 +1238,9 @@ class _ClaimSlot:
                 with self._lock:
                     self._spawning = False
 
-    def _resume_result(self, entry: _Result, metadata: dict[str, object]) -> _Result:
+    def _resume_result(
+        self, entry: _Result, metadata: dict[str, object], request_deadline: float
+    ) -> _Result:
         """End idle retention with fresh authority; never extend an intent deadline."""
         try:
             entry.authority.check_authority()
@@ -1223,6 +1253,7 @@ class _ClaimSlot:
             if configuration != entry.configuration or entry.process.poll() is not None:
                 raise ValueError("result unavailable")
             control_instance, control_token, confirmed = entry.authority.claim_child_identity()
+            entry.deadline = min(entry.deadline, request_deadline)
             if entry.metadata.get("operation") == "stage" and entry.retention_deadline is not None:
                 # The child was only idle while business ran. This operation
                 # gets a fresh, separately confirmed Control deadline, capped
@@ -1233,6 +1264,7 @@ class _ClaimSlot:
                     entry.deadline = min(
                         entry.retention_deadline,
                         confirmed,
+                        request_deadline,
                         math.nextafter(_clock() + 25, -math.inf),
                     )
                     if entry.timer is not None:
@@ -1382,9 +1414,10 @@ class _ClaimSlot:
                 self._discard_unpublished(entry.process, entry.pidfd, entry.spawn)
             raise
         finally:
-            with self._lock:
+            with self._reap_finished:
                 self._spawning = False
                 self._closing = False
+                self._reap_finished.notify_all()
             self._notify_idle()
 
     def _expire(self, entry: _Claim) -> bool:
@@ -1410,8 +1443,9 @@ class _ClaimSlot:
                 self._discard_unpublished(entry.process, entry.pidfd, entry.spawn)
             raise
         finally:
-            with self._lock:
+            with self._reap_finished:
                 self._closing = False
+                self._reap_finished.notify_all()
             self._notify_idle()
 
     def close(self) -> None:
@@ -1452,7 +1486,9 @@ class ClaimCoordinator:
         self._slots = tuple(_ClaimSlot(self) for _ in range(limit))
         self._warm: _WarmResult | None = None
 
-    def anticipate_result(self, process: ControlProcess) -> None:
+    def anticipate_result(
+        self, process: ControlProcess, *, observed: tuple[int, int, str, str] | None = None
+    ) -> None:
         """Use at most one free slot in response to an observed, active Attempt."""
         if (
             sys.platform != "linux"
@@ -1463,12 +1499,20 @@ class ClaimCoordinator:
         try:
             with self._lock:
                 self._live()
+                demand = (
+                    (observed[0], observed[1], _demand_digest(observed[2], observed[3]))
+                    if observed is not None
+                    else None
+                )
                 if self._warm is not None:
+                    if demand is not None and not self._warm.allocated:
+                        self._warm.demand = demand
                     return
                 slot = next((item for item in self._slots if item._worker_id is None), None)
                 if slot is None:
                     return
                 warm = self._warm = _WarmResult(self, slot)
+                warm.demand = demand
                 try:
                     threading.Thread(
                         target=warm.run, args=(process,), name="dlr-result-preload", daemon=True
@@ -1715,6 +1759,7 @@ class ClaimCoordinator:
     def close(self) -> None:
         self._poisoned.set()
         failures: list[BaseException] = []
+        closed_slots = []
         with self._lock:
             warm = self._warm
         if warm is not None:
@@ -1727,13 +1772,21 @@ class ClaimCoordinator:
                 slot.close()
             except BaseException as error:
                 failures.append(error)
+            else:
+                closed_slots.append(slot)
         # A handoff may own a real pidfd between take() and publication in
         # _result. Its original request owns reap and wakes this waiter.
+        drain_deadline = time.monotonic() + 5
         with self._drained:
             if not self._drained.wait_for(lambda: all(s._calls == 0 for s in self._slots), 5):
                 failures.append(ClaimUnavailable("Control child handoff still in progress"))
-        for slot in self._slots:
-            with slot._lock:
+        for slot in closed_slots:
+            # Timers reap outside the registry's request count.
+            with slot._reap_finished:
+                if not slot._reap_finished.wait_for(
+                    lambda slot=slot: not slot._closing, max(0.0, drain_deadline - time.monotonic())
+                ):
+                    failures.append(ClaimUnavailable("Control child reap still in progress"))
                 if slot._unresolved:
                     failures.append(ClaimUnavailable("Control child cleanup unconfirmed"))
         with self._resource_lock:

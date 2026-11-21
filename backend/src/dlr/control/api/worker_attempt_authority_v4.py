@@ -37,10 +37,12 @@ DbSession = Annotated[Session, Depends(db.get_session)]
 _MAX_ACTION_BYTES = 4096
 
 
-def _anticipate_result(request: Request, process: ControlProcess) -> None:
+def _anticipate_result(
+    request: Request, process: ControlProcess, observed: tuple[int, int, str, str]
+) -> None:
     coordinator = getattr(request.app.state, "claim_coordinator_v4", None)
     if isinstance(coordinator, ClaimCoordinator):
-        coordinator.anticipate_result(process)
+        coordinator.anticipate_result(process, observed=observed)
 
 
 def _error(status: int) -> HTTPException:
@@ -158,7 +160,7 @@ def _start(
         fence.check()
         process.check_authority()
         session.rollback()
-        _anticipate_result(request, process)
+        _anticipate_result(request, process, (worker_id, attempt_id, credential, attempt_proof))
         process.check_authority()
         return JSONResponse(
             {
@@ -208,7 +210,7 @@ def _renew(
         session.commit()
         process.check_authority()
         proof = process.observe_attempt_candidate(candidate, credential, instance_proof, action)
-        _anticipate_result(request, process)
+        _anticipate_result(request, process, (worker_id, attempt_id, credential, proof))
         process.check_authority()
         return JSONResponse({"attempt_proof": proof}, headers=_HEADERS)
     except Exception:  # noqa: BLE001 - commit or observation may be unknown

@@ -9,7 +9,6 @@ import sys
 from contextlib import closing
 
 from dlr.control.services.claim_child_v4 import _clock, _read_exact, _read_frame, _restrict
-from dlr.control.services.claim_envelope_v4 import ClaimEnvelope
 
 IDLE_SECONDS = 5.0
 
@@ -41,6 +40,8 @@ def main() -> int:
     try:
         fd, parent_pid, address_space = map(int, sys.argv[1:])
         _restrict(parent_pid, address_space)
+        from dlr.control.services.claim_envelope_v4 import ClaimEnvelope
+
         if set(os.environ) - {"LC_CTYPE"}:
             raise ValueError("unclean preload environment")
         envelope = ClaimEnvelope.open(child_address_space_bytes=address_space, preload=True)

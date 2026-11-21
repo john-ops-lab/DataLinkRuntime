@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select, text
+from sqlalchemy import event, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.control.models import (
@@ -210,10 +210,8 @@ def _args(facts, authority, instance_proof, ref, action):
     )
 
 
-@pytest.mark.parametrize("change", ["clock", "credential", "transaction"])
-def test_result_recheck_keeps_current_time_locked_rows_and_transaction(
-    api_client, session_factory, monkeypatch, change
-):
+@pytest.fixture
+def successful_result_context(api_client, session_factory):
     from dlr.control.schemas.reliable_runtime import AttemptResultBody
     from dlr.control.services import attempt_result_intent_v4 as intents
 
@@ -221,7 +219,7 @@ def test_result_recheck_keeps_current_time_locked_rows_and_transaction(
         api_client, session_factory
     )
     result = AttemptResultBody(**action.model_dump(), status="succeeded", output={"ok": True})
-    context = intents.ResultIntentContext(
+    return intents.ResultIntentContext(
         facts["worker_id"],
         ref.attempt_id,
         facts["credential"],
@@ -232,6 +230,15 @@ def test_result_recheck_keeps_current_time_locked_rows_and_transaction(
         result,
         authority,
     )
+
+
+@pytest.mark.parametrize("change", ["clock", "credential", "expiry", "transaction"])
+def test_result_recheck_keeps_current_time_locked_rows_and_transaction(
+    successful_result_context, session_factory, monkeypatch, change
+):
+    from dlr.control.services import attempt_result_intent_v4 as intents
+
+    context = successful_result_context
     with session_factory() as session:
         checks = intents._IntentChecks(session, context)
         assert checks.versions is not None
@@ -246,12 +253,83 @@ def test_result_recheck_keeps_current_time_locked_rows_and_transaction(
                     "UPDATE worker_credentials SET revoked_at = clock_timestamp() "
                     "WHERE worker_id = :worker AND kind = 'runtime'"
                 ),
-                {"worker": facts["worker_id"]},
+                {"worker": context.worker_id},
+            )
+        elif change == "expiry":
+            session.execute(
+                text(
+                    "UPDATE worker_credentials SET expires_at = clock_timestamp() "
+                    "WHERE worker_id = :worker AND kind = 'runtime'"
+                ),
+                {"worker": context.worker_id},
             )
         else:
             session.rollback()
         with pytest.raises(intents.ResultIntentError):
             checks.recheck()
+
+
+@pytest.mark.parametrize("phase", ["stage", "observe"])
+def test_result_checks_expiry_after_the_intent_write_or_lock(
+    successful_result_context, session_factory, monkeypatch, phase
+):
+    from dlr.control.services import attempt_result_intent_v4 as intents
+
+    ctx = successful_result_context
+    if phase == "observe":
+        with session_factory.begin() as session:
+            ref = intents.stage_result_intent(session, ctx, max_body_bytes=100_000)
+    with session_factory() as session:
+        expires = session.get(WorkerLeaseCandidateV4, ctx.worker_id).guard_until
+        blocked = False
+        original_clock = intents.worker_availability.current_time
+        monkeypatch.setattr(
+            intents.worker_availability,
+            "current_time",
+            lambda s: expires if blocked else original_clock(s),
+        )
+
+        def after_sql(_conn, _cursor, statement, *_args):
+            nonlocal blocked
+            sql = statement.lower()
+            if phase == "stage":
+                blocked |= "insert into attempt_result_intents_v4" in sql
+            else:
+                blocked |= "from attempt_result_intents_v4" in sql and "for update" in sql
+
+        connection = session.connection()
+        event.listen(connection, "after_cursor_execute", after_sql)
+        try:
+            with pytest.raises(intents.ResultIntentError):
+                if phase == "stage":
+                    intents.stage_result_intent(session, ctx, max_body_bytes=100_000)
+                else:
+                    intents.observe_result_in_session(
+                        session, ctx, ref, max_body_bytes=100_000, observation_nonce=uuid4()
+                    )
+            assert blocked
+        finally:
+            event.remove(connection, "after_cursor_execute", after_sql)
+
+
+def test_unchanged_result_locks_are_acquired_once_per_transaction(
+    successful_result_context, session_factory, monkeypatch
+):
+    from unittest.mock import Mock
+
+    from dlr.control.services import attempt_result_intent_v4 as intents
+
+    snapshot = Mock(wraps=intents._snapshot)
+    monkeypatch.setattr(intents, "_snapshot", snapshot)
+    ctx = successful_result_context
+    with session_factory.begin() as session:
+        ref = intents.stage_result_intent(session, ctx, max_body_bytes=100_000)
+    assert snapshot.call_count == 1
+    with session_factory.begin() as session:
+        observed = intents.observe_result_in_session(
+            session, ctx, ref, max_body_bytes=100_000, observation_nonce=uuid4()
+        )
+    assert observed.token and snapshot.call_count == 2
 
 
 def test_cancel_before_attempt_renewal_does_not_extend_lease(api_client, session_factory):
