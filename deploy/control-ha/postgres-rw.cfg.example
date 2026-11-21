@@ -1,20 +1,49 @@
-# Append this section to the private Control HAProxy configuration on both LBs.
-# PostgreSQL terminates TLS. Keep the private VIP and caller ACL aligned on both LBs.
-# Before the 200 rule in local_proxy_health, add the following rule when enabling this section.
-#   http-request return status 503 unless { nbsrv(postgres_primary) eq 1 }
+# Append this section to both copies of the private Control HAProxy configuration.
+# Install pg-primary.map from the example. Its on-disk value fences clients on
+# every restart. Runtime routing selects at most one explicit primary backend.
+
+frontend local_proxy_health
+    mode http
+    bind 127.0.0.1:18080
+    maxconn 4
+    timeout http-request 250ms
+    timeout client 400ms
+    http-request set-var(txn.pg_primary) str(primary),map(/etc/dlr-private/pg-primary.map,postgres_fenced)
+    acl ready_path path /ready
+    http-request return status 200 content-type text/plain string ready if ready_path { var(txn.pg_primary) -m str postgres_a } { nbsrv(postgres_a) eq 1 }
+    http-request return status 200 content-type text/plain string ready if ready_path { var(txn.pg_primary) -m str postgres_b } { nbsrv(postgres_b) eq 1 }
+    http-request return status 200 content-type text/plain string ready if ready_path { var(txn.pg_primary) -m str postgres_c } { nbsrv(postgres_c) eq 1 }
+    http-request return status 503 if ready_path
+    http-request deny deny_status 404
+
 frontend postgres_rw
     mode tcp
+    maxconn 64
     bind 192.0.2.20:6432
     tcp-request connection reject unless { src 192.0.2.10 192.0.2.11 }
-    default_backend postgres_primary
+    tcp-request connection set-var(sess.pg_primary) str(primary),map(/etc/dlr-private/pg-primary.map,postgres_fenced)
+    use_backend postgres_a if { var(sess.pg_primary) -m str postgres_a }
+    use_backend postgres_b if { var(sess.pg_primary) -m str postgres_b }
+    use_backend postgres_c if { var(sess.pg_primary) -m str postgres_c }
+    default_backend postgres_fenced
 
-backend postgres_primary
+defaults postgres_tcp
     mode tcp
     timeout connect 2s
     timeout server 660s
+    timeout client 660s
     timeout check 2s
     retries 0
     default-server check inter 2s fall 2 rise 1 on-marked-down shutdown-sessions
-    server pg_a 192.0.2.31:5432 disabled
-    server pg_b 192.0.2.32:5432 disabled
-    server pg_c 192.0.2.33:5432 disabled
+
+backend postgres_fenced
+    tcp-request content reject
+
+backend postgres_a
+    server db 192.0.2.31:5432
+
+backend postgres_b
+    server db 192.0.2.32:5432
+
+backend postgres_c
+    server db 192.0.2.33:5432

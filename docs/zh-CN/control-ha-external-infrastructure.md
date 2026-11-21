@@ -25,9 +25,11 @@
 
 ## 冗余入口
 
-在两个独立 Linux 节点运行 [Control HAProxy](../../deploy/control-ha/haproxy.cfg.example)，用[私有 VRRP 示例](../../deploy/control-ha/keepalived.conf.example)提供稳定地址。在等效外部负载均衡上保留同样的路径、TLS 和不自动重发写请求的行为。VRRP 需要受控的同一 L2、兼容的地址接管与明确的分区路由。两台专用入口机均先启用 `net.ipv4.ip_nonlocal_bind=1`，保证尚未持有 VIP 的节点可以启动 HAProxy。检查两台代理的本机 Unix Runtime socket 和 `127.0.0.1:18080/ready`，再启动 VRRP。VRRP 探测代理的真实应答，活动代理卡死时也能转移。节点共损、L2 整体不可用和 VIP 回切均须按实际拓扑验证。
+在两个独立 Linux 节点运行 [Control HAProxy](../../deploy/control-ha/haproxy.cfg.example)，用[私有 VRRP 示例](../../deploy/control-ha/keepalived.conf.example)提供稳定地址。在等效外部负载均衡上保留同样的路径、TLS 和不自动重发写请求的行为。VRRP 需要受控的同一 L2、兼容的地址接管与明确的分区路由。两台专用入口机均先启用 `net.ipv4.ip_nonlocal_bind=1`，保证尚未持有 VIP 的节点可以启动 HAProxy。检查两台代理的本机 Unix Runtime socket 和 `127.0.0.1:18080/ready`，再启动 VRRP。VRRP 探测代理的真实应答，活动代理卡死时也能转移。代理的业务前端连接上限之和须低于全局上限，为本机探测预留连接。节点共损、L2 整体不可用和 VIP 回切均须按实际拓扑验证。
 
-稳定数据库入口可附加[专用 TCP 后端](../../deploy/control-ha/postgres-rw.cfg.example)。示例只监听私有 VIP 并限制来源。允许两台 Control 的固定私有来源及经授权的运维探测入口。数据库为代理来源配置受限网络和运行角色权限。运行客户端使用 `sslmode=verify-full` 和稳定主机名，数据库服务端证书含该名称。两台代理默认关闭全部候选后端。附加示例时按文件注释更新本机健康规则，只有唯一已启用且连通的 PostgreSQL 后端才具备 VIP 资格。冷启动、代理重启和维护关闭后按当前权威重新授权。只在供方验证旧主隔离和新主同步后端到位、容量权威切换成功后，动态启用两端同一个后端。对于 HAProxy 管理 socket，先对旧后端执行 `disable server postgres_primary/<name>` 和 `shutdown sessions server postgres_primary/<name>`，待新主完成验证后执行 `enable server postgres_primary/<name>`。两台代理分别在 global 配置仅限本机操作身份的 Unix Runtime socket，使用 `level admin` 和 `mode 0600`。对两台分别核对命令执行结果。重启代理后根据当前权威重新授权。TCP 健康检查用于摘除失联地址，提升由数据库供方执行。
+附加[专用 TCP 配置](../../deploy/control-ha/postgres-rw.cfg.example)及[主库映射示例](../../deploy/control-ha/pg-primary.map.example)后，两台代理同时提供私有 PostgreSQL 入口和带数据库条件的本机探测。监听地址及来源 ACL 只开放给获准的运行客户端。数据库为代理来源配置受限网络和角色。客户端用 `sslmode=verify-full` 连接稳定主机名，数据库服务端证书含该名称。
+
+映射文件安装于 `/etc/dlr-private/pg-primary.map`。磁盘版本的 `primary` 值固定为 `postgres_fenced`。冷启动、代理重启及维护关闭时，本机探测应返回 503。通过每台代理的本机 Unix Runtime socket 运行 `set map /etc/dlr-private/pg-primary.map primary postgres_fenced` 关闭新连接，再执行 `shutdown sessions server postgres_a/db` 等对应原后端的命令清退旧连接。旧主隔离、容量换代和新主持续同步各有回执后，用 `set map /etc/dlr-private/pg-primary.map primary postgres_b` 等指向唯一的新主。使用 `show map /etc/dlr-private/pg-primary.map` 核对两个实例均指向同一后端，随后验证 `/ready`、VIP 归属及真实 SQL 回执。每个后端只包含一台数据库，健康检查使失效地址不可用，提升和后端授权由供方执行。恢复脚本需要在每次代理重启后按当前权威重新授权。管理 socket 使用 `level admin` 与 `mode 0600`。
 
 ## 共享文件存储
 

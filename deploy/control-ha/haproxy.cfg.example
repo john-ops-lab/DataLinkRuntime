@@ -16,13 +16,8 @@ defaults
     timeout server 660s
     retries 0
 
-frontend local_proxy_health
-    bind 127.0.0.1:18080 unlimited
-    maxconn 4
-    http-request return status 200 content-type text/plain string ready if { path /ready }
-    http-request deny deny_status 404
-
 frontend token_api
+    maxconn 256
     bind :8443 ssl crt /etc/dlr-tls/api.pem
     http-request deny deny_status 404 unless { path_beg /api/ }
     http-request del-header X-DLR-Claim-Forwarded
@@ -32,6 +27,7 @@ frontend token_api
     default_backend controls
 
 frontend account_api
+    maxconn 112
     bind :9443 ssl crt /etc/dlr-tls/api.pem
     http-request deny deny_status 404 unless { path_beg /api/ }
     http-request del-header X-DLR-Claim-Forwarded
@@ -51,6 +47,7 @@ backend controls
     server control_b 192.0.2.11:8443 ssl verify required ca-file /etc/dlr-tls/control-ca.pem verifyhost control-b.example.internal sni str(control-b.example.internal) check-sni control-b.example.internal
 
 frontend claim_peer_a
+    maxconn 16
     bind 192.0.2.20:10443 ssl crt /etc/dlr-tls/claim-peer.pem
     http-request deny unless { src 192.0.2.11 }
     http-request deny unless METH_POST { path_reg ^/api/workers/[0-9]+/v4/claim/finalize$ }
@@ -58,6 +55,7 @@ frontend claim_peer_a
     default_backend claim_to_a
 
 frontend claim_peer_b
+    maxconn 16
     bind 192.0.2.20:11443 ssl crt /etc/dlr-tls/claim-peer.pem
     http-request deny unless { src 192.0.2.10 }
     http-request deny unless METH_POST { path_reg ^/api/workers/[0-9]+/v4/claim/finalize$ }
