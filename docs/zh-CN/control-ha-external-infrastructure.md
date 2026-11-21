@@ -8,7 +8,7 @@
 
 失去要求的同步副本时，写事务可等待同步。运行连接继续开放时，不得通过取消 COMMIT 等待、减少要求的同步副本数或关闭同步来恢复写入。PostgreSQL 可能在受主动取消时已经本地持久化并发出告警，此时结果须视为未知。操作员需先围住整套旧写入口和存量连接。原主故障后，只能提升此前处于声明同步集合、有真实持久提交保障的副本。候选缺失、旧主无法隔离或同步证明未知时，保持写入口关闭。异步部署不能承诺已确认责任零丢失。[PostgreSQL 同步复制](https://www.postgresql.org/docs/16/warm-standby.html#SYNCHRONOUS-REPLICATION)
 
-1. 记录故障时刻、原主和时间线。关闭两台代理的运行数据库入口，终止代理中的旧后端连接。停两台 Control，核对连接池、native 来源进程及在途请求已退出。对原主使用供方的节点隔离、断电或已验证的进程及其自动重启隔离，留存隔离回执。
+1. 记录故障时刻、原主和时间线。关闭仍在运行的代理上的数据库入口，终止代理中的旧后端连接。停仍在运行的 Control，核对连接池、native 来源进程及在途请求已退出。对原主和随原主失联的代理或 Control，记录已经断电或受到隔离且禁止自动恢复的供方回执。管理接口无响应时，保持其围栏状态未知，直到取得独立证明。
 2. 在维护通路核对同步候选和原主失权，由供方提升。选用与原主同属一个系统标识的新时间线，在新主仍隔离运行连接时绑定仍可用的同步候选，并验证实际 `sync_state=sync`、`state=streaming` 和 replay。旧节点沿新时间线重建或按供方流程追赶，恢复同步资格前不得重新成为写节点。
 3. 保持运行角色 `NOLOGIN`，只通过维护通路保留一个应用库 owner 会话。确认没有其他应用库用户会话和 prepared transaction，等原 Control 及订阅租约自然结束。在同一逻辑数据库容量域使用更大的 epoch 运行 `python -m dlr.control.control_identity_init_v4 ha-configure <storage-domain> <epoch>`。以 `configured` 或同意图读回的 `verified` 为准。已接受记录和占用沿用原库。
 4. 用新主和同步候选生成匹配新 epoch 的真实容量采样。恢复受限角色登录，在隔离的维护通路用实际运行角色和实际连接参数核对数据库身份及 `SHOW synchronous_commit`，随后断开该验证连接。两台代理开放唯一主库，再启动 Control。用合法新请求的提交与独立读回验证恢复。旧 ID、提交结果未知及原生重投按原键核对。文件节点具备安全挂载后，按共享文件指南对三个启用的命名空间运行新的双端 `prove`，确认新实例完成登记，逐个核对原冻结对象。
@@ -35,7 +35,7 @@ VRRP 对端心跳隔离时，两端各自健康可能导致双 VIP。要求控�
 
 附加[专用 TCP 配置](../../deploy/control-ha/postgres-rw.cfg.example)及[主库映射示例](../../deploy/control-ha/pg-primary.map.example)后，两台代理同时提供私有 PostgreSQL 入口和带数据库条件的本机探测。监听地址及来源 ACL 只开放给获准的运行客户端。数据库为代理来源配置受限网络和角色。客户端用 `sslmode=verify-full` 连接稳定主机名，数据库服务端证书含该名称。
 
-映射文件安装于 `/etc/dlr-private/pg-primary.map`。磁盘版本的 `primary` 值固定为 `postgres_fenced`。冷启动、代理重启及维护关闭时，本机探测应返回 503。通过每台代理的本机 Unix Runtime socket 运行 `set map /etc/dlr-private/pg-primary.map primary postgres_fenced` 关闭新连接，再执行 `shutdown sessions server postgres_a/db` 等对应原后端的命令清退旧连接。旧主隔离、容量换代和新主持续同步各有回执后，用 `set map /etc/dlr-private/pg-primary.map primary postgres_b` 等指向唯一的新主。使用 `show map /etc/dlr-private/pg-primary.map` 核对两个实例均指向同一后端，随后验证 `/ready`、VIP 归属及真实 SQL 回执。
+映射文件安装于 `/etc/dlr-private/pg-primary.map`。磁盘版本的 `primary` 值固定为 `postgres_fenced`。冷启动、代理重启及维护关闭时，本机探测应返回 503。通过每台在线代理的本机 Unix Runtime socket 运行 `set map /etc/dlr-private/pg-primary.map primary postgres_fenced` 关闭新连接，再执行 `shutdown sessions server postgres_a/db` 等对应原后端的命令清退旧连接。已经断电并禁止自动恢复的共置代理使用供方围栏回执。旧主隔离、容量换代和新主持续同步各有回执后，用 `set map /etc/dlr-private/pg-primary.map primary postgres_b` 等指向唯一的新主。使用 `show map /etc/dlr-private/pg-primary.map` 核对每台在线实例均指向同一后端，随后验证 `/ready`、VIP 归属及真实 SQL 回执。代理重入时先验证默认关闭，再按当前权威授权。
 
 每个后端只包含一台数据库，TCP 健康检查只判断当前已选地址的连通性。实例失效后，由数据库供方阻止其自主恢复写服务，并在两处映射都关闭、旧会话均已清退后才启动另一个主库。旧地址即便恢复监听，也须经历这个围栏流程和明确的新一次授权才可重新进入运行通路。恢复脚本在每次代理重启后按当前权威重新授权。管理 socket 使用 `level admin` 与 `mode 0600`。
 
