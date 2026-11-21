@@ -33,6 +33,7 @@ from dlr.control.models import (
     SubscriptionExecutionBatch,
     SubscriptionQuota,
     Worker,
+    WorkerIdentityReservation,
     WorkerLeaseCandidateV4,
     WorkerPlacementCutover,
     WorkerPoolMember,
@@ -54,6 +55,7 @@ from dlr.control.services import (
     worker_claim_v4,
     worker_credentials,
     worker_identity_reservation,
+    worker_legacy_window,
     worker_maintenance_observation,
     worker_placement_cutover,
     worker_placement_scheduler,
@@ -341,9 +343,95 @@ def test_v3_accepted_after_upgrade_has_no_retroactive_placement_expiry(
         assert converted.placement_deadline_at is None
         assert converted.placement_wait_timeout_seconds is None
         assert not worker_placement_wait.expire_queued(session, execution_id)
-        from dlr.control.services.worker_legacy_window import has_unsettled_worker_work
+        assert not worker_legacy_window.has_unsettled_worker_work(session, worker_id)
 
-        assert not has_unsettled_worker_work(session, worker_id)
+
+def test_closed_window_preserves_adopted_v3_attempt_and_retry_custody(
+    placement, api_client, monkeypatch
+):
+    factory, _, _, _, _ = placement
+    monkeypatch.setattr(settings, "worker_remote_v4_enabled", False)
+    worker_id = register(api_client, "legacy-retry-history")
+    with factory.begin() as session:
+        execution = _ordinary(session, None, "legacy-retry", fixed_worker=worker_id, staged=False)
+        execution_id = execution.id
+        now = worker_availability.current_time(session)
+        due = now + timedelta(minutes=5)
+        execution.status = "retry_wait"
+        execution.next_attempt_at = due
+        execution.attempt_count = 1
+        attempt_row = ExecutionAttempt(
+            execution_id=execution.id,
+            adapter_id=execution.adapter_id,
+            worker_id=worker_id,
+            attempt_no=1,
+            fencing_token=1,
+            status="failed",
+            claimed_at=now - timedelta(seconds=1),
+            ended_at=now,
+            lease_expires_at=now + timedelta(seconds=30),
+            claim_token_hash="a" * 64,
+            cleanup_token_hash="b" * 64,
+            cleanup_summary={"workspace_cleanup_status": "completed"},
+        )
+        session.add(attempt_row)
+        session.flush()
+        attempt_id = attempt_row.id
+
+    monkeypatch.setattr(settings, "worker_remote_v4_enabled", True)
+    monkeypatch.setattr(settings, "worker_v4_deployment_mode", "A")
+    monkeypatch.setattr(settings, "worker_v4_control_slots", 1)
+    with factory.begin() as session:
+        worker_legacy_window.open_once(session, due)
+        assert worker_placement_cutover.pause(session) == "paused"
+    with factory.begin() as session:
+        assert worker_placement_cutover.convert_waiting(session, execution_id)
+        worker = session.get(Worker, worker_id)
+        reservation_id = uuid4()
+        session.add(
+            WorkerIdentityReservation(
+                request_id=reservation_id,
+                worker_id=worker_id,
+                name=worker.name,
+                actor_kind="superadmin",
+                legacy_stop_evidence_sha256="c" * 64,
+            )
+        )
+        worker.status = "offline"
+        worker.protocol_version = 4
+        worker.identity_lifecycle = "reserved"
+
+    monkeypatch.setattr(settings, "worker_v4_deployment_mode", "C")
+    monkeypatch.setattr(settings, "worker_v4_control_slots", 2)
+    with factory() as session, pytest.raises(RemoteDeploymentUnavailable):
+        require_dedicated_deployment(session)
+    monkeypatch.setattr(settings, "worker_v4_deployment_mode", "A")
+    monkeypatch.setattr(settings, "worker_v4_control_slots", 1)
+    with factory.begin() as session:
+        worker_legacy_window.close(session)
+
+    monkeypatch.setattr(settings, "worker_v4_deployment_mode", "C")
+    monkeypatch.setattr(settings, "worker_v4_control_slots", 2)
+    with factory() as session:
+        require_dedicated_deployment(session)
+        assert session.get(ExecutionAttempt, attempt_id).worker_identity_id is None
+        assert session.get(Execution, execution_id).next_attempt_at == due
+    with factory() as session:
+        row = session.get(ExecutionAttempt, attempt_id)
+        row.cleanup_summary = {"workspace_cleanup_status": "deferred"}
+        session.flush()
+        with pytest.raises(RemoteDeploymentUnavailable):
+            require_dedicated_deployment(session, readonly=True)
+    with factory() as session:
+        session.get(WorkerIdentityReservation, reservation_id).legacy_stop_evidence_sha256 = None
+        session.flush()
+        with pytest.raises(RemoteDeploymentUnavailable):
+            require_dedicated_deployment(session, readonly=True)
+    with factory() as session:
+        _intent(session, execution_id).last_error_code = "unknown"
+        session.flush()
+        with pytest.raises(RemoteDeploymentUnavailable):
+            require_dedicated_deployment(session, readonly=True)
 
 
 def test_placement_limit_retry_expiration_and_cancel_keep_one_responsibility(placement, api_client):
